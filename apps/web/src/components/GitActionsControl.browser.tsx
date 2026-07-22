@@ -1,6 +1,8 @@
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { ThreadId } from "@threadlines/contracts";
+import * as Option from "effect/Option";
 import { useState } from "react";
+import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -27,10 +29,13 @@ const {
   activeDraftThreadRef,
   hasServerThreadRef,
   invalidateGitQueriesSpy,
+  publishGitStatusRef,
+  publishRepositoryMutateAsyncSpy,
   refreshGitStatusSpy,
   runStackedActionMutateAsyncSpy,
   setDraftThreadContextSpy,
   setThreadBranchSpy,
+  sourceControlDiscoveryRef,
   toastAddSpy,
   toastCloseSpy,
   toastPromiseSpy,
@@ -40,10 +45,13 @@ const {
   activeDraftThreadRef: { current: null as unknown },
   hasServerThreadRef: { current: true },
   invalidateGitQueriesSpy: vi.fn(() => Promise.resolve()),
+  publishGitStatusRef: { current: null as unknown },
+  publishRepositoryMutateAsyncSpy: vi.fn(),
   refreshGitStatusSpy: vi.fn(() => Promise.resolve(null)),
   runStackedActionMutateAsyncSpy: vi.fn(() => activeRunStackedActionDeferredRef.current.promise),
   setDraftThreadContextSpy: vi.fn(),
   setThreadBranchSpy: vi.fn(),
+  sourceControlDiscoveryRef: { current: { data: null } as unknown },
   toastAddSpy: vi.fn(() => "toast-1"),
   toastCloseSpy: vi.fn(),
   toastPromiseSpy: vi.fn(),
@@ -68,6 +76,13 @@ vi.mock("@tanstack/react-query", async () => {
       if (options.__kind === "pull") {
         return {
           mutateAsync: vi.fn(),
+          isPending: false,
+        };
+      }
+
+      if (options.__kind === "publish-repository") {
+        return {
+          mutateAsync: publishRepositoryMutateAsyncSpy,
           isPending: false,
         };
       }
@@ -123,27 +138,34 @@ vi.mock("~/lib/gitReactQuery", () => ({
 vi.mock("~/lib/gitStatusState", () => ({
   refreshGitStatus: refreshGitStatusSpy,
   resetGitStatusStateForTests: () => undefined,
-  useGitStatus: vi.fn(() => ({
-    data: {
-      isRepo: true,
-      sourceControlProvider: {
-        kind: "github",
-        name: "GitHub",
-        baseUrl: "https://github.com",
+  useGitStatus: vi.fn(
+    () =>
+      publishGitStatusRef.current ?? {
+        data: {
+          isRepo: true,
+          sourceControlProvider: {
+            kind: "github",
+            name: "GitHub",
+            baseUrl: "https://github.com",
+          },
+          hasPrimaryRemote: true,
+          isDefaultRef: false,
+          refName: BRANCH_NAME,
+          hasWorkingTreeChanges: false,
+          workingTree: { files: [], insertions: 0, deletions: 0 },
+          hasUpstream: true,
+          aheadCount: 1,
+          behindCount: 0,
+          pr: null,
+        },
+        error: null,
+        isPending: false,
       },
-      hasPrimaryRemote: true,
-      isDefaultRef: false,
-      refName: BRANCH_NAME,
-      hasWorkingTreeChanges: false,
-      workingTree: { files: [], insertions: 0, deletions: 0 },
-      hasUpstream: true,
-      aheadCount: 1,
-      behindCount: 0,
-      pr: null,
-    },
-    error: null,
-    isPending: false,
-  })),
+  ),
+}));
+
+vi.mock("~/lib/sourceControlDiscoveryState", () => ({
+  useSourceControlDiscovery: vi.fn(() => sourceControlDiscoveryRef.current),
 }));
 
 vi.mock("~/localApi", () => ({
@@ -264,7 +286,7 @@ vi.mock("~/terminal-links", () => ({
   resolvePathLinkTarget: vi.fn(),
 }));
 
-import GitActionsControl from "./GitActionsControl";
+import GitActionsControl, { PublishRepositoryDialog } from "./GitActionsControl";
 
 function findButtonByText(text: string): HTMLButtonElement | null {
   return (Array.from(document.querySelectorAll("button")).find((button) =>
@@ -286,6 +308,23 @@ function Harness() {
         Switch environment
       </button>
       <GitActionsControl gitCwd={GIT_CWD} activeThreadRef={activeThreadRef} />
+    </>
+  );
+}
+
+function PublishDialogHarness() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Open publish
+      </button>
+      <PublishRepositoryDialog
+        open={open}
+        onOpenChange={setOpen}
+        environmentId={ENVIRONMENT_A}
+        gitCwd={GIT_CWD}
+      />
     </>
   );
 }
@@ -475,6 +514,147 @@ describe("GitActionsControl thread-scoped progress toast", () => {
 
       expect(setDraftThreadContextSpy).not.toHaveBeenCalled();
       expect(setThreadBranchSpy).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+});
+
+describe("PublishRepositoryDialog", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    publishGitStatusRef.current = null;
+    sourceControlDiscoveryRef.current = { data: null };
+    document.body.innerHTML = "";
+  });
+
+  function prepareGitHubPublish() {
+    sourceControlDiscoveryRef.current = {
+      data: {
+        versionControlSystems: [],
+        sourceControlProviders: [
+          {
+            kind: "github",
+            label: "GitHub",
+            status: "available",
+            version: Option.some("2.78.0"),
+            installHint: "Install GitHub CLI.",
+            detail: Option.none(),
+            auth: {
+              status: "authenticated",
+              account: Option.some("badcuban"),
+              host: Option.some("github.com"),
+              detail: Option.none(),
+              preferredProtocol: "https",
+            },
+          },
+        ],
+      },
+    };
+    publishGitStatusRef.current = {
+      data: {
+        isRepo: true,
+        hasPrimaryRemote: false,
+        isDefaultRef: true,
+        refName: "master",
+        headSha: null,
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [{ path: "one.png" }, { path: "two.png" }, { path: "contract.pdf" }],
+          insertions: 0,
+          deletions: 0,
+        },
+        hasUpstream: false,
+        aheadCount: 0,
+        behindCount: 0,
+        pr: null,
+      },
+      error: null,
+      isPending: false,
+    };
+  }
+
+  it("reviews empty-repository effects and submits provider-aware options", async () => {
+    prepareGitHubPublish();
+    publishRepositoryMutateAsyncSpy.mockResolvedValue({
+      repository: {
+        provider: "github",
+        nameWithOwner: "acme/dojostorm",
+        url: "https://github.com/acme/dojostorm",
+        sshUrl: "git@github.com:acme/dojostorm.git",
+      },
+      remoteName: "origin",
+      remoteUrl: "https://github.com/acme/dojostorm",
+      branch: "main",
+      status: "remote_added",
+    });
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(<PublishDialogHarness />, { container: host });
+
+    try {
+      findButtonByText("Open publish")?.click();
+      await vi.waitFor(() => expect(findButtonByText("Next")).toBeTruthy());
+      findButtonByText("Next")?.click();
+
+      await page.getByPlaceholder("owner/repo").fill("acme/dojostorm");
+      await page
+        .getByPlaceholder("A short description of this repository")
+        .fill("Dojo Storm assets");
+
+      await page.getByRole("radio", { name: /Internal/u }).click();
+      await page.getByPlaceholder("team-slug").fill("design");
+
+      findButtonByText("Next")?.click();
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain("No commits will be uploaded yet.");
+        expect(document.body.textContent).toContain("master · aligned to provider default");
+        expect(document.body.textContent).toContain("3 changed files remain local");
+      });
+
+      findButtonByText("Publish")?.click();
+      await vi.waitFor(() =>
+        expect(publishRepositoryMutateAsyncSpy).toHaveBeenCalledWith({
+          provider: "github",
+          repository: "acme/dojostorm",
+          visibility: "internal",
+          description: "Dojo Storm assets",
+          team: "design",
+          remoteName: "origin",
+          protocol: "https",
+        }),
+      );
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Repository created"));
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("restores private visibility whenever the dialog is reopened", async () => {
+    prepareGitHubPublish();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(<PublishDialogHarness />, { container: host });
+
+    try {
+      findButtonByText("Open publish")?.click();
+      await vi.waitFor(() => expect(findButtonByText("Next")).toBeTruthy());
+      findButtonByText("Next")?.click();
+      await page.getByRole("radio", { name: /Public/u }).click();
+      findButtonByText("Back")?.click();
+      await vi.waitFor(() => expect(findButtonByText("Cancel")).toBeTruthy());
+      findButtonByText("Cancel")?.click();
+      await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+
+      findButtonByText("Open publish")?.click();
+      await vi.waitFor(() => expect(findButtonByText("Next")).toBeTruthy());
+      findButtonByText("Next")?.click();
+      await expect
+        .element(page.getByRole("radio", { name: /Private/u }))
+        .toHaveAttribute("aria-checked", "true");
     } finally {
       await screen.unmount();
       host.remove();

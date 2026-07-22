@@ -251,6 +251,7 @@ layer("GitLabCli.layer", (it) => {
         cwd: "/repo",
         repository: "octocat/t3code",
         visibility: "public",
+        description: "Agent workspace",
       });
 
       assert.deepStrictEqual(result, {
@@ -282,6 +283,8 @@ layer("GitLabCli.layer", (it) => {
             "name=t3code",
             "--raw-field",
             "visibility=public",
+            "--raw-field",
+            "description=Agent workspace",
             "--raw-field",
             "namespace_id=1234",
           ],

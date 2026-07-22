@@ -88,6 +88,8 @@ export interface SourceControlProviderShape {
     readonly cwd: string;
     readonly repository: string;
     readonly visibility: SourceControlRepositoryVisibility;
+    readonly description?: string;
+    readonly team?: string;
   }) => Effect.Effect<SourceControlRepositoryCloneUrls, SourceControlProviderError>;
   readonly getDefaultBranch: (input: {
     readonly cwd: string;

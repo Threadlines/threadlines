@@ -444,12 +444,14 @@ it.effect("creates repositories through the Bitbucket REST API", () => {
       cwd: "/repo",
       repository: "pingdotgg/t3code",
       visibility: "private",
+      description: "Agent workspace",
     });
 
     assert.deepStrictEqual(cloneUrls, {
       nameWithOwner: "pingdotgg/t3code",
       url: "https://bitbucket.org/pingdotgg/t3code.git",
       sshUrl: "git@bitbucket.org:pingdotgg/t3code.git",
+      defaultBranch: "main",
     });
 
     const request = execute.mock.calls[0]?.[0];
@@ -462,7 +464,28 @@ it.effect("creates repositories through the Bitbucket REST API", () => {
     assert.deepStrictEqual(JSON.parse(new TextDecoder().decode(rawBody)), {
       scm: "git",
       is_private: true,
+      description: "Agent workspace",
     });
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("rejects unsupported internal repository visibility", () => {
+  const { execute, layer } = makeLayer({
+    response: () => Response.json(repositoryJson),
+  });
+
+  return Effect.gen(function* () {
+    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    const error = yield* bitbucket
+      .createRepository({
+        cwd: "/repo",
+        repository: "pingdotgg/t3code",
+        visibility: "internal",
+      })
+      .pipe(Effect.flip);
+
+    assert.strictEqual(error.detail, "Bitbucket repositories do not support internal visibility.");
+    assert.strictEqual(execute.mock.calls.length, 0);
   }).pipe(Effect.provide(layer));
 });
 

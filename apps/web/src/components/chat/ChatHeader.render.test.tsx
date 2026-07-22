@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@threadlines/contracts";
+import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -10,6 +10,7 @@ const TEST_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
 function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> = {}) {
   const props = {
+    activeThreadId: ThreadId.make("thread-chat-header-test"),
     activeThreadEnvironmentId: TEST_ENVIRONMENT_ID,
     activeThreadTitle: "General chat",
     activeProjectName: "General Chats",

@@ -393,6 +393,7 @@ export const ThreadForkSeedOutcomeActivityKind = "thread.fork.seed-outcome";
 export const ThreadForkSeedOutcomePayload = Schema.Struct({
   seedMode: Schema.Literals(["provider-native", "context-seed"]),
   sourceProviderThreadId: Schema.optional(TrimmedNonEmptyString),
+  beforeTurnId: Schema.optional(TrimmedNonEmptyString),
   lastTurnId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ThreadForkSeedOutcomePayload = typeof ThreadForkSeedOutcomePayload.Type;
@@ -746,6 +747,8 @@ const ClientThreadForkCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
+    attachments: Schema.optional(Schema.Array(ChatAttachment)),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -767,6 +770,8 @@ const ThreadForkCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
+    attachments: Schema.optional(Schema.Array(ChatAttachment)),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,

@@ -23,6 +23,9 @@ import type {
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
+  ProviderExternalThreadListInput,
+  ProviderExternalThreadListResult,
+  ProviderExternalThreadSnapshot,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -56,6 +59,16 @@ export interface ProviderServiceShape {
     threadId: ThreadId,
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
+
+  readonly listExternalThreads: (
+    input: ProviderExternalThreadListInput,
+  ) => Effect.Effect<ProviderExternalThreadListResult, ProviderServiceError>;
+
+  readonly readExternalThread: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly providerThreadId: string;
+    readonly expectedCwd: string;
+  }) => Effect.Effect<ProviderExternalThreadSnapshot, ProviderServiceError>;
 
   /**
    * Send a provider turn.

@@ -6,6 +6,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  ProjectId,
   ProviderItemId,
   ThreadId,
   TurnId,
@@ -105,8 +106,11 @@ export type ThreadContextSeed = typeof ThreadContextSeed.Type;
  */
 export const ProviderSessionForkFrom = Schema.Struct({
   providerThreadId: TrimmedNonEmptyString,
-  // Provider turn to cut the copied history through, inclusive. Absent means
-  // fork the full history.
+  // Preferred exact boundary for replacing a user prompt: exclude this turn
+  // and everything after it. Never sent together with `lastTurnId`.
+  beforeTurnId: Schema.optional(TrimmedNonEmptyString),
+  // Stable fallback boundary: copy history through this turn, inclusive.
+  // Absent boundaries mean fork the full history.
   lastTurnId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderSessionForkFrom = typeof ProviderSessionForkFrom.Type;
@@ -119,6 +123,9 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  /** External imports require the selected native thread to resume exactly;
+   *  normal recovery keeps the historical fallback-to-fresh behavior. */
+  resumePolicy: Schema.optional(Schema.Literals(["fallback", "required"])),
   // Cross-driver handoff: provider-agnostic conversation rehydration used when
   // there is no native `resumeCursor` for the target driver. Adapters inject it
   // as a priming preamble on the first turn.
@@ -227,6 +234,99 @@ export type ProviderStartReviewResult = typeof ProviderStartReviewResult.Type;
 
 export class ProviderStartReviewError extends Schema.TaggedErrorClass<ProviderStartReviewError>()(
   "ProviderStartReviewError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export const ProviderExternalThreadSource = Schema.Literals([
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "unknown",
+]);
+export type ProviderExternalThreadSource = typeof ProviderExternalThreadSource.Type;
+
+export const ProviderExternalThreadStatus = Schema.Literals([
+  "notLoaded",
+  "idle",
+  "active",
+  "systemError",
+]);
+export type ProviderExternalThreadStatus = typeof ProviderExternalThreadStatus.Type;
+
+/** One root Codex conversation discovered in a provider instance's own home. */
+export const ProviderExternalThreadCandidate = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  providerThreadId: TrimmedNonEmptyString,
+  sessionId: TrimmedNonEmptyString,
+  source: ProviderExternalThreadSource,
+  name: Schema.NullOr(TrimmedNonEmptyString),
+  preview: Schema.String,
+  cwd: TrimmedNonEmptyString,
+  cliVersion: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  status: ProviderExternalThreadStatus,
+  canImport: Schema.Boolean,
+  unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  /** Present when this native session is already attached to a Threadlines thread. */
+  linkedThreadId: Schema.optional(ThreadId),
+});
+export type ProviderExternalThreadCandidate = typeof ProviderExternalThreadCandidate.Type;
+
+export const ProviderExternalThreadListInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  cwd: TrimmedNonEmptyString,
+  cursor: Schema.optional(TrimmedNonEmptyString),
+  searchTerm: Schema.optional(TrimmedNonEmptyString),
+  limit: Schema.optional(NonNegativeInt),
+});
+export type ProviderExternalThreadListInput = typeof ProviderExternalThreadListInput.Type;
+
+export const ProviderExternalThreadListResult = Schema.Struct({
+  data: Schema.Array(ProviderExternalThreadCandidate),
+  nextCursor: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExternalThreadListResult = typeof ProviderExternalThreadListResult.Type;
+
+export const ProviderExternalThreadTranscriptMessage = Schema.Struct({
+  providerItemId: TrimmedNonEmptyString,
+  providerTurnId: TrimmedNonEmptyString,
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+export type ProviderExternalThreadTranscriptMessage =
+  typeof ProviderExternalThreadTranscriptMessage.Type;
+
+/** Server-internal compatibility/read result used to backfill an import. */
+export const ProviderExternalThreadSnapshot = Schema.Struct({
+  candidate: ProviderExternalThreadCandidate,
+  messages: Schema.Array(ProviderExternalThreadTranscriptMessage),
+});
+export type ProviderExternalThreadSnapshot = typeof ProviderExternalThreadSnapshot.Type;
+
+export const ProviderExternalThreadImportInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  providerThreadId: TrimmedNonEmptyString,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+});
+export type ProviderExternalThreadImportInput = typeof ProviderExternalThreadImportInput.Type;
+
+export const ProviderExternalThreadImportResult = Schema.Struct({
+  threadId: ThreadId,
+  importedMessageCount: NonNegativeInt,
+});
+export type ProviderExternalThreadImportResult = typeof ProviderExternalThreadImportResult.Type;
+
+export class ProviderExternalThreadError extends Schema.TaggedErrorClass<ProviderExternalThreadError>()(
+  "ProviderExternalThreadError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

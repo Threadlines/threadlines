@@ -577,6 +577,50 @@ describe("ProviderModelPicker", () => {
     }
   });
 
+  it("marks the model advertised as the provider default", async () => {
+    const providers: ReadonlyArray<ServerProvider> = [
+      {
+        ...TEST_PROVIDERS[0]!,
+        models: [
+          {
+            slug: "gpt-5.6-sol",
+            name: "GPT-5.6 Sol",
+            isCustom: false,
+            isDefault: true,
+            capabilities: createModelCapabilities({ optionDescriptors: [] }),
+          },
+          {
+            slug: "gpt-5.6-terra",
+            name: "GPT-5.6 Terra",
+            isCustom: false,
+            capabilities: createModelCapabilities({ optionDescriptors: [] }),
+          },
+        ],
+      },
+    ];
+    const mounted = await mountPicker({
+      activeInstanceId: CODEX_INSTANCE_ID,
+      model: "gpt-5.6-sol",
+      lockedProvider: null,
+      providers,
+    });
+
+    try {
+      await openModelPicker();
+
+      await vi.waitFor(() => {
+        const defaultRowText = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-model-picker-model-name]"),
+        )
+          .map((row) => row.textContent ?? "")
+          .find((text) => text.includes("Default"));
+        expect(defaultRowText).toContain("Sol");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows instance tabs in locked mode when that provider has multiple instances", async () => {
     const defaultCodexModels: ServerProvider["models"] = [
       {

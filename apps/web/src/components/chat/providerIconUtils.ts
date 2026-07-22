@@ -24,6 +24,7 @@ export type ModelEsque = {
   description?: string | undefined;
   shortName?: string | undefined;
   subProvider?: string | undefined;
+  isDefault?: boolean | undefined;
 };
 
 const CLAUDE_AGENT_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");

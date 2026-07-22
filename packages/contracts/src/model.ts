@@ -144,7 +144,12 @@ const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
-export const DEFAULT_MODEL = "gpt-5.5";
+/**
+ * Offline Codex fallback used only when the provider has not reported a live
+ * default model yet. Normal UI selection should prefer the model marked
+ * `isDefault` by the active Codex instance.
+ */
+export const DEFAULT_MODEL = "gpt-5.6-sol";
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 
 export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {

@@ -33,6 +33,7 @@ export interface ForkHeaderContext {
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
+  activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
@@ -96,6 +97,7 @@ export function resolveContinueInProjectHeaderState(disabledReason: string | nul
 
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
+  activeThreadId,
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
@@ -188,6 +190,8 @@ export const ChatHeader = memo(function ChatHeader({
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
         <ThreadActivityPopover
+          activeThreadEnvironmentId={activeThreadEnvironmentId}
+          activeThreadId={activeThreadId}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
           backgroundRuns={backgroundRuns}

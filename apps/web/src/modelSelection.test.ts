@@ -281,6 +281,24 @@ describe("instance-scoped model selection", () => {
     ).toBe("gpt-5.5");
   });
 
+  it("preserves an explicit visible model instead of replacing it with the live default", () => {
+    const providers = [
+      provider({
+        instanceId: "codex",
+        models: [{ slug: "gpt-5.6-sol", isDefault: true }, "gpt-5.5"],
+      }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("codex"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        "gpt-5.5",
+      ),
+    ).toBe("gpt-5.5");
+  });
+
   it("uses the configured provider default before the first visible model", () => {
     const providers = [
       provider({
@@ -296,7 +314,7 @@ describe("instance-scoped model selection", () => {
         providers,
         undefined,
       ),
-    ).toBe("gpt-5.5");
+    ).toBe("gpt-5.6-sol");
   });
 
   it("falls back instead of resolving a custom slug against the wrong instance", () => {

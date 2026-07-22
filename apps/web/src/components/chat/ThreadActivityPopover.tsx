@@ -1,3 +1,4 @@
+import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import {
   memo,
   useCallback,
@@ -14,6 +15,7 @@ import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   ClockIcon,
   ExternalLinkIcon,
@@ -41,6 +43,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
+import { SubagentTranscript } from "./SubagentTranscript";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
@@ -70,6 +73,8 @@ export interface ThreadBackgroundRunItem {
 }
 
 interface ThreadActivityPopoverProps {
+  activeThreadEnvironmentId: EnvironmentId;
+  activeThreadId: ThreadId;
   taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
@@ -894,8 +899,30 @@ function TaskSection({
   );
 }
 
-function SubagentSection({ state }: { state: SubagentProgressState }) {
+function subagentTreeIndentClass(treeDepth: number | undefined): string | undefined {
+  switch (Math.min(treeDepth ?? 0, 3)) {
+    case 1:
+      return "ml-3";
+    case 2:
+      return "ml-6";
+    case 3:
+      return "ml-9";
+    default:
+      return undefined;
+  }
+}
+
+function SubagentSection({
+  activeThreadEnvironmentId,
+  activeThreadId,
+  state,
+}: {
+  activeThreadEnvironmentId: EnvironmentId;
+  activeThreadId: ThreadId;
+  state: SubagentProgressState;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
   const shouldCollapse = state.items.length > COLLAPSED_SUBAGENT_LIMIT;
   const visibleItems = useMemo(
     () =>
@@ -925,11 +952,14 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
           const details = deriveSubagentDisplayDetails(item);
           const displayName = formatSubagentDisplayName(item);
           const showSubagentChip = shouldShowSubagentDisplayChip(item);
+          const transcriptAvailable = item.agentThreadId !== null;
+          const transcriptExpanded = item.agentThreadId === expandedAgentId;
           return (
             <div
               key={item.id}
               className={cn(
-                "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-md px-2 py-2 transition-colors",
+                "min-w-0 rounded-md transition-colors",
+                subagentTreeIndentClass(item.treeDepth),
                 (item.status === "starting" ||
                   item.status === "running" ||
                   item.status === "waiting") &&
@@ -937,66 +967,108 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
                 item.status === "completed" && "bg-success/10",
                 (item.status === "failed" || item.status === "interrupted") && "bg-destructive/10",
               )}
+              data-subagent-agent-path={item.agentPath ?? undefined}
+              data-subagent-tree-depth={item.treeDepth ?? 0}
             >
-              <div className="mt-0.5">{subagentStatusIcon(item.status)}</div>
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-start justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <div className="truncate text-[12px] leading-snug font-medium text-foreground/90">
-                      {displayName}
+              <button
+                type="button"
+                className={cn(
+                  "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-md px-2 py-2 text-left",
+                  transcriptAvailable && "transition-colors hover:bg-foreground/5",
+                )}
+                disabled={!transcriptAvailable}
+                aria-expanded={transcriptAvailable ? transcriptExpanded : undefined}
+                aria-label={transcriptAvailable ? `Inspect ${displayName} transcript` : undefined}
+                title={
+                  item.agentPath ?? (transcriptAvailable ? "Open read-only transcript" : undefined)
+                }
+                onClick={() =>
+                  item.agentThreadId &&
+                  setExpandedAgentId((current) =>
+                    current === item.agentThreadId ? null : item.agentThreadId,
+                  )
+                }
+              >
+                <div className="mt-0.5">{subagentStatusIcon(item.status)}</div>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <div className="truncate text-[12px] leading-snug font-medium text-foreground/90">
+                        {displayName}
+                      </div>
+                      {showSubagentChip ? (
+                        <span className="shrink-0 rounded border border-border/60 bg-background/65 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/75 uppercase">
+                          Subagent
+                        </span>
+                      ) : null}
                     </div>
-                    {showSubagentChip ? (
-                      <span className="shrink-0 rounded border border-border/60 bg-background/65 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/75 uppercase">
-                        Subagent
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span className="rounded border border-border/60 bg-background/65 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80">
+                        {item.statusLabel}
                       </span>
-                    ) : null}
-                  </div>
-                  <div className="shrink-0 rounded border border-border/60 bg-background/65 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80">
-                    {item.statusLabel}
-                  </div>
-                </div>
-
-                {details.goal ? (
-                  <div
-                    className="mt-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-1.5"
-                    title={details.title ?? undefined}
-                  >
-                    <div className="mt-0.5 rounded bg-primary/15 px-1 py-0.5 text-[9px] leading-none font-semibold tracking-[0.08em] text-primary-readable uppercase">
-                      Goal
+                      {transcriptAvailable ? (
+                        <ChevronRightIcon
+                          className={cn(
+                            "size-3 text-muted-foreground/60 transition-transform",
+                            transcriptExpanded && "rotate-90",
+                          )}
+                          aria-hidden="true"
+                        />
+                      ) : null}
                     </div>
+                  </div>
+
+                  {details.goal ? (
                     <div
-                      className="line-clamp-2 text-[11px] leading-4 text-foreground/80"
-                      data-subagent-progress-goal="true"
+                      className="mt-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-1.5"
+                      title={details.title ?? undefined}
                     >
-                      {details.goal}
-                    </div>
-                  </div>
-                ) : null}
-
-                {details.metadata.length > 0 ? (
-                  <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-                    {details.metadata.map((chip) => (
-                      <span
-                        key={`${item.id}:${chip.title}:${chip.label}`}
-                        className="inline-flex max-w-full items-center rounded border border-border/55 bg-background/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80"
-                        title={`${chip.title}: ${chip.label}`}
-                        data-subagent-progress-meta="true"
+                      <div className="mt-0.5 rounded bg-primary/15 px-1 py-0.5 text-[9px] leading-none font-semibold tracking-[0.08em] text-primary-readable uppercase">
+                        Goal
+                      </div>
+                      <div
+                        className="line-clamp-2 text-[11px] leading-4 text-foreground/80"
+                        data-subagent-progress-goal="true"
                       >
-                        <span className="min-w-0 truncate">{chip.label}</span>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
+                        {details.goal}
+                      </div>
+                    </div>
+                  ) : null}
 
-                {item.liveBody && isActiveSubagentStatus(item.status) ? (
-                  <div
-                    className="mt-1 line-clamp-3 text-[11px] leading-4 text-muted-foreground/75"
-                    data-subagent-progress-live="true"
-                  >
-                    {normalizeSubagentInlineText(item.liveBody)}
-                  </div>
-                ) : null}
-              </div>
+                  {details.metadata.length > 0 ? (
+                    <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                      {details.metadata.map((chip) => (
+                        <span
+                          key={`${item.id}:${chip.title}:${chip.label}`}
+                          className="inline-flex max-w-full items-center rounded border border-border/55 bg-background/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80"
+                          title={`${chip.title}: ${chip.label}`}
+                          data-subagent-progress-meta="true"
+                        >
+                          <span className="min-w-0 truncate">{chip.label}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {item.liveBody && isActiveSubagentStatus(item.status) ? (
+                    <div
+                      className="mt-1 line-clamp-3 text-[11px] leading-4 text-muted-foreground/75"
+                      data-subagent-progress-live="true"
+                    >
+                      {normalizeSubagentInlineText(item.liveBody)}
+                    </div>
+                  ) : null}
+                </div>
+              </button>
+              {transcriptExpanded && item.agentThreadId ? (
+                <div className="mx-2 border-t border-border/45 px-5 py-2">
+                  <SubagentTranscript
+                    environmentId={activeThreadEnvironmentId}
+                    threadId={activeThreadId}
+                    agentIds={[item.agentThreadId]}
+                  />
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -1221,6 +1293,8 @@ function BackgroundRunsSection({
 }
 
 export const ThreadActivityPopover = memo(function ThreadActivityPopover({
+  activeThreadEnvironmentId,
+  activeThreadId,
   taskProgress,
   subagentProgress,
   backgroundRuns,
@@ -1309,7 +1383,13 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
                 }
               />
             ) : null}
-            {subagentProgress ? <SubagentSection state={subagentProgress} /> : null}
+            {subagentProgress ? (
+              <SubagentSection
+                activeThreadEnvironmentId={activeThreadEnvironmentId}
+                activeThreadId={activeThreadId}
+                state={subagentProgress}
+              />
+            ) : null}
             <BackgroundRunsSection
               backgroundRuns={backgroundRuns}
               onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}

@@ -9,6 +9,10 @@ import {
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
   type ProviderStartReviewInput,
+  type ProviderExternalThreadImportInput,
+  type ProviderExternalThreadImportResult,
+  type ProviderExternalThreadListInput,
+  type ProviderExternalThreadListResult,
   type ProviderSubagentTranscriptInput,
   type ProviderSubagentTranscriptResult,
   type ProviderStartReviewResult,
@@ -161,6 +165,12 @@ export interface WsRpcClient {
     readonly readSubagentTranscript: (
       input: ProviderSubagentTranscriptInput,
     ) => Promise<ProviderSubagentTranscriptResult>;
+    readonly listExternalProviderThreads: (
+      input: ProviderExternalThreadListInput,
+    ) => Promise<ProviderExternalThreadListResult>;
+    readonly importExternalProviderThread: (
+      input: ProviderExternalThreadImportInput,
+    ) => Promise<ProviderExternalThreadImportResult>;
     readonly consumeProviderRateLimitResetCredit: RpcUnaryMethod<
       typeof WS_METHODS.serverConsumeProviderRateLimitResetCredit
     >;
@@ -460,6 +470,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverStartProviderReview](input)),
       readSubagentTranscript: (input) =>
         transport.request((client) => client[WS_METHODS.serverReadSubagentTranscript](input)),
+      listExternalProviderThreads: (input) =>
+        transport.request((client) => client[WS_METHODS.serverListExternalProviderThreads](input)),
+      importExternalProviderThread: (input) =>
+        transport.request((client) => client[WS_METHODS.serverImportExternalProviderThread](input)),
       consumeProviderRateLimitResetCredit: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverConsumeProviderRateLimitResetCredit](input).pipe(

@@ -341,6 +341,37 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("shows the provider-stamped duration for a completed command", async () => {
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-command",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-command",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              completedAt: "2026-04-13T12:00:03.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "vp run typecheck",
+              executionState: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByLabelText("Completed in 3.0s")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("copies expanded command output without making the output panel collapse the row", async () => {
     const outputLines = Array.from({ length: 24 }, (_, index) => `line ${index + 1}`);
     const expectedCopiedOutput = outputLines.slice(-20).join("\n");
@@ -633,7 +664,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("exposes a continue-in-new-thread action on user messages", async () => {
+  it("exposes an edit-and-branch action on user messages", async () => {
     const onContinueInNewThread = vi.fn();
     const screen = await renderTimeline(
       <MessagesTimeline
@@ -645,13 +676,13 @@ describe("MessagesTimeline", () => {
 
     try {
       const continueButton = document.querySelector<HTMLButtonElement>(
-        'button[aria-label="Continue in new thread"]',
+        'button[aria-label="Edit and branch"]',
       );
       expect(continueButton).toBeTruthy();
       expect(getComputedStyle(continueButton!).cursor).toBe("pointer");
       expect(continueButton?.getAttribute("title")).toBeNull();
 
-      await page.getByRole("button", { name: "Continue in new thread" }).click();
+      await page.getByRole("button", { name: "Edit and branch" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
     } finally {

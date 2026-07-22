@@ -81,6 +81,11 @@ import {
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
 import {
+  ProviderExternalThreadError,
+  ProviderExternalThreadImportInput,
+  ProviderExternalThreadImportResult,
+  ProviderExternalThreadListInput,
+  ProviderExternalThreadListResult,
   ProviderStartReviewError,
   ProviderStartReviewInput,
   ProviderStartReviewResult,
@@ -259,6 +264,8 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverStartProviderReview: "server.startProviderReview",
   serverReadSubagentTranscript: "server.readSubagentTranscript",
+  serverListExternalProviderThreads: "server.listExternalProviderThreads",
+  serverImportExternalProviderThread: "server.importExternalProviderThread",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
   serverUpdateProvider: "server.updateProvider",
   serverResolveProviderUpdateBlockers: "server.resolveProviderUpdateBlockers",
@@ -346,6 +353,24 @@ export const WsServerReadSubagentTranscriptRpc = Rpc.make(WS_METHODS.serverReadS
   success: ProviderSubagentTranscriptResult,
   error: ProviderSubagentTranscriptError,
 });
+
+export const WsServerListExternalProviderThreadsRpc = Rpc.make(
+  WS_METHODS.serverListExternalProviderThreads,
+  {
+    payload: ProviderExternalThreadListInput,
+    success: ProviderExternalThreadListResult,
+    error: ProviderExternalThreadError,
+  },
+);
+
+export const WsServerImportExternalProviderThreadRpc = Rpc.make(
+  WS_METHODS.serverImportExternalProviderThread,
+  {
+    payload: ProviderExternalThreadImportInput,
+    success: ProviderExternalThreadImportResult,
+    error: ProviderExternalThreadError,
+  },
+);
 
 export const WsServerConsumeProviderRateLimitResetCreditRpc = Rpc.make(
   WS_METHODS.serverConsumeProviderRateLimitResetCredit,
@@ -925,6 +950,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerStartProviderReviewRpc,
   WsServerReadSubagentTranscriptRpc,
+  WsServerListExternalProviderThreadsRpc,
+  WsServerImportExternalProviderThreadRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,
   WsServerUpdateProviderRpc,
   WsServerResolveProviderUpdateBlockersRpc,

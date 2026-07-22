@@ -96,6 +96,9 @@ function parseGitHubAuth(input: SourceControlProviderDiscovery.SourceControlAuth
       status: "authenticated",
       account: authenticatedAccount.account,
       host,
+      ...(authenticatedAccount.preferredProtocol !== null
+        ? { preferredProtocol: authenticatedAccount.preferredProtocol }
+        : {}),
     });
   }
 

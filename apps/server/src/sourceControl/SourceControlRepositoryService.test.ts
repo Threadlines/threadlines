@@ -72,7 +72,23 @@ function makeLayer(input: {
     Layer.provide(
       Layer.mock(GitVcsDriver.GitVcsDriver)({
         execute: () => Effect.succeed(processOutput()),
+        statusDetails: () =>
+          Effect.succeed({
+            isRepo: true,
+            hasOriginRemote: false,
+            isDefaultBranch: false,
+            branch: "feature/remote-v1",
+            headSha: "abc123",
+            upstreamRef: null,
+            hasWorkingTreeChanges: false,
+            workingTree: { files: [], insertions: 0, deletions: 0 },
+            hasUpstream: false,
+            aheadCount: 0,
+            behindCount: 0,
+            aheadOfDefaultCount: 0,
+          }),
         ensureRemote: () => Effect.succeed("origin"),
+        renameBranch: (request) => Effect.succeed({ branch: request.newBranch }),
         pushCurrentBranch: () =>
           Effect.succeed({
             status: "pushed" as const,
@@ -301,7 +317,13 @@ it.effect("reports the clone provider when the concrete repository directory is 
 );
 
 it.effect("publishes by creating the repository, adding a remote, and pushing upstream", () => {
-  const createCalls: Array<{ cwd: string; repository: string; visibility: string }> = [];
+  const createCalls: Array<{
+    cwd: string;
+    repository: string;
+    visibility: string;
+    description?: string;
+    team?: string;
+  }> = [];
   const remoteCalls: Array<{ cwd: string; preferredName: string; url: string }> = [];
   const pushCalls: Array<{ cwd: string; remoteName: string | null | undefined }> = [];
   const provider = makeProvider({
@@ -311,6 +333,8 @@ it.effect("publishes by creating the repository, adding a remote, and pushing up
           cwd: input.cwd,
           repository: input.repository,
           visibility: input.visibility,
+          ...(input.description ? { description: input.description } : {}),
+          ...(input.team ? { team: input.team } : {}),
         });
         return CLONE_URLS;
       }),
@@ -323,6 +347,8 @@ it.effect("publishes by creating the repository, adding a remote, and pushing up
       provider: "github",
       repository: "octocat/t3code",
       visibility: "private",
+      description: "Agent workspace",
+      team: "platform",
       remoteName: "origin",
       protocol: "ssh",
     });
@@ -336,7 +362,13 @@ it.effect("publishes by creating the repository, adding a remote, and pushing up
       status: "pushed",
     });
     assert.deepStrictEqual(createCalls, [
-      { cwd: "/workspace", repository: "octocat/t3code", visibility: "private" },
+      {
+        cwd: "/workspace",
+        repository: "octocat/t3code",
+        visibility: "private",
+        description: "Agent workspace",
+        team: "platform",
+      },
     ]);
     assert.deepStrictEqual(remoteCalls, [
       { cwd: "/workspace", preferredName: "origin", url: CLONE_URLS.sshUrl },
@@ -407,6 +439,7 @@ it.effect("publishes to the remote name returned by ensureRemote", () => {
 
 it.effect("publish succeeds with status remote_added when the local repo has no commits", () => {
   let pushCalls = 0;
+  const renameCalls: Array<{ oldBranch: string; newBranch: string }> = [];
   return Effect.gen(function* () {
     const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
     const result = yield* service.publishRepository({
@@ -429,6 +462,9 @@ it.effect("publish succeeds with status remote_added when the local repo has no 
   }).pipe(
     Effect.provide(
       makeLayer({
+        provider: makeProvider({
+          createRepository: () => Effect.succeed({ ...CLONE_URLS, defaultBranch: "main" }),
+        }),
         git: {
           execute: (input) =>
             input.args[0] === "rev-parse"
@@ -446,7 +482,7 @@ it.effect("publish succeeds with status remote_added when the local repo has no 
               isRepo: true,
               hasOriginRemote: true,
               isDefaultBranch: true,
-              branch: "main",
+              branch: "master",
               headSha: null,
               upstreamRef: null,
               hasWorkingTreeChanges: false,
@@ -455,6 +491,11 @@ it.effect("publish succeeds with status remote_added when the local repo has no 
               aheadCount: 0,
               behindCount: 0,
               aheadOfDefaultCount: 0,
+            }),
+          renameBranch: (request) =>
+            Effect.sync(() => {
+              renameCalls.push({ oldBranch: request.oldBranch, newBranch: request.newBranch });
+              return { branch: request.newBranch };
             }),
           pushCurrentBranch: () =>
             Effect.sync(() => {
@@ -467,6 +508,11 @@ it.effect("publish succeeds with status remote_added when the local repo has no 
               };
             }),
         },
+      }),
+    ),
+    Effect.tap(() =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(renameCalls, [{ oldBranch: "master", newBranch: "main" }]);
       }),
     ),
   );

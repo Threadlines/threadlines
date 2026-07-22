@@ -39,6 +39,7 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   ProviderExtensionsError,
+  ProviderExternalThreadError,
   ProviderRealtimeError,
   ProviderSubagentTranscriptError,
   ThreadId,
@@ -72,6 +73,7 @@ import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolve
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { startProviderReviewForThread } from "./provider/ProviderReviewCoordinator.ts";
+import { importExternalProviderThread } from "./provider/ExternalThreadImport.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
   callProviderExtensionMcpTool,
@@ -1023,6 +1025,33 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   }),
               ),
             ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverListExternalProviderThreads]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListExternalProviderThreads,
+            providerService.listExternalThreads(input).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderExternalThreadError({
+                    message:
+                      error.message.trim().length > 0
+                        ? error.message
+                        : "Failed to list Codex sessions.",
+                    cause: error,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverImportExternalProviderThread]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverImportExternalProviderThread,
+            importExternalProviderThread(input, {
+              providerService,
+              projectionSnapshotQuery,
+              orchestrationEngine,
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverConsumeProviderRateLimitResetCredit]: (input) =>

@@ -100,32 +100,60 @@ function toNonEmptyProviderInput(value: string | undefined): string | undefined 
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
-/**
- * Resolves the provider turn a native fork should cut through, inclusive.
- *
- * Fork anchors on a message; provider forks cut at turn granularity. An
- * assistant/tool anchor forks through its own turn. A user-message anchor
- * means "retry from before it", so the cut is the previous turn and the
- * superseded user message stays out of the forked history. Returns undefined
- * when no turn at or before the anchor is known (native fork not applicable).
- */
-export function resolveForkCutTurnId(
+export interface ForkTurnBoundary {
+  /** Exact experimental boundary used to exclude a selected user turn. */
+  readonly beforeTurnId?: TurnId;
+  /** Stable inclusive boundary used directly or as the compatibility fallback. */
+  readonly lastTurnId?: TurnId;
+}
+
+/** Resolves provider turn boundaries for a message-anchored native fork. */
+export function resolveForkTurnBoundary(
   messages: ReadonlyArray<{
     readonly id: MessageId;
     readonly role: string;
     readonly turnId: TurnId | null;
   }>,
   sourceMessageId: MessageId,
-): TurnId | undefined {
+): ForkTurnBoundary | undefined {
   const sourceIndex = messages.findIndex((message) => message.id === sourceMessageId);
   if (sourceIndex === -1) {
     return undefined;
   }
-  const startIndex = messages[sourceIndex]?.role === "user" ? sourceIndex - 1 : sourceIndex;
-  for (let index = startIndex; index >= 0; index -= 1) {
+
+  if (messages[sourceIndex]?.role === "user") {
+    let beforeTurnId: TurnId | undefined;
+    for (let index = sourceIndex; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (index > sourceIndex && message?.role === "user") {
+        break;
+      }
+      if (message?.turnId !== null && message?.turnId !== undefined) {
+        beforeTurnId = message.turnId;
+        break;
+      }
+    }
+
+    let lastTurnId: TurnId | undefined;
+    for (let index = sourceIndex - 1; index >= 0; index -= 1) {
+      const turnId = messages[index]?.turnId;
+      if (turnId !== null && turnId !== undefined) {
+        lastTurnId = turnId;
+        break;
+      }
+    }
+    return beforeTurnId !== undefined || lastTurnId !== undefined
+      ? {
+          ...(beforeTurnId !== undefined ? { beforeTurnId } : {}),
+          ...(lastTurnId !== undefined ? { lastTurnId } : {}),
+        }
+      : undefined;
+  }
+
+  for (let index = sourceIndex; index >= 0; index -= 1) {
     const turnId = messages[index]?.turnId;
     if (turnId !== null && turnId !== undefined) {
-      return turnId;
+      return { lastTurnId: turnId };
     }
   }
   return undefined;
@@ -874,9 +902,12 @@ const make = Effect.gen(function* () {
         const capabilities = yield* providerService
           .getCapabilities(desiredInstanceId)
           .pipe(Effect.option, Effect.map(Option.getOrUndefined));
-        const lastTurnId = resolveForkCutTurnId(sourceThread.messages, forkContext.sourceMessageId);
-        if (capabilities?.nativeThreadFork === "supported" && lastTurnId !== undefined) {
-          forkFrom = { providerThreadId: sourceProviderThreadId, lastTurnId };
+        const boundary = resolveForkTurnBoundary(
+          sourceThread.messages,
+          forkContext.sourceMessageId,
+        );
+        if (capabilities?.nativeThreadFork === "supported" && boundary !== undefined) {
+          forkFrom = { providerThreadId: sourceProviderThreadId, ...boundary };
         }
       }
     }
@@ -929,6 +960,9 @@ const make = Effect.gen(function* () {
         ...(forkFrom !== undefined
           ? {
               sourceProviderThreadId: forkFrom.providerThreadId,
+              ...(forkFrom.beforeTurnId !== undefined
+                ? { beforeTurnId: forkFrom.beforeTurnId }
+                : {}),
               ...(forkFrom.lastTurnId !== undefined ? { lastTurnId: forkFrom.lastTurnId } : {}),
             }
           : {}),

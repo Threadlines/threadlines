@@ -533,6 +533,10 @@ function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
 function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
   return {
     isRepo: status.isRepo,
+    ...(status.repositoryRoot === undefined ? {} : { repositoryRoot: status.repositoryRoot }),
+    ...(status.repositoryRootRelation === undefined
+      ? {}
+      : { repositoryRootRelation: status.repositoryRootRelation }),
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }
       : {}),

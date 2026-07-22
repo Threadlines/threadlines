@@ -389,6 +389,10 @@ const VcsStatusChangeRequest = Schema.Struct({
 
 const VcsStatusLocalShape = {
   isRepo: Schema.Boolean,
+  /** Resolved repository root used for status and source-control actions. */
+  repositoryRoot: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Whether the opened working directory is the repository root or a nested path within it. */
+  repositoryRootRelation: Schema.optional(Schema.Literals(["same", "ancestor"])),
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
   /** Repository web URL derived from the tracked remote, e.g. `https://github.com/owner/repo`. */
   remoteWebUrl: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),

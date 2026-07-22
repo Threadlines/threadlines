@@ -16,6 +16,7 @@ import {
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderExternalThreadListInput,
   ProviderRealtimeAppendAudioInput,
   ProviderRealtimeListVoicesInput,
   ProviderRealtimeStartInput,
@@ -104,6 +105,14 @@ const ProviderSetThreadGoalServiceInput = Schema.Struct({
 const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
 });
+
+function readCodexResumeThreadId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const threadId = (value as { readonly threadId?: unknown }).threadId;
+  return typeof threadId === "string" && threadId.trim().length > 0 ? threadId : undefined;
+}
 
 function toValidationError(
   operation: string,
@@ -780,6 +789,92 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     },
   );
+
+  const listExternalThreads: ProviderServiceShape["listExternalThreads"] = Effect.fn(
+    "listExternalThreads",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.listExternalThreads",
+      schema: ProviderExternalThreadListInput,
+      payload: rawInput,
+    });
+    const instanceInfo = yield* registry.getInstanceInfo(input.providerInstanceId);
+    if (!instanceInfo.enabled) {
+      return yield* toValidationError(
+        "ProviderService.listExternalThreads",
+        `Provider instance '${input.providerInstanceId}' is disabled.`,
+      );
+    }
+    const adapter = yield* registry.getByInstance(input.providerInstanceId);
+    if (!adapter.listExternalThreads) {
+      return yield* toValidationError(
+        "ProviderService.listExternalThreads",
+        `Provider '${instanceInfo.driverKind}' does not expose external conversations.`,
+      );
+    }
+
+    const [page, bindings] = yield* Effect.all([
+      adapter.listExternalThreads(input),
+      directory.listBindings(),
+    ]);
+    const linkedProviderThreadIds = new Set(
+      bindings.flatMap((binding) => {
+        if (binding.providerInstanceId !== input.providerInstanceId) {
+          return [];
+        }
+        const providerThreadId = readCodexResumeThreadId(binding.resumeCursor);
+        return providerThreadId ? [providerThreadId] : [];
+      }),
+    );
+
+    return {
+      ...page,
+      data: page.data.filter(
+        (candidate) => !linkedProviderThreadIds.has(candidate.providerThreadId),
+      ),
+    };
+  });
+
+  const readExternalThread: ProviderServiceShape["readExternalThread"] = Effect.fn(
+    "readExternalThread",
+  )(function* (input) {
+    const providerThreadId = input.providerThreadId.trim();
+    const expectedCwd = input.expectedCwd.trim();
+    if (!providerThreadId || !expectedCwd) {
+      return yield* toValidationError(
+        "ProviderService.readExternalThread",
+        "Provider thread id and expected working directory are required.",
+      );
+    }
+    const instanceInfo = yield* registry.getInstanceInfo(input.providerInstanceId);
+    if (!instanceInfo.enabled) {
+      return yield* toValidationError(
+        "ProviderService.readExternalThread",
+        `Provider instance '${input.providerInstanceId}' is disabled.`,
+      );
+    }
+    const adapter = yield* registry.getByInstance(input.providerInstanceId);
+    if (!adapter.readExternalThread) {
+      return yield* toValidationError(
+        "ProviderService.readExternalThread",
+        `Provider '${instanceInfo.driverKind}' does not expose external conversations.`,
+      );
+    }
+
+    const bindings = yield* directory.listBindings();
+    const linkedThread = bindings.find(
+      (binding) =>
+        binding.providerInstanceId === input.providerInstanceId &&
+        readCodexResumeThreadId(binding.resumeCursor) === providerThreadId,
+    );
+    if (linkedThread) {
+      return yield* toValidationError(
+        "ProviderService.readExternalThread",
+        `This Codex session is already linked to Threadlines thread '${linkedThread.threadId}'.`,
+      );
+    }
+    return yield* adapter.readExternalThread({ providerThreadId, expectedCwd });
+  });
 
   const sendTurn: ProviderServiceShape["sendTurn"] = Effect.fn("sendTurn")(function* (rawInput) {
     const parsed = yield* decodeInputOrValidationError({
@@ -1882,6 +1977,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   return {
     startSession,
+    listExternalThreads,
+    readExternalThread,
     sendTurn,
     steerTurn,
     startReview,

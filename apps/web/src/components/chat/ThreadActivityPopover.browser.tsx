@@ -1,5 +1,6 @@
 import "../../index.css";
 
+import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -13,6 +14,9 @@ const TASK_BADGE = {
   tone: "active",
   pulse: true,
 } as const;
+
+const ACTIVE_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+const ACTIVE_THREAD_ID = ThreadId.make("thread-activity");
 
 function buildTaskProgress(activeStep: string): ThreadTaskProgressState {
   return {
@@ -43,6 +47,8 @@ async function renderOpenPopover(activeStep: string) {
       }}
     >
       <ThreadActivityPopover
+        activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+        activeThreadId={ACTIVE_THREAD_ID}
         taskProgress={buildTaskProgress(activeStep)}
         subagentProgress={null}
         backgroundRuns={[]}
@@ -129,6 +135,8 @@ describe("ThreadActivityPopover", () => {
         }}
       >
         <ThreadActivityPopover
+          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+          activeThreadId={ACTIVE_THREAD_ID}
           taskProgress={null}
           subagentProgress={null}
           backgroundRuns={[
@@ -211,6 +219,8 @@ describe("ThreadActivityPopover", () => {
     const mounted = await render(
       <main style={{ minHeight: 360, padding: 24, width: 960 }}>
         <ThreadActivityPopover
+          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+          activeThreadId={ACTIVE_THREAD_ID}
           taskProgress={null}
           subagentProgress={subagentProgress}
           backgroundRuns={[]}
@@ -227,6 +237,93 @@ describe("ThreadActivityPopover", () => {
       expect(liveNodes).toHaveLength(1);
       expect(liveNodes[0]?.textContent).toBe("Scanning migrations now.");
       expect(document.body.textContent).not.toContain("stale live text");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("shows nested agents as a hierarchy and expands a read-only transcript", async () => {
+    const subagentProgress: SubagentProgressState = {
+      items: [
+        {
+          agentThreadId: "agent-parent",
+          agentPath: "/root/research",
+          parentAgentPath: null,
+          treeDepth: 0,
+          id: "agent-parent",
+          turnId: null,
+          label: "Research subagent",
+          role: "research",
+          objective: "Map the current architecture",
+          status: "running",
+          statusLabel: "Running",
+          model: null,
+          reasoningEffort: null,
+          liveBody: null,
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        },
+        {
+          agentThreadId: "agent-child",
+          agentPath: "/root/research/database",
+          parentAgentPath: "/root/research",
+          treeDepth: 1,
+          id: "agent-child",
+          turnId: null,
+          label: "Database subagent",
+          role: "database",
+          objective: "Inspect persistence",
+          status: "running",
+          statusLabel: "Running",
+          model: null,
+          reasoningEffort: null,
+          liveBody: null,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:03.000Z",
+        },
+      ],
+      activeCount: 2,
+      completedCount: 0,
+      failedCount: 0,
+      totalCount: 2,
+      summary: "2 subagents active",
+      badge: {
+        label: "2",
+        ariaLabel: "2 subagents active",
+        tone: "active",
+        pulse: true,
+      },
+    };
+    const mounted = await render(
+      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
+        <ThreadActivityPopover
+          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+          activeThreadId={ACTIVE_THREAD_ID}
+          taskProgress={null}
+          subagentProgress={subagentProgress}
+          backgroundRuns={[]}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
+      const parent = document.querySelector<HTMLElement>(
+        "[data-subagent-agent-path='/root/research']",
+      );
+      const child = document.querySelector<HTMLElement>(
+        "[data-subagent-agent-path='/root/research/database']",
+      );
+      expect(parent?.dataset.subagentTreeDepth).toBe("0");
+      expect(child?.dataset.subagentTreeDepth).toBe("1");
+      expect(child?.classList.contains("ml-3")).toBe(true);
+
+      const inspect = page.getByRole("button", { name: "Inspect Database transcript" });
+      await inspect.click();
+      await expect.element(page.getByText("Read-only transcript")).toBeVisible();
+      expect(document.querySelector("[data-subagent-transcript='true']")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }
@@ -259,6 +356,8 @@ describe("ThreadActivityPopover", () => {
         }}
       >
         <ThreadActivityPopover
+          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+          activeThreadId={ACTIVE_THREAD_ID}
           taskProgress={null}
           subagentProgress={subagentProgress}
           backgroundRuns={[

@@ -404,7 +404,11 @@ function actionDisabledReason(input: {
   readonly status: VcsStatusResult | null;
   readonly action: "commit" | "commit_push" | "pull" | "push" | "create_pr";
   readonly isBusy: boolean;
+  readonly repositorySafetyReason?: string | null;
 }): string | null {
+  if (input.repositorySafetyReason) {
+    return input.repositorySafetyReason;
+  }
   if (input.isBusy) {
     return "Git action in progress.";
   }
@@ -1406,7 +1410,11 @@ function getBranchActionDisabledReason(input: {
   readonly status: VcsStatusResult | null | undefined;
   readonly isBusy: boolean;
   readonly action: "switch" | "create" | "merge";
+  readonly repositorySafetyReason?: string | null;
 }): string | null {
+  if (input.repositorySafetyReason) {
+    return input.repositorySafetyReason;
+  }
   if (input.isBusy) {
     return "Git action in progress.";
   }
@@ -1441,6 +1449,7 @@ function SourceControlBranchMenu({
   onActiveBranchChange,
   status,
   isBusy,
+  repositorySafetyReason,
   refreshPanel,
 }: {
   readonly target: SourceControlProjectTarget;
@@ -1450,6 +1459,7 @@ function SourceControlBranchMenu({
     | undefined;
   readonly status: VcsStatusResult | null | undefined;
   readonly isBusy: boolean;
+  readonly repositorySafetyReason: string | null;
   readonly refreshPanel: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -1507,16 +1517,19 @@ function SourceControlBranchMenu({
     status,
     isBusy: isBusy || checkoutMutation.isPending || createBranchMutation.isPending,
     action: "switch",
+    repositorySafetyReason,
   });
   const createDisabledReason = getBranchActionDisabledReason({
     status,
     isBusy: isBusy || checkoutMutation.isPending || createBranchMutation.isPending,
     action: "create",
+    repositorySafetyReason,
   });
   const mergeDisabledReason = getBranchActionDisabledReason({
     status,
     isBusy: isBusy || mergeMutation.isPending,
     action: "merge",
+    repositorySafetyReason,
   });
 
   const syncActiveThreadBranch = useCallback(
@@ -1553,6 +1566,9 @@ function SourceControlBranchMenu({
 
   const runSwitchRef = useCallback(
     (ref: VcsRef) => {
+      if (repositorySafetyReason) {
+        return;
+      }
       const selectionTarget = resolveBranchSelectionTarget({
         activeProjectCwd: target.projectCwd,
         activeWorktreePath: target.worktreePath,
@@ -1581,6 +1597,7 @@ function SourceControlBranchMenu({
     [
       checkoutMutation,
       refreshPanel,
+      repositorySafetyReason,
       syncActiveThreadBranch,
       target.projectCwd,
       target.worktreePath,
@@ -1588,6 +1605,9 @@ function SourceControlBranchMenu({
   );
 
   const runCreateBranch = useCallback(() => {
+    if (repositorySafetyReason) {
+      return;
+    }
     const refName = createBranchName.trim();
     if (refName.length === 0) {
       return;
@@ -1610,10 +1630,16 @@ function SourceControlBranchMenu({
       }),
     });
     void promise.then(refreshPanel, () => undefined);
-  }, [createBranchMutation, createBranchName, refreshPanel, syncActiveThreadBranch]);
+  }, [
+    createBranchMutation,
+    createBranchName,
+    refreshPanel,
+    repositorySafetyReason,
+    syncActiveThreadBranch,
+  ]);
 
   const runMergeRef = useCallback(() => {
-    if (!pendingMergeRef) {
+    if (!pendingMergeRef || repositorySafetyReason) {
       return;
     }
     const refName = pendingMergeRef.name;
@@ -1641,7 +1667,7 @@ function SourceControlBranchMenu({
       }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
-  }, [currentBranch, mergeMutation, pendingMergeRef, refreshPanel]);
+  }, [currentBranch, mergeMutation, pendingMergeRef, refreshPanel, repositorySafetyReason]);
 
   return (
     <>
@@ -1763,7 +1789,11 @@ function SourceControlBranchMenu({
             <Button variant="outline" size="sm" onClick={() => setPendingMergeRef(null)}>
               Cancel
             </Button>
-            <Button size="sm" disabled={mergeMutation.isPending} onClick={runMergeRef}>
+            <Button
+              size="sm"
+              disabled={mergeMutation.isPending || repositorySafetyReason !== null}
+              onClick={runMergeRef}
+            >
               Merge & push
             </Button>
           </DialogFooter>
@@ -1814,7 +1844,11 @@ function SourceControlBranchMenu({
               <Button
                 size="sm"
                 type="submit"
-                disabled={createBranchMutation.isPending || createBranchName.trim().length === 0}
+                disabled={
+                  createBranchMutation.isPending ||
+                  createBranchName.trim().length === 0 ||
+                  repositorySafetyReason !== null
+                }
               >
                 Create
               </Button>
@@ -1840,6 +1874,9 @@ export function SourceControlPanel({
   const [commitMessageEditorOpen, setCommitMessageEditorOpen] = useState(false);
   const [commitMessageEditorMounted, setCommitMessageEditorMounted] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
+  const [approvedParentRepositoryKey, setApprovedParentRepositoryKey] = useState<string | null>(
+    null,
+  );
   const [authRemediationFailure, setAuthRemediationFailure] = useState<GitRemoteAuthFailure | null>(
     null,
   );
@@ -1955,6 +1992,19 @@ export function SourceControlPanel({
   );
   const gitStatus = useGitStatus({ environmentId, cwd });
   const status = gitStatus.data;
+  const parentRepositoryRoot =
+    status?.isRepo && status.repositoryRootRelation === "ancestor"
+      ? (status.repositoryRoot ?? null)
+      : null;
+  const parentRepositoryKey =
+    environmentId && cwd && parentRepositoryRoot
+      ? `${environmentId}\0${cwd}\0${parentRepositoryRoot}`
+      : null;
+  const isParentRepositoryConfirmationRequired =
+    parentRepositoryKey !== null && approvedParentRepositoryKey !== parentRepositoryKey;
+  const repositorySafetyReason = isParentRepositoryConfirmationRequired
+    ? "Confirm the parent repository before making changes."
+    : null;
   const commitGraphStatusRefreshKey = getCommitGraphStatusRefreshKey(status);
   useEffect(() => {
     setCommitGraphLimit(GRAPH_INITIAL_LIMIT);
@@ -2195,6 +2245,8 @@ export function SourceControlPanel({
     unstageChangesMutation.isPending ||
     createTagMutation.isPending ||
     deleteBranchMutation.isPending;
+  const isSourceControlMutationDisabled =
+    isGitActionRunning || isParentRepositoryConfirmationRequired;
   const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
   const stagedChangeFiles = useMemo(
     () =>
@@ -2250,26 +2302,31 @@ export function SourceControlPanel({
     status,
     action: "commit",
     isBusy: isGitActionRunning,
+    repositorySafetyReason,
   });
   const commitAndPushDisabledReason = actionDisabledReason({
     status,
     action: "commit_push",
     isBusy: isGitActionRunning,
+    repositorySafetyReason,
   });
   const pullDisabledReason = actionDisabledReason({
     status,
     action: "pull",
     isBusy: isGitActionRunning,
+    repositorySafetyReason,
   });
   const pushDisabledReason = actionDisabledReason({
     status,
     action: "push",
     isBusy: isGitActionRunning,
+    repositorySafetyReason,
   });
   const prDisabledReason = actionDisabledReason({
     status,
     action: "create_pr",
     isBusy: isGitActionRunning,
+    repositorySafetyReason,
   });
   const generateCommitMessageDisabledReason = isGitActionRunning
     ? "Git action in progress."
@@ -2402,7 +2459,7 @@ export function SourceControlPanel({
 
   const runAction = useCallback(
     async (action: GitStackedAction, options?: { readonly skipDefaultBranchPrompt?: boolean }) => {
-      if (!environmentId || !cwd) {
+      if (!environmentId || !cwd || isParentRepositoryConfirmationRequired) {
         return;
       }
       if (
@@ -2492,6 +2549,7 @@ export function SourceControlPanel({
       commitMessage,
       cwd,
       environmentId,
+      isParentRepositoryConfirmationRequired,
       queryClient,
       sourceControlPresentation.terminology,
       status?.aheadCount,
@@ -2504,6 +2562,9 @@ export function SourceControlPanel({
 
   const executePull = useCallback(
     (historyReconciliation?: VcsPullHistoryReconciliation) => {
+      if (isParentRepositoryConfirmationRequired) {
+        return;
+      }
       const requestTarget: PullRequestTarget = { environmentId, cwd };
       const promise = pullMutation.mutateAsync(historyReconciliation);
       void toastManager.promise<
@@ -2598,7 +2659,14 @@ export function SourceControlPanel({
         },
       );
     },
-    [cwd, environmentId, pullMutation, refreshPanel, threadToastData],
+    [
+      cwd,
+      environmentId,
+      isParentRepositoryConfirmationRequired,
+      pullMutation,
+      refreshPanel,
+      threadToastData,
+    ],
   );
 
   const runPull = useCallback(() => {
@@ -2624,6 +2692,9 @@ export function SourceControlPanel({
 
   const runStageChanges = useCallback(
     (filePaths: string[], label: string, count: number) => {
+      if (isParentRepositoryConfirmationRequired) {
+        return;
+      }
       clearCommitMessageDraft();
       const promise = stageChangesMutation.mutateAsync({ filePaths });
       void toastManager.promise(promise, {
@@ -2641,11 +2712,20 @@ export function SourceControlPanel({
       });
       void promise.then(refreshPanel, () => refreshPanel());
     },
-    [clearCommitMessageDraft, refreshPanel, stageChangesMutation, threadToastData],
+    [
+      clearCommitMessageDraft,
+      isParentRepositoryConfirmationRequired,
+      refreshPanel,
+      stageChangesMutation,
+      threadToastData,
+    ],
   );
 
   const runUnstageChanges = useCallback(
     (filePaths: string[], label: string, count: number) => {
+      if (isParentRepositoryConfirmationRequired) {
+        return;
+      }
       clearCommitMessageDraft();
       const promise = unstageChangesMutation.mutateAsync({ filePaths });
       void toastManager.promise(promise, {
@@ -2663,7 +2743,13 @@ export function SourceControlPanel({
       });
       void promise.then(refreshPanel, () => refreshPanel());
     },
-    [clearCommitMessageDraft, refreshPanel, threadToastData, unstageChangesMutation],
+    [
+      clearCommitMessageDraft,
+      isParentRepositoryConfirmationRequired,
+      refreshPanel,
+      threadToastData,
+      unstageChangesMutation,
+    ],
   );
 
   const stageFileChanges = useCallback(
@@ -2702,18 +2788,24 @@ export function SourceControlPanel({
     );
   }, [runUnstageChanges, stagedChangeFiles]);
 
-  const requestDiscardFileChanges = useCallback((entry: WorkingTreeSectionFile) => {
-    setPendingDiscardChanges({
-      filePaths: [entry.path],
-      label: entry.path,
-      count: 1,
-      includesNewFiles: entry.status === "untracked",
-      scope: "unstaged",
-    });
-  }, []);
+  const requestDiscardFileChanges = useCallback(
+    (entry: WorkingTreeSectionFile) => {
+      if (isParentRepositoryConfirmationRequired) {
+        return;
+      }
+      setPendingDiscardChanges({
+        filePaths: [entry.path],
+        label: entry.path,
+        count: 1,
+        includesNewFiles: entry.status === "untracked",
+        scope: "unstaged",
+      });
+    },
+    [isParentRepositoryConfirmationRequired],
+  );
 
   const requestDiscardAllUnstagedChanges = useCallback(() => {
-    if (unstagedChangeFiles.length === 0) {
+    if (unstagedChangeFiles.length === 0 || isParentRepositoryConfirmationRequired) {
       return;
     }
     setPendingDiscardChanges({
@@ -2723,7 +2815,7 @@ export function SourceControlPanel({
       includesNewFiles: unstagedChangeFiles.some((entry) => entry.status === "untracked"),
       scope: "unstaged",
     });
-  }, [unstagedChangeFiles]);
+  }, [isParentRepositoryConfirmationRequired, unstagedChangeFiles]);
 
   const toggleChangesViewMode = useCallback(() => {
     setChangesViewMode((current) => (current === "tree" ? "list" : "tree"));
@@ -2748,7 +2840,7 @@ export function SourceControlPanel({
   );
 
   const runDiscardChanges = useCallback(() => {
-    if (!pendingDiscardChanges) {
+    if (!pendingDiscardChanges || isParentRepositoryConfirmationRequired) {
       return;
     }
     const discardRequest = pendingDiscardChanges;
@@ -2776,6 +2868,7 @@ export function SourceControlPanel({
   }, [
     clearCommitMessageDraft,
     discardChangesMutation,
+    isParentRepositoryConfirmationRequired,
     pendingDiscardChanges,
     refreshPanel,
     threadToastData,
@@ -2963,7 +3056,7 @@ export function SourceControlPanel({
   }, []);
 
   const runCreateTag = useCallback(() => {
-    if (!pendingCreateTagCommit) {
+    if (!pendingCreateTagCommit || isParentRepositoryConfirmationRequired) {
       return;
     }
     const tagName = createTagName.trim();
@@ -2991,10 +3084,17 @@ export function SourceControlPanel({
       }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
-  }, [createTagMutation, createTagName, pendingCreateTagCommit, refreshPanel, threadToastData]);
+  }, [
+    createTagMutation,
+    createTagName,
+    isParentRepositoryConfirmationRequired,
+    pendingCreateTagCommit,
+    refreshPanel,
+    threadToastData,
+  ]);
 
   const runDeleteBranch = useCallback(() => {
-    if (!pendingDeleteBranch) {
+    if (!pendingDeleteBranch || isParentRepositoryConfirmationRequired) {
       return;
     }
     const deleteRequest = pendingDeleteBranch;
@@ -3014,7 +3114,13 @@ export function SourceControlPanel({
       }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
-  }, [deleteBranchMutation, pendingDeleteBranch, refreshPanel, threadToastData]);
+  }, [
+    deleteBranchMutation,
+    isParentRepositoryConfirmationRequired,
+    pendingDeleteBranch,
+    refreshPanel,
+    threadToastData,
+  ]);
 
   const startProviderReview = useCallback(
     (reviewTarget: ProviderReviewTarget, targetDescription: string) => {
@@ -3157,12 +3263,16 @@ export function SourceControlPanel({
           {
             id: "create-tag",
             label: "Create tag...",
-            disabled: createTagMutation.isPending,
+            disabled: createTagMutation.isPending || isParentRepositoryConfirmationRequired,
           },
           ...deletableBranches.map((branchName) => ({
             id: `delete-branch:${branchName}` as const,
             label: `Delete branch '${branchName}'...`,
-            disabled: !environmentId || !cwd || deleteBranchMutation.isPending,
+            disabled:
+              !environmentId ||
+              !cwd ||
+              deleteBranchMutation.isPending ||
+              isParentRepositoryConfirmationRequired,
           })),
         ],
         position,
@@ -3213,6 +3323,7 @@ export function SourceControlPanel({
       cwd,
       deleteBranchMutation.isPending,
       environmentId,
+      isParentRepositoryConfirmationRequired,
       openCreateTagDialog,
       openCommitUrl,
       reviewCommitDisabledReason,
@@ -3478,14 +3589,16 @@ export function SourceControlPanel({
                         CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME,
                         "hover:text-destructive-foreground",
                       )}
-                      disabled={isGitActionRunning}
+                      disabled={isSourceControlMutationDisabled}
                       onClick={() => requestDiscardFileChanges(entry)}
                     />
                   }
                 >
                   <Undo2Icon className="size-3" />
                 </TooltipTrigger>
-                <TooltipPopup side="top">Discard changes</TooltipPopup>
+                <TooltipPopup side="top">
+                  {repositorySafetyReason ?? "Discard changes"}
+                </TooltipPopup>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger
@@ -3499,14 +3612,14 @@ export function SourceControlPanel({
                         CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME,
                         "hover:text-foreground",
                       )}
-                      disabled={isGitActionRunning}
+                      disabled={isSourceControlMutationDisabled}
                       onClick={() => stageFileChanges(entry)}
                     />
                   }
                 >
                   <PlusIcon className="size-3" />
                 </TooltipTrigger>
-                <TooltipPopup side="top">Stage changes</TooltipPopup>
+                <TooltipPopup side="top">{repositorySafetyReason ?? "Stage changes"}</TooltipPopup>
               </Tooltip>
             </>
           ) : (
@@ -3522,14 +3635,14 @@ export function SourceControlPanel({
                       CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME,
                       "hover:text-foreground",
                     )}
-                    disabled={isGitActionRunning}
+                    disabled={isSourceControlMutationDisabled}
                     onClick={() => unstageFileChanges(entry)}
                   />
                 }
               >
                 <MinusIcon className="size-3" />
               </TooltipTrigger>
-              <TooltipPopup side="top">Unstage changes</TooltipPopup>
+              <TooltipPopup side="top">{repositorySafetyReason ?? "Unstage changes"}</TooltipPopup>
             </Tooltip>
           )}
         </div>
@@ -3726,6 +3839,69 @@ export function SourceControlPanel({
       </div>
 
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3">
+        {parentRepositoryRoot ? (
+          <section
+            role="alert"
+            className="mb-3 border-y border-warning/25 py-2.5 text-xs"
+            data-parent-repository-warning
+          >
+            <div className="flex items-start gap-2">
+              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-foreground">Parent repository detected</p>
+                <p className="mt-1 leading-snug text-muted-foreground/80">
+                  This project is inside a repository rooted at{" "}
+                  <span className="font-mono text-foreground/80">
+                    {threadWorkingCwdLabel(parentRepositoryRoot)}
+                  </span>
+                  . Changes and actions can include files outside {target.name}.
+                </p>
+                <p
+                  className="mt-1 truncate font-mono text-[10px] text-muted-foreground/60"
+                  title={parentRepositoryRoot}
+                >
+                  {parentRepositoryRoot}
+                </p>
+                {isParentRepositoryConfirmationRequired ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setApprovedParentRepositoryKey(parentRepositoryKey)}
+                    >
+                      Use parent repository
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      disabled={initMutation.isPending}
+                      onClick={initializeRepository}
+                    >
+                      {initMutation.isPending ? "Initializing" : "Initialize here"}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground/70">
+                    <span className="inline-flex min-w-0 items-center gap-1">
+                      <CheckIcon className="size-3 shrink-0 text-success" />
+                      Parent actions enabled for this panel
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setApprovedParentRepositoryKey(null)}
+                    >
+                      Lock
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : null}
         {status?.isRepo === false ? (
           <section className="mb-3 rounded-md border border-border/70 bg-background/40 px-3 py-3 text-xs">
             <p className="font-medium text-foreground">No Git repository</p>
@@ -3822,7 +3998,9 @@ export function SourceControlPanel({
                           variant="ghost"
                           size="icon-xs"
                           className="text-muted-foreground/70 hover:text-foreground"
-                          disabled={stagedChangeFiles.length === 0 || isGitActionRunning}
+                          disabled={
+                            stagedChangeFiles.length === 0 || isSourceControlMutationDisabled
+                          }
                           onClick={unstageAllStagedChanges}
                         />
                       }
@@ -3851,7 +4029,9 @@ export function SourceControlPanel({
                             variant="ghost"
                             size="icon-xs"
                             className="text-muted-foreground/70 hover:text-destructive-foreground"
-                            disabled={unstagedChangeFiles.length === 0 || isGitActionRunning}
+                            disabled={
+                              unstagedChangeFiles.length === 0 || isSourceControlMutationDisabled
+                            }
                             onClick={requestDiscardAllUnstagedChanges}
                           />
                         }
@@ -3869,7 +4049,9 @@ export function SourceControlPanel({
                             variant="ghost"
                             size="icon-xs"
                             className="text-muted-foreground/70 hover:text-foreground"
-                            disabled={unstagedChangeFiles.length === 0 || isGitActionRunning}
+                            disabled={
+                              unstagedChangeFiles.length === 0 || isSourceControlMutationDisabled
+                            }
                             onClick={stageAllUnstagedChanges}
                           />
                         }
@@ -4078,7 +4260,7 @@ export function SourceControlPanel({
                 type="button"
                 variant="outline"
                 size="xs"
-                disabled={isGitActionRunning}
+                disabled={isSourceControlMutationDisabled}
                 onClick={() => setIsPublishDialogOpen(true)}
                 className="w-full min-w-0 justify-center"
               >
@@ -4092,6 +4274,7 @@ export function SourceControlPanel({
               onActiveBranchChange={onActiveBranchChange}
               status={status}
               isBusy={isGitActionRunning}
+              repositorySafetyReason={repositorySafetyReason}
               refreshPanel={refreshPanel}
             />
           </section>
@@ -4300,7 +4483,11 @@ export function SourceControlPanel({
               <Button
                 size="sm"
                 type="submit"
-                disabled={createTagMutation.isPending || createTagName.trim().length === 0}
+                disabled={
+                  createTagMutation.isPending ||
+                  createTagName.trim().length === 0 ||
+                  isParentRepositoryConfirmationRequired
+                }
               >
                 Create tag
               </Button>
@@ -4339,7 +4526,7 @@ export function SourceControlPanel({
             <Button
               variant="destructive"
               size="sm"
-              disabled={deleteBranchMutation.isPending}
+              disabled={deleteBranchMutation.isPending || isParentRepositoryConfirmationRequired}
               onClick={runDeleteBranch}
             >
               Delete branch
@@ -4371,7 +4558,7 @@ export function SourceControlPanel({
             <Button
               variant="destructive"
               size="sm"
-              disabled={discardChangesMutation.isPending}
+              disabled={discardChangesMutation.isPending || isParentRepositoryConfirmationRequired}
               onClick={runDiscardChanges}
             >
               Discard

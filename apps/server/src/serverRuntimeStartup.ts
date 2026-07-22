@@ -189,13 +189,17 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
         serverConfig.cwd,
       );
       let nextProjectId: ProjectId;
-      let nextProjectDefaultModelSelection: ModelSelection;
+      let nextProjectDefaultModelSelection: ModelSelection | null;
 
       if (Option.isNone(existingProject)) {
         const createdAt = DateTime.formatIso(yield* DateTime.now);
         nextProjectId = ProjectId.make(crypto.randomUUID());
         const bootstrapProjectTitle = path.basename(serverConfig.cwd) || "project";
-        nextProjectDefaultModelSelection = getAutoBootstrapDefaultModelSelection();
+        // Leave new projects unpinned so UI-created threads can follow the
+        // active provider instance's live `isDefault` model. The startup
+        // thread below still needs a concrete model before provider snapshots
+        // are available, so it uses the canonical offline fallback.
+        nextProjectDefaultModelSelection = null;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
           commandId: CommandId.make(crypto.randomUUID()),
@@ -207,8 +211,7 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
         });
       } else {
         nextProjectId = existingProject.value.id;
-        nextProjectDefaultModelSelection =
-          existingProject.value.defaultModelSelection ?? getAutoBootstrapDefaultModelSelection();
+        nextProjectDefaultModelSelection = existingProject.value.defaultModelSelection;
       }
 
       const existingThreadId =
@@ -222,7 +225,8 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           threadId: createdThreadId,
           projectId: nextProjectId,
           title: "New thread",
-          modelSelection: nextProjectDefaultModelSelection,
+          modelSelection:
+            nextProjectDefaultModelSelection ?? getAutoBootstrapDefaultModelSelection(),
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
           branch: null,

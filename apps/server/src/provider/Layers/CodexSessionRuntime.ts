@@ -56,6 +56,9 @@ const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
 );
+const decodeV2ThreadForkResponse = Schema.decodeUnknownEffect(
+  EffectCodexSchema.V2ThreadForkResponse,
+);
 const decodeV2TurnSteerParams = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerParams);
 const decodeV2TurnSteerResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerResponse);
 const decodeV2ThreadGoalSetResponse = Schema.decodeUnknownEffect(
@@ -106,6 +109,7 @@ const decodeCodexRealtimeListVoicesResponse = Schema.decodeUnknownEffect(
 );
 
 const PROVIDER = ProviderDriverKind.make("codex");
+export const CODEX_THREAD_SOURCE = "threadlines";
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(60);
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
@@ -178,6 +182,10 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /** Fail session startup when a requested native thread cannot be resumed.
+   *  External imports use this to avoid silently attaching an empty provider
+   *  conversation to a transcript that was imported from another thread. */
+  readonly resumeRequired?: boolean | undefined;
   /** Open the session as a provider-side fork of another thread's history.
    *  Ignored when `resumeCursor` is present (a restart resumes the session's
    *  own thread). Fork failures fail the start — the orchestration reactor
@@ -451,6 +459,7 @@ function buildThreadStartParams(input: {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     cwd: input.cwd,
+    threadSource: CODEX_THREAD_SOURCE,
     approvalPolicy: config.approvalPolicy,
     sandbox: config.sandbox,
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
@@ -470,6 +479,7 @@ function buildThreadForkParams(input: {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     threadId: input.sourceThreadId,
+    threadSource: CODEX_THREAD_SOURCE,
     ...(input.lastTurnId !== undefined ? { lastTurnId: input.lastTurnId } : {}),
     cwd: input.cwd,
     approvalPolicy: config.approvalPolicy,
@@ -721,6 +731,12 @@ type CodexThreadOpenResponse =
 type CodexThreadOpenMethod = "thread/start" | "thread/resume" | "thread/fork";
 
 interface CodexThreadOpenClient {
+  readonly raw?: {
+    readonly request: (
+      method: string,
+      payload?: unknown,
+    ) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
+  };
   readonly request: <M extends CodexThreadOpenMethod>(
     method: M,
     payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -755,10 +771,10 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
-  /** Same-driver native fork: open the thread as a provider-side copy of
-   *  another thread's history through `lastTurnId` (inclusive). Only honored
-   *  when there is no `resumeThreadId`. Fork failures propagate — the caller
-   *  owns any fallback to seeded starts. */
+  readonly resumeRequired?: boolean | undefined;
+  /** Same-driver native fork. `beforeTurnId` is preferred for exact
+   *  user-prompt replacement; `lastTurnId` remains the stable compatibility
+   *  fallback. Only honored when there is no `resumeThreadId`. */
   readonly forkFrom?: ProviderSessionForkFrom | undefined;
   /** Invoked when a requested native resume is unrecoverable and the thread
    *  falls back to a fresh start. Lets callers surface the degraded resume
@@ -776,8 +792,7 @@ export const openCodexThread = (input: {
   if (resumeThreadId === undefined) {
     const forkFrom = input.forkFrom;
     if (forkFrom !== undefined) {
-      return withCodexRequestTimeout(
-        "fork a Codex thread",
+      const stableFork = () =>
         input.client.request(
           "thread/fork",
           buildThreadForkParams({
@@ -788,8 +803,37 @@ export const openCodexThread = (input: {
             model: input.requestedModel,
             serviceTier: input.serviceTier,
           }),
-        ),
-      );
+        );
+      const forkRequest =
+        forkFrom.beforeTurnId !== undefined && input.client.raw !== undefined
+          ? input.client.raw
+              .request("thread/fork", {
+                ...buildThreadForkParams({
+                  sourceThreadId: forkFrom.providerThreadId,
+                  lastTurnId: undefined,
+                  cwd: input.cwd,
+                  runtimeMode: input.runtimeMode,
+                  model: input.requestedModel,
+                  serviceTier: input.serviceTier,
+                }),
+                beforeTurnId: forkFrom.beforeTurnId,
+              })
+              .pipe(
+                Effect.flatMap((response) =>
+                  decodeV2ThreadForkResponse(response).pipe(
+                    Effect.mapError((cause) =>
+                      toProtocolParseError("Invalid thread/fork response", cause),
+                    ),
+                  ),
+                ),
+                Effect.catchIf(
+                  (error) =>
+                    forkFrom.lastTurnId !== undefined && isNativeThreadForkUnsupportedError(error),
+                  stableFork,
+                ),
+              )
+          : stableFork();
+      return withCodexRequestTimeout("fork a Codex thread", forkRequest);
     }
     return withCodexRequestTimeout(
       "start a Codex thread",
@@ -797,13 +841,22 @@ export const openCodexThread = (input: {
     );
   }
 
-  return withCodexRequestTimeout(
+  // `threadSource` classifies newly created/forked threads. Resume does not
+  // accept that field and retains the source already stored by Codex.
+  const { threadSource: _threadSource, ...resumeParams } = startParams;
+  const resume = withCodexRequestTimeout(
     "resume a Codex thread",
     input.client.request("thread/resume", {
       threadId: resumeThreadId,
-      ...startParams,
+      ...resumeParams,
     }),
-  ).pipe(
+  );
+
+  if (input.resumeRequired === true) {
+    return resume;
+  }
+
+  return resume.pipe(
     Effect.catchIf(isRecoverableThreadResumeError, (error) =>
       Effect.logWarning("codex app-server thread resume fell back to fresh start", {
         threadId: input.threadId,
@@ -1875,6 +1928,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        resumeRequired: options.resumeRequired,
         forkFrom: options.forkFrom,
         onResumeFallback: (cause) =>
           emitEvent({
