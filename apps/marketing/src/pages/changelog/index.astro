@@ -30,7 +30,7 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
       <div class="release-list">
         {
           entries.map((entry) => (
-            <article class="release-card">
+            <article class="release-entry">
               <a href={changelogEntryPath(entry)}>
                 <div class="release-meta">
                   <span>v{entry.data.version}</span>
@@ -38,9 +38,10 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
                     {formatReleaseDate(entry.data.date)}
                   </time>
                 </div>
-                <h2>{entry.data.title}</h2>
+                <h2>
+                  {entry.data.title} <span class="release-arrow" aria-hidden="true">→</span>
+                </h2>
                 <p>{entry.data.summary}</p>
-                <span class="release-link">Read release notes <span aria-hidden="true">→</span></span>
               </a>
             </article>
           ))
@@ -52,7 +53,7 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
 
 <style>
   .changelog-index {
-    padding: 88px 0 112px;
+    padding: 72px 0 96px;
   }
 
   .changelog-wrap {
@@ -61,7 +62,7 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
 
   .changelog-header {
     max-width: 680px;
-    margin-bottom: 56px;
+    margin-bottom: 36px;
   }
 
   .changelog-header h1 {
@@ -76,34 +77,23 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
     text-wrap: pretty;
   }
 
-  .release-list {
-    display: grid;
-    gap: 16px;
+  .release-entry {
+    border-top: 1px solid var(--border);
   }
 
-  .release-card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  .release-entry:last-child {
+    border-bottom: 1px solid var(--border);
   }
 
-  .release-card:hover {
-    border-color: var(--border-strong);
-    background: var(--surface-hover);
-    transform: translateY(-1px);
-  }
-
-  .release-card a {
+  .release-entry a {
     display: block;
-    padding: 28px 30px;
+    padding: 24px 0;
   }
 
   .release-meta {
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 16px;
     color: var(--fg-dim);
     font-family: var(--font-mono);
     font-size: 12px;
@@ -113,39 +103,39 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
     color: var(--accent-bright);
   }
 
-  .release-card h2 {
-    margin: 18px 0 10px;
-    font-size: clamp(23px, 3vw, 30px);
-    line-height: 1.15;
-    letter-spacing: -0.025em;
+  .release-entry h2 {
+    margin: 10px 0 6px;
+    font-size: clamp(20px, 2.6vw, 24px);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
   }
 
-  .release-card p {
+  .release-arrow {
+    color: var(--fg-dim);
+    transition: color 0.2s ease, transform 0.2s ease;
+  }
+
+  .release-entry a:hover .release-arrow {
+    color: var(--accent-bright);
+  }
+
+  .release-entry p {
     max-width: 68ch;
     color: var(--fg-muted);
-    line-height: 1.65;
-  }
-
-  .release-link {
-    display: inline-flex;
-    gap: 6px;
-    margin-top: 22px;
-    color: var(--fg);
-    font-size: 14px;
-    font-weight: 600;
+    line-height: 1.6;
   }
 
   @media (max-width: 620px) {
     .changelog-index {
-      padding: 64px 0 88px;
+      padding: 56px 0 80px;
     }
 
     .changelog-header {
-      margin-bottom: 38px;
+      margin-bottom: 28px;
     }
 
-    .release-card a {
-      padding: 24px 22px;
+    .release-entry a {
+      padding: 20px 0;
     }
   }
 </style>

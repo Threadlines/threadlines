@@ -88,7 +88,7 @@ const structuredData = {
 
 <style>
   .release-detail {
-    padding: 64px 0 112px;
+    padding: 48px 0 96px;
   }
 
   .release-wrap {
@@ -108,7 +108,7 @@ const structuredData = {
   }
 
   .release-header {
-    padding: 56px 0 64px;
+    padding: 32px 0 36px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -126,8 +126,8 @@ const structuredData = {
 
   .release-header h1 {
     max-width: 780px;
-    margin: 20px 0;
-    font-size: clamp(38px, 6vw, 64px);
+    margin: 14px 0 12px;
+    font-size: clamp(32px, 5vw, 48px);
     text-wrap: balance;
   }
 
@@ -141,14 +141,13 @@ const structuredData = {
 
   .highlights {
     display: grid;
-    padding: 28px 0;
   }
 
   .highlight {
     display: grid;
     grid-template-columns: 48px minmax(0, 1fr);
     gap: 18px;
-    padding: 32px 0;
+    padding: 22px 0;
     border-bottom: 1px solid var(--border);
   }
 
@@ -160,29 +159,25 @@ const structuredData = {
   }
 
   .highlight h2 {
-    margin-bottom: 10px;
-    font-size: 25px;
+    margin-bottom: 6px;
+    font-size: 22px;
     letter-spacing: -0.02em;
   }
 
   .highlight p {
     max-width: 68ch;
     color: var(--fg-muted);
-    line-height: 1.7;
+    line-height: 1.65;
   }
 
   .also-improved {
-    margin-top: 28px;
-    padding: 30px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
+    padding: 24px 0 0;
   }
 
   .also-improved ul {
     display: grid;
-    gap: 12px;
-    margin-top: 20px;
+    gap: 8px;
+    margin-top: 14px;
     padding-left: 20px;
     color: var(--fg-muted);
     line-height: 1.6;
@@ -197,8 +192,7 @@ const structuredData = {
     flex-wrap: wrap;
     align-items: center;
     gap: 20px 28px;
-    margin-top: 48px;
-    padding-top: 32px;
+    margin-top: 36px;
   }
 
   .release-actions a {
@@ -225,21 +219,17 @@ const structuredData = {
 
   @media (max-width: 620px) {
     .release-detail {
-      padding: 44px 0 88px;
+      padding: 36px 0 80px;
     }
 
     .release-header {
-      padding: 42px 0 48px;
+      padding: 26px 0 30px;
     }
 
     .highlight {
       grid-template-columns: 34px minmax(0, 1fr);
       gap: 10px;
-      padding: 28px 0;
-    }
-
-    .also-improved {
-      padding: 24px 22px;
+      padding: 20px 0;
     }
   }
 </style>
