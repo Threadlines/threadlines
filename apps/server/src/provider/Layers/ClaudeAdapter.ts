@@ -110,12 +110,53 @@ const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJ
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
 const COMPACT_CONTEXT_COMMAND = "/compact";
 const MAX_CLAUDE_FALLBACK_MODELS = 3;
+const CLAUDE_SKIP_PROMPT_HISTORY_ENV = "CLAUDE_CODE_SKIP_PROMPT_HISTORY";
+const CLAUDE_FORCE_SESSION_PERSISTENCE_ENV = "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE";
+const CLAUDE_SESSION_PERSISTENCE_WARNING_KIND = "session-persistence";
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
   "command_output" | "file_change_output"
 >;
 type ClaudeSdkEffort = NonNullable<ClaudeQueryOptions["effort"]>;
+
+function isEnabledEnvironmentFlag(value: string | undefined): boolean {
+  switch (value?.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function claudeSessionPersistenceEnvironmentWarning(
+  environment: NodeJS.ProcessEnv,
+): string | undefined {
+  if (
+    !isEnabledEnvironmentFlag(environment[CLAUDE_SKIP_PROMPT_HISTORY_ENV]) ||
+    isEnabledEnvironmentFlag(environment[CLAUDE_FORCE_SESSION_PERSISTENCE_ENV])
+  ) {
+    return undefined;
+  }
+  return (
+    `Claude session persistence is disabled by ${CLAUDE_SKIP_PROMPT_HISTORY_ENV}. ` +
+    "Threadlines will retain its activity history, but Claude cannot resume the saved model context. " +
+    `Unset ${CLAUDE_SKIP_PROMPT_HISTORY_ENV} or set ${CLAUDE_FORCE_SESSION_PERSISTENCE_ENV}=1, then restart Threadlines.`
+  );
+}
+
+function isClaudeSessionPersistenceWarning(message: string): boolean {
+  return /transcript|session persistence|saved for resume|--resume will not find/i.test(message);
+}
+
+function isClaudeDisabledSessionPersistenceWarning(message: string): boolean {
+  return /session persistence.*(?:disabled|off)|--resume will not find|keep future transcripts/i.test(
+    message,
+  );
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -314,6 +355,7 @@ interface ClaudeSessionContext {
   // turn and cleared once consumed. Set only when a session starts from a
   // context seed (no native resume).
   pendingContextSeedText: string | undefined;
+  sessionPersistenceDisabledWarningEmitted: boolean;
   stopped: boolean;
 }
 
@@ -4446,6 +4488,38 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* emitRuntimeError(context, `Claude workspace mirror error: ${detail}`, message);
         return;
       }
+      case "informational": {
+        const content = nonEmptyString(message.content);
+        if (!content || message.level !== "warning") {
+          yield* Effect.logDebug("claude.sdk.informational", {
+            threadId: context.session.threadId,
+            level: message.level,
+            content: message.content,
+          });
+          return;
+        }
+        const isPersistenceWarning = isClaudeSessionPersistenceWarning(content);
+        if (
+          isPersistenceWarning &&
+          isClaudeDisabledSessionPersistenceWarning(content) &&
+          context.sessionPersistenceDisabledWarningEmitted
+        ) {
+          yield* Effect.logInfo("claude.session-persistence.warning-duplicate", {
+            threadId: context.session.threadId,
+            content,
+          });
+          return;
+        }
+        if (isClaudeDisabledSessionPersistenceWarning(content)) {
+          context.sessionPersistenceDisabledWarningEmitted = true;
+        }
+        yield* emitRuntimeWarning(context, content, message, {
+          warningKind: isPersistenceWarning
+            ? CLAUDE_SESSION_PERSISTENCE_WARNING_KIND
+            : "claude-informational",
+        });
+        return;
+      }
       case "api_retry": {
         // First-attempt retries are routine stream hiccups the SDK absorbs on
         // its own; keep those in server diagnostics only. Cascades that reach
@@ -5373,6 +5447,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         includePartialMessages: true,
         enableFileCheckpointing: true,
         promptSuggestions: true,
+        persistSession: true,
         // Subagent conversations arrive as messages tagged with
         // parent_tool_use_id; routing keeps them out of the main transcript
         // and streams them into the collab tool item instead. Travels via the
@@ -5494,10 +5569,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           input.contextSeed !== undefined && resumeState === undefined
             ? renderThreadContextSeed(input.contextSeed)
             : undefined,
+        sessionPersistenceDisabledWarningEmitted: false,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
       sessions.set(threadId, context);
+
+      const sessionPersistenceWarning =
+        claudeSessionPersistenceEnvironmentWarning(claudeEnvironment);
+      if (sessionPersistenceWarning !== undefined) {
+        context.sessionPersistenceDisabledWarningEmitted = true;
+        yield* emitRuntimeWarning(context, sessionPersistenceWarning, undefined, {
+          warningKind: CLAUDE_SESSION_PERSISTENCE_WARNING_KIND,
+        });
+      }
 
       const sessionStartedStamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({

@@ -166,15 +166,40 @@ try {
 
     $installDir = Split-Path -Parent $installPath
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-    Move-Item -LiteralPath $downloadPath -Destination $installPath -Force
-
-    $installedVersion = & $installPath --version
-    if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch [regex]::Escape($version)) {
-        Write-Error "Claude Code was replaced, but version verification failed: $installedVersion"
-        exit 1
+    $backupPath = Join-Path $downloadDir "claude-backup-$PID-$([guid]::NewGuid().ToString('N')).exe"
+    $preservedExistingExecutable = Test-Path -LiteralPath $installPath
+    if ($preservedExistingExecutable) {
+        Copy-Item -LiteralPath $installPath -Destination $backupPath -Force
     }
 
-    Write-Output "Installed Claude Code $installedVersion at $installPath"
+    try {
+        Move-Item -LiteralPath $downloadPath -Destination $installPath -Force
+
+        $installedVersion = & $installPath --version
+        if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch [regex]::Escape($version)) {
+            throw "Claude Code was replaced, but version verification failed: $installedVersion"
+        }
+
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+        Write-Output "Installed Claude Code $installedVersion at $installPath"
+    } catch {
+        $updateFailure = $_
+        if ($preservedExistingExecutable -and (Test-Path -LiteralPath $backupPath)) {
+            try {
+                Copy-Item -LiteralPath $backupPath -Destination $installPath -Force
+                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+                Write-Warning "Claude update failed; restored the previous executable at $installPath."
+            } catch {
+                Write-Error "Claude update failed and Threadlines could not restore the previous executable. The backup remains at $backupPath."
+                throw
+            }
+        } elseif (Test-Path -LiteralPath $installPath) {
+            Remove-Item -LiteralPath $installPath -Force -ErrorAction SilentlyContinue
+        }
+        throw $updateFailure
+    }
 } finally {
     if (Test-Path -LiteralPath $downloadPath) {
         Remove-Item -LiteralPath $downloadPath -Force

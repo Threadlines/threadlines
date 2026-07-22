@@ -549,6 +549,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(createInput?.options.settingSources, ["user", "project", "local"]);
       assert.equal(createInput?.options.enableFileCheckpointing, true);
       assert.equal(createInput?.options.promptSuggestions, true);
+      assert.equal(createInput?.options.persistSession, true);
       assert.equal(createInput?.options.permissionMode, undefined);
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
@@ -4675,6 +4676,90 @@ describe("ClaudeAdapterLive", () => {
         );
         assert.equal(warning.payload.warningKind, "api-retry");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("warns once when the inherited environment disables session persistence", () => {
+    const harness = makeHarness({
+      environment: {
+        ...missingClaudeConfigEnvironment(),
+        CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "informational",
+        content:
+          "CLAUDE_CODE_SKIP_PROMPT_HISTORY is set --resume will not find this session; if unintended, unset it and restart",
+        level: "warning",
+        session_id: "sdk-session-persistence-disabled",
+        uuid: "persistence-disabled-1",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const warnings = runtimeEvents.filter((event) => event.type === "runtime.warning");
+      assert.equal(warnings.length, 1);
+      assert.include(warnings[0]?.payload.message ?? "", "CLAUDE_CODE_SKIP_PROMPT_HISTORY");
+      assert.equal(warnings[0]?.payload.warningKind, "session-persistence");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("surfaces Claude transcript-write informational warnings", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "informational",
+        content:
+          "Transcript writes are failing (disk full); recent messages may not be saved for resume",
+        level: "warning",
+        session_id: "sdk-session-transcript-write-failed",
+        uuid: "transcript-write-failed-1",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const warnings = runtimeEvents.filter((event) => event.type === "runtime.warning");
+      assert.equal(warnings.length, 1);
+      assert.equal(
+        warnings[0]?.payload.message,
+        "Transcript writes are failing (disk full); recent messages may not be saved for resume",
+      );
+      assert.equal(warnings[0]?.payload.warningKind, "session-persistence");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
