@@ -8238,8 +8238,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await page.getByText("Original prompt for branching.", { exact: true }).hover();
-      await page.getByRole("button", { name: "Edit and branch" }).first().click();
+      const sourceMessageText = page.getByText("Original prompt for branching.", { exact: true });
+      await sourceMessageText.hover();
+      const sourceMessageRow = sourceMessageText
+        .element()
+        .closest<HTMLElement>(`[data-message-id="${sourceMessageId}"]`);
+      const editAndBranchButton = sourceMessageRow?.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit and branch"]',
+      );
+      expect(editAndBranchButton).not.toBeNull();
+      await page.elementLocator(editAndBranchButton!).click();
       await expect
         .element(page.getByText("Edit this prompt in a new thread?", { exact: true }))
         .toBeInTheDocument();
