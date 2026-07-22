@@ -1,6 +1,10 @@
 import { assert, it } from "@effect/vitest";
 
-import { formatReleaseNotes, parseGitLogOutput } from "./generate-release-notes.ts";
+import {
+  formatReleaseNotes,
+  parseCuratedReleaseContent,
+  parseGitLogOutput,
+} from "./generate-release-notes.ts";
 
 it("formats direct commits in categorized sections with commit links and a compare link", () => {
   assert.equal(
@@ -124,4 +128,38 @@ it("parses git log records with parent hashes and commit bodies", () => {
       },
     ],
   );
+});
+
+it("puts human-reviewed stable highlights before collapsed technical changes", () => {
+  const curated = parseCuratedReleaseContent(`---
+summary: Goals are easier to start and monitor.
+highlights:
+  - title: Codex Goals
+    description: Set an objective and optional token budget from the composer.
+alsoImproved:
+  - description: Attach more file types.
+---
+`);
+
+  const notes = formatReleaseNotes({
+    channel: "stable",
+    currentTag: "v0.2.5",
+    previousTag: "v0.2.4",
+    repository: "Threadlines/threadlines",
+    commits: [
+      {
+        hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        shortHash: "aaaaaaaa",
+        parentHashes: ["1111111111111111111111111111111111111111"],
+        subject: "Add goal monitoring",
+        body: "",
+      },
+    ],
+    curated,
+  });
+
+  assert.match(notes, /^## Highlights\n\nGoals are easier/);
+  assert.match(notes, /<summary>Complete technical changes<\/summary>/);
+  assert.match(notes, /## What's changed/);
+  assert.match(notes, /Add goal monitoring/);
 });

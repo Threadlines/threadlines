@@ -2,8 +2,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+
+import { parse as parseYaml } from "yaml";
 
 import { resolveReleaseNotesBaselineTag, type ReleaseChannel } from "./lib/release-tags.ts";
 
@@ -21,6 +23,18 @@ interface FormatReleaseNotesInput {
   readonly previousTag: string | undefined;
   readonly repository: string | undefined;
   readonly commits: ReadonlyArray<ReleaseNoteCommit>;
+  readonly curated?: CuratedReleaseContent;
+}
+
+export interface CuratedReleaseContent {
+  readonly summary: string;
+  readonly highlights: ReadonlyArray<{
+    readonly title: string;
+    readonly description: string;
+  }>;
+  readonly alsoImproved: ReadonlyArray<{
+    readonly description: string;
+  }>;
 }
 
 interface ReleaseNoteEntry {
@@ -320,7 +334,7 @@ function formatReleaseNoteEntry(
     : formatPullRequestEntry(repository, entry);
 }
 
-export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
+function formatTechnicalReleaseNotes(input: FormatReleaseNotesInput): string {
   const lines: Array<string> = [];
   const entries = input.commits.map(releaseNoteEntryFromCommit).map(classifyReleaseNoteEntry);
 
@@ -360,6 +374,86 @@ export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
   return `${lines.join("\n")}\n`;
 }
 
+function requiredString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Curated release content is missing '${name}'.`);
+  }
+  return value.trim();
+}
+
+export function parseCuratedReleaseContent(content: string): CuratedReleaseContent {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
+  if (!frontmatter) throw new Error("Curated release content is missing YAML frontmatter.");
+
+  const parsed = parseYaml(frontmatter) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Curated release frontmatter must be an object.");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (!Array.isArray(record.highlights) || record.highlights.length === 0) {
+    throw new Error("Curated release content must include highlights.");
+  }
+  if (!Array.isArray(record.alsoImproved)) {
+    throw new Error("Curated release content must include alsoImproved.");
+  }
+
+  return {
+    summary: requiredString(record.summary, "summary"),
+    highlights: record.highlights.map((value, index) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`Curated highlight ${index + 1} must be an object.`);
+      }
+      const highlight = value as Record<string, unknown>;
+      return {
+        title: requiredString(highlight.title, `highlights[${index}].title`),
+        description: requiredString(highlight.description, `highlights[${index}].description`),
+      };
+    }),
+    alsoImproved: record.alsoImproved.map((value, index) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`Curated improvement ${index + 1} must be an object.`);
+      }
+      return {
+        description: requiredString(
+          (value as Record<string, unknown>).description,
+          `alsoImproved[${index}].description`,
+        ),
+      };
+    }),
+  };
+}
+
+function formatCuratedReleaseContent(content: CuratedReleaseContent): string {
+  const lines = ["## Highlights", "", content.summary];
+  for (const highlight of content.highlights) {
+    lines.push("", `### ${highlight.title}`, "", highlight.description);
+  }
+  if (content.alsoImproved.length > 0) {
+    lines.push("", "### Also improved", "");
+    for (const improvement of content.alsoImproved) {
+      lines.push(`- ${improvement.description}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
+  const technical = formatTechnicalReleaseNotes(input);
+  if (!input.curated) return technical;
+
+  return [
+    formatCuratedReleaseContent(input.curated).trimEnd(),
+    "",
+    "<details>",
+    "<summary>Complete technical changes</summary>",
+    "",
+    technical.trimEnd(),
+    "",
+    "</details>",
+    "",
+  ].join("\n");
+}
+
 function main(): void {
   const { values } = parseArgs({
     options: {
@@ -368,6 +462,7 @@ function main(): void {
       "current-ref": { type: "string", default: "HEAD" },
       repository: { type: "string" },
       output: { type: "string" },
+      "highlights-file": { type: "string" },
     },
   });
 
@@ -377,6 +472,10 @@ function main(): void {
   const repository =
     typeof values.repository === "string" ? values.repository.trim() || undefined : undefined;
   const output = typeof values.output === "string" ? values.output.trim() || undefined : undefined;
+  const highlightsFile =
+    typeof values["highlights-file"] === "string"
+      ? values["highlights-file"].trim() || undefined
+      : undefined;
   const previousTag = resolveReleaseNotesBaselineTag(channel, currentTag, listGitTags());
   const body = formatReleaseNotes({
     channel,
@@ -384,6 +483,9 @@ function main(): void {
     previousTag,
     repository,
     commits: listCommits(previousTag, currentRef),
+    ...(highlightsFile
+      ? { curated: parseCuratedReleaseContent(readFileSync(highlightsFile, "utf8")) }
+      : {}),
   });
 
   if (output) {

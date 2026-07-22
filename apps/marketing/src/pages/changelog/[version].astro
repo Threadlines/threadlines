@@ -1,0 +1,245 @@
+---
+import { getCollection, type CollectionEntry } from "astro:content";
+
+import Layout from "../../layouts/Layout.astro";
+import { formatReleaseDate } from "../../lib/changelog";
+import { absoluteSiteUrl } from "../../lib/site";
+
+export async function getStaticPaths() {
+  const entries = await getCollection("changelog");
+  return entries.map((entry) => ({ params: { version: entry.id }, props: { entry } }));
+}
+
+interface Props {
+  entry: CollectionEntry<"changelog">;
+}
+
+const { entry } = Astro.props;
+const { version, date, title, summary, githubRelease, highlights, alsoImproved } = entry.data;
+const canonicalPath = `/changelog/${entry.id}`;
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "Article",
+  headline: `Threadlines v${version}: ${title}`,
+  description: summary,
+  datePublished: date.toISOString(),
+  mainEntityOfPage: absoluteSiteUrl(canonicalPath),
+  author: { "@type": "Organization", name: "Threadlines" },
+};
+---
+
+<Layout
+  title={`Threadlines v${version}: ${title}`}
+  description={summary}
+  canonicalPath={canonicalPath}
+  structuredData={[structuredData]}
+>
+  <article class="release-detail">
+    <div class="container release-wrap">
+      <a class="back-link" href="/changelog"><span aria-hidden="true">←</span> All releases</a>
+
+      <header class="release-header">
+        <div class="release-meta">
+          <span>v{version}</span>
+          <time datetime={date.toISOString()}>{formatReleaseDate(date)}</time>
+        </div>
+        <h1 class="display">{title}</h1>
+        <p>{summary}</p>
+      </header>
+
+      <div class="highlights">
+        {
+          highlights.map((highlight, index) => (
+            <section class="highlight">
+              <span class="highlight-number" aria-hidden="true">
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <div>
+                <h2>{highlight.title}</h2>
+                <p>{highlight.description}</p>
+              </div>
+            </section>
+          ))
+        }
+      </div>
+
+      {
+        alsoImproved.length > 0 && (
+          <section class="also-improved">
+            <p class="eyebrow">Also improved</p>
+            <ul>
+              {alsoImproved.map((improvement) => (
+                <li>{improvement.description}</li>
+              ))}
+            </ul>
+          </section>
+        )
+      }
+
+      <footer class="release-actions">
+        <a class="primary-action" href="/download">Download Threadlines</a>
+        <a href={githubRelease} target="_blank" rel="noopener noreferrer">
+          Complete technical notes on GitHub <span aria-hidden="true">↗</span>
+        </a>
+      </footer>
+    </div>
+  </article>
+</Layout>
+
+<style>
+  .release-detail {
+    padding: 64px 0 112px;
+  }
+
+  .release-wrap {
+    max-width: 860px;
+  }
+
+  .back-link {
+    display: inline-flex;
+    gap: 8px;
+    color: var(--fg-dim);
+    font-size: 14px;
+    transition: color 0.2s ease;
+  }
+
+  .back-link:hover {
+    color: var(--fg);
+  }
+
+  .release-header {
+    padding: 56px 0 64px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .release-meta {
+    display: flex;
+    gap: 16px;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .release-meta span {
+    color: var(--accent-bright);
+  }
+
+  .release-header h1 {
+    max-width: 780px;
+    margin: 20px 0;
+    font-size: clamp(38px, 6vw, 64px);
+    text-wrap: balance;
+  }
+
+  .release-header > p {
+    max-width: 680px;
+    color: var(--fg-muted);
+    font-size: 19px;
+    line-height: 1.65;
+    text-wrap: pretty;
+  }
+
+  .highlights {
+    display: grid;
+    padding: 28px 0;
+  }
+
+  .highlight {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 18px;
+    padding: 32px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .highlight-number {
+    padding-top: 5px;
+    color: var(--accent-bright);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .highlight h2 {
+    margin-bottom: 10px;
+    font-size: 25px;
+    letter-spacing: -0.02em;
+  }
+
+  .highlight p {
+    max-width: 68ch;
+    color: var(--fg-muted);
+    line-height: 1.7;
+  }
+
+  .also-improved {
+    margin-top: 28px;
+    padding: 30px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
+
+  .also-improved ul {
+    display: grid;
+    gap: 12px;
+    margin-top: 20px;
+    padding-left: 20px;
+    color: var(--fg-muted);
+    line-height: 1.6;
+  }
+
+  .also-improved li::marker {
+    color: var(--accent-bright);
+  }
+
+  .release-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 20px 28px;
+    margin-top: 48px;
+    padding-top: 32px;
+  }
+
+  .release-actions a {
+    color: var(--fg-muted);
+    font-size: 14px;
+    transition: color 0.2s ease;
+  }
+
+  .release-actions a:hover {
+    color: var(--fg);
+  }
+
+  .release-actions .primary-action {
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: var(--accent-bright);
+    color: var(--accent-contrast);
+    font-weight: 600;
+  }
+
+  .release-actions .primary-action:hover {
+    color: var(--accent-contrast);
+  }
+
+  @media (max-width: 620px) {
+    .release-detail {
+      padding: 44px 0 88px;
+    }
+
+    .release-header {
+      padding: 42px 0 48px;
+    }
+
+    .highlight {
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+      padding: 28px 0;
+    }
+
+    .also-improved {
+      padding: 24px 22px;
+    }
+  }
+</style>

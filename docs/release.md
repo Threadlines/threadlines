@@ -124,6 +124,38 @@ the latest prior stable tag. Stable releases compare against the previous stable
 tag, so their notes include the full stable-to-stable commit range even if some
 of those commits already appeared in nightly notes.
 
+Stable releases also require a human-reviewed changelog entry under
+`apps/marketing/src/content/changelog/v<version>.md`. Nightly releases do not
+create marketing changelog entries.
+
+Before publishing a stable release, run **Prepare Stable Release Content** from
+GitHub Actions with the target version. The workflow:
+
+1. summarizes the commits since the previous stable tag with schema-constrained
+   OpenAI output;
+2. validates that every public claim cites a commit in that release range;
+3. creates the marketing changelog entry and an X draft capped at 260 Unicode
+   characters; and
+4. opens a Draft PR and tries to assign it to the person who ran the workflow.
+
+Review the copy in the PR, edit the generated changelog file as needed, and use
+the Vercel Preview check to inspect the rendered page. Merging the PR approves
+the marketing and GitHub release copy. It never posts to social media.
+
+Configure `OPENAI_API_KEY` as a GitHub Actions repository secret. The generator
+uses `gpt-5.6` by default; set the optional `OPENAI_RELEASE_SUMMARY_MODEL`
+repository variable to change the model without editing the workflow.
+
+For a local draft, use:
+
+```bash
+OPENAI_API_KEY=... vp run release:content -- --version 0.2.5 --current-ref HEAD
+```
+
+The stable release workflow refuses to publish when the matching reviewed entry
+is missing. Its GitHub release body places those highlights first and keeps the
+complete categorized commit list in a collapsed technical-details section.
+
 The release assets should include:
 
 - `Threadlines-<version>-x64.exe`

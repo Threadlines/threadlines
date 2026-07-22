@@ -305,13 +305,32 @@ jobs:
         run: vp install --frozen-lockfile
 
       - name: Generate release notes
-        run: >
-          node scripts/generate-release-notes.ts
-          --channel "${{ needs.preflight.outputs.channel }}"
-          --current-tag "${{ needs.preflight.outputs.tag }}"
-          --current-ref "${{ needs.preflight.outputs.ref }}"
-          --repository "${{ github.repository }}"
-          --output release-notes.md
+        env:
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          CURRENT_REF: ${{ needs.preflight.outputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          args=(
+            --channel "$CHANNEL"
+            --current-tag "$TAG"
+            --current-ref "$CURRENT_REF"
+            --repository "$REPOSITORY"
+            --output release-notes.md
+          )
+
+          if [[ "$CHANNEL" == "stable" ]]; then
+            highlights_file="apps/marketing/src/content/changelog/${TAG}.md"
+            if [[ ! -f "$highlights_file" ]]; then
+              echo "::error::Stable release content is missing at $highlights_file. Run the Prepare Stable Release Content workflow and merge its Draft PR before publishing $TAG."
+              exit 1
+            fi
+            args+=(--highlights-file "$highlights_file")
+          fi
+
+          node scripts/generate-release-notes.ts "${args[@]}"
 
       - name: Create draft release
         env:

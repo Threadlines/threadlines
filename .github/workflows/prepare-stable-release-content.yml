@@ -1,0 +1,135 @@
+name: Prepare Stable Release Content
+
+run-name: Prepare stable release content for ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable version to draft, for example 0.2.5 (the v prefix is optional)."
+        required: true
+        type: string
+      current_ref:
+        description: "Commit or tag to summarize. Blank uses an existing version tag, otherwise main."
+        required: false
+        type: string
+      release_date:
+        description: "Release date in YYYY-MM-DD. Blank uses today's UTC date."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: stable-release-content-v${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    name: Draft changelog and announcement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_RELEASE_SUMMARY_MODEL: ${{ vars.OPENAI_RELEASE_SUMMARY_MODEL }}
+      VERSION_INPUT: ${{ inputs.version }}
+      CURRENT_REF_INPUT: ${{ inputs.current_ref }}
+      RELEASE_DATE_INPUT: ${{ inputs.release_date }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout main with release history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.2.4"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Verify release drafting credentials
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo "::error::Missing OPENAI_API_KEY. Add it as a GitHub Actions repository secret before drafting stable release content."
+            exit 1
+          fi
+
+      - name: Generate stable release draft
+        run: |
+          set -euo pipefail
+
+          version="${VERSION_INPUT#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid stable version '$VERSION_INPUT'. Expected MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+
+          args=(
+            --version "$version"
+            --repository "$GITHUB_REPOSITORY"
+            --pr-body release-content-pr.md
+          )
+          if [[ -n "${CURRENT_REF_INPUT:-}" ]]; then
+            args+=(--current-ref "$CURRENT_REF_INPUT")
+          fi
+          if [[ -n "${RELEASE_DATE_INPUT:-}" ]]; then
+            args+=(--release-date "$RELEASE_DATE_INPUT")
+          fi
+
+          node scripts/generate-release-content.ts "${args[@]}"
+
+      - name: Open human-review Draft PR
+        run: |
+          set -euo pipefail
+
+          version="${VERSION_INPUT#v}"
+          branch="release-content/v${version}"
+          content_path="apps/marketing/src/content/changelog/v${version}.md"
+
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "::error::Branch '$branch' already exists. Review its existing PR or delete the branch before regenerating."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add "$content_path"
+
+          if git diff --cached --quiet; then
+            echo "::error::The generated draft did not change '$content_path'."
+            exit 1
+          fi
+
+          git commit -m "Prepare v${version} changelog and announcement"
+          git push --set-upstream origin "$branch"
+
+          pr_url="$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$branch" \
+            --draft \
+            --title "Prepare v${version} changelog and announcement" \
+            --body-file release-content-pr.md)"
+
+          if ! gh pr edit "$pr_url" --add-assignee "$GITHUB_ACTOR"; then
+            echo "::warning::Draft PR was created, but $GITHUB_ACTOR could not be assigned automatically."
+          fi
+
+          {
+            echo "### Stable release content draft"
+            echo
+            echo "- Draft PR: $pr_url"
+            echo "- Version: v${version}"
+            echo "- Review the Vercel Preview deployment in the PR checks before merging."
+          } >> "$GITHUB_STEP_SUMMARY"

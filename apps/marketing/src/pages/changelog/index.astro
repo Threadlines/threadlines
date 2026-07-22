@@ -1,0 +1,151 @@
+---
+import { getCollection } from "astro:content";
+
+import Layout from "../../layouts/Layout.astro";
+import {
+  changelogEntryPath,
+  formatReleaseDate,
+  sortChangelogEntries,
+} from "../../lib/changelog";
+
+const entries = sortChangelogEntries(await getCollection("changelog"));
+---
+
+<Layout
+  title="Threadlines changelog"
+  description="Stable Threadlines release highlights, improvements, and technical release links."
+  canonicalPath="/changelog/"
+>
+  <section class="changelog-index">
+    <div class="container changelog-wrap">
+      <header class="changelog-header">
+        <p class="eyebrow">Stable releases</p>
+        <h1 class="display">Changelog</h1>
+        <p>
+          The meaningful changes in each stable Threadlines release. Nightly builds stay on GitHub;
+          this page is the concise, human-reviewed record.
+        </p>
+      </header>
+
+      <div class="release-list">
+        {
+          entries.map((entry) => (
+            <article class="release-card">
+              <a href={changelogEntryPath(entry)}>
+                <div class="release-meta">
+                  <span>v{entry.data.version}</span>
+                  <time datetime={entry.data.date.toISOString()}>
+                    {formatReleaseDate(entry.data.date)}
+                  </time>
+                </div>
+                <h2>{entry.data.title}</h2>
+                <p>{entry.data.summary}</p>
+                <span class="release-link">Read release notes <span aria-hidden="true">→</span></span>
+              </a>
+            </article>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .changelog-index {
+    padding: 88px 0 112px;
+  }
+
+  .changelog-wrap {
+    max-width: 860px;
+  }
+
+  .changelog-header {
+    max-width: 680px;
+    margin-bottom: 56px;
+  }
+
+  .changelog-header h1 {
+    margin: 12px 0 18px;
+    font-size: clamp(42px, 7vw, 72px);
+  }
+
+  .changelog-header > p:last-child {
+    color: var(--fg-muted);
+    font-size: 18px;
+    line-height: 1.65;
+    text-wrap: pretty;
+  }
+
+  .release-list {
+    display: grid;
+    gap: 16px;
+  }
+
+  .release-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  }
+
+  .release-card:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+    transform: translateY(-1px);
+  }
+
+  .release-card a {
+    display: block;
+    padding: 28px 30px;
+  }
+
+  .release-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .release-meta span {
+    color: var(--accent-bright);
+  }
+
+  .release-card h2 {
+    margin: 18px 0 10px;
+    font-size: clamp(23px, 3vw, 30px);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+  }
+
+  .release-card p {
+    max-width: 68ch;
+    color: var(--fg-muted);
+    line-height: 1.65;
+  }
+
+  .release-link {
+    display: inline-flex;
+    gap: 6px;
+    margin-top: 22px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  @media (max-width: 620px) {
+    .changelog-index {
+      padding: 64px 0 88px;
+    }
+
+    .changelog-header {
+      margin-bottom: 38px;
+    }
+
+    .release-card a {
+      padding: 24px 22px;
+    }
+  }
+</style>
