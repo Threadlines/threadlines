@@ -3,11 +3,12 @@ import {
   DEFAULT_RUNTIME_MODE,
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@threadlines/contracts";
 import type { Thread } from "../types";
-import { getLatestThreadForProject, sortThreads } from "./threadSort";
+import { getLatestThreadForProject, selectActiveAndRecentThreads, sortThreads } from "./threadSort";
 
 const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const PROJECT_ID = ProjectId.make("project-1");
@@ -234,5 +235,78 @@ describe("sortThreads", () => {
     );
 
     expect(latestThread?.id).toBe(ThreadId.make("thread-3"));
+  });
+});
+
+describe("selectActiveAndRecentThreads", () => {
+  it("shows every in-flight thread before filling the limit by true recency", () => {
+    const session = {
+      provider: ProviderDriverKind.make("codex"),
+      status: "running" as const,
+      orchestrationStatus: "running" as const,
+      createdAt: "2026-03-09T10:00:00.000Z",
+      updatedAt: "2026-03-09T10:00:00.000Z",
+    };
+    const makeTimestampedThread = (
+      id: string,
+      latestUserMessageAt: string,
+      overrides: Partial<Thread> = {},
+    ) =>
+      makeThread({
+        id: ThreadId.make(id),
+        updatedAt: latestUserMessageAt,
+        messages: [
+          {
+            id: `message-${id}` as never,
+            role: "user",
+            text: id,
+            createdAt: latestUserMessageAt,
+            streaming: false,
+            completedAt: latestUserMessageAt,
+          },
+        ],
+        ...overrides,
+      });
+
+    const threads = [
+      makeTimestampedThread("pinned-1", "2026-03-09T09:01:00.000Z", {
+        pinnedAt: "2026-03-09T10:11:00.000Z",
+      }),
+      makeTimestampedThread("pinned-2", "2026-03-09T09:02:00.000Z", {
+        pinnedAt: "2026-03-09T10:11:00.000Z",
+      }),
+      makeTimestampedThread("pinned-3", "2026-03-09T09:03:00.000Z", {
+        pinnedAt: "2026-03-09T10:11:00.000Z",
+      }),
+      makeTimestampedThread("pinned-4", "2026-03-09T09:04:00.000Z", {
+        pinnedAt: "2026-03-09T10:11:00.000Z",
+      }),
+      makeTimestampedThread("running-newer", "2026-03-09T10:10:00.000Z", { session }),
+      makeTimestampedThread("running-older", "2026-03-09T09:00:00.000Z", { session }),
+      makeTimestampedThread("recent-unpinned", "2026-03-09T10:05:00.000Z"),
+    ];
+    const selected = selectActiveAndRecentThreads(threads, 5);
+
+    expect(selected.map((thread) => thread.id)).toEqual([
+      ThreadId.make("running-newer"),
+      ThreadId.make("running-older"),
+      ThreadId.make("recent-unpinned"),
+      ThreadId.make("pinned-4"),
+      ThreadId.make("pinned-3"),
+    ]);
+    expect(selectActiveAndRecentThreads(threads, 1).map((thread) => thread.id)).toEqual([
+      ThreadId.make("running-newer"),
+      ThreadId.make("running-older"),
+    ]);
+  });
+
+  it("excludes archived threads and respects an empty limit", () => {
+    const archived = makeThread({
+      id: ThreadId.make("archived"),
+      archivedAt: "2026-03-09T10:00:00.000Z",
+    });
+
+    expect(selectActiveAndRecentThreads([archived], 5)).toEqual([]);
+    expect(selectActiveAndRecentThreads([makeThread()], 0)).toEqual([]);
   });
 });

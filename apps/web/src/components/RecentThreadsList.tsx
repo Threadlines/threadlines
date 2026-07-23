@@ -5,8 +5,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useSettings } from "../hooks/useSettings";
-import { sortThreads } from "../lib/threadSort";
+import { selectActiveAndRecentThreads } from "../lib/threadSort";
 import {
   selectGeneralChatsProjectAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -27,15 +26,10 @@ export function RecentThreadsList({ limit = 3, testId, className }: RecentThread
   const navigate = useNavigate();
   const { orderedProjects } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const recentThreads = useMemo(
-    () =>
-      sortThreads(
-        threads.filter((thread) => thread.archivedAt === null),
-        sidebarThreadSortOrder,
-      ).slice(0, limit),
-    [limit, sidebarThreadSortOrder, threads],
+    () => selectActiveAndRecentThreads(threads, limit),
+    [limit, threads],
   );
   const projectByScopedKey = useMemo(
     () =>
@@ -55,7 +49,7 @@ export function RecentThreadsList({ limit = 3, testId, className }: RecentThread
   return (
     <div className={className}>
       <div className="mb-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
-        Recent threads
+        Active and recent
       </div>
       <div className="flex flex-col divide-y divide-border/50">
         {recentThreads.map((thread) => {

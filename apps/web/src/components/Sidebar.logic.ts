@@ -4,6 +4,7 @@ import type {
   SidebarThreadSortOrder,
 } from "@threadlines/contracts/settings";
 import {
+  getThreadInFlightStatus,
   getThreadSortTimestamp,
   sortThreads,
   toSortableTimestamp,
@@ -362,7 +363,9 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running" || thread.session?.orchestrationStatus === "running") {
+  const inFlightStatus = getThreadInFlightStatus(thread);
+
+  if (inFlightStatus === "working") {
     return {
       label: "Working",
       colorClass: "text-primary-readable",
@@ -371,10 +374,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (
-    thread.session?.status === "connecting" ||
-    thread.session?.orchestrationStatus === "starting"
-  ) {
+  if (inFlightStatus === "starting") {
     return {
       label: "Starting",
       colorClass: "text-primary-readable",
