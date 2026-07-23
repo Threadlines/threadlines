@@ -1329,7 +1329,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
                   size="xs"
                   ref={popoverLayout.triggerRef}
                   className={cn(
-                    "h-6 min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
+                    "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
                     triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
                     triggerState.mode === "mixed" && "max-w-44",
                   )}

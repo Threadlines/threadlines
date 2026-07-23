@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
+import { Button } from "../ui/button";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 
 const TASK_BADGE = {
@@ -67,6 +68,39 @@ async function renderOpenPopover(activeStep: string) {
 describe("ThreadActivityPopover", () => {
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("matches adjacent compact button height at phone widths", async () => {
+    await page.viewport(500, 800);
+    const mounted = await render(
+      <main className="flex items-center gap-2">
+        <ThreadActivityPopover
+          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+          activeThreadId={ACTIVE_THREAD_ID}
+          taskProgress={buildTaskProgress("Implement mobile layout")}
+          subagentProgress={null}
+          backgroundRuns={[]}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+        <Button size="xs" variant="outline" aria-label="Adjacent header action">
+          +
+        </Button>
+      </main>,
+    );
+
+    try {
+      const activityTrigger = page.getByRole("button", { name: TASK_BADGE.ariaLabel }).element();
+      const adjacentButton = page.getByRole("button", { name: "Adjacent header action" }).element();
+
+      expect(activityTrigger.getBoundingClientRect().height).toBe(28);
+      expect(activityTrigger.getBoundingClientRect().height).toBe(
+        adjacentButton.getBoundingClientRect().height,
+      );
+    } finally {
+      await mounted.unmount();
+      await page.viewport(1_600, 1_300);
+    }
   });
 
   it("does not render task summary disclosure when the summary fits", async () => {
