@@ -36,6 +36,7 @@ const CURSOR_INSTANCE_ID = ProviderInstanceId.make("cursor");
 const CLAUDE_INSTANCE_ID = ProviderInstanceId.make("claudeAgent");
 const OPENCODE_INSTANCE_ID = ProviderInstanceId.make("opencode");
 const encoder = new TextEncoder();
+const OVERSIZED_WINDOWS_UPDATE_PAYLOAD = "A".repeat(10_000);
 
 function lifecycleFor(provider: ProviderDriverKind): ProviderMaintenanceCapabilities {
   if (provider === CURSOR_DRIVER) {
@@ -236,7 +237,7 @@ function claudeWindowsUpdateCapabilities(): ProviderMaintenanceCapabilities {
     provider: CLAUDE_DRIVER,
     packageName: "@anthropic-ai/claude-code",
     updateExecutable: "powershell.exe",
-    updateArgs: ["-NoProfile", "-EncodedCommand", "fake"],
+    updateArgs: ["-NoProfile", "-EncodedCommand", OVERSIZED_WINDOWS_UPDATE_PAYLOAD],
     updateLockKey: "claude-native-verified-win32",
   });
 }
@@ -366,7 +367,7 @@ describe("providerMaintenanceRunner", () => {
     },
   );
 
-  it.effect("runs provider update commands through a shell on Windows", () => {
+  it.effect("runs Windows batch-shim provider updates through a shell", () => {
     const calls: Array<{
       command: string;
       args: ReadonlyArray<string>;
@@ -377,14 +378,27 @@ describe("providerMaintenanceRunner", () => {
       "win32",
       Effect.gen(function* () {
         const { registry } = yield* makeRegistry(baseProvider);
-        const runner = yield* makeTestRunner(registry);
+        const runner = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed(
+              makeProviderMaintenanceCapabilities({
+                provider: CODEX_DRIVER,
+                packageName: "@openai/codex",
+                updateExecutable: "C:\\Users\\Alice\\AppData\\Roaming\\npm\\npm.cmd",
+                updateArgs: ["install", "-g", "@openai/codex@latest"],
+                updateLockKey: "npm-global",
+              }),
+            ),
+        });
 
         const result = yield* runner.updateProvider(CODEX_DRIVER);
 
         assert.deepStrictEqual(calls, [
           {
-            command: "npm",
-            args: ["install", "-g", "@openai/codex@latest"],
+            command:
+              "C:\\Users\\Alice\\AppData\\Roaming\\npm\\npm.cmd install -g @openai/codex@latest",
+            args: [],
             shell: true,
             windowsHide: true,
           },
@@ -502,8 +516,14 @@ describe("providerMaintenanceRunner", () => {
     ),
   );
 
-  it.effect("runs the Windows Claude update when no Claude process is active", () => {
-    const calls: string[] = [];
+  it.effect("runs the Windows Claude update directly when no Claude process is active", () => {
+    const calls: Array<{
+      kind: "preflight" | "update";
+      command: string;
+      args: ReadonlyArray<string>;
+      shell: ChildProcess.CommandOptions["shell"];
+      windowsHide: boolean | undefined;
+    }> = [];
     return withProcessPlatform(
       "win32",
       Effect.gen(function* () {
@@ -516,19 +536,48 @@ describe("providerMaintenanceRunner", () => {
 
         const result = yield* updater.updateProvider(CLAUDE_DRIVER);
 
-        assert.deepStrictEqual(calls, [
-          "command:powershell.exe preflight",
-          "command:powershell.exe update",
-        ]);
+        assert.deepStrictEqual(
+          calls.map(({ args, ...call }) => ({
+            ...call,
+            args: args.slice(0, 2),
+            encodedCommand:
+              call.kind === "update" ? (args[2]?.length ?? 0) : args[2] ? "present" : "missing",
+          })),
+          [
+            {
+              kind: "preflight",
+              command: "powershell.exe",
+              args: ["-NoProfile", "-EncodedCommand"],
+              encodedCommand: "present",
+              shell: undefined,
+              windowsHide: true,
+            },
+            {
+              kind: "update",
+              command: "powershell.exe",
+              args: ["-NoProfile", "-EncodedCommand"],
+              encodedCommand: 10_000,
+              shell: undefined,
+              windowsHide: true,
+            },
+          ],
+        );
         assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
       }),
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
           latestVersionHttpClient("0.0.0"),
-          mockSpawnerLayer((command, args) => {
-            const kind = args.includes("fake") ? "update" : "preflight";
-            calls.push(`command:${command} ${kind}`);
+          mockSpawnerLayer((command, args, options) => {
+            const kind = args.includes(OVERSIZED_WINDOWS_UPDATE_PAYLOAD) ? "update" : "preflight";
+            calls.push({
+              kind,
+              command,
+              args,
+              shell: options.shell,
+              windowsHide: (options as ChildProcess.CommandOptions & { windowsHide?: boolean })
+                .windowsHide,
+            });
             return kind === "preflight" ? {} : { stdout: "updated" };
           }),
         ),
@@ -561,7 +610,7 @@ describe("providerMaintenanceRunner", () => {
         Layer.mergeAll(
           latestVersionHttpClient("0.0.0"),
           mockSpawnerLayer((command, args) => {
-            const kind = args.includes("fake") ? "update" : "preflight";
+            const kind = args.includes(OVERSIZED_WINDOWS_UPDATE_PAYLOAD) ? "update" : "preflight";
             calls.push(`command:${command} ${kind}`);
             if (kind === "preflight") {
               return {

@@ -27,6 +27,7 @@ import { makeProviderMaintenanceCommandCoordinator } from "./providerMaintenance
 import { enrichProviderSnapshotWithVersionAdvisory } from "./providerMaintenance.ts";
 import type { ProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
+import { planCliSpawn } from "../cliSpawn.ts";
 const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
@@ -131,13 +132,15 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
   }) {
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
+        const commandEnvironment = { ...process.env, ...input.environmentPatch };
+        const spawnPlan = planCliSpawn(input.command, input.args, commandEnvironment);
         const child = yield* input.spawner
           .spawn(
             ChildProcess.make(
-              input.command,
-              [...input.args],
+              spawnPlan.command,
+              [...spawnPlan.args],
               hideWindowsConsole({
-                ...(process.platform === "win32" ? { shell: true as const } : {}),
+                ...spawnPlan.options,
                 ...(input.environmentPatch
                   ? { env: input.environmentPatch, extendEnv: true as const }
                   : {}),
