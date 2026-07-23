@@ -47,7 +47,6 @@ import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
   closeRightPanelSearchParams,
-  isDraftSourceControlPanelOpen,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
@@ -1263,12 +1262,9 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  // Mirror the owning route's panel default: server threads open on wide
-  // viewports, drafts stay closed until explicitly opened.
-  const sourceControlOpen =
-    routeKind === "server"
-      ? isSourceControlPanelOpen(rawSearch, { defaultOpen: !shouldUseRightPanelSheet })
-      : isDraftSourceControlPanelOpen(rawSearch);
+  const sourceControlOpen = isSourceControlPanelOpen(rawSearch, {
+    defaultOpen: !shouldUseRightPanelSheet,
+  });
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.
@@ -1323,15 +1319,6 @@ export default function ChatView(props: ChatViewProps) {
   // General Chat threads run in a hidden scratch workspace: source-control,
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
-  const insertDraftStarterPrompt = useCallback(
-    (text: string) => {
-      setComposerDraftPrompt(composerDraftTarget, text);
-      window.requestAnimationFrame(() => {
-        composerRef.current?.focusAtEnd();
-      });
-    },
-    [composerDraftTarget, composerRef, setComposerDraftPrompt],
-  );
   const draftTimelineEmptyState = useMemo(
     () =>
       isLocalDraftThread && draftThread ? (
@@ -1339,14 +1326,12 @@ export default function ChatView(props: ChatViewProps) {
           currentProjectRef={scopeProjectRef(draftThread.environmentId, draftThread.projectId)}
           currentProjectName={activeProject?.name ?? null}
           isGeneralChat={isGeneralChatThread}
-          onInsertPrompt={insertDraftStarterPrompt}
         />
       ) : undefined,
     [
       activeProject?.name,
       draftThread?.environmentId,
       draftThread?.projectId,
-      insertDraftStarterPrompt,
       isGeneralChatThread,
       isLocalDraftThread,
     ],

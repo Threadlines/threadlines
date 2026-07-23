@@ -1,12 +1,6 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
-import {
-  BugIcon,
-  CheckIcon,
-  CompassIcon,
-  GitCompareArrowsIcon,
-  MessagesSquareIcon,
-} from "lucide-react";
+import { CheckIcon, MessagesSquareIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -16,7 +10,6 @@ import { resolveGeneralChatsProjectRef } from "../../lib/generalChats";
 import { selectGeneralChatsProjectAcrossEnvironments, useStore } from "../../store";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
-import { Button } from "../ui/button";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import {
   Menu,
@@ -32,21 +25,12 @@ interface DraftEmptyStateProps {
   currentProjectRef: ScopedProjectRef | null;
   currentProjectName: string | null;
   isGeneralChat: boolean;
-  onInsertPrompt?: ((text: string) => void) | undefined;
 }
-
-/** Starter prompts inserted into the composer for editing, not sent. */
-const STARTER_PROMPTS = [
-  { icon: CompassIcon, prompt: "Explain this codebase" },
-  { icon: GitCompareArrowsIcon, prompt: "Review my uncommitted changes" },
-  { icon: BugIcon, prompt: "Fix a bug" },
-] as const;
 
 export function DraftEmptyState({
   currentProjectRef,
   currentProjectName,
   isGeneralChat,
-  onInsertPrompt,
 }: DraftEmptyStateProps) {
   const { handleNewThread, orderedProjects } = useHandleNewThread();
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
@@ -131,28 +115,8 @@ export function DraftEmptyState({
         ?
       </h2>
 
-      {!isGeneralChat && onInsertPrompt ? (
-        <div
-          className="no-thread-rise mt-5 flex flex-wrap items-center justify-center gap-1"
-          style={riseDelay("0.26s")}
-        >
-          {STARTER_PROMPTS.map(({ icon: Icon, prompt }) => (
-            <Button
-              className="text-muted-foreground hover:text-foreground"
-              key={prompt}
-              onClick={() => onInsertPrompt(prompt)}
-              size="sm"
-              variant="ghost"
-            >
-              <Icon />
-              {prompt}
-            </Button>
-          ))}
-        </div>
-      ) : null}
-
       <RecentThreadsList
-        className="no-thread-rise mt-10 w-full [--no-thread-delay:0.4s]"
+        className="no-thread-rise mt-10 w-full [--no-thread-delay:0.26s]"
         limit={5}
         testId="draft-empty-recent-thread"
       />
