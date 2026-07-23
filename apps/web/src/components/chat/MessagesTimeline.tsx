@@ -2063,6 +2063,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                   text={messageText}
                   cwd={ctx.markdownCwd}
                   environmentId={ctx.activeThreadEnvironmentId}
+                  threadId={ctx.activeThreadId ?? undefined}
                   isStreaming={Boolean(row.message.streaming)}
                   skills={ctx.skills}
                   searchHighlightQuery={

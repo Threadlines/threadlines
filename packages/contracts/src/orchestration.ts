@@ -298,6 +298,38 @@ export class ChatAttachmentReadError extends Schema.TaggedErrorClass<ChatAttachm
   },
 ) {}
 
+/**
+ * Reads a Codex-owned inline visualization fragment for a thread. The client
+ * supplies only the public Threadlines thread id and the filename emitted in
+ * the assistant response; the server derives the provider session and Codex
+ * home so arbitrary filesystem paths never cross the RPC boundary.
+ */
+export const CodexInlineVisualizationFileName = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*\.html$/),
+);
+export type CodexInlineVisualizationFileName = typeof CodexInlineVisualizationFileName.Type;
+
+export const CodexInlineVisualizationReadInput = Schema.Struct({
+  threadId: ThreadId,
+  file: CodexInlineVisualizationFileName,
+});
+export type CodexInlineVisualizationReadInput = typeof CodexInlineVisualizationReadInput.Type;
+
+export const CodexInlineVisualizationReadResult = Schema.Struct({
+  file: CodexInlineVisualizationFileName,
+  contents: Schema.String,
+  sizeBytes: NonNegativeInt,
+});
+export type CodexInlineVisualizationReadResult = typeof CodexInlineVisualizationReadResult.Type;
+
+export class CodexInlineVisualizationReadError extends Schema.TaggedErrorClass<CodexInlineVisualizationReadError>()(
+  "CodexInlineVisualizationReadError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 export const ProjectScriptIcon = Schema.Literals([
   "play",
   "test",

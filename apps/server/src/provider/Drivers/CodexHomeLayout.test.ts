@@ -11,6 +11,11 @@ import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+import {
+  codexVisualizationDateShard,
+  MAX_CODEX_INLINE_VISUALIZATION_BYTES,
+  readCodexInlineVisualization,
+} from "../CodexInlineVisualization.ts";
 const decodeCodexSettingsValue = Schema.decodeSync(CodexSettings);
 
 const decodeCodexSettings = (input: {
@@ -77,6 +82,85 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           effectiveHomePath: shadowHome,
           continuationKey: `codex:home:${sharedHome}`,
         });
+      }),
+    );
+  });
+
+  describe("Codex inline visualizations", () => {
+    const providerThreadId = "019f8ca0-8000-7992-a481-9125813cb125";
+
+    it("derives the local date shard from a native UUIDv7 thread id", () => {
+      const timestamp = new Date(Number.parseInt("019f8ca08000", 16));
+      const expected = [
+        String(timestamp.getFullYear()).padStart(4, "0"),
+        String(timestamp.getMonth() + 1).padStart(2, "0"),
+        String(timestamp.getDate()).padStart(2, "0"),
+      ].join("/");
+
+      expect(codexVisualizationDateShard(providerThreadId)).toBe(expected);
+      expect(codexVisualizationDateShard("not-a-native-thread-id")).toBeNull();
+    });
+
+    it.effect("reads only the expected visualization fragment", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const codexHomePath = yield* makeTempDir("threadlines-codex-visualization-");
+        const shard = codexVisualizationDateShard(providerThreadId);
+        expect(shard).not.toBeNull();
+        const filePath = path.join(
+          codexHomePath,
+          "visualizations",
+          shard ?? "",
+          providerThreadId,
+          "connection-map.html",
+        );
+        yield* writeTextFile(filePath, "<div>Connection map</div>");
+
+        const result = yield* readCodexInlineVisualization({
+          codexHomePath,
+          providerThreadId,
+          file: "connection-map.html",
+        });
+
+        expect(result).toEqual({
+          file: "connection-map.html",
+          contents: "<div>Connection map</div>",
+          sizeBytes: 25,
+        });
+      }),
+    );
+
+    it.effect("rejects symlinks and oversized visualization files", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const codexHomePath = yield* makeTempDir("threadlines-codex-visualization-");
+        const shard = codexVisualizationDateShard(providerThreadId) ?? "";
+        const directory = path.join(codexHomePath, "visualizations", shard, providerThreadId);
+        const targetPath = path.join(directory, "target.html");
+        const symlinkPath = path.join(directory, "linked-file.html");
+        const oversizedPath = path.join(directory, "oversized-file.html");
+        yield* writeTextFile(targetPath, "<div>target</div>");
+        if (process.platform !== "win32") {
+          yield* fileSystem.symlink(targetPath, symlinkPath);
+          const symlinkError = yield* readCodexInlineVisualization({
+            codexHomePath,
+            providerThreadId,
+            file: "linked-file.html",
+          }).pipe(Effect.flip);
+          expect(symlinkError.message).toContain("not a regular file");
+        }
+
+        yield* fileSystem.writeFile(
+          oversizedPath,
+          new Uint8Array(MAX_CODEX_INLINE_VISUALIZATION_BYTES + 1),
+        );
+        const oversizedError = yield* readCodexInlineVisualization({
+          codexHomePath,
+          providerThreadId,
+          file: "oversized-file.html",
+        }).pipe(Effect.flip);
+        expect(oversizedError.message).toContain("too large");
       }),
     );
   });

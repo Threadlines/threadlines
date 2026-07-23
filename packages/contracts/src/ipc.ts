@@ -128,6 +128,8 @@ import * as Schema from "effect/Schema";
 import type {
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
+  CodexInlineVisualizationReadInput,
+  CodexInlineVisualizationReadResult,
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -783,6 +785,10 @@ export interface EnvironmentApi {
   };
   attachments: {
     read: (input: ChatAttachmentReadInput) => Promise<ChatAttachmentReadResult>;
+  };
+  /** Optional so newer clients can still connect to older Threadlines servers. */
+  visualizations?: {
+    read: (input: CodexInlineVisualizationReadInput) => Promise<CodexInlineVisualizationReadResult>;
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
