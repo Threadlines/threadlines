@@ -2456,7 +2456,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps source control closed by default on wide draft thread routes before first send", async () => {
+  it("defaults source control open on wide draft thread routes before first send", async () => {
     const draftId = DraftId.make("draft-source-control-before-start");
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2494,18 +2494,19 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find source control toggle.",
       );
       expect(sourceControlToggle.disabled).toBe(false);
-      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
-      await expect
-        .element(page.getByRole("heading", { name: "Source Control" }))
-        .not.toBeInTheDocument();
+      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(true);
+      expect(document.body.textContent).not.toContain("Explain this codebase");
+      expect(document.body.textContent).not.toContain("Review my uncommitted changes");
+      expect(document.body.textContent).not.toContain("Fix a bug");
+      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
 
       sourceControlToggle.click();
 
       await vi.waitFor(
         () => {
-          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
-          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(true);
-          expect(document.querySelector('h2[aria-label="Source Control"]')).not.toBeNull();
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
+          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
+          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );

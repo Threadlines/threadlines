@@ -133,16 +133,6 @@ export function isSourceControlPanelOpen(
   return options.defaultOpen ?? true;
 }
 
-/**
- * Drafts start with the source-control panel closed: a pristine thread has no
- * turn activity to review, and the home/new-thread surface should read as a
- * clean page. Only explicit `sourceControl=1` opens it; the wide-viewport
- * default that applies to server threads does not.
- */
-export function isDraftSourceControlPanelOpen(search: DiffRouteSearch): boolean {
-  return isSourceControlPanelOpen(search, { defaultOpen: false });
-}
-
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
   const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
   const diffMode = diff && search.diffMode === "workingTree" ? "workingTree" : undefined;
