@@ -423,6 +423,16 @@
         color: var(--blue);
         background: rgba(122, 162, 247, 0.12);
       }
+      .hbtn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .hbtn .ds {
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1;
+      }
       .chat-scroll {
         flex: 1;
         overflow: hidden;
@@ -1054,7 +1064,7 @@
           <span class="chip">▸ Dev Env</span>
           <button class="hbtn ${s.terminal ? "on" : ""}" data-act="terminal" title="Terminal">${ICONS.term}</button>
           <button class="hbtn ${s.browser ? "on" : ""}" data-act="browser" title="Browser">${ICONS.globe}</button>
-          <button class="hbtn ${s.sc ? "on" : ""}" data-act="sc" title="Source control">${ICONS.branch}</button>
+          <button class="hbtn ${s.sc ? "on" : ""}" data-act="sc" title="Source control">${ICONS.branch}${s.sc ? "" : '<span class="ds"><span class="plus">+38</span> <span class="minus">−12</span></span>'}</button>
         </header>`;
       }
 
