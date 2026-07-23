@@ -64,6 +64,9 @@ import {
   ChatAttachmentReadError,
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
+  CodexInlineVisualizationReadError,
+  CodexInlineVisualizationReadInput,
+  CodexInlineVisualizationReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -212,6 +215,9 @@ export const WS_METHODS = {
 
   // Chat attachment methods
   attachmentsRead: "attachments.read",
+
+  // Codex inline visualization methods
+  visualizationsRead: "visualizations.read",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -647,6 +653,12 @@ export const WsAttachmentsReadRpc = Rpc.make(WS_METHODS.attachmentsRead, {
   error: ChatAttachmentReadError,
 });
 
+export const WsVisualizationsReadRpc = Rpc.make(WS_METHODS.visualizationsRead, {
+  payload: CodexInlineVisualizationReadInput,
+  success: CodexInlineVisualizationReadResult,
+  error: CodexInlineVisualizationReadError,
+});
+
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: ExternalLauncherError,
@@ -991,6 +1003,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsReadFileRpc,
   WsProjectsFaviconRpc,
   WsAttachmentsReadRpc,
+  WsVisualizationsReadRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsSubscribeVcsStatusRpc,

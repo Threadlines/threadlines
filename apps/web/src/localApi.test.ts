@@ -62,6 +62,9 @@ const rpcClientMock = {
   attachments: {
     read: vi.fn(),
   },
+  visualizations: {
+    read: vi.fn(),
+  },
   filesystem: {
     browse: vi.fn(),
   },
@@ -519,6 +522,28 @@ describe("wsApi", () => {
       cwd: "/tmp/project",
       relativePath: "plan.md",
       contents: "# Plan\n",
+    });
+  });
+
+  it("forwards visualization reads to the RPC client", async () => {
+    const result = {
+      file: "connection-map.html",
+      contents: "<div>Connection map</div>",
+      sizeBytes: 25,
+    };
+    rpcClientMock.visualizations.read.mockResolvedValue(result);
+    const { createEnvironmentApi } = await import("./environmentApi");
+
+    const api = createEnvironmentApi(rpcClientMock as never);
+    await expect(
+      api.visualizations?.read({
+        threadId: ThreadId.make("thread-1"),
+        file: "connection-map.html",
+      }),
+    ).resolves.toEqual(result);
+    expect(rpcClientMock.visualizations.read).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      file: "connection-map.html",
     });
   });
 

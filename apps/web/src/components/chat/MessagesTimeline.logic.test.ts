@@ -261,6 +261,19 @@ describe("resolveAssistantMessageCopyState", () => {
       visible: false,
     });
   });
+
+  it("omits inline visualization directives from copied assistant text", () => {
+    expect(
+      resolveAssistantMessageCopyState({
+        showCopyButton: true,
+        text: 'Summary\n\n::codex-inline-vis{file="connection-map.html"}',
+        streaming: false,
+      }),
+    ).toEqual({
+      text: "Summary",
+      visible: true,
+    });
+  });
 });
 
 describe("deriveMessagesTimelineRows", () => {

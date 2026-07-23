@@ -34,6 +34,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     attachments: {
       read: rpcClient.attachments.read,
     },
+    visualizations: {
+      read: rpcClient.visualizations.read,
+    },
     filesystem: {
       browse: rpcClient.filesystem.browse,
     },
