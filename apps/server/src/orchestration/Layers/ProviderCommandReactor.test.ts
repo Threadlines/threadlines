@@ -57,7 +57,7 @@ import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
   ProviderCommandReactorLive,
-  resolveForkCutTurnId,
+  resolveForkTurnBoundary,
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
@@ -366,6 +366,8 @@ describe("ProviderCommandReactor", () => {
     });
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
+      listExternalThreads: () => unsupported(),
+      readExternalThread: () => unsupported(),
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
       startReview: () => unsupported(),
@@ -3318,7 +3320,7 @@ describe("ProviderCommandReactor", () => {
   });
 });
 
-describe("resolveForkCutTurnId", () => {
+describe("resolveForkTurnBoundary", () => {
   const message = (id: string, role: "user" | "assistant", turnId: string | null) => ({
     id: asMessageId(id),
     role,
@@ -3332,8 +3334,12 @@ describe("resolveForkCutTurnId", () => {
       message("u2", "user", "turn-2"),
       message("a2", "assistant", "turn-2"),
     ];
-    expect(resolveForkCutTurnId(messages, asMessageId("a1"))).toBe(asTurnId("turn-1"));
-    expect(resolveForkCutTurnId(messages, asMessageId("a2"))).toBe(asTurnId("turn-2"));
+    expect(resolveForkTurnBoundary(messages, asMessageId("a1"))).toEqual({
+      lastTurnId: asTurnId("turn-1"),
+    });
+    expect(resolveForkTurnBoundary(messages, asMessageId("a2"))).toEqual({
+      lastTurnId: asTurnId("turn-2"),
+    });
   });
 
   it("cuts before a user anchor so the fork can retry it", () => {
@@ -3343,18 +3349,26 @@ describe("resolveForkCutTurnId", () => {
       message("u2", "user", "turn-2"),
       message("a2", "assistant", "turn-2"),
     ];
-    expect(resolveForkCutTurnId(messages, asMessageId("u2"))).toBe(asTurnId("turn-1"));
+    expect(resolveForkTurnBoundary(messages, asMessageId("u2"))).toEqual({
+      beforeTurnId: asTurnId("turn-2"),
+      lastTurnId: asTurnId("turn-1"),
+    });
+    expect(resolveForkTurnBoundary(messages, asMessageId("u1"))).toEqual({
+      beforeTurnId: asTurnId("turn-1"),
+    });
   });
 
   it("skips messages without turn ids when walking back", () => {
     const messages = [message("a1", "assistant", "turn-1"), message("a2", "assistant", null)];
-    expect(resolveForkCutTurnId(messages, asMessageId("a2"))).toBe(asTurnId("turn-1"));
+    expect(resolveForkTurnBoundary(messages, asMessageId("a2"))).toEqual({
+      lastTurnId: asTurnId("turn-1"),
+    });
   });
 
   it("returns undefined when no prior turn exists or the anchor is unknown", () => {
-    const messages = [message("u1", "user", "turn-1"), message("a1", "assistant", null)];
-    expect(resolveForkCutTurnId(messages, asMessageId("u1"))).toBeUndefined();
-    expect(resolveForkCutTurnId(messages, asMessageId("missing"))).toBeUndefined();
-    expect(resolveForkCutTurnId([], asMessageId("u1"))).toBeUndefined();
+    const messages = [message("u1", "user", null), message("a1", "assistant", null)];
+    expect(resolveForkTurnBoundary(messages, asMessageId("u1"))).toBeUndefined();
+    expect(resolveForkTurnBoundary(messages, asMessageId("missing"))).toBeUndefined();
+    expect(resolveForkTurnBoundary([], asMessageId("u1"))).toBeUndefined();
   });
 });

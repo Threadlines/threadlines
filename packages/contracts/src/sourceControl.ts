@@ -40,10 +40,11 @@ export const SourceControlRepositoryCloneUrls = Schema.Struct({
   nameWithOwner: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
   sshUrl: TrimmedNonEmptyString,
+  defaultBranch: Schema.optional(TrimmedNonEmptyString),
 });
 export type SourceControlRepositoryCloneUrls = typeof SourceControlRepositoryCloneUrls.Type;
 
-export const SourceControlRepositoryVisibility = Schema.Literals(["private", "public"]);
+export const SourceControlRepositoryVisibility = Schema.Literals(["private", "public", "internal"]);
 export type SourceControlRepositoryVisibility = typeof SourceControlRepositoryVisibility.Type;
 
 export const SourceControlCloneProtocol = Schema.Literals(["auto", "ssh", "https"]);
@@ -97,6 +98,8 @@ export const SourceControlPublishRepositoryInput = Schema.Struct({
   provider: SourceControlProviderKind,
   repository: TrimmedNonEmptyString,
   visibility: SourceControlRepositoryVisibility,
+  description: Schema.optional(TrimmedNonEmptyString),
+  team: Schema.optional(TrimmedNonEmptyString),
   remoteName: Schema.optional(TrimmedNonEmptyString),
   protocol: Schema.optional(SourceControlCloneProtocol),
 });
@@ -130,6 +133,7 @@ export const SourceControlProviderAuth = Schema.Struct({
   account: Schema.Option(TrimmedNonEmptyString),
   host: Schema.Option(TrimmedNonEmptyString),
   detail: Schema.Option(TrimmedNonEmptyString),
+  preferredProtocol: Schema.optional(SourceControlCloneProtocol),
 });
 export type SourceControlProviderAuth = typeof SourceControlProviderAuth.Type;
 

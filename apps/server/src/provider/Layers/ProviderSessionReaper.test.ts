@@ -199,6 +199,8 @@ describe("ProviderSessionReaper", () => {
 
     const providerService: ProviderServiceShape = {
       startSession: () => unsupported(),
+      listExternalThreads: () => unsupported(),
+      readExternalThread: () => unsupported(),
       sendTurn: () => unsupported(),
       steerTurn: () => unsupported(),
       startReview: () => unsupported(),

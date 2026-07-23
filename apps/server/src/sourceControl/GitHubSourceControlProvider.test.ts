@@ -252,6 +252,7 @@ it("accepts active authenticated GitHub accounts when another account fails", ()
               active: true,
               host: "github.com",
               login: "active-user",
+              gitProtocol: "https",
             },
           ],
         },
@@ -264,11 +265,13 @@ it("accepts active authenticated GitHub accounts when another account fails", ()
       status: auth.status,
       account: auth.account,
       host: auth.host,
+      preferredProtocol: auth.preferredProtocol,
     },
     {
       status: "authenticated",
       account: Option.some("active-user"),
       host: Option.some("github.com"),
+      preferredProtocol: "https",
     },
   );
 });
@@ -326,6 +329,7 @@ it("parses GitHub auth status accounts by host and active state", () => {
               active: true,
               host: "github.com",
               login: "active-user",
+              gitProtocol: "https",
             },
           ],
         },
@@ -340,6 +344,7 @@ it("parses GitHub auth status accounts by host and active state", () => {
           authenticated: false,
           active: false,
           error: "token expired",
+          preferredProtocol: null,
         },
         {
           host: "github.com",
@@ -347,6 +352,7 @@ it("parses GitHub auth status accounts by host and active state", () => {
           authenticated: true,
           active: true,
           error: null,
+          preferredProtocol: "https",
         },
       ],
     },

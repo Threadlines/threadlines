@@ -2,17 +2,18 @@
 
 import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import {
-  DEFAULT_MODEL,
+  DEFAULT_RUNTIME_MODE,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  type ProviderExternalThreadCandidate,
+  type ProviderInstanceId,
   type ProjectId,
-  ProviderInstanceId,
   type SourceControlDiscoveryResult,
   type SourceControlProviderKind,
   type SourceControlRepositoryInfo,
 } from "@threadlines/contracts";
 import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@threadlines/shared/git";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -48,6 +49,7 @@ import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../en
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
+  requireEnvironmentConnection,
 } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
@@ -80,7 +82,14 @@ import {
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { getLatestThreadForProject } from "../lib/threadSort";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
-import { cn, isMacPlatform, isWindowsPlatform, newCommandId, newProjectId } from "../lib/utils";
+import {
+  cn,
+  isMacPlatform,
+  isWindowsPlatform,
+  newCommandId,
+  newProjectId,
+  newThreadId,
+} from "../lib/utils";
 import {
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -111,7 +120,10 @@ import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
-import { useServerKeybindings } from "../rpc/serverState";
+import { useServerKeybindings, useServerProviders } from "../rpc/serverState";
+import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import { deriveProviderInstanceEntries } from "../providerInstances";
+import { formatRelativeTimeLabel } from "../timestampFormat";
 import { resolveShortcutCommand } from "../keybindings";
 import {
   Command,
@@ -133,7 +145,31 @@ const BROWSE_STALE_TIME_MS = 30_000;
 const GITHUB_REPOSITORY_LIST_LIMIT = 100;
 const GITHUB_REPOSITORY_LIST_STALE_TIME_MS = 60_000;
 const THREAD_CONTENT_SEARCH_DEBOUNCE_MS = 180;
+const EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS = 180;
 const EMPTY_THREAD_CONTENT_MATCHES = [] as const;
+
+interface CodexSessionBrowserFlow {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly projectName: string;
+  readonly cwd: string;
+  readonly providerInstanceId: ProviderInstanceId;
+}
+
+function externalSessionSourceLabel(source: ProviderExternalThreadCandidate["source"]): string {
+  switch (source) {
+    case "cli":
+      return "Codex CLI";
+    case "vscode":
+      return "Codex app / IDE";
+    case "exec":
+      return "Codex exec";
+    case "appServer":
+      return "Codex app";
+    case "unknown":
+      return "Codex";
+  }
+}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -449,7 +485,10 @@ function OpenCommandPaletteDialog() {
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
+  const [codexSessionFlow, setCodexSessionFlow] = useState<CodexSessionBrowserFlow | null>(null);
+  const [importingProviderThreadId, setImportingProviderThreadId] = useState<string | null>(null);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryServerProviders = useServerProviders();
   const primaryEnvironmentLabel = readPrimaryEnvironmentDescriptor()?.label ?? null;
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
@@ -539,10 +578,6 @@ function OpenCommandPaletteDialog() {
     [primaryEnvironmentId, savedEnvironmentRuntimeById, settings],
   );
 
-  const projectCwdById = useMemo(
-    () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.cwd])),
-    [projects],
-  );
   const projectTitleById = useMemo(
     () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.name])),
     [projects],
@@ -579,9 +614,49 @@ function OpenCommandPaletteDialog() {
   const currentProjectEnvironmentId =
     activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
-  const currentProjectCwd = currentProjectId
-    ? (projectCwdById.get(currentProjectId) ?? null)
-    : null;
+  const currentProject =
+    currentProjectId && currentProjectEnvironmentId
+      ? (projects.find(
+          (project) =>
+            project.id === currentProjectId &&
+            project.environmentId === currentProjectEnvironmentId,
+        ) ?? null)
+      : null;
+  const currentProjectCwd = currentProject?.cwd ?? null;
+  const currentEnvironmentProviders = useMemo(
+    () =>
+      currentProjectEnvironmentId && currentProjectEnvironmentId === primaryEnvironmentId
+        ? primaryServerProviders
+        : currentProjectEnvironmentId
+          ? (savedEnvironmentRuntimeById[currentProjectEnvironmentId]?.serverConfig?.providers ??
+            [])
+          : [],
+    [
+      currentProjectEnvironmentId,
+      primaryEnvironmentId,
+      primaryServerProviders,
+      savedEnvironmentRuntimeById,
+    ],
+  );
+  const currentEnvironmentServerSettings =
+    currentProjectEnvironmentId && currentProjectEnvironmentId !== primaryEnvironmentId
+      ? savedEnvironmentRuntimeById[currentProjectEnvironmentId]?.serverConfig?.settings
+      : null;
+  const currentEnvironmentSettings = currentEnvironmentServerSettings
+    ? { ...settings, ...currentEnvironmentServerSettings }
+    : settings;
+  const availableCodexInstances = useMemo(
+    () =>
+      deriveProviderInstanceEntries(currentEnvironmentProviders).filter(
+        (entry) =>
+          entry.driverKind === "codex" &&
+          entry.enabled &&
+          entry.installed &&
+          entry.isAvailable &&
+          entry.models.length > 0,
+      ),
+    [currentEnvironmentProviders],
+  );
   const currentProjectCwdForBrowse =
     browseEnvironmentId && currentProjectEnvironmentId === browseEnvironmentId
       ? currentProjectCwd
@@ -591,6 +666,39 @@ function OpenCommandPaletteDialog() {
   const browseDirectoryPath = isBrowsing ? getBrowseDirectoryPath(query) : "";
   const browseFilterQuery =
     isBrowsing && !hasTrailingPathSeparator(query) ? getBrowseLeafPathSegment(query) : "";
+  const [externalSessionSearchQuery] = useDebouncedValue(
+    codexSessionFlow ? deferredQuery : "",
+    { wait: EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS },
+    (debouncerState) => ({ isPending: debouncerState.isPending }),
+  );
+  const externalSessionsQuery = useInfiniteQuery({
+    queryKey: [
+      "externalCodexSessions",
+      codexSessionFlow?.environmentId,
+      codexSessionFlow?.providerInstanceId,
+      codexSessionFlow?.cwd,
+      externalSessionSearchQuery.trim(),
+    ],
+    queryFn: async ({ pageParam }) => {
+      if (!codexSessionFlow) {
+        return { data: [] };
+      }
+      return requireEnvironmentConnection(
+        codexSessionFlow.environmentId,
+      ).client.server.listExternalProviderThreads({
+        providerInstanceId: codexSessionFlow.providerInstanceId,
+        cwd: codexSessionFlow.cwd,
+        limit: 20,
+        ...(typeof pageParam === "string" ? { cursor: pageParam } : {}),
+        ...(externalSessionSearchQuery.trim().length > 0
+          ? { searchTerm: externalSessionSearchQuery.trim() }
+          : {}),
+      });
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    enabled: codexSessionFlow !== null,
+  });
 
   const fetchBrowseResult = useCallback(
     async (partialPath: string): Promise<FilesystemBrowseResult | null> => {
@@ -891,8 +999,57 @@ function OpenCommandPaletteDialog() {
     });
   }
 
+  function startCodexSessionBrowser(instance: (typeof availableCodexInstances)[number]): void {
+    if (!currentProject || currentProject.kind !== "workspace") {
+      return;
+    }
+    setCodexSessionFlow({
+      environmentId: currentProject.environmentId,
+      projectId: currentProject.id,
+      projectName: currentProject.name,
+      cwd: currentProject.cwd,
+      providerInstanceId: instance.instanceId,
+    });
+    pushPaletteView({
+      addonIcon: <MessagesSquareIcon className={ADDON_ICON_CLASS} />,
+      groups: [],
+      inputPlaceholder: `Search other Codex conversations in ${currentProject.name}...`,
+    });
+  }
+
+  function openCodexSessionBrowser(): void {
+    if (availableCodexInstances.length === 1) {
+      startCodexSessionBrowser(availableCodexInstances[0]!);
+      return;
+    }
+    pushPaletteView({
+      addonIcon: <MessagesSquareIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "codex-accounts",
+          label: "Codex accounts",
+          items: availableCodexInstances.map((instance) => ({
+            kind: "action" as const,
+            value: `external-codex-account:${instance.instanceId}`,
+            searchTerms: [instance.displayName, instance.instanceId, "codex", "account"],
+            title: instance.displayName,
+            description: "Sessions stored by this Codex account",
+            icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+            keepOpen: true,
+            run: async () => {
+              startCodexSessionBrowser(instance);
+            },
+          })),
+        },
+      ],
+      inputPlaceholder: "Choose a Codex account...",
+    });
+  }
+
   function popView(): void {
     setAddProjectCloneFlow(null);
+    setCodexSessionFlow(null);
+    setImportingProviderThreadId(null);
     if (viewStack.length <= 1) {
       setAddProjectEnvironmentId(null);
     }
@@ -1194,12 +1351,133 @@ function OpenCommandPaletteDialog() {
     threads,
   ]);
 
+  const importExternalCodexSession = useCallback(
+    async (candidate: ProviderExternalThreadCandidate): Promise<void> => {
+      if (!codexSessionFlow || importingProviderThreadId !== null) {
+        return;
+      }
+      const model = resolveAppModelSelectionForInstance(
+        codexSessionFlow.providerInstanceId,
+        currentEnvironmentSettings,
+        currentEnvironmentProviders,
+        null,
+      );
+      if (!model) {
+        throw new Error("No usable model is available for this Codex account.");
+      }
+
+      setImportingProviderThreadId(candidate.providerThreadId);
+      try {
+        const connection = requireEnvironmentConnection(codexSessionFlow.environmentId);
+        const result = await connection.client.server.importExternalProviderThread({
+          providerInstanceId: codexSessionFlow.providerInstanceId,
+          providerThreadId: candidate.providerThreadId,
+          projectId: codexSessionFlow.projectId,
+          threadId: newThreadId(),
+          modelSelection: {
+            instanceId: codexSessionFlow.providerInstanceId,
+            model,
+          },
+          runtimeMode:
+            activeThread?.runtimeMode ?? activeDraftThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        });
+        setOpen(false);
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(
+            scopeThreadRef(codexSessionFlow.environmentId, result.threadId),
+          ),
+        });
+      } finally {
+        setImportingProviderThreadId(null);
+      }
+    },
+    [
+      activeDraftThread?.runtimeMode,
+      activeThread?.runtimeMode,
+      codexSessionFlow,
+      currentEnvironmentProviders,
+      currentEnvironmentSettings,
+      importingProviderThreadId,
+      navigate,
+      setOpen,
+    ],
+  );
+
+  const externalCodexSessionGroups = useMemo<CommandPaletteView["groups"]>(() => {
+    if (!codexSessionFlow) {
+      return [];
+    }
+    const candidates = externalSessionsQuery.data?.pages.flatMap((page) => page.data) ?? [];
+    const items: CommandPaletteActionItem[] = candidates.map((candidate) => {
+      const title =
+        candidate.name?.trim() ||
+        candidate.preview.trim().split(/\r?\n/, 1)[0] ||
+        "Untitled Codex session";
+      const source = externalSessionSourceLabel(candidate.source);
+      const isImporting = importingProviderThreadId === candidate.providerThreadId;
+      return {
+        kind: "action",
+        value: `external-codex-session:${candidate.providerThreadId}`,
+        searchTerms: [title, candidate.preview, source, candidate.cliVersion],
+        title,
+        description: candidate.unavailableReason ?? `${source} · ${candidate.preview}`,
+        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        timestamp: formatRelativeTimeLabel(candidate.updatedAt),
+        disabled: !candidate.canImport || importingProviderThreadId !== null,
+        ...(isImporting
+          ? {
+              titleTrailingContent: (
+                <span className="ml-auto text-[10px] text-muted-foreground">Importing…</span>
+              ),
+            }
+          : {}),
+        keepOpen: true,
+        run: async () => {
+          await importExternalCodexSession(candidate);
+        },
+      };
+    });
+
+    if (externalSessionsQuery.hasNextPage) {
+      items.push({
+        kind: "action",
+        value: "external-codex-session:load-more",
+        searchTerms: ["load more", "older", "sessions"],
+        title: externalSessionsQuery.isFetchingNextPage ? "Loading more…" : "Load more sessions",
+        description: "Fetch the next 20 conversations",
+        icon: <ArrowDownIcon className={ITEM_ICON_CLASS} />,
+        disabled: externalSessionsQuery.isFetchingNextPage || importingProviderThreadId !== null,
+        keepOpen: true,
+        run: async () => {
+          await externalSessionsQuery.fetchNextPage();
+        },
+      });
+    }
+
+    return items.length > 0
+      ? [
+          {
+            value: "external-codex-sessions",
+            label: `Other Codex conversations in ${codexSessionFlow.projectName}`,
+            items,
+          },
+        ]
+      : [];
+  }, [
+    codexSessionFlow,
+    externalSessionsQuery.data?.pages,
+    externalSessionsQuery.fetchNextPage,
+    externalSessionsQuery.hasNextPage,
+    externalSessionsQuery.isFetchingNextPage,
+    importExternalCodexSession,
+    importingProviderThreadId,
+  ]);
+
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
   if (projects.length > 0) {
-    const activeProjectTitle = currentProjectId
-      ? (projectTitleById.get(currentProjectId) ?? null)
-      : null;
+    const activeProjectTitle = currentProject?.name ?? null;
 
     if (activeProjectTitle) {
       actionItems.push({
@@ -1223,6 +1501,25 @@ function OpenCommandPaletteDialog() {
           });
         },
       });
+
+      if (
+        currentProject?.kind === "workspace" &&
+        currentProjectCwd &&
+        availableCodexInstances.length > 0
+      ) {
+        actionItems.push({
+          kind: "action",
+          value: "action:open-codex-session",
+          searchTerms: ["open", "import", "codex", "session", "chat", "conversation"],
+          title: "Bring in Codex conversation…",
+          description: "Continue work from Codex app, CLI, or IDE",
+          icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+          keepOpen: true,
+          run: async () => {
+            openCodexSessionBrowser();
+          },
+        });
+      }
     }
 
     actionItems.push({
@@ -1375,10 +1672,9 @@ function OpenCommandPaletteDialog() {
           title: inferProjectTitleFromPath(cwd),
           workspaceRoot: cwd,
           createWorkspaceRootIfMissing: true,
-          defaultModelSelection: {
-            instanceId: ProviderInstanceId.make("codex"),
-            model: DEFAULT_MODEL,
-          },
+          // Keep newly added projects on the provider's live default until
+          // the user explicitly chooses a project/thread model.
+          defaultModelSelection: null,
           createdAt: new Date().toISOString(),
         });
         await handleNewThread(scopeProjectRef(browseEnvironmentId, projectId), {
@@ -1663,7 +1959,9 @@ function OpenCommandPaletteDialog() {
   }, [addProjectCloneFlow]);
 
   let displayedGroups: CommandPaletteView["groups"] = filteredGroups;
-  if (addProjectCloneFlow?.step === "repository") {
+  if (codexSessionFlow) {
+    displayedGroups = externalCodexSessionGroups;
+  } else if (addProjectCloneFlow?.step === "repository") {
     displayedGroups = isGitHubRepositorySelectionStep
       ? filteredGitHubRepositorySuggestionGroups
       : [];
@@ -1877,7 +2175,7 @@ function OpenCommandPaletteDialog() {
       }}
     >
       <Command
-        key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${addProjectCloneFlow?.step ?? "none"}`}
+        key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${addProjectCloneFlow?.step ?? "none"}-${codexSessionFlow?.providerInstanceId ?? "no-codex-browser"}`}
         aria-label="Command palette"
         autoHighlight={isBrowsing || isRemoteProjectCloneFlow ? false : "always"}
         mode="none"
@@ -2004,22 +2302,32 @@ function OpenCommandPaletteDialog() {
             keybindings={keybindings}
             query={deferredQuery}
             onExecuteItem={executeItem}
-            {...(addProjectCloneFlow?.step === "repository"
+            {...(codexSessionFlow
               ? {
-                  emptyStateMessage:
-                    remoteProjectRepositoryEmptyStateMessage ??
-                    "Enter a repository path and press Enter to look it up.",
+                  emptyStateMessage: externalSessionsQuery.isPending
+                    ? "Loading other Codex conversations…"
+                    : externalSessionsQuery.isError
+                      ? `Could not load Codex conversations: ${errorMessage(externalSessionsQuery.error)}`
+                      : deferredQuery.trim().length > 0
+                        ? "No matching external Codex conversations in this project."
+                        : "No other Codex conversations were found. Conversations already in Threadlines are hidden.",
                 }
-              : addProjectCloneFlow?.step === "confirm"
-                ? { emptyStateMessage: "Choose a destination path and press Enter to clone." }
-                : relativePathNeedsActiveProject
-                  ? { emptyStateMessage: "Relative paths require an active project." }
-                  : willCreateProjectPath
-                    ? {
-                        emptyStateMessage:
-                          "Press Enter to create this folder and add it as a project.",
-                      }
-                    : {})}
+              : addProjectCloneFlow?.step === "repository"
+                ? {
+                    emptyStateMessage:
+                      remoteProjectRepositoryEmptyStateMessage ??
+                      "Enter a repository path and press Enter to look it up.",
+                  }
+                : addProjectCloneFlow?.step === "confirm"
+                  ? { emptyStateMessage: "Choose a destination path and press Enter to clone." }
+                  : relativePathNeedsActiveProject
+                    ? { emptyStateMessage: "Relative paths require an active project." }
+                    : willCreateProjectPath
+                      ? {
+                          emptyStateMessage:
+                            "Press Enter to create this folder and add it as a project.",
+                        }
+                      : {})}
           />
         </CommandPanel>
         <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">

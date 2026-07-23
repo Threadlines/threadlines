@@ -127,8 +127,8 @@ export function SettingsPageContainer({
   className?: string;
 }) {
   return (
-    <div className="flex-1 overflow-y-auto p-6 sm:p-8">
-      <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-8", className)}>
+    <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+      <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-6 sm:gap-8", className)}>
         {children}
       </div>
     </div>

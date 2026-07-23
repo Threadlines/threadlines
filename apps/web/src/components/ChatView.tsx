@@ -1,5 +1,6 @@
 import {
   type ApprovalRequestId,
+  type ChatSkillReference,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
@@ -48,7 +49,7 @@ import {
   closeRightPanelSearchParams,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
-  preserveRightPanelSearchParamsForNavigation,
+  preserveRightPanelSearchParamsForDraftNavigation,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import {
@@ -162,6 +163,7 @@ import {
 } from "../composerDraftStore";
 import {
   appendTerminalContextsToPrompt,
+  deriveDisplayedUserMessageState,
   formatTerminalContextLabel,
   type TerminalContextDraft,
   type TerminalContextSelection,
@@ -188,6 +190,7 @@ import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
+import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
@@ -482,6 +485,9 @@ type ForkThreadDialogState = {
   readonly sourceMessageText: string;
   readonly sourceAttachmentCount: number;
   readonly instruction: string;
+  readonly preservedInstructionSuffix: string;
+  readonly replacementAttachments: ReadonlyArray<ChatAttachment>;
+  readonly replacementSkills: ReadonlyArray<ChatSkillReference>;
   readonly modelSelection: ModelSelection;
   /** Present for "Continue in project" from a General Chat. */
   readonly targetProject?: { readonly projectId: ProjectId; readonly name: string };
@@ -521,6 +527,7 @@ function ForkThreadDialog(props: {
   }
 
   const sourceRoleLabel = roleLabelForForkSource(state.sourceMessageRole);
+  const editsUserPrompt = state.sourceMessageRole === "user" && !state.targetProject;
   const instruction = state.instruction.trim();
   const sourceText =
     state.sourceMessageText.length > 0 ? state.sourceMessageText : "No text in the source message.";
@@ -532,12 +539,16 @@ function ForkThreadDialog(props: {
           <AlertDialogTitle>
             {state.targetProject
               ? `Continue in ${state.targetProject.name}?`
-              : "Continue in a new thread?"}
+              : editsUserPrompt
+                ? "Edit this prompt in a new thread?"
+                : "Continue in a new thread?"}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {state.targetProject
               ? `This starts a new thread in ${state.targetProject.name} immediately, seeded with a context snapshot of this chat up to the selected message. This chat stays unchanged.`
-              : "This starts a separate thread immediately. It uses your current files, does not checkout or revert the worktree, and carries a server-built context snapshot up to the selected message."}
+              : editsUserPrompt
+                ? "This branches immediately before the selected prompt and sends your edited version. The original thread and current files stay unchanged."
+                : "This starts a separate thread immediately. It uses your current files, does not checkout or revert the worktree, and carries a server-built context snapshot up to the selected message."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-5">
@@ -559,14 +570,16 @@ function ForkThreadDialog(props: {
             <p>
               <span className="font-medium text-foreground/80">Images:</span>{" "}
               {state.sourceAttachmentCount > 0
-                ? "copied only if carried in context"
+                ? editsUserPrompt
+                  ? "preserved with edited prompt"
+                  : "copied only if carried in context"
                 : "none on source message"}
             </p>
           </div>
 
           <label className="block">
             <span className="mb-1.5 block text-xs font-medium text-muted-foreground">
-              First message
+              {editsUserPrompt ? "Edited prompt" : "First message"}
             </span>
             <Textarea
               value={state.instruction}
@@ -600,7 +613,7 @@ function ForkThreadDialog(props: {
             Cancel
           </AlertDialogClose>
           <Button disabled={props.disabled || instruction.length === 0} onClick={props.onConfirm}>
-            {state.targetProject ? "Continue in project" : "Start fork"}
+            {state.targetProject ? "Continue in project" : "Start branch"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -1257,11 +1270,6 @@ export default function ChatView(props: ChatViewProps) {
   // open and pressing it closes the whole panel.
   const diffPanelOpen = rawSearch.diff === "1";
   const rightPanelEngaged = sourceControlOpen || diffPanelOpen;
-  const preserveRightPanelSearchForDraftNavigation = useCallback(
-    (previous: Record<string, unknown>) =>
-      preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
-    [sourceControlOpen],
-  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1311,6 +1319,23 @@ export default function ChatView(props: ChatViewProps) {
   // General Chat threads run in a hidden scratch workspace: source-control,
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
+  const draftTimelineEmptyState = useMemo(
+    () =>
+      isLocalDraftThread && draftThread ? (
+        <DraftEmptyState
+          currentProjectRef={scopeProjectRef(draftThread.environmentId, draftThread.projectId)}
+          currentProjectName={activeProject?.name ?? null}
+          isGeneralChat={isGeneralChatThread}
+        />
+      ) : undefined,
+    [
+      activeProject?.name,
+      draftThread?.environmentId,
+      draftThread?.projectId,
+      isGeneralChatThread,
+      isLocalDraftThread,
+    ],
+  );
 
   const shouldRetainThreadDetailSubscription = routeKind === "server" || serverThread !== undefined;
   useEffect(() => {
@@ -1491,7 +1516,7 @@ export default function ChatView(props: ChatViewProps) {
           await navigate({
             to: "/draft/$draftId",
             params: buildDraftThreadRouteParams(storedDraftSession.draftId),
-            search: preserveRightPanelSearchForDraftNavigation,
+            search: preserveRightPanelSearchParamsForDraftNavigation,
           });
         }
         return storedDraftSession.threadId;
@@ -1526,7 +1551,7 @@ export default function ChatView(props: ChatViewProps) {
       await navigate({
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(nextDraftId),
-        search: preserveRightPanelSearchForDraftNavigation,
+        search: preserveRightPanelSearchParamsForDraftNavigation,
       });
       return nextThreadId;
     },
@@ -1537,7 +1562,6 @@ export default function ChatView(props: ChatViewProps) {
       getDraftSessionByLogicalProjectKey,
       isServerThread,
       navigate,
-      preserveRightPanelSearchForDraftNavigation,
       projectGroupingSettings,
       routeKind,
       setDraftThreadContext,
@@ -3752,9 +3776,13 @@ export default function ChatView(props: ChatViewProps) {
     setIsRevertingCheckpoint(false);
   }, [activeThread?.id]);
 
+  // Pristine drafts (the home surface) open without stealing focus; the
+  // composer takes focus once a conversation exists or via an explicit action.
+  const skipEntryComposerFocus = isLocalDraftThread && (activeThread?.messages.length ?? 0) === 0;
   useEffect(() => {
     if (
       !activeThread?.id ||
+      skipEntryComposerFocus ||
       timelineSearchTargetRef.current ||
       terminalState.terminalOpen ||
       isCoarsePointer
@@ -3767,7 +3795,13 @@ export default function ChatView(props: ChatViewProps) {
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, isCoarsePointer, terminalState.terminalOpen]);
+  }, [
+    activeThread?.id,
+    focusComposer,
+    isCoarsePointer,
+    skipEntryComposerFocus,
+    terminalState.terminalOpen,
+  ]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -5296,12 +5330,24 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      const editsUserPrompt = selectedMessage.role === "user";
+      const displayedUserMessage = editsUserPrompt
+        ? deriveDisplayedUserMessageState(selectedMessage.text)
+        : null;
+      const editableInstruction =
+        displayedUserMessage?.visibleText ?? DEFAULT_FORK_THREAD_INSTRUCTION;
+
       setForkDialogState({
         sourceMessageId: selectedMessage.id,
         sourceMessageRole: selectedMessage.role,
         sourceMessageText: buildForkSourceExcerpt(selectedMessage),
         sourceAttachmentCount: selectedMessage.attachments?.length ?? 0,
-        instruction: DEFAULT_FORK_THREAD_INSTRUCTION,
+        instruction: editableInstruction,
+        preservedInstructionSuffix: editsUserPrompt
+          ? selectedMessage.text.slice(editableInstruction.length)
+          : "",
+        replacementAttachments: editsUserPrompt ? (selectedMessage.attachments ?? []) : [],
+        replacementSkills: editsUserPrompt ? (selectedMessage.skills ?? []) : [],
         modelSelection: resolveInitialForkModelSelection(),
       });
     },
@@ -5367,6 +5413,9 @@ export default function ChatView(props: ChatViewProps) {
           sourceMessageText: buildForkSourceExcerpt(lastMessage),
           sourceAttachmentCount: lastMessage.attachments?.length ?? 0,
           instruction: DEFAULT_CONTINUE_IN_PROJECT_INSTRUCTION,
+          preservedInstructionSuffix: "",
+          replacementAttachments: [],
+          replacementSkills: [],
           modelSelection: resolveInitialForkModelSelection(),
           targetProject: { projectId: targetProject.id, name: targetProject.name },
         });
@@ -5414,8 +5463,9 @@ export default function ChatView(props: ChatViewProps) {
     ) {
       return;
     }
-    const instruction = formatOutgoingPrompt(state.instruction);
-    if (instruction.length === 0) {
+    const visibleInstruction = formatOutgoingPrompt(state.instruction);
+    const instruction = `${visibleInstruction}${state.preservedInstructionSuffix}`;
+    if (visibleInstruction.length === 0) {
       return;
     }
     if (!activeThread.messages.some((message) => message.id === state.sourceMessageId)) {
@@ -5446,6 +5496,10 @@ export default function ChatView(props: ChatViewProps) {
           messageId: newMessageId(),
           role: "user",
           text: instruction,
+          ...(state.replacementAttachments.length > 0
+            ? { attachments: [...state.replacementAttachments] }
+            : {}),
+          ...(state.replacementSkills.length > 0 ? { skills: [...state.replacementSkills] } : {}),
         },
         modelSelection: state.modelSelection,
         runtimeMode,
@@ -5917,6 +5971,7 @@ export default function ChatView(props: ChatViewProps) {
       >
         <ChatHeader
           activeThreadEnvironmentId={activeThread.environmentId}
+          activeThreadId={activeThread.id}
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
           isGitRepo={isGitRepo}
@@ -6025,6 +6080,7 @@ export default function ChatView(props: ChatViewProps) {
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
+              emptyState={draftTimelineEmptyState}
               isWorking={isWorking}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
@@ -6131,7 +6187,12 @@ export default function ChatView(props: ChatViewProps) {
                   lockedProvider={null}
                   providerStatuses={providerStatuses as ServerProvider[]}
                   activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
-                  activeThreadModelSelection={activeThread?.modelSelection}
+                  // A local draft has not chosen a concrete model yet. Ignore
+                  // its placeholder Thread value so the composer can resolve
+                  // the active provider instance's live `isDefault` model.
+                  activeThreadModelSelection={
+                    isLocalDraftThread ? null : activeThread?.modelSelection
+                  }
                   activeThreadActivities={activeThread?.activities}
                   resolvedTheme={resolvedTheme}
                   settings={settings}

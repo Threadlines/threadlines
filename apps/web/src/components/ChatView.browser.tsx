@@ -2456,7 +2456,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("defaults source control open from wide draft thread routes before first send", async () => {
+  it("defaults source control open on wide draft thread routes before first send", async () => {
     const draftId = DraftId.make("draft-source-control-before-start");
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2494,6 +2494,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find source control toggle.",
       );
       expect(sourceControlToggle.disabled).toBe(false);
+      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(true);
+      expect(document.body.textContent).not.toContain("Explain this codebase");
+      expect(document.body.textContent).not.toContain("Review my uncommitted changes");
+      expect(document.body.textContent).not.toContain("Fix a bug");
       await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
 
       sourceControlToggle.click();
@@ -2501,11 +2505,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
-          expect(
-            Array.from(document.querySelectorAll("h2")).some(
-              (heading) => heading.textContent?.trim() === "Source Control",
-            ),
-          ).toBe(false);
+          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
+          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -3541,6 +3542,94 @@ describe("ChatView timeline estimator parity (full app)", () => {
             request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("uses the live Codex default when bootstrapping an unpinned local draft", async () => {
+    setDraftThreadWithoutWorktree();
+    const snapshot = createDraftOnlySnapshot();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        projects: snapshot.projects.map((project) => ({
+          ...project,
+          defaultModelSelection: null,
+        })),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...nextFixture.serverConfig.providers[0]!,
+              models: [
+                {
+                  slug: "gpt-5.5",
+                  name: "GPT-5.5",
+                  isCustom: false,
+                  capabilities: createModelCapabilities({ optionDescriptors: [] }),
+                },
+                {
+                  slug: "gpt-5.6-sol",
+                  name: "GPT-5.6 Sol",
+                  isCustom: false,
+                  isDefault: true,
+                  capabilities: createModelCapabilities({ optionDescriptors: [] }),
+                },
+              ],
+            },
+          ],
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Use the provider default");
+      await waitForLayout();
+
+      const sendButton = await waitForSendButton();
+      expect(sendButton.disabled).toBe(false);
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const turnStartRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.turn.start",
+          ) as
+            | {
+                modelSelection?: { instanceId?: string; model?: string };
+                bootstrap?: {
+                  createThread?: {
+                    modelSelection?: { instanceId?: string; model?: string };
+                  };
+                };
+              }
+            | undefined;
+
+          expect(turnStartRequest?.modelSelection).toMatchObject({
+            instanceId: "codex",
+            model: "gpt-5.6-sol",
+          });
+          expect(turnStartRequest?.bootstrap?.createThread?.modelSelection).toMatchObject({
+            instanceId: "codex",
+            model: "gpt-5.6-sol",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }
@@ -5849,6 +5938,109 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("opens a project-scoped Codex session browser and imports the selected conversation", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-external-codex-session" as MessageId,
+        targetText: "external Codex session",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...nextFixture.serverConfig.providers[0]!,
+              models: [
+                {
+                  slug: "gpt-5.6-sol",
+                  name: "GPT-5.6 Sol",
+                  isCustom: false,
+                  isDefault: true,
+                  capabilities: createModelCapabilities({ optionDescriptors: [] }),
+                },
+              ],
+            },
+          ],
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.serverListExternalProviderThreads) {
+          return {
+            data: [
+              {
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                providerThreadId: "native-codex-thread",
+                sessionId: "native-codex-session",
+                source: "cli",
+                name: "Finish parser migration",
+                preview: "Finish the parser migration and verify its tests",
+                cwd: "/repo/project",
+                cliVersion: "0.145.0",
+                createdAt: "2026-03-01T12:00:00.000Z",
+                updatedAt: "2026-03-03T12:00:00.000Z",
+                status: "idle",
+                canImport: true,
+              },
+            ],
+          };
+        }
+        if (body._tag === WS_METHODS.serverImportExternalProviderThread) {
+          return {
+            threadId: (body as unknown as { readonly threadId: ThreadId }).threadId,
+            importedMessageCount: 2,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await expect
+        .element(palette.getByText("Bring in Codex conversation…", { exact: true }))
+        .toBeInTheDocument();
+      await palette.getByText("Bring in Codex conversation…", { exact: true }).click();
+      await waitForCommandPaletteInput("Search other Codex conversations in Project...");
+
+      await expect
+        .element(palette.getByText("Finish parser migration", { exact: true }))
+        .toBeInTheDocument();
+      await expect
+        .element(palette.getByText("Codex CLI · Finish the parser migration and verify its tests"))
+        .toBeInTheDocument();
+      await palette.getByText("Finish parser migration", { exact: true }).click();
+
+      await vi.waitFor(
+        () => {
+          const listRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.serverListExternalProviderThreads,
+          );
+          expect(listRequest).toMatchObject({
+            providerInstanceId: "codex",
+            cwd: "/repo/project",
+            limit: 20,
+          });
+          const importRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.serverImportExternalProviderThread,
+          );
+          expect(importRequest).toMatchObject({
+            providerInstanceId: "codex",
+            providerThreadId: "native-codex-thread",
+            projectId: PROJECT_ID,
+            modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+            runtimeMode: "full-access",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("highlights quoted phrase matches in titles and messages and jumps to the message", async () => {
     const matchedThreadTitle = "Release codename deltafrogs thread";
     const searchQuery = `"release codename"`;
@@ -7989,6 +8181,126 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(tooltip?.textContent).toContain("Open pages, click around, and inspect web apps.");
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("edits a user prompt into a new branch while preserving its attachments and skills", async () => {
+    const sourceMessageId = "msg-user-edit-and-branch" as MessageId;
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: sourceMessageId,
+      targetText: "Original prompt for branching.",
+      targetAttachmentCount: 1,
+    });
+    const sourceMessage = baseSnapshot.threads[0]?.messages.find(
+      (message) => message.id === sourceMessageId,
+    );
+    if (!sourceMessage) {
+      throw new Error("Expected source message fixture.");
+    }
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              messages: [
+                {
+                  ...sourceMessage,
+                  skills: [
+                    {
+                      name: "review",
+                      path: "/Users/test/.codex/skills/review/SKILL.md",
+                    },
+                  ],
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      resolveRpc: (body) => {
+        if (body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return undefined;
+        }
+        if (body.type === "thread.fork") {
+          const nextThreadId = body.threadId as ThreadId;
+          fixture.snapshot = addThreadToSnapshot(fixture.snapshot, nextThreadId);
+          queueMicrotask(() => sendShellThreadUpsert(nextThreadId));
+        }
+        return { sequence: fixture.snapshot.snapshotSequence + 1 };
+      },
+    });
+
+    try {
+      const sourceMessageText = page.getByText("Original prompt for branching.", { exact: true });
+      await sourceMessageText.hover();
+      const sourceMessageRow = sourceMessageText
+        .element()
+        .closest<HTMLElement>(`[data-message-id="${sourceMessageId}"]`);
+      const editAndBranchButton = sourceMessageRow?.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit and branch"]',
+      );
+      expect(editAndBranchButton).not.toBeNull();
+      await page.elementLocator(editAndBranchButton!).click();
+      await expect
+        .element(page.getByText("Edit this prompt in a new thread?", { exact: true }))
+        .toBeInTheDocument();
+
+      const editTextarea = await waitForElement(
+        () => document.querySelector<HTMLTextAreaElement>('[role="alertdialog"] textarea'),
+        "Edit-and-branch prompt textarea did not render.",
+      );
+      await page.elementLocator(editTextarea).fill("Edited prompt for the branch.");
+      await page.getByRole("button", { name: "Start branch" }).click();
+
+      let forkRequest: NormalizedWsRpcRequestBody | undefined;
+      await vi.waitFor(
+        () => {
+          forkRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.fork",
+          );
+          expect(forkRequest).toBeDefined();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(forkRequest).toMatchObject({
+        type: "thread.fork",
+        sourceThreadId: THREAD_ID,
+        sourceMessageId,
+        message: {
+          role: "user",
+          text: "Edited prompt for the branch.",
+          attachments: [
+            {
+              id: "attachment-1",
+              name: "attachment-1.png",
+              mimeType: "image/png",
+            },
+          ],
+          skills: [
+            {
+              name: "review",
+              path: "/Users/test/.codex/skills/review/SKILL.md",
+            },
+          ],
+        },
+      });
+
+      const nextThreadId = forkRequest?.threadId as ThreadId;
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(nextThreadId),
+        "Edit-and-branch should navigate to the new server thread.",
       );
     } finally {
       await mounted.cleanup();

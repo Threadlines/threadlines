@@ -36,6 +36,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import type * as CodexClient from "effect-codex-app-server/client";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
@@ -57,6 +58,133 @@ import {
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+
+it.effect("discovers compatible root Codex conversations without exposing subagents", () => {
+  const requests: Array<{ readonly method: string; readonly payload: unknown }> = [];
+  const listedThread = (id: string, source: unknown, parentThreadId?: string) => ({
+    id,
+    sessionId: `session-${id}`,
+    source,
+    name: id === "root-readable" ? "Readable session" : null,
+    preview: `Preview for ${id}`,
+    cwd: "/tmp/project",
+    cliVersion: "0.145.0",
+    modelProvider: "openai",
+    createdAt: 1_760_000_000,
+    updatedAt: 1_760_000_100,
+    recencyAt: 1_760_000_200,
+    ephemeral: false,
+    status: { type: "idle" },
+    turns: [],
+    ...(parentThreadId ? { parentThreadId } : {}),
+  });
+  const readableThread = {
+    ...listedThread("root-readable", "cli"),
+    turns: [
+      {
+        id: "turn-1",
+        startedAt: 1_760_000_010,
+        status: "completed",
+        items: [
+          { id: "item-user", type: "userMessage", content: [{ type: "text", text: "Hello" }] },
+          { id: "item-assistant", type: "agentMessage", text: "Hi there" },
+        ],
+      },
+    ],
+  };
+  const request = ((method: string, payload: unknown) => {
+    requests.push({ method, payload });
+    switch (method) {
+      case "initialize":
+        return Effect.succeed({ userAgent: "codex_cli_rs/0.145.0" });
+      case "thread/list":
+        return Effect.succeed({
+          data: [
+            listedThread("root-readable", "cli"),
+            listedThread("root-paginated", "vscode"),
+            {
+              ...listedThread("threadlines-managed", "appServer"),
+              threadSource: "threadlines",
+            },
+            listedThread(
+              "child-thread",
+              { subAgent: { thread_spawn: { depth: 1, parent_thread_id: "root-readable" } } },
+              "root-readable",
+            ),
+          ],
+          nextCursor: "next-page",
+        });
+      case "thread/read":
+        return (payload as { readonly threadId: string }).threadId === "root-paginated"
+          ? Effect.fail(
+              CodexErrors.CodexAppServerRequestError.internalError(
+                "paginated threads do not support full history reads",
+              ),
+            )
+          : Effect.succeed({ thread: readableThread });
+      default:
+        return Effect.die(new Error(`Unexpected Codex request: ${method}`));
+    }
+  }) as unknown as CodexClient.CodexAppServerClientShape["request"];
+  const client = {
+    request,
+    notify: () => Effect.void,
+  } as unknown as CodexClient.CodexAppServerClientShape;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const adapter = yield* makeCodexAdapter(decodeCodexSettings({}), {
+        makeAppServerClient: () => Effect.succeed(client),
+      });
+      const page = yield* adapter.listExternalThreads!({
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        cwd: "/tmp/project",
+        limit: 20,
+      });
+
+      assert.deepStrictEqual(
+        page.data.map((candidate) => [candidate.providerThreadId, candidate.canImport]),
+        [
+          ["root-readable", true],
+          ["root-paginated", false],
+        ],
+      );
+      assert.match(page.data[1]?.unavailableReason ?? "", /paginated history/i);
+      assert.equal(page.nextCursor, "next-page");
+      assert.equal(
+        requests.some(
+          (entry) =>
+            entry.method === "thread/read" &&
+            (entry.payload as { readonly threadId?: string }).threadId === "threadlines-managed",
+        ),
+        false,
+      );
+      assert.deepStrictEqual(requests.find((entry) => entry.method === "thread/list")?.payload, {
+        cwd: "/tmp/project",
+        limit: 20,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+        sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
+        useStateDbOnly: true,
+      });
+
+      const snapshot = yield* adapter.readExternalThread!({
+        providerThreadId: "root-readable",
+        expectedCwd: "/tmp/project",
+      });
+      assert.deepStrictEqual(
+        snapshot.messages.map((message) => [message.role, message.text]),
+        [
+          ["user", "Hello"],
+          ["assistant", "Hi there"],
+        ],
+      );
+    }),
+  ).pipe(
+    Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Effect.provide(NodeServices.layer),
+  );
+});
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
 class CodexAdapter extends Context.Service<CodexAdapter, CodexAdapterShape>()(

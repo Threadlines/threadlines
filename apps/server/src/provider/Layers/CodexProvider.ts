@@ -684,7 +684,7 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   };
 }
 
-const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function* (input: {
+export const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function* (input: {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly cwd: string;
@@ -717,13 +717,13 @@ const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function*
   );
 });
 
-const initializeCodexAppServerClient = Effect.fn("initializeCodexAppServerClient")(function* (
-  client: CodexClient.CodexAppServerClientShape,
-) {
-  const initialize = yield* client.request("initialize", buildCodexInitializeParams());
-  yield* client.notify("initialized", undefined);
-  return initialize;
-});
+export const initializeCodexAppServerClient = Effect.fn("initializeCodexAppServerClient")(
+  function* (client: CodexClient.CodexAppServerClientShape) {
+    const initialize = yield* client.request("initialize", buildCodexInitializeParams());
+    yield* client.notify("initialized", undefined);
+    return initialize;
+  },
+);
 
 const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
   readonly binaryPath: string;

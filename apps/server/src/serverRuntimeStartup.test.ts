@@ -1,5 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
+import {
+  DEFAULT_MODEL,
+  type OrchestrationCommand,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -186,7 +192,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
 
 it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when missing", () =>
   Effect.gen(function* () {
-    const dispatchCalls = yield* Ref.make<ReadonlyArray<string>>([]);
+    const dispatchCalls = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
     const targets = yield* resolveAutoBootstrapWelcomeTargets.pipe(
       Effect.provideService(ServerConfig, {
         cwd: "/tmp/startup-project",
@@ -210,7 +216,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
       Effect.provideService(OrchestrationEngineService, {
         readEvents: () => Stream.empty,
         dispatch: (command) =>
-          Ref.update(dispatchCalls, (calls) => [...calls, command.type]).pipe(
+          Ref.update(dispatchCalls, (calls) => [...calls, command]).pipe(
             Effect.as({ sequence: 1 }),
           ),
         streamDomainEvents: Stream.empty,
@@ -220,6 +226,19 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
 
     assert.equal(typeof targets.bootstrapProjectId, "string");
     assert.equal(typeof targets.bootstrapThreadId, "string");
-    assert.deepStrictEqual(yield* Ref.get(dispatchCalls), ["project.create", "thread.create"]);
+    const commands = yield* Ref.get(dispatchCalls);
+    assert.deepStrictEqual(
+      commands.map((command) => command.type),
+      ["project.create", "thread.create"],
+    );
+
+    const projectCreate = commands[0];
+    const threadCreate = commands[1];
+    assert.equal(projectCreate?.type, "project.create");
+    assert.equal(threadCreate?.type, "thread.create");
+    if (projectCreate?.type === "project.create" && threadCreate?.type === "thread.create") {
+      assert.equal(projectCreate.defaultModelSelection, null);
+      assert.deepStrictEqual(threadCreate.modelSelection, getAutoBootstrapDefaultModelSelection());
+    }
   }),
 );

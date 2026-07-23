@@ -31,6 +31,9 @@ import {
   OrchestrationThreadSearchError,
   ORCHESTRATION_WS_METHODS,
   ChatAttachmentReadError,
+  CodexInlineVisualizationReadError,
+  CodexSettings,
+  ProviderDriverKind,
   ProjectFaviconError,
   ProjectListEntriesError,
   ProjectReadFileError,
@@ -39,6 +42,7 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   ProviderExtensionsError,
+  ProviderExternalThreadError,
   ProviderRealtimeError,
   ProviderSubagentTranscriptError,
   ThreadId,
@@ -71,7 +75,11 @@ import {
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
+import { readCodexInlineVisualization } from "./provider/CodexInlineVisualization.ts";
+import { resolveCodexHomeLayout } from "./provider/Drivers/CodexHomeLayout.ts";
+import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { startProviderReviewForThread } from "./provider/ProviderReviewCoordinator.ts";
+import { importExternalProviderThread } from "./provider/ExternalThreadImport.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
   callProviderExtensionMcpTool,
@@ -129,6 +137,8 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+
+const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
@@ -1025,6 +1035,33 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverListExternalProviderThreads]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListExternalProviderThreads,
+            providerService.listExternalThreads(input).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderExternalThreadError({
+                    message:
+                      error.message.trim().length > 0
+                        ? error.message
+                        : "Failed to list Codex sessions.",
+                    cause: error,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverImportExternalProviderThread]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverImportExternalProviderThread,
+            importExternalProviderThread(input, {
+              providerService,
+              projectionSnapshotQuery,
+              orchestrationEngine,
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverConsumeProviderRateLimitResetCredit]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverConsumeProviderRateLimitResetCredit,
@@ -1444,6 +1481,71 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 base64: Buffer.from(bytes).toString("base64"),
                 sizeBytes: bytes.byteLength,
               };
+            }),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.visualizationsRead]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.visualizationsRead,
+            Effect.gen(function* () {
+              const threadOption = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new CodexInlineVisualizationReadError({
+                        message: "The visualization thread could not be loaded.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(threadOption)) {
+                return yield* new CodexInlineVisualizationReadError({
+                  message: "The visualization thread was not found.",
+                });
+              }
+
+              const thread = threadOption.value;
+              const providerThreadId = thread.session?.providerThreadId;
+              if (!providerThreadId) {
+                return yield* new CodexInlineVisualizationReadError({
+                  message: "This thread does not have a native Codex session.",
+                });
+              }
+
+              const providerInstanceId =
+                thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CodexInlineVisualizationReadError({
+                      message: "The Codex provider settings could not be loaded.",
+                      cause,
+                    }),
+                ),
+              );
+              const providerConfig = deriveProviderInstanceConfigMap(settings)[providerInstanceId];
+              if (!providerConfig || providerConfig.driver !== ProviderDriverKind.make("codex")) {
+                return yield* new CodexInlineVisualizationReadError({
+                  message: "This thread is not backed by a configured Codex provider.",
+                });
+              }
+
+              const codexSettings = yield* decodeCodexSettings(providerConfig.config ?? {}).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CodexInlineVisualizationReadError({
+                      message: "The Codex provider settings are invalid.",
+                      cause,
+                    }),
+                ),
+              );
+              const homeLayout = yield* resolveCodexHomeLayout(codexSettings);
+              return yield* readCodexInlineVisualization({
+                codexHomePath: homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
+                providerThreadId,
+                file: input.file,
+              });
             }),
             { "rpc.aggregate": "workspace" },
           ),

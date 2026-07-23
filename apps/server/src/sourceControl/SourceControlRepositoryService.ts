@@ -99,6 +99,14 @@ function toRepositoryInfo(
   };
 }
 
+function repositoryBaseUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
 function selectRemoteUrl(
   urls: SourceControlRepositoryCloneUrls,
   protocol: SourceControlCloneProtocol | undefined,
@@ -318,22 +326,9 @@ export const make = Effect.fn("makeSourceControlRepositoryService")(function* ()
         provider: input.provider,
       });
       const provider = yield* providers.get(providerKind);
-      const urls = yield* provider.createRepository({
-        cwd: input.cwd,
-        repository: input.repository.trim(),
-        visibility: input.visibility,
-      });
-      const remoteUrl = selectRemoteUrl(urls, input.protocol);
-      const remoteName = yield* git.ensureRemote({
-        cwd: input.cwd,
-        preferredName: input.remoteName?.trim() || "origin",
-        url: remoteUrl,
-      });
-
-      // An empty local repo (no commits) would make `git push HEAD:...` fail
-      // with an opaque "src refspec HEAD does not match any". Treat this as a
-      // partial success: the remote was created and wired up, but there is
-      // nothing to push yet.
+      const localDetails = yield* git
+        .statusDetails(input.cwd)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
       const hasCommits = yield* git
         .execute({
           operation: "SourceControlRepositoryService.publishRepository.headCheck",
@@ -344,15 +339,59 @@ export const make = Effect.fn("makeSourceControlRepositoryService")(function* ()
           Effect.map(() => true),
           Effect.catch(() => Effect.succeed(false)),
         );
+      const urls = yield* provider.createRepository({
+        cwd: input.cwd,
+        repository: input.repository.trim(),
+        visibility: input.visibility,
+        ...(input.description ? { description: input.description.trim() } : {}),
+        ...(input.team ? { team: input.team.trim() } : {}),
+      });
+      const remoteUrl = selectRemoteUrl(urls, input.protocol);
+      const remoteName = yield* git.ensureRemote({
+        cwd: input.cwd,
+        preferredName: input.remoteName?.trim() || "origin",
+        url: remoteUrl,
+      });
+
+      const providerDefaultBranch =
+        urls.defaultBranch ??
+        (yield* provider
+          .getDefaultBranch({
+            cwd: input.cwd,
+            context: {
+              provider: {
+                kind: providerKind,
+                name: providerKind,
+                baseUrl: repositoryBaseUrl(urls.url),
+              },
+              remoteName,
+              remoteUrl,
+            },
+          })
+          .pipe(Effect.catch(() => Effect.succeed(null)))) ??
+        "main";
+
+      let publishBranch = localDetails?.branch ?? providerDefaultBranch;
+      if (localDetails?.isDefaultBranch === true && publishBranch !== providerDefaultBranch) {
+        const renamed = yield* git.renameBranch({
+          cwd: input.cwd,
+          oldBranch: publishBranch,
+          newBranch: providerDefaultBranch,
+        });
+        publishBranch = renamed.branch;
+      }
+
+      // An empty local repo (no commits) would make `git push HEAD:...` fail
+      // with an opaque "src refspec HEAD does not match any". Treat this as a
+      // partial success: the remote was created and wired up, but there is
+      // nothing to push yet. The unborn branch is still aligned with the
+      // provider's default so the first commit publishes to the expected ref.
       if (!hasCommits) {
-        const details = yield* git
-          .statusDetails(input.cwd)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
         return {
           repository: toRepositoryInfo(providerKind, urls),
           remoteName,
           remoteUrl,
-          branch: details?.branch ?? "main",
+          branch: publishBranch,
           status: "remote_added" as const,
         };
       }

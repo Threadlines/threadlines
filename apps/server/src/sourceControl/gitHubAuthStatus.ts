@@ -7,6 +7,7 @@ const GitHubAuthStatusAccountSchema = Schema.Struct({
   active: Schema.Boolean,
   host: Schema.String,
   login: Schema.String,
+  gitProtocol: Schema.optional(Schema.String),
 });
 
 const GitHubAuthStatusSchema = Schema.Struct({
@@ -23,6 +24,7 @@ export interface GitHubAuthStatusAccount {
   readonly authenticated: boolean;
   readonly active: boolean;
   readonly error: string | null;
+  readonly preferredProtocol: "ssh" | "https" | null;
 }
 
 export interface GitHubAuthStatus {
@@ -56,6 +58,10 @@ export function parseGitHubAuthStatus(text: string): GitHubAuthStatus {
                 authenticated: account.state === "success",
                 active: account.active,
                 error: account.error?.trim() || null,
+                preferredProtocol:
+                  account.gitProtocol === "ssh" || account.gitProtocol === "https"
+                    ? account.gitProtocol
+                    : null,
               },
             ];
           }),

@@ -33,6 +33,7 @@ export interface AzureDevOpsRepositoryCloneUrls {
   readonly nameWithOwner: string;
   readonly url: string;
   readonly sshUrl: string;
+  readonly defaultBranch?: string;
 }
 
 export interface AzureDevOpsCliShape {
@@ -201,6 +202,16 @@ function normalizeRepositoryCloneUrls(
     nameWithOwner: projectName ? `${projectName}/${raw.name}` : raw.name,
     url: raw.remoteUrl,
     sshUrl: raw.sshUrl,
+  };
+}
+
+function normalizeCreatedRepositoryCloneUrls(
+  raw: Schema.Schema.Type<typeof RawAzureDevOpsRepositorySchema>,
+): AzureDevOpsRepositoryCloneUrls {
+  const defaultBranch = normalizeDefaultBranch(raw.defaultBranch);
+  return {
+    ...normalizeRepositoryCloneUrls(raw),
+    ...(defaultBranch ? { defaultBranch } : {}),
   };
 }
 
@@ -373,7 +384,7 @@ export const make = Effect.fn("makeAzureDevOpsCli")(function* () {
             "Azure DevOps CLI returned invalid repository JSON.",
           ),
         ),
-        Effect.map(normalizeRepositoryCloneUrls),
+        Effect.map(normalizeCreatedRepositoryCloneUrls),
       );
     },
     createPullRequest: (input) =>

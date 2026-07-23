@@ -42,6 +42,7 @@ export interface GitHubRepositoryCloneUrls {
   readonly nameWithOwner: string;
   readonly url: string;
   readonly sshUrl: string;
+  readonly defaultBranch?: string;
 }
 
 export interface GitHubCliShape {
@@ -78,6 +79,8 @@ export interface GitHubCliShape {
     readonly cwd: string;
     readonly repository: string;
     readonly visibility: SourceControlRepositoryVisibility;
+    readonly description?: string;
+    readonly team?: string;
   }) => Effect.Effect<GitHubRepositoryCloneUrls, GitHubCliError>;
 
   readonly createPullRequest: (input: {
@@ -382,10 +385,30 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
     createRepository: (input) =>
       execute({
         cwd: input.cwd,
-        args: ["repo", "create", input.repository, `--${input.visibility}`],
+        args: [
+          "repo",
+          "create",
+          input.repository,
+          `--${input.visibility}`,
+          ...(input.description ? ["--description", input.description] : []),
+          ...(input.team ? ["--team", input.team] : []),
+        ],
       }).pipe(
         Effect.map((result) =>
           deriveRepositoryCloneUrlsFromCreateOutput(result.stdout, input.repository),
+        ),
+        Effect.flatMap((urls) =>
+          execute({
+            cwd: input.cwd,
+            args: ["api", `repos/${urls.nameWithOwner}`, "--jq", ".default_branch"],
+          }).pipe(
+            Effect.map((result) => result.stdout.trim()),
+            Effect.map((defaultBranch) => ({
+              ...urls,
+              ...(defaultBranch.length > 0 ? { defaultBranch } : {}),
+            })),
+            Effect.catch(() => Effect.succeed(urls)),
+          ),
         ),
       ),
     createPullRequest: (input) =>
@@ -408,15 +431,17 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
     getDefaultBranch: (input) =>
       execute({
         cwd: input.cwd,
-        args: [
-          "repo",
-          "view",
-          ...repositoryViewArgs(input.repository),
-          "--json",
-          "defaultBranchRef",
-          "--jq",
-          ".defaultBranchRef.name",
-        ],
+        args: input.repository
+          ? ["api", `repos/${input.repository}`, "--jq", ".default_branch"]
+          : [
+              "repo",
+              "view",
+              ...repositoryViewArgs(input.repository),
+              "--json",
+              "defaultBranchRef",
+              "--jq",
+              ".defaultBranchRef.name",
+            ],
       }).pipe(
         Effect.map((value) => {
           const trimmed = value.stdout.trim();

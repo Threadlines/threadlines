@@ -9,6 +9,7 @@ import {
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@threadlines/contracts";
+import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 
@@ -139,9 +140,10 @@ export function resolveAssistantMessageCopyState({
   showCopyButton: boolean;
   streaming: boolean;
 }) {
-  const hasText = text !== null && text.trim().length > 0;
+  const copyText = text === null ? null : stripCodexInlineVisualizationDirectives(text);
+  const hasText = copyText !== null && copyText.trim().length > 0;
   return {
-    text: hasText ? text : null,
+    text: hasText ? copyText : null,
     visible: showCopyButton && hasText && !streaming,
   };
 }

@@ -15,6 +15,9 @@ import {
   EventId,
   ProviderDriverKind,
   type ProviderEvent,
+  type ProviderExternalThreadCandidate,
+  type ProviderExternalThreadSnapshot,
+  type ProviderExternalThreadTranscriptMessage,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
@@ -44,6 +47,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
@@ -65,6 +69,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
+  CODEX_THREAD_SOURCE,
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
   makeCodexSessionRuntime,
@@ -73,6 +78,7 @@ import {
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -86,9 +92,125 @@ const CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS = 4_000;
 const CODEX_SUBAGENT_TRANSCRIPT_OUTPUT_MAX_CHARS = 2_000;
 const CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS = 1_000;
 const CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH = 32;
+const CODEX_EXTERNAL_THREAD_PAGE_SIZE = 20;
+const CODEX_EXTERNAL_THREAD_PAGE_SIZE_MAX = 50;
+const CODEX_EXTERNAL_THREAD_SOURCE_KINDS = [
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "unknown",
+] as const;
 
 type CodexStoredThread = EffectCodexSchema.V2ThreadReadResponse["thread"];
 type CodexStoredThreadItem = CodexStoredThread["turns"][number]["items"][number];
+type CodexListedThread = EffectCodexSchema.V2ThreadListResponse["data"][number];
+
+function isoFromEpochSeconds(value: number): string {
+  return new Date(value * 1_000).toISOString();
+}
+
+function normalizeCwdForComparison(value: string): string {
+  const normalized = value.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function codexListedThreadSource(
+  thread: CodexListedThread,
+): ProviderExternalThreadCandidate["source"] {
+  return typeof thread.source === "string" ? thread.source : "unknown";
+}
+
+function codexExternalThreadCandidate(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly thread: CodexListedThread;
+  readonly canImport: boolean;
+  readonly unavailableReason?: string | undefined;
+}): ProviderExternalThreadCandidate {
+  return {
+    providerInstanceId: input.instanceId,
+    providerThreadId: input.thread.id,
+    sessionId: input.thread.sessionId,
+    source: codexListedThreadSource(input.thread),
+    name: input.thread.name?.trim() || null,
+    preview: input.thread.preview,
+    cwd: input.thread.cwd,
+    cliVersion: input.thread.cliVersion,
+    createdAt: isoFromEpochSeconds(input.thread.createdAt),
+    updatedAt: isoFromEpochSeconds(input.thread.recencyAt ?? input.thread.updatedAt),
+    status: input.thread.status.type,
+    canImport: input.canImport,
+    ...(input.unavailableReason ? { unavailableReason: input.unavailableReason } : {}),
+  };
+}
+
+function codexUserInputText(
+  content: Extract<CodexStoredThreadItem, { readonly type: "userMessage" }>,
+): string {
+  return content.content
+    .map((part) => {
+      switch (part.type) {
+        case "text":
+          return part.text;
+        case "image":
+          return `[Image attachment: ${part.url}]`;
+        case "localImage":
+          return `[Image attachment: ${part.path}]`;
+        case "audio":
+          return `[Audio attachment: ${part.url}]`;
+        case "localAudio":
+          return `[Audio attachment: ${part.path}]`;
+        case "skill":
+          return `$${part.name}`;
+        case "mention":
+          return `@${part.name}`;
+      }
+    })
+    .filter((part) => part.trim().length > 0)
+    .join("\n");
+}
+
+function mapCodexExternalThreadMessages(
+  thread: CodexStoredThread,
+): ProviderExternalThreadTranscriptMessage[] {
+  const messages: ProviderExternalThreadTranscriptMessage[] = [];
+  for (const [turnIndex, turn] of thread.turns.entries()) {
+    const turnStartedAt = turn.startedAt ?? thread.createdAt + turnIndex;
+    for (const [itemIndex, item] of turn.items.entries()) {
+      const createdAt = new Date(turnStartedAt * 1_000 + itemIndex).toISOString();
+      if (item.type === "userMessage") {
+        const text = codexUserInputText(item);
+        if (text.trim().length > 0) {
+          messages.push({
+            providerItemId: item.id,
+            providerTurnId: turn.id,
+            role: "user",
+            text,
+            createdAt,
+          });
+        }
+      } else if (item.type === "agentMessage" || item.type === "plan") {
+        if (item.text.trim().length > 0) {
+          messages.push({
+            providerItemId: item.id,
+            providerTurnId: turn.id,
+            role: "assistant",
+            text: item.text,
+            createdAt,
+          });
+        }
+      }
+    }
+  }
+  return messages;
+}
+
+function externalThreadUnavailableReason(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.toLowerCase().includes("paginated threads")
+    ? "This session uses Codex's paginated history format, which Threadlines cannot import yet."
+    : "Codex could not read this session's stored conversation.";
+}
 
 function capCodexTranscriptText(value: string, maxChars: number): string {
   const trimmed = value.trim();
@@ -328,6 +450,16 @@ export interface CodexAdapterLiveOptions {
     CodexSessionRuntimeShape,
     CodexSessionRuntimeError,
     ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+  >;
+  readonly makeAppServerClient?: (input: {
+    readonly binaryPath: string;
+    readonly homePath?: string;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) => Effect.Effect<
+    CodexClient.CodexAppServerClientShape,
+    CodexErrors.CodexAppServerError,
+    Scope.Scope
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -2384,6 +2516,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
           ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
@@ -2861,6 +2994,162 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       );
     });
 
+  const openExternalThreadClient = (cwd: string) => {
+    const createClient = options?.makeAppServerClient ?? makeCodexAppServerClient;
+    return createClient({
+      binaryPath: codexConfig.binaryPath,
+      ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+      cwd,
+      ...(options?.environment ? { environment: options.environment } : {}),
+    }).pipe(Effect.tap(initializeCodexAppServerClient));
+  };
+
+  const listExternalThreads: NonNullable<CodexAdapterShape["listExternalThreads"]> = (input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* openExternalThreadClient(input.cwd);
+        const page = yield* client.request("thread/list", {
+          cwd: input.cwd,
+          limit: Math.min(
+            CODEX_EXTERNAL_THREAD_PAGE_SIZE_MAX,
+            Math.max(1, input.limit ?? CODEX_EXTERNAL_THREAD_PAGE_SIZE),
+          ),
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+          ...(input.searchTerm ? { searchTerm: input.searchTerm } : {}),
+          sortKey: "recency_at",
+          sortDirection: "desc",
+          sourceKinds: [...CODEX_EXTERNAL_THREAD_SOURCE_KINDS],
+          useStateDbOnly: true,
+        });
+        const rootThreads = page.data.filter(
+          (thread) =>
+            !thread.parentThreadId &&
+            typeof thread.source === "string" &&
+            thread.threadSource !== CODEX_THREAD_SOURCE,
+        );
+        const data = yield* Effect.forEach(
+          rootThreads,
+          (thread) =>
+            client.request("thread/read", { threadId: thread.id, includeTurns: true }).pipe(
+              Effect.map((response) => {
+                const messages = mapCodexExternalThreadMessages(response.thread);
+                const active = thread.status.type === "active";
+                return codexExternalThreadCandidate({
+                  instanceId: boundInstanceId,
+                  thread,
+                  canImport: messages.length > 0 && !active,
+                  ...(active
+                    ? {
+                        unavailableReason:
+                          "Wait for this Codex session's active run to finish before importing it.",
+                      }
+                    : messages.length === 0
+                      ? {
+                          unavailableReason:
+                            "No user or assistant messages are stored for this session.",
+                        }
+                      : {}),
+                });
+              }),
+              Effect.catch((cause) =>
+                Effect.succeed(
+                  codexExternalThreadCandidate({
+                    instanceId: boundInstanceId,
+                    thread,
+                    canImport: false,
+                    unavailableReason: externalThreadUnavailableReason(cause),
+                  }),
+                ),
+              ),
+            ),
+          { concurrency: 4 },
+        );
+        return {
+          data,
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        };
+      }),
+    ).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "thread/list",
+            detail: cause.message,
+            cause,
+          }),
+      ),
+    );
+
+  const readExternalThread: NonNullable<CodexAdapterShape["readExternalThread"]> = (input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* openExternalThreadClient(input.expectedCwd);
+        const response = yield* client.request("thread/read", {
+          threadId: input.providerThreadId,
+          includeTurns: true,
+        });
+        const thread = response.thread;
+        if (thread.threadSource === CODEX_THREAD_SOURCE) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "readExternalThread",
+            issue: "This Codex conversation is already managed by Threadlines.",
+          });
+        }
+        if (thread.parentThreadId || typeof thread.source !== "string") {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "readExternalThread",
+            issue: "Subagent conversations cannot be imported as root Threadlines threads.",
+          });
+        }
+        if (thread.status.type === "active") {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "readExternalThread",
+            issue: "Wait for this Codex session's active run to finish before importing it.",
+          });
+        }
+        if (
+          normalizeCwdForComparison(thread.cwd) !== normalizeCwdForComparison(input.expectedCwd)
+        ) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "readExternalThread",
+            issue: "The Codex session belongs to a different project directory.",
+          });
+        }
+        const messages = mapCodexExternalThreadMessages(thread);
+        if (messages.length === 0) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "readExternalThread",
+            issue: "The Codex session has no user or assistant messages to import.",
+          });
+        }
+        const candidate = codexExternalThreadCandidate({
+          instanceId: boundInstanceId,
+          thread,
+          canImport: true,
+        });
+        return { candidate, messages } satisfies ProviderExternalThreadSnapshot;
+      }),
+    ).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+      Effect.mapError((cause) =>
+        cause instanceof ProviderAdapterValidationError
+          ? cause
+          : new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/read",
+              detail: cause.message,
+              cause,
+            }),
+      ),
+    );
+
   const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
     if (!Number.isInteger(numTurns) || numTurns < 1) {
       return Effect.fail(
@@ -2990,6 +3279,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       realtimeVoice: "supported",
     },
     startSession,
+    listExternalThreads,
+    readExternalThread,
     sendTurn,
     steerTurn,
     startReview,

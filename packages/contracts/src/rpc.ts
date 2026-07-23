@@ -64,6 +64,9 @@ import {
   ChatAttachmentReadError,
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
+  CodexInlineVisualizationReadError,
+  CodexInlineVisualizationReadInput,
+  CodexInlineVisualizationReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -81,6 +84,11 @@ import {
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
 import {
+  ProviderExternalThreadError,
+  ProviderExternalThreadImportInput,
+  ProviderExternalThreadImportResult,
+  ProviderExternalThreadListInput,
+  ProviderExternalThreadListResult,
   ProviderStartReviewError,
   ProviderStartReviewInput,
   ProviderStartReviewResult,
@@ -208,6 +216,9 @@ export const WS_METHODS = {
   // Chat attachment methods
   attachmentsRead: "attachments.read",
 
+  // Codex inline visualization methods
+  visualizationsRead: "visualizations.read",
+
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
 
@@ -259,6 +270,8 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverStartProviderReview: "server.startProviderReview",
   serverReadSubagentTranscript: "server.readSubagentTranscript",
+  serverListExternalProviderThreads: "server.listExternalProviderThreads",
+  serverImportExternalProviderThread: "server.importExternalProviderThread",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
   serverUpdateProvider: "server.updateProvider",
   serverResolveProviderUpdateBlockers: "server.resolveProviderUpdateBlockers",
@@ -346,6 +359,24 @@ export const WsServerReadSubagentTranscriptRpc = Rpc.make(WS_METHODS.serverReadS
   success: ProviderSubagentTranscriptResult,
   error: ProviderSubagentTranscriptError,
 });
+
+export const WsServerListExternalProviderThreadsRpc = Rpc.make(
+  WS_METHODS.serverListExternalProviderThreads,
+  {
+    payload: ProviderExternalThreadListInput,
+    success: ProviderExternalThreadListResult,
+    error: ProviderExternalThreadError,
+  },
+);
+
+export const WsServerImportExternalProviderThreadRpc = Rpc.make(
+  WS_METHODS.serverImportExternalProviderThread,
+  {
+    payload: ProviderExternalThreadImportInput,
+    success: ProviderExternalThreadImportResult,
+    error: ProviderExternalThreadError,
+  },
+);
 
 export const WsServerConsumeProviderRateLimitResetCreditRpc = Rpc.make(
   WS_METHODS.serverConsumeProviderRateLimitResetCredit,
@@ -620,6 +651,12 @@ export const WsAttachmentsReadRpc = Rpc.make(WS_METHODS.attachmentsRead, {
   payload: ChatAttachmentReadInput,
   success: ChatAttachmentReadResult,
   error: ChatAttachmentReadError,
+});
+
+export const WsVisualizationsReadRpc = Rpc.make(WS_METHODS.visualizationsRead, {
+  payload: CodexInlineVisualizationReadInput,
+  success: CodexInlineVisualizationReadResult,
+  error: CodexInlineVisualizationReadError,
 });
 
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
@@ -925,6 +962,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerStartProviderReviewRpc,
   WsServerReadSubagentTranscriptRpc,
+  WsServerListExternalProviderThreadsRpc,
+  WsServerImportExternalProviderThreadRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,
   WsServerUpdateProviderRpc,
   WsServerResolveProviderUpdateBlockersRpc,
@@ -964,6 +1003,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsReadFileRpc,
   WsProjectsFaviconRpc,
   WsAttachmentsReadRpc,
+  WsVisualizationsReadRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsSubscribeVcsStatusRpc,

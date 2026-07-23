@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import {
   ChatAttachment,
   ChatAttachmentListLenient,
+  CodexInlineVisualizationReadInput,
   ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -59,6 +60,25 @@ const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationComma
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeThreadForkContextPayload = Schema.decodeUnknownEffect(ThreadForkContextPayload);
+const decodeCodexInlineVisualizationReadInput = Schema.decodeUnknownEffect(
+  CodexInlineVisualizationReadInput,
+);
+
+it.effect("accepts only path-free kebab-case Codex visualization filenames", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeCodexInlineVisualizationReadInput({
+      threadId: "thread-1",
+      file: "connection-map.html",
+    });
+    assert.strictEqual(parsed.file, "connection-map.html");
+
+    const traversal = yield* decodeCodexInlineVisualizationReadInput({
+      threadId: "thread-1",
+      file: "../connection-map.html",
+    }).pipe(Effect.result);
+    assert.strictEqual(traversal._tag, "Failure");
+  }),
+);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {

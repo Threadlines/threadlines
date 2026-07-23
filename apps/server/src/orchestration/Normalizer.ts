@@ -176,7 +176,15 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         });
       }
 
-      const sourceMessages = sourceThread.messages.slice(0, selectedIndex + 1);
+      const replacesUserPrompt = sourceMessage.role === "user" && !isCrossProjectFork;
+      // Editing a user prompt replaces that prompt. Keep it out of the
+      // context-seed fallback so the provider never sees both the old and the
+      // edited instruction. Assistant/system anchors still carry the selected
+      // message as background before the new continuation instruction.
+      const sourceMessages = sourceThread.messages.slice(
+        0,
+        replacesUserPrompt ? selectedIndex : selectedIndex + 1,
+      );
       const entries = [
         ...sourceMessages.map((message) => ({
           kind: "message" as const,
@@ -235,8 +243,21 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             .filter((message) => includedSourceMessageIds.has(message.id))
             .flatMap((message) => message.attachments ?? [])
         : [];
+      const replacementAttachments =
+        replacesUserPrompt && command.includeAttachments
+          ? (command.message.attachments ?? sourceMessage.attachments ?? [])
+          : [];
+      const copiedReplacementAttachments = yield* Effect.forEach(
+        replacementAttachments.slice(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+        (attachment) => copyAttachmentForThread(attachment, command.threadId),
+        { concurrency: 1 },
+      );
+      const remainingContextAttachmentSlots = Math.max(
+        0,
+        PROVIDER_SEND_TURN_MAX_ATTACHMENTS - copiedReplacementAttachments.length,
+      );
       const copiedAttachments = yield* Effect.forEach(
-        contextualAttachments.slice(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+        contextualAttachments.slice(0, remainingContextAttachmentSlots),
         (attachment) => copyAttachmentForThread(attachment, command.threadId),
         { concurrency: 1 },
       );
@@ -267,6 +288,13 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
 
       return {
         ...forkCommand,
+        message: {
+          ...forkCommand.message,
+          ...(copiedReplacementAttachments.length > 0
+            ? { attachments: copiedReplacementAttachments }
+            : {}),
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+        },
         projectId: isCrossProjectFork ? targetProjectId : sourceThread.projectId,
         title: isCrossProjectFork
           ? truncate(`Continued: ${sourceThread.title}`, 80)

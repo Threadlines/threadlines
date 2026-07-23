@@ -334,7 +334,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.message.messageId,
           role: "user",
           text: command.message.text,
-          attachments: [],
+          attachments: command.message.attachments ?? [],
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -384,6 +385,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           providerContext: command.providerContext,
           providerAttachments: command.providerAttachments,
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           createdAt: command.createdAt,
         },
       };

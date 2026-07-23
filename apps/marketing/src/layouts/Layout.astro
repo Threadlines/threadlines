@@ -157,6 +157,13 @@ const websiteStructuredData = {
         <div class="footer-inner">
           <div class="footer-brand">
             <span>&copy; {new Date().getFullYear()} Threadlines</span>
+            <span>
+              Built by <a
+                href="https://wilfredoleon.com"
+                target="_blank"
+                rel="noopener noreferrer">Will</a
+              >
+            </span>
           </div>
           <div class="footer-links">
             <a href="/changelog">Changelog</a>
@@ -501,8 +508,19 @@ const websiteStructuredData = {
   }
 
   .footer-brand {
+    display: flex;
+    gap: 16px;
     font-size: 13px;
     color: var(--fg-dim);
+  }
+
+  .footer-brand a {
+    color: inherit;
+    transition: color 0.2s ease;
+  }
+
+  .footer-brand a:hover {
+    color: var(--fg);
   }
 
   .footer-links {

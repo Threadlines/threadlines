@@ -13,6 +13,9 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  ProviderExternalThreadListInput,
+  ProviderExternalThreadListResult,
+  ProviderExternalThreadSnapshot,
   ProviderStartReviewInput,
   ProviderStartReviewResult,
   ProviderSendTurnInput,
@@ -119,6 +122,17 @@ export interface ProviderAdapterShape<TError> {
   readonly startSession: (
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
+
+  /** Discover root conversations stored by this provider outside Threadlines. */
+  readonly listExternalThreads?: (
+    input: ProviderExternalThreadListInput,
+  ) => Effect.Effect<ProviderExternalThreadListResult, TError>;
+
+  /** Read and compatibility-check one external conversation before import. */
+  readonly readExternalThread?: (input: {
+    readonly providerThreadId: string;
+    readonly expectedCwd: string;
+  }) => Effect.Effect<ProviderExternalThreadSnapshot, TError>;
 
   /**
    * Send a turn to an active provider session.

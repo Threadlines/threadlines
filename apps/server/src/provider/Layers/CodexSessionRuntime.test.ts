@@ -663,6 +663,47 @@ describe("openCodexThread", () => {
     });
   });
 
+  it("does not fall back to a fresh thread when native resume is required", async () => {
+    const calls: string[] = [];
+    const client = {
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        _payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push(method);
+        if (method === "thread/resume") {
+          return Effect.fail(
+            new CodexErrors.CodexAppServerRequestError({
+              code: -32603,
+              errorMessage: "thread not found",
+            }),
+          );
+        }
+        return Effect.succeed(
+          makeThreadOpenResponse("fresh-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+
+    await assert.rejects(
+      Effect.runPromise(
+        openCodexThread({
+          client,
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access",
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          resumeThreadId: "external-thread",
+          resumeRequired: true,
+        }),
+      ),
+      (error: unknown) =>
+        isCodexAppServerRequestError(error) && error.errorMessage === "thread not found",
+    );
+    assert.deepStrictEqual(calls, ["thread/resume"]);
+  });
+
   it("propagates non-recoverable resume failures", async () => {
     const client = {
       request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
@@ -739,9 +780,140 @@ describe("openCodexThread", () => {
       threadId: "source-thread",
       lastTurnId: "turn-7",
       cwd: "/tmp/project",
+      threadSource: "threadlines",
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       model: "gpt-5.3-codex",
+    });
+  });
+
+  it("forks before a user turn through the experimental request surface", async () => {
+    const rawCalls: Array<{ method: string; payload: unknown }> = [];
+    const typedCalls: string[] = [];
+    const rawForked = {
+      cwd: "/tmp/project",
+      model: "gpt-5.3-codex",
+      modelProvider: "openai",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: { type: "dangerFullAccess" },
+      thread: {
+        id: "forked-before-thread",
+        sessionId: "session-forked-before-thread",
+        source: "appServer",
+        preview: "",
+        cwd: "/tmp/project",
+        cliVersion: "0.145.0",
+        modelProvider: "openai",
+        createdAt: 1_760_000_000,
+        updatedAt: 1_760_000_001,
+        ephemeral: false,
+        status: { type: "idle" },
+        turns: [],
+      },
+    };
+    const client = {
+      raw: {
+        request: (method: string, payload: unknown) => {
+          rawCalls.push({ method, payload });
+          return Effect.succeed(rawForked);
+        },
+      },
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        _payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        typedCalls.push(method);
+        return Effect.succeed(
+          makeThreadOpenResponse("unexpected-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+
+    const opened = await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        forkFrom: {
+          providerThreadId: "source-thread",
+          beforeTurnId: "turn-8",
+          lastTurnId: "turn-7",
+        },
+      }),
+    );
+
+    assert.equal(opened.thread.id, "forked-before-thread");
+    assert.deepStrictEqual(typedCalls, []);
+    assert.deepStrictEqual(rawCalls, [
+      {
+        method: "thread/fork",
+        payload: {
+          threadId: "source-thread",
+          beforeTurnId: "turn-8",
+          cwd: "/tmp/project",
+          threadSource: "threadlines",
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+          model: "gpt-5.3-codex",
+        },
+      },
+    ]);
+  });
+
+  it("falls back to the stable inclusive boundary when beforeTurnId is rejected", async () => {
+    const calls: Array<{ method: string; payload: unknown; surface: "raw" | "typed" }> = [];
+    const client = {
+      raw: {
+        request: (method: string, payload: unknown) => {
+          calls.push({ method, payload, surface: "raw" });
+          return Effect.fail(CodexErrors.CodexAppServerRequestError.invalidParams());
+        },
+      },
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push({ method, payload, surface: "typed" });
+        return Effect.succeed(
+          makeThreadOpenResponse("stable-fork") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+
+    const opened = await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        forkFrom: {
+          providerThreadId: "source-thread",
+          beforeTurnId: "turn-8",
+          lastTurnId: "turn-7",
+        },
+      }),
+    );
+
+    assert.equal(opened.thread.id, "stable-fork");
+    assert.deepStrictEqual(
+      calls.map((call) => call.surface),
+      ["raw", "typed"],
+    );
+    assert.deepStrictEqual(calls[1]?.payload, {
+      threadId: "source-thread",
+      lastTurnId: "turn-7",
+      cwd: "/tmp/project",
+      threadSource: "threadlines",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
     });
   });
 

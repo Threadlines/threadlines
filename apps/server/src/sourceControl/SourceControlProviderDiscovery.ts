@@ -1,4 +1,5 @@
 import type {
+  SourceControlCloneProtocol,
   SourceControlProviderAuth,
   SourceControlProviderDiscoveryItem,
   SourceControlProviderInfo,
@@ -100,12 +101,16 @@ export function providerAuth(input: {
   readonly account?: string | undefined;
   readonly host?: string | undefined;
   readonly detail?: string | undefined;
+  readonly preferredProtocol?: SourceControlCloneProtocol | undefined;
 }): SourceControlProviderAuth {
   return {
     status: input.status,
     account: authAccount(input.account),
     host: authHost(input.host),
     detail: authDetail(input.detail),
+    ...(input.preferredProtocol !== undefined
+      ? { preferredProtocol: input.preferredProtocol }
+      : {}),
   };
 }
 

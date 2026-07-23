@@ -132,6 +132,9 @@ const PUBLISH_PROVIDER_OPTIONS = [
     description: "github.com",
     host: "github.com",
     pathPlaceholder: "owner/repo",
+    supportsDescription: true,
+    supportsTeam: true,
+    supportsVisibility: true,
     Icon: GitHubIcon,
   },
   {
@@ -140,6 +143,9 @@ const PUBLISH_PROVIDER_OPTIONS = [
     description: "gitlab.com",
     host: "gitlab.com",
     pathPlaceholder: "group/project",
+    supportsDescription: true,
+    supportsTeam: false,
+    supportsVisibility: true,
     Icon: GitLabIcon,
   },
   {
@@ -148,6 +154,9 @@ const PUBLISH_PROVIDER_OPTIONS = [
     description: "bitbucket.org",
     host: "bitbucket.org",
     pathPlaceholder: "workspace/repository",
+    supportsDescription: true,
+    supportsTeam: false,
+    supportsVisibility: true,
     Icon: BitbucketIcon,
   },
   {
@@ -156,6 +165,9 @@ const PUBLISH_PROVIDER_OPTIONS = [
     description: "dev.azure.com",
     host: "dev.azure.com",
     pathPlaceholder: "project/repository",
+    supportsDescription: false,
+    supportsTeam: false,
+    supportsVisibility: false,
     Icon: AzureDevOpsIcon,
   },
 ] as const satisfies ReadonlyArray<{
@@ -164,6 +176,9 @@ const PUBLISH_PROVIDER_OPTIONS = [
   readonly description: string;
   readonly host: string;
   readonly pathPlaceholder: string;
+  readonly supportsDescription: boolean;
+  readonly supportsTeam: boolean;
+  readonly supportsVisibility: boolean;
   readonly Icon: typeof GitHubIcon;
 }>;
 
@@ -327,6 +342,8 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const sourceControlDiscovery = useSourceControlDiscovery();
   const [publishProvider, setPublishProvider] = useState<PublishProviderKind>("github");
   const [publishRepository, setPublishRepository] = useState("");
+  const [publishDescription, setPublishDescription] = useState("");
+  const [publishTeam, setPublishTeam] = useState("");
   const [publishVisibility, setPublishVisibility] =
     useState<SourceControlRepositoryVisibility>("private");
   const [publishRemoteName, setPublishRemoteName] = useState("origin");
@@ -338,6 +355,11 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
     null,
   );
   const [hasUserEditedPublishRepository, setHasUserEditedPublishRepository] = useState(false);
+  const [hasUserEditedPublishProtocol, setHasUserEditedPublishProtocol] = useState(false);
+  const publishGitStatus = useGitStatus({
+    environmentId: props.environmentId,
+    cwd: props.gitCwd,
+  });
   const publishRepositoryMutation = useMutation(
     sourceControlPublishRepositoryMutationOptions({
       environmentId: props.environmentId,
@@ -395,12 +417,55 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const publishHost = currentPublishProvider.host;
   const publishPathPlaceholder = currentPublishProvider.pathPlaceholder;
   const publishProviderLabel = currentPublishProvider.label;
-  const publishWizardSteps = ["Provider", "Repository", "Summary"] as const;
+  const publishWizardSteps = ["Provider", "Details", "Review", "Done"] as const;
   const publishWizardStepSummaries = [
     publishProviderLabel,
-    publishResult?.repository.nameWithOwner ?? null,
+    publishRepository.trim() || null,
     null,
+    publishResult?.repository.nameWithOwner ?? null,
   ] as const;
+  const publishRepositoryOwner = publishRepository.trim().split("/")[0]?.trim() ?? "";
+  const isGitHubOrganizationTarget =
+    publishProvider === "github" &&
+    publishRepositoryOwner.length > 0 &&
+    publishAccountByProvider.github !== null &&
+    publishRepositoryOwner.toLowerCase() !== publishAccountByProvider.github.toLowerCase();
+  const publishVisibilityOptions = useMemo(() => {
+    const options: ReadonlyArray<{
+      readonly value: SourceControlRepositoryVisibility;
+      readonly label: string;
+      readonly description: string;
+      readonly Icon: typeof LockIcon;
+    }> = [
+      {
+        value: "private",
+        label: "Private",
+        description: "Only invited people",
+        Icon: LockIcon,
+      },
+      {
+        value: "public",
+        label: "Public",
+        description: "Anyone on the web",
+        Icon: GlobeIcon,
+      },
+    ];
+    if (publishProvider === "gitlab" || isGitHubOrganizationTarget) {
+      return [
+        ...options,
+        {
+          value: "internal" as const,
+          label: "Internal",
+          description: publishProvider === "github" ? "Organization members" : "Signed-in users",
+          Icon: LockIcon,
+        },
+      ];
+    }
+    return options;
+  }, [isGitHubOrganizationTarget, publishProvider]);
+  const publishHasCommits = publishGitStatus.data?.headSha != null;
+  const publishChangedFileCount = publishGitStatus.data?.workingTree.files.length ?? 0;
+  const publishBranch = publishGitStatus.data?.refName;
 
   useEffect(() => {
     if (!props.open || hasUserEditedPublishRepository) {
@@ -408,6 +473,20 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
     }
     setPublishRepository(publishRepositoryPrefill);
   }, [hasUserEditedPublishRepository, props.open, publishRepositoryPrefill]);
+
+  useEffect(() => {
+    if (!props.open || hasUserEditedPublishProtocol) return;
+    const discovered = sourceControlDiscovery.data?.sourceControlProviders.find(
+      (provider) => provider.kind === publishProvider,
+    );
+    setPublishProtocol(discovered?.auth.preferredProtocol ?? "ssh");
+  }, [hasUserEditedPublishProtocol, props.open, publishProvider, sourceControlDiscovery.data]);
+
+  useEffect(() => {
+    if (!publishVisibilityOptions.some((option) => option.value === publishVisibility)) {
+      setPublishVisibility("private");
+    }
+  }, [publishVisibility, publishVisibilityOptions]);
 
   const canSubmitPublishRepository = useMemo(() => {
     if (!selectedPublishProviderReadiness.ready) return false;
@@ -446,13 +525,15 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
         provider: publishProvider,
         repository: publishRepository.trim(),
         visibility: publishVisibility,
+        ...(publishDescription.trim() ? { description: publishDescription.trim() } : {}),
+        ...(isGitHubOrganizationTarget && publishTeam.trim() ? { team: publishTeam.trim() } : {}),
         remoteName: publishRemoteName.trim() || "origin",
         protocol: publishProtocol,
       })
       .then((result) => {
         flushSync(() => {
           setPublishResult(result);
-          setPublishWizardStep(2);
+          setPublishWizardStep(3);
         });
         void refreshGitStatus({ environmentId: props.environmentId, cwd: props.gitCwd }).catch(
           () => undefined,
@@ -466,17 +547,25 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
     props.environmentId,
     props.gitCwd,
     publishProtocol,
+    publishDescription,
     publishProvider,
     publishRemoteName,
     publishRepository,
     publishRepositoryMutation,
+    publishTeam,
     publishVisibility,
+    isGitHubOrganizationTarget,
   ]);
 
   const resetState = useCallback(() => {
     setPublishRemoteName("origin");
     setPublishRepository("");
+    setPublishDescription("");
+    setPublishTeam("");
+    setPublishVisibility("private");
+    setPublishProtocol("ssh");
     setHasUserEditedPublishRepository(false);
+    setHasUserEditedPublishProtocol(false);
     setPublishWizardStep(0);
     setPublishAdvancedOpen(false);
     setPublishError(null);
@@ -485,10 +574,10 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      props.onOpenChange(open);
       if (!open) {
         resetState();
       }
+      props.onOpenChange(open);
     },
     [props, resetState],
   );
@@ -507,11 +596,11 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
             <DialogDescription>
               Pick where to host it, then point us at a repo to push to.
             </DialogDescription>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {publishWizardSteps.map((label, index) => {
                 const isComplete = index < publishWizardStep;
                 const isClickable =
-                  publishWizardStep !== 2 &&
+                  publishWizardStep !== 3 &&
                   index < publishWizardSteps.length - 1 &&
                   index <= publishWizardStep;
                 return (
@@ -661,7 +750,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
                           event.preventDefault();
-                          submitPublishRepository();
+                          if (canSubmitPublishRepository) setPublishWizardStep(2);
                         }
                       }}
                       placeholder={publishPathPlaceholder}
@@ -671,66 +760,91 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <span
-                    id="publish-visibility-cards-label"
-                    className="text-xs font-medium text-foreground"
-                  >
-                    Visibility
-                  </span>
-                  <RadioGroup
-                    value={publishVisibility}
-                    onValueChange={(value) =>
-                      setPublishVisibility(value as SourceControlRepositoryVisibility)
-                    }
-                    aria-labelledby="publish-visibility-cards-label"
-                    disabled={publishRepositoryMutation.isPending}
-                    className="grid grid-cols-2 gap-2.5"
-                  >
-                    {[
-                      {
-                        value: "private" as const,
-                        label: "Private",
-                        description: "Only invited people",
-                        Icon: LockIcon,
-                      },
-                      {
-                        value: "public" as const,
-                        label: "Public",
-                        description: "Anyone on the web",
-                        Icon: GlobeIcon,
-                      },
-                    ].map((option) => {
-                      const isSelected = publishVisibility === option.value;
-                      return (
-                        <RadioPrimitive.Root
-                          key={option.value}
-                          value={option.value}
-                          className={cn(
-                            "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow]",
-                            "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-                            isSelected
-                              ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
-                              : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
-                          )}
-                        >
-                          <option.Icon
-                            className="size-4 shrink-0 text-muted-foreground"
-                            aria-hidden
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-sm font-medium text-foreground">
-                              {option.label}
+                {currentPublishProvider.supportsDescription ? (
+                  <label className="block space-y-2" htmlFor="publish-description">
+                    <span className="text-xs font-medium text-foreground">
+                      Description{" "}
+                      <span className="font-normal text-muted-foreground">Optional</span>
+                    </span>
+                    <Input
+                      id="publish-description"
+                      value={publishDescription}
+                      onChange={(event) => setPublishDescription(event.target.value)}
+                      placeholder="A short description of this repository"
+                      disabled={publishRepositoryMutation.isPending}
+                    />
+                  </label>
+                ) : null}
+
+                {currentPublishProvider.supportsVisibility ? (
+                  <div className="space-y-2">
+                    <span
+                      id="publish-visibility-cards-label"
+                      className="text-xs font-medium text-foreground"
+                    >
+                      Visibility
+                    </span>
+                    <RadioGroup
+                      value={publishVisibility}
+                      onValueChange={(value) =>
+                        setPublishVisibility(value as SourceControlRepositoryVisibility)
+                      }
+                      aria-labelledby="publish-visibility-cards-label"
+                      disabled={publishRepositoryMutation.isPending}
+                      className="grid grid-cols-2 gap-2.5"
+                    >
+                      {publishVisibilityOptions.map((option) => {
+                        const isSelected = publishVisibility === option.value;
+                        return (
+                          <RadioPrimitive.Root
+                            key={option.value}
+                            value={option.value}
+                            className={cn(
+                              "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow]",
+                              "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                              isSelected
+                                ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
+                                : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
+                            )}
+                          >
+                            <option.Icon
+                              className="size-4 shrink-0 text-muted-foreground"
+                              aria-hidden
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-medium text-foreground">
+                                {option.label}
+                              </span>
+                              <span className="block text-xs text-muted-foreground">
+                                {option.description}
+                              </span>
                             </span>
-                            <span className="block text-xs text-muted-foreground">
-                              {option.description}
-                            </span>
-                          </span>
-                        </RadioPrimitive.Root>
-                      );
-                    })}
-                  </RadioGroup>
-                </div>
+                          </RadioPrimitive.Root>
+                        );
+                      })}
+                    </RadioGroup>
+                  </div>
+                ) : (
+                  <p className="border-t border-border pt-3 text-xs text-muted-foreground">
+                    Visibility is inherited from the Azure DevOps project permissions.
+                  </p>
+                )}
+
+                {currentPublishProvider.supportsTeam && isGitHubOrganizationTarget ? (
+                  <label className="block space-y-2" htmlFor="publish-team">
+                    <span className="text-xs font-medium text-foreground">
+                      Organization team{" "}
+                      <span className="font-normal text-muted-foreground">Optional</span>
+                    </span>
+                    <Input
+                      id="publish-team"
+                      value={publishTeam}
+                      onChange={(event) => setPublishTeam(event.target.value)}
+                      placeholder="team-slug"
+                      disabled={publishRepositoryMutation.isPending}
+                    />
+                  </label>
+                ) : null}
 
                 <div>
                   <button
@@ -768,9 +882,10 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                         </span>
                         <RadioGroup
                           value={publishProtocol}
-                          onValueChange={(value) =>
-                            setPublishProtocol(value as SourceControlCloneProtocol)
-                          }
+                          onValueChange={(value) => {
+                            setPublishProtocol(value as SourceControlCloneProtocol);
+                            setHasUserEditedPublishProtocol(true);
+                          }}
                           aria-labelledby="publish-protocol-label"
                           disabled={publishRepositoryMutation.isPending}
                           className="grid grid-cols-2 gap-2"
@@ -821,6 +936,64 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
               </div>
 
               <div className={cn("space-y-4", publishWizardStep !== 2 && "hidden")}>
+                <div className="divide-y divide-border border-y border-border text-sm">
+                  <div className="flex items-center justify-between gap-4 py-3">
+                    <span className="text-muted-foreground">Destination</span>
+                    <span className="truncate font-mono text-xs text-foreground">
+                      {publishHost}/{publishRepository.trim()}
+                    </span>
+                  </div>
+                  {currentPublishProvider.supportsVisibility ? (
+                    <div className="flex items-center justify-between gap-4 py-3">
+                      <span className="text-muted-foreground">Visibility</span>
+                      <span className="capitalize text-foreground">{publishVisibility}</span>
+                    </div>
+                  ) : null}
+                  <div className="flex items-center justify-between gap-4 py-3">
+                    <span className="text-muted-foreground">Branch</span>
+                    <span className="text-right text-foreground">
+                      {publishBranch ?? "Provider default"}
+                      {publishGitStatus.data?.isDefaultRef && publishBranch !== null
+                        ? " · aligned to provider default"
+                        : ""}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 py-3">
+                    <span className="text-muted-foreground">Remote</span>
+                    <span className="font-mono text-xs uppercase text-foreground">
+                      {publishRemoteName.trim() || "origin"} · {publishProtocol}
+                    </span>
+                  </div>
+                </div>
+
+                {!publishHasCommits ? (
+                  <div className="border-l-2 border-warning pl-3 text-xs text-muted-foreground">
+                    <p className="font-medium text-foreground">No commits will be uploaded yet.</p>
+                    <p className="mt-1">
+                      Threadlines will create the repository, add the remote, and align the initial
+                      branch with {publishProviderLabel}. {publishChangedFileCount} changed{" "}
+                      {publishChangedFileCount === 1 ? "file remains" : "files remain"} local until
+                      you commit and push.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    The current branch and its commits will be pushed after the repository is
+                    created.
+                  </p>
+                )}
+                {publishError && !publishRepositoryMutation.isPending ? (
+                  <div
+                    role="alert"
+                    className="border-l-2 border-destructive pl-3 text-xs text-destructive"
+                  >
+                    <p className="font-medium">Publish failed</p>
+                    <p className="mt-1 text-destructive/90">{publishError}</p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className={cn("space-y-4", publishWizardStep !== 3 && "hidden")}>
                 {publishResult ? (
                   <>
                     <div className="flex flex-col items-center gap-2 py-1 text-center">
@@ -868,7 +1041,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
           </DialogPanel>
 
           <DialogFooter>
-            {publishWizardStep === 2 ? (
+            {publishWizardStep === 3 ? (
               <Button size="sm" onClick={() => handleOpenChange(false)}>
                 Done
               </Button>
@@ -888,29 +1061,45 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                 >
                   {publishWizardStep === 0 ? "Cancel" : "Back"}
                 </Button>
-                {publishWizardStep < 1 ? (
+                {publishWizardStep < 2 ? (
                   <Button
                     size="sm"
-                    disabled={!hasReadyPublishProvider || !selectedPublishProviderReadiness.ready}
-                    onClick={() => setPublishWizardStep((step) => Math.min(1, step + 1))}
+                    disabled={
+                      publishWizardStep === 0
+                        ? !hasReadyPublishProvider || !selectedPublishProviderReadiness.ready
+                        : !canSubmitPublishRepository
+                    }
+                    onClick={() => setPublishWizardStep((step) => Math.min(2, step + 1))}
                   >
                     Next
                   </Button>
                 ) : (
-                  <Button
-                    size="sm"
-                    disabled={!canSubmitPublishRepository}
-                    onClick={submitPublishRepository}
-                  >
-                    {publishRepositoryMutation.isPending ? (
-                      <>
-                        <Spinner className="size-3.5" aria-hidden />
-                        Publishing...
-                      </>
-                    ) : (
-                      "Publish"
-                    )}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {!publishHasCommits ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={publishRepositoryMutation.isPending}
+                        onClick={() => handleOpenChange(false)}
+                      >
+                        Commit first
+                      </Button>
+                    ) : null}
+                    <Button
+                      size="sm"
+                      disabled={!canSubmitPublishRepository}
+                      onClick={submitPublishRepository}
+                    >
+                      {publishRepositoryMutation.isPending ? (
+                        <>
+                          <Spinner className="size-3.5" aria-hidden />
+                          Publishing...
+                        </>
+                      ) : (
+                        "Publish"
+                      )}
+                    </Button>
+                  </div>
                 )}
               </>
             )}

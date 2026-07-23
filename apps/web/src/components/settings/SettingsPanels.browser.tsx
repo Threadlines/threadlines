@@ -1106,6 +1106,29 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeInTheDocument();
   });
 
+  it("shows host text-generation controls on the phone surface", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel surface="phone" />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect
+      .element(page.getByRole("heading", { name: "This Computer", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("heading", { name: "Text generation model", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("heading", { name: "Backup text generation model", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("link", { name: "View diagnostics" }))
+      .not.toBeInTheDocument();
+  });
+
   it("persists the usage analytics opt-out from About", async () => {
     const updateSettings = vi
       .fn<LocalApi["server"]["updateSettings"]>()

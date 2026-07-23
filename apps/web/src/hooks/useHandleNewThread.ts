@@ -1,6 +1,6 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import { DEFAULT_RUNTIME_MODE, type ScopedProjectRef } from "@threadlines/contracts";
-import { useParams, useRouter, useSearch } from "@tanstack/react-router";
+import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -8,12 +8,7 @@ import {
   type DraftThreadState,
   useComposerDraftStore,
 } from "../composerDraftStore";
-import {
-  isSourceControlPanelOpen,
-  parseDiffRouteSearch,
-  preserveRightPanelSearchParamsForNavigation,
-} from "../diffRouteSearch";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { newDraftId, newThreadId } from "../lib/utils";
 import {
   orderItemsByPreferredIds,
@@ -34,25 +29,11 @@ import { createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import { useSettings } from "./useSettings";
-import { useMediaQuery } from "./useMediaQuery";
 
 function useNewThreadState() {
   const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const router = useRouter();
-  const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
-  const sourceControlOpen = useSearch({
-    strict: false,
-    select: (params) =>
-      isSourceControlPanelOpen(parseDiffRouteSearch(params), {
-        defaultOpen: !shouldUseRightPanelSheet,
-      }),
-  });
-  const preserveRightPanelSearchForDraftNavigation = useCallback(
-    (previous: Record<string, unknown>) =>
-      preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
-    [sourceControlOpen],
-  );
   const getCurrentRouteTarget = useCallback(() => {
     const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
     return resolveThreadRouteTarget(currentRouteParams);
@@ -65,6 +46,7 @@ function useNewThreadState() {
         branch?: string | null;
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
+        replace?: boolean;
       },
     ): Promise<void> => {
       const {
@@ -114,7 +96,8 @@ function useNewThreadState() {
           await router.navigate({
             to: "/draft/$draftId",
             params: { draftId: storedDraftThread.draftId },
-            search: preserveRightPanelSearchForDraftNavigation,
+            search: preserveRightPanelSearchParamsForDraftNavigation,
+            replace: options?.replace ?? false,
           });
         })();
       }
@@ -161,17 +144,12 @@ function useNewThreadState() {
         await router.navigate({
           to: "/draft/$draftId",
           params: { draftId },
-          search: preserveRightPanelSearchForDraftNavigation,
+          search: preserveRightPanelSearchParamsForDraftNavigation,
+          replace: options?.replace ?? false,
         });
       })();
     },
-    [
-      getCurrentRouteTarget,
-      preserveRightPanelSearchForDraftNavigation,
-      projectGroupingSettings,
-      router,
-      projects,
-    ],
+    [getCurrentRouteTarget, projectGroupingSettings, router, projects],
   );
 }
 

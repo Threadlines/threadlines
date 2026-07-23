@@ -957,6 +957,10 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
+    expect(entries[0]).toMatchObject({
+      createdAt: "2026-02-23T00:00:02.000Z",
+      completedAt: "2026-02-23T00:00:03.000Z",
+    });
   });
 
   it("marks subagent task rows and leaves background command tasks unmarked", () => {
@@ -4086,6 +4090,9 @@ describe("deriveSubagentProgressState", () => {
         expect.objectContaining({
           id: "agent-native-1",
           agentThreadId: "agent-native-1",
+          agentPath: "/root/implementation_review",
+          parentAgentPath: null,
+          treeDepth: 0,
           role: "implementation_review",
           label: "Implementation review subagent",
           status: "running",
@@ -4113,6 +4120,73 @@ describe("deriveSubagentProgressState", () => {
         latestTurnSettled: true,
       }),
     ).toBeNull();
+  });
+
+  it("derives a stable hierarchy from native Codex agent paths", () => {
+    const spawnActivity = (input: {
+      id: string;
+      agentThreadId: string;
+      agentPath: string;
+      createdAt: string;
+    }): OrchestrationThreadActivity =>
+      makeActivity({
+        id: input.id,
+        createdAt: input.createdAt,
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              kind: "started",
+              agentThreadId: input.agentThreadId,
+              agentPath: input.agentPath,
+              tool: "spawnAgent",
+              status: "inProgress",
+              receiverThreadIds: [input.agentThreadId],
+              agentsStates: {
+                [input.agentThreadId]: { status: "running", message: null },
+              },
+            },
+          },
+        },
+      });
+
+    const state = deriveSubagentProgressState({
+      activities: [
+        spawnActivity({
+          id: "spawn-research",
+          agentThreadId: "agent-research",
+          agentPath: "/root/research",
+          createdAt: "2026-07-13T18:38:47.000Z",
+        }),
+        spawnActivity({
+          id: "spawn-database",
+          agentThreadId: "agent-database",
+          agentPath: "/root/research/database",
+          createdAt: "2026-07-13T18:38:48.000Z",
+        }),
+      ],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+
+    expect(state?.items).toMatchObject([
+      {
+        id: "agent-research",
+        agentPath: "/root/research",
+        parentAgentPath: null,
+        treeDepth: 0,
+      },
+      {
+        id: "agent-database",
+        agentPath: "/root/research/database",
+        parentAgentPath: "/root/research",
+        treeDepth: 1,
+      },
+    ]);
   });
 });
 

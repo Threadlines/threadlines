@@ -262,31 +262,52 @@ describe("GitHubCli.layer", () => {
 
   it.effect("creates repositories and parses clone URLs from create output", () =>
     Effect.gen(function* () {
-      mockRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            "✓ Created repository octocat/example-app on github.com\nhttps://github.com/octocat/example-app\n",
+      mockRun
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              "✓ Created repository octocat/example-app on github.com\nhttps://github.com/octocat/example-app\n",
+            ),
           ),
-        ),
-      );
+        )
+        .mockReturnValueOnce(Effect.succeed(processOutput("main\n")));
 
       const gh = yield* GitHubCli.GitHubCli;
       const result = yield* gh.createRepository({
         cwd: "/repo",
         repository: "octocat/example-app",
-        visibility: "private",
+        visibility: "internal",
+        description: "Agent workspace",
+        team: "platform",
       });
 
       assert.deepStrictEqual(result, {
         nameWithOwner: "octocat/example-app",
         url: "https://github.com/octocat/example-app",
         sshUrl: "git@github.com:octocat/example-app.git",
+        defaultBranch: "main",
       });
-      expect(mockRun).toHaveBeenCalledTimes(1);
+      expect(mockRun).toHaveBeenCalledTimes(2);
       expect(mockRun).toHaveBeenNthCalledWith(1, {
         operation: "GitHubCli.execute",
         command: "gh",
-        args: ["repo", "create", "octocat/example-app", "--private"],
+        args: [
+          "repo",
+          "create",
+          "octocat/example-app",
+          "--internal",
+          "--description",
+          "Agent workspace",
+          "--team",
+          "platform",
+        ],
+        cwd: "/repo",
+        timeoutMs: 30_000,
+      });
+      expect(mockRun).toHaveBeenNthCalledWith(2, {
+        operation: "GitHubCli.execute",
+        command: "gh",
+        args: ["api", "repos/octocat/example-app", "--jq", ".default_branch"],
         cwd: "/repo",
         timeoutMs: 30_000,
       });
@@ -332,7 +353,9 @@ describe("GitHubCli.layer", () => {
 
   it.effect("falls back to constructed URLs when create output omits a URL", () =>
     Effect.gen(function* () {
-      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("")));
+      mockRun
+        .mockReturnValueOnce(Effect.succeed(processOutput("")))
+        .mockReturnValueOnce(Effect.succeed(processOutput("")));
 
       const gh = yield* GitHubCli.GitHubCli;
       const result = yield* gh.createRepository({

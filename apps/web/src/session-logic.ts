@@ -84,6 +84,9 @@ export interface McpAuthReconnectAction {
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
+  /** Provider-stamped lifecycle completion time. Combined with `createdAt`
+   *  after started/completed rows collapse to produce an accurate duration. */
+  completedAt?: string;
   label: string;
   detail?: string;
   command?: string;
@@ -186,6 +189,11 @@ export type SubagentProgressStatus =
 export interface SubagentProgressItem {
   id: string;
   agentThreadId: string | null;
+  /** Stable V2 hierarchy path (for example `/root/research/database`). */
+  agentPath?: string | null;
+  parentAgentPath?: string | null;
+  /** Visual nesting below the first child of `/root`. */
+  treeDepth?: number;
   turnId: TurnId | null;
   label: string;
   nickname?: string | null;
@@ -1041,11 +1049,14 @@ function collectSubagentActivityRecords(
         stateStatus,
       });
       const parsedObjective = parseSubagentObjective(prompt);
+      const pathMetadata = deriveSubagentPathMetadata(
+        asTrimmedString(item.agentPath) ?? previous?.agentPath ?? null,
+      );
       const role =
         asTrimmedString(item.agentRole) ??
         asTrimmedString(item.role) ??
         parsedObjective.role ??
-        subagentRoleFromAgentPath(asTrimmedString(item.agentPath)) ??
+        subagentRoleFromAgentPath(pathMetadata?.agentPath ?? null) ??
         previous?.role ??
         null;
       const nickname =
@@ -1085,6 +1096,9 @@ function collectSubagentActivityRecords(
       byAgentId.set(agentId, {
         id: agentId,
         agentThreadId: pendingAgent ? null : agentId,
+        agentPath: pathMetadata?.agentPath ?? null,
+        parentAgentPath: pathMetadata?.parentAgentPath ?? null,
+        treeDepth: pathMetadata?.treeDepth ?? 0,
         turnId: activity.turnId ?? previous?.turnId ?? null,
         label,
         ...(nickname ? { nickname } : {}),
@@ -1350,6 +1364,39 @@ function subagentRoleFromAgentPath(agentPath: string | null): string | null {
     .findLast((segment) => segment.trim().length > 0)
     ?.trim();
   return lastSegment && lastSegment.toLowerCase() !== "root" ? lastSegment : null;
+}
+
+interface SubagentPathMetadata {
+  agentPath: string;
+  parentAgentPath: string | null;
+  treeDepth: number;
+}
+
+function deriveSubagentPathMetadata(agentPath: string | null): SubagentPathMetadata | null {
+  if (!agentPath) {
+    return null;
+  }
+
+  const segments = agentPath
+    .split(/[\\/]+/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const normalizedPath = `/${segments.join("/")}`;
+  const rootOffset = segments[0]?.toLowerCase() === "root" ? 1 : 0;
+  const agentSegments = segments.slice(rootOffset);
+  const treeDepth = Math.max(0, agentSegments.length - 1);
+  const parentSegments = segments.slice(0, -1);
+
+  return {
+    agentPath: normalizedPath,
+    parentAgentPath:
+      agentSegments.length > 1 && parentSegments.length > 0 ? `/${parentSegments.join("/")}` : null,
+    treeDepth,
+  };
 }
 
 function isTerminalSubagentResult(input: {
@@ -1780,6 +1827,9 @@ function toDerivedWorkLogEntry(
     activityKind: activity.kind,
     turnId: activity.turnId,
   };
+  if (activity.kind === "tool.completed") {
+    entry.completedAt = activity.createdAt;
+  }
   if (modelFallback) {
     entry.modelFallback = modelFallback;
   }
@@ -2192,11 +2242,13 @@ function mergeDerivedWorkLogEntries(
   const turnId = next.turnId ?? previous.turnId;
   const subagentTask = next.subagentTask ?? previous.subagentTask;
   const spawnedAgentIds = next.spawnedAgentIds ?? previous.spawnedAgentIds;
+  const completedAt = next.completedAt ?? previous.completedAt;
   return {
     ...previous,
     ...next,
     id: previous.id,
     createdAt: previous.createdAt,
+    ...(completedAt ? { completedAt } : {}),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),

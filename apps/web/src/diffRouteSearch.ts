@@ -107,13 +107,17 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
   };
 }
 
-export function preserveRightPanelSearchParamsForNavigation<T extends Record<string, unknown>>(
+/**
+ * Navigating into a draft carries only explicit panel state (`sourceControl`
+ * set to "1" or "0" by a user toggle or deep link). Implicit defaults are not
+ * baked into the URL; the destination route applies its own default.
+ */
+export function preserveRightPanelSearchParamsForDraftNavigation<T extends Record<string, unknown>>(
   params: T,
-  options: { sourceControlOpen: boolean },
 ) {
-  return options.sourceControlOpen
-    ? { ...stripRightPanelSearchParams(params), sourceControl: "1" as const }
-    : closeRightPanelSearchParams(params);
+  const { sourceControl } = parseDiffRouteSearch(params);
+  const stripped = stripRightPanelSearchParams(params);
+  return sourceControl ? { ...stripped, sourceControl } : stripped;
 }
 
 export function isSourceControlPanelOpen(

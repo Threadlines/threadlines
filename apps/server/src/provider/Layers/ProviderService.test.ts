@@ -5,6 +5,7 @@ import path from "node:path";
 
 import type {
   ProviderApprovalDecision,
+  ProviderExternalThreadListInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -120,6 +121,48 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       sessions.set(session.threadId, session);
       return session;
     }),
+  );
+
+  const listExternalThreads = vi.fn((input: ProviderExternalThreadListInput) =>
+    Effect.succeed({
+      data: [
+        {
+          providerInstanceId: input.providerInstanceId,
+          providerThreadId: "native-unlinked",
+          sessionId: "session-unlinked",
+          source: "cli" as const,
+          name: "Unlinked session",
+          preview: "An external Codex conversation",
+          cwd: input.cwd,
+          cliVersion: "0.145.0",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          updatedAt: "2026-07-20T00:05:00.000Z",
+          status: "idle" as const,
+          canImport: true,
+        },
+      ],
+    }),
+  );
+
+  const readExternalThread = vi.fn(
+    (input: { readonly providerThreadId: string; readonly expectedCwd: string }) =>
+      Effect.succeed({
+        candidate: {
+          providerInstanceId: codexInstanceId,
+          providerThreadId: input.providerThreadId,
+          sessionId: "session-unlinked",
+          source: "cli" as const,
+          name: "Unlinked session",
+          preview: "An external Codex conversation",
+          cwd: input.expectedCwd,
+          cliVersion: "0.145.0",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          updatedAt: "2026-07-20T00:05:00.000Z",
+          status: "idle" as const,
+          canImport: true,
+        },
+        messages: [],
+      }),
   );
 
   const sendTurn = vi.fn(
@@ -276,6 +319,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       threadGoals: provider === CODEX_DRIVER ? "supported" : "unsupported",
     },
     startSession,
+    ...(provider === CODEX_DRIVER ? { listExternalThreads, readExternalThread } : {}),
     sendTurn,
     startReview,
     interruptTurn,
@@ -317,6 +361,8 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     emit,
     updateSession,
     startSession,
+    listExternalThreads,
+    readExternalThread,
     sendTurn,
     startReview,
     interruptTurn,
@@ -978,6 +1024,60 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("filters already-linked native sessions from external discovery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const linkedThreadId = asThreadId("thread-linked-external");
+      yield* provider.startSession(linkedThreadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId: linkedThreadId,
+        cwd: "/tmp/project",
+        resumeCursor: { threadId: "native-linked" },
+        runtimeMode: "full-access",
+      });
+
+      routing.codex.listExternalThreads.mockImplementationOnce((input) =>
+        Effect.succeed({
+          data: ["native-linked", "native-unlinked"].map((providerThreadId) => ({
+            providerInstanceId: input.providerInstanceId,
+            providerThreadId,
+            sessionId: `session-${providerThreadId}`,
+            source: "cli" as const,
+            name: providerThreadId,
+            preview: providerThreadId,
+            cwd: input.cwd,
+            cliVersion: "0.145.0",
+            createdAt: "2026-07-20T00:00:00.000Z",
+            updatedAt: "2026-07-20T00:05:00.000Z",
+            status: "idle" as const,
+            canImport: true,
+          })),
+        }),
+      );
+
+      const page = yield* provider.listExternalThreads({
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+      });
+      assert.deepEqual(
+        page.data.map((candidate) => candidate.providerThreadId),
+        ["native-unlinked"],
+      );
+
+      routing.codex.readExternalThread.mockClear();
+      const linkedRead = yield* provider
+        .readExternalThread({
+          providerInstanceId: codexInstanceId,
+          providerThreadId: "native-linked",
+          expectedCwd: "/tmp/project",
+        })
+        .pipe(Effect.result);
+      assert.equal(linkedRead._tag, "Failure");
+      assert.equal(routing.codex.readExternalThread.mock.calls.length, 0);
     }),
   );
 

@@ -294,6 +294,16 @@ function makeForkCommand(input: {
       messageId: MessageId.make("message-fork"),
       role: "user",
       text: "Continue this in the project.",
+      attachments: [
+        {
+          type: "image",
+          id: "fork-image",
+          name: "fork.png",
+          mimeType: "image/png",
+          sizeBytes: 128,
+        },
+      ],
+      skills: [{ name: "review", path: "/skills/review/SKILL.md" }],
     },
     modelSelection,
     runtimeMode: "full-access",
@@ -387,6 +397,20 @@ describe("decider continue-in-project forks", () => {
       events[0]?.type === "thread.created" &&
         (events[0].payload as { projectId: string }).projectId,
     ).toBe("project-workspace");
+    expect(events.find((event) => event.type === "thread.message-sent")?.payload).toMatchObject({
+      attachments: [
+        {
+          id: "fork-image",
+          name: "fork.png",
+        },
+      ],
+      skills: [{ name: "review", path: "/skills/review/SKILL.md" }],
+    });
+    expect(
+      events.find((event) => event.type === "thread.turn-start-requested")?.payload,
+    ).toMatchObject({
+      skills: [{ name: "review", path: "/skills/review/SKILL.md" }],
+    });
   });
 
   it("rejects cross-project forks from workspace threads", async () => {

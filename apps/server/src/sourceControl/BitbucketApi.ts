@@ -159,6 +159,7 @@ export interface BitbucketApiShape {
     readonly cwd: string;
     readonly repository: string;
     readonly visibility: SourceControlRepositoryVisibility;
+    readonly description?: string;
   }) => Effect.Effect<SourceControlRepositoryCloneUrls, BitbucketApiError>;
   readonly createPullRequest: (input: {
     readonly cwd: string;
@@ -280,6 +281,15 @@ function normalizeRepositoryCloneUrls(
     nameWithOwner: raw.full_name,
     url: httpClone ?? raw.links.html?.href ?? raw.full_name,
     sshUrl: sshClone ?? httpClone ?? raw.full_name,
+  };
+}
+
+function normalizeCreatedRepositoryCloneUrls(
+  raw: typeof RawBitbucketRepositorySchema.Type,
+): SourceControlRepositoryCloneUrls {
+  return {
+    ...normalizeRepositoryCloneUrls(raw),
+    ...(raw.mainbranch?.name ? { defaultBranch: raw.mainbranch.name } : {}),
   };
 }
 
@@ -642,7 +652,15 @@ export const make = Effect.fn("makeBitbucketApi")(function* () {
     getRepositoryCloneUrls: (input) =>
       getRepository(input).pipe(Effect.map(normalizeRepositoryCloneUrls)),
     createRepository: (input) =>
-      requireRepositoryLocator("createRepository", input.repository).pipe(
+      (input.visibility === "internal"
+        ? Effect.fail(
+            new BitbucketApiError({
+              operation: "createRepository",
+              detail: "Bitbucket repositories do not support internal visibility.",
+            }),
+          )
+        : requireRepositoryLocator("createRepository", input.repository)
+      ).pipe(
         Effect.flatMap((repository) =>
           executeJson(
             "createRepository",
@@ -654,12 +672,13 @@ export const make = Effect.fn("makeBitbucketApi")(function* () {
               HttpClientRequest.bodyJsonUnsafe({
                 scm: "git",
                 is_private: input.visibility === "private",
+                ...(input.description ? { description: input.description } : {}),
               }),
             ),
             RawBitbucketRepositorySchema,
           ),
         ),
-        Effect.map(normalizeRepositoryCloneUrls),
+        Effect.map(normalizeCreatedRepositoryCloneUrls),
       ),
     createPullRequest: (input) =>
       Effect.gen(function* () {

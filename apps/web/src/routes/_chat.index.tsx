@@ -1,4 +1,6 @@
+import { scopedProjectKey } from "@threadlines/client-runtime";
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useEffectEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import {
@@ -12,6 +14,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { selectProjectsAcrossEnvironments, useStore } from "../store";
+import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { deriveHostedStaticIndexState } from "./-hostedStaticIndexState";
 
 function ChatIndexRouteView() {
@@ -48,7 +51,25 @@ function ChatIndexRouteView() {
     }
   }
 
-  return <NoActiveThreadState />;
+  return <DefaultProjectDraftRedirect />;
+}
+
+function DefaultProjectDraftRedirect() {
+  const { defaultProjectRef, handleNewThread } = useHandleNewThread();
+  const defaultProjectKey = defaultProjectRef ? scopedProjectKey(defaultProjectRef) : null;
+  const openDefaultProjectDraft = useEffectEvent(() => {
+    if (defaultProjectRef) {
+      void handleNewThread(defaultProjectRef, { replace: true });
+    }
+  });
+
+  useEffect(() => {
+    if (defaultProjectKey) {
+      openDefaultProjectDraft();
+    }
+  }, [defaultProjectKey]);
+
+  return defaultProjectRef === null ? <NoActiveThreadState /> : null;
 }
 
 export const Route = createFileRoute("/_chat/")({

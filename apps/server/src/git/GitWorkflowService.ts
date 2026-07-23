@@ -1,3 +1,5 @@
+import * as nodePath from "node:path";
+
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -51,7 +53,7 @@ import {
 
 import { GitManager, type GitRunStackedActionOptions } from "./GitManager.ts";
 import { GitVcsDriver, type GitRemoteStatusOptions } from "../vcs/GitVcsDriver.ts";
-import { VcsDriverRegistry } from "../vcs/VcsDriverRegistry.ts";
+import { VcsDriverRegistry, type VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
 
 export interface GitWorkflowServiceShape {
   readonly status: (
@@ -130,6 +132,20 @@ export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
   GitWorkflowServiceShape
 >()("threadlines/git/GitWorkflowService") {}
+
+function withRepositoryContext<T extends VcsStatusLocalResult>(
+  status: T,
+  cwd: string,
+  handle: VcsDriverHandle,
+): T & Pick<VcsStatusLocalResult, "repositoryRoot" | "repositoryRootRelation"> {
+  const repositoryRoot = handle.repository.rootPath;
+  return {
+    ...status,
+    repositoryRoot,
+    repositoryRootRelation:
+      nodePath.resolve(repositoryRoot) === nodePath.resolve(cwd) ? "same" : "ancestor",
+  };
+}
 
 const unsupportedGitWorkflow = (operation: string, cwd: string, detail: string) =>
   new GitManagerError({
@@ -256,7 +272,7 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
           ),
         );
       if (!handle) {
-        return false;
+        return null;
       }
       if (handle.kind !== "git") {
         return yield* unsupportedGitWorkflow(
@@ -265,7 +281,7 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
           `The ${operation} workflow currently supports Git repositories only; detected ${handle.kind}.`,
         );
       }
-      return true;
+      return handle;
     },
   );
 
@@ -307,22 +323,28 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
   return GitWorkflowService.of({
     status: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.status(input) : Effect.succeed(nonRepositoryStatus()),
+        Effect.flatMap((handle) =>
+          handle
+            ? gitManager
+                .status(input)
+                .pipe(Effect.map((status) => withRepositoryContext(status, input.cwd, handle)))
+            : Effect.succeed(nonRepositoryStatus()),
         ),
       ),
     localStatus: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository
-            ? gitManager.localStatus(input)
+        Effect.flatMap((handle) =>
+          handle
+            ? gitManager
+                .localStatus(input)
+                .pipe(Effect.map((status) => withRepositoryContext(status, input.cwd, handle)))
             : Effect.succeed(nonRepositoryLocalStatus()),
         ),
       ),
     remoteStatus: (input, options) =>
       detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
+        Effect.flatMap((handle) =>
+          handle ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
         ),
       ),
     invalidateLocalStatus: gitManager.invalidateLocalStatus,

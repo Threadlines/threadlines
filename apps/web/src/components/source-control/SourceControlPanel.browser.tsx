@@ -368,6 +368,56 @@ describe("SourceControlPanel changes", () => {
     await __resetLocalApiForTests();
   });
 
+  it("warns about an ancestor repository and unlocks mutations only after confirmation", async () => {
+    const stageChanges: EnvironmentApi["vcs"]["stageChanges"] = vi.fn(async (input) => ({
+      stagedPaths: input.filePaths,
+    }));
+    const mounted = await renderPanel({
+      status: makeStatus({
+        repositoryRoot: "/repo",
+        repositoryRootRelation: "ancestor",
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [
+            {
+              path: "../sibling/app.ts",
+              indexStatus: null,
+              worktreeStatus: "untracked",
+              insertions: 4,
+              deletions: 0,
+            },
+          ],
+          insertions: 4,
+          deletions: 0,
+        },
+      }),
+      environmentApi: makeEnvironmentApi({ vcs: { stageChanges } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Parent repository detected")).toBeVisible();
+      await expect.element(page.getByText("/repo", { exact: true })).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Initialize here" })).toBeVisible();
+
+      const stageButton = page.getByRole("button", {
+        name: "Stage changes to ../sibling/app.ts",
+      });
+      await expect.element(stageButton).toBeDisabled();
+
+      await page.getByRole("button", { name: "Use parent repository" }).click();
+      await expect.element(stageButton).not.toBeDisabled();
+      await stageButton.click();
+      await vi.waitFor(() => {
+        expect(stageChanges).toHaveBeenCalledWith({
+          cwd: CWD,
+          filePaths: ["../sibling/app.ts"],
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("confirms and discards a selected file change", async () => {
     const discardChanges: EnvironmentApi["vcs"]["discardChanges"] = vi.fn(async (input) => ({
       discardedPaths: input.filePaths,

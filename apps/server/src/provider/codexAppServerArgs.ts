@@ -11,6 +11,8 @@ import { planCliSpawn } from "../cliSpawn.ts";
  *
  * Threadlines opts into this feature deliberately, so suppress the generic
  * unstable-feature warning Codex otherwise emits when each thread starts.
+ * Codex 0.145.0 does not expose a supported session-source override for
+ * app-server, so external-history de-duplication uses native thread IDs.
  */
 export const CODEX_APP_SERVER_ARGS: ReadonlyArray<string> = [
   "app-server",

@@ -45,6 +45,7 @@ export interface GitLabRepositoryCloneUrls {
   readonly nameWithOwner: string;
   readonly url: string;
   readonly sshUrl: string;
+  readonly defaultBranch?: string;
 }
 
 export interface GitLabCliShape {
@@ -76,6 +77,7 @@ export interface GitLabCliShape {
     readonly cwd: string;
     readonly repository: string;
     readonly visibility: SourceControlRepositoryVisibility;
+    readonly description?: string;
   }) => Effect.Effect<GitLabRepositoryCloneUrls, GitLabCliError>;
 
   readonly createMergeRequest: (input: {
@@ -167,6 +169,7 @@ const RawGitLabRepositoryCloneUrlsSchema = Schema.Struct({
   web_url: TrimmedNonEmptyString,
   http_url_to_repo: TrimmedNonEmptyString,
   ssh_url_to_repo: TrimmedNonEmptyString,
+  default_branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
 const RawGitLabDefaultBranchSchema = Schema.Struct({
@@ -184,6 +187,15 @@ function normalizeRepositoryCloneUrls(
     nameWithOwner: raw.path_with_namespace,
     url: raw.web_url,
     sshUrl: raw.ssh_url_to_repo,
+  };
+}
+
+function normalizeCreatedRepositoryCloneUrls(
+  raw: Schema.Schema.Type<typeof RawGitLabRepositoryCloneUrlsSchema>,
+): GitLabRepositoryCloneUrls {
+  return {
+    ...normalizeRepositoryCloneUrls(raw),
+    ...(raw.default_branch ? { defaultBranch: raw.default_branch } : {}),
   };
 }
 
@@ -386,6 +398,7 @@ export const make = Effect.fn("makeGitLabCli")(function* () {
               `name=${projectPath}`,
               "--raw-field",
               `visibility=${input.visibility}`,
+              ...(input.description ? ["--raw-field", `description=${input.description}`] : []),
               ...(resolvedNamespaceId === null
                 ? []
                 : ["--raw-field", `namespace_id=${resolvedNamespaceId}`]),
@@ -401,7 +414,7 @@ export const make = Effect.fn("makeGitLabCli")(function* () {
             "GitLab CLI returned invalid repository JSON.",
           ),
         ),
-        Effect.map(normalizeRepositoryCloneUrls),
+        Effect.map(normalizeCreatedRepositoryCloneUrls),
       );
     },
     createMergeRequest: (input) => {

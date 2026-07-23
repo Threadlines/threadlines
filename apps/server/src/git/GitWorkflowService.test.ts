@@ -19,15 +19,51 @@ function makeLayer(input: { readonly detect: VcsDriverRegistry.VcsDriverRegistry
   );
 }
 
-function makeGitHandle(): VcsDriverRegistry.VcsDriverHandle {
+function makeGitHandle(rootPath = "/repo"): VcsDriverRegistry.VcsDriverHandle {
   return {
     kind: "git",
-    repository: {} as VcsDriverRegistry.VcsDriverHandle["repository"],
+    repository: {
+      rootPath,
+    } as VcsDriverRegistry.VcsDriverHandle["repository"],
     driver: {} as VcsDriverRegistry.VcsDriverHandle["driver"],
   };
 }
 
 describe("GitWorkflowService", () => {
+  it.effect("reports when the detected repository root is above the requested cwd", () => {
+    const localStatus = vi.fn(() =>
+      Effect.succeed({
+        isRepo: true,
+        hasPrimaryRemote: false,
+        isDefaultRef: true,
+        refName: "main",
+        headSha: null,
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+      }),
+    );
+    const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          detect: () => Effect.succeed(makeGitHandle("/repo")),
+        }),
+      ),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(Layer.mock(GitManager.GitManager)({ localStatus })),
+    );
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const rootStatus = yield* workflow.localStatus({ cwd: "/repo" });
+      const nestedStatus = yield* workflow.localStatus({ cwd: "/repo/apps/web" });
+
+      assert.equal(rootStatus.repositoryRoot, "/repo");
+      assert.equal(rootStatus.repositoryRootRelation, "same");
+      assert.equal(nestedStatus.repositoryRoot, "/repo");
+      assert.equal(nestedStatus.repositoryRootRelation, "ancestor");
+    }).pipe(Effect.provide(testLayer));
+  });
+
   it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
