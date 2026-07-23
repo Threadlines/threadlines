@@ -537,17 +537,25 @@ describe("providerMaintenanceRunner", () => {
         const result = yield* updater.updateProvider(CLAUDE_DRIVER);
 
         assert.deepStrictEqual(
-          calls.map(({ args, ...call }) => ({
-            ...call,
-            args: args.slice(0, 2),
-            encodedCommand:
-              call.kind === "update" ? (args[2]?.length ?? 0) : args[2] ? "present" : "missing",
-          })),
+          calls.map(({ args, ...call }) => {
+            const encodedCommandIndex = args.indexOf("-EncodedCommand");
+            const encodedCommand = args[encodedCommandIndex + 1];
+            return {
+              ...call,
+              args: args.slice(0, encodedCommandIndex + 1),
+              encodedCommand:
+                call.kind === "update"
+                  ? (encodedCommand?.length ?? 0)
+                  : encodedCommand
+                    ? "present"
+                    : "missing",
+            };
+          }),
           [
             {
               kind: "preflight",
               command: "powershell.exe",
-              args: ["-NoProfile", "-EncodedCommand"],
+              args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand"],
               encodedCommand: "present",
               shell: undefined,
               windowsHide: true,
