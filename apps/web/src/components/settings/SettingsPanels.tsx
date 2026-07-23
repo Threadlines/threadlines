@@ -950,195 +950,199 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
       </SettingsSection>
 
-      {!isPhoneSurface ? (
-        <SettingsSection title="Agent Behavior">
-          <AssistantStreamingRow />
+      <SettingsSection title={isPhoneSurface ? "This Computer" : "Agent Behavior"}>
+        <AssistantStreamingRow />
 
-          <PreventSleepRow />
+        <PreventSleepRow />
 
-          <SettingsRow
-            title="Text generation model"
-            description="Configure the model used for generated thread titles, branch names, commit messages, and PR text."
-            resetAction={
-              isGitWritingModelDirty ? (
-                <SettingResetButton
-                  label="text generation model"
-                  onClick={() =>
-                    updateSettings({
-                      textGenerationModelSelection:
-                        DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <ProviderModelPicker
-                  activeInstanceId={textGenInstanceId}
-                  model={textGenModel}
-                  lockedProvider={null}
-                  instanceEntries={gitModelInstanceEntries}
-                  modelOptionsByInstance={gitModelOptionsByInstance}
-                  triggerVariant="outline"
-                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                  onInstanceModelChange={(instanceId, model) => {
-                    const nextPrimarySelection = resolveAppModelSelectionState(
+        <SettingsRow
+          title="Text generation model"
+          description="Configure the model used for generated thread titles, branch names, commit messages, and PR text."
+          resetAction={
+            isGitWritingModelDirty ? (
+              <SettingResetButton
+                label="text generation model"
+                onClick={() =>
+                  updateSettings({
+                    textGenerationModelSelection:
+                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <ProviderModelPicker
+                activeInstanceId={textGenInstanceId}
+                model={textGenModel}
+                lockedProvider={null}
+                instanceEntries={gitModelInstanceEntries}
+                modelOptionsByInstance={gitModelOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  const nextPrimarySelection = resolveAppModelSelectionState(
+                    {
+                      ...settings,
+                      textGenerationModelSelection: createModelSelection(instanceId, model),
+                    },
+                    serverProviders,
+                  );
+                  updateSettings({
+                    textGenerationModelSelection: nextPrimarySelection,
+                    ...(settings.textGenerationBackupModelSelection !== null
+                      ? {
+                          textGenerationBackupModelSelection:
+                            resolveTextGenerationBackupModelSelectionState(
+                              {
+                                ...settings,
+                                textGenerationModelSelection: nextPrimarySelection,
+                              },
+                              serverProviders,
+                              nextPrimarySelection,
+                            ),
+                        }
+                      : {}),
+                  });
+                }}
+              />
+              <TraitsPicker
+                provider={textGenProvider}
+                models={
+                  // Use the exact instance's models (rather than the
+                  // first-kind-match) so a custom text-gen instance like
+                  // `codex_personal` gets its own model list, not the
+                  // default Codex one.
+                  textGenInstanceEntry?.models ?? []
+                }
+                model={textGenModel}
+                modelOptions={textGenModelOptions}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onModelOptionsChange={(nextOptions) => {
+                  updateSettings({
+                    textGenerationModelSelection: resolveAppModelSelectionState(
                       {
                         ...settings,
-                        textGenerationModelSelection: createModelSelection(instanceId, model),
+                        textGenerationModelSelection: createModelSelection(
+                          textGenInstanceId,
+                          textGenModel,
+                          nextOptions,
+                        ),
                       },
                       serverProviders,
-                    );
-                    updateSettings({
-                      textGenerationModelSelection: nextPrimarySelection,
-                      ...(settings.textGenerationBackupModelSelection !== null
-                        ? {
-                            textGenerationBackupModelSelection:
-                              resolveTextGenerationBackupModelSelectionState(
-                                {
-                                  ...settings,
-                                  textGenerationModelSelection: nextPrimarySelection,
-                                },
-                                serverProviders,
-                                nextPrimarySelection,
-                              ),
-                          }
-                        : {}),
-                    });
-                  }}
-                />
-                <TraitsPicker
-                  provider={textGenProvider}
-                  models={
-                    // Use the exact instance's models (rather than the
-                    // first-kind-match) so a custom text-gen instance like
-                    // `codex_personal` gets its own model list, not the
-                    // default Codex one.
-                    textGenInstanceEntry?.models ?? []
-                  }
-                  model={textGenModel}
-                  modelOptions={textGenModelOptions}
-                  triggerVariant="outline"
-                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                  onModelOptionsChange={(nextOptions) => {
-                    updateSettings({
-                      textGenerationModelSelection: resolveAppModelSelectionState(
+                    ),
+                  });
+                }}
+              />
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Backup text generation model"
+          description="Retry generated thread titles, branch names, commit messages, and PR text with a different provider when the primary provider fails."
+          resetAction={
+            isGitWritingBackupModelDirty ? (
+              <SettingResetButton
+                label="backup text generation model"
+                onClick={() =>
+                  updateSettings({
+                    textGenerationBackupModelSelection:
+                      DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              {textGenerationBackupModelSelection &&
+              textGenBackupInstanceId &&
+              textGenBackupModel ? (
+                <>
+                  <ProviderModelPicker
+                    activeInstanceId={textGenBackupInstanceId}
+                    model={textGenBackupModel}
+                    lockedProvider={null}
+                    instanceEntries={gitBackupModelInstanceEntries}
+                    modelOptionsByInstance={gitModelOptionsByInstance}
+                    triggerVariant="outline"
+                    triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                    onInstanceModelChange={(instanceId, model) => {
+                      const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
                         {
                           ...settings,
-                          textGenerationModelSelection: createModelSelection(
-                            textGenInstanceId,
-                            textGenModel,
+                          textGenerationBackupModelSelection: createModelSelection(
+                            instanceId,
+                            model,
+                          ),
+                        },
+                        serverProviders,
+                        textGenerationModelSelection,
+                      );
+                      if (!nextBackupSelection) return;
+                      updateSettings({
+                        textGenerationBackupModelSelection: nextBackupSelection,
+                      });
+                    }}
+                  />
+                  <TraitsPicker
+                    provider={textGenBackupProvider}
+                    models={textGenBackupInstanceEntry?.models ?? []}
+                    model={textGenBackupModel}
+                    modelOptions={textGenBackupModelOptions}
+                    triggerVariant="outline"
+                    triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                    onModelOptionsChange={(nextOptions) => {
+                      const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
+                        {
+                          ...settings,
+                          textGenerationBackupModelSelection: createModelSelection(
+                            textGenBackupInstanceId,
+                            textGenBackupModel,
                             nextOptions,
                           ),
                         },
                         serverProviders,
-                      ),
-                    });
-                  }}
-                />
-              </div>
-            }
-          />
-
-          <SettingsRow
-            title="Backup text generation model"
-            description="Retry generated thread titles, branch names, commit messages, and PR text with a different provider when the primary provider fails."
-            resetAction={
-              isGitWritingBackupModelDirty ? (
-                <SettingResetButton
-                  label="backup text generation model"
+                        textGenerationModelSelection,
+                      );
+                      if (!nextBackupSelection) return;
+                      updateSettings({
+                        textGenerationBackupModelSelection: nextBackupSelection,
+                      });
+                    }}
+                  />
+                </>
+              ) : defaultTextGenerationBackupModelSelection ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
                   onClick={() =>
                     updateSettings({
-                      textGenerationBackupModelSelection:
-                        DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
+                      textGenerationBackupModelSelection: defaultTextGenerationBackupModelSelection,
                     })
                   }
-                />
-              ) : null
-            }
-            control={
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                {textGenerationBackupModelSelection &&
-                textGenBackupInstanceId &&
-                textGenBackupModel ? (
-                  <>
-                    <ProviderModelPicker
-                      activeInstanceId={textGenBackupInstanceId}
-                      model={textGenBackupModel}
-                      lockedProvider={null}
-                      instanceEntries={gitBackupModelInstanceEntries}
-                      modelOptionsByInstance={gitModelOptionsByInstance}
-                      triggerVariant="outline"
-                      triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                      onInstanceModelChange={(instanceId, model) => {
-                        const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
-                          {
-                            ...settings,
-                            textGenerationBackupModelSelection: createModelSelection(
-                              instanceId,
-                              model,
-                            ),
-                          },
-                          serverProviders,
-                          textGenerationModelSelection,
-                        );
-                        if (!nextBackupSelection) return;
-                        updateSettings({
-                          textGenerationBackupModelSelection: nextBackupSelection,
-                        });
-                      }}
-                    />
-                    <TraitsPicker
-                      provider={textGenBackupProvider}
-                      models={textGenBackupInstanceEntry?.models ?? []}
-                      model={textGenBackupModel}
-                      modelOptions={textGenBackupModelOptions}
-                      triggerVariant="outline"
-                      triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                      onModelOptionsChange={(nextOptions) => {
-                        const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
-                          {
-                            ...settings,
-                            textGenerationBackupModelSelection: createModelSelection(
-                              textGenBackupInstanceId,
-                              textGenBackupModel,
-                              nextOptions,
-                            ),
-                          },
-                          serverProviders,
-                          textGenerationModelSelection,
-                        );
-                        if (!nextBackupSelection) return;
-                        updateSettings({
-                          textGenerationBackupModelSelection: nextBackupSelection,
-                        });
-                      }}
-                    />
-                  </>
-                ) : defaultTextGenerationBackupModelSelection ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5"
-                    onClick={() =>
-                      updateSettings({
-                        textGenerationBackupModelSelection:
-                          defaultTextGenerationBackupModelSelection,
-                      })
-                    }
-                  >
-                    <PlusIcon className="size-3.5" />
-                    <span>Add backup</span>
-                  </Button>
-                ) : (
-                  <span className="text-xs text-muted-foreground">No different provider ready</span>
-                )}
-              </div>
-            }
-          />
-        </SettingsSection>
-      ) : null}
+                >
+                  <PlusIcon className="size-3.5" />
+                  <span>Add backup</span>
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">No different provider ready</span>
+              )}
+            </div>
+          }
+        />
+
+        {isPhoneSurface ? (
+          <>
+            <DefaultThreadEnvModeRow />
+            <UsageAnalyticsRow />
+          </>
+        ) : null}
+      </SettingsSection>
 
       <SettingsSection title="Projects & Threads">
         {!isPhoneSurface ? (
@@ -1227,18 +1231,6 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
         />
       </SettingsSection>
-
-      {isPhoneSurface ? (
-        // Server-authoritative settings that matter most while away from the
-        // computer: keeping it awake mid-turn, streaming, and the default
-        // workspace mode for threads started remotely.
-        <SettingsSection title="This Computer">
-          <PreventSleepRow />
-          <AssistantStreamingRow />
-          <DefaultThreadEnvModeRow />
-          <UsageAnalyticsRow />
-        </SettingsSection>
-      ) : null}
 
       <SettingsSection title="About">
         {isElectron ? (
@@ -1582,6 +1574,10 @@ export function ProviderSettingsPanel() {
         contentClassName="overflow-visible rounded-none border-0 bg-transparent shadow-none before:hidden dark:shadow-none"
       >
         <div className="space-y-2.5">
+          <p className="px-1 text-xs leading-relaxed text-muted-foreground">
+            Account, usage, and configuration apply to the paired computer. Favorites and model
+            ordering are saved on this device.
+          </p>
           {rows.map((row) => {
             const driverOption = getDriverOption(row.driver);
             const liveProvider = serverProviders.find(

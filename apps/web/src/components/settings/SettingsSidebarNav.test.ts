@@ -25,6 +25,15 @@ describe("SETTINGS_NAV_ITEMS", () => {
 
   it("keeps hosted phone navigation to phone-safe settings sections", () => {
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
+      "/settings/general",
+      "/settings/providers",
+      "/settings/plugins",
+      "/settings/instructions",
+      "/settings/source-control",
+      "/settings/connections",
+      "/settings/archived",
+    ]);
+    expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
       ...HOSTED_STATIC_SETTINGS_SECTION_PATHS,
     ]);
   });
@@ -97,22 +106,22 @@ describe("resolveSettingsEntryRedirect", () => {
     ).toBeNull();
   });
 
-  it("redirects hosted static sessions away from desktop-only sections", () => {
+  it("allows remote-capable hosted sections and redirects desktop-only sections", () => {
     expect(
       resolveSettingsEntryRedirect({
         pathname: "/settings/providers",
         isHostedStatic: true,
         isMobileViewport: true,
       }),
-    ).toBe(HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH);
+    ).toBeNull();
 
     expect(
       resolveSettingsEntryRedirect({
-        pathname: "/settings/connections",
+        pathname: "/settings/keybindings",
         isHostedStatic: true,
         isMobileViewport: true,
       }),
-    ).toBeNull();
+    ).toBe(HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH);
   });
 
   it("renders visible sections without redirecting", () => {

@@ -484,9 +484,38 @@ export function AgentInstructionsSettingsPanel() {
         }
       >
         {instructionFiles.length > 0 ? (
-          <div className="grid h-[min(42rem,calc(100dvh-16rem))] min-h-120 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-1">
+          <div className="grid h-[58dvh] min-h-[22rem] max-h-[32rem] grid-rows-[auto_minmax(0,1fr)] sm:h-[min(42rem,calc(100dvh-16rem))] sm:min-h-120 sm:max-h-none lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-1">
             <div className="min-w-0 border-b border-border/60 bg-muted/10 lg:border-b-0 lg:border-r">
-              <div className="flex gap-1 overflow-x-auto p-2 lg:h-full lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto">
+              <div className="p-2 sm:hidden">
+                <Select
+                  value={activeFile ? instructionFileKey(activeFile) : ""}
+                  onValueChange={(value) => {
+                    if (value) setActiveFileKey(value);
+                  }}
+                >
+                  <SelectTrigger className="w-full" aria-label="Instruction file">
+                    <SelectValue>
+                      {activeFile
+                        ? `${instructionFileLabel(activeFile)}${
+                            dirtyFileKeys.has(instructionFileKey(activeFile)) ? " • Edited" : ""
+                          }`
+                        : "Select a file"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {instructionFiles.map((file) => {
+                      const key = instructionFileKey(file);
+                      return (
+                        <SelectItem key={key} hideIndicator value={key}>
+                          {instructionFileLabel(file)}
+                          {dirtyFileKeys.has(key) ? " • Edited" : ""}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectPopup>
+                </Select>
+              </div>
+              <div className="hidden gap-1 overflow-x-auto p-2 sm:flex lg:h-full lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto">
                 {instructionFiles.map((file) => {
                   const key = instructionFileKey(file);
                   return (

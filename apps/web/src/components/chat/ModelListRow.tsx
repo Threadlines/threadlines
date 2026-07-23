@@ -74,11 +74,6 @@ export const ModelListRow = memo(function ModelListRow(props: {
             data-model-picker-model-name
           >
             <span className="truncate">{modelLabel}</span>
-            {props.model.isDefault === true ? (
-              <span className="shrink-0 font-mono text-[9px] font-normal tracking-[0.08em] text-muted-foreground/65 uppercase">
-                Default
-              </span>
-            ) : null}
             {/* Inline selection check (no left gutter — rows keep their
                 full width and unselected rows don't carry an empty column). */}
             <CheckIcon
