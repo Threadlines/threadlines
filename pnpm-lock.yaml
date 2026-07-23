@@ -44,7 +44,7 @@ overrides:
   '@effect/platform-node': 4.0.0-beta.98
   '@effect/platform-node-shared': 4.0.0-beta.97
   '@effect/sql-sqlite-bun': 4.0.0-beta.97
-  '@effect/vitest': 4.0.0-beta.97
+  '@effect/vitest': 4.0.0-beta.100
   '@types/node': ^24.10.13
   effect: 4.0.0-beta.97
   fast-uri: 3.1.4
@@ -117,8 +117,8 @@ importers:
         version: 6.8.9
     devDependencies:
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@types/node':
         specifier: ^24.10.13
         version: 24.13.3
@@ -210,8 +210,8 @@ importers:
         version: 1.1.0
     devDependencies:
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@threadlines/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -407,8 +407,8 @@ importers:
         version: 4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2)
     devDependencies:
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       oxlint:
         specifier: ^1.74.0
         version: 1.74.0(oxlint-tsgolint@0.24.0)(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.61.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0))
@@ -457,8 +457,8 @@ importers:
         version: 4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2)
     devDependencies:
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -485,8 +485,8 @@ importers:
         specifier: 4.0.0-beta.98
         version: 4.0.0-beta.98(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(ioredis@5.11.1)
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@types/node':
         specifier: ^24.10.13
         version: 24.13.3
@@ -516,8 +516,8 @@ importers:
         specifier: 4.0.0-beta.98
         version: 4.0.0-beta.98(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(ioredis@5.11.1)
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@types/node':
         specifier: ^24.10.13
         version: 24.13.3
@@ -550,8 +550,8 @@ importers:
         specifier: 4.0.0-beta.98
         version: 4.0.0-beta.98(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(ioredis@5.11.1)
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@types/node':
         specifier: ^24.10.13
         version: 24.13.3
@@ -584,8 +584,8 @@ importers:
         specifier: 4.0.0-beta.98
         version: 4.0.0-beta.98(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(ioredis@5.11.1)
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@types/node':
         specifier: ^24.10.13
         version: 24.13.3
@@ -612,8 +612,8 @@ importers:
         version: 4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2)
     devDependencies:
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       '@types/node':
         specifier: ^24.10.13
         version: 24.13.3
@@ -655,8 +655,8 @@ importers:
         version: 2.9.0
     devDependencies:
       '@effect/vitest':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1137,8 +1137,8 @@ packages:
     resolution: {integrity: sha512-zPQMHBdCN1k7Jbxjxq0HVAbzsZd+LAoRPzBEZ3F4y/uxNK0K/XGvFXUUw/CUAsD6rhUtC2VahZY1tp0owb5lgg==}
     hasBin: true
 
-  '@effect/vitest@4.0.0-beta.97':
-    resolution: {integrity: sha512-1dH6LBWSZyqnTV7ZO+yIpPGPf/xd7RtFfvQ4ZpTy9elzFN+wr1YBFpHSCr8+BfXOml6b8g9Mtj5eDy1qjbizUA==}
+  '@effect/vitest@4.0.0-beta.100':
+    resolution: {integrity: sha512-WoxrzPuxc+4QXb+7D1j8PwaBb9zVxHM2yw0sDz7fXij1Sx7X7T6LkYJ7m2xzWbfskIXxIdXVA+NnDSF8qAOGsw==}
     peerDependencies:
       effect: 4.0.0-beta.97
       vitest: 4.1.10
@@ -6579,7 +6579,7 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.13.2
       '@effect/tsgo-win32-x64': 0.13.2
 
-  '@effect/vitest@4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)':
+  '@effect/vitest@4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)':
     dependencies:
       effect: 4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2)
       vitest: 4.1.10(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.61.1)(vitest@4.1.10))(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))
