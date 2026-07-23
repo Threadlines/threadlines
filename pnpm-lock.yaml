@@ -43,7 +43,7 @@ overrides:
   '@effect/platform-bun': 4.0.0-beta.98
   '@effect/platform-node': 4.0.0-beta.98
   '@effect/platform-node-shared': 4.0.0-beta.97
-  '@effect/sql-sqlite-bun': 4.0.0-beta.97
+  '@effect/sql-sqlite-bun': 4.0.0-beta.100
   '@effect/vitest': 4.0.0-beta.97
   '@types/node': ^24.10.13
   effect: 4.0.0-beta.97
@@ -194,8 +194,8 @@ importers:
         specifier: 4.0.0-beta.97
         version: 4.0.0-beta.97(patch_hash=32a956569b355a7617af71fb5384e5ad2e40a302999506093492facea434779c)(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))
       '@effect/sql-sqlite-bun':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))
       '@opencode-ai/sdk':
         specifier: ^1.18.3
         version: 1.18.3
@@ -1093,8 +1093,8 @@ packages:
       effect: 4.0.0-beta.97
       ioredis: ^5.7.0
 
-  '@effect/sql-sqlite-bun@4.0.0-beta.97':
-    resolution: {integrity: sha512-bLEcfiYoW1tQTmBU21/DBbNBlZ7kz5gTAr99OlGL9ObvdmCU64KnzR+vyPFsOACW6/+Yx5goNZICFoUoNjEGug==}
+  '@effect/sql-sqlite-bun@4.0.0-beta.100':
+    resolution: {integrity: sha512-SRzj2IWKTWVYUOW6WJgrj6xg/nkBP4KumLMPQ9EvslBav3zJcwYkJveWgYFWgsIDu805VAEP66N9xBh/DbE+pA==}
     peerDependencies:
       effect: 4.0.0-beta.97
 
@@ -6544,7 +6544,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@effect/sql-sqlite-bun@4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))':
+  '@effect/sql-sqlite-bun@4.0.0-beta.100(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))':
     dependencies:
       effect: 4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2)
 
