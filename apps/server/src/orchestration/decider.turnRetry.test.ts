@@ -152,6 +152,7 @@ describe("decider turn retry", () => {
       payload: {
         threadId,
         messageId: MessageId.make("message-user-2"),
+        providerMessageId: expect.any(String),
         runtimeMode: "full-access",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         skills: [
@@ -162,6 +163,10 @@ describe("decider turn retry", () => {
         ],
       },
     });
+    if (events[1]?.type !== "thread.turn-start-requested") {
+      throw new Error("Expected retry turn start event.");
+    }
+    expect(events[1].payload.providerMessageId).not.toBe(events[1].payload.messageId);
   });
 
   it("emits events the projector can apply", async () => {
@@ -245,6 +250,63 @@ describe("decider turn retry", () => {
         }),
       ),
     ).rejects.toThrow("has no failed turn to retry");
+  });
+
+  it("retries a completed Claude authentication response without duplicating the user message", async () => {
+    const authMessageId = MessageId.make("message-assistant-auth");
+    const settledAuthThread = makeThread({
+      latestTurn: {
+        turnId: TurnId.make("turn-auth"),
+        state: "completed",
+        requestedAt: "2026-01-01T00:00:01.000Z",
+        startedAt: "2026-01-01T00:00:02.000Z",
+        completedAt: "2026-01-01T00:00:04.000Z",
+        assistantMessageId: authMessageId,
+      },
+      messages: [
+        ...makeThread().messages,
+        {
+          id: authMessageId,
+          role: "assistant",
+          text: "Not logged in · Please run /login",
+          turnId: TurnId.make("turn-auth"),
+          streaming: false,
+          createdAt: "2026-01-01T00:00:04.000Z",
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+      ],
+      session: {
+        ...failedSession,
+        status: "ready",
+        lastError: null,
+      },
+    });
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: retryCommand,
+        readModel: makeReadModel(settledAuthThread),
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      type: "thread.session-set",
+      payload: {
+        session: {
+          status: "starting",
+          lastError: null,
+        },
+      },
+    });
+    expect(events[1]).toMatchObject({
+      type: "thread.turn-start-requested",
+      payload: {
+        messageId: MessageId.make("message-user-2"),
+        providerMessageId: expect.any(String),
+      },
+    });
   });
 
   it("rejects retrying a thread without user messages", async () => {

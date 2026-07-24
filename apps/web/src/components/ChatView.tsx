@@ -214,6 +214,7 @@ import {
   createLocalDispatchSnapshot,
   deriveProviderBackgroundRuns,
   deriveDetectedBackgroundRunLabel,
+  deriveFailedTurnRetryMessageId,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
   filterUnresolvedProviderBackgroundRuns,
@@ -238,6 +239,7 @@ import {
   revokeUserMessagePreviewUrls,
   shouldRefreshThreadDetailAfterEventLoopStall,
   shouldConfirmTerminalKill,
+  shouldOfferFailedTurnRetry,
   shouldWriteThreadErrorToCurrentServerThread,
   THREAD_DETAIL_STALL_PROBE_INTERVAL_MS,
   waitForStartedServerThread,
@@ -4910,32 +4912,32 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThread, environmentId]);
 
   const failedTurnRetryAction = useMemo(() => {
-    const failedMessage = activeThread?.messages.findLast((message) => message.role === "user");
+    const failedMessageId = deriveFailedTurnRetryMessageId({
+      messages: activeThread?.messages ?? [],
+      sessionLastError: activeThread?.session?.lastError,
+    });
     if (
-      !isServerThread ||
-      !activeThread?.error ||
-      !activeThread.session?.lastError ||
-      !failedMessage ||
-      activeTurnInProgress ||
-      activeThread.session?.orchestrationStatus === "starting" ||
-      activeThread.session?.orchestrationStatus === "running"
+      !activeThread ||
+      !shouldOfferFailedTurnRetry({
+        isServerThread,
+        failedMessageId,
+        orchestrationStatus: activeThread.session?.orchestrationStatus,
+      })
     ) {
       return null;
     }
     return {
-      messageId: failedMessage.id,
+      messageId: failedMessageId,
       isRetrying: turnRetryDispatchingThreadId === activeThread.id,
       onRetry: () => {
         void onRetryFailedTurn();
       },
     };
   }, [
-    activeThread?.error,
     activeThread?.id,
     activeThread?.messages,
     activeThread?.session?.lastError,
     activeThread?.session?.orchestrationStatus,
-    activeTurnInProgress,
     isServerThread,
     onRetryFailedTurn,
     turnRetryDispatchingThreadId,

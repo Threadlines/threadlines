@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type MessageId,
   type OrchestrationRevertPlan,
   ProjectId,
   type ModelSelection,
@@ -10,6 +11,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import {
+  findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
@@ -1525,6 +1527,37 @@ export function deriveProviderAuthReconnectPrompt(input: {
   }
 
   return null;
+}
+
+export function deriveFailedTurnRetryMessageId(input: {
+  readonly messages: ReadonlyArray<Pick<ChatMessage, "id" | "role" | "text">>;
+  readonly sessionLastError: string | null | undefined;
+}): MessageId | null {
+  const lastUserMessage = input.messages.findLast((message) => message.role === "user");
+  if (!lastUserMessage) {
+    return null;
+  }
+  if (input.sessionLastError?.trim()) {
+    return lastUserMessage.id;
+  }
+
+  const authRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(input.messages);
+  return authRetryUserMessageIndex === null
+    ? null
+    : (input.messages[authRetryUserMessageIndex]?.id ?? null);
+}
+
+export function shouldOfferFailedTurnRetry(input: {
+  readonly isServerThread: boolean;
+  readonly failedMessageId: MessageId | null;
+  readonly orchestrationStatus: ThreadSession["orchestrationStatus"] | null | undefined;
+}): boolean {
+  return (
+    input.isServerThread &&
+    input.failedMessageId !== null &&
+    input.orchestrationStatus !== "starting" &&
+    input.orchestrationStatus !== "running"
+  );
 }
 
 /** Error classes where re-running the same turn would reproduce the failure;

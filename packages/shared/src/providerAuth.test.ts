@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   addProviderAuthHint,
+  findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "./providerAuth.ts";
@@ -31,6 +32,25 @@ describe("provider auth helpers", () => {
         "I could not change the live Vercel project setting yet because the local Vercel CLI is not authenticated and the connector returned 403.",
       ),
     ).toBe(false);
+  });
+
+  it("targets only the user message immediately followed by a terminal auth response", () => {
+    expect(
+      findProviderAuthRetryUserMessageIndex([
+        { role: "user", text: "first request" },
+        { role: "assistant", text: "first response" },
+        { role: "user", text: "retry me" },
+        { role: "assistant", text: "Not logged in · Please run /login" },
+      ]),
+    ).toBe(2);
+    expect(
+      findProviderAuthRetryUserMessageIndex([
+        { role: "user", text: "failed request" },
+        { role: "assistant", text: "Not logged in · Please run /login" },
+        { role: "user", text: "later request" },
+        { role: "assistant", text: "later response succeeded" },
+      ]),
+    ).toBeNull();
   });
 
   it("exposes the provider reconnect command", () => {

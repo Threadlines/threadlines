@@ -746,6 +746,7 @@ it.effect(
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       assert.strictEqual(parsed.modelSelection, undefined);
+      assert.strictEqual(parsed.providerMessageId, undefined);
       assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
@@ -781,6 +782,19 @@ it.effect("decodes thread.turn-start-requested title seed when present", () =>
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.titleSeed, "Investigate reconnect failures");
+  }),
+);
+
+it.effect("decodes a distinct provider message id for a repeated turn attempt", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartRequestedPayload({
+      threadId: "thread-2",
+      messageId: "msg-2",
+      providerMessageId: "provider-attempt-2",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.messageId, "msg-2");
+    assert.strictEqual(parsed.providerMessageId, "provider-attempt-2");
   }),
 );
 
