@@ -11,6 +11,8 @@ import {
   GitRunStackedActionResult,
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
+  VcsApplyStashInput,
+  VcsListStashesResult,
   VcsMergeRefResult,
   VcsPullInput,
   VcsPullResult,
@@ -30,6 +32,8 @@ const decodeResolvePullRequestResult = Schema.decodeUnknownSync(GitResolvePullRe
 const decodeMergeRefResult = Schema.decodeUnknownSync(VcsMergeRefResult);
 const decodePullInput = Schema.decodeUnknownSync(VcsPullInput);
 const decodePullResult = Schema.decodeUnknownSync(VcsPullResult);
+const decodeApplyStashInput = Schema.decodeUnknownSync(VcsApplyStashInput);
+const decodeListStashesResult = Schema.decodeUnknownSync(VcsListStashesResult);
 
 describe("VcsCreateWorktreeInput", () => {
   it("accepts omitted newRefName for existing-refName worktrees", () => {
@@ -156,6 +160,63 @@ describe("VcsPull", () => {
 
     expect(required.status).toBe("requires_history_reconciliation");
     expect(reconciled.status).toBe("reconciled");
+  });
+
+  it("decodes an explicit stash-and-pull request and recovery result", () => {
+    const input = decodePullInput({
+      cwd: "/repo",
+      stashLocalChanges: true,
+    });
+    const result = decodePullResult({
+      status: "pulled_with_restore_conflicts",
+      refName: "main",
+      upstreamRef: "origin/main",
+      stashId: "0123456789abcdef0123456789abcdef01234567",
+      recoveryRef: "refs/threadlines/recovery/stash/main/example",
+      conflictedPaths: ["src/app.ts"],
+    });
+
+    expect(input.stashLocalChanges).toBe(true);
+    expect(result.status).toBe("pulled_with_restore_conflicts");
+  });
+});
+
+describe("VcsStash", () => {
+  it("binds stash mutations to an exact selector and full object id", () => {
+    const parsed = decodeApplyStashInput({
+      cwd: "/repo",
+      selector: "stash@{2}",
+      expectedStashId: "0123456789abcdef0123456789abcdef01234567",
+      dropAfterApply: true,
+    });
+
+    expect(parsed.selector).toBe("stash@{2}");
+    expect(parsed.dropAfterApply).toBe(true);
+    expect(() =>
+      decodeApplyStashInput({
+        cwd: "/repo",
+        selector: "stash@{2}",
+        expectedStashId: "0123456",
+        dropAfterApply: true,
+      }),
+    ).toThrow();
+  });
+
+  it("decodes stash metadata", () => {
+    const parsed = decodeListStashesResult({
+      stashes: [
+        {
+          id: "0123456789abcdef0123456789abcdef01234567",
+          selector: "stash@{0}",
+          message: "On main: explorer fix",
+          createdAt: "2026-07-24T12:00:00.000Z",
+          recoveryBranch: "main",
+        },
+      ],
+    });
+
+    expect(parsed.stashes[0]?.message).toContain("explorer fix");
+    expect(parsed.stashes[0]?.recoveryBranch).toBe("main");
   });
 });
 

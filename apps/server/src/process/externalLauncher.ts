@@ -35,12 +35,14 @@ interface EditorLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly shell?: boolean;
+  readonly windowsHide?: boolean;
 }
 
 interface ProcessLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly options: ChildProcess.CommandOptions;
+  readonly windowsHide?: boolean;
 }
 
 interface TargetPathAndPosition {
@@ -241,6 +243,9 @@ const resolveWindowsFileManagerLaunch = Effect.fn("resolveWindowsFileManagerLaun
     command: resolveWindowsExplorerPath(env),
     args,
     shell: false,
+    // `windowsHide` maps to SW_HIDE for GUI processes in libuv. Explorer
+    // starts successfully in that state but never presents its window.
+    windowsHide: false,
   };
 });
 
@@ -400,7 +405,7 @@ const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
   const command = ChildProcess.make(
     launch.command,
     launch.args,
-    hideWindowsConsole(launch.options),
+    launch.windowsHide === false ? launch.options : hideWindowsConsole(launch.options),
   );
 
   yield* spawner.spawn(command).pipe(
@@ -432,13 +437,14 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
     {
       command: launch.command,
       args: isWin32 && shell ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
-      options: hideWindowsConsole({
+      options: {
         detached: true,
         shell,
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
-      }),
+      },
+      ...(launch.windowsHide !== undefined ? { windowsHide: launch.windowsHide } : {}),
     },
     "failed to spawn detached process",
   );

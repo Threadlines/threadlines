@@ -112,6 +112,10 @@ export interface WsRpcClient {
   };
   readonly vcs: {
     readonly pull: RpcUnaryMethod<typeof WS_METHODS.vcsPull>;
+    readonly listStashes: RpcUnaryMethod<typeof WS_METHODS.vcsListStashes>;
+    readonly createStash: RpcUnaryMethod<typeof WS_METHODS.vcsCreateStash>;
+    readonly applyStash: RpcUnaryMethod<typeof WS_METHODS.vcsApplyStash>;
+    readonly dropStash: RpcUnaryMethod<typeof WS_METHODS.vcsDropStash>;
     readonly refreshLocalStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshLocalStatus>;
     readonly refreshStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshStatus>;
     readonly onStatus: (
@@ -401,6 +405,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     },
     vcs: {
       pull: (input) => transport.request((client) => client[WS_METHODS.vcsPull](input)),
+      listStashes: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsListStashes](input)),
+      createStash: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsCreateStash](input)),
+      applyStash: (input) => transport.request((client) => client[WS_METHODS.vcsApplyStash](input)),
+      dropStash: (input) => transport.request((client) => client[WS_METHODS.vcsDropStash](input)),
       refreshLocalStatus: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRefreshLocalStatus](input)),
       refreshStatus: (input) =>

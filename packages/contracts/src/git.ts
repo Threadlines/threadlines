@@ -6,6 +6,9 @@ import { VcsDriverKind } from "./vcs.ts";
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const GIT_LIST_BRANCHES_MAX_LIMIT = 200;
 const VcsCommitSha = TrimmedNonEmptyStringSchema.check(Schema.isPattern(/^[0-9a-fA-F]{7,64}$/));
+const VcsStashId = TrimmedNonEmptyStringSchema.check(
+  Schema.isPattern(/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/),
+);
 
 // Domain Types
 
@@ -126,8 +129,36 @@ export type VcsPullHistoryReconciliation = typeof VcsPullHistoryReconciliation.T
 export const VcsPullInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   historyReconciliation: Schema.optional(VcsPullHistoryReconciliation),
+  stashLocalChanges: Schema.optional(Schema.Boolean),
 });
 export type VcsPullInput = typeof VcsPullInput.Type;
+
+export const VcsListStashesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+});
+export type VcsListStashesInput = typeof VcsListStashesInput.Type;
+
+export const VcsCreateStashInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  message: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(200))),
+  includeUntracked: Schema.Boolean,
+});
+export type VcsCreateStashInput = typeof VcsCreateStashInput.Type;
+
+export const VcsApplyStashInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  selector: TrimmedNonEmptyStringSchema,
+  expectedStashId: VcsStashId,
+  dropAfterApply: Schema.Boolean,
+});
+export type VcsApplyStashInput = typeof VcsApplyStashInput.Type;
+
+export const VcsDropStashInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  selector: TrimmedNonEmptyStringSchema,
+  expectedStashId: VcsStashId,
+});
+export type VcsDropStashInput = typeof VcsDropStashInput.Type;
 
 // Remote authentication failures classified from git stderr, and the
 // remediation actions the server can apply on the user's behalf.
@@ -572,12 +603,84 @@ const VcsPullHistoryReconciledResult = Schema.Struct({
   recoveryRef: TrimmedNonEmptyStringSchema,
 });
 
+const VcsPullRestoredChangesResult = Schema.Struct({
+  status: Schema.Literal("pulled_with_restored_changes"),
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  stashId: VcsStashId,
+  stashDropped: Schema.Boolean,
+});
+
+const VcsPullRestoreConflictedResult = Schema.Struct({
+  status: Schema.Literal("pulled_with_restore_conflicts"),
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  stashId: VcsStashId,
+  recoveryRef: TrimmedNonEmptyStringSchema,
+  conflictedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+
+const VcsPullRestoreFailedResult = Schema.Struct({
+  status: Schema.Literal("pulled_with_restore_failure"),
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  stashId: VcsStashId,
+  recoveryRef: TrimmedNonEmptyStringSchema,
+  detail: TrimmedNonEmptyStringSchema,
+});
+
+const VcsPullUpdateFailedWithProtectedChangesResult = Schema.Struct({
+  status: Schema.Literal("update_failed_with_protected_changes"),
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  stashId: VcsStashId,
+  recoveryRef: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
+  detail: TrimmedNonEmptyStringSchema,
+  conflictedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+
 export const VcsPullResult = Schema.Union([
   VcsPullCompletedResult,
   VcsPullHistoryReconciliationRequiredResult,
   VcsPullHistoryReconciledResult,
+  VcsPullRestoredChangesResult,
+  VcsPullRestoreConflictedResult,
+  VcsPullRestoreFailedResult,
+  VcsPullUpdateFailedWithProtectedChangesResult,
 ]);
 export type VcsPullResult = typeof VcsPullResult.Type;
+
+export const VcsStashEntry = Schema.Struct({
+  id: VcsStashId,
+  selector: TrimmedNonEmptyStringSchema,
+  message: TrimmedNonEmptyStringSchema,
+  createdAt: TrimmedNonEmptyStringSchema,
+  recoveryBranch: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
+});
+export type VcsStashEntry = typeof VcsStashEntry.Type;
+
+export const VcsListStashesResult = Schema.Struct({
+  stashes: Schema.Array(VcsStashEntry),
+});
+export type VcsListStashesResult = typeof VcsListStashesResult.Type;
+
+export const VcsCreateStashResult = Schema.Struct({
+  stash: VcsStashEntry,
+});
+export type VcsCreateStashResult = typeof VcsCreateStashResult.Type;
+
+export const VcsApplyStashResult = Schema.Struct({
+  status: Schema.Literals(["applied", "conflicted"]),
+  stashId: VcsStashId,
+  dropped: Schema.Boolean,
+  conflictedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+export type VcsApplyStashResult = typeof VcsApplyStashResult.Type;
+
+export const VcsDropStashResult = Schema.Struct({
+  stashId: VcsStashId,
+});
+export type VcsDropStashResult = typeof VcsDropStashResult.Type;
 
 // RPC / domain errors
 export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()("GitCommandError", {

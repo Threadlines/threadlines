@@ -55,6 +55,8 @@ export const gitQueryKeys = {
     ["git", "refs", environmentId ?? null, cwd, "search", query] as const,
   authRemediationPlan: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "auth-remediation-plan", environmentId ?? null, cwd] as const,
+  stashes: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "stashes", environmentId ?? null, cwd] as const,
 };
 
 export const gitMutationKeys = {
@@ -82,6 +84,12 @@ export const gitMutationKeys = {
     ["git", "mutation", "start-provider-review", environmentId ?? null, cwd] as const,
   pull: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "pull", environmentId ?? null, cwd] as const,
+  createStash: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "create-stash", environmentId ?? null, cwd] as const,
+  applyStash: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "apply-stash", environmentId ?? null, cwd] as const,
+  dropStash: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "drop-stash", environmentId ?? null, cwd] as const,
   preparePullRequestThread: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "prepare-pull-request-thread", environmentId ?? null, cwd] as const,
   publishRepository: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -541,16 +549,117 @@ export function gitPullMutationOptions(input: {
 }) {
   return mutationOptions({
     mutationKey: gitMutationKeys.pull(input.environmentId, input.cwd),
-    mutationFn: async (historyReconciliation?: VcsPullHistoryReconciliation) => {
+    mutationFn: async (options?: {
+      historyReconciliation?: VcsPullHistoryReconciliation;
+      stashLocalChanges?: boolean;
+    }) => {
       if (!input.cwd || !input.environmentId) throw new Error("Git pull is unavailable.");
       const api = ensureEnvironmentApi(input.environmentId);
       return api.vcs.pull({
         cwd: input.cwd,
-        ...(historyReconciliation === undefined ? {} : { historyReconciliation }),
+        ...(options?.historyReconciliation === undefined
+          ? {}
+          : { historyReconciliation: options.historyReconciliation }),
+        ...(options?.stashLocalChanges === undefined
+          ? {}
+          : { stashLocalChanges: options.stashLocalChanges }),
       });
     },
-    onSuccess: async () => {
+    onSettled: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    },
+  });
+}
+
+export function gitStashesQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: gitQueryKeys.stashes(input.environmentId, input.cwd),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Git stashes are unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).vcs.listStashes({ cwd: input.cwd });
+    },
+    enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    staleTime: 5_000,
+    retry: false,
+  });
+}
+
+export function gitCreateStashMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.createStash(input.environmentId, input.cwd),
+    mutationFn: async (args: { message?: string; includeUntracked: boolean }) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Creating a stash is unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).vcs.createStash({
+        cwd: input.cwd,
+        includeUntracked: args.includeUntracked,
+        ...(args.message ? { message: args.message } : {}),
+      });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
+    },
+  });
+}
+
+export function gitApplyStashMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.applyStash(input.environmentId, input.cwd),
+    mutationFn: async (args: {
+      selector: string;
+      expectedStashId: string;
+      dropAfterApply: boolean;
+    }) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Applying a stash is unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).vcs.applyStash({
+        cwd: input.cwd,
+        selector: args.selector,
+        expectedStashId: args.expectedStashId,
+        dropAfterApply: args.dropAfterApply,
+      });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
+    },
+  });
+}
+
+export function gitDropStashMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.dropStash(input.environmentId, input.cwd),
+    mutationFn: async (args: { selector: string; expectedStashId: string }) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Dropping a stash is unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).vcs.dropStash({
+        cwd: input.cwd,
+        selector: args.selector,
+        expectedStashId: args.expectedStashId,
+      });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
     },
   });
 }

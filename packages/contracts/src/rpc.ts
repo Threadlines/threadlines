@@ -48,6 +48,14 @@ import {
   GitAuthRemediationPlanInput,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
+  VcsApplyStashInput,
+  VcsApplyStashResult,
+  VcsCreateStashInput,
+  VcsCreateStashResult,
+  VcsDropStashInput,
+  VcsDropStashResult,
+  VcsListStashesInput,
+  VcsListStashesResult,
   VcsPullInput,
   GitPullRequestRefInput,
   VcsPullResult,
@@ -227,6 +235,10 @@ export const WS_METHODS = {
 
   // VCS methods
   vcsPull: "vcs.pull",
+  vcsListStashes: "vcs.listStashes",
+  vcsCreateStash: "vcs.createStash",
+  vcsApplyStash: "vcs.applyStash",
+  vcsDropStash: "vcs.dropStash",
   vcsRefreshLocalStatus: "vcs.refreshLocalStatus",
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
@@ -683,6 +695,30 @@ export const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
   error: GitCommandError,
 });
 
+export const WsVcsListStashesRpc = Rpc.make(WS_METHODS.vcsListStashes, {
+  payload: VcsListStashesInput,
+  success: VcsListStashesResult,
+  error: GitCommandError,
+});
+
+export const WsVcsCreateStashRpc = Rpc.make(WS_METHODS.vcsCreateStash, {
+  payload: VcsCreateStashInput,
+  success: VcsCreateStashResult,
+  error: GitCommandError,
+});
+
+export const WsVcsApplyStashRpc = Rpc.make(WS_METHODS.vcsApplyStash, {
+  payload: VcsApplyStashInput,
+  success: VcsApplyStashResult,
+  error: GitCommandError,
+});
+
+export const WsVcsDropStashRpc = Rpc.make(WS_METHODS.vcsDropStash, {
+  payload: VcsDropStashInput,
+  success: VcsDropStashResult,
+  error: GitCommandError,
+});
+
 export const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
   payload: VcsStatusInput,
   success: VcsStatusResult,
@@ -1008,6 +1044,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsFilesystemBrowseRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
+  WsVcsListStashesRpc,
+  WsVcsCreateStashRpc,
+  WsVcsApplyStashRpc,
+  WsVcsDropStashRpc,
   WsVcsRefreshLocalStatusRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,

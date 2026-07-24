@@ -48,6 +48,10 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     },
     vcs: {
       pull: rpcClient.vcs.pull,
+      listStashes: rpcClient.vcs.listStashes,
+      createStash: rpcClient.vcs.createStash,
+      applyStash: rpcClient.vcs.applyStash,
+      dropStash: rpcClient.vcs.dropStash,
       refreshLocalStatus: rpcClient.vcs.refreshLocalStatus,
       refreshStatus: rpcClient.vcs.refreshStatus,
       onStatus: (input, callback, options) => rpcClient.vcs.onStatus(input, callback, options),

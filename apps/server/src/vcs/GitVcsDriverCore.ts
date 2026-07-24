@@ -24,6 +24,7 @@ import {
   type VcsCommitDetailsResult,
   type VcsCommitGraphResult,
   type VcsRef,
+  type VcsStashEntry,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
 import {
@@ -75,6 +76,9 @@ const GIT_COMMIT_DETAILS_MAX_OUTPUT_BYTES = 96 * 1024;
 const UNTRACKED_TEXT_STAT_MAX_BYTES = 512 * 1024;
 const GIT_GRAPH_RECORD_SEPARATOR = "\x1e";
 const GIT_GRAPH_FIELD_SEPARATOR = "\x1f";
+const GIT_STASH_RECORD_SEPARATOR = "\x1e";
+const GIT_STASH_FIELD_SEPARATOR = "\x1f";
+const THREADLINES_STASH_RECOVERY_REF_PREFIX = "refs/threadlines/recovery/stash/";
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetails>({
   isRepo: false,
   hasOriginRemote: false,
@@ -1181,23 +1185,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.map((result) => result.stdout),
     );
 
-  const gitFetchSemaphores = new Map<string, Semaphore.Semaphore>();
-  const gitFetchSemaphoreForCommonDir = (
+  const gitMutationSemaphores = new Map<string, Semaphore.Semaphore>();
+  const gitMutationSemaphoreForCommonDir = (
     gitCommonDir: string,
   ): Effect.Effect<Semaphore.Semaphore> =>
     Effect.sync(() => {
-      const existing = gitFetchSemaphores.get(gitCommonDir);
+      const existing = gitMutationSemaphores.get(gitCommonDir);
       if (existing) return existing;
       const semaphore = Semaphore.makeUnsafe(1);
-      gitFetchSemaphores.set(gitCommonDir, semaphore);
+      gitMutationSemaphores.set(gitCommonDir, semaphore);
       return semaphore;
     });
 
-  const withGitFetchPermitForCommonDir = <A, E, R>(
+  const withGitMutationPermitForCommonDir = <A, E, R>(
     gitCommonDir: string,
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, E, R> =>
-    gitFetchSemaphoreForCommonDir(gitCommonDir).pipe(
+    gitMutationSemaphoreForCommonDir(gitCommonDir).pipe(
       Effect.flatMap((semaphore) => semaphore.withPermit(effect)),
     );
 
@@ -1301,7 +1305,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       upstream.remoteName,
       remoteBranchFetchRefspec(upstream.remoteName, upstream.branchName),
     ];
-    return withGitFetchPermitForCommonDir(
+    return withGitMutationPermitForCommonDir(
       gitCommonDir,
       executeGit("GitVcsDriver.fetchRemoteForStatus", fetchCwd, fetchArgs, {
         allowNonZeroExit: true,
@@ -1330,12 +1334,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
   });
 
-  const withGitFetchPermitForCwd = <A, E, R>(
+  const withGitMutationPermitForCwd = <A, E, R>(
     cwd: string,
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, E | GitCommandError, R> =>
     resolveGitCommonDir(cwd).pipe(
-      Effect.flatMap((gitCommonDir) => withGitFetchPermitForCommonDir(gitCommonDir, effect)),
+      Effect.flatMap((gitCommonDir) => withGitMutationPermitForCommonDir(gitCommonDir, effect)),
     );
 
   const gitCommonDirMetadataCwd = (gitCommonDir: string): string =>
@@ -1394,7 +1398,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     remoteName: string,
     options?: { readonly includeTags?: boolean },
   ) {
-    yield* withGitFetchPermitForCommonDir(
+    yield* withGitMutationPermitForCommonDir(
       gitCommonDir,
       Effect.gen(function* () {
         const fetchCwd =
@@ -2737,6 +2741,345 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
   });
 
+  const parseStashRecoveryBranches = (stdout: string): ReadonlyMap<string, string> => {
+    const recoveryBranches = new Map<string, string>();
+    for (const record of stdout.split(/\r?\n/gu).filter((value) => value.length > 0)) {
+      const [id = "", refName = ""] = record.split("\t");
+      if (
+        !/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/u.test(id) ||
+        !refName.startsWith(THREADLINES_STASH_RECOVERY_REF_PREFIX)
+      ) {
+        continue;
+      }
+      const branchAndOperation = refName.slice(THREADLINES_STASH_RECOVERY_REF_PREFIX.length);
+      const operationSeparatorIndex = branchAndOperation.lastIndexOf("/");
+      if (operationSeparatorIndex <= 0) {
+        continue;
+      }
+      recoveryBranches.set(id, branchAndOperation.slice(0, operationSeparatorIndex));
+    }
+    return recoveryBranches;
+  };
+
+  const parseStashEntries = (
+    stdout: string,
+    recoveryBranches: ReadonlyMap<string, string>,
+  ): ReadonlyArray<VcsStashEntry> =>
+    stdout
+      .split(GIT_STASH_RECORD_SEPARATOR)
+      .map((record) => record.replace(/^[\r\n]+|[\r\n]+$/gu, ""))
+      .filter((record) => record.length > 0)
+      .flatMap((record) => {
+        const [id = "", selector = "", createdAtSeconds = "", message = ""] =
+          record.split(GIT_STASH_FIELD_SEPARATOR);
+        const createdAtMs = Number(createdAtSeconds) * 1_000;
+        if (
+          !/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/u.test(id) ||
+          selector.trim().length === 0 ||
+          !Number.isFinite(createdAtMs)
+        ) {
+          return [];
+        }
+        return [
+          {
+            id,
+            selector: selector.trim(),
+            message: message.trim() || selector.trim(),
+            createdAt: new Date(createdAtMs).toISOString(),
+            recoveryBranch: recoveryBranches.get(id) ?? null,
+          },
+        ];
+      });
+
+  const listStashesUnlocked = Effect.fn("listStashesUnlocked")(function* (cwd: string) {
+    const [stashOutput, recoveryRefOutput] = yield* Effect.all([
+      runGitStdoutWithOptions(
+        "GitVcsDriver.listStashes",
+        cwd,
+        ["stash", "list", "--format=%H%x1f%gd%x1f%ct%x1f%gs%x1e"],
+        { maxOutputBytes: 512 * 1024 },
+      ),
+      runGitStdoutWithOptions(
+        "GitVcsDriver.listStashRecoveryRefs",
+        cwd,
+        [
+          "for-each-ref",
+          "--format=%(objectname)%09%(refname)",
+          THREADLINES_STASH_RECOVERY_REF_PREFIX,
+        ],
+        { maxOutputBytes: 512 * 1024 },
+      ),
+    ]);
+    return parseStashEntries(stashOutput, parseStashRecoveryBranches(recoveryRefOutput));
+  });
+
+  const conflictedPaths = Effect.fn("conflictedPaths")(function* (cwd: string) {
+    const stdout = yield* runGitStdout(
+      "GitVcsDriver.stash.conflictedPaths",
+      cwd,
+      ["diff", "--name-only", "--diff-filter=U", "-z"],
+      true,
+    );
+    return stdout.split("\0").filter((filePath) => filePath.length > 0);
+  });
+
+  const ensureStashableWorkingTree = Effect.fn("ensureStashableWorkingTree")(function* (
+    cwd: string,
+  ) {
+    const details = yield* statusDetails(cwd);
+    if (!details.hasWorkingTreeChanges) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.createStash",
+        cwd,
+        ["stash", "push"],
+        "There are no local changes to stash.",
+      );
+    }
+    if (
+      details.workingTree.files.some(
+        (file) => file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged",
+      )
+    ) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.createStash",
+        cwd,
+        ["stash", "push"],
+        "Resolve the current merge conflicts before stashing changes.",
+      );
+    }
+
+    const porcelain = yield* runGitStdout(
+      "GitVcsDriver.createStash.submoduleStatus",
+      cwd,
+      ["status", "--porcelain=2", "--untracked-files=all", "--ignore-submodules=none"],
+      true,
+    );
+    const hasDirtySubmodule = porcelain.split(/\r?\n/gu).some((line) => {
+      if (!line.startsWith("1 ") && !line.startsWith("2 ")) {
+        return false;
+      }
+      const submoduleState = line.split(" ", 4)[2] ?? "";
+      return submoduleState.startsWith("S") && submoduleState !== "S...";
+    });
+    if (hasDirtySubmodule) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.createStash",
+        cwd,
+        ["stash", "push"],
+        "A submodule contains local changes. Stash or commit the submodule changes before continuing.",
+      );
+    }
+    return details;
+  });
+
+  const createStashUnlocked = Effect.fn("createStashUnlocked")(function* (input: {
+    readonly cwd: string;
+    readonly includeUntracked: boolean;
+    readonly message?: string | undefined;
+  }) {
+    yield* ensureStashableWorkingTree(input.cwd);
+    const previousStashes = yield* listStashesUnlocked(input.cwd);
+    const args = [
+      "stash",
+      "push",
+      ...(input.includeUntracked ? ["--include-untracked"] : []),
+      ...(input.message ? ["--message", input.message] : []),
+    ];
+    yield* executeGit("GitVcsDriver.createStash", input.cwd, args, {
+      timeoutMs: 30_000,
+      fallbackErrorMessage: "git stash push failed",
+    });
+    const stashes = yield* listStashesUnlocked(input.cwd);
+    const stash = stashes[0];
+    if (!stash || stashes.length <= previousStashes.length) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.createStash",
+        input.cwd,
+        args,
+        "Git did not create a new stash. Review the working tree and try again.",
+      );
+    }
+    return stash;
+  });
+
+  const verifyStashTarget = Effect.fn("verifyStashTarget")(function* (input: {
+    readonly cwd: string;
+    readonly selector: string;
+    readonly expectedStashId: string;
+    readonly operation: string;
+  }) {
+    const result = yield* executeGit(
+      input.operation,
+      input.cwd,
+      ["rev-parse", "--verify", `${input.selector}^{commit}`],
+      { allowNonZeroExit: true, timeoutMs: 10_000 },
+    );
+    const actualId = result.stdout.trim();
+    if (result.exitCode !== 0 || actualId.toLowerCase() !== input.expectedStashId.toLowerCase()) {
+      return yield* createGitCommandError(
+        input.operation,
+        input.cwd,
+        ["rev-parse", "--verify", `${input.selector}^{commit}`],
+        "The selected stash changed after it was loaded. Refresh the stash list and try again.",
+      );
+    }
+  });
+
+  const dropVerifiedStashUnlocked = Effect.fn("dropVerifiedStashUnlocked")(function* (input: {
+    readonly cwd: string;
+    readonly selector: string;
+    readonly expectedStashId: string;
+    readonly strict: boolean;
+  }) {
+    const verification = yield* verifyStashTarget({
+      cwd: input.cwd,
+      selector: input.selector,
+      expectedStashId: input.expectedStashId,
+      operation: "GitVcsDriver.dropStash.verify",
+    }).pipe(Effect.exit);
+    if (Exit.isFailure(verification)) {
+      if (input.strict) {
+        return yield* Effect.failCause(verification.cause);
+      }
+      return false;
+    }
+    yield* executeGit("GitVcsDriver.dropStash", input.cwd, [
+      "stash",
+      "drop",
+      "--quiet",
+      input.selector,
+    ]);
+    return true;
+  });
+
+  const applyStashUnlocked = Effect.fn("applyStashUnlocked")(function* (input: {
+    readonly cwd: string;
+    readonly selector: string;
+    readonly expectedStashId: string;
+    readonly dropAfterApply: boolean;
+  }) {
+    yield* verifyStashTarget({
+      cwd: input.cwd,
+      selector: input.selector,
+      expectedStashId: input.expectedStashId,
+      operation: "GitVcsDriver.applyStash.verify",
+    });
+    const applyResult = yield* executeGit(
+      "GitVcsDriver.applyStash",
+      input.cwd,
+      ["stash", "apply", "--index", input.expectedStashId],
+      { allowNonZeroExit: true, timeoutMs: 30_000 },
+    );
+    const conflicts = yield* conflictedPaths(input.cwd);
+    if (applyResult.exitCode !== 0) {
+      if (conflicts.length > 0) {
+        return {
+          status: "conflicted" as const,
+          stashId: input.expectedStashId,
+          dropped: false,
+          conflictedPaths: conflicts,
+        };
+      }
+      return yield* createGitCommandError(
+        "GitVcsDriver.applyStash",
+        input.cwd,
+        ["stash", "apply", "--index", input.expectedStashId],
+        applyResult.stderr.trim() ||
+          applyResult.stdout.trim() ||
+          "Git could not restore the selected stash.",
+      );
+    }
+
+    const dropped = input.dropAfterApply
+      ? yield* dropVerifiedStashUnlocked({
+          cwd: input.cwd,
+          selector: input.selector,
+          expectedStashId: input.expectedStashId,
+          strict: false,
+        })
+      : false;
+    return {
+      status: "applied" as const,
+      stashId: input.expectedStashId,
+      dropped,
+      conflictedPaths: [],
+    };
+  });
+
+  const restoreProtectedStashUnlocked = Effect.fn("restoreProtectedStashUnlocked")(
+    function* (input: {
+      readonly cwd: string;
+      readonly selector: string;
+      readonly stashId: string;
+      readonly recoveryRef: string;
+    }) {
+      const applyArgs = ["stash", "apply", "--index", input.recoveryRef] as const;
+      const applyResult = yield* executeGit(
+        "GitVcsDriver.pullCurrentBranch.restore",
+        input.cwd,
+        applyArgs,
+        { allowNonZeroExit: true, timeoutMs: 30_000 },
+      );
+      const conflicts = yield* conflictedPaths(input.cwd);
+      if (applyResult.exitCode !== 0) {
+        return {
+          status: conflicts.length > 0 ? ("conflicted" as const) : ("failed" as const),
+          stashDropped: false,
+          conflictedPaths: conflicts,
+          detail:
+            applyResult.stderr.trim() ||
+            applyResult.stdout.trim() ||
+            "Git could not restore the protected local changes.",
+        };
+      }
+
+      const stashDropped = yield* dropVerifiedStashUnlocked({
+        cwd: input.cwd,
+        selector: input.selector,
+        expectedStashId: input.stashId,
+        strict: false,
+      });
+      yield* runGit(
+        "GitVcsDriver.pullCurrentBranch.deleteStashRecoveryRef",
+        input.cwd,
+        ["update-ref", "-d", input.recoveryRef, input.stashId],
+        true,
+      );
+      return {
+        status: "applied" as const,
+        stashDropped,
+        conflictedPaths: [],
+        detail: "",
+      };
+    },
+  );
+
+  const listStashes: GitVcsDriver.GitVcsDriverShape["listStashes"] = (input) =>
+    withGitMutationPermitForCwd(
+      input.cwd,
+      listStashesUnlocked(input.cwd).pipe(Effect.map((stashes) => ({ stashes }))),
+    );
+
+  const createStash: GitVcsDriver.GitVcsDriverShape["createStash"] = (input) =>
+    withGitMutationPermitForCwd(
+      input.cwd,
+      createStashUnlocked(input).pipe(Effect.map((stash) => ({ stash }))),
+    );
+
+  const applyStash: GitVcsDriver.GitVcsDriverShape["applyStash"] = (input) =>
+    withGitMutationPermitForCwd(input.cwd, applyStashUnlocked(input));
+
+  const dropStash: GitVcsDriver.GitVcsDriverShape["dropStash"] = (input) =>
+    withGitMutationPermitForCwd(
+      input.cwd,
+      dropVerifiedStashUnlocked({
+        cwd: input.cwd,
+        selector: input.selector,
+        expectedStashId: input.expectedStashId,
+        strict: true,
+      }).pipe(Effect.as({ stashId: input.expectedStashId })),
+    );
+
   const pullRefsHaveCommonAncestor = Effect.fn("pullRefsHaveCommonAncestor")(function* (
     cwd: string,
     localSha: string,
@@ -2758,6 +3101,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       cwd,
       args,
       result.stderr.trim() || "git merge-base failed",
+    );
+  });
+
+  const pullCanFastForward = Effect.fn("pullCanFastForward")(function* (
+    cwd: string,
+    localSha: string,
+    upstreamSha: string,
+  ) {
+    const args = ["merge-base", "--is-ancestor", localSha, upstreamSha] as const;
+    const result = yield* executeGit("GitVcsDriver.pullCurrentBranch.fastForwardCheck", cwd, args, {
+      allowNonZeroExit: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode === 0) {
+      return true;
+    }
+    if (result.exitCode === 1) {
+      return false;
+    }
+    return yield* createGitCommandError(
+      "GitVcsDriver.pullCurrentBranch.fastForwardCheck",
+      cwd,
+      args,
+      result.stderr.trim() || "git merge-base --is-ancestor failed",
     );
   });
 
@@ -2820,8 +3187,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const pullCurrentBranch: GitVcsDriver.GitVcsDriverShape["pullCurrentBranch"] = Effect.fn(
     "pullCurrentBranch",
   )(function* (input) {
-    const { cwd, historyReconciliation } = input;
-    return yield* withGitFetchPermitForCwd(
+    const { cwd, historyReconciliation, stashLocalChanges = false } = input;
+    if (historyReconciliation && stashLocalChanges) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.pullCurrentBranch",
+        cwd,
+        ["pull", "--ff-only"],
+        "Stashing local changes cannot be combined with rewritten-history reconciliation.",
+      );
+    }
+    return yield* withGitMutationPermitForCwd(
       cwd,
       Effect.gen(function* () {
         const details = yield* statusDetails(cwd);
@@ -3047,6 +3422,168 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             ["pull", "--ff-only"],
             "The local and upstream branches no longer have unrelated histories. Review the updated repository state and pull again.",
           );
+        }
+
+        if (stashLocalChanges && refreshedBeforePull.hasWorkingTreeChanges) {
+          if (localSha === upstreamSha) {
+            return {
+              status: "skipped_up_to_date" as const,
+              refName,
+              upstreamRef: currentUpstream.upstreamRef,
+            };
+          }
+          if (!(yield* pullCanFastForward(cwd, localSha, upstreamSha))) {
+            return yield* createGitCommandError(
+              "GitVcsDriver.pullCurrentBranch.protectChanges",
+              cwd,
+              ["merge", "--ff-only", upstreamSha],
+              "The local and upstream branches have diverged. Resolve the divergence before stashing and pulling.",
+            );
+          }
+
+          const operationId = randomUUID();
+          const stash = yield* createStashUnlocked({
+            cwd,
+            includeUntracked: true,
+            message: `Threadlines pull ${refName} ${operationId}`,
+          });
+          const recoveryRef = `refs/threadlines/recovery/stash/${refName}/${operationId}`;
+          const createRecoveryRefResult = yield* executeGit(
+            "GitVcsDriver.pullCurrentBranch.createStashRecoveryRef",
+            cwd,
+            ["update-ref", recoveryRef, stash.id, ""],
+            { allowNonZeroExit: true },
+          );
+          if (createRecoveryRefResult.exitCode !== 0) {
+            return {
+              status: "update_failed_with_protected_changes" as const,
+              refName,
+              upstreamRef: currentUpstream.upstreamRef,
+              stashId: stash.id,
+              recoveryRef: null,
+              detail:
+                "The branch was not updated because Threadlines could not create the extra recovery reference. Your local changes remain protected in the listed stash.",
+              conflictedPaths: [],
+            };
+          }
+
+          const restoreAfterStoppedUpdate = Effect.fn("restoreAfterStoppedUpdate")(function* (
+            detail: string,
+          ) {
+            const restore = yield* restoreProtectedStashUnlocked({
+              cwd,
+              selector: stash.selector,
+              stashId: stash.id,
+              recoveryRef,
+            });
+            if (restore.status === "applied") {
+              return yield* createGitCommandError(
+                "GitVcsDriver.pullCurrentBranch.protectChanges",
+                cwd,
+                ["merge", "--ff-only", upstreamSha],
+                detail,
+              );
+            }
+            return {
+              status: "update_failed_with_protected_changes" as const,
+              refName,
+              upstreamRef: currentUpstream.upstreamRef,
+              stashId: stash.id,
+              recoveryRef,
+              detail: `${detail} ${restore.detail}`.trim(),
+              conflictedPaths: restore.conflictedPaths,
+            };
+          });
+
+          const [postStashDetails, postStashUpstream, postStashLocalSha, postStashUpstreamSha] =
+            yield* Effect.all([
+              statusDetails(cwd),
+              resolveCurrentUpstream(cwd),
+              runGitStdout("GitVcsDriver.pullCurrentBranch.postStashLocalSha", cwd, [
+                "rev-parse",
+                "HEAD",
+              ]).pipe(Effect.map((stdout) => stdout.trim())),
+              runGitStdout("GitVcsDriver.pullCurrentBranch.postStashUpstreamSha", cwd, [
+                "rev-parse",
+                upstreamTrackingRef,
+              ]).pipe(Effect.map((stdout) => stdout.trim())),
+            ]);
+          const postStashMismatch =
+            postStashDetails.branch !== refName
+              ? "The current branch changed while local changes were being protected."
+              : postStashUpstream?.upstreamRef !== currentUpstream.upstreamRef
+                ? "The upstream changed while local changes were being protected."
+                : postStashLocalSha !== localSha
+                  ? "Local HEAD changed while local changes were being protected."
+                  : postStashUpstreamSha !== upstreamSha
+                    ? "Upstream HEAD changed while local changes were being protected."
+                    : postStashDetails.hasWorkingTreeChanges
+                      ? "The working tree changed while local changes were being protected."
+                      : null;
+          if (postStashMismatch) {
+            return yield* restoreAfterStoppedUpdate(
+              `${postStashMismatch} The protected update was stopped.`,
+            );
+          }
+
+          const mergeResult = yield* executeGit(
+            "GitVcsDriver.pullCurrentBranch.mergeProtected",
+            cwd,
+            ["merge", "--ff-only", upstreamSha],
+            { allowNonZeroExit: true, timeoutMs: 30_000 },
+          );
+          if (mergeResult.exitCode !== 0) {
+            return yield* restoreAfterStoppedUpdate(
+              mergeResult.stderr.trim() ||
+                mergeResult.stdout.trim() ||
+                "The fast-forward update failed.",
+            );
+          }
+
+          const afterProtectedMergeSha = yield* runGitStdout(
+            "GitVcsDriver.pullCurrentBranch.afterProtectedMergeSha",
+            cwd,
+            ["rev-parse", "HEAD"],
+          ).pipe(Effect.map((stdout) => stdout.trim()));
+          if (afterProtectedMergeSha !== upstreamSha) {
+            return yield* restoreAfterStoppedUpdate(
+              "The branch did not reach the expected upstream commit.",
+            );
+          }
+
+          const restore = yield* restoreProtectedStashUnlocked({
+            cwd,
+            selector: stash.selector,
+            stashId: stash.id,
+            recoveryRef,
+          });
+          if (restore.status === "conflicted") {
+            return {
+              status: "pulled_with_restore_conflicts" as const,
+              refName,
+              upstreamRef: currentUpstream.upstreamRef,
+              stashId: stash.id,
+              recoveryRef,
+              conflictedPaths: restore.conflictedPaths,
+            };
+          }
+          if (restore.status === "failed") {
+            return {
+              status: "pulled_with_restore_failure" as const,
+              refName,
+              upstreamRef: currentUpstream.upstreamRef,
+              stashId: stash.id,
+              recoveryRef,
+              detail: restore.detail,
+            };
+          }
+          return {
+            status: "pulled_with_restored_changes" as const,
+            refName,
+            upstreamRef: currentUpstream.upstreamRef,
+            stashId: stash.id,
+            stashDropped: restore.stashDropped,
+          };
         }
 
         yield* executeGit(
@@ -3378,6 +3915,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "--exclude=refs/threadlines/checkpoints/*",
           "--exclude=refs/t3/*",
           "--exclude=refs/t3/checkpoints/*",
+          "--exclude=refs/stash",
           "--all",
           "--topo-order",
           "--decorate=short",
@@ -3408,7 +3946,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* createGitCommandError(
         "GitVcsDriver.commitGraph",
         input.cwd,
-        ["log", "--all", "--topo-order"],
+        ["log", "--exclude=refs/stash", "--all", "--topo-order"],
         result.stderr.trim() || "git log failed",
       );
     },
@@ -3521,7 +4059,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fetchPullRequestBranch: GitVcsDriver.GitVcsDriverShape["fetchPullRequestBranch"] =
     Effect.fn("fetchPullRequestBranch")(function* (input) {
       const remoteName = yield* resolvePrimaryRemoteName(input.cwd);
-      yield* withGitFetchPermitForCwd(
+      yield* withGitMutationPermitForCwd(
         input.cwd,
         executeGit(
           "GitVcsDriver.fetchPullRequestBranch",
@@ -3544,7 +4082,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fetchRemoteBranch: GitVcsDriver.GitVcsDriverShape["fetchRemoteBranch"] = Effect.fn(
     "fetchRemoteBranch",
   )(function* (input) {
-    yield* withGitFetchPermitForCwd(
+    yield* withGitMutationPermitForCwd(
       input.cwd,
       runGit("GitVcsDriver.fetchRemoteBranch.fetch", input.cwd, [
         "fetch",
@@ -3569,7 +4107,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const fetchRemoteTrackingBranch: GitVcsDriver.GitVcsDriverShape["fetchRemoteTrackingBranch"] =
     Effect.fn("fetchRemoteTrackingBranch")(function* (input) {
-      yield* withGitFetchPermitForCwd(
+      yield* withGitMutationPermitForCwd(
         input.cwd,
         runGit("GitVcsDriver.fetchRemoteTrackingBranch", input.cwd, [
           "fetch",
@@ -3954,6 +4492,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     commit,
     pushCurrentBranch,
     pullCurrentBranch,
+    listStashes,
+    createStash,
+    applyStash,
+    dropStash,
     readRangeContext,
     readConfigValue,
     listRefs,

@@ -40,6 +40,14 @@ import {
   type VcsListRefsResult,
   type VcsMergeRefInput,
   type VcsMergeRefResult,
+  type VcsApplyStashInput,
+  type VcsApplyStashResult,
+  type VcsCreateStashInput,
+  type VcsCreateStashResult,
+  type VcsDropStashInput,
+  type VcsDropStashResult,
+  type VcsListStashesInput,
+  type VcsListStashesResult,
   type VcsPullInput,
   type VcsPullResult,
   type VcsRemoveWorktreeInput,
@@ -251,6 +259,18 @@ export interface GitVcsDriverShape {
   readonly pullCurrentBranch: (
     input: VcsPullInput,
   ) => Effect.Effect<VcsPullResult, GitCommandError>;
+  readonly listStashes: (
+    input: VcsListStashesInput,
+  ) => Effect.Effect<VcsListStashesResult, GitCommandError>;
+  readonly createStash: (
+    input: VcsCreateStashInput,
+  ) => Effect.Effect<VcsCreateStashResult, GitCommandError>;
+  readonly applyStash: (
+    input: VcsApplyStashInput,
+  ) => Effect.Effect<VcsApplyStashResult, GitCommandError>;
+  readonly dropStash: (
+    input: VcsDropStashInput,
+  ) => Effect.Effect<VcsDropStashResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;

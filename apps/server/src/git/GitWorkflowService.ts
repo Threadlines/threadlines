@@ -39,6 +39,14 @@ import {
   type GitPreparePullRequestThreadInput,
   type GitPreparePullRequestThreadResult,
   type GitPullRequestRefInput,
+  type VcsApplyStashInput,
+  type VcsApplyStashResult,
+  type VcsCreateStashInput,
+  type VcsCreateStashResult,
+  type VcsDropStashInput,
+  type VcsDropStashResult,
+  type VcsListStashesInput,
+  type VcsListStashesResult,
   type VcsPullInput,
   type VcsPullResult,
   type VcsRemoveWorktreeInput,
@@ -72,6 +80,18 @@ export interface GitWorkflowServiceShape {
   readonly pullCurrentBranch: (
     input: VcsPullInput,
   ) => Effect.Effect<VcsPullResult, GitCommandError>;
+  readonly listStashes: (
+    input: VcsListStashesInput,
+  ) => Effect.Effect<VcsListStashesResult, GitCommandError>;
+  readonly createStash: (
+    input: VcsCreateStashInput,
+  ) => Effect.Effect<VcsCreateStashResult, GitCommandError>;
+  readonly applyStash: (
+    input: VcsApplyStashInput,
+  ) => Effect.Effect<VcsApplyStashResult, GitCommandError>;
+  readonly dropStash: (
+    input: VcsDropStashInput,
+  ) => Effect.Effect<VcsDropStashResult, GitCommandError>;
   readonly runStackedAction: (
     input: GitRunStackedActionInput,
     options?: GitRunStackedActionOptions,
@@ -353,6 +373,22 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     pullCurrentBranch: (input) =>
       ensureGitCommand("GitWorkflowService.pullCurrentBranch", input.cwd).pipe(
         Effect.andThen(git.pullCurrentBranch(input)),
+      ),
+    listStashes: (input) =>
+      ensureGitCommand("GitWorkflowService.listStashes", input.cwd).pipe(
+        Effect.andThen(git.listStashes(input)),
+      ),
+    createStash: (input) =>
+      ensureGitCommand("GitWorkflowService.createStash", input.cwd).pipe(
+        Effect.andThen(git.createStash(input)),
+      ),
+    applyStash: (input) =>
+      ensureGitCommand("GitWorkflowService.applyStash", input.cwd).pipe(
+        Effect.andThen(git.applyStash(input)),
+      ),
+    dropStash: (input) =>
+      ensureGitCommand("GitWorkflowService.dropStash", input.cwd).pipe(
+        Effect.andThen(git.dropStash(input)),
       ),
     runStackedAction: (input, options) =>
       ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(

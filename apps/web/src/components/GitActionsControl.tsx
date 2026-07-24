@@ -1262,7 +1262,19 @@ export default function GitActionsControl({
     useIsMutating({
       mutationKey: gitMutationKeys.publishRepository(activeEnvironmentId, gitCwd),
     }) > 0;
-  const isGitActionRunning = isRunStackedActionRunning || isPullRunning || isPublishRunning;
+  const isStashRunning =
+    useIsMutating({
+      mutationKey: gitMutationKeys.createStash(activeEnvironmentId, gitCwd),
+    }) +
+      useIsMutating({
+        mutationKey: gitMutationKeys.applyStash(activeEnvironmentId, gitCwd),
+      }) +
+      useIsMutating({
+        mutationKey: gitMutationKeys.dropStash(activeEnvironmentId, gitCwd),
+      }) >
+    0;
+  const isGitActionRunning =
+    isRunStackedActionRunning || isPullRunning || isPublishRunning || isStashRunning;
   const isSelectingWorktreeBase =
     !activeServerThread &&
     activeDraftThread?.envMode === "worktree" &&
@@ -1680,6 +1692,21 @@ export default function GitActionsControl({
                 return {
                   title: "Updated from rewritten upstream",
                   description: `Backed up ${result.refName} to ${result.recoveryRef}, then updated it from ${result.upstreamRef}.`,
+                  data: threadToastData,
+                };
+              case "pulled_with_restored_changes":
+                return {
+                  title: "Updated and restored changes",
+                  description: `Updated ${result.refName} from ${result.upstreamRef}.`,
+                  data: threadToastData,
+                };
+              case "pulled_with_restore_conflicts":
+              case "pulled_with_restore_failure":
+              case "update_failed_with_protected_changes":
+                return {
+                  title: "Protected changes need attention",
+                  description: "Open Source Control to review the protected stash.",
+                  timeout: 0,
                   data: threadToastData,
                 };
             }

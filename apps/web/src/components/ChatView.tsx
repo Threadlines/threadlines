@@ -4918,6 +4918,7 @@ export default function ChatView(props: ChatViewProps) {
     });
     if (
       !activeThread ||
+      failedMessageId === null ||
       !shouldOfferFailedTurnRetry({
         isServerThread,
         failedMessageId,

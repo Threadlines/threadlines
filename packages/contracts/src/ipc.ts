@@ -28,6 +28,14 @@ import type {
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
+  VcsApplyStashInput,
+  VcsApplyStashResult,
+  VcsCreateStashInput,
+  VcsCreateStashResult,
+  VcsDropStashInput,
+  VcsDropStashResult,
+  VcsListStashesInput,
+  VcsListStashesResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
@@ -824,6 +832,10 @@ export interface EnvironmentApi {
     mergeRef: (input: VcsMergeRefInput) => Promise<VcsMergeRefResult>;
     init: (input: VcsInitInput) => Promise<void>;
     pull: (input: VcsPullInput) => Promise<VcsPullResult>;
+    listStashes: (input: VcsListStashesInput) => Promise<VcsListStashesResult>;
+    createStash: (input: VcsCreateStashInput) => Promise<VcsCreateStashResult>;
+    applyStash: (input: VcsApplyStashInput) => Promise<VcsApplyStashResult>;
+    dropStash: (input: VcsDropStashInput) => Promise<VcsDropStashResult>;
     refreshLocalStatus: (input: VcsStatusInput) => Promise<VcsStatusLocalResult>;
     refreshStatus: (input: VcsStatusInput) => Promise<VcsStatusResult>;
     onStatus: (

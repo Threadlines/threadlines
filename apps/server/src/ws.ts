@@ -1609,6 +1609,58 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "git" },
           ),
+        [WS_METHODS.vcsListStashes]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsListStashes, gitWorkflow.listStashes(input), {
+            "rpc.aggregate": "git",
+          }),
+        [WS_METHODS.vcsCreateStash]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsCreateStash,
+            gitWorkflow.createStash(input).pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsApplyStash]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsApplyStash,
+            gitWorkflow.applyStash(input).pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsDropStash]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsDropStash,
+            gitWorkflow.dropStash(input).pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
         [WS_METHODS.gitRunStackedAction]: (input) =>
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,

@@ -13,6 +13,7 @@ import {
   type VcsPullHistoryReconciliation,
   type VcsPullResult,
   type VcsRef,
+  type VcsStashEntry,
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
@@ -29,6 +30,7 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  ArchiveIcon,
   CheckIcon,
   CloudIcon,
   CloudUploadIcon,
@@ -50,6 +52,7 @@ import {
   SparklesIcon,
   TagIcon,
   TriangleAlertIcon,
+  Trash2Icon,
   Undo2Icon,
   UploadIcon,
   XIcon,
@@ -72,11 +75,14 @@ import { openFileInActiveViewer } from "~/fileViewerStore";
 import { readEnvironmentApi } from "~/environmentApi";
 import {
   gitBranchSearchInfiniteQueryOptions,
+  gitApplyStashMutationOptions,
   gitCommitDetailsQueryOptions,
   gitCheckoutMutationOptions,
   gitCommitGraphQueryOptions,
   gitCreateTagMutationOptions,
+  gitCreateStashMutationOptions,
   gitDeleteBranchMutationOptions,
+  gitDropStashMutationOptions,
   gitDiscardChangesMutationOptions,
   gitGenerateCommitMessageMutationOptions,
   gitInitMutationOptions,
@@ -86,6 +92,7 @@ import {
   gitQueryKeys,
   gitRunStackedActionMutationOptions,
   gitStartProviderReviewMutationOptions,
+  gitStashesQueryOptions,
   gitStageChangesMutationOptions,
   gitUnstageChangesMutationOptions,
 } from "~/lib/gitReactQuery";
@@ -133,7 +140,9 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogDescription,
@@ -270,6 +279,16 @@ interface PendingHistoryReconciliation extends PullRequestTarget {
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
   readonly result: HistoryReconciliationRequiredResult;
+}
+
+interface PendingStashRecovery extends PullRequestTarget {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly title: string;
+  readonly detail: string;
+  readonly stashId: string;
+  readonly recoveryRef: string | null;
+  readonly conflictedPaths: readonly string[];
 }
 
 function isSamePullRequestTarget(a: PullRequestTarget, b: PullRequestTarget): boolean {
@@ -438,8 +457,17 @@ function actionDisabledReason(input: {
     if (status.refName === null) {
       return "Detached HEAD.";
     }
+    if (status.aheadCount > 0 && status.behindCount > 0) {
+      return "Resolve branch divergence first.";
+    }
     if (status.hasWorkingTreeChanges) {
-      return "Commit or stash changes first.";
+      if (
+        status.workingTree.files.some(
+          (file) => file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged",
+        )
+      ) {
+        return "Resolve merge conflicts first.";
+      }
     }
     return status.behindCount > 0 ? null : "Branch is up to date.";
   }
@@ -1882,6 +1910,14 @@ export function SourceControlPanel({
   );
   const [pendingHistoryReconciliation, setPendingHistoryReconciliation] =
     useState<PendingHistoryReconciliation | null>(null);
+  const [pendingStashRecovery, setPendingStashRecovery] = useState<PendingStashRecovery | null>(
+    null,
+  );
+  const [safePullConfirmationOpen, setSafePullConfirmationOpen] = useState(false);
+  const [stashDialogMode, setStashDialogMode] = useState<"create" | "manage" | null>(null);
+  const [stashMessage, setStashMessage] = useState("");
+  const [stashIncludeUntracked, setStashIncludeUntracked] = useState(true);
+  const [pendingDropStash, setPendingDropStash] = useState<VcsStashEntry | null>(null);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
   const [pendingDiscardChanges, setPendingDiscardChanges] = useState<PendingDiscardChanges | null>(
@@ -1932,9 +1968,18 @@ export function SourceControlPanel({
     isSamePullRequestTarget(pendingHistoryReconciliation, currentPullTargetRef.current)
       ? pendingHistoryReconciliation
       : null;
+  const activeStashRecovery =
+    pendingStashRecovery &&
+    isSamePullRequestTarget(pendingStashRecovery, currentPullTargetRef.current)
+      ? pendingStashRecovery
+      : null;
 
   useEffect(() => {
     setPendingHistoryReconciliation(null);
+    setPendingStashRecovery(null);
+    setSafePullConfirmationOpen(false);
+    setStashDialogMode(null);
+    setPendingDropStash(null);
   }, [cwd, environmentId]);
   const reviewThread = useStore(
     useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]),
@@ -2193,6 +2238,34 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
+  const stashesQuery = useQuery(
+    gitStashesQueryOptions({
+      environmentId,
+      cwd,
+      enabled: Boolean(status?.isRepo),
+    }),
+  );
+  const createStashMutation = useMutation(
+    gitCreateStashMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
+  const applyStashMutation = useMutation(
+    gitApplyStashMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
+  const dropStashMutation = useMutation(
+    gitDropStashMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
   const discardChangesMutation = useMutation(
     gitDiscardChangesMutationOptions({
       environmentId,
@@ -2234,12 +2307,31 @@ export function SourceControlPanel({
   const runningPublishActionCount = useIsMutating({
     mutationKey: gitMutationKeys.publishRepository(environmentId, cwd),
   });
+  const runningPullActionCount = useIsMutating({
+    mutationKey: gitMutationKeys.pull(environmentId, cwd),
+  });
+  const runningCreateStashCount = useIsMutating({
+    mutationKey: gitMutationKeys.createStash(environmentId, cwd),
+  });
+  const runningApplyStashCount = useIsMutating({
+    mutationKey: gitMutationKeys.applyStash(environmentId, cwd),
+  });
+  const runningDropStashCount = useIsMutating({
+    mutationKey: gitMutationKeys.dropStash(environmentId, cwd),
+  });
   const isGitActionRunning =
     runningStackedActionCount > 0 ||
     runningPublishActionCount > 0 ||
+    runningPullActionCount > 0 ||
+    runningCreateStashCount > 0 ||
+    runningApplyStashCount > 0 ||
+    runningDropStashCount > 0 ||
     actionMutation.isPending ||
     initMutation.isPending ||
     pullMutation.isPending ||
+    createStashMutation.isPending ||
+    applyStashMutation.isPending ||
+    dropStashMutation.isPending ||
     discardChangesMutation.isPending ||
     stageChangesMutation.isPending ||
     unstageChangesMutation.isPending ||
@@ -2287,6 +2379,21 @@ export function SourceControlPanel({
       ? changesTreeExpansionState.overrides
       : EMPTY_DIRECTORY_EXPANSION_OVERRIDES;
   const changedFileCount = changedFiles.length;
+  const stashes = stashesQuery.data?.stashes ?? [];
+  const shouldProtectChangesBeforePull = Boolean(
+    status?.hasWorkingTreeChanges && status.behindCount > 0 && status.aheadCount === 0,
+  );
+  const stashChangesDisabledReason = isGitActionRunning
+    ? "Git action in progress."
+    : !status?.isRepo
+      ? "No Git repository."
+      : !status.hasWorkingTreeChanges
+        ? "No working tree changes."
+        : status.workingTree.files.some(
+              (file) => file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged",
+            )
+          ? "Resolve merge conflicts first."
+          : repositorySafetyReason;
   const canPublishRepository = Boolean(status?.isRepo && !status.hasPrimaryRemote);
   const shouldPublishBranch = Boolean(
     status?.isRepo &&
@@ -2561,18 +2668,25 @@ export function SourceControlPanel({
   );
 
   const executePull = useCallback(
-    (historyReconciliation?: VcsPullHistoryReconciliation) => {
+    (options?: {
+      readonly historyReconciliation?: VcsPullHistoryReconciliation;
+      readonly stashLocalChanges?: boolean;
+    }) => {
       if (isParentRepositoryConfirmationRequired) {
         return;
       }
       const requestTarget: PullRequestTarget = { environmentId, cwd };
-      const promise = pullMutation.mutateAsync(historyReconciliation);
+      const promise = pullMutation.mutateAsync(options);
       void toastManager.promise<
         Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
         ThreadToastData
       >(promise, {
         loading: {
-          title: historyReconciliation ? "Updating from rewritten upstream..." : "Pulling...",
+          title: options?.historyReconciliation
+            ? "Updating from rewritten upstream..."
+            : options?.stashLocalChanges
+              ? "Stashing, pulling, and restoring..."
+              : "Pulling...",
           data: threadToastData,
         },
         success: (result) => {
@@ -2590,15 +2704,52 @@ export function SourceControlPanel({
                 data: threadToastData,
               };
             case "requires_history_reconciliation":
-              return {
-                title: "Pull needs confirmation",
-                description: `The history for ${result.upstreamRef} changed upstream.`,
-                data: threadToastData,
-              };
+              return options?.stashLocalChanges
+                ? {
+                    title: "Upstream history changed",
+                    description:
+                      "Stash your changes manually, then pull again to review the rewritten history.",
+                    timeout: 0,
+                    data: threadToastData,
+                  }
+                : {
+                    title: "Pull needs confirmation",
+                    description: `The history for ${result.upstreamRef} changed upstream.`,
+                    data: threadToastData,
+                  };
             case "reconciled":
               return {
                 title: "Updated from rewritten upstream",
                 description: `Backed up ${result.refName} to ${result.recoveryRef}, then updated it from ${result.upstreamRef}.`,
+                data: threadToastData,
+              };
+            case "pulled_with_restored_changes":
+              return {
+                title: "Updated and restored changes",
+                description: result.stashDropped
+                  ? `Updated ${result.refName} from ${result.upstreamRef} and restored your local changes.`
+                  : `Updated ${result.refName} and restored your local changes. The protected stash was kept because the stash list changed.`,
+                data: threadToastData,
+              };
+            case "pulled_with_restore_conflicts":
+              return {
+                title: "Updated; local changes need attention",
+                description: `Your protected stash was kept. Resolve ${result.conflictedPaths.length} conflicted ${result.conflictedPaths.length === 1 ? "file" : "files"}.`,
+                timeout: 0,
+                data: threadToastData,
+              };
+            case "pulled_with_restore_failure":
+              return {
+                title: "Updated; protected changes need attention",
+                description: result.detail,
+                timeout: 0,
+                data: threadToastData,
+              };
+            case "update_failed_with_protected_changes":
+              return {
+                title: "Update stopped; protected changes need attention",
+                description: result.detail,
+                timeout: 0,
                 data: threadToastData,
               };
           }
@@ -2633,7 +2784,7 @@ export function SourceControlPanel({
           if (!isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)) {
             return;
           }
-          if (result.status === "requires_history_reconciliation") {
+          if (result.status === "requires_history_reconciliation" && !options?.stashLocalChanges) {
             if (requestTarget.environmentId && requestTarget.cwd) {
               setPendingHistoryReconciliation({
                 environmentId: requestTarget.environmentId,
@@ -2641,6 +2792,33 @@ export function SourceControlPanel({
                 result,
               });
             }
+          } else if (result.status === "requires_history_reconciliation") {
+            setPendingHistoryReconciliation(null);
+            setStashDialogMode("create");
+          } else if (
+            result.status === "pulled_with_restore_conflicts" ||
+            result.status === "pulled_with_restore_failure" ||
+            result.status === "update_failed_with_protected_changes"
+          ) {
+            if (requestTarget.environmentId && requestTarget.cwd) {
+              setPendingStashRecovery({
+                environmentId: requestTarget.environmentId,
+                cwd: requestTarget.cwd,
+                title:
+                  result.status === "update_failed_with_protected_changes"
+                    ? "Update stopped; protected changes remain"
+                    : "Branch updated; local changes need attention",
+                detail:
+                  result.status === "pulled_with_restore_conflicts"
+                    ? "Threadlines kept the protected stash because restoring it caused conflicts."
+                    : result.detail,
+                stashId: result.stashId,
+                recoveryRef: result.recoveryRef,
+                conflictedPaths:
+                  result.status === "pulled_with_restore_failure" ? [] : result.conflictedPaths,
+              });
+            }
+            setPendingHistoryReconciliation(null);
           } else {
             setPendingHistoryReconciliation(null);
           }
@@ -2648,7 +2826,7 @@ export function SourceControlPanel({
         },
         () => {
           if (
-            historyReconciliation &&
+            options?.historyReconciliation &&
             isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)
           ) {
             // A failed confirmation may mean HEAD or the upstream moved. Require a fresh probe
@@ -2670,8 +2848,141 @@ export function SourceControlPanel({
   );
 
   const runPull = useCallback(() => {
+    if (shouldProtectChangesBeforePull) {
+      setSafePullConfirmationOpen(true);
+      return;
+    }
     executePull();
-  }, [executePull]);
+  }, [executePull, shouldProtectChangesBeforePull]);
+
+  const createStash = useCallback(() => {
+    const message = stashMessage.trim();
+    const promise = createStashMutation.mutateAsync({
+      includeUntracked: stashIncludeUntracked,
+      ...(message.length > 0 ? { message } : {}),
+    });
+    void toastManager.promise(promise, {
+      loading: { title: "Stashing changes...", data: threadToastData },
+      success: (result) => ({
+        title: "Changes stashed",
+        description: result.stash.message,
+        data: threadToastData,
+      }),
+      error: (error) => ({
+        title: "Could not stash changes",
+        description: formatGitErrorMessage(error),
+        data: threadToastData,
+      }),
+    });
+    void promise.then(
+      () => {
+        setStashMessage("");
+        setStashIncludeUntracked(true);
+        setStashDialogMode(null);
+        refreshPanel();
+      },
+      () => {
+        refreshPanel();
+      },
+    );
+  }, [createStashMutation, refreshPanel, stashIncludeUntracked, stashMessage, threadToastData]);
+
+  const applySelectedStash = useCallback(
+    (stash: VcsStashEntry, dropAfterApply: boolean) => {
+      const requestTarget: PullRequestTarget = { environmentId, cwd };
+      const promise = applyStashMutation.mutateAsync({
+        selector: stash.selector,
+        expectedStashId: stash.id,
+        dropAfterApply,
+      });
+      void toastManager.promise(promise, {
+        loading: {
+          title: dropAfterApply ? "Popping stash..." : "Applying stash...",
+          data: threadToastData,
+        },
+        success: (result) =>
+          result.status === "conflicted"
+            ? {
+                title: "Stash needs conflict resolution",
+                description: `The stash was kept. Resolve ${result.conflictedPaths.length} conflicted ${result.conflictedPaths.length === 1 ? "file" : "files"}.`,
+                timeout: 0,
+                data: threadToastData,
+              }
+            : {
+                title: dropAfterApply
+                  ? result.dropped
+                    ? "Stash popped"
+                    : "Stash applied and kept"
+                  : "Stash applied",
+                description:
+                  dropAfterApply && !result.dropped
+                    ? "The stash list changed before cleanup, so Threadlines left the stash in place."
+                    : undefined,
+                data: threadToastData,
+              },
+        error: (error) => ({
+          title: dropAfterApply ? "Could not pop stash" : "Could not apply stash",
+          description: formatGitErrorMessage(error),
+          data: threadToastData,
+        }),
+      });
+      void promise.then(
+        (result) => {
+          if (
+            result.status === "conflicted" &&
+            requestTarget.environmentId &&
+            requestTarget.cwd &&
+            isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)
+          ) {
+            setPendingStashRecovery({
+              environmentId: requestTarget.environmentId,
+              cwd: requestTarget.cwd,
+              title: "Stash needs conflict resolution",
+              detail: "The selected stash was kept because applying it caused conflicts.",
+              stashId: result.stashId,
+              recoveryRef: null,
+              conflictedPaths: result.conflictedPaths,
+            });
+            setStashDialogMode(null);
+          }
+          refreshPanel();
+        },
+        () => {
+          refreshPanel();
+        },
+      );
+    },
+    [applyStashMutation, cwd, environmentId, refreshPanel, threadToastData],
+  );
+
+  const dropSelectedStash = useCallback(() => {
+    const stash = pendingDropStash;
+    if (!stash) {
+      return;
+    }
+    const promise = dropStashMutation.mutateAsync({
+      selector: stash.selector,
+      expectedStashId: stash.id,
+    });
+    void toastManager.promise(promise, {
+      loading: { title: "Dropping stash...", data: threadToastData },
+      success: { title: "Stash dropped", data: threadToastData },
+      error: (error) => ({
+        title: "Could not drop stash",
+        description: formatGitErrorMessage(error),
+        data: threadToastData,
+      }),
+    });
+    void promise.then(
+      () => {
+        setPendingDropStash(null);
+        refreshPanel();
+      },
+      () => {
+        refreshPanel();
+      },
+    );
+  }, [dropStashMutation, pendingDropStash, refreshPanel, threadToastData]);
 
   const initializeRepository = useCallback(() => {
     const promise = initMutation.mutateAsync();
@@ -4231,13 +4542,28 @@ export function SourceControlPanel({
                       <UploadIcon className="size-3.5" />
                       <span>{shouldPublishBranch ? "Publish branch" : "Push only"}</span>
                     </MenuItem>
+                    <MenuSeparator />
+                    <MenuItem
+                      disabled={stashChangesDisabledReason !== null}
+                      onClick={() => setStashDialogMode("create")}
+                    >
+                      <ArchiveIcon className="size-3.5" />
+                      <span>Stash changes...</span>
+                    </MenuItem>
+                    <MenuItem
+                      disabled={!status?.isRepo || isGitActionRunning}
+                      onClick={() => setStashDialogMode("manage")}
+                    >
+                      <ArchiveIcon className="size-3.5" />
+                      <span>View stashes{stashes.length > 0 ? ` (${stashes.length})` : ""}</span>
+                    </MenuItem>
                   </MenuGroup>
                 </MenuPopup>
               </Menu>
             </div>
             <div className="grid grid-cols-2 gap-1.5">
               <ActionButton
-                label="Pull"
+                label={shouldProtectChangesBeforePull ? "Stash & pull" : "Pull"}
                 icon={<DownloadIcon className="size-3" />}
                 disabledReason={pullDisabledReason}
                 onClick={runPull}
@@ -4277,6 +4603,19 @@ export function SourceControlPanel({
               repositorySafetyReason={repositorySafetyReason}
               refreshPanel={refreshPanel}
             />
+            {status?.isRepo && stashes.length > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={isGitActionRunning}
+                onClick={() => setStashDialogMode("manage")}
+                className="w-full min-w-0 justify-center"
+              >
+                <ArchiveIcon className="size-3" />
+                <span className="truncate">Stashes ({stashes.length})</span>
+              </Button>
+            ) : null}
           </section>
 
           <section className="flex min-h-[7.5rem] flex-1 flex-col space-y-2">
@@ -4600,6 +4939,348 @@ export function SourceControlPanel({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+      <AlertDialog
+        open={safePullConfirmationOpen}
+        onOpenChange={(open) => {
+          if (!pullMutation.isPending) {
+            setSafePullConfirmationOpen(open);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stash, pull, and restore?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Threadlines will temporarily stash {changedFileCount} changed{" "}
+              {changedFileCount === 1 ? "file" : "files"}, including untracked files, fast-forward{" "}
+              <span className="font-mono">{status?.refName ?? "the current branch"}</span> by{" "}
+              {status?.behindCount ?? 0} {(status?.behindCount ?? 0) === 1 ? "commit" : "commits"},
+              then restore your staged and unstaged changes. Nothing will be committed or pushed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              render={<Button variant="outline" size="sm" disabled={pullMutation.isPending} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              size="sm"
+              disabled={pullMutation.isPending || pullDisabledReason !== null}
+              onClick={() => {
+                setSafePullConfirmationOpen(false);
+                executePull({ stashLocalChanges: true });
+              }}
+            >
+              Stash, pull &amp; restore
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <Dialog
+        open={stashDialogMode === "create"}
+        onOpenChange={(open) => {
+          if (!createStashMutation.isPending) {
+            setStashDialogMode(open ? "create" : null);
+          }
+        }}
+      >
+        <DialogPopup className="max-w-lg">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              createStash();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>Stash changes</DialogTitle>
+              <DialogDescription>
+                Save your current changes without creating a commit. You can apply or pop this stash
+                later.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 space-y-4">
+              <Input
+                autoFocus
+                nativeInput
+                size="sm"
+                maxLength={200}
+                placeholder="Optional description"
+                value={stashMessage}
+                onChange={(event) => setStashMessage(event.target.value)}
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={stashIncludeUntracked}
+                  onCheckedChange={(checked) => setStashIncludeUntracked(Boolean(checked))}
+                />
+                <span>Include untracked files</span>
+              </label>
+            </div>
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={createStashMutation.isPending}
+                onClick={() => setStashDialogMode(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={
+                  createStashMutation.isPending ||
+                  stashChangesDisabledReason !== null ||
+                  stashMessage.trim().length > 200
+                }
+              >
+                Stash changes
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogPopup>
+      </Dialog>
+      <Dialog
+        open={stashDialogMode === "manage"}
+        onOpenChange={(open) => {
+          if (!applyStashMutation.isPending && !dropStashMutation.isPending) {
+            setStashDialogMode(open ? "manage" : null);
+          }
+        }}
+      >
+        <DialogPopup className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Stashes</DialogTitle>
+            <DialogDescription>
+              Apply keeps a stash. Pop applies it and removes it only after a successful restore.
+            </DialogDescription>
+          </DialogHeader>
+          {status?.hasWorkingTreeChanges ? (
+            <div className="px-6 pt-4 text-xs leading-relaxed text-muted-foreground" role="note">
+              Apply and Pop are unavailable while this checkout has uncommitted changes. If a
+              recovery backup was already restored, keep it until you commit, then drop it.
+            </div>
+          ) : null}
+          <div className="mt-4 border-y border-border">
+            {stashesQuery.isPending ? (
+              <div className="px-6 py-4 text-sm text-muted-foreground">Loading stashes...</div>
+            ) : stashesQuery.isError ? (
+              <div className="flex items-center justify-between gap-3 px-6 py-4">
+                <span className="text-sm text-destructive">
+                  {formatGitErrorMessage(stashesQuery.error)}
+                </span>
+                <Button size="xs" variant="outline" onClick={() => void stashesQuery.refetch()}>
+                  Retry
+                </Button>
+              </div>
+            ) : stashes.length === 0 ? (
+              <div className="px-6 py-4 text-sm text-muted-foreground">No stashes yet.</div>
+            ) : (
+              stashes.map((stash, index) => (
+                <div
+                  key={`${stash.id}:${stash.selector}`}
+                  className={cn(
+                    "flex items-center gap-3 px-6 py-3",
+                    index > 0 && "border-t border-border",
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="truncate text-sm">
+                        {stash.recoveryBranch
+                          ? `Before pulling ${stash.recoveryBranch}`
+                          : stash.message}
+                      </div>
+                      {stash.recoveryBranch ? (
+                        <Badge variant="info" size="sm">
+                          Recovery backup
+                        </Badge>
+                      ) : null}
+                    </div>
+                    {stash.recoveryBranch ? (
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        Created automatically before pulling{" "}
+                        <span className="font-mono">{stash.recoveryBranch}</span>.
+                      </div>
+                    ) : null}
+                    <div className="mt-0.5 flex gap-2 text-xs text-muted-foreground">
+                      <span className="font-mono">{stash.selector}</span>
+                      <span>{new Date(stash.createdAt).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={isGitActionRunning || Boolean(status?.hasWorkingTreeChanges)}
+                      tooltip={
+                        status?.hasWorkingTreeChanges
+                          ? "Commit or stash current changes before applying another stash."
+                          : "Apply this stash and keep it"
+                      }
+                      onClick={() => applySelectedStash(stash, false)}
+                    >
+                      Apply
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={isGitActionRunning || Boolean(status?.hasWorkingTreeChanges)}
+                      tooltip={
+                        status?.hasWorkingTreeChanges
+                          ? "Commit or stash current changes before popping another stash."
+                          : "Apply this stash, then remove it"
+                      }
+                      onClick={() => applySelectedStash(stash, true)}
+                    >
+                      Pop
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={`Drop ${stash.selector}`}
+                      disabled={isGitActionRunning}
+                      onClick={() => {
+                        setStashDialogMode(null);
+                        setPendingDropStash(stash);
+                      }}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <DialogFooter className="mt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={stashChangesDisabledReason !== null}
+              onClick={() => setStashDialogMode("create")}
+            >
+              Stash changes...
+            </Button>
+            <Button size="sm" onClick={() => setStashDialogMode(null)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+      <AlertDialog
+        open={pendingDropStash !== null}
+        onOpenChange={(open) => {
+          if (!open && !dropStashMutation.isPending) {
+            setPendingDropStash(null);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Drop this stash?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDropStash ? (
+                <>
+                  Permanently remove <span className="font-mono">{pendingDropStash.selector}</span>:{" "}
+                  {pendingDropStash.message}. This cannot be undone.
+                </>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              render={<Button variant="outline" size="sm" disabled={dropStashMutation.isPending} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={dropStashMutation.isPending || pendingDropStash === null}
+              onClick={dropSelectedStash}
+            >
+              Drop stash
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <Dialog
+        open={activeStashRecovery !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingStashRecovery(null);
+          }
+        }}
+      >
+        <DialogPopup className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TriangleAlertIcon className="size-4 text-amber-500" />
+              {activeStashRecovery?.title ?? "Protected changes need attention"}
+            </DialogTitle>
+            <DialogDescription>{activeStashRecovery?.detail}</DialogDescription>
+          </DialogHeader>
+          {activeStashRecovery ? (
+            <div className="mt-4 divide-y divide-border border-y border-border text-sm">
+              {activeStashRecovery.conflictedPaths.length > 0 ? (
+                <div className="py-3">
+                  <div className="mb-1 text-xs text-muted-foreground">Conflicted files</div>
+                  {activeStashRecovery.conflictedPaths.map((filePath) => (
+                    <div key={filePath} className="truncate font-mono text-xs">
+                      {filePath}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="py-3">
+                <div className="text-xs text-muted-foreground">Protected stash</div>
+                <div className="break-all font-mono text-xs">{activeStashRecovery.stashId}</div>
+              </div>
+              {activeStashRecovery.recoveryRef ? (
+                <div className="py-3">
+                  <div className="text-xs text-muted-foreground">Recovery ref</div>
+                  <div className="break-all font-mono text-xs">
+                    {activeStashRecovery.recoveryRef}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <DialogFooter className="mt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setPendingStashRecovery(null);
+                setStashDialogMode("manage");
+              }}
+            >
+              View stashes
+            </Button>
+            {activeStashRecovery?.conflictedPaths[0] && onOpenDiff ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  const firstConflict = activeStashRecovery.conflictedPaths[0];
+                  setPendingStashRecovery(null);
+                  onOpenDiff(firstConflict);
+                }}
+              >
+                Review conflicts
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => setPendingStashRecovery(null)}>
+                Done
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       <PublishRepositoryDialog
         open={isPublishDialogOpen}
         onOpenChange={setIsPublishDialogOpen}
@@ -4681,10 +5362,12 @@ export function SourceControlPanel({
                   return;
                 }
                 executePull({
-                  refName: activeHistoryReconciliation.result.refName,
-                  upstreamRef: activeHistoryReconciliation.result.upstreamRef,
-                  expectedLocalSha: activeHistoryReconciliation.result.localSha,
-                  expectedUpstreamSha: activeHistoryReconciliation.result.upstreamSha,
+                  historyReconciliation: {
+                    refName: activeHistoryReconciliation.result.refName,
+                    upstreamRef: activeHistoryReconciliation.result.upstreamRef,
+                    expectedLocalSha: activeHistoryReconciliation.result.localSha,
+                    expectedUpstreamSha: activeHistoryReconciliation.result.upstreamSha,
+                  },
                 });
               }}
             >
