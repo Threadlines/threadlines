@@ -4122,6 +4122,101 @@ describe("deriveSubagentProgressState", () => {
     ).toBeNull();
   });
 
+  it("does not expose root conversation interactions as running subagents", () => {
+    const childStarted = makeActivity({
+      id: "native-child-started",
+      createdAt: "2026-07-24T19:58:41.647Z",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "subAgentActivity",
+            agentThreadId: "agent-child",
+            agentPath: "/root/commentary_before_actions",
+            kind: "started",
+            tool: "spawnAgent",
+            status: "inProgress",
+            receiverThreadIds: ["agent-child"],
+            agentsStates: {
+              "agent-child": { status: "running", message: null },
+            },
+          },
+        },
+      },
+    });
+    const rootInteracted = makeActivity({
+      id: "native-root-interacted",
+      createdAt: "2026-07-24T19:58:46.319Z",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "subAgentActivity",
+            agentThreadId: "agent-root",
+            agentPath: "/root",
+            kind: "interacted",
+            tool: "sendInput",
+            status: "inProgress",
+            receiverThreadIds: ["agent-root"],
+            agentsStates: {
+              "agent-root": { status: "running", message: null },
+            },
+          },
+        },
+      },
+    });
+    const childCompleted = makeActivity({
+      id: "native-child-result",
+      createdAt: "2026-07-24T19:59:02.833Z",
+      kind: "subagent.result",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            id: "subagent-response:agent-child",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            receiverThreadIds: ["agent-child"],
+            agentsStates: {
+              "agent-child": { status: "completed", message: "Completed child result." },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      deriveSubagentProgressState({
+        activities: [childStarted, rootInteracted],
+        latestTurnId: TurnId.make("turn-1"),
+        latestTurnSettled: false,
+      })?.items,
+    ).toEqual([
+      expect.objectContaining({
+        agentThreadId: "agent-child",
+        agentPath: "/root/commentary_before_actions",
+        status: "running",
+      }),
+    ]);
+
+    expect(
+      deriveSubagentProgressState({
+        activities: [childStarted, rootInteracted, childCompleted],
+        latestTurnId: TurnId.make("turn-1"),
+        latestTurnSettled: true,
+      }),
+    ).toBeNull();
+  });
+
   it("derives a stable hierarchy from native Codex agent paths", () => {
     const spawnActivity = (input: {
       id: string;

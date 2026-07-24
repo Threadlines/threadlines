@@ -339,6 +339,10 @@ export const ProviderSubagentTranscriptInput = Schema.Struct({
    *  spawned agent's transcript file. */
   agentId: TrimmedNonEmptyString,
   limit: Schema.optional(NonNegativeInt),
+  /** Zero-based entry offset for paginated transcript reads. */
+  offset: Schema.optional(NonNegativeInt),
+  /** Read the newest `limit` entries. Takes precedence over `offset`. */
+  fromEnd: Schema.optional(Schema.Boolean),
 });
 export type ProviderSubagentTranscriptInput = typeof ProviderSubagentTranscriptInput.Type;
 
@@ -360,6 +364,11 @@ export type ProviderSubagentTranscriptEntry = typeof ProviderSubagentTranscriptE
 export const ProviderSubagentTranscriptResult = Schema.Struct({
   entries: Schema.Array(ProviderSubagentTranscriptEntry),
   truncated: Schema.Boolean,
+  /** Zero-based index of the first returned entry. Optional for compatibility
+   *  with older Threadlines servers. */
+  offset: Schema.optional(NonNegativeInt),
+  /** Total mapped entries in the provider-owned transcript at read time. */
+  totalEntries: Schema.optional(NonNegativeInt),
 });
 export type ProviderSubagentTranscriptResult = typeof ProviderSubagentTranscriptResult.Type;
 

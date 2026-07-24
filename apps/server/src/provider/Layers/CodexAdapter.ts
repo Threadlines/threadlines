@@ -53,6 +53,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { isRootAgentPath } from "@threadlines/shared/subagentPath";
 import { resolveCodexServiceTier } from "../../codexServiceTier.ts";
 
 import {
@@ -398,7 +399,11 @@ function mapCodexStoredItem(
 
 export function mapCodexSubagentTranscript(
   thread: CodexStoredThread,
-  options?: { readonly limit?: number },
+  options?: {
+    readonly limit?: number;
+    readonly offset?: number;
+    readonly fromEnd?: boolean;
+  },
 ): ProviderSubagentTranscriptResult {
   const entries = thread.turns.flatMap((turn) =>
     turn.items.flatMap((item) => {
@@ -406,10 +411,19 @@ export function mapCodexSubagentTranscript(
       return entry === undefined ? [] : [entry];
     }),
   );
-  const limit = options?.limit ?? CODEX_SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+  const limit =
+    options?.limit !== undefined && options.limit > 0
+      ? options.limit
+      : CODEX_SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+  const offset = options?.fromEnd
+    ? Math.max(0, entries.length - limit)
+    : Math.min(options?.offset ?? 0, entries.length);
+  const page = entries.slice(offset, offset + limit);
   return {
-    entries: entries.slice(0, limit),
-    truncated: entries.length > limit,
+    entries: page,
+    truncated: offset > 0 || offset + page.length < entries.length,
+    offset,
+    totalEntries: entries.length,
   };
 }
 
@@ -1128,6 +1142,9 @@ function mapItemLifecycle(
     readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
   const item = payload?.item;
   if (!item) {
+    return undefined;
+  }
+  if (item.type === "subAgentActivity" && isRootAgentPath(item.agentPath)) {
     return undefined;
   }
   const itemType = toCanonicalItemType(item.type);
@@ -2977,7 +2994,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         if (parentThreadId === root.threadId) {
           return mapCodexSubagentTranscript(
             candidate,
-            input.limit !== undefined ? { limit: input.limit } : undefined,
+            input.limit !== undefined || input.offset !== undefined || input.fromEnd !== undefined
+              ? {
+                  ...(input.limit !== undefined ? { limit: input.limit } : {}),
+                  ...(input.offset !== undefined ? { offset: input.offset } : {}),
+                  ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+                }
+              : undefined,
           );
         }
         if (!parentThreadId || visited.has(parentThreadId)) {

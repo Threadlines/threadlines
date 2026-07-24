@@ -2,12 +2,24 @@ import "../../index.css";
 
 import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
 import { Button } from "../ui/button";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
+
+const transcriptRpcMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../environments/runtime/service", () => ({
+  requireEnvironmentConnection: () => ({
+    client: {
+      server: {
+        readSubagentTranscript: transcriptRpcMock,
+      },
+    },
+  }),
+}));
 
 const TASK_BADGE = {
   label: "1/2",
@@ -66,6 +78,16 @@ async function renderOpenPopover(activeStep: string) {
 }
 
 describe("ThreadActivityPopover", () => {
+  beforeEach(() => {
+    transcriptRpcMock.mockReset();
+    transcriptRpcMock.mockResolvedValue({
+      entries: [{ role: "assistant", text: "Inspecting the selected area.", toolUses: [] }],
+      truncated: false,
+      offset: 0,
+      totalEntries: 1,
+    });
+  });
+
   afterEach(() => {
     document.body.innerHTML = "";
   });
@@ -276,7 +298,7 @@ describe("ThreadActivityPopover", () => {
     }
   });
 
-  it("shows nested agents as a hierarchy and expands a read-only transcript", async () => {
+  it("shows nested agents as a hierarchy and opens a viewport-bounded transcript dialog", async () => {
     const subagentProgress: SubagentProgressState = {
       items: [
         {
@@ -328,6 +350,38 @@ describe("ThreadActivityPopover", () => {
         pulse: true,
       },
     };
+    transcriptRpcMock.mockImplementation(
+      async (input: { agentId: string; fromEnd?: boolean; offset?: number }) => {
+        if (input.agentId !== "agent-child") {
+          return {
+            entries: [{ role: "assistant", text: "Parent transcript", toolUses: [] }],
+            truncated: false,
+            offset: 0,
+            totalEntries: 1,
+          };
+        }
+        if (input.fromEnd) {
+          return {
+            entries: [
+              { role: "assistant", text: "Latest child step", toolUses: [] },
+              { role: "assistant", text: "Current child output", toolUses: [] },
+            ],
+            truncated: true,
+            offset: 2,
+            totalEntries: 4,
+          };
+        }
+        return {
+          entries: [
+            { role: "user", text: "Inspect persistence", toolUses: [] },
+            { role: "thinking", text: "Checking migrations", toolUses: [] },
+          ],
+          truncated: true,
+          offset: 0,
+          totalEntries: 4,
+        };
+      },
+    );
     const mounted = await render(
       <main style={{ minHeight: 360, padding: 24, width: 960 }}>
         <ThreadActivityPopover
@@ -356,8 +410,118 @@ describe("ThreadActivityPopover", () => {
 
       const inspect = page.getByRole("button", { name: "Inspect Database transcript" });
       await inspect.click();
+      await expect.element(page.getByLabelText("Database subagent inspector")).toBeVisible();
       await expect.element(page.getByText("Read-only transcript")).toBeVisible();
-      expect(document.querySelector("[data-subagent-transcript='true']")).not.toBeNull();
+      await expect.element(page.getByText("Current child output")).toBeVisible();
+      expect(document.body.textContent).not.toContain("2 subagents active");
+      expect(document.querySelector("[data-subagent-inspector='true']")).not.toBeNull();
+      const dialogViewport = document.querySelector<HTMLElement>("[data-slot='dialog-viewport']");
+      const dialogPopup = document.querySelector<HTMLElement>("[data-slot='dialog-popup']");
+      expect(dialogViewport).not.toBeNull();
+      expect(getComputedStyle(dialogViewport!).position).toBe("fixed");
+      const popupBounds = dialogPopup!.getBoundingClientRect();
+      expect(popupBounds.top).toBeGreaterThanOrEqual(0);
+      expect(popupBounds.bottom).toBeLessThanOrEqual(window.innerHeight);
+      expect(transcriptRpcMock).toHaveBeenCalledWith({
+        threadId: ACTIVE_THREAD_ID,
+        agentId: "agent-child",
+        limit: 80,
+        fromEnd: true,
+      });
+
+      await page.getByRole("button", { name: "Load earlier" }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll("[data-subagent-transcript-entry]")).toHaveLength(4);
+      });
+      expect(transcriptRpcMock).toHaveBeenCalledWith({
+        threadId: ACTIVE_THREAD_ID,
+        agentId: "agent-child",
+        offset: 0,
+        limit: 2,
+      });
+
+      const transcriptEntries = [
+        ...document.querySelectorAll<HTMLElement>("[data-subagent-transcript-entry]"),
+      ].map((entry) => entry.textContent);
+      expect(transcriptEntries).toEqual([
+        "userInspect persistence",
+        "Checking migrations",
+        "assistantLatest child step",
+        "assistantCurrent child output",
+      ]);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("refreshes the selected running subagent transcript", async () => {
+    let readCount = 0;
+    transcriptRpcMock.mockImplementation(async () => {
+      readCount += 1;
+      return {
+        entries: [
+          {
+            role: "assistant",
+            text: readCount === 1 ? "Initial transcript output" : "Refreshed transcript output",
+            toolUses: [],
+          },
+        ],
+        truncated: false,
+        offset: 0,
+        totalEntries: 1,
+      };
+    });
+    const subagentProgress: SubagentProgressState = {
+      items: [
+        {
+          agentThreadId: "agent-live",
+          id: "agent-live",
+          turnId: null,
+          label: "Live subagent",
+          role: "research",
+          objective: "Follow the live transcript",
+          status: "running",
+          statusLabel: "Running",
+          model: "gpt-5.6",
+          reasoningEffort: "high",
+          liveBody: "Reporting progress.",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        },
+      ],
+      activeCount: 1,
+      completedCount: 0,
+      failedCount: 0,
+      totalCount: 1,
+      summary: "1 subagent active",
+      badge: {
+        label: "1",
+        ariaLabel: "1 subagent active",
+        tone: "active",
+        pulse: true,
+      },
+    };
+    const mounted = await render(
+      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
+        <ThreadActivityPopover
+          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
+          activeThreadId={ACTIVE_THREAD_ID}
+          taskProgress={null}
+          subagentProgress={subagentProgress}
+          backgroundRuns={[]}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
+      await page.getByRole("button", { name: "Inspect Research transcript" }).click();
+      await expect.element(page.getByText("Initial transcript output")).toBeVisible();
+      await expect.element(page.getByText("Following live")).toBeVisible();
+      await expect.element(page.getByText("Refreshed transcript output")).toBeVisible();
+      expect(transcriptRpcMock.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {
       await mounted.unmount();
     }

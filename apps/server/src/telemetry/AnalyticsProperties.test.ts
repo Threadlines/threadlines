@@ -20,6 +20,11 @@ describe("AnalyticsProperties", () => {
       modelKind: "known",
       modelFamily: "claude",
     });
+    assert.deepStrictEqual(normalizeAnalyticsModel("claude-opus-5"), {
+      model: "claude-opus-5",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
   });
 
   it("redacts custom and provider-prefixed model strings", () => {

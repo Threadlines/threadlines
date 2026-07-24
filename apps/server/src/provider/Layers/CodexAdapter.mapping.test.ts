@@ -75,6 +75,36 @@ describe("CodexAdapter item mapping", () => {
     });
   });
 
+  it("does not project root conversation activity as a subagent", () => {
+    const runtimeEvents = mapToRuntimeEvents(
+      {
+        id: EventId.make("evt-root-interacted"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-07-13T18:38:49.000Z",
+        method: "item/completed",
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-1"),
+        itemId: ProviderItemId.make("root-activity-1"),
+        payload: {
+          completedAtMs: 1_783_967_929_000,
+          threadId: "provider-child-thread",
+          turnId: "provider-child-turn",
+          item: {
+            id: "root-activity-1",
+            type: "subAgentActivity",
+            kind: "interacted",
+            agentPath: "/root",
+            agentThreadId: "provider-parent-thread",
+          },
+        },
+      },
+      ThreadId.make("thread-1"),
+    );
+
+    assert.deepStrictEqual(runtimeEvents, []);
+  });
+
   it("maps a stored Codex child thread into the shared transcript shape", () => {
     const thread = {
       id: "child-thread",
@@ -125,6 +155,8 @@ describe("CodexAdapter item mapping", () => {
     assert.equal(readCodexSubagentParentThreadId(thread), "parent-thread");
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread), {
       truncated: false,
+      offset: 0,
+      totalEntries: 4,
       entries: [
         { role: "user", text: "Inspect the update path", toolUses: [] },
         { role: "thinking", text: "Checking the runtime wiring", toolUses: [] },
@@ -169,7 +201,30 @@ describe("CodexAdapter item mapping", () => {
     assert.equal(readCodexSubagentParentThreadId(thread), "child-thread");
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1 }), {
       truncated: true,
+      offset: 0,
+      totalEntries: 2,
       entries: [{ role: "assistant", text: "First", toolUses: [] }],
+    });
+    assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1, fromEnd: true }), {
+      truncated: true,
+      offset: 1,
+      totalEntries: 2,
+      entries: [{ role: "assistant", text: "Second", toolUses: [] }],
+    });
+    assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1, offset: 1 }), {
+      truncated: true,
+      offset: 1,
+      totalEntries: 2,
+      entries: [{ role: "assistant", text: "Second", toolUses: [] }],
+    });
+    assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 0 }), {
+      truncated: false,
+      offset: 0,
+      totalEntries: 2,
+      entries: [
+        { role: "assistant", text: "First", toolUses: [] },
+        { role: "assistant", text: "Second", toolUses: [] },
+      ],
     });
   });
 });

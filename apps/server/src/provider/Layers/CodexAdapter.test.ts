@@ -634,6 +634,8 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
       assert.deepStrictEqual(result, {
         entries: [{ role: "assistant", text: "Child result", toolUses: [] }],
         truncated: false,
+        offset: 0,
+        totalEntries: 1,
       });
       assert.deepStrictEqual(
         runtime.readStoredThreadImpl.mock.calls.map(([id]) => id),

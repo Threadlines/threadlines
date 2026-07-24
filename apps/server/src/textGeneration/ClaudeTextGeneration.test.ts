@@ -350,6 +350,38 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  it.effect("forwards Claude Opus 5 model and supported effort", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Use Opus 5",
+            body: "Body",
+          },
+        }),
+        argsMustContain: "--model claude-opus-5 --effort max",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/opus-5",
+            commitSummary: "Use Opus 5",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5", [
+                { id: "effort", value: "max" },
+              ]),
+            },
+          });
+
+          expect(generated.title).toBe("Use Opus 5");
+        }),
+    ),
+  );
+
   it.effect("forwards Claude Sonnet 5 model and supported effort", () =>
     withFakeClaudeEnv(
       {

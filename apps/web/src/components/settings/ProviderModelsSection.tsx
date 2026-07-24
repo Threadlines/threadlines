@@ -380,11 +380,11 @@ export function ProviderModelsSection({
                           variant="ghost"
                           className="size-5 rounded-sm p-0 text-muted-foreground/60 hover:text-muted-foreground"
                           aria-label={`Details for ${model.name}`}
-                        />
+                        >
+                          <InfoIcon className="size-3" />
+                        </Button>
                       }
-                    >
-                      <InfoIcon className="size-3" />
-                    </TooltipTrigger>
+                    ></TooltipTrigger>
                     <TooltipPopup side="top" className="max-w-56">
                       <div className="space-y-1">
                         <code className="block text-[11px] text-foreground">{model.slug}</code>

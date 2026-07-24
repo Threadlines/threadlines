@@ -347,6 +347,9 @@ export const ServerProvider = Schema.Struct({
   // Human-readable reason populated when `availability === "unavailable"`.
   // Surfaces in the UI alongside the missing-driver affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  // Whether the current model list came from a successful provider-native
+  // catalog probe or from Threadlines' offline fallback definitions.
+  modelCatalogSource: Schema.optional(Schema.Literals(["live", "fallback"])),
   models: Schema.Array(ServerProviderModel),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),

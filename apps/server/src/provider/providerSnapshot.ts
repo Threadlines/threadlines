@@ -201,6 +201,7 @@ export function buildServerProvider(input: {
   enabled: boolean;
   checkedAt: string;
   models: ReadonlyArray<ServerProviderModel>;
+  modelCatalogSource?: "live" | "fallback";
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
   probe: ProviderProbeResult;
@@ -230,6 +231,7 @@ export function buildServerProvider(input: {
     ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
+    ...(input.modelCatalogSource ? { modelCatalogSource: input.modelCatalogSource } : {}),
     models: input.models,
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
