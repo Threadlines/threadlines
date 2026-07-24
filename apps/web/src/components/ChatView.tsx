@@ -4909,6 +4909,38 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [activeThread, environmentId]);
 
+  const failedTurnRetryAction = useMemo(() => {
+    const failedMessage = activeThread?.messages.findLast((message) => message.role === "user");
+    if (
+      !isServerThread ||
+      !activeThread?.error ||
+      !activeThread.session?.lastError ||
+      !failedMessage ||
+      activeTurnInProgress ||
+      activeThread.session?.orchestrationStatus === "starting" ||
+      activeThread.session?.orchestrationStatus === "running"
+    ) {
+      return null;
+    }
+    return {
+      messageId: failedMessage.id,
+      isRetrying: turnRetryDispatchingThreadId === activeThread.id,
+      onRetry: () => {
+        void onRetryFailedTurn();
+      },
+    };
+  }, [
+    activeThread?.error,
+    activeThread?.id,
+    activeThread?.messages,
+    activeThread?.session?.lastError,
+    activeThread?.session?.orchestrationStatus,
+    activeTurnInProgress,
+    isServerThread,
+    onRetryFailedTurn,
+    turnRetryDispatchingThreadId,
+  ]);
+
   const threadErrorRetryAction = useMemo(() => {
     if (
       !isServerThread ||
@@ -6109,6 +6141,7 @@ export default function ChatView(props: ChatViewProps) {
               workspaceRoot={activeWorkspaceRoot}
               skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
               providerAuthReconnect={providerAuthReconnectPrompt}
+              failedTurnRetry={failedTurnRetryAction}
               onRunProviderAuthReconnect={runProviderAuthReconnect}
               mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
               onRunMcpAuthReconnect={runMcpAuthReconnect}

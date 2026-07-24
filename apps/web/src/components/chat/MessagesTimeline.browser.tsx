@@ -134,13 +134,13 @@ function buildLongUserMessageText(tail = "deep hidden detail only after expand")
   ).join("\n");
 }
 
-function buildUserTimelineEntry(text: string) {
+function buildUserTimelineEntry(text: string, messageId = "message-1") {
   return {
-    id: "entry-1",
+    id: `entry-${messageId}`,
     kind: "message" as const,
     createdAt: MESSAGE_CREATED_AT,
     message: {
-      id: "message-1" as never,
+      id: messageId as never,
       role: "user" as const,
       text,
       createdAt: MESSAGE_CREATED_AT,
@@ -685,6 +685,38 @@ describe("MessagesTimeline", () => {
       await page.getByRole("button", { name: "Edit and branch" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("retries only the failed user message from its compact inline action", async () => {
+    const onRetry = vi.fn();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        failedTurnRetry={{
+          messageId: MessageId.make("message-2"),
+          isRetrying: false,
+          onRetry,
+        }}
+        timelineEntries={[
+          buildUserTimelineEntry("Earlier request.", "message-1"),
+          buildUserTimelineEntry("Request that failed.", "message-2"),
+        ]}
+      />,
+    );
+
+    try {
+      const retryButtons = document.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Retry this message"]',
+      );
+      expect(retryButtons).toHaveLength(1);
+      expect(retryButtons[0]?.closest('[data-message-id="message-2"]')).not.toBeNull();
+
+      await page.getByRole("button", { name: "Retry this message" }).click();
+
+      expect(onRetry).toHaveBeenCalledOnce();
     } finally {
       await screen.unmount();
     }

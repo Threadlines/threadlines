@@ -55,6 +55,7 @@ import {
   KeyRoundIcon,
   LoaderIcon,
   LogInIcon,
+  RefreshCwIcon,
   SearchIcon,
   ShieldCheckIcon,
   SplitIcon,
@@ -142,6 +143,7 @@ interface TimelineRowSharedState {
   providerAuthReconnect: ProviderAuthReconnectAction | null;
   resolvedProviderAuthReconnectIds: ReadonlySet<string>;
   mcpAuthReconnectStatusByServerName: ReadonlyMap<string, McpAuthReconnectStatus>;
+  failedTurnRetry: FailedTurnRetryAction | null;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -164,6 +166,12 @@ export interface TimelineProposedPlanState {
   readonly onImplementInNewThread?: (() => void) | undefined;
   readonly onDismiss?: (() => void) | undefined;
   readonly onOpenThread: (threadId: ThreadId) => void;
+}
+
+interface FailedTurnRetryAction {
+  readonly messageId: MessageId;
+  readonly isRetrying: boolean;
+  readonly onRetry: () => void;
 }
 
 interface TimelineRowActivityState {
@@ -515,6 +523,7 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerAuthReconnect?: ProviderAuthReconnectAction | null;
+  failedTurnRetry?: FailedTurnRetryAction | null;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
@@ -571,6 +580,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   providerAuthReconnect = null,
+  failedTurnRetry = null,
   onRunProviderAuthReconnect,
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
   onRunMcpAuthReconnect,
@@ -1133,6 +1143,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
+      failedTurnRetry,
       onRevertUserMessage,
       ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
       onImageExpand,
@@ -1158,6 +1169,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
+      failedTurnRetry,
       onRevertUserMessage,
       onContinueInNewThread,
       onImageExpand,
@@ -1806,6 +1818,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
 
   return (
     <div className="flex justify-end">
@@ -1831,14 +1844,17 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           }
           footer={
             <>
-              <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                {displayedUserMessage.copyText && (
-                  <MessageCopyButton text={displayedUserMessage.copyText} />
-                )}
-                {displayedUserMessage.copyText && (
-                  <ContinueInNewThreadButton messageId={row.message.id} action="edit" />
-                )}
-                {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+              <div className="flex items-center gap-1.5">
+                {canRetryFailedTurn && <RetryUserMessageButton />}
+                <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                  {displayedUserMessage.copyText && (
+                    <MessageCopyButton text={displayedUserMessage.copyText} />
+                  )}
+                  {displayedUserMessage.copyText && (
+                    <ContinueInNewThreadButton messageId={row.message.id} action="edit" />
+                  )}
+                  {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+                </div>
               </div>
               <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
                 {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
@@ -1917,6 +1933,31 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
       tooltip="Revert to this message"
     >
       <Undo2Icon className="size-3" />
+    </Button>
+  );
+}
+
+function RetryUserMessageButton() {
+  const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  const retry = ctx.failedTurnRetry;
+  if (!retry) {
+    return null;
+  }
+
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      disabled={retry.isRetrying || activity.isWorking}
+      onClick={retry.onRetry}
+      aria-label="Retry this message"
+      tooltip="Retry this message"
+      className="gap-1 px-2 enabled:cursor-pointer"
+    >
+      <RefreshCwIcon className={cn("size-3", retry.isRetrying && "animate-spin")} />
+      {retry.isRetrying ? "Retrying" : "Retry"}
     </Button>
   );
 }
