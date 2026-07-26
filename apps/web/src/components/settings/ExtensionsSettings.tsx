@@ -25,6 +25,8 @@ import type {
   ProviderExtensionMcpServer,
   ProviderExtensionMcpTool,
   ProviderExtensionPlugin,
+  ProviderExtensionPluginComponent,
+  ProviderExtensionPluginDetail,
   ProviderExtensionProviderInventory,
   ProviderExtensionsInventoryResult,
   ProviderExtensionSkill,
@@ -56,8 +58,13 @@ import {
   extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
+  formatTokenCount,
+  groupPluginComponents,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
+  type PluginComponentTarget,
+  resolvePluginComponentTarget,
+  summarizePluginDetail,
   makeExtensionJsonSchemaFormDefaults,
   shouldRenderExtensionBrowserGroups,
   type ExtensionItemKind,
@@ -1309,9 +1316,158 @@ function ExtensionResourcesList({
   );
 }
 
+type PluginDetailState =
+  | { readonly status: "idle" }
+  | { readonly status: "loading" }
+  | { readonly status: "ready"; readonly detail: ProviderExtensionPluginDetail }
+  | { readonly status: "error"; readonly message: string };
+
+/** Dot-separated meta line. Skips blanks so a sparse plugin does not render stray separators. */
+function PluginMetaLine({ parts }: { parts: ReadonlyArray<string | undefined> }) {
+  const present = parts.filter((part): part is string => Boolean(part?.trim()));
+  if (present.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted-foreground/70">
+      {present.map((part, index) => (
+        <span key={part} className="flex items-center gap-2">
+          {index > 0 ? (
+            <span aria-hidden className="text-muted-foreground/40">
+              ·
+            </span>
+          ) : null}
+          <span className="truncate">{part}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function PluginTokenCost({ detail }: { detail: ProviderExtensionPluginDetail }) {
+  const alwaysOn = detail.tokenCost?.alwaysOnTokens;
+  if (alwaysOn === undefined) return null;
+
+  return (
+    <div className="flex items-baseline gap-2 text-xs text-muted-foreground">
+      <span className="font-mono text-foreground">{formatTokenCount(alwaysOn)} tok</span>
+      <span>added to every session</span>
+    </div>
+  );
+}
+
+function PluginComponentRow({
+  component,
+  onInvoke,
+}: {
+  component: ProviderExtensionPluginComponent;
+  onInvoke: (() => void) | null;
+}) {
+  const body = (
+    <>
+      <span className="min-w-0 truncate text-xs text-foreground">{component.name}</span>
+      {component.detail ? (
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+          {component.detail}
+        </span>
+      ) : null}
+      {component.enabled === false ? (
+        <Badge size="sm" variant="outline">
+          Off
+        </Badge>
+      ) : null}
+    </>
+  );
+
+  if (!onInvoke) {
+    return (
+      <div className="flex min-w-0 items-center gap-2 border-t border-border/40 py-1.5 first:border-t-0">
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="group flex min-w-0 items-center gap-2 border-t border-border/40 py-1.5 text-left transition-colors first:border-t-0 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={onInvoke}
+    >
+      {body}
+      <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+    </button>
+  );
+}
+
+function PluginComponents({
+  state,
+  provider,
+  onSelectTarget,
+  onRetry,
+}: {
+  state: PluginDetailState;
+  provider: ProviderExtensionProviderInventory;
+  onSelectTarget: (target: PluginComponentTarget) => void;
+  onRetry: () => void;
+}) {
+  const groups = useMemo(
+    () => (state.status === "ready" ? groupPluginComponents(state.detail.components) : []),
+    [state],
+  );
+
+  if (state.status === "idle") return null;
+
+  return (
+    <section className="space-y-2 border-t border-border/50 pt-3">
+      <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">What it adds</h3>
+      {state.status === "loading" ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <LoaderIcon className="size-3.5 animate-spin" />
+          Reading plugin contents
+        </div>
+      ) : null}
+      {state.status === "error" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 text-xs text-muted-foreground">{state.message}</span>
+          <Button size="xs" variant="outline" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {state.status === "ready" && groups.length === 0 ? (
+        <div className="text-xs text-muted-foreground">
+          This plugin does not contribute any components.
+        </div>
+      ) : null}
+      {groups.map((group) => (
+        <div key={group.kind} className="grid gap-1 sm:grid-cols-[8rem_minmax(0,1fr)]">
+          <div className="pt-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+            {group.label}
+            <span className="ml-1 font-mono font-normal text-muted-foreground/50">
+              {group.components.length}
+            </span>
+          </div>
+          <div className="min-w-0">
+            {group.components.map((component) => {
+              const target = resolvePluginComponentTarget(component, provider);
+              return (
+                <PluginComponentRow
+                  key={`${component.kind}:${component.name}`}
+                  component={component}
+                  onInvoke={target ? () => onSelectTarget(target) : null}
+                />
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function ExtensionDetailDialog({
   item,
   onClose,
+  onSelectItem,
   cwd,
   providerThreadId,
   onInventoryMutated,
@@ -1320,6 +1476,7 @@ function ExtensionDetailDialog({
 }: {
   item: ExtensionItem | null;
   onClose: () => void;
+  onSelectItem: (item: ExtensionItem) => void;
   cwd: string;
   providerThreadId: string;
   onInventoryMutated: () => Promise<void>;
@@ -1333,6 +1490,8 @@ function ExtensionDetailDialog({
   const [toolArguments, setToolArguments] = useState("{}");
   const [toolArgumentMode, setToolArgumentMode] = useState<"form" | "json">("json");
   const [toolFormValues, setToolFormValues] = useState<Record<string, string | boolean>>({});
+  const [pluginDetail, setPluginDetail] = useState<PluginDetailState>({ status: "idle" });
+  const [pluginDetailAttempt, setPluginDetailAttempt] = useState(0);
   const pollRef = useRef(0);
   const managedClaudePlugin = useMemo(() => findManagedClaudePluginForMcp(item), [item]);
 
@@ -1343,8 +1502,62 @@ function ExtensionDetailDialog({
     setToolArguments("{}");
     setToolArgumentMode("json");
     setToolFormValues({});
+    setPluginDetail({ status: "idle" });
+    setPluginDetailAttempt(0);
     pollRef.current += 1;
   }, [item?.kind, item?.id]);
+
+  // A plugin's component inventory needs a provider round trip, so it loads with the dialog rather
+  // than behind a button: "what does this add" is the question the dialog exists to answer.
+  useEffect(() => {
+    if (!item || item.kind !== "plugin" || item.plugin.installed !== true) return;
+
+    let cancelled = false;
+    setPluginDetail({ status: "loading" });
+    void (async () => {
+      try {
+        const result = await ensureLocalApi().server.readProviderExtensionPlugin({
+          ...actionBaseInput(item, cwd),
+          ...pluginSelectorInput(item.plugin),
+        });
+        if (!cancelled) setPluginDetail({ status: "ready", detail: result.plugin });
+      } catch (error) {
+        if (cancelled) return;
+        setPluginDetail({
+          status: "error",
+          message: error instanceof Error ? error.message : "Could not read plugin contents.",
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd, item, pluginDetailAttempt]);
+
+  const pluginDetailValue = pluginDetail.status === "ready" ? pluginDetail.detail : null;
+  const pluginDescription =
+    item?.kind === "plugin"
+      ? (pluginDetailValue?.description ?? item.plugin.description)
+      : undefined;
+  const pluginVersion =
+    item?.kind === "plugin" ? (item.plugin.version ?? pluginDetailValue?.version) : undefined;
+
+  const selectComponentTarget = useCallback(
+    (target: PluginComponentTarget) => {
+      if (!item) return;
+      if (target.kind === "skill") {
+        onSelectItem(skillExtensionItem(item.provider, target.skill));
+        return;
+      }
+      if (target.kind === "mcp") {
+        onSelectItem(mcpExtensionItem(item.provider, target.server));
+        return;
+      }
+      onSelectItem(appExtensionItem(item.provider, target.app));
+    },
+    [item, onSelectItem],
+  );
 
   const runDialogAction = useCallback(
     async (label: string, action: () => Promise<string | null | undefined>) => {
@@ -1475,17 +1688,6 @@ function ExtensionDetailDialog({
     });
   }, [cwd, item, onInventoryMutated, runDialogAction]);
 
-  const readPlugin = useCallback(() => {
-    if (!item || item.kind !== "plugin") return;
-    void runDialogAction("Read plugin", async () => {
-      const result = await ensureLocalApi().server.readProviderExtensionPlugin({
-        ...actionBaseInput(item, cwd),
-        ...pluginSelectorInput(item.plugin),
-      });
-      return formatJson(result.plugin);
-    });
-  }, [cwd, item, runDialogAction]);
-
   const installPlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
     void runDialogAction("Install plugin", async () => {
@@ -1549,7 +1751,7 @@ function ExtensionDetailDialog({
         ...actionBaseInput(item, cwd),
         ...pluginSelectorInput(managedClaudePlugin),
       });
-      return formatJson(result.plugin);
+      return summarizePluginDetail(result.plugin);
     });
   }, [cwd, item, managedClaudePlugin, runDialogAction]);
 
@@ -1693,109 +1895,152 @@ function ExtensionDetailDialog({
                 </Badge>
               ) : null}
             </div>
-            <dl className="rounded-md border border-border/60 bg-background px-3">
-              {item.kind === "plugin" ? (
-                <>
-                  <DetailRow label="ID" value={item.plugin.id} copyValue={item.plugin.id} />
-                  <DetailRow label="Name" value={item.plugin.name} copyValue={item.plugin.name} />
-                  <DetailRow label="Display" value={item.plugin.displayName} />
-                  <DetailRow label="Description" value={item.plugin.description} />
-                  <DetailRow label="Version" value={item.plugin.version} />
-                  <DetailRow label="Available" value={item.plugin.availableVersion} />
-                  <DetailRow label="Developer" value={item.plugin.developerName} />
-                  <DetailRow label="Category" value={item.plugin.category} />
-                  <DetailRow
-                    label="Website"
-                    value={item.plugin.websiteUrl}
-                    copyValue={item.plugin.websiteUrl}
+            {item.kind === "plugin" ? (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  {pluginDescription ? (
+                    <p className="text-xs leading-relaxed text-foreground/90">
+                      {pluginDescription}
+                    </p>
+                  ) : null}
+                  <PluginMetaLine
+                    parts={[
+                      item.plugin.developerName,
+                      pluginVersion ? `v${pluginVersion}` : undefined,
+                      item.plugin.availableVersion
+                        ? `v${item.plugin.availableVersion} available`
+                        : undefined,
+                      item.plugin.category,
+                      item.plugin.marketplaceName,
+                    ]}
                   />
-                  <DetailRow label="Installed" value={formatBoolean(item.plugin.installed)} />
-                  <DetailRow label="Enabled" value={formatBoolean(item.plugin.enabled)} />
-                  <DetailRow label="Auth Policy" value={item.plugin.authPolicy} />
-                  <DetailRow label="Install Policy" value={item.plugin.installPolicy} />
-                  <DetailRow label="Availability" value={item.plugin.availability} />
-                  <DetailRow label="Marketplace" value={item.plugin.marketplaceName} />
-                  <DetailRow
-                    label="Install Path"
-                    value={item.plugin.installPath}
-                    copyValue={item.plugin.installPath}
-                  />
-                  <DetailRow label="Installed At" value={item.plugin.installedAt} />
-                  <DetailRow label="Last Updated" value={item.plugin.lastUpdated} />
-                  <DetailRow
-                    label="Install Count"
-                    value={
-                      item.plugin.installCount !== undefined
-                        ? String(item.plugin.installCount)
-                        : undefined
-                    }
-                  />
-                  <DetailRow
-                    label="Project Path"
-                    value={item.plugin.projectPath}
-                    copyValue={item.plugin.projectPath}
-                  />
-                  <DetailRow
-                    label="Market Path"
-                    value={item.plugin.marketplacePath}
-                    copyValue={item.plugin.marketplacePath}
-                  />
-                  <DetailRow label="Scope" value={item.plugin.scope} />
-                  <DetailRow
-                    label="Source"
-                    value={item.plugin.source}
-                    copyValue={item.plugin.source}
-                  />
-                </>
-              ) : null}
-              {item.kind === "skill" ? (
-                <>
-                  <DetailRow label="Name" value={item.skill.name} copyValue={item.skill.name} />
-                  <DetailRow label="Display" value={item.skill.displayName} />
-                  <DetailRow label="Summary" value={item.skill.shortDescription} />
-                  <DetailRow label="Description" value={item.skill.description} />
-                  <DetailRow label="Enabled" value={formatBoolean(item.skill.enabled)} />
-                  <DetailRow
-                    label="Bundle"
-                    value={item.skill.bundleId ? skillBundleLabel(item.skill) : undefined}
-                  />
-                  <DetailRow
-                    label="Bundle ID"
-                    value={item.skill.bundleId}
-                    copyValue={item.skill.bundleId}
-                  />
-                  <DetailRow label="Scope" value={item.skill.scope} />
-                  <DetailRow label="Source" value={item.skill.source} />
-                  <DetailRow label="Path" value={item.skill.path} copyValue={item.skill.path} />
-                </>
-              ) : null}
-              {item.kind === "mcp" ? (
-                <>
-                  <DetailRow label="Name" value={item.server.name} copyValue={item.server.name} />
-                  <DetailRow label="Status" value={item.server.status} />
-                  <DetailRow label="Auth" value={item.server.authStatus} />
-                  <DetailRow label="Transport" value={item.server.transport} />
-                  <DetailRow label="Tool Count" value={String(item.server.toolCount ?? 0)} />
-                  <DetailRow label="Resources" value={String(item.server.resourceCount ?? 0)} />
-                  <DetailRow label="Detail" value={item.server.detail} />
-                  <DetailRow
-                    label="Managed By"
-                    value={managedClaudePlugin ? `${managedClaudePlugin.name} plugin` : undefined}
-                    copyValue={managedClaudePlugin?.id}
-                  />
-                </>
-              ) : null}
-              {item.kind === "app" ? (
-                <>
-                  <DetailRow label="ID" value={item.app.id} copyValue={item.app.id} />
-                  <DetailRow label="Name" value={item.app.name} copyValue={item.app.name} />
-                  <DetailRow label="Display" value={item.app.displayName} />
-                  <DetailRow label="Description" value={item.app.description} />
-                  <DetailRow label="Enabled" value={formatBoolean(item.app.enabled)} />
-                  <DetailRow label="Accessible" value={formatBoolean(item.app.accessible)} />
-                </>
-              ) : null}
-            </dl>
+                  {pluginDetail.status === "ready" ? (
+                    <PluginTokenCost detail={pluginDetail.detail} />
+                  ) : null}
+                </div>
+                <PluginComponents
+                  state={pluginDetail}
+                  provider={item.provider}
+                  onSelectTarget={selectComponentTarget}
+                  onRetry={() => setPluginDetailAttempt((attempt) => attempt + 1)}
+                />
+                <details className="group border-t border-border/50 pt-3">
+                  <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+                    <ChevronRightIcon className="size-3 transition-transform group-open:rotate-90" />
+                    Provenance
+                  </summary>
+                  <dl className="mt-1">
+                    <DetailRow label="ID" value={item.plugin.id} copyValue={item.plugin.id} />
+                    <DetailRow label="Name" value={item.plugin.name} copyValue={item.plugin.name} />
+                    <DetailRow label="Display" value={item.plugin.displayName} />
+                    <DetailRow
+                      label="Website"
+                      value={item.plugin.websiteUrl}
+                      copyValue={item.plugin.websiteUrl}
+                    />
+                    <DetailRow
+                      label="Repository"
+                      value={pluginDetailValue?.repositoryUrl}
+                      copyValue={pluginDetailValue?.repositoryUrl}
+                    />
+                    <DetailRow label="License" value={pluginDetailValue?.license} />
+                    <DetailRow
+                      label="Share URL"
+                      value={pluginDetailValue?.shareUrl}
+                      copyValue={pluginDetailValue?.shareUrl}
+                    />
+                    <DetailRow label="Installed" value={formatBoolean(item.plugin.installed)} />
+                    <DetailRow label="Enabled" value={formatBoolean(item.plugin.enabled)} />
+                    <DetailRow label="Auth Policy" value={item.plugin.authPolicy} />
+                    <DetailRow label="Install Policy" value={item.plugin.installPolicy} />
+                    <DetailRow label="Availability" value={item.plugin.availability} />
+                    <DetailRow label="Marketplace" value={item.plugin.marketplaceName} />
+                    <DetailRow
+                      label="Install Path"
+                      value={item.plugin.installPath}
+                      copyValue={item.plugin.installPath}
+                    />
+                    <DetailRow label="Installed At" value={item.plugin.installedAt} />
+                    <DetailRow label="Last Updated" value={item.plugin.lastUpdated} />
+                    <DetailRow
+                      label="Install Count"
+                      value={
+                        item.plugin.installCount !== undefined
+                          ? String(item.plugin.installCount)
+                          : undefined
+                      }
+                    />
+                    <DetailRow
+                      label="Project Path"
+                      value={item.plugin.projectPath}
+                      copyValue={item.plugin.projectPath}
+                    />
+                    <DetailRow
+                      label="Market Path"
+                      value={item.plugin.marketplacePath}
+                      copyValue={item.plugin.marketplacePath}
+                    />
+                    <DetailRow label="Scope" value={item.plugin.scope} />
+                    <DetailRow
+                      label="Source"
+                      value={item.plugin.source}
+                      copyValue={item.plugin.source}
+                    />
+                  </dl>
+                </details>
+              </div>
+            ) : null}
+            {item.kind !== "plugin" ? (
+              <dl className="rounded-md border border-border/60 bg-background px-3">
+                {item.kind === "skill" ? (
+                  <>
+                    <DetailRow label="Name" value={item.skill.name} copyValue={item.skill.name} />
+                    <DetailRow label="Display" value={item.skill.displayName} />
+                    <DetailRow label="Summary" value={item.skill.shortDescription} />
+                    <DetailRow label="Description" value={item.skill.description} />
+                    <DetailRow label="Enabled" value={formatBoolean(item.skill.enabled)} />
+                    <DetailRow
+                      label="Bundle"
+                      value={item.skill.bundleId ? skillBundleLabel(item.skill) : undefined}
+                    />
+                    <DetailRow
+                      label="Bundle ID"
+                      value={item.skill.bundleId}
+                      copyValue={item.skill.bundleId}
+                    />
+                    <DetailRow label="Scope" value={item.skill.scope} />
+                    <DetailRow label="Source" value={item.skill.source} />
+                    <DetailRow label="Path" value={item.skill.path} copyValue={item.skill.path} />
+                  </>
+                ) : null}
+                {item.kind === "mcp" ? (
+                  <>
+                    <DetailRow label="Name" value={item.server.name} copyValue={item.server.name} />
+                    <DetailRow label="Status" value={item.server.status} />
+                    <DetailRow label="Auth" value={item.server.authStatus} />
+                    <DetailRow label="Transport" value={item.server.transport} />
+                    <DetailRow label="Tool Count" value={String(item.server.toolCount ?? 0)} />
+                    <DetailRow label="Resources" value={String(item.server.resourceCount ?? 0)} />
+                    <DetailRow label="Detail" value={item.server.detail} />
+                    <DetailRow
+                      label="Managed By"
+                      value={managedClaudePlugin ? `${managedClaudePlugin.name} plugin` : undefined}
+                      copyValue={managedClaudePlugin?.id}
+                    />
+                  </>
+                ) : null}
+                {item.kind === "app" ? (
+                  <>
+                    <DetailRow label="ID" value={item.app.id} copyValue={item.app.id} />
+                    <DetailRow label="Name" value={item.app.name} copyValue={item.app.name} />
+                    <DetailRow label="Display" value={item.app.displayName} />
+                    <DetailRow label="Description" value={item.app.description} />
+                    <DetailRow label="Enabled" value={formatBoolean(item.app.enabled)} />
+                    <DetailRow label="Accessible" value={formatBoolean(item.app.accessible)} />
+                  </>
+                ) : null}
+              </dl>
+            ) : null}
             {item.kind === "mcp" ? (
               <>
                 <ExtensionToolsList tools={mcpTools} onSelectTool={selectTool} />
@@ -2021,19 +2266,6 @@ function ExtensionDetailDialog({
             ) : null}
             {codexActionsAvailable && item.kind === "plugin" ? (
               <>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={busyAction !== null}
-                  onClick={readPlugin}
-                >
-                  {busyAction === "Read plugin" ? (
-                    <LoaderIcon className="size-3.5 animate-spin" />
-                  ) : (
-                    <WrenchIcon className="size-3.5" />
-                  )}
-                  Details
-                </Button>
                 {item.plugin.installed === true ? (
                   <>
                     <Button
@@ -2082,21 +2314,6 @@ function ExtensionDetailDialog({
             ) : null}
             {claudeActionsAvailable && item.kind === "plugin" ? (
               <>
-                {item.plugin.installed === true && item.plugin.enabled !== false ? (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={busyAction !== null}
-                    onClick={readPlugin}
-                  >
-                    {busyAction === "Read plugin" ? (
-                      <LoaderIcon className="size-3.5 animate-spin" />
-                    ) : (
-                      <WrenchIcon className="size-3.5" />
-                    )}
-                    Details
-                  </Button>
-                ) : null}
                 {item.plugin.installed === true ? (
                   <>
                     <Button
@@ -3714,6 +3931,7 @@ export function ExtensionsSettingsPanel() {
         cwd={cwd}
         providerThreadId={effectiveProviderThreadId}
         onClose={() => setSelectedItem(null)}
+        onSelectItem={setSelectedItem}
         onInventoryMutated={refreshAfterMutation}
         lastAction={selectedItemLastAction}
         onActionHistoryChange={recordItemActionHistory}

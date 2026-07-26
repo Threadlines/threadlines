@@ -16,8 +16,12 @@ import {
   formatExtensionGroupLabel,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
+  formatTokenCount,
+  groupPluginComponents,
   makeExtensionJsonSchemaFormDefaults,
+  resolvePluginComponentTarget,
   shouldRenderExtensionBrowserGroups,
+  summarizePluginDetail,
 } from "./ExtensionsSettings.logic";
 
 describe("ExtensionsSettings logic", () => {
@@ -30,6 +34,89 @@ describe("ExtensionsSettings logic", () => {
 
   it("treats empty filters as a match", () => {
     expect(extensionTextMatchesFilter([], "   ")).toBe(true);
+  });
+
+  it("groups plugin components by kind in display order with counted labels", () => {
+    const groups = groupPluginComponents([
+      { kind: "mcpServer", name: "supabase", detail: "http" },
+      { kind: "skill", name: "supabase-postgres-best-practices" },
+      { kind: "hook", name: "pre-commit", detail: "preToolUse" },
+      { kind: "skill", name: "supabase" },
+    ]);
+
+    expect(groups.map((group) => [group.label, group.components.length])).toEqual([
+      ["Skills", 2],
+      ["MCP server", 1],
+      ["Hook", 1],
+    ]);
+    expect(groups[0]?.components.map((component) => component.name)).toEqual([
+      "supabase-postgres-best-practices",
+      "supabase",
+    ]);
+  });
+
+  it("formats token counts compactly across magnitudes", () => {
+    expect(formatTokenCount(298)).toBe("298");
+    expect(formatTokenCount(4100)).toBe("4.1k");
+    expect(formatTokenCount(2000)).toBe("2k");
+    expect(formatTokenCount(1_200_000)).toBe("1.2m");
+  });
+
+  it("resolves plugin components to inventory entries by path, name, and server suffix", () => {
+    const provider = {
+      skills: [
+        { name: "supabase", path: "/plugins/supabase/skills/supabase/SKILL.md" },
+        { name: "renamed-on-disk", path: "/plugins/supabase/skills/postgres/SKILL.md" },
+      ],
+      mcpServers: [{ name: "plugin:supabase:supabase" }],
+      apps: [{ id: "app-1", name: "Notion" }],
+    };
+
+    expect(
+      resolvePluginComponentTarget(
+        { kind: "skill", name: "postgres", path: "/plugins/supabase/skills/postgres/SKILL.md" },
+        provider,
+      ),
+    ).toEqual({ kind: "skill", skill: provider.skills[1] });
+
+    expect(resolvePluginComponentTarget({ kind: "skill", name: "Supabase" }, provider)).toEqual({
+      kind: "skill",
+      skill: provider.skills[0],
+    });
+
+    expect(resolvePluginComponentTarget({ kind: "mcpServer", name: "supabase" }, provider)).toEqual(
+      {
+        kind: "mcp",
+        server: provider.mcpServers[0],
+      },
+    );
+
+    expect(resolvePluginComponentTarget({ kind: "hook", name: "pre-commit" }, provider)).toBeNull();
+    expect(resolvePluginComponentTarget({ kind: "skill", name: "absent" }, provider)).toBeNull();
+  });
+
+  it("summarizes a plugin detail as readable text rather than JSON", () => {
+    expect(
+      summarizePluginDetail({
+        pluginId: "supabase@claude-plugins-official",
+        name: "supabase",
+        version: "0.1.12",
+        description: "Official Supabase plugin.",
+        components: [
+          { kind: "skill", name: "supabase" },
+          { kind: "mcpServer", name: "supabase", detail: "http" },
+        ],
+        tokenCost: { alwaysOnTokens: 298, components: [] },
+      }),
+    ).toBe(
+      [
+        "supabase 0.1.12",
+        "Official Supabase plugin.",
+        "Skill (1): supabase",
+        "MCP server (1): supabase",
+        "Always-on cost: ~298 tok per session",
+      ].join("\n"),
+    );
   });
 
   it("detects local file paths without treating URLs as paths", () => {

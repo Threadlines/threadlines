@@ -11,6 +11,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -25,8 +26,10 @@ import {
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
+  mapCodexPluginDetail,
   mapCodexPlugins,
   parseClaudeMcpList,
+  parseClaudePluginDetails,
   parseClaudePluginList,
   getProviderExtensionOperationStatus,
   readProviderInstructionFiles,
@@ -229,6 +232,127 @@ describe("provider extensions inventory", () => {
     ]);
   });
 
+  it("maps typed Codex plugin detail and sorts its component inventory", () => {
+    const detail = mapCodexPluginDetail({
+      appTemplates: [
+        {
+          templateId: "warehouse-template",
+          name: "Warehouse",
+          category: "Data",
+          description: "Connect a warehouse",
+          materializedAppIds: [],
+        },
+      ],
+      apps: [
+        {
+          id: "dashboard-app",
+          name: "Dashboard",
+          category: "Analytics",
+          description: "Open dashboards",
+        },
+      ],
+      description: "Installed analytics toolkit",
+      hooks: [{ eventName: "postToolUse", key: "record-usage" }],
+      marketplaceName: "catalog",
+      marketplacePath: "/plugins/catalog",
+      mcpServers: ["metrics-api"],
+      scheduledTasks: [
+        {
+          key: "weekly-report",
+          name: "Weekly report",
+          prompt: "Summarize usage",
+          schedule: { type: "weekly", days: ["MO", "FR"], time: "09:00" },
+        },
+      ],
+      shareUrl: null,
+      skills: [
+        {
+          name: "summarize",
+          description: "Summarize product usage",
+          enabled: true,
+          path: "/plugins/analytics/skills/summarize/SKILL.md",
+          shortDescription: "Summarize usage",
+        },
+        {
+          name: "analyze",
+          description: "Analyze funnels",
+          enabled: false,
+        },
+      ],
+      summary: {
+        authPolicy: "ON_USE",
+        enabled: true,
+        id: "analytics",
+        installPolicy: "AVAILABLE",
+        installed: true,
+        interface: {
+          capabilities: [],
+          screenshotUrls: [],
+          screenshots: [],
+          displayName: "Analytics Toolkit",
+          developerName: "Example Labs",
+          websiteUrl: "https://example.com/analytics",
+          shortDescription: "Remote description",
+        },
+        localVersion: "1.5.0",
+        name: "Analytics",
+        shareContext: {
+          remotePluginId: "remote-analytics",
+          shareUrl: "https://example.com/share/analytics",
+        },
+        source: { type: "remote" },
+        version: "2.0.0",
+      },
+    } satisfies CodexSchema.V2PluginReadResponse__PluginDetail);
+
+    assert.deepEqual(detail, {
+      pluginId: "analytics",
+      name: "Analytics",
+      displayName: "Analytics Toolkit",
+      description: "Installed analytics toolkit",
+      version: "1.5.0",
+      developerName: "Example Labs",
+      websiteUrl: "https://example.com/analytics",
+      marketplaceName: "catalog",
+      marketplacePath: "/plugins/catalog",
+      shareUrl: "https://example.com/share/analytics",
+      components: [
+        {
+          kind: "skill",
+          name: "analyze",
+          description: "Analyze funnels",
+          enabled: false,
+        },
+        {
+          kind: "skill",
+          name: "summarize",
+          description: "Summarize usage",
+          path: "/plugins/analytics/skills/summarize/SKILL.md",
+          enabled: true,
+        },
+        { kind: "hook", name: "record-usage", detail: "postToolUse" },
+        { kind: "mcpServer", name: "metrics-api" },
+        {
+          kind: "app",
+          name: "Dashboard",
+          description: "Open dashboards",
+          detail: "Analytics",
+        },
+        {
+          kind: "appTemplate",
+          name: "Warehouse",
+          description: "Connect a warehouse",
+          detail: "Data",
+        },
+        {
+          kind: "scheduledTask",
+          name: "Weekly report",
+          detail: "MO, FR at 09:00",
+        },
+      ],
+    });
+  });
+
   it("summarizes and sanitizes Codex marketplace load failures", () => {
     const message = codexMarketplaceLoadErrorMessage({
       marketplaceLoadErrors: [
@@ -288,6 +412,62 @@ describe("provider extensions inventory", () => {
     assert.equal(plugins[0]?.installCount, 100599);
     assert.equal(plugins[1]?.id, "vercel@claude-plugins-official");
     assert.equal(plugins[1]?.installed, false);
+  });
+
+  it("parses Claude plugin component inventory and projected token cost", () => {
+    const details = parseClaudePluginDetails(`supabase 0.1.12
+  Official Supabase plugin for Claude Code with bundled Supabase skills and MCP access for project management, database work, auth, storage, and Postgres best practices.
+  Source: supabase@inline
+
+Component inventory
+  Skills (2)  supabase, supabase-postgres-best-practices
+  Agents (0)
+  Hooks (0)
+  MCP servers (0)
+  LSP servers (0)
+
+Projected token cost
+  Always-on:   ~298 tok   added to every session
+
+Per-component (rounded)
+  component                         always-on  on-invoke
+  supabase-postgres-best-practices        ~90       ~640
+  supabase                               ~210      ~4.1k
+
+  On-invoke cost is paid each time a skill or agent fires.
+  Token counts are estimates and may differ from actual usage.`);
+
+    assert.deepEqual(details, {
+      name: "supabase",
+      version: "0.1.12",
+      description:
+        "Official Supabase plugin for Claude Code with bundled Supabase skills and MCP access for project management, database work, auth, storage, and Postgres best practices.",
+      components: [
+        { kind: "skill", name: "supabase" },
+        { kind: "skill", name: "supabase-postgres-best-practices" },
+      ],
+      tokenCost: {
+        alwaysOnTokens: 298,
+        components: [
+          {
+            name: "supabase-postgres-best-practices",
+            alwaysOnTokens: 90,
+            onInvokeTokens: 640,
+          },
+          {
+            name: "supabase",
+            alwaysOnTokens: 210,
+            onInvokeTokens: 4100,
+          },
+        ],
+      },
+    });
+  });
+
+  it("degrades malformed Claude plugin details to empty enrichment", () => {
+    assert.deepEqual(parseClaudePluginDetails("unexpected output without stable sections"), {
+      components: [],
+    });
   });
 
   it("maps Codex MCP auth status without treating unsupported auth as server failure", () => {

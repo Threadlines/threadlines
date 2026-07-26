@@ -53,6 +53,67 @@ export const ProviderExtensionPlugin = Schema.Struct({
 });
 export type ProviderExtensionPlugin = typeof ProviderExtensionPlugin.Type;
 
+/**
+ * A single thing a plugin contributes to a session. Both providers describe plugins as bundles of
+ * these, so the settings UI can render one shape regardless of where the data came from.
+ */
+export const ProviderExtensionPluginComponentKind = Schema.Literals([
+  "skill",
+  "agent",
+  "hook",
+  "mcpServer",
+  "app",
+  "appTemplate",
+  "scheduledTask",
+  "lspServer",
+]);
+export type ProviderExtensionPluginComponentKind = typeof ProviderExtensionPluginComponentKind.Type;
+
+export const ProviderExtensionPluginComponent = Schema.Struct({
+  kind: ProviderExtensionPluginComponentKind,
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedString),
+  /** Short qualifier shown beside the name, e.g. a hook event name or an MCP transport. */
+  detail: Schema.optional(TrimmedNonEmptyString),
+  /** Filesystem path, when the component maps to an inventory item keyed by path (skills). */
+  path: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.optional(Schema.Boolean),
+});
+export type ProviderExtensionPluginComponent = typeof ProviderExtensionPluginComponent.Type;
+
+export const ProviderExtensionPluginComponentTokenCost = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  alwaysOnTokens: Schema.optional(NonNegativeInt),
+  onInvokeTokens: Schema.optional(NonNegativeInt),
+});
+export type ProviderExtensionPluginComponentTokenCost =
+  typeof ProviderExtensionPluginComponentTokenCost.Type;
+
+/** Estimated context cost of installing a plugin. Only Claude reports this today. */
+export const ProviderExtensionPluginTokenCost = Schema.Struct({
+  alwaysOnTokens: Schema.optional(NonNegativeInt),
+  components: Schema.Array(ProviderExtensionPluginComponentTokenCost),
+});
+export type ProviderExtensionPluginTokenCost = typeof ProviderExtensionPluginTokenCost.Type;
+
+export const ProviderExtensionPluginDetail = Schema.Struct({
+  pluginId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  displayName: Schema.optional(TrimmedNonEmptyString),
+  description: Schema.optional(TrimmedString),
+  version: Schema.optional(TrimmedNonEmptyString),
+  developerName: Schema.optional(TrimmedNonEmptyString),
+  websiteUrl: Schema.optional(TrimmedNonEmptyString),
+  repositoryUrl: Schema.optional(TrimmedNonEmptyString),
+  license: Schema.optional(TrimmedNonEmptyString),
+  marketplaceName: Schema.optional(TrimmedNonEmptyString),
+  marketplacePath: Schema.optional(TrimmedNonEmptyString),
+  shareUrl: Schema.optional(TrimmedNonEmptyString),
+  components: Schema.Array(ProviderExtensionPluginComponent),
+  tokenCost: Schema.optional(ProviderExtensionPluginTokenCost),
+});
+export type ProviderExtensionPluginDetail = typeof ProviderExtensionPluginDetail.Type;
+
 export const ProviderExtensionSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
   path: TrimmedNonEmptyString,
@@ -279,7 +340,7 @@ export const ProviderExtensionPluginReadInput = Schema.Struct({
 export type ProviderExtensionPluginReadInput = typeof ProviderExtensionPluginReadInput.Type;
 
 export const ProviderExtensionPluginReadResult = Schema.Struct({
-  plugin: Schema.Unknown,
+  plugin: ProviderExtensionPluginDetail,
 });
 export type ProviderExtensionPluginReadResult = typeof ProviderExtensionPluginReadResult.Type;
 
