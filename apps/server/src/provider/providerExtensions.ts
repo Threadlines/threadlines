@@ -89,9 +89,11 @@ const INVENTORY_COMMAND_TIMEOUT = Duration.seconds(20);
 const CODEX_APP_SERVER_INVENTORY_TIMEOUT = Duration.seconds(20);
 const decodeCodexJson = Schema.decodeUnknownSync(Schema.Json);
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
+const CODEX_MCP_ORIGIN_TIMEOUT = Duration.seconds(3);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
 const CODEX_EXTENSION_INVENTORY_PAGE_LIMIT = 100;
+const MAX_CODEX_MCP_ORIGIN_PLUGINS = 40;
 const CODEX_MCP_OAUTH_DEFAULT_TIMEOUT_SECONDS = 300;
 const CODEX_MCP_OAUTH_MAX_TIMEOUT_SECONDS = 900;
 const CLAUDE_MCP_LOGIN_VERIFY_INTERVAL_SECONDS = 3;
@@ -718,11 +720,39 @@ function codexMcpServerStatusLabel(
 
 export function mapCodexMcpServers(
   response: CodexSchema.V2ListMcpServerStatusResponse,
+  pluginOwners?: ReadonlyArray<{
+    readonly pluginId: string;
+    readonly pluginName: string;
+    readonly mcpServers: ReadonlyArray<string>;
+  }>,
 ): ProviderExtensionMcpServer[] {
+  const ownersByServerName =
+    pluginOwners === undefined
+      ? undefined
+      : new Map(
+          pluginOwners.flatMap((owner) =>
+            owner.mcpServers.flatMap((rawServerName) => {
+              const serverName = requiredText(rawServerName);
+              return serverName ? ([[serverName, owner]] as const) : [];
+            }),
+          ),
+        );
+
   return response.data
     .flatMap((server) => {
       const name = requiredText(server.name);
       if (!name) return [];
+      const owner = ownersByServerName?.get(name);
+      const origin =
+        ownersByServerName === undefined
+          ? undefined
+          : owner
+            ? {
+                kind: "plugin" as const,
+                pluginId: owner.pluginId,
+                pluginName: owner.pluginName,
+              }
+            : { kind: "user" as const };
       const toolDefinitions = Object.entries(server.tools ?? {})
         .flatMap(([toolName, tool]) => {
           const resolvedName = requiredText(tool.name) ?? requiredText(toolName);
@@ -780,6 +810,7 @@ export function mapCodexMcpServers(
       return [
         {
           name,
+          ...(origin ? { origin } : {}),
           authStatus: codexMcpAuthStatusLabel(server.authStatus),
           status: codexMcpServerStatusLabel(server.authStatus),
           ...(tools.length > 0 ? { tools } : {}),
@@ -793,6 +824,45 @@ export function mapCodexMcpServers(
     })
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
+
+const readCodexMcpPluginOwners = Effect.fn("providerExtensions.readCodexMcpPluginOwners")(
+  function* (
+    client: CodexClient.CodexAppServerClientShape,
+    plugins: ReadonlyArray<ProviderExtensionPlugin>,
+  ) {
+    const installedPlugins = plugins.filter((plugin) => plugin.installed === true);
+    if (installedPlugins.length > MAX_CODEX_MCP_ORIGIN_PLUGINS) return undefined;
+
+    // `plugin/read` 404s for remote-catalog plugins, and a slow probe should not hold up the
+    // inventory, so each plugin succeeds or drops out on its own. One failure must not cost us
+    // origin for every other plugin.
+    const probes = yield* Effect.all(
+      installedPlugins.map((plugin) =>
+        client
+          .request("plugin/read", {
+            pluginName: plugin.name,
+            ...(plugin.marketplacePath ? { marketplacePath: plugin.marketplacePath } : {}),
+            ...(plugin.remoteMarketplaceName
+              ? { remoteMarketplaceName: plugin.remoteMarketplaceName }
+              : {}),
+          })
+          .pipe(
+            Effect.map((response) => ({
+              pluginId: plugin.id,
+              pluginName: plugin.name,
+              mcpServers: response.plugin.mcpServers,
+            })),
+            Effect.timeoutOption(CODEX_MCP_ORIGIN_TIMEOUT),
+            Effect.catch(() => Effect.succeed(Option.none())),
+          ),
+      ),
+      { concurrency: 4 },
+    );
+
+    const owners = probes.flatMap((probe) => (Option.isSome(probe) ? [probe.value] : []));
+    return owners.length > 0 ? owners : undefined;
+  },
+);
 
 function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensionApp[] {
   return response.data
@@ -1189,6 +1259,9 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const appListWithoutThreadParams = {
           limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
         };
+        const emptyMcpServerResponse: CodexSchema.V2ListMcpServerStatusResponse = {
+          data: [],
+        };
 
         const includeMcpServers = input.includeMcpServers ?? true;
         const mcpServersEffect = includeMcpServers
@@ -1198,20 +1271,34 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
                   ? client.request("mcpServerStatus/list", mcpStatusWithoutThreadParams)
                   : Effect.fail(cause),
               ),
-              Effect.map(mapCodexMcpServers),
               collectCodexRequest("MCP servers"),
             )
-          : Effect.succeed(Result.succeed([] as ProviderExtensionMcpServer[]));
+          : Effect.succeed(Result.succeed(emptyMcpServerResponse));
 
-        const [plugins, skills, mcpServers, apps] = yield* Effect.all(
+        const pluginsEffect = yield* Effect.cached(
+          client.request("plugin/list", { cwds: [input.cwd] }).pipe(
+            Effect.map((response) => ({
+              ...mapCodexPluginInventory(response),
+              loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
+            })),
+            collectCodexRequest("plugins"),
+          ),
+        );
+        const mcpPluginOwnersFiber = yield* (
+          includeMcpServers
+            ? pluginsEffect.pipe(
+                Effect.flatMap((plugins) =>
+                  Result.isSuccess(plugins)
+                    ? readCodexMcpPluginOwners(client, plugins.success.plugins)
+                    : Effect.succeed(undefined),
+                ),
+              )
+            : Effect.succeed(undefined)
+        ).pipe(Effect.forkScoped);
+
+        const [plugins, skills, mcpServerResponse, apps] = yield* Effect.all(
           [
-            client.request("plugin/list", { cwds: [input.cwd] }).pipe(
-              Effect.map((response) => ({
-                ...mapCodexPluginInventory(response),
-                loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
-              })),
-              collectCodexRequest("plugins"),
-            ),
+            pluginsEffect,
             client.request("skills/list", { cwds: [input.cwd] }).pipe(
               Effect.map((response) => mapCodexSkills(response, input.cwd)),
               collectCodexRequest("skills"),
@@ -1234,6 +1321,14 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           ],
           { concurrency: 2 },
         );
+        const mcpPluginOwnersExit = mcpPluginOwnersFiber.pollUnsafe();
+        const mcpPluginOwners =
+          mcpPluginOwnersExit !== undefined && Exit.isSuccess(mcpPluginOwnersExit)
+            ? mcpPluginOwnersExit.value
+            : undefined;
+        const mcpServers = Result.isFailure(mcpServerResponse)
+          ? Result.fail(mcpServerResponse.failure)
+          : Result.succeed(mapCodexMcpServers(mcpServerResponse.success, mcpPluginOwners));
         return { includeMcpServers, plugins, skills, mcpServers, apps };
       }),
     ).pipe(Effect.result, Effect.timeoutOption(CODEX_APP_SERVER_INVENTORY_TIMEOUT));
@@ -1734,34 +1829,79 @@ function normalizeClaudeMcpStatus(value: string | undefined): string | undefined
   return /^needs authentication$/i.test(normalized) ? "Needs authentication" : normalized;
 }
 
-function claudeMcpDisplayName(rawName: string): string {
+function parseClaudeMcpName(rawName: string): {
+  readonly name: string;
+  readonly pluginName?: string | undefined;
+} {
   const parts = rawName
     .split(":")
     .map((part) => part.trim())
     .filter(Boolean);
   if (parts[0] === "plugin" && parts.length >= 3) {
-    const pluginName = parts[1]!;
+    const pluginName = parts[1];
+    if (!pluginName) return { name: rawName.trim() };
     const serverName = parts.slice(2).join(":");
-    return serverName === pluginName ? pluginName : `${pluginName}:${serverName}`;
+    return {
+      name: serverName === pluginName ? pluginName : `${pluginName}:${serverName}`,
+      pluginName,
+    };
   }
-  return rawName.trim();
+  return { name: rawName.trim() };
 }
 
-export function parseClaudeMcpList(output: string): ProviderExtensionMcpServer[] {
+function claudeMcpPluginOrigin(
+  parsedName: ReturnType<typeof parseClaudeMcpName>,
+  pluginEntries: ReadonlyArray<ParsedClaudePluginListEntry>,
+): ProviderExtensionMcpServer["origin"] {
+  const installedEntries = pluginEntries.filter((entry) => entry.plugin.installed === true);
+  if (parsedName.pluginName) {
+    const matchingPlugin = installedEntries.find(
+      (entry) =>
+        entry.plugin.name === parsedName.pluginName ||
+        shortClaudePluginName(entry.plugin.id) === parsedName.pluginName,
+    );
+    return {
+      kind: "plugin",
+      ...(matchingPlugin ? { pluginId: matchingPlugin.plugin.id } : {}),
+      pluginName: parsedName.pluginName,
+    };
+  }
+
+  const matchingPlugin = installedEntries.find((entry) =>
+    Object.keys(entry.mcpServers).some(
+      (rawServerName) => requiredText(rawServerName) === parsedName.name,
+    ),
+  );
+  return matchingPlugin
+    ? {
+        kind: "plugin",
+        pluginId: matchingPlugin.plugin.id,
+        pluginName: matchingPlugin.plugin.name,
+      }
+    : { kind: "user" };
+}
+
+export function parseClaudeMcpList(
+  output: string,
+  pluginEntries: ReadonlyArray<ParsedClaudePluginListEntry> = [],
+): ProviderExtensionMcpServer[] {
   const servers: ProviderExtensionMcpServer[] = [];
   for (const line of output.split(/\r?\n/g)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.toLowerCase().startsWith("checking ")) continue;
     const match = trimmed.match(/^(.+?):\s+(.+?)(?:\s+-\s+(.+))?$/);
     if (!match) continue;
-    const name = claudeMcpDisplayName(match[1]!);
+    const rawName = match[1];
+    if (!rawName) continue;
+    const parsedName = parseClaudeMcpName(rawName);
     const target = match[2] ?? "";
     const status = normalizeClaudeMcpStatus(match[3]);
     const transport = target.match(/\(([^)]+)\)\s*$/)?.[1]?.trim();
     const detail = optionalText(target.replace(/\s*\([^)]*\)\s*$/, ""));
     const authStatus = status?.toLowerCase().includes("auth") ? status : undefined;
     servers.push({
-      name,
+      name: parsedName.name,
+      origin: claudeMcpPluginOrigin(parsedName, pluginEntries),
       status: optionalText(status) ?? "configured",
       ...(authStatus ? { authStatus } : {}),
       transport: optionalText(transport),
@@ -2495,7 +2635,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
                 }),
               ),
         ),
-        Effect.map((result) => parseClaudePluginList(result.stdout)),
+        Effect.map((result) => parseClaudePluginListEntries(result.stdout)),
         Effect.result,
       ),
       runClaudeCommand({
@@ -2523,10 +2663,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
         args: ["mcp", "list"],
         cwd: input.cwd,
         env: claudeEnvironment,
-      }).pipe(
-        Effect.map((result) => parseClaudeMcpList(result.stdout)),
-        Effect.result,
-      ),
+      }).pipe(Effect.result),
       readClaudeSkills(path.resolve(claudeHome), input.cwd).pipe(Effect.result),
     ],
     { concurrency: "unbounded" },
@@ -2537,9 +2674,8 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     resultMessage(mcpResult),
     resultMessage(skillsResult),
   ].filter((message): message is string => Boolean(message));
-  const plugins = yield* describeInstalledClaudePlugins(
-    Result.isSuccess(pluginResult) ? pluginResult.success : [],
-  );
+  const pluginEntries = Result.isSuccess(pluginResult) ? pluginResult.success : [];
+  const plugins = yield* describeInstalledClaudePlugins(pluginEntries.map((entry) => entry.plugin));
   const marketplaces = Result.isSuccess(marketplaceResult)
     ? parseClaudeMarketplaceList(marketplaceResult.success.stdout, plugins)
     : [];
@@ -2552,7 +2688,9 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     plugins,
     marketplaces,
     skills,
-    mcpServers: Result.isSuccess(mcpResult) ? mcpResult.success : [],
+    mcpServers: Result.isSuccess(mcpResult)
+      ? parseClaudeMcpList(mcpResult.success.stdout, pluginEntries)
+      : [],
     apps: [],
   } satisfies Pick<
     ProviderExtensionProviderInventory,

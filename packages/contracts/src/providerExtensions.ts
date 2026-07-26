@@ -181,8 +181,28 @@ export const ProviderExtensionMcpResourceTemplate = Schema.Struct({
 });
 export type ProviderExtensionMcpResourceTemplate = typeof ProviderExtensionMcpResourceTemplate.Type;
 
+/**
+ * Why a connection exists. Users think in terms of "Cloudflare", not "an MCP server contributed by
+ * a plugin", so every connection has to be able to name where it came from.
+ */
+export const ProviderExtensionMcpOriginKind = Schema.Literals([
+  "plugin",
+  "user",
+  "project",
+  "builtin",
+]);
+export type ProviderExtensionMcpOriginKind = typeof ProviderExtensionMcpOriginKind.Type;
+
+export const ProviderExtensionMcpOrigin = Schema.Struct({
+  kind: ProviderExtensionMcpOriginKind,
+  pluginId: Schema.optional(TrimmedNonEmptyString),
+  pluginName: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionMcpOrigin = typeof ProviderExtensionMcpOrigin.Type;
+
 export const ProviderExtensionMcpServer = Schema.Struct({
   name: TrimmedNonEmptyString,
+  origin: Schema.optional(ProviderExtensionMcpOrigin),
   authStatus: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(TrimmedNonEmptyString),
   transport: Schema.optional(TrimmedNonEmptyString),

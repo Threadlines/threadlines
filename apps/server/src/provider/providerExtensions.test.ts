@@ -581,19 +581,101 @@ Per-component (rounded)
     assert.equal(servers[1]?.authStatus, "Not logged in");
   });
 
-  it("parses Claude plugin MCP entries without collapsing the name to plugin", () => {
+  it("maps Claude MCP origins from plugin prefixes and plugin inventories", () => {
     const servers = parseClaudeMcpList(
       [
         "Checking MCP server health...",
         "plugin:supabase:supabase: https://mcp.supabase.com/mcp (HTTP) - ! Needs authentication",
+        "figma: https://mcp.figma.com/mcp (HTTP) - Connected",
+        "local-tools: npx local-tools (stdio) - Connected",
       ].join("\n"),
+      [
+        {
+          plugin: {
+            id: "supabase@openai-curated",
+            name: "supabase",
+            installed: true,
+          },
+          mcpServers: {},
+        },
+        {
+          plugin: {
+            id: "design@openai-curated",
+            name: "design",
+            installed: true,
+          },
+          mcpServers: { figma: { type: "http" } },
+        },
+      ],
     );
 
-    assert.equal(servers[0]?.name, "supabase");
-    assert.equal(servers[0]?.status, "Needs authentication");
-    assert.equal(servers[0]?.authStatus, "Needs authentication");
-    assert.equal(servers[0]?.transport, "HTTP");
-    assert.equal(servers[0]?.detail, "https://mcp.supabase.com/mcp");
+    assert.deepEqual(
+      servers.map((server) => ({ name: server.name, origin: server.origin })),
+      [
+        {
+          name: "figma",
+          origin: {
+            kind: "plugin",
+            pluginId: "design@openai-curated",
+            pluginName: "design",
+          },
+        },
+        { name: "local-tools", origin: { kind: "user" } },
+        {
+          name: "supabase",
+          origin: {
+            kind: "plugin",
+            pluginId: "supabase@openai-curated",
+            pluginName: "supabase",
+          },
+        },
+      ],
+    );
+  });
+
+  it("maps Codex MCP servers to the installed plugin that provides them", () => {
+    const servers = mapCodexMcpServers(
+      {
+        data: [
+          {
+            name: "figma",
+            authStatus: "oAuth",
+            tools: {},
+            resources: [],
+            resourceTemplates: [],
+          },
+          {
+            name: "local-tools",
+            authStatus: "unsupported",
+            tools: {},
+            resources: [],
+            resourceTemplates: [],
+          },
+        ],
+      },
+      [
+        {
+          pluginId: "design@openai-curated",
+          pluginName: "Design",
+          mcpServers: ["figma"],
+        },
+      ],
+    );
+
+    assert.deepEqual(
+      servers.map((server) => ({ name: server.name, origin: server.origin })),
+      [
+        {
+          name: "figma",
+          origin: {
+            kind: "plugin",
+            pluginId: "design@openai-curated",
+            pluginName: "Design",
+          },
+        },
+        { name: "local-tools", origin: { kind: "user" } },
+      ],
+    );
   });
 
   it("derives plugin bundle metadata from cached skill paths", () => {
