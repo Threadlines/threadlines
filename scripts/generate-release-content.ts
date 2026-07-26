@@ -456,6 +456,7 @@ export async function requestReleaseSummary(
   },
 ): Promise<ReleaseSummaryDraft> {
   const execute = options.fetch ?? fetch;
+  const model = options.model?.trim() || DEFAULT_MODEL;
   const response = await execute(GITHUB_MODELS_API_URL, {
     method: "POST",
     headers: {
@@ -465,7 +466,7 @@ export async function requestReleaseSummary(
       "X-GitHub-Api-Version": "2026-03-10",
     },
     body: JSON.stringify({
-      model: options.model ?? DEFAULT_MODEL,
+      model,
       messages: [
         {
           role: "system",
@@ -487,7 +488,16 @@ export async function requestReleaseSummary(
     }),
   });
 
-  const responseBody = (await response.json()) as GitHubModelsResponseBody;
+  const responseText = await response.text();
+  let responseBody: GitHubModelsResponseBody;
+  try {
+    responseBody = JSON.parse(responseText) as GitHubModelsResponseBody;
+  } catch {
+    const responseSummary = responseText.trim().slice(0, 1_000) || "<empty response>";
+    throw new Error(
+      `GitHub Models API ${response.status} returned a non-JSON response: ${responseSummary}`,
+    );
+  }
   if (!response.ok) {
     throw new Error(`GitHub Models API ${response.status}: ${JSON.stringify(responseBody)}`);
   }

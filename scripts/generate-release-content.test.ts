@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import { parse as parseYaml } from "yaml";
 
 import {
@@ -130,7 +130,7 @@ it("rejects release titles that repeat the product or version", () => {
   );
 });
 
-it("uses schema-constrained GitHub Models output", async () => {
+it("uses schema-constrained GitHub Models output and defaults a blank model", async () => {
   let requestUrl: string | undefined;
   let requestBody: Record<string, unknown> | undefined;
   const unnormalizedDraft = {
@@ -168,7 +168,7 @@ it("uses schema-constrained GitHub Models output", async () => {
       repository: "Threadlines/threadlines",
       evidence,
     },
-    { token: "test-token", fetch: fakeFetch },
+    { token: "test-token", model: "   ", fetch: fakeFetch },
   );
 
   assert.deepEqual(result, draft);
@@ -178,6 +178,27 @@ it("uses schema-constrained GitHub Models output", async () => {
     (requestBody?.response_format as { type?: unknown } | undefined)?.type,
     "json_schema",
   );
+});
+
+it("reports non-JSON GitHub Models API errors", async () => {
+  const fakeFetch: typeof fetch = async () =>
+    new Response("Model not found. Valid models can be found by calling /catalog/models.", {
+      status: 400,
+    });
+
+  await expect(
+    requestReleaseSummary(
+      {
+        version: "0.2.5",
+        releaseDate: "2026-07-22",
+        previousTag: "v0.2.4",
+        currentRef: "main",
+        repository: "Threadlines/threadlines",
+        evidence,
+      },
+      { token: "test-token", fetch: fakeFetch },
+    ),
+  ).rejects.toThrow("GitHub Models API 400 returned a non-JSON response: Model not found");
 });
 
 it("parses commit evidence records with optional path data", () => {
