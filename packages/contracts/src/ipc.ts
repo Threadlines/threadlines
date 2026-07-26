@@ -412,6 +412,12 @@ export const DesktopPreviewPickInputSchema = Schema.Struct({
 });
 export type DesktopPreviewPickInput = typeof DesktopPreviewPickInputSchema.Type;
 
+export const DesktopPreviewRevealInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  selector: Schema.String,
+});
+export type DesktopPreviewRevealInput = typeof DesktopPreviewRevealInputSchema.Type;
+
 export const DesktopPreviewClickInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   ref: Schema.Number,
@@ -772,6 +778,8 @@ export interface DesktopBridge {
     input: DesktopPreviewPickInput,
   ) => Promise<DesktopPreviewPickedElement | null>;
   previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
+  /** Resolves false when the element is no longer on the page. */
+  previewRevealElement?: (input: DesktopPreviewRevealInput) => Promise<boolean>;
   previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;

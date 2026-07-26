@@ -11,6 +11,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 interface ComposerPendingPickedElementContextsProps {
   contexts: ReadonlyArray<PickedElementContextDraft>;
   onRemove: (contextId: string) => void;
+  /** Shows the element again in the preview; absent outside the desktop app. */
+  onReveal?: ((context: PickedElementContextDraft) => void) | undefined;
   className?: string;
 }
 
@@ -27,6 +29,7 @@ const CHIP_CONTAINER_CLASS_NAME =
 export function ComposerPendingPickedElementContexts({
   contexts,
   onRemove,
+  onReveal,
   className,
 }: ComposerPendingPickedElementContextsProps) {
   if (contexts.length === 0) {
@@ -40,10 +43,20 @@ export function ComposerPendingPickedElementContexts({
           <Tooltip>
             <TooltipTrigger
               render={
-                <span
-                  className="inline-flex min-w-0 items-center gap-1.5 text-[12px] font-medium leading-tight text-foreground"
-                  data-testid={`picked-element-chip-${context.id}`}
-                />
+                onReveal === undefined ? (
+                  <span
+                    className="inline-flex min-w-0 items-center gap-1.5 text-[12px] font-medium leading-tight text-foreground"
+                    data-testid={`picked-element-chip-${context.id}`}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    aria-label={`Show ${formatPickedElementContextLabel(context)} in the preview`}
+                    className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 text-left text-[12px] font-medium leading-tight text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    data-testid={`picked-element-chip-${context.id}`}
+                    onClick={() => onReveal(context)}
+                  />
+                )
               }
             >
               <MousePointerClickIcon className="size-3 shrink-0 text-muted-foreground/70" />
@@ -52,6 +65,9 @@ export function ComposerPendingPickedElementContexts({
             {/* The label is the short form; the tooltip carries what a truncated
                 chip had to drop, which is what identifies it on the page. */}
             <TooltipPopup side="top" className="max-w-80">
+              {onReveal === undefined ? null : (
+                <span className="block text-[11px] text-foreground">Click to show in preview</span>
+              )}
               <span className="block font-mono text-[11px]">{context.selector}</span>
               <span className="block text-[11px] text-muted-foreground">
                 {context.width}×{context.height} · {context.url}

@@ -515,6 +515,8 @@ export interface ChatComposerProps {
   composerTranscriptHighlightContextsRef: React.RefObject<TranscriptHighlightContextDraft[]>;
   composerFileSelectionContextsRef: React.RefObject<FileSelectionContextDraft[]>;
   composerPickedElementContextsRef: React.RefObject<PickedElementContextDraft[]>;
+  /** Shows a picked element again in the preview; absent outside the desktop app. */
+  onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
   // Scroll
@@ -616,6 +618,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerTranscriptHighlightContextsRef,
     composerFileSelectionContextsRef,
     composerPickedElementContextsRef,
+    onRevealPickedElement,
     shouldAutoScrollRef,
     scheduleStickToBottom,
     onSend,
@@ -2835,6 +2838,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingPickedElementContexts
                   contexts={composerPickedElementContexts}
                   onRemove={removePickedElementContext}
+                  onReveal={onRevealPickedElement}
                   className="mb-2"
                 />
               )}

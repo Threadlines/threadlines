@@ -2532,6 +2532,22 @@ export default function ChatView(props: ChatViewProps) {
   );
   const toggleBrowserOpen = useBrowserPanelStore((store) => store.toggleBrowserOpen);
   const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
+
+  /**
+   * Showing a picked element again is a request, not a call: the panel may be
+   * closed, in which case it has to open and mount a webview before anything
+   * can be highlighted. Handing it a pending request lets it act when it is
+   * ready rather than making the caller guess at the timing.
+   */
+  const [pendingElementReveal, setPendingElementReveal] =
+    useState<PickedElementContextDraft | null>(null);
+  const revealPickedElement = useCallback(
+    (context: PickedElementContextDraft) => {
+      setBrowserOpen(routeThreadRef, true);
+      setPendingElementReveal(context);
+    },
+    [routeThreadRef, setBrowserOpen],
+  );
   const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
   const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
   const browserExpanded = useBrowserPanelStore((store) => store.expanded);
@@ -6291,6 +6307,7 @@ export default function ChatView(props: ChatViewProps) {
                   composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
                   composerFileSelectionContextsRef={composerFileSelectionContextsRef}
                   composerPickedElementContextsRef={composerPickedElementContextsRef}
+                  onRevealPickedElement={isElectron ? revealPickedElement : undefined}
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
@@ -6444,6 +6461,8 @@ export default function ChatView(props: ChatViewProps) {
               flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
               onClose={handleCloseBrowser}
               onPickElement={appendPickedElementToComposer}
+              pendingReveal={pendingElementReveal}
+              onRevealHandled={() => setPendingElementReveal(null)}
             />
           </>
         ) : null}

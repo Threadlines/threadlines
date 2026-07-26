@@ -10,6 +10,7 @@ import {
   DesktopPreviewStatusSchema,
   DesktopPreviewPickedElementSchema,
   DesktopPreviewPickInputSchema,
+  DesktopPreviewRevealInputSchema,
   DesktopPreviewTargetSchema,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -158,6 +159,16 @@ export const previewCancelPick = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.cancelPick")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.cancelPick(input.webContentsId);
+  }),
+});
+
+export const previewRevealElement = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_REVEAL_ELEMENT_CHANNEL,
+  payload: DesktopPreviewRevealInputSchema,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.preview.revealElement")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.revealElement(input.webContentsId, input.selector);
   }),
 });
 

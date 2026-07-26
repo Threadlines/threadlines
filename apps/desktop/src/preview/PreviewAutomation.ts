@@ -24,6 +24,7 @@ import type {
 import { webContents, type WebContents } from "electron";
 
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
+import { buildRevealElementScript } from "./revealElementScript.ts";
 import {
   buildPickOverlayScript,
   PICK_OVERLAY_BINDING,
@@ -138,6 +139,10 @@ export class PreviewAutomation extends Context.Service<
       colorScheme: "light" | "dark",
     ) => Effect.Effect<DesktopPreviewPickedElement | null, PreviewAutomationError>;
     readonly cancelPick: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
+    readonly revealElement: (
+      webContentsId: number,
+      selector: string,
+    ) => Effect.Effect<boolean, PreviewAutomationError>;
     readonly setColorScheme: (
       webContentsId: number,
       colorScheme: "light" | "dark",
@@ -608,6 +613,17 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         return null;
       }
       return yield* describePickedNode(sendCommand)(contents, located.backendNodeId);
+    }),
+    revealElement: Effect.fn("PreviewAutomation.revealElement")(function* (
+      webContentsId: number,
+      selector: string,
+    ) {
+      const contents = yield* resolve(webContentsId);
+      const result = (yield* sendCommand(contents, "Runtime.evaluate", {
+        expression: buildRevealElementScript(selector),
+        returnByValue: true,
+      })) as { result?: { value?: unknown } };
+      return result.result?.value === true;
     }),
     cancelPick: Effect.fn("PreviewAutomation.cancelPick")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);

@@ -1,3 +1,4 @@
+import type { PickedElementContextDraft } from "../../lib/pickedElementContext";
 import type {
   DesktopLocalServer,
   DesktopPreviewPickedElement,
@@ -109,6 +110,8 @@ export function BrowserPanel({
   flexGrow,
   onClose,
   onPickElement,
+  pendingReveal,
+  onRevealHandled,
 }: {
   threadRef: ScopedThreadRef;
   /** Complement of the chat column's share, so the two honour one ratio. */
@@ -116,6 +119,9 @@ export function BrowserPanel({
   onClose: () => void;
   /** Hands a picked element to the composer as context for the next message. */
   onPickElement?: ((element: DesktopPreviewPickedElement) => void) | undefined;
+  /** An element to show again, requested from a composer chip. */
+  pendingReveal?: PickedElementContextDraft | null | undefined;
+  onRevealHandled?: (() => void) | undefined;
 }) {
   const browserState = useBrowserPanelStore((store) =>
     selectThreadBrowserState(store.browserStateByThreadKey, threadRef),
@@ -218,6 +224,54 @@ export function BrowserPanel({
       setPicking(false);
     }
   }, [activeTabId, guestColorScheme, onPickElement, picking]);
+
+  // A reveal request arrives from the composer, which cannot know which tab is
+  // showing the page it came from -- or whether the panel was even open. The
+  // panel resolves that here: it prefers a tab already on that URL, falls back
+  // to the active one, and reports when the element has since gone.
+  const [revealMissing, setRevealMissing] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingReveal === null || pendingReveal === undefined || !isElectron) {
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      const onSameUrl = browserState.tabs.find((tab) => tab.url === pendingReveal.url);
+      if (onSameUrl !== undefined && onSameUrl.id !== activeTabId) {
+        selectTab(threadRef, onSameUrl.id);
+        // Let the newly active tab mount before asking it for anything.
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      if (cancelled) return;
+      const targetId = onSameUrl?.id ?? activeTabId;
+      const webview = webviewsRef.current.get(targetId);
+      if (webview === null || webview === undefined) {
+        onRevealHandled?.();
+        return;
+      }
+      const found = await window.desktopBridge?.previewRevealElement?.({
+        webContentsId: webview.getWebContentsId(),
+        selector: pendingReveal.selector,
+      });
+      if (cancelled) return;
+      setRevealMissing(found === true ? null : pendingReveal.id);
+      onRevealHandled?.();
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTabId, browserState.tabs, onRevealHandled, pendingReveal, selectTab, threadRef]);
+
+  // The notice clears itself: it answers a question the user just asked and
+  // has no meaning a moment later.
+  useEffect(() => {
+    if (revealMissing === null) {
+      return;
+    }
+    const timer = setTimeout(() => setRevealMissing(null), 4000);
+    return () => clearTimeout(timer);
+  }, [revealMissing]);
 
   const captureScreenshot = useCallback(() => {
     const webview = webviewsRef.current.get(activeTabId);
@@ -463,6 +517,14 @@ export function BrowserPanel({
         />
       ) : null}
 
+      {revealMissing === null ? null : (
+        <div
+          className="shrink-0 border-b border-border bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-600 dark:text-amber-400"
+          data-testid="browser-reveal-missing"
+        >
+          That element is not on this page any more.
+        </div>
+      )}
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background" ref={viewportAreaRef}>
         {!isElectron ? (
           <BrowserUnavailableNotice />
