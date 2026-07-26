@@ -3462,7 +3462,7 @@ function ExtensionBrowserDialog({
                     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
                   }}
                 >
-                  {option.label}
+                  {isCurated && option.value === "all" ? "Featured" : option.label}
                   <span className="font-mono tabular-nums text-foreground/80">
                     {filterCounts[option.value]}
                   </span>
@@ -3486,6 +3486,12 @@ function ExtensionBrowserDialog({
               ) : null}
             </div>
           </div>
+          {isCurated ? (
+            <div className="shrink-0 border-b border-border/60 bg-muted/10 px-6 py-2 text-[11px] text-muted-foreground">
+              Showing {searchedItems.length} featured and most-installed plugins. Search to reach
+              all {browseSourceItems.length}.
+            </div>
+          ) : null}
           <div className="min-h-0 p-0">
             {visibleItems.length > 0 ? (
               <div className="max-h-[min(58vh,36rem)] overflow-y-auto overscroll-contain">
@@ -4261,7 +4267,6 @@ export function ExtensionsSettingsPanel() {
       emptyLabel: "No plugins installed.",
     };
   }, [allPluginItems, deferredPageQuery, searchedInstalledPlugins]);
-  const catalogPluginCount = Math.max(0, allPluginItems.length - searchedInstalledPlugins.length);
 
   const attentionEntries = useMemo((): ReadonlyArray<ExtensionAttentionEntry> => {
     const connectionIssues = allMcpItems.filter(extensionItemNeedsAuth).map((item) => ({
@@ -4395,7 +4400,7 @@ export function ExtensionsSettingsPanel() {
               onClick={() => setIsBrowsingCatalog(true)}
             >
               <SearchIcon className="size-3.5" />
-              {catalogPluginCount > 0 ? `Browse ${catalogPluginCount} more` : "Browse catalog"}
+              Browse catalog
             </Button>
           </div>
           <InstalledStrip
