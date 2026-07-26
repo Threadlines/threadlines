@@ -113,6 +113,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewDetach: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_DETACH_CHANNEL, input),
   previewStatus: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_STATUS_CHANNEL, input),
   previewEvaluate: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_EVALUATE_CHANNEL, input),
+  previewSnapshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SNAPSHOT_CHANNEL, input),
+  previewClick: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLICK_CHANNEL, input),
+  previewType: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_TYPE_CHANNEL, input),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   showContextMenu: (items, position) =>

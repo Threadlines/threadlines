@@ -1,5 +1,8 @@
 import {
+  DesktopPreviewClickInputSchema,
   DesktopPreviewEvaluateInputSchema,
+  DesktopPreviewSnapshotSchema,
+  DesktopPreviewTypeInputSchema,
   DesktopPreviewStatusSchema,
   DesktopPreviewTargetSchema,
 } from "@threadlines/contracts";
@@ -47,5 +50,35 @@ export const previewEvaluate = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.evaluate")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     return yield* automation.evaluate(input.webContentsId, input.expression);
+  }),
+});
+
+export const previewSnapshot = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SNAPSHOT_CHANNEL,
+  payload: DesktopPreviewTargetSchema,
+  result: DesktopPreviewSnapshotSchema,
+  handler: Effect.fn("desktop.ipc.preview.snapshot")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.snapshot(input.webContentsId);
+  }),
+});
+
+export const previewClick = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CLICK_CHANNEL,
+  payload: DesktopPreviewClickInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.click")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.click(input.webContentsId, input.ref);
+  }),
+});
+
+export const previewType = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_TYPE_CHANNEL,
+  payload: DesktopPreviewTypeInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.type")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.type(input);
   }),
 });

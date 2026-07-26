@@ -14,7 +14,9 @@
 
 import type {
   DesktopPreviewConsoleEntry,
+  DesktopPreviewElement,
   DesktopPreviewNetworkFailure,
+  DesktopPreviewSnapshot,
   DesktopPreviewStatus,
 } from "@threadlines/contracts";
 import { webContents, type WebContents } from "electron";
@@ -24,6 +26,43 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+
+/**
+ * Roles worth handing to an agent. The full accessibility tree of a real page
+ * runs to thousands of nodes, most of them generic containers and text, which
+ * would bury the handful of things that can actually be acted on.
+ */
+const ACTIONABLE_ROLES: ReadonlySet<string> = new Set([
+  "button",
+  "link",
+  "textbox",
+  "searchbox",
+  "checkbox",
+  "radio",
+  "combobox",
+  "listbox",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "option",
+  "slider",
+  "spinbutton",
+  "switch",
+  "tab",
+  "textarea",
+]);
+
+/** Kept for orientation: they tell the agent where it is, not what to press. */
+const LANDMARK_ROLES: ReadonlySet<string> = new Set([
+  "heading",
+  "alert",
+  "status",
+  "dialog",
+  "navigation",
+  "main",
+]);
+
+const MAX_SNAPSHOT_ELEMENTS = 200;
 
 /** Enough to explain a failure without letting a chatty page grow unboundedly. */
 const MAX_CONSOLE_ENTRIES = 200;
@@ -76,6 +115,19 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
       expression: string,
     ) => Effect.Effect<unknown, PreviewAutomationError>;
+    readonly snapshot: (
+      webContentsId: number,
+    ) => Effect.Effect<DesktopPreviewSnapshot, PreviewAutomationError>;
+    readonly click: (
+      webContentsId: number,
+      ref: number,
+    ) => Effect.Effect<void, PreviewAutomationError>;
+    readonly type: (input: {
+      webContentsId: number;
+      ref: number;
+      text: string;
+      clear?: boolean | undefined;
+    }) => Effect.Effect<void, PreviewAutomationError>;
   }
 >()("@threadlines/desktop/preview/PreviewAutomation") {}
 
@@ -229,11 +281,41 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     };
     attached.set(webContentsId, tab);
 
-    for (const method of ["Runtime.enable", "Page.enable", "Network.enable", "Log.enable"]) {
+    for (const method of [
+      "Runtime.enable",
+      "Page.enable",
+      "Network.enable",
+      "Log.enable",
+      "Accessibility.enable",
+    ]) {
       yield* sendCommand(contents, method);
     }
 
     return buildStatus(webContentsId, contents);
+  });
+
+  const centerOf = Effect.fn("PreviewAutomation.centerOf")(function* (
+    contents: WebContents,
+    backendNodeId: number,
+  ) {
+    const box = (yield* sendCommand(contents, "DOM.getBoxModel", { backendNodeId })) as {
+      model?: { content?: ReadonlyArray<number> };
+    };
+    const quad = box.model?.content;
+    if (quad === undefined || quad.length < 8) {
+      return yield* Effect.fail(
+        new PreviewCommandError({
+          webContentsId: contents.id,
+          method: "DOM.getBoxModel",
+          cause: `element ${backendNodeId} has no layout box`,
+        }),
+      );
+    }
+    // Centre of the border box: the quad is four corner pairs, clockwise.
+    return {
+      x: (quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4,
+      y: (quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4,
+    };
   });
 
   return PreviewAutomation.of({
@@ -251,6 +333,106 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);
       return buildStatus(webContentsId, contents);
+    }),
+    snapshot: Effect.fn("PreviewAutomation.snapshot")(function* (webContentsId: number) {
+      const contents = yield* resolve(webContentsId);
+      const tree = (yield* sendCommand(contents, "Accessibility.getFullAXTree", {})) as {
+        nodes?: ReadonlyArray<Record<string, unknown>>;
+      };
+      const elements: DesktopPreviewElement[] = [];
+      for (const node of tree.nodes ?? []) {
+        if (elements.length >= MAX_SNAPSHOT_ELEMENTS) break;
+        if (node.ignored === true) continue;
+        const role = String((node.role as { value?: unknown } | undefined)?.value ?? "");
+        const isActionable = ACTIONABLE_ROLES.has(role);
+        if (!isActionable && !LANDMARK_ROLES.has(role)) continue;
+        const name = String((node.name as { value?: unknown } | undefined)?.value ?? "").trim();
+        // An actionable control with no accessible name cannot be described to
+        // an agent, and is usually decorative; a landmark without one is noise.
+        if (name === "") continue;
+        const backendNodeId = node.backendDOMNodeId;
+        if (typeof backendNodeId !== "number") continue;
+        const properties =
+          (node.properties as ReadonlyArray<{ name?: string; value?: { value?: unknown } }>) ?? [];
+        const disabled = properties.some(
+          (property) => property.name === "disabled" && property.value?.value === true,
+        );
+        const rawValue = (node.value as { value?: unknown } | undefined)?.value;
+        elements.push({
+          ref: backendNodeId,
+          role,
+          name,
+          value: rawValue === undefined || rawValue === null ? null : String(rawValue),
+          disabled,
+        });
+      }
+      return { ...buildStatus(webContentsId, contents), elements };
+    }),
+    click: Effect.fn("PreviewAutomation.click")(function* (webContentsId: number, ref: number) {
+      const contents = yield* resolve(webContentsId);
+      const point = yield* centerOf(contents, ref);
+      // Real input events rather than element.click(): hover, focus and blur
+      // fire as they would for a person, and a handler that checks isTrusted
+      // behaves the same way too.
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      });
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      });
+    }),
+    type: Effect.fn("PreviewAutomation.type")(function* (input: {
+      webContentsId: number;
+      ref: number;
+      text: string;
+      clear?: boolean | undefined;
+    }) {
+      const contents = yield* resolve(input.webContentsId);
+      const point = yield* centerOf(contents, input.ref);
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      });
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      });
+      if (input.clear === true) {
+        // `commands` invokes the editing command directly, which is what a
+        // modifier chord ultimately triggers. Dispatching Meta+A as a raw key
+        // does not: the browser resolves shortcuts to editing commands above
+        // the layer CDP injects at, so the keypress arrives and selects
+        // nothing, and the insert below lands wherever the caret happened to
+        // be -- mid-word, since a click centres it.
+        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "a",
+          code: "KeyA",
+          windowsVirtualKeyCode: 65,
+          commands: ["selectAll"],
+        });
+        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "a",
+          code: "KeyA",
+          windowsVirtualKeyCode: 65,
+        });
+      }
+      yield* sendCommand(contents, "Input.insertText", { text: input.text });
     }),
     evaluate: Effect.fn("PreviewAutomation.evaluate")(function* (
       webContentsId: number,

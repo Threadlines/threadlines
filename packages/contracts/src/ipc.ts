@@ -388,6 +388,38 @@ export const DesktopPreviewNetworkFailureSchema = Schema.Struct({
 });
 export type DesktopPreviewNetworkFailure = typeof DesktopPreviewNetworkFailureSchema.Type;
 
+/**
+ * An element the agent can address, taken from the accessibility tree.
+ *
+ * `ref` is a backend node id: stable for the life of the document, and handed
+ * back verbatim to act on the element. Targeting by ref rather than by a
+ * selector string means there is nothing to parse and nothing ambiguous -- the
+ * agent acts on something it was actually shown.
+ */
+export const DesktopPreviewElementSchema = Schema.Struct({
+  ref: Schema.Number,
+  role: Schema.String,
+  name: Schema.String,
+  value: Schema.NullOr(Schema.String),
+  disabled: Schema.Boolean,
+});
+export type DesktopPreviewElement = typeof DesktopPreviewElementSchema.Type;
+
+export const DesktopPreviewClickInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  ref: Schema.Number,
+});
+export type DesktopPreviewClickInput = typeof DesktopPreviewClickInputSchema.Type;
+
+export const DesktopPreviewTypeInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  ref: Schema.Number,
+  text: Schema.String,
+  /** Replace what is already in the field rather than appending to it. */
+  clear: Schema.optional(Schema.Boolean),
+});
+export type DesktopPreviewTypeInput = typeof DesktopPreviewTypeInputSchema.Type;
+
 export const DesktopPreviewStatusSchema = Schema.Struct({
   webContentsId: Schema.Number,
   url: Schema.String,
@@ -400,6 +432,12 @@ export const DesktopPreviewStatusSchema = Schema.Struct({
   networkFailures: Schema.Array(DesktopPreviewNetworkFailureSchema),
 });
 export type DesktopPreviewStatus = typeof DesktopPreviewStatusSchema.Type;
+
+export const DesktopPreviewSnapshotSchema = Schema.Struct({
+  ...DesktopPreviewStatusSchema.fields,
+  elements: Schema.Array(DesktopPreviewElementSchema),
+});
+export type DesktopPreviewSnapshot = typeof DesktopPreviewSnapshotSchema.Type;
 
 export const DesktopCaptureScreenshotInputSchema = Schema.Struct({
   mode: DesktopCaptureScreenshotModeSchema,
@@ -658,6 +696,9 @@ export interface DesktopBridge {
   previewDetach?: (input: DesktopPreviewTarget) => Promise<void>;
   previewStatus?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
   previewEvaluate?: (input: DesktopPreviewEvaluateInput) => Promise<unknown>;
+  previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
+  previewClick?: (input: DesktopPreviewClickInput) => Promise<void>;
+  previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],

@@ -48,7 +48,15 @@ import {
   setTheme,
   showContextMenu,
 } from "./methods/window.ts";
-import { previewAttach, previewDetach, previewEvaluate, previewStatus } from "./methods/preview.ts";
+import {
+  previewAttach,
+  previewClick,
+  previewDetach,
+  previewEvaluate,
+  previewSnapshot,
+  previewStatus,
+  previewType,
+} from "./methods/preview.ts";
 
 export const installDesktopIpcHandlers = Effect.gen(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -77,6 +85,9 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewDetach);
   yield* ipc.handle(previewStatus);
   yield* ipc.handle(previewEvaluate);
+  yield* ipc.handle(previewSnapshot);
+  yield* ipc.handle(previewClick);
+  yield* ipc.handle(previewType);
 
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);
