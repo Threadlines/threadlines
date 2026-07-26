@@ -63,6 +63,7 @@ import {
   extensionProviderDriverSortRank,
   formatSkillDisplayName,
   formatTokenCount,
+  rankPluginsAcrossProviders,
   selectCuratedPlugins,
   shouldCuratePluginBrowse,
   groupPluginComponents,
@@ -713,21 +714,12 @@ function extensionItemGroupKey(item: ExtensionItem, sort: ExtensionBrowserSort):
   return extensionItemGroupLabel(item);
 }
 
-/** Only Claude's catalog reports install counts; everything else ranks as unknown. */
-function extensionItemInstallCount(item: ExtensionItem): number {
-  return item.kind === "plugin" ? (item.plugin.installCount ?? 0) : 0;
-}
-
 function sortExtensionItems(
   items: ReadonlyArray<ExtensionItem>,
   sort: ExtensionBrowserSort,
 ): ReadonlyArray<ExtensionItem> {
   return items.toSorted((left, right) => {
     if (sort === "name") return compareExtensionItemsByTitle(left, right);
-    if (sort === "popular") {
-      const installRank = extensionItemInstallCount(right) - extensionItemInstallCount(left);
-      return installRank || compareExtensionItemsByTitle(left, right);
-    }
     if (sort === "status") {
       const statusRank = extensionItemStatusRank(left) - extensionItemStatusRank(right);
       return statusRank || compareExtensionItemsByTitle(left, right);
@@ -2696,7 +2688,6 @@ const EXTENSION_BROWSER_SORT_OPTIONS: ReadonlyArray<{
   readonly label: string;
 }> = [
   { value: "recommended", label: "Recommended" },
-  { value: "popular", label: "Most installed" },
   { value: "bundle", label: "Bundle" },
   { value: "name", label: "Name" },
   { value: "status", label: "Status" },
@@ -3368,10 +3359,24 @@ function ExtensionBrowserDialog({
     const filtered = searchedItems.filter((item) =>
       extensionItemMatchesBrowserFilter(item, filter),
     );
-    // The curated slice is already ranked by promotion then install count. Re-sorting it under
-    // "Recommended" threw that away and left the opening view alphabetical.
-    return isCurated && sort === "recommended" ? filtered : sortExtensionItems(filtered, sort);
-  }, [filter, isCurated, searchedItems, sort]);
+    // "Recommended" over plugins means the same cross-provider ranking whether you are looking at
+    // the opening slice or the whole catalog. Other sections have no popularity signal, so they
+    // keep the triage order that puts problems first.
+    if (sort !== "recommended") return sortExtensionItems(filtered, sort);
+    if (section?.key !== "plugins") return sortExtensionItems(filtered, sort);
+    return isCurated
+      ? filtered
+      : rankPluginsAcrossProviders(filtered, (item) => ({
+          providerId: String(item.provider.instanceId),
+          ...(item.kind === "plugin"
+            ? {
+                featured: item.plugin.featured,
+                installed: item.plugin.installed,
+                installCount: item.plugin.installCount,
+              }
+            : {}),
+        }));
+  }, [filter, isCurated, searchedItems, section?.key, sort]);
   const visibleItems = browserItems.slice(0, visibleLimit);
   const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
   const renderGroups =

@@ -222,13 +222,6 @@ describe("ExtensionsSettings logic", () => {
         "recommended",
       ),
     ).toBe(false);
-    // Ranked orders stay flat: grouping them would scatter the ranking across headings.
-    expect(
-      shouldRenderExtensionBrowserGroups(
-        [{ items: ["user-plugin"] }, { items: ["official-a", "official-b", "official-c"] }],
-        "popular",
-      ),
-    ).toBe(false);
   });
 
   it("derives stable skill bundle labels and keys", () => {

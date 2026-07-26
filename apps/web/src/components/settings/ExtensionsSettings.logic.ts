@@ -171,7 +171,7 @@ export function shouldCuratePluginBrowse(totalItems: number, query: string): boo
  * therefore sorts by provider, not by popularity. Rank within each provider on its own terms, then
  * interleave, so the opening view is genuinely mixed.
  */
-export function selectCuratedPlugins<T>(
+export function rankPluginsAcrossProviders<T>(
   items: ReadonlyArray<T>,
   read: (item: T) => CuratedPluginCandidate,
 ): ReadonlyArray<T> {
@@ -193,17 +193,23 @@ export function selectCuratedPlugins<T>(
     }),
   );
 
-  const curated: T[] = [];
-  for (let index = 0; curated.length < CURATED_PLUGIN_BROWSE_LIMIT; index += 1) {
-    const before = curated.length;
+  const interleaved: T[] = [];
+  for (let index = 0; ; index += 1) {
+    const before = interleaved.length;
     for (const group of ranked) {
-      if (curated.length >= CURATED_PLUGIN_BROWSE_LIMIT) break;
       const next = group[index];
-      if (next !== undefined) curated.push(next);
+      if (next !== undefined) interleaved.push(next);
     }
-    if (curated.length === before) break;
+    if (interleaved.length === before) break;
   }
-  return curated;
+  return interleaved;
+}
+
+export function selectCuratedPlugins<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => CuratedPluginCandidate,
+): ReadonlyArray<T> {
+  return rankPluginsAcrossProviders(items, read).slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
 }
 
 /** Plain-text rendering of a plugin's contents, for surfaces that only have a text output slot. */
@@ -322,8 +328,8 @@ export function shouldRenderExtensionBrowserGroups(
   groups: ReadonlyArray<{ readonly items: ReadonlyArray<unknown> }>,
   sort: string,
 ): boolean {
-  // A ranked list is the point of these two; slicing it into groups would destroy the ranking.
-  if (sort === "recommended" || sort === "popular" || groups.length <= 1) return false;
+  // A ranked list is the point of this one; slicing it into groups would destroy the ranking.
+  if (sort === "recommended" || groups.length <= 1) return false;
   const singletonGroupCount = groups.filter((group) => group.items.length === 1).length;
   const singletonGroupRatio = singletonGroupCount / groups.length;
   return (
