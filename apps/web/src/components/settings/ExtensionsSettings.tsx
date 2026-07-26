@@ -3757,8 +3757,10 @@ function ProviderInventoryRow({
   ];
   // Installed plugins and MCP connections are rendered above the fold by the page itself, so this
   // row is only the two surfaces that have nowhere else to live.
+  // Apps are a Codex concept; the Claude driver always reports an empty list, so rendering the tab
+  // for it just advertises a category that provider does not have.
   const sections = allSections.filter(
-    (section) => section.key === "skills" || section.key === "apps",
+    (section) => section.key === "skills" || (section.key === "apps" && isCodexProvider(provider)),
   );
   const activeSectionConfig =
     sections.find((section) => section.key === activeSection) ?? sections[0];
