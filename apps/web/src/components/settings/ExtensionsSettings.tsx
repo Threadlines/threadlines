@@ -3338,15 +3338,16 @@ function ExtensionBrowserDialog({
   const searchedItems = useMemo(
     () =>
       isCurated
-        ? selectCuratedPlugins(matchingItems, (item) =>
-            item.kind === "plugin"
+        ? selectCuratedPlugins(matchingItems, (item) => ({
+            providerId: String(item.provider.instanceId),
+            ...(item.kind === "plugin"
               ? {
                   featured: item.plugin.featured,
                   installed: item.plugin.installed,
                   installCount: item.plugin.installCount,
                 }
-              : {},
-          )
+              : {}),
+          }))
         : matchingItems,
     [isCurated, matchingItems],
   );

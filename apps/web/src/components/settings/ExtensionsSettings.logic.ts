@@ -154,6 +154,8 @@ const CURATED_PLUGIN_BROWSE_THRESHOLD = 60;
 const CURATED_PLUGIN_BROWSE_LIMIT = 50;
 
 export interface CuratedPluginCandidate {
+  /** Which provider published it. The ranking interleaves providers rather than concatenating. */
+  readonly providerId: string;
   readonly featured?: boolean | undefined;
   readonly installed?: boolean | undefined;
   readonly installCount?: number | undefined;
@@ -163,22 +165,45 @@ export function shouldCuratePluginBrowse(totalItems: number, query: string): boo
   return query.trim().length === 0 && totalItems > CURATED_PLUGIN_BROWSE_THRESHOLD;
 }
 
+/**
+ * The providers publish incomparable signals: Codex marks plugins as featured but reports no
+ * install counts, Claude reports counts but marks nothing as featured. Ranking them in one pile
+ * therefore sorts by provider, not by popularity. Rank within each provider on its own terms, then
+ * interleave, so the opening view is genuinely mixed.
+ */
 export function selectCuratedPlugins<T>(
   items: ReadonlyArray<T>,
   read: (item: T) => CuratedPluginCandidate,
 ): ReadonlyArray<T> {
-  // What you already have is listed on the page above; spending discovery slots on it is what made
-  // this view mostly a duplicate. Rank by what the provider promotes, then by what others install.
-  const candidates = items.filter((item) => read(item).installed !== true);
-  const featured = candidates.filter((item) => read(item).featured === true);
-  const featuredSet = new Set(featured);
-  const popular = candidates
-    .filter((item) => !featuredSet.has(item))
-    .toSorted((left, right) => (read(right).installCount ?? 0) - (read(left).installCount ?? 0));
+  const byProvider = new Map<string, T[]>();
+  for (const item of items) {
+    const providerId = read(item).providerId;
+    const existing = byProvider.get(providerId);
+    if (existing) existing.push(item);
+    else byProvider.set(providerId, [item]);
+  }
 
-  const curated = [...featured, ...popular].slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
-  // A catalog of only-installed plugins would otherwise curate down to nothing.
-  return curated.length > 0 ? curated : items.slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
+  const ranked = [...byProvider.values()].map((group) =>
+    group.toSorted((left, right) => {
+      const leftRead = read(left);
+      const rightRead = read(right);
+      const featuredRank = Number(rightRead.featured === true) - Number(leftRead.featured === true);
+      if (featuredRank !== 0) return featuredRank;
+      return (rightRead.installCount ?? 0) - (leftRead.installCount ?? 0);
+    }),
+  );
+
+  const curated: T[] = [];
+  for (let index = 0; curated.length < CURATED_PLUGIN_BROWSE_LIMIT; index += 1) {
+    const before = curated.length;
+    for (const group of ranked) {
+      if (curated.length >= CURATED_PLUGIN_BROWSE_LIMIT) break;
+      const next = group[index];
+      if (next !== undefined) curated.push(next);
+    }
+    if (curated.length === before) break;
+  }
+  return curated;
 }
 
 /** Plain-text rendering of a plugin's contents, for surfaces that only have a text output slot. */

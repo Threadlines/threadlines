@@ -64,27 +64,22 @@ describe("ExtensionsSettings logic", () => {
     expect(shouldCuratePluginBrowse(12, "")).toBe(false);
 
     const catalog = [
-      { name: "unpopular", installCount: 3 },
-      { name: "already-installed", installed: true, installCount: 100_000 },
-      { name: "popular", installCount: 9000 },
-      { name: "featured", featured: true },
-      { name: "middling", installCount: 400 },
+      { name: "codex-featured", providerId: "codex", featured: true },
+      { name: "codex-plain", providerId: "codex" },
+      { name: "claude-popular", providerId: "claude", installCount: 9000 },
+      { name: "claude-installed", providerId: "claude", installed: true, installCount: 50_000 },
+      { name: "claude-quiet", providerId: "claude", installCount: 5 },
     ];
 
-    // Installed plugins are listed on the page already, so the discovery view leaves them out.
+    // Providers publish incomparable signals, so rank within each and interleave rather than
+    // concatenating one provider's list after the other. Installed plugins still rank.
     expect(selectCuratedPlugins(catalog, (entry) => entry).map((entry) => entry.name)).toEqual([
-      "featured",
-      "popular",
-      "middling",
-      "unpopular",
+      "codex-featured",
+      "claude-installed",
+      "codex-plain",
+      "claude-popular",
+      "claude-quiet",
     ]);
-
-    // A catalog with nothing left to discover still shows something rather than going blank.
-    expect(
-      selectCuratedPlugins([{ name: "only", installed: true }], (entry) => entry).map(
-        (entry) => entry.name,
-      ),
-    ).toEqual(["only"]);
   });
 
   it("drops a plugin prefix from a bundled skill name without mangling others", () => {
