@@ -13,6 +13,7 @@
  */
 
 import type {
+  DesktopPreviewPickedElement,
   DesktopPreviewConsoleEntry,
   DesktopPreviewElement,
   DesktopPreviewNetworkFailure,
@@ -67,6 +68,8 @@ const MAX_SNAPSHOT_ELEMENTS = 200;
 
 /** Enough to explain a failure without letting a chatty page grow unboundedly. */
 const MAX_CONSOLE_ENTRIES = 200;
+/** Long enough to choose deliberately, short enough not to strand inspect mode. */
+const PICK_TIMEOUT_MS = 60_000;
 const MAX_NETWORK_FAILURES = 100;
 
 export class PreviewTargetMissingError extends Schema.TaggedErrorClass<PreviewTargetMissingError>()(
@@ -124,6 +127,10 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
       size: { width: number | null; height: number | null },
     ) => Effect.Effect<void, PreviewAutomationError>;
+    readonly pickElement: (
+      webContentsId: number,
+    ) => Effect.Effect<DesktopPreviewPickedElement | null, PreviewAutomationError>;
+    readonly cancelPick: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
     readonly setColorScheme: (
       webContentsId: number,
       colorScheme: "light" | "dark",
@@ -159,6 +166,105 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     Effect.tryPromise({
       try: () => contents.debugger.sendCommand(method, params ?? {}),
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
+    });
+
+  /**
+   * Turns a picked node into something that still means something later.
+   *
+   * Everything is read in one page-side evaluation so the description matches a
+   * single moment: reading the tag, then the text, then the box across separate
+   * round trips would let the page change underneath and produce a description
+   * that never existed.
+   */
+  const describePickedNode = (send: typeof sendCommand) =>
+    Effect.fn("PreviewAutomation.describePickedNode")(function* (
+      contents: WebContents,
+      backendNodeId: number,
+    ) {
+      const resolved = yield* send(contents, "DOM.resolveNode", { backendNodeId });
+      const objectId = (resolved as { object?: { objectId?: string } }).object?.objectId;
+      if (objectId === undefined) {
+        return null;
+      }
+
+      const description = yield* send(contents, "Runtime.callFunctionOn", {
+        objectId,
+        returnByValue: true,
+        functionDeclaration: `function () {
+      const element = this;
+      const rect = element.getBoundingClientRect();
+      // A path that a person could paste into the console: id when it is
+      // unique, otherwise tag plus nth-of-type up to a sensible depth.
+      const path = (node) => {
+        const parts = [];
+        let current = node;
+        while (current && current.nodeType === 1 && parts.length < 5) {
+          if (current.id) {
+            parts.unshift('#' + CSS.escape(current.id));
+            break;
+          }
+          const tag = current.tagName.toLowerCase();
+          const parent = current.parentElement;
+          if (!parent) {
+            parts.unshift(tag);
+            break;
+          }
+          const siblings = [...parent.children].filter((c) => c.tagName === current.tagName);
+          parts.unshift(
+            siblings.length > 1 ? tag + ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')' : tag,
+          );
+          current = parent;
+        }
+        return parts.join(' > ');
+      };
+      const text = (element.innerText || element.textContent || '').trim().replace(/\\s+/g, ' ');
+      return {
+        tagName: element.tagName.toLowerCase(),
+        selector: path(element),
+        text: text === '' ? null : text.slice(0, 200),
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+        url: location.href,
+      };
+    }`,
+      });
+
+      yield* send(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
+
+      const value = (description as { result?: { value?: Record<string, unknown> } }).result?.value;
+      if (value === undefined) {
+        return null;
+      }
+
+      // Role and name come from the accessibility tree, which is how the agent
+      // identifies elements everywhere else in this feature.
+      const axNode = yield* send(contents, "Accessibility.getPartialAXTree", {
+        backendNodeId,
+        fetchRelatives: false,
+      }).pipe(Effect.orElseSucceed(() => ({}) as Record<string, unknown>));
+      const nodes = (axNode as { nodes?: ReadonlyArray<Record<string, unknown>> }).nodes ?? [];
+      const first = nodes[0];
+      // An AX property is { type, value } -- the string sits one level down,
+      // not two. Reading it a level too deep yielded undefined for every
+      // element, which the fallback below then reported as "no role", silently.
+      const readValue = (field: unknown): string | null => {
+        const raw = (field as { value?: unknown } | undefined)?.value;
+        return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : null;
+      };
+
+      return {
+        tagName: String(value.tagName ?? "element"),
+        role: first === undefined ? null : readValue(first.role),
+        name: first === undefined ? null : readValue(first.name),
+        selector: String(value.selector ?? ""),
+        text: (value.text as string | null) ?? null,
+        rect: value.rect as { x: number; y: number; width: number; height: number },
+        url: String(value.url ?? ""),
+      } satisfies DesktopPreviewPickedElement;
     });
 
   const buildStatus = (webContentsId: number, contents: WebContents): DesktopPreviewStatus => {
@@ -402,6 +508,70 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         deviceScaleFactor: 0,
         mobile: false,
       });
+    }),
+    /**
+     * Uses DevTools' own element picker rather than injecting a script into the
+     * page. The guest keeps its preload stripped and context isolation intact,
+     * and the highlight the user sees while choosing is Chromium's, so it
+     * behaves exactly as it does in DevTools.
+     */
+    pickElement: Effect.fn("PreviewAutomation.pickElement")(function* (webContentsId: number) {
+      const contents = yield* resolve(webContentsId);
+      yield* sendCommand(contents, "DOM.enable", {});
+      yield* sendCommand(contents, "Overlay.enable", {});
+      yield* sendCommand(contents, "Overlay.setInspectMode", {
+        mode: "searchForNode",
+        highlightConfig: {
+          showInfo: true,
+          contentColor: { r: 111, g: 168, b: 220, a: 0.35 },
+          borderColor: { r: 111, g: 168, b: 220, a: 0.85 },
+        },
+      });
+
+      const picked = yield* Effect.tryPromise({
+        try: () =>
+          new Promise<number | null>((resolve) => {
+            let done = false;
+            const finish = (value: number | null) => {
+              if (done) return;
+              done = true;
+              contents.debugger.off("message", onMessage);
+              clearTimeout(timer);
+              resolve(value);
+            };
+            const onMessage = (
+              _event: unknown,
+              method: string,
+              params: Record<string, unknown>,
+            ) => {
+              if (method === "Overlay.inspectNodeRequested") {
+                finish(typeof params.backendNodeId === "number" ? params.backendNodeId : null);
+              }
+            };
+            contents.debugger.on("message", onMessage);
+            // Picking is a deliberate act; if the user wanders off, stop
+            // waiting rather than leaving the page in inspect mode forever.
+            const timer = setTimeout(() => finish(null), PICK_TIMEOUT_MS);
+          }),
+        catch: (cause) => new PreviewCommandError({ webContentsId, method: "Overlay.pick", cause }),
+      });
+
+      yield* sendCommand(contents, "Overlay.setInspectMode", {
+        mode: "none",
+        highlightConfig: {},
+      }).pipe(Effect.ignore);
+
+      if (picked === null) {
+        return null;
+      }
+      return yield* describePickedNode(sendCommand)(contents, picked);
+    }),
+    cancelPick: Effect.fn("PreviewAutomation.cancelPick")(function* (webContentsId: number) {
+      const contents = yield* resolve(webContentsId);
+      yield* sendCommand(contents, "Overlay.setInspectMode", {
+        mode: "none",
+        highlightConfig: {},
+      }).pipe(Effect.ignore);
     }),
     setColorScheme: Effect.fn("PreviewAutomation.setColorScheme")(function* (
       webContentsId: number,

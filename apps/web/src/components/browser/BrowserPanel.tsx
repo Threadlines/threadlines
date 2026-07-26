@@ -1,4 +1,8 @@
-import type { DesktopLocalServer, ScopedThreadRef } from "@threadlines/contracts";
+import type {
+  DesktopLocalServer,
+  DesktopPreviewPickedElement,
+  ScopedThreadRef,
+} from "@threadlines/contracts";
 import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import {
   ArrowLeftIcon,
@@ -8,6 +12,7 @@ import {
   GlobeIcon,
   MaximizeIcon,
   MinimizeIcon,
+  MousePointerClickIcon,
   MoreVerticalIcon,
   PlusIcon,
   RadioTowerIcon,
@@ -103,11 +108,14 @@ export function BrowserPanel({
   threadRef,
   flexGrow,
   onClose,
+  onPickElement,
 }: {
   threadRef: ScopedThreadRef;
   /** Complement of the chat column's share, so the two honour one ratio. */
   flexGrow: number;
   onClose: () => void;
+  /** Hands a picked element to the composer as context for the next message. */
+  onPickElement?: ((element: DesktopPreviewPickedElement) => void) | undefined;
 }) {
   const browserState = useBrowserPanelStore((store) =>
     selectThreadBrowserState(store.browserStateByThreadKey, threadRef),
@@ -185,6 +193,29 @@ export function BrowserPanel({
     [activeTabId, addressDraft, setTabUrl, threadRef],
   );
 
+  const [picking, setPicking] = useState(false);
+  const pickElement = useCallback(async () => {
+    const webview = webviewsRef.current.get(activeTabId);
+    if (webview === null || webview === undefined || !isElectron) {
+      return;
+    }
+    const webContentsId = webview.getWebContentsId();
+    if (picking) {
+      setPicking(false);
+      await window.desktopBridge?.previewCancelPick?.({ webContentsId });
+      return;
+    }
+    setPicking(true);
+    try {
+      const element = await window.desktopBridge?.previewPickElement?.({ webContentsId });
+      if (element !== null && element !== undefined) {
+        onPickElement?.(element);
+      }
+    } finally {
+      setPicking(false);
+    }
+  }, [activeTabId, onPickElement, picking]);
+
   const captureScreenshot = useCallback(() => {
     const webview = webviewsRef.current.get(activeTabId);
     if (webview === undefined || !isElectron) {
@@ -231,6 +262,14 @@ export function BrowserPanel({
             so the address row stays free for controls that act on the page --
             annotate and element-pick will want that space. */}
         <div className="ms-auto flex shrink-0 items-center gap-0.5 self-center">
+          <NavButton
+            label={picking ? "Cancel pick" : "Pick an element"}
+            onClick={() => void pickElement()}
+            active={picking}
+            testId="browser-pick-element"
+          >
+            <MousePointerClickIcon className="size-3.5" />
+          </NavButton>
           <NavButton label="Capture screenshot" onClick={captureScreenshot}>
             <CameraIcon className="size-3.5" />
           </NavButton>
@@ -839,12 +878,14 @@ function NavButton({
   disabled,
   active,
   onClick,
+  testId,
   children,
 }: {
   label: string;
   disabled?: boolean;
   active?: boolean;
   onClick: () => void;
+  testId?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -854,6 +895,7 @@ function NavButton({
           <button
             type="button"
             aria-label={label}
+            {...(testId === undefined ? {} : { "data-testid": testId })}
             disabled={disabled}
             onClick={onClick}
             className={cn(

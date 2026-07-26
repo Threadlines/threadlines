@@ -8,6 +8,7 @@ import {
   DesktopPreviewSnapshotSchema,
   DesktopPreviewTypeInputSchema,
   DesktopPreviewStatusSchema,
+  DesktopPreviewPickedElementSchema,
   DesktopPreviewTargetSchema,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -136,6 +137,26 @@ export const previewSetColorScheme = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.setColorScheme")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.setColorScheme(input.webContentsId, input.colorScheme);
+  }),
+});
+
+export const previewPickElement = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL,
+  payload: DesktopPreviewTargetSchema,
+  result: Schema.NullOr(DesktopPreviewPickedElementSchema),
+  handler: Effect.fn("desktop.ipc.preview.pickElement")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.pickElement(input.webContentsId);
+  }),
+});
+
+export const previewCancelPick = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CANCEL_PICK_CHANNEL,
+  payload: DesktopPreviewTargetSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.cancelPick")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.cancelPick(input.webContentsId);
   }),
 });
 

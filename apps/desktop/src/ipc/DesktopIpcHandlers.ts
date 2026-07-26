@@ -58,6 +58,8 @@ import {
   previewClearCache,
   previewOpenDevTools,
   previewScreenshot,
+  previewCancelPick,
+  previewPickElement,
   previewSetColorScheme,
   previewSetViewport,
   previewSnapshot,
@@ -99,6 +101,8 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewScreenshot);
   yield* ipc.handle(previewOpenDevTools);
   yield* ipc.handle(previewSetColorScheme);
+  yield* ipc.handle(previewPickElement);
+  yield* ipc.handle(previewCancelPick);
   yield* ipc.handle(previewSetViewport);
   yield* ipc.handle(previewClearBrowsingData);
   yield* ipc.handle(previewClearCache);

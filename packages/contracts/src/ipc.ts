@@ -464,6 +464,32 @@ export const DesktopLocalServerSchema = Schema.Struct({
 });
 export type DesktopLocalServer = typeof DesktopLocalServerSchema.Type;
 
+/**
+ * An element the user pointed at in the preview.
+ *
+ * Described rather than referenced: a backend node id is only valid for the
+ * document that produced it, so handing one to an agent that will act minutes
+ * later, possibly after a reload, would be a dangling pointer. Role and name
+ * are what the agent looks elements up by anyway.
+ */
+export const DesktopPreviewPickedElementSchema = Schema.Struct({
+  tagName: Schema.String,
+  /** Accessible role and name, matching how snapshot elements are identified. */
+  role: Schema.NullOr(Schema.String),
+  name: Schema.NullOr(Schema.String),
+  /** A CSS path good enough to find the element again by hand. */
+  selector: Schema.String,
+  text: Schema.NullOr(Schema.String),
+  rect: Schema.Struct({
+    x: Schema.Number,
+    y: Schema.Number,
+    width: Schema.Number,
+    height: Schema.Number,
+  }),
+  url: Schema.String,
+});
+export type DesktopPreviewPickedElement = typeof DesktopPreviewPickedElementSchema.Type;
+
 export const DesktopPreviewSnapshotSchema = Schema.Struct({
   ...DesktopPreviewStatusSchema.fields,
   elements: Schema.Array(DesktopPreviewElementSchema),
@@ -734,6 +760,9 @@ export interface DesktopBridge {
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
+  /** Resolves null when picking is cancelled or times out. */
+  previewPickElement?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewPickedElement | null>;
+  previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;
