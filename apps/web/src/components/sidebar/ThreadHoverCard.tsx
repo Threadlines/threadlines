@@ -94,7 +94,7 @@ export function ThreadHoverCard({
         className="w-64 rounded-lg p-3 text-left text-popover-foreground text-sm shadow-none elevate-popover"
         data-testid="thread-hover-card"
       >
-        <p className="mb-2 line-clamp-3 text-sm font-medium leading-snug text-foreground">
+        <p className="mb-2 line-clamp-2 text-xs font-medium leading-snug text-foreground">
           {thread.title}
         </p>
         <div className="mb-2 flex items-center gap-2 border-b border-border/60 pb-2 text-xs">

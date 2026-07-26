@@ -26,7 +26,7 @@ export function DestinationBand({ destinations }: { destinations: readonly Sideb
   }
 
   return (
-    <SidebarGroup className="px-2 pt-0 pb-2" data-testid="sidebar-destination-band">
+    <SidebarGroup className="px-2 pt-1.5 pb-2" data-testid="sidebar-destination-band">
       <SidebarMenu>
         {destinations.map((destination) => {
           const Icon = destination.icon;

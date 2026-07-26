@@ -2912,7 +2912,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarMenu>
       </SidebarGroup>
       {destinationBand}
-      <SidebarSeparator className="mx-2 w-auto" />
+      <SidebarSeparator className="mx-2 my-1 w-auto" />
       {onDeckSection}
       <SidebarGroup className="px-2 py-2">
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
@@ -3321,6 +3321,28 @@ export default function Sidebar() {
     () => sidebarThreads.filter((thread) => thread.archivedAt === null),
     [sidebarThreads],
   );
+  const generalChatProjectKeys = useMemo(
+    () =>
+      new Set(
+        projects
+          .filter((project) => project.kind === "general-chat")
+          .map((project) => scopedProjectKey(scopeProjectRef(project.environmentId, project.id))),
+      ),
+    [projects],
+  );
+  // On Deck is the working set for project work. General chats are
+  // conversations that belong to no project, so they never join the deck --
+  // they live behind the Chats destination and nowhere else.
+  const deckEligibleThreads = useMemo(
+    () =>
+      visibleThreads.filter(
+        (thread) =>
+          !generalChatProjectKeys.has(
+            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+          ),
+      ),
+    [generalChatProjectKeys, visibleThreads],
+  );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
       ...project,
@@ -3384,7 +3406,7 @@ export default function Sidebar() {
 
   useEffect(() => {
     syncOnDeck(
-      visibleThreads.map((thread) => {
+      deckEligibleThreads.map((thread) => {
         const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
         return buildOnDeckSyncInput({
           threadKey,
@@ -3394,7 +3416,7 @@ export default function Sidebar() {
       }),
       routeThreadKey,
     );
-  }, [onDeckStatusByThreadKey, routeThreadKey, syncOnDeck, visibleThreads]);
+  }, [deckEligibleThreads, onDeckStatusByThreadKey, routeThreadKey, syncOnDeck]);
 
   const onDeckEntries = useMemo<OnDeckEntry[]>(() => {
     return onDeckThreadKeys.flatMap((threadKey) => {
