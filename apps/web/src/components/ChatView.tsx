@@ -2514,7 +2514,6 @@ export default function ChatView(props: ChatViewProps) {
   const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
   const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
   const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
-  const browserDockSide = useBrowserPanelStore((store) => store.dockSide);
   const browserExpanded = useBrowserPanelStore((store) => store.expanded);
   // General chats have no project and therefore no dev server to look at.
   const browserAvailable = !isGeneralChatThread;
@@ -6124,14 +6123,9 @@ export default function ChatView(props: ChatViewProps) {
           void confirmRevertThread();
         }}
       />
-      {/* Main content area. The browser docks beside or below the chat; when
-          expanded it takes the whole area and the chat is not rendered. */}
-      <div
-        className={cn(
-          "flex min-h-0 min-w-0 flex-1",
-          browserOpen && browserDockSide === "bottom" ? "flex-col" : "flex-row",
-        )}
-      >
+      {/* Main content area. The browser splits the centre beside the chat; the
+          bottom edge belongs to the terminal. Expanding hides the chat. */}
+      <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
         <div
           className={cn(
@@ -6416,7 +6410,6 @@ export default function ChatView(props: ChatViewProps) {
               <BrowserSplitHandle
                 chatFraction={splitChatFraction}
                 onChange={setSplitChatFraction}
-                orientation={browserDockSide === "bottom" ? "horizontal" : "vertical"}
               />
             )}
             <BrowserPanel

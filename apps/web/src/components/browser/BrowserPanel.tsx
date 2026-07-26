@@ -9,8 +9,6 @@ import {
   MaximizeIcon,
   MinimizeIcon,
   MoreVerticalIcon,
-  PanelBottomIcon,
-  PanelRightIcon,
   PlusIcon,
   RadioTowerIcon,
   RotateCwIcon,
@@ -27,6 +25,7 @@ import {
   type BrowserViewportPresetId,
 } from "../../browserPanelStore";
 import { isElectron } from "../../env";
+import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -102,10 +101,9 @@ export function BrowserPanel({
   const openTab = useBrowserPanelStore((store) => store.openTab);
   const closeTab = useBrowserPanelStore((store) => store.closeTab);
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
-  const dockSide = useBrowserPanelStore((store) => store.dockSide);
   const expanded = useBrowserPanelStore((store) => store.expanded);
-  const setDockSide = useBrowserPanelStore((store) => store.setDockSide);
   const toggleExpanded = useBrowserPanelStore((store) => store.toggleExpanded);
+  const { resolvedTheme } = useTheme();
 
   const activeTab = selectActiveTab(browserState);
   const activeTabId = activeTab?.id ?? "";
@@ -160,11 +158,7 @@ export function BrowserPanel({
 
   return (
     <section
-      className={cn(
-        "flex min-w-0 flex-col bg-rail",
-        // The rule belongs on the edge the chat is actually on.
-        dockSide === "bottom" ? "border-t border-border" : "border-l border-border",
-      )}
+      className="flex min-w-0 flex-col border-l border-border bg-rail"
       style={{ flex: `${flexGrow} 1 0%` }}
       data-testid="browser-panel"
       aria-label="Browser preview"
@@ -203,20 +197,6 @@ export function BrowserPanel({
             ) : (
               <MaximizeIcon className="size-3.5" />
             )}
-          </NavButton>
-          <NavButton
-            label="Dock to bottom"
-            onClick={() => setDockSide("bottom")}
-            active={dockSide === "bottom"}
-          >
-            <PanelBottomIcon className="size-3.5" />
-          </NavButton>
-          <NavButton
-            label="Dock to right"
-            onClick={() => setDockSide("right")}
-            active={dockSide === "right"}
-          >
-            <PanelRightIcon className="size-3.5" />
           </NavButton>
         </div>
       </div>
@@ -347,7 +327,7 @@ export function BrowserPanel({
         ) : (
           <>
             {activeTab !== null && activeTab.url === null ? (
-              <div className="absolute inset-0 z-10 overflow-auto px-3">
+              <div className="absolute inset-0 z-10 overflow-auto bg-background px-3">
                 <LocalServerPicker
                   onSelect={(port) => {
                     const url = `http://localhost:${port}`;
@@ -365,6 +345,7 @@ export function BrowserPanel({
                 threadRef={threadRef}
                 isActive={tab.id === activeTabId}
                 preset={preset}
+                colorScheme={resolvedTheme}
                 onNavState={setNavState}
                 register={(element) => {
                   if (element === null) {
@@ -441,6 +422,7 @@ function PreviewTabFrame({
   threadRef,
   isActive,
   preset,
+  colorScheme,
   onNavState,
   register,
 }: {
@@ -448,6 +430,7 @@ function PreviewTabFrame({
   threadRef: ScopedThreadRef;
   isActive: boolean;
   preset: (typeof BROWSER_VIEWPORT_PRESETS)[number];
+  colorScheme: "light" | "dark";
   onNavState: (state: NavState) => void;
   register: (element: PreviewWebview | null) => void;
 }) {
@@ -456,6 +439,19 @@ function PreviewTabFrame({
   const setTabTitle = useBrowserPanelStore((store) => store.setTabTitle);
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
+  const colorSchemeRef = useRef(colorScheme);
+  colorSchemeRef.current = colorScheme;
+
+  useEffect(() => {
+    const webview = elementRef.current;
+    if (webview === null || !isElectron) {
+      return;
+    }
+    const id = callWhenReady(() => webview.getWebContentsId());
+    if (id !== null) {
+      void window.desktopBridge?.previewSetColorScheme?.({ webContentsId: id, colorScheme });
+    }
+  }, [colorScheme]);
 
   useEffect(() => {
     const webview = elementRef.current;
@@ -465,7 +461,15 @@ function PreviewTabFrame({
     let attachedId: number | null = null;
     const onAttached = () => {
       attachedId = webview.getWebContentsId();
-      void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId });
+      void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId }).then(() => {
+        // A page that respects prefers-color-scheme should follow the app
+        // rather than the OS: a dark app hosting a stubbornly light page is
+        // the jarring part, and it is the app the page is embedded in.
+        void window.desktopBridge?.previewSetColorScheme?.({
+          webContentsId: attachedId as number,
+          colorScheme: colorSchemeRef.current,
+        });
+      });
     };
     const publishNav = (loading: boolean) => {
       // Only the visible tab drives the toolbar; a background tab finishing a
@@ -522,7 +526,7 @@ function PreviewTabFrame({
           register(element as PreviewWebview | null);
         }}
         {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
-        className="h-full w-full border border-border bg-white"
+        className="h-full w-full bg-background"
         style={
           preset.width === null
             ? undefined

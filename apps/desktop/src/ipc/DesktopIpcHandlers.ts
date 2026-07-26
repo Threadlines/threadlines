@@ -57,6 +57,7 @@ import {
   previewClearBrowsingData,
   previewOpenDevTools,
   previewScreenshot,
+  previewSetColorScheme,
   previewSnapshot,
   previewStatus,
   previewType,
@@ -95,6 +96,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewLocalServers);
   yield* ipc.handle(previewScreenshot);
   yield* ipc.handle(previewOpenDevTools);
+  yield* ipc.handle(previewSetColorScheme);
   yield* ipc.handle(previewClearBrowsingData);
 
   yield* ipc.handle(getServerExposureState);

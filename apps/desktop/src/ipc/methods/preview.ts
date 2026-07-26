@@ -1,6 +1,7 @@
 import {
   DesktopLocalServerSchema,
   DesktopPreviewClickInputSchema,
+  DesktopPreviewColorSchemeInputSchema,
   DesktopPreviewEvaluateInputSchema,
   DesktopPreviewScreenshotSchema,
   DesktopPreviewSnapshotSchema,
@@ -124,5 +125,15 @@ export const previewClearBrowsingData = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.clearBrowsingData")(function* () {
     const session = yield* PreviewSession.PreviewSession;
     yield* session.clearBrowsingData();
+  }),
+});
+
+export const previewSetColorScheme = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL,
+  payload: DesktopPreviewColorSchemeInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setColorScheme")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.setColorScheme(input.webContentsId, input.colorScheme);
   }),
 });

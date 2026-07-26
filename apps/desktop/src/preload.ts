@@ -120,6 +120,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewScreenshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCREENSHOT_CHANNEL, input),
   previewOpenDevTools: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL, input),
+  previewSetColorScheme: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL, input),
   previewClearBrowsingData: () =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),

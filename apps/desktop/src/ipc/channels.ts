@@ -11,6 +11,7 @@ export const PREVIEW_TYPE_CHANNEL = "desktop:preview-type";
 export const PREVIEW_LOCAL_SERVERS_CHANNEL = "desktop:preview-local-servers";
 export const PREVIEW_SCREENSHOT_CHANNEL = "desktop:preview-screenshot";
 export const PREVIEW_OPEN_DEVTOOLS_CHANNEL = "desktop:preview-open-devtools";
+export const PREVIEW_SET_COLOR_SCHEME_CHANNEL = "desktop:preview-set-color-scheme";
 export const PREVIEW_CLEAR_BROWSING_DATA_CHANNEL = "desktop:preview-clear-browsing-data";
 export const SET_THEME_CHANNEL = "desktop:set-theme";
 export const SET_TASKBAR_STATUS_CHANNEL = "desktop:set-taskbar-status";

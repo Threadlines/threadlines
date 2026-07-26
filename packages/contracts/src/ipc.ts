@@ -433,6 +433,12 @@ export const DesktopPreviewStatusSchema = Schema.Struct({
 });
 export type DesktopPreviewStatus = typeof DesktopPreviewStatusSchema.Type;
 
+export const DesktopPreviewColorSchemeInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  colorScheme: Schema.Literals(["light", "dark"]),
+});
+export type DesktopPreviewColorSchemeInput = typeof DesktopPreviewColorSchemeInputSchema.Type;
+
 export const DesktopPreviewScreenshotSchema = Schema.Struct({
   dataUrl: Schema.String,
   width: Schema.Number,
@@ -717,6 +723,7 @@ export interface DesktopBridge {
   previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
+  previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
   previewClearBrowsingData?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(

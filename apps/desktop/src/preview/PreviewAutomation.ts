@@ -120,6 +120,10 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewSnapshot, PreviewAutomationError>;
     readonly openDevTools: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
+    readonly setColorScheme: (
+      webContentsId: number,
+      colorScheme: "light" | "dark",
+    ) => Effect.Effect<void, PreviewAutomationError>;
     readonly screenshot: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
@@ -372,6 +376,17 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         });
       }
       return { ...buildStatus(webContentsId, contents), elements };
+    }),
+    setColorScheme: Effect.fn("PreviewAutomation.setColorScheme")(function* (
+      webContentsId: number,
+      colorScheme: "light" | "dark",
+    ) {
+      const contents = yield* resolve(webContentsId);
+      // Emulated rather than set on the guest: the page decides what to do with
+      // prefers-color-scheme, and pages that ignore it are left alone.
+      yield* sendCommand(contents, "Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-color-scheme", value: colorScheme }],
+      });
     }),
     openDevTools: Effect.fn("PreviewAutomation.openDevTools")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);
