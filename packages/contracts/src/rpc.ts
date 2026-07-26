@@ -136,6 +136,8 @@ import {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillReadInput,
+  ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
   ProviderExtensionSkillToggleResult,
   ProviderExtensionsError,
@@ -307,6 +309,7 @@ export const WS_METHODS = {
   serverGetProviderExtensionOperationStatus: "server.getProviderExtensionOperationStatus",
   serverReloadProviderExtensionMcpServers: "server.reloadProviderExtensionMcpServers",
   serverSetProviderExtensionSkillEnabled: "server.setProviderExtensionSkillEnabled",
+  serverReadProviderExtensionSkill: "server.readProviderExtensionSkill",
   serverReadProviderExtensionPlugin: "server.readProviderExtensionPlugin",
   serverInstallProviderExtensionPlugin: "server.installProviderExtensionPlugin",
   serverUninstallProviderExtensionPlugin: "server.uninstallProviderExtensionPlugin",
@@ -508,6 +511,15 @@ export const WsServerSetProviderExtensionSkillEnabledRpc = Rpc.make(
   {
     payload: ProviderExtensionSkillToggleInput,
     success: ProviderExtensionSkillToggleResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerReadProviderExtensionSkillRpc = Rpc.make(
+  WS_METHODS.serverReadProviderExtensionSkill,
+  {
+    payload: ProviderExtensionSkillReadInput,
+    success: ProviderExtensionSkillReadResult,
     error: ProviderExtensionsError,
   },
 );
@@ -1043,6 +1055,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProviderExtensionOperationStatusRpc,
   WsServerReloadProviderExtensionMcpServersRpc,
   WsServerSetProviderExtensionSkillEnabledRpc,
+  WsServerReadProviderExtensionSkillRpc,
   WsServerReadProviderExtensionPluginRpc,
   WsServerInstallProviderExtensionPluginRpc,
   WsServerUninstallProviderExtensionPluginRpc,

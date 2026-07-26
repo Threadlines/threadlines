@@ -38,6 +38,7 @@ import {
   getProviderExtensionOperationStatus,
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
+  readProviderExtensionSkill,
   refreshProviderExtensionPluginMarketplaces,
   startProviderExtensionMcpOAuth,
   writeInstructionFile,
@@ -1061,6 +1062,108 @@ Per-component (rounded)
         [ProviderInstanceId.make("claudeAgent")],
       );
       assert.equal(result.providers[0]?.status, "disabled");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("reads contents for a skill in the current inventory", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-home-",
+      });
+      const skillPath = path.join(claudeHome, ".claude", "skills", "readable", "SKILL.md");
+      const contents = "# Readable skill\n\nKeep the instructions visible.\n";
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(skillPath, contents);
+      const settings = makeSettings({
+        providers: {
+          codex: { enabled: false },
+          claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+          cursor: { enabled: false },
+          opencode: { enabled: false },
+        },
+      });
+
+      yield* readProviderExtensionsInventory({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings,
+        providers: [],
+      });
+      const result = yield* readProviderExtensionSkill({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          path: skillPath,
+        },
+        settings,
+      });
+
+      assert.deepEqual(result, { contents });
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("rejects a skill path outside the current inventory", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-home-",
+      });
+      const outsidePath = path.join(cwd, "outside-inventory.md");
+      yield* fileSystem.writeFileString(outsidePath, "Do not expose this file.\n");
+      const settings = makeSettings({
+        providers: {
+          codex: { enabled: false },
+          claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+          cursor: { enabled: false },
+          opencode: { enabled: false },
+        },
+      });
+
+      yield* readProviderExtensionsInventory({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings,
+        providers: [],
+      });
+      const error = yield* readProviderExtensionSkill({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          path: outsidePath,
+        },
+        settings,
+      }).pipe(Effect.flip);
+
+      assert.equal(error.message, "Skill is not in the current provider extensions inventory.");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 

@@ -383,6 +383,20 @@ export const ProviderExtensionSkillToggleResult = Schema.Struct({
 });
 export type ProviderExtensionSkillToggleResult = typeof ProviderExtensionSkillToggleResult.Type;
 
+export const ProviderExtensionSkillReadInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  /** Absolute path of the skill file, as reported by the inventory. */
+  path: TrimmedNonEmptyString,
+});
+export type ProviderExtensionSkillReadInput = typeof ProviderExtensionSkillReadInput.Type;
+
+export const ProviderExtensionSkillReadResult = Schema.Struct({
+  contents: Schema.String,
+  /** The file exceeded the read budget and the tail was dropped. */
+  truncated: Schema.optional(Schema.Boolean),
+});
+export type ProviderExtensionSkillReadResult = typeof ProviderExtensionSkillReadResult.Type;
+
 export const ProviderExtensionPluginReadInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,
   pluginName: TrimmedNonEmptyString,

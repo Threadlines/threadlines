@@ -97,6 +97,8 @@ import type {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillReadInput,
+  ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
   ProviderExtensionSkillToggleResult,
   ProviderExtensionsInventoryInput,
@@ -722,6 +724,9 @@ export interface LocalApi {
     setProviderExtensionSkillEnabled: (
       input: ProviderExtensionSkillToggleInput,
     ) => Promise<ProviderExtensionSkillToggleResult>;
+    readProviderExtensionSkill: (
+      input: ProviderExtensionSkillReadInput,
+    ) => Promise<ProviderExtensionSkillReadResult>;
     readProviderExtensionPlugin: (
       input: ProviderExtensionPluginReadInput,
     ) => Promise<ProviderExtensionPluginReadResult>;

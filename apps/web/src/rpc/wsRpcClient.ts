@@ -217,6 +217,9 @@ export interface WsRpcClient {
     readonly setProviderExtensionSkillEnabled: RpcUnaryMethod<
       typeof WS_METHODS.serverSetProviderExtensionSkillEnabled
     >;
+    readonly readProviderExtensionSkill: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadProviderExtensionSkill
+    >;
     readonly readProviderExtensionPlugin: RpcUnaryMethod<
       typeof WS_METHODS.serverReadProviderExtensionPlugin
     >;
@@ -576,6 +579,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       setProviderExtensionSkillEnabled: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverSetProviderExtensionSkillEnabled](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      readProviderExtensionSkill: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReadProviderExtensionSkill](input).pipe(
             Effect.withTracerEnabled(false),
           ),
         ),

@@ -201,6 +201,10 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         rpcClient
           ? rpcClient.server.setProviderExtensionSkillEnabled(input)
           : Promise.reject(unavailableLocalBackendError()),
+      readProviderExtensionSkill: (input) =>
+        rpcClient
+          ? rpcClient.server.readProviderExtensionSkill(input)
+          : Promise.reject(unavailableLocalBackendError()),
       readProviderExtensionPlugin: (input) =>
         rpcClient
           ? rpcClient.server.readProviderExtensionPlugin(input)

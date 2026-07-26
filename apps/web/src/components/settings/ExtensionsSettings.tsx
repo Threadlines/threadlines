@@ -1281,6 +1281,12 @@ function ExtensionResourcesList({
   );
 }
 
+type SkillContentsState =
+  | { readonly status: "idle" }
+  | { readonly status: "loading" }
+  | { readonly status: "ready"; readonly contents: string; readonly truncated: boolean }
+  | { readonly status: "error"; readonly message: string };
+
 type PluginDetailState =
   | { readonly status: "idle" }
   | { readonly status: "loading" }
@@ -1459,6 +1465,7 @@ function ExtensionDetailDialog({
   const [toolFormValues, setToolFormValues] = useState<Record<string, string | boolean>>({});
   const [pluginDetail, setPluginDetail] = useState<PluginDetailState>({ status: "idle" });
   const [pluginDetailAttempt, setPluginDetailAttempt] = useState(0);
+  const [skillContents, setSkillContents] = useState<SkillContentsState>({ status: "idle" });
   const pollRef = useRef(0);
   const managedClaudePlugin = useMemo(() => findManagedClaudePluginForMcp(item), [item]);
 
@@ -1471,6 +1478,7 @@ function ExtensionDetailDialog({
     setToolFormValues({});
     setPluginDetail({ status: "idle" });
     setPluginDetailAttempt(0);
+    setSkillContents({ status: "idle" });
     pollRef.current += 1;
   }, [item?.kind, item?.id]);
 
@@ -1501,6 +1509,38 @@ function ExtensionDetailDialog({
       cancelled = true;
     };
   }, [cwd, item, pluginDetailAttempt]);
+
+  useEffect(() => {
+    if (!item || item.kind !== "skill") return;
+
+    let cancelled = false;
+    setSkillContents({ status: "loading" });
+    void (async () => {
+      try {
+        const result = await ensureLocalApi().server.readProviderExtensionSkill({
+          ...actionBaseInput(item, cwd),
+          path: item.skill.path,
+        });
+        if (!cancelled) {
+          setSkillContents({
+            status: "ready",
+            contents: result.contents,
+            truncated: result.truncated === true,
+          });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setSkillContents({
+          status: "error",
+          message: error instanceof Error ? error.message : "Could not read this skill.",
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd, item]);
 
   const pluginDetailValue = pluginDetail.status === "ready" ? pluginDetail.detail : null;
   const pluginDescription =
@@ -2020,6 +2060,46 @@ function ExtensionDetailDialog({
                   </>
                 ) : null}
               </dl>
+            ) : null}
+            {item.kind === "skill" ? (
+              <section className="space-y-2 border-t border-border/50 pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                    Contents
+                  </h3>
+                  {skillContents.status === "ready" ? (
+                    <div className="flex items-center gap-1.5">
+                      {skillContents.truncated ? (
+                        <Badge size="sm" variant="outline">
+                          Truncated
+                        </Badge>
+                      ) : null}
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => copyText(skillContents.contents, "Skill")}
+                      >
+                        <CopyIcon className="size-3" />
+                        Copy
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+                {skillContents.status === "loading" ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                    Reading skill
+                  </div>
+                ) : null}
+                {skillContents.status === "error" ? (
+                  <div className="text-xs text-muted-foreground">{skillContents.message}</div>
+                ) : null}
+                {skillContents.status === "ready" ? (
+                  <pre className="max-h-72 overflow-auto rounded-md border border-border/60 bg-background p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+                    {skillContents.contents}
+                  </pre>
+                ) : null}
+              </section>
             ) : null}
             {item.kind === "mcp" ? (
               <>

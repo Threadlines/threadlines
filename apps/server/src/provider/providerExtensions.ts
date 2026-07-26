@@ -60,6 +60,8 @@ import {
   type ProviderExtensionsInventoryResult,
   type ProviderExtensionProviderInventory,
   type ProviderExtensionSkill,
+  type ProviderExtensionSkillReadInput,
+  type ProviderExtensionSkillReadResult,
   type ProviderExtensionSkillToggleInput,
   type ProviderExtensionSkillToggleResult,
   type ProviderInstanceConfig,
@@ -926,10 +928,15 @@ type ClaudeProviderExtensionActionContext = {
 
 const providerExtensionOperations = new Map<string, ProviderExtensionOperationStatusResult>();
 let currentProviderExtensionPluginIconPaths = new Set<string>();
+let currentProviderExtensionSkillPaths = new Set<string>();
 const isProviderExtensionsError = Schema.is(ProviderExtensionsError);
 
 export function isCurrentProviderExtensionPluginIconPath(filePath: string): boolean {
   return currentProviderExtensionPluginIconPaths.has(filePath);
+}
+
+export function isCurrentProviderExtensionSkillPath(filePath: string): boolean {
+  return currentProviderExtensionSkillPaths.has(filePath);
 }
 
 function recordProviderExtensionOperation(
@@ -3322,6 +3329,84 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
   return { effectiveEnabled: response.effectiveEnabled };
 });
 
+const readSkillFilePrefix = Effect.fn("providerExtensions.readSkillFilePrefix")(function* (
+  filePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fileSystem.open(filePath);
+      const chunks: Uint8Array[] = [];
+      let bytesRead = 0;
+      while (bytesRead < MAX_SKILL_FILE_BYTES) {
+        const chunk = yield* file.readAlloc(MAX_SKILL_FILE_BYTES - bytesRead);
+        if (Option.isNone(chunk) || chunk.value.length === 0) break;
+        chunks.push(chunk.value);
+        bytesRead += chunk.value.length;
+      }
+      return Buffer.concat(chunks, bytesRead);
+    }),
+  );
+});
+
+export const readProviderExtensionSkill = Effect.fn(
+  "providerExtensions.readProviderExtensionSkill",
+)(function* (input: {
+  readonly request: ProviderExtensionSkillReadInput;
+  readonly settings: ServerSettings;
+}): Effect.fn.Return<
+  ProviderExtensionSkillReadResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem
+> {
+  yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (!isCurrentProviderExtensionSkillPath(input.request.path)) {
+    return yield* new ProviderExtensionsError({
+      message: "Skill is not in the current provider extensions inventory.",
+    });
+  }
+
+  const fileSystem = yield* FileSystem.FileSystem;
+  const linkTarget = yield* fileSystem
+    .readLink(input.request.path)
+    .pipe(Effect.catch(() => Effect.succeed(null)));
+  if (linkTarget !== null) {
+    return yield* new ProviderExtensionsError({
+      message:
+        "Skill contents could not be read because the inventory entry is not a regular file.",
+    });
+  }
+
+  const stat = yield* fileSystem
+    .stat(input.request.path)
+    .pipe(
+      Effect.mapError(
+        () => new ProviderExtensionsError({ message: "Skill contents could not be read." }),
+      ),
+    );
+  if (stat.type !== "File") {
+    return yield* new ProviderExtensionsError({
+      message:
+        "Skill contents could not be read because the inventory entry is not a regular file.",
+    });
+  }
+
+  const contents = yield* readSkillFilePrefix(input.request.path).pipe(
+    Effect.map((bytes) => bytes.toString()),
+    Effect.mapError(
+      () => new ProviderExtensionsError({ message: "Skill contents could not be read." }),
+    ),
+  );
+  const truncated = Number(stat.size) > MAX_SKILL_FILE_BYTES;
+  return {
+    contents,
+    ...(truncated ? { truncated: true } : {}),
+  };
+});
+
 export const readProviderExtensionPlugin = Effect.fn(
   "providerExtensions.readProviderExtensionPlugin",
 )(function* (input: {
@@ -3952,11 +4037,18 @@ export const readProviderExtensionsInventory = Effect.fn(
     { concurrency: "unbounded" },
   );
 
-  currentProviderExtensionPluginIconPaths = new Set(
-    providers.flatMap((provider) =>
-      provider.plugins.flatMap((plugin) => (plugin.iconPath ? [plugin.iconPath] : [])),
-    ),
-  );
+  const pluginIconPaths = new Set<string>();
+  const skillPaths = new Set<string>();
+  for (const provider of providers) {
+    for (const plugin of provider.plugins) {
+      if (plugin.iconPath) pluginIconPaths.add(plugin.iconPath);
+    }
+    for (const skill of provider.skills) {
+      if (skill.path) skillPaths.add(skill.path);
+    }
+  }
+  currentProviderExtensionPluginIconPaths = pluginIconPaths;
+  currentProviderExtensionSkillPaths = skillPaths;
 
   return {
     cwd,
