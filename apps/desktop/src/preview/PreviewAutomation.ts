@@ -70,6 +70,29 @@ const MAX_SNAPSHOT_ELEMENTS = 200;
 const MAX_CONSOLE_ENTRIES = 200;
 /** Long enough to choose deliberately, short enough not to strand inspect mode. */
 const PICK_TIMEOUT_MS = 60_000;
+
+/**
+ * How a candidate element is highlighted while picking.
+ *
+ * The four colours are the CSS box regions, and each only paints if that region
+ * has any thickness -- so an element with no border gets no outline, which is
+ * most of them on a modern page and made picking feel unresponsive over large
+ * borderless containers.
+ *
+ * `showExtensionLines` is what fixes that: it draws guides from the element's
+ * edges out to the edges of the viewport, so the bounds are legible whatever
+ * the element's box happens to be. The colours match DevTools so the regions
+ * mean the same thing they do there.
+ */
+const PICK_HIGHLIGHT_CONFIG = {
+  showInfo: true,
+  showExtensionLines: true,
+  contentColor: { r: 111, g: 168, b: 220, a: 0.45 },
+  paddingColor: { r: 147, g: 196, b: 125, a: 0.55 },
+  borderColor: { r: 255, g: 229, b: 153, a: 0.66 },
+  marginColor: { r: 246, g: 178, b: 107, a: 0.66 },
+} as const;
+
 const MAX_NETWORK_FAILURES = 100;
 
 export class PreviewTargetMissingError extends Schema.TaggedErrorClass<PreviewTargetMissingError>()(
@@ -521,11 +544,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       yield* sendCommand(contents, "Overlay.enable", {});
       yield* sendCommand(contents, "Overlay.setInspectMode", {
         mode: "searchForNode",
-        highlightConfig: {
-          showInfo: true,
-          contentColor: { r: 111, g: 168, b: 220, a: 0.35 },
-          borderColor: { r: 111, g: 168, b: 220, a: 0.85 },
-        },
+        highlightConfig: PICK_HIGHLIGHT_CONFIG,
       });
 
       const picked = yield* Effect.tryPromise({
