@@ -244,6 +244,7 @@ import {
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
   buildRevertConfirmView,
+  resolveWorkingTreeDiffStat,
   type RevertConfirmView,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -2503,6 +2504,10 @@ export default function ChatView(props: ChatViewProps) {
       : (storeServerTerminalLaunchContext ?? null);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const workingTreeDiffStat = useMemo(
+    () => resolveWorkingTreeDiffStat(gitStatusQuery.data ?? null),
+    [gitStatusQuery.data],
+  );
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -6003,6 +6008,7 @@ export default function ChatView(props: ChatViewProps) {
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
           sourceControlOpen={rightPanelEngaged && !isGeneralChatThread}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
+          workingTreeDiffStat={workingTreeDiffStat}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}

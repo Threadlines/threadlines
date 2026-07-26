@@ -49,6 +49,12 @@ interface ChatHeaderProps {
   sourceControlOpen: boolean;
   /** False for capability-gated threads (General Chats) even when a project name exists. */
   sourceControlAvailable: boolean;
+  /**
+   * Working-tree diffstat, surfaced on the closed source control toggle so the
+   * size of the pending change is legible without opening the panel. Null when
+   * the tree is clean or the status has not loaded.
+   */
+  workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
@@ -112,6 +118,7 @@ export const ChatHeader = memo(function ChatHeader({
   sourceControlToggleShortcutLabel,
   sourceControlOpen,
   sourceControlAvailable,
+  workingTreeDiffStat,
   fileBrowserAvailable,
   taskProgress,
   subagentProgress,
@@ -314,6 +321,16 @@ export const ChatHeader = memo(function ChatHeader({
                       disabled={!sourceControlAvailable && !sourceControlOpen}
                     >
                       <SourceControlIcon className="size-[11px]" />
+                      {/* Only while closed: once the panel is open it shows the
+                          per-file counts, and repeating the total is noise. */}
+                      {!sourceControlOpen && workingTreeDiffStat ? (
+                        <span className="ms-1 font-mono text-[10px] leading-none">
+                          <span className="text-success">+{workingTreeDiffStat.insertions}</span>
+                          <span className="ps-1 text-destructive">
+                            −{workingTreeDiffStat.deletions}
+                          </span>
+                        </span>
+                      ) : null}
                     </Toggle>
                   }
                 />

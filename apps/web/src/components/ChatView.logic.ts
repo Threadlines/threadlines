@@ -1959,3 +1959,21 @@ export function buildRevertConfirmView(input: {
     ],
   };
 }
+
+/**
+ * The working-tree diffstat to show on a closed source control toggle, or null
+ * when there is nothing worth reporting. A clean tree stays visually quiet, and
+ * an unloaded or non-repo status must not read as "no changes".
+ */
+export function resolveWorkingTreeDiffStat(
+  status: {
+    readonly isRepo: boolean;
+    readonly workingTree: { readonly insertions: number; readonly deletions: number };
+  } | null,
+): { readonly insertions: number; readonly deletions: number } | null {
+  if (status === null || !status.isRepo) {
+    return null;
+  }
+  const { insertions, deletions } = status.workingTree;
+  return insertions === 0 && deletions === 0 ? null : { insertions, deletions };
+}

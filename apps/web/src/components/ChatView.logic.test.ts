@@ -16,6 +16,7 @@ import { type ChatMessage, type Thread } from "../types";
 
 import {
   buildRevertConfirmView,
+  resolveWorkingTreeDiffStat,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   classifyModelSwitch,
@@ -2416,5 +2417,23 @@ describe("buildRevertConfirmView", () => {
     });
     expect(view.summary).toBe("No file changes need to be reverted.");
     expect(view.notes.some((note) => note.startsWith("No active provider session"))).toBe(true);
+  });
+});
+
+describe("resolveWorkingTreeDiffStat", () => {
+  it("reports counts only for a dirty repository", () => {
+    expect(
+      resolveWorkingTreeDiffStat({ isRepo: true, workingTree: { insertions: 38, deletions: 12 } }),
+    ).toEqual({ insertions: 38, deletions: 12 });
+  });
+
+  it("stays quiet for a clean tree, a non-repo, and an unloaded status", () => {
+    expect(
+      resolveWorkingTreeDiffStat({ isRepo: true, workingTree: { insertions: 0, deletions: 0 } }),
+    ).toBeNull();
+    expect(
+      resolveWorkingTreeDiffStat({ isRepo: false, workingTree: { insertions: 9, deletions: 9 } }),
+    ).toBeNull();
+    expect(resolveWorkingTreeDiffStat(null)).toBeNull();
   });
 });

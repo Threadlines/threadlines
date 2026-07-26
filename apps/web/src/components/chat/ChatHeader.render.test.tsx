@@ -26,6 +26,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     sourceControlToggleShortcutLabel: null,
     sourceControlOpen: false,
     sourceControlAvailable: false,
+    workingTreeDiffStat: null,
     fileBrowserAvailable: false,
     taskProgress: null,
     subagentProgress: null,
@@ -70,5 +71,27 @@ describe("ChatHeader", () => {
     expect(markup).toContain('aria-disabled="true"');
     expect(markup).toContain('data-disabled="true"');
     expect(markup).toContain("cursor-default");
+  });
+
+  it("shows the working-tree diffstat on the closed source control toggle", () => {
+    const markup = renderChatHeader({
+      sourceControlAvailable: true,
+      sourceControlOpen: false,
+      workingTreeDiffStat: { insertions: 38, deletions: 12 },
+    });
+
+    expect(markup).toContain("+38");
+    expect(markup).toContain("−12");
+  });
+
+  it("drops the diffstat once the panel is open and shows its own counts", () => {
+    const markup = renderChatHeader({
+      sourceControlAvailable: true,
+      sourceControlOpen: true,
+      workingTreeDiffStat: { insertions: 38, deletions: 12 },
+    });
+
+    expect(markup).not.toContain("+38");
+    expect(markup).not.toContain("−12");
   });
 });
