@@ -61,13 +61,11 @@ export const ThreadlinesGlyph: Icon = (props) => {
 };
 
 /**
- * Device rotation: a screen turned on its corner, mid-swap between portrait and
- * landscape, with the arc it travels through.
+ * Device rotation: an upright screen with arrows turning around it.
  *
  * Drawn rather than taken from the icon set, which offers a square with a
  * refresh arrow (reads as "reload") and a pair of devices (reads as
- * "responsive"). Neither says "turn this on its side", which is the one thing
- * this control does.
+ * "responsive"). Neither says "turn this on its side".
  */
 export const RotateDeviceIcon: Icon = ({ className, ...props }) => (
   <svg
@@ -80,11 +78,14 @@ export const RotateDeviceIcon: Icon = ({ className, ...props }) => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    {/* The screen, caught on its corner mid-turn. */}
-    <rect x="6.2" y="6.2" width="11.6" height="11.6" rx="2.4" transform="rotate(45 12 12)" />
-    {/* Its short edge: without this it is a diamond, not a screen. An arc and
-        arrowhead were tried alongside and only muddied it at 14px. */}
-    <path d="m8.6 8.6 6.8 6.8" />
+    {/* The device, upright, so the arrows read as turning it. */}
+    <rect x="9" y="4" width="6" height="16" rx="1.6" />
+    {/* Turning down the left... */}
+    <path d="M6.2 8.6a7.4 7.4 0 0 0 0 6.8" />
+    <path d="m4.3 9.9 1.9-1.5 1.5 1.9" />
+    {/* ...and back up the right. */}
+    <path d="M17.8 15.4a7.4 7.4 0 0 0 0-6.8" />
+    <path d="m19.7 14.1-1.9 1.5-1.5-1.9" />
   </svg>
 );
 
