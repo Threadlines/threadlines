@@ -76,6 +76,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
         terminalContexts: [],
         transcriptHighlightContexts: [],
         fileSelectionContexts: [],
+        pickedElementContexts: [],
         modelSelectionByProvider: {
           [instanceId]: createModelSelection(instanceId, model, props?.modelSelection?.options),
         },

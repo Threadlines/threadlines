@@ -195,7 +195,11 @@ import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { DesktopPreviewPickedElement } from "@threadlines/contracts";
-import { describePickedElementForComposer } from "../lib/pickedElementContext";
+import {
+  appendPickedElementContextsToPrompt,
+  pickedElementFromPreview,
+  type PickedElementContextDraft,
+} from "../lib/pickedElementContext";
 import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
@@ -1114,6 +1118,7 @@ export default function ChatView(props: ChatViewProps) {
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerTranscriptHighlightContextsRef = useRef<TranscriptHighlightContextDraft[]>([]);
   const composerFileSelectionContextsRef = useRef<FileSelectionContextDraft[]>([]);
+  const composerPickedElementContextsRef = useRef<PickedElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -1330,28 +1335,16 @@ export default function ChatView(props: ChatViewProps) {
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
   /**
-   * Describes the element rather than passing a handle to it. A backend node id
-   * dies with the document, and by the time the agent acts the page may have
-   * reloaded -- but a role, a name and a selector still find it.
+   * A picked element becomes a context attached to the message, not text in it.
+   * It is the same shape as a terminal excerpt or a highlighted quote: evidence
+   * carried alongside what you are asking, removable before you send, and left
+   * out of the prompt you are still writing.
    */
   const appendPickedElementToComposer = useCallback(
     (element: DesktopPreviewPickedElement) => {
-      const description = describePickedElementForComposer(element);
-      // Appended rather than replacing: picking a second element while
-      // mid-sentence should add to the message, not discard it.
-      const existing = (composerRef.current?.getSendContext().prompt ?? "").trim();
-      setComposerDraftPrompt(
-        composerDraftTarget,
-        existing === "" ? description : `${existing}\n${description}`,
-      );
-      window.requestAnimationFrame(() => {
-        // The editor caches its own cursor state, so it has to be told the
-        // prompt changed underneath it or the caret lands in the old position.
-        composerRef.current?.resetCursorState({ detectTrigger: false });
-        composerRef.current?.focusAtEnd();
-      });
+      composerRef.current?.addPickedElementContext(pickedElementFromPreview(element));
     },
-    [composerDraftTarget, composerRef, setComposerDraftPrompt],
+    [composerRef],
   );
 
   const insertDraftStarterPrompt = useCallback(
@@ -4279,6 +4272,7 @@ export default function ChatView(props: ChatViewProps) {
       terminalContexts: composerTerminalContexts,
       transcriptHighlightContexts: composerTranscriptHighlightContexts,
       fileSelectionContexts: composerFileSelectionContexts,
+      pickedElementContexts: composerPickedElementContexts,
       selectedModel: ctxSelectedModel,
       selectedModelSelection: ctxSelectedModelSelection,
       skillReferences: composerSkillReferences,
@@ -4391,6 +4385,7 @@ export default function ChatView(props: ChatViewProps) {
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
     const composerTranscriptHighlightContextsSnapshot = [...sendableTranscriptHighlightContexts];
     const composerFileSelectionContextsSnapshot = [...composerFileSelectionContexts];
+    const composerPickedElementContextsSnapshot = [...composerPickedElementContexts];
     const messageTextWithTerminalContexts = appendTerminalContextsToPrompt(
       promptForSend,
       composerTerminalContextsSnapshot,
@@ -4399,9 +4394,13 @@ export default function ChatView(props: ChatViewProps) {
       messageTextWithTerminalContexts,
       composerTranscriptHighlightContextsSnapshot,
     );
-    const messageTextForSend = appendFileSelectionContextsToPrompt(
+    const messageTextWithFileSelections = appendFileSelectionContextsToPrompt(
       messageTextWithHighlights,
       composerFileSelectionContextsSnapshot,
+    );
+    const messageTextForSend = appendPickedElementContextsToPrompt(
+      messageTextWithFileSelections,
+      composerPickedElementContextsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -6291,6 +6290,7 @@ export default function ChatView(props: ChatViewProps) {
                   composerTerminalContextsRef={composerTerminalContextsRef}
                   composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
                   composerFileSelectionContextsRef={composerFileSelectionContextsRef}
+                  composerPickedElementContextsRef={composerPickedElementContextsRef}
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
