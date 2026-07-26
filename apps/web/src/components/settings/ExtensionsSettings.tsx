@@ -4317,7 +4317,7 @@ export function ExtensionsSettingsPanel() {
           ) : null
         }
       >
-        <div className="space-y-4 py-1">
+        <div className="space-y-4 px-4 py-4 sm:px-5">
           <p className="text-xs text-muted-foreground">
             Plugins and connections available to Codex and Claude in this project.
             {inventory?.generatedAt
@@ -4395,7 +4395,7 @@ export function ExtensionsSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Connections" icon={<DatabaseIcon className="size-3.5" />}>
-        <div className="py-1">
+        <div className="px-4 py-3.5 sm:px-5">
           <ConnectionsTable
             items={searchedConnections}
             environmentId={selectedEnvironmentId}
@@ -4406,7 +4406,7 @@ export function ExtensionsSettingsPanel() {
 
       {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
         <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
-          <div className="space-y-3 py-1">
+          <div className="space-y-3 px-4 py-3.5 sm:px-5">
             {providerScopedInventory.map((provider) => (
               <MarketplacesBlock
                 key={provider.instanceId}
