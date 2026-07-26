@@ -354,6 +354,53 @@ export interface DesktopMenuActionPayload {
   threadId?: string;
 }
 
+/**
+ * Preview automation, the surface the agent will eventually drive.
+ *
+ * Keyed by the guest's webContents id rather than a thread: the renderer owns
+ * the <webview> and is the only side that knows which element belongs to which
+ * thread, so it registers the pairing and the main process stays a dumb
+ * executor that cannot act on a tab nobody claimed.
+ */
+export const DesktopPreviewTargetSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+});
+export type DesktopPreviewTarget = typeof DesktopPreviewTargetSchema.Type;
+
+export const DesktopPreviewEvaluateInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  expression: Schema.String,
+});
+export type DesktopPreviewEvaluateInput = typeof DesktopPreviewEvaluateInputSchema.Type;
+
+export const DesktopPreviewConsoleEntrySchema = Schema.Struct({
+  level: Schema.String,
+  text: Schema.String,
+  at: Schema.String,
+});
+export type DesktopPreviewConsoleEntry = typeof DesktopPreviewConsoleEntrySchema.Type;
+
+export const DesktopPreviewNetworkFailureSchema = Schema.Struct({
+  url: Schema.String,
+  status: Schema.NullOr(Schema.Number),
+  errorText: Schema.NullOr(Schema.String),
+  at: Schema.String,
+});
+export type DesktopPreviewNetworkFailure = typeof DesktopPreviewNetworkFailureSchema.Type;
+
+export const DesktopPreviewStatusSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  attached: Schema.Boolean,
+  /** Console output since the page last navigated, oldest first. */
+  console: Schema.Array(DesktopPreviewConsoleEntrySchema),
+  /** Requests that failed or returned >= 400 since the page last navigated. */
+  networkFailures: Schema.Array(DesktopPreviewNetworkFailureSchema),
+});
+export type DesktopPreviewStatus = typeof DesktopPreviewStatusSchema.Type;
+
 export const DesktopCaptureScreenshotInputSchema = Schema.Struct({
   mode: DesktopCaptureScreenshotModeSchema,
 });
@@ -607,6 +654,10 @@ export interface DesktopBridge {
   captureScreenshot?: (
     input: DesktopCaptureScreenshotInput,
   ) => Promise<DesktopCaptureScreenshotResult>;
+  previewAttach?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
+  previewDetach?: (input: DesktopPreviewTarget) => Promise<void>;
+  previewStatus?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
+  previewEvaluate?: (input: DesktopPreviewEvaluateInput) => Promise<unknown>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],

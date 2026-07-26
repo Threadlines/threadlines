@@ -48,6 +48,7 @@ import {
   setTheme,
   showContextMenu,
 } from "./methods/window.ts";
+import { previewAttach, previewDetach, previewEvaluate, previewStatus } from "./methods/preview.ts";
 
 export const installDesktopIpcHandlers = Effect.gen(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -71,6 +72,11 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(fetchSshSessionState);
   yield* ipc.handle(issueSshWebSocketToken);
   yield* ipc.handle(resolveSshPasswordPrompt);
+
+  yield* ipc.handle(previewAttach);
+  yield* ipc.handle(previewDetach);
+  yield* ipc.handle(previewStatus);
+  yield* ipc.handle(previewEvaluate);
 
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);

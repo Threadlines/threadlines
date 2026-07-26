@@ -34,6 +34,7 @@ declare global {
 }
 
 interface PreviewWebview extends HTMLElement {
+  getWebContentsId: () => number;
   getURL: () => string;
   canGoBack: () => boolean;
   canGoForward: () => boolean;
@@ -69,6 +70,28 @@ export function BrowserPanel({
   useEffect(() => {
     setAddressDraft(browserState.url ?? "");
   }, [browserState.url]);
+
+  // Attach CDP once the guest exists. Done here rather than on first tool call
+  // so console output and failed requests are being collected from the first
+  // page load: by the time anyone asks what went wrong, it has already printed.
+  useEffect(() => {
+    const webview = webviewRef.current;
+    if (webview === null || !isElectron) {
+      return;
+    }
+    let attachedId: number | null = null;
+    const onAttached = () => {
+      attachedId = webview.getWebContentsId();
+      void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId });
+    };
+    webview.addEventListener("did-attach", onAttached);
+    return () => {
+      webview.removeEventListener("did-attach", onAttached);
+      if (attachedId !== null) {
+        void window.desktopBridge?.previewDetach?.({ webContentsId: attachedId });
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const webview = webviewRef.current;

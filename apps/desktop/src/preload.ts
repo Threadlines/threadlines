@@ -109,6 +109,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   confirm: (message) => ipcRenderer.invoke(IpcChannels.CONFIRM_CHANNEL, message),
   captureScreenshot: (input) => ipcRenderer.invoke(IpcChannels.CAPTURE_SCREENSHOT_CHANNEL, input),
+  previewAttach: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_ATTACH_CHANNEL, input),
+  previewDetach: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_DETACH_CHANNEL, input),
+  previewStatus: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_STATUS_CHANNEL, input),
+  previewEvaluate: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_EVALUATE_CHANNEL, input),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   showContextMenu: (items, position) =>
