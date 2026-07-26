@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 
 import * as LocalServers from "../../preview/LocalServers.ts";
 import * as PreviewAutomation from "../../preview/PreviewAutomation.ts";
+import * as PreviewSession from "../../preview/PreviewSession.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod } from "../DesktopIpc.ts";
 
@@ -103,5 +104,25 @@ export const previewScreenshot = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.screenshot")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     return yield* automation.screenshot(input.webContentsId);
+  }),
+});
+
+export const previewOpenDevTools = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL,
+  payload: DesktopPreviewTargetSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.openDevTools")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.openDevTools(input.webContentsId);
+  }),
+});
+
+export const previewClearBrowsingData = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.clearBrowsingData")(function* () {
+    const session = yield* PreviewSession.PreviewSession;
+    yield* session.clearBrowsingData();
   }),
 });

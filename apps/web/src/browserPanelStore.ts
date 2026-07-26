@@ -52,6 +52,15 @@ export const BROWSER_SPLIT_MIN_CHAT_FRACTION = 0.3;
 export const BROWSER_SPLIT_MAX_CHAT_FRACTION = 0.7;
 export const DEFAULT_BROWSER_SPLIT_CHAT_FRACTION = 0.5;
 
+/**
+ * Where the browser sits relative to the chat.
+ *
+ * A window preference rather than a per-thread one, like the split ratio: the
+ * panel jumping from one edge to another when you switch threads would be
+ * disorienting in a way that a remembered position is not.
+ */
+export type BrowserDockSide = "right" | "bottom";
+
 let tabSequence = 0;
 function nextTabId(): string {
   tabSequence += 1;
@@ -125,6 +134,9 @@ export function nextActiveTabId(
 interface BrowserPanelStoreState {
   browserStateByThreadKey: Record<string, ThreadBrowserState>;
   splitChatFraction: number;
+  dockSide: BrowserDockSide;
+  /** Hides the chat so the page gets the whole centre; the split is remembered. */
+  expanded: boolean;
   setBrowserOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   toggleBrowserOpen: (threadRef: ScopedThreadRef) => void;
   openTab: (threadRef: ScopedThreadRef) => void;
@@ -138,6 +150,8 @@ interface BrowserPanelStoreState {
     presetId: BrowserViewportPresetId,
   ) => void;
   setSplitChatFraction: (fraction: number) => void;
+  setDockSide: (side: BrowserDockSide) => void;
+  toggleExpanded: () => void;
 }
 
 function updateThread(
@@ -168,6 +182,8 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
     (set) => ({
       browserStateByThreadKey: {},
       splitChatFraction: DEFAULT_BROWSER_SPLIT_CHAT_FRACTION,
+      dockSide: "right",
+      expanded: false,
       setBrowserOpen: (threadRef, open) =>
         set((state) => updateThread(state, threadRef, (current) => ({ ...current, open }))),
       toggleBrowserOpen: (threadRef) =>
@@ -218,6 +234,8 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         ),
       setSplitChatFraction: (fraction) =>
         set(() => ({ splitChatFraction: clampBrowserSplitFraction(fraction) })),
+      setDockSide: (side) => set(() => ({ dockSide: side })),
+      toggleExpanded: () => set((state) => ({ expanded: !state.expanded })),
     }),
     {
       name: BROWSER_PANEL_STORAGE_KEY,
@@ -227,6 +245,9 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       partialize: (state) => ({
         browserStateByThreadKey: state.browserStateByThreadKey,
         splitChatFraction: state.splitChatFraction,
+        dockSide: state.dockSide,
+        // Expansion is deliberately not persisted: reopening the app to a
+        // hidden chat would look like the thread had vanished.
       }),
     },
   ),

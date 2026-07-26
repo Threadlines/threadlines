@@ -716,6 +716,8 @@ export interface DesktopBridge {
   previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
   previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
+  previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
+  previewClearBrowsingData?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],

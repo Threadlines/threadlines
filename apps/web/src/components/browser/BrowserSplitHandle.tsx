@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 
 import { clampBrowserSplitFraction } from "../../browserPanelStore";
+import { cn } from "../../lib/utils";
 
 /**
  * Drag handle between the chat column and the browser panel.
@@ -12,9 +13,12 @@ import { clampBrowserSplitFraction } from "../../browserPanelStore";
 export function BrowserSplitHandle({
   chatFraction,
   onChange,
+  orientation = "vertical",
 }: {
   chatFraction: number;
   onChange: (fraction: number) => void;
+  /** "vertical" splits left/right; "horizontal" splits top/bottom. */
+  orientation?: "vertical" | "horizontal";
 }) {
   const draggingRef = useRef(false);
 
@@ -33,12 +37,15 @@ export function BrowserSplitHandle({
         return;
       }
       const bounds = row.getBoundingClientRect();
-      if (bounds.width === 0) {
+      const extent = orientation === "vertical" ? bounds.width : bounds.height;
+      if (extent === 0) {
         return;
       }
-      onChange(clampBrowserSplitFraction((event.clientX - bounds.left) / bounds.width));
+      const offset =
+        orientation === "vertical" ? event.clientX - bounds.left : event.clientY - bounds.top;
+      onChange(clampBrowserSplitFraction(offset / extent));
     },
-    [onChange],
+    [onChange, orientation],
   );
 
   const endDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -51,26 +58,33 @@ export function BrowserSplitHandle({
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       const step = event.shiftKey ? 0.1 : 0.02;
-      if (event.key === "ArrowLeft") {
+      const decrease = orientation === "vertical" ? "ArrowLeft" : "ArrowUp";
+      const increase = orientation === "vertical" ? "ArrowRight" : "ArrowDown";
+      if (event.key === decrease) {
         event.preventDefault();
         onChange(clampBrowserSplitFraction(chatFraction - step));
-      } else if (event.key === "ArrowRight") {
+      } else if (event.key === increase) {
         event.preventDefault();
         onChange(clampBrowserSplitFraction(chatFraction + step));
       }
     },
-    [chatFraction, onChange],
+    [chatFraction, onChange, orientation],
   );
 
   return (
     <div
       // Wider than it looks: a 1px target is a hairline to hit, so the hit area
       // is padded while only the rule itself is painted.
-      className="group relative w-1 shrink-0 cursor-col-resize touch-none after:absolute after:inset-y-0 after:-left-1 after:-right-1 hover:bg-border"
+      className={cn(
+        "group relative shrink-0 touch-none hover:bg-border",
+        orientation === "vertical"
+          ? "w-1 cursor-col-resize after:absolute after:inset-y-0 after:-left-1 after:-right-1"
+          : "h-1 cursor-row-resize after:absolute after:inset-x-0 after:-top-1 after:-bottom-1",
+      )}
       data-testid="browser-split-handle"
       role="separator"
       aria-label="Resize browser panel"
-      aria-orientation="vertical"
+      aria-orientation={orientation}
       aria-valuenow={Math.round(chatFraction * 100)}
       tabIndex={0}
       onPointerDown={handlePointerDown}

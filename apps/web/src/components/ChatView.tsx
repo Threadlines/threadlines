@@ -2514,6 +2514,8 @@ export default function ChatView(props: ChatViewProps) {
   const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
   const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
   const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
+  const browserDockSide = useBrowserPanelStore((store) => store.dockSide);
+  const browserExpanded = useBrowserPanelStore((store) => store.expanded);
   // General chats have no project and therefore no dev server to look at.
   const browserAvailable = !isGeneralChatThread;
   const browserOpen = browserAvailable && browserPanelState.open;
@@ -6122,11 +6124,20 @@ export default function ChatView(props: ChatViewProps) {
           void confirmRevertThread();
         }}
       />
-      {/* Main content area */}
-      <div className="flex min-h-0 min-w-0 flex-1">
+      {/* Main content area. The browser docks beside or below the chat; when
+          expanded it takes the whole area and the chat is not rendered. */}
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1",
+          browserOpen && browserDockSide === "bottom" ? "flex-col" : "flex-row",
+        )}
+      >
         {/* Chat column */}
         <div
-          className="flex min-h-0 min-w-0 flex-col"
+          className={cn(
+            "flex min-h-0 min-w-0 flex-col",
+            browserOpen && browserExpanded && "hidden",
+          )}
           style={browserOpen ? { flex: `${splitChatFraction} 1 0%` } : { flex: "1 1 0%" }}
         >
           {/* Messages Wrapper */}
@@ -6401,10 +6412,16 @@ export default function ChatView(props: ChatViewProps) {
         {/* end chat column */}
         {browserOpen && routeThreadRef !== null ? (
           <>
-            <BrowserSplitHandle chatFraction={splitChatFraction} onChange={setSplitChatFraction} />
+            {browserExpanded ? null : (
+              <BrowserSplitHandle
+                chatFraction={splitChatFraction}
+                onChange={setSplitChatFraction}
+                orientation={browserDockSide === "bottom" ? "horizontal" : "vertical"}
+              />
+            )}
             <BrowserPanel
               threadRef={routeThreadRef}
-              flexGrow={1 - splitChatFraction}
+              flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
               onClose={handleCloseBrowser}
             />
           </>

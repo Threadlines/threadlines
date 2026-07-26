@@ -6,6 +6,11 @@ import {
   CameraIcon,
   ExternalLinkIcon,
   GlobeIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+  MoreVerticalIcon,
+  PanelBottomIcon,
+  PanelRightIcon,
   PlusIcon,
   RadioTowerIcon,
   RotateCwIcon,
@@ -23,6 +28,7 @@ import {
 } from "../../browserPanelStore";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { normalizePreviewUrl } from "./previewUrl";
 
@@ -96,6 +102,10 @@ export function BrowserPanel({
   const openTab = useBrowserPanelStore((store) => store.openTab);
   const closeTab = useBrowserPanelStore((store) => store.closeTab);
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
+  const dockSide = useBrowserPanelStore((store) => store.dockSide);
+  const expanded = useBrowserPanelStore((store) => store.expanded);
+  const setDockSide = useBrowserPanelStore((store) => store.setDockSide);
+  const toggleExpanded = useBrowserPanelStore((store) => store.toggleExpanded);
 
   const activeTab = selectActiveTab(browserState);
   const activeTabId = activeTab?.id ?? "";
@@ -150,7 +160,11 @@ export function BrowserPanel({
 
   return (
     <section
-      className="flex min-w-0 flex-col border-l border-border bg-rail"
+      className={cn(
+        "flex min-w-0 flex-col bg-rail",
+        // The rule belongs on the edge the chat is actually on.
+        dockSide === "bottom" ? "border-t border-border" : "border-l border-border",
+      )}
       style={{ flex: `${flexGrow} 1 0%` }}
       data-testid="browser-panel"
       aria-label="Browser preview"
@@ -175,6 +189,36 @@ export function BrowserPanel({
         >
           <PlusIcon className="size-3.5" />
         </button>
+
+        {/* Where the panel lives belongs with the tabs, not with the controls
+            that act on the page. */}
+        <div className="ms-auto flex shrink-0 items-center gap-0.5 self-center">
+          <NavButton
+            label={expanded ? "Restore chat" : "Expand browser"}
+            onClick={toggleExpanded}
+            active={expanded}
+          >
+            {expanded ? (
+              <MinimizeIcon className="size-3.5" />
+            ) : (
+              <MaximizeIcon className="size-3.5" />
+            )}
+          </NavButton>
+          <NavButton
+            label="Dock to bottom"
+            onClick={() => setDockSide("bottom")}
+            active={dockSide === "bottom"}
+          >
+            <PanelBottomIcon className="size-3.5" />
+          </NavButton>
+          <NavButton
+            label="Dock to right"
+            onClick={() => setDockSide("right")}
+            active={dockSide === "right"}
+          >
+            <PanelRightIcon className="size-3.5" />
+          </NavButton>
+        </div>
       </div>
 
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-2">
@@ -228,6 +272,70 @@ export function BrowserPanel({
         <NavButton label="Capture screenshot" onClick={captureScreenshot}>
           <CameraIcon className="size-3.5" />
         </NavButton>
+
+        <Menu>
+          <MenuTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Browser options"
+                data-testid="browser-overflow"
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+              />
+            }
+          >
+            <MoreVerticalIcon className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem
+              disabled={activeUrl === null}
+              onClick={() => {
+                if (activeUrl !== null) {
+                  void window.desktopBridge?.openExternal?.(activeUrl);
+                }
+              }}
+            >
+              Open in default browser
+            </MenuItem>
+            <MenuItem
+              disabled={activeUrl === null}
+              onClick={() => {
+                if (activeUrl !== null) {
+                  void navigator.clipboard.writeText(activeUrl).catch(() => {});
+                }
+              }}
+            >
+              Copy address
+            </MenuItem>
+            <MenuItem
+              data-testid="browser-open-devtools"
+              onClick={() => {
+                const webview = webviewsRef.current.get(activeTabId);
+                const id =
+                  webview === undefined ? null : callWhenReady(() => webview.getWebContentsId());
+                if (id !== null) {
+                  void window.desktopBridge?.previewOpenDevTools?.({ webContentsId: id });
+                }
+              }}
+            >
+              Open developer tools
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem
+              data-testid="browser-clear-data"
+              onClick={() => {
+                // Signing out of the preview is the point, so reload after: the
+                // page on screen would otherwise still look signed in.
+                void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
+                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reload());
+                });
+              }}
+            >
+              Clear cookies and storage
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+
         <NavButton label="Close browser" onClick={onClose}>
           <XIcon className="size-3.5" />
         </NavButton>
@@ -430,11 +538,13 @@ function PreviewTabFrame({
 function NavButton({
   label,
   disabled,
+  active,
   onClick,
   children,
 }: {
   label: string;
   disabled?: boolean;
+  active?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -447,7 +557,10 @@ function NavButton({
             aria-label={label}
             disabled={disabled}
             onClick={onClick}
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            className={cn(
+              "inline-flex size-6 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40",
+              active === true ? "bg-accent text-foreground" : "text-muted-foreground/70",
+            )}
           />
         }
       >

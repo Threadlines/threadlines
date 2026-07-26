@@ -119,6 +119,7 @@ export class PreviewAutomation extends Context.Service<
     readonly snapshot: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewSnapshot, PreviewAutomationError>;
+    readonly openDevTools: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
     readonly screenshot: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
@@ -371,6 +372,14 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         });
       }
       return { ...buildStatus(webContentsId, contents), elements };
+    }),
+    openDevTools: Effect.fn("PreviewAutomation.openDevTools")(function* (webContentsId: number) {
+      const contents = yield* resolve(webContentsId);
+      // Undocked: the guest is a small pane inside our layout, and devtools
+      // docked into it would leave almost nothing of the page visible.
+      yield* Effect.sync(() => {
+        contents.openDevTools({ mode: "detach" });
+      });
     }),
     screenshot: Effect.fn("PreviewAutomation.screenshot")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);
