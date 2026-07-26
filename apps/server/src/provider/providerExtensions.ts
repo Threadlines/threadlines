@@ -580,6 +580,23 @@ export function mapCodexPluginDetail(
   };
 }
 
+/**
+ * `plugin/read` resolves remote-catalog plugins through the ChatGPT backend, which 404s for plugins
+ * the catalog will not describe. Surfacing that as a raw upstream error puts a backend URL and a
+ * JSON body in the settings dialog, so translate it into something a user can act on.
+ */
+export function codexPluginReadError(cause: unknown): ProviderExtensionsError {
+  const message = toErrorMessage(cause);
+  const isMissingRemotePlugin =
+    /remote plugin catalog/i.test(message) && /\b404\b|not found/i.test(message);
+  return isMissingRemotePlugin
+    ? new ProviderExtensionsError({
+        message: "Codex does not publish the contents of this remote catalog plugin.",
+        cause,
+      })
+    : toProviderExtensionsError(cause);
+}
+
 export function codexMarketplaceLoadErrorMessage(
   response: CodexSchema.V2PluginListResponse,
 ): string | undefined {
@@ -1325,7 +1342,7 @@ function mapClaudeInstalledPlugin(record: Record<string, unknown>): ProviderExte
     source: "Claude CLI",
     ...(marketplaceName ? { marketplaceName, remoteMarketplaceName: marketplaceName } : {}),
     ...(scope ? { scope } : {}),
-    ...(version && version !== "unknown" ? { version, description: `Version ${version}` } : {}),
+    ...(version && version !== "unknown" ? { version } : {}),
     ...(installPath ? { installPath } : {}),
     ...(installedAt ? { installedAt } : {}),
     ...(lastUpdated ? { lastUpdated } : {}),
@@ -1432,7 +1449,7 @@ function parseClaudePluginListText(output: string): ProviderExtensionPlugin[] {
     if (!current) continue;
     const version = trimmed.match(/^Version:\s*(.+)$/i)?.[1]?.trim();
     if (version && version !== "unknown") {
-      current = { ...current, description: `Version ${version}` };
+      current = { ...current, version };
       continue;
     }
     const scope = trimmed.match(/^Scope:\s*(.+)$/i)?.[1]?.trim();
@@ -2345,16 +2362,42 @@ function claudePluginMcpComponents(
   });
 }
 
-function claudePluginListDescription(plugin: ProviderExtensionPlugin): string | undefined {
-  const description = optionalText(plugin.description);
-  return description === `Version ${plugin.version}` ? undefined : description;
-}
-
 function unsupportedProviderExtensionAction(driver: ProviderDriverKind, action: string) {
   return new ProviderExtensionsError({
     message: `${action} is not implemented for provider driver ${driver}.`,
   });
 }
+
+/**
+ * `claude plugin list --json` carries no description for installed plugins, and the marketplace
+ * entry it merges with is missing for some. Their manifest is already on disk, and only installed
+ * plugins have an install path, so this is a couple of reads rather than one per catalog entry.
+ */
+const describeInstalledClaudePlugins = Effect.fn(
+  "providerExtensions.describeInstalledClaudePlugins",
+)(function* (plugins: ReadonlyArray<ProviderExtensionPlugin>) {
+  const needingDescription = plugins.flatMap((plugin) => {
+    const installPath = optionalText(plugin.installPath);
+    return !optionalText(plugin.description) && installPath ? [{ id: plugin.id, installPath }] : [];
+  });
+  if (needingDescription.length === 0) return plugins;
+
+  const manifests = new Map(
+    yield* Effect.all(
+      needingDescription.map((target) =>
+        readClaudePluginManifest(target.installPath).pipe(
+          Effect.map((manifest) => [target.id, manifest] as const),
+        ),
+      ),
+      { concurrency: 4 },
+    ),
+  );
+
+  return plugins.map((plugin) => {
+    const description = manifests.get(plugin.id)?.description;
+    return description ? { ...plugin, description } : plugin;
+  });
+});
 
 const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(function* (input: {
   readonly config: ClaudeSettings;
@@ -2407,7 +2450,9 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     resultMessage(mcpResult),
     resultMessage(skillsResult),
   ].filter((message): message is string => Boolean(message));
-  const plugins = Result.isSuccess(pluginResult) ? pluginResult.success : [];
+  const plugins = yield* describeInstalledClaudePlugins(
+    Result.isSuccess(pluginResult) ? pluginResult.success : [],
+  );
   const skills = Result.isSuccess(skillsResult)
     ? annotatePluginBackedSkills(skillsResult.success, plugins)
     : [];
@@ -2875,7 +2920,7 @@ export const readProviderExtensionPlugin = Effect.fn(
       manifest.name ?? optionalText(installed.plugin.name) ?? parsedDetails.name ?? pluginId;
     const description =
       manifest.description ??
-      claudePluginListDescription(installed.plugin) ??
+      optionalText(installed.plugin.description) ??
       parsedDetails.description;
     const version =
       manifest.version ?? optionalText(installed.plugin.version) ?? parsedDetails.version;
@@ -2911,8 +2956,8 @@ export const readProviderExtensionPlugin = Effect.fn(
     settings: input.settings,
   });
   const response = yield* runCodexAppServerAction(context, (client) =>
-    mapCodexRequestError(
-      client.request("plugin/read", {
+    client
+      .request("plugin/read", {
         pluginName: input.request.pluginName,
         ...(input.request.marketplacePath
           ? { marketplacePath: input.request.marketplacePath }
@@ -2920,8 +2965,8 @@ export const readProviderExtensionPlugin = Effect.fn(
         ...(input.request.remoteMarketplaceName
           ? { remoteMarketplaceName: input.request.remoteMarketplaceName }
           : {}),
-      }),
-    ),
+      })
+      .pipe(Effect.mapError(codexPluginReadError)),
   );
   return { plugin: mapCodexPluginDetail(response.plugin) };
 });

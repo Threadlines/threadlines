@@ -1542,6 +1542,13 @@ function ExtensionDetailDialog({
       : undefined;
   const pluginVersion =
     item?.kind === "plugin" ? (item.plugin.version ?? pluginDetailValue?.version) : undefined;
+  // Many plugins name their developer after the plugin, which would just echo the dialog title.
+  const pluginDeveloperName =
+    item?.kind === "plugin" &&
+    item.plugin.developerName &&
+    item.plugin.developerName.trim().toLowerCase() !== item.title.trim().toLowerCase()
+      ? item.plugin.developerName
+      : undefined;
 
   const selectComponentTarget = useCallback(
     (target: PluginComponentTarget) => {
@@ -1899,13 +1906,18 @@ function ExtensionDetailDialog({
               <div className="space-y-3">
                 <div className="space-y-1.5">
                   {pluginDescription ? (
-                    <p className="text-xs leading-relaxed text-foreground/90">
+                    // Some descriptions are whole prompt paragraphs; keep the identity block
+                    // scannable and let the title attribute carry the rest.
+                    <p
+                      className="line-clamp-3 text-xs leading-relaxed text-foreground/90"
+                      title={pluginDescription}
+                    >
                       {pluginDescription}
                     </p>
                   ) : null}
                   <PluginMetaLine
                     parts={[
-                      item.plugin.developerName,
+                      pluginDeveloperName,
                       pluginVersion ? `v${pluginVersion}` : undefined,
                       item.plugin.availableVersion
                         ? `v${item.plugin.availableVersion} available`
