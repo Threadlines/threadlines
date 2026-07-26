@@ -138,6 +138,13 @@ GitHub Actions with the target version. The workflow:
    characters; and
 4. opens a Draft PR and tries to assign it to the person who ran the workflow.
 
+The generator only describes functionality available in the default
+user-facing product. Add dormant, disabled, hidden, internal-only, or unreleased
+features to `.github/release-content-policy.yml`. The policy is included in the
+model prompt, and generated copy that still mentions a matching term is rejected
+before a changelog or PR is created. Remove an exclusion when the feature becomes
+publicly available.
+
 Review the copy in the PR, edit the generated changelog file as needed, and use
 the Vercel Preview check to inspect the rendered page. Merging the PR approves
 the marketing and GitHub release copy. The X draft links to the GitHub release

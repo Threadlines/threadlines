@@ -1,0 +1,7 @@
+excludedTopics:
+  - name: Realtime voice mode
+    reason: The implementation is dormant because it requires separate API billing and is not available in the user-facing product.
+    terms:
+      - realtime voice
+      - voice mode
+      - voice replies
