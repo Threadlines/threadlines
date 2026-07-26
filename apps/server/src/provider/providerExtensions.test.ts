@@ -609,6 +609,17 @@ Per-component (rounded)
       ],
     );
 
+    // The CLI keys off the configured name, so collapsing it for display must not lose it:
+    // `claude mcp login supabase` fails for a server configured as `plugin:supabase:supabase`.
+    assert.deepEqual(
+      servers.map((server) => ({ name: server.name, configuredName: server.configuredName })),
+      [
+        { name: "figma", configuredName: undefined },
+        { name: "local-tools", configuredName: undefined },
+        { name: "supabase", configuredName: "plugin:supabase:supabase" },
+      ],
+    );
+
     assert.deepEqual(
       servers.map((server) => ({ name: server.name, origin: server.origin })),
       [

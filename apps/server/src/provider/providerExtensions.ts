@@ -1831,6 +1831,7 @@ function normalizeClaudeMcpStatus(value: string | undefined): string | undefined
 
 function parseClaudeMcpName(rawName: string): {
   readonly name: string;
+  readonly configuredName: string;
   readonly pluginName?: string | undefined;
 } {
   const parts = rawName
@@ -1839,14 +1840,15 @@ function parseClaudeMcpName(rawName: string): {
     .filter(Boolean);
   if (parts[0] === "plugin" && parts.length >= 3) {
     const pluginName = parts[1];
-    if (!pluginName) return { name: rawName.trim() };
+    if (!pluginName) return { name: rawName.trim(), configuredName: rawName.trim() };
     const serverName = parts.slice(2).join(":");
     return {
       name: serverName === pluginName ? pluginName : `${pluginName}:${serverName}`,
+      configuredName: rawName.trim(),
       pluginName,
     };
   }
-  return { name: rawName.trim() };
+  return { name: rawName.trim(), configuredName: rawName.trim() };
 }
 
 function claudeMcpPluginOrigin(
@@ -1901,6 +1903,9 @@ export function parseClaudeMcpList(
     const authStatus = status?.toLowerCase().includes("auth") ? status : undefined;
     servers.push({
       name: parsedName.name,
+      ...(parsedName.configuredName !== parsedName.name
+        ? { configuredName: parsedName.configuredName }
+        : {}),
       origin: claudeMcpPluginOrigin(parsedName, pluginEntries),
       status: optionalText(status) ?? "configured",
       ...(authStatus ? { authStatus } : {}),
@@ -1950,7 +1955,9 @@ const verifyClaudeMcpLoginStatus = Effect.fn("providerExtensions.verifyClaudeMcp
     }
 
     const servers = parseClaudeMcpList(result.stdout);
-    const server = servers.find((entry) => entry.name === serverName);
+    const server = servers.find(
+      (entry) => entry.configuredName === serverName || entry.name === serverName,
+    );
     if (!server) {
       return {
         authenticated: false,

@@ -1705,7 +1705,7 @@ function ExtensionDetailDialog({
       const api = ensureLocalApi();
       const result = await api.server.startProviderExtensionMcpOAuth({
         ...actionBaseInput(item, cwd),
-        serverName: item.server.name,
+        serverName: item.server.configuredName ?? item.server.name,
         timeoutSecs: 300,
       });
       if (result.authorizationUrl) {
@@ -1888,7 +1888,7 @@ function ExtensionDetailDialog({
           : parseJsonInput(toolArguments);
       const result = await ensureLocalApi().server.callProviderExtensionMcpTool({
         ...actionBaseInput(item, cwd),
-        serverName: item.server.name,
+        serverName: item.server.configuredName ?? item.server.name,
         toolName: selectedTool.name,
         providerThreadId: threadId,
         arguments: argumentsValue,
@@ -1914,7 +1914,7 @@ function ExtensionDetailDialog({
         const threadId = providerThreadId.trim();
         const result = await ensureLocalApi().server.readProviderExtensionMcpResource({
           ...actionBaseInput(item, cwd),
-          serverName: item.server.name,
+          serverName: item.server.configuredName ?? item.server.name,
           uri,
           ...(threadId ? { providerThreadId: threadId } : {}),
         });

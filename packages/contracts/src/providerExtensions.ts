@@ -201,7 +201,13 @@ export const ProviderExtensionMcpOrigin = Schema.Struct({
 export type ProviderExtensionMcpOrigin = typeof ProviderExtensionMcpOrigin.Type;
 
 export const ProviderExtensionMcpServer = Schema.Struct({
+  /** Display name. Providers namespace plugin-owned servers, and that prefix is noise on screen. */
   name: TrimmedNonEmptyString,
+  /**
+   * The identifier the provider's CLI actually accepts, when it differs from the display name.
+   * Commands must use this: `claude mcp login supabase` fails for `plugin:supabase:supabase`.
+   */
+  configuredName: Schema.optional(TrimmedNonEmptyString),
   origin: Schema.optional(ProviderExtensionMcpOrigin),
   authStatus: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(TrimmedNonEmptyString),
