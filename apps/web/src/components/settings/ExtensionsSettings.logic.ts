@@ -35,6 +35,8 @@ export function formatExtensionGroupLabel(value: string): string {
 }
 
 export interface ExtensionPluginGroupLabelInput {
+  /** The provider's own category. Present on most catalog plugins for both providers. */
+  readonly category?: string | undefined;
   readonly scope?: string | undefined;
   readonly marketplaceName?: string | undefined;
   readonly remoteMarketplaceName?: string | undefined;
@@ -45,6 +47,7 @@ export interface ExtensionPluginGroupLabelInput {
 }
 
 export function deriveExtensionPluginGroupLabel({
+  category,
   scope,
   marketplaceName,
   remoteMarketplaceName,
@@ -53,6 +56,8 @@ export function deriveExtensionPluginGroupLabel({
   isOfficial,
   isLocal,
 }: ExtensionPluginGroupLabelInput): string {
+  // A real category beats a derived bucket: it is what makes 2,500 catalog entries navigable.
+  if (category) return formatExtensionGroupLabel(category);
   if (scope) return formatExtensionGroupLabel(scope);
   if (isOfficial) return "Official catalog";
   if (isLocal) return "Local";

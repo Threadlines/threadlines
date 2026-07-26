@@ -671,6 +671,7 @@ function extensionItemGroupLabel(item: ExtensionItem): string {
 
   if (item.kind === "plugin") {
     return deriveExtensionPluginGroupLabel({
+      category: item.plugin.category,
       scope: item.plugin.scope,
       marketplaceName: item.plugin.marketplaceName,
       remoteMarketplaceName: item.plugin.remoteMarketplaceName,
@@ -3277,6 +3278,7 @@ function ExtensionBrowserDialog({
   const [visibleLimit, setVisibleLimit] = useState(EXTENSION_BROWSER_PAGE_SIZE);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [busyBundleId, setBusyBundleId] = useState<string | null>(null);
+  const [showEntireCatalog, setShowEntireCatalog] = useState(false);
   const sortOptions = useMemo(
     () =>
       EXTENSION_BROWSER_SORT_OPTIONS.filter(
@@ -3292,11 +3294,14 @@ function ExtensionBrowserDialog({
     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
     setCollapsedGroups({});
     setBusyBundleId(null);
+    setShowEntireCatalog(false);
   }, [initialQuery, section?.key]);
 
   const browseSourceItems = section?.browseItems ?? section?.items ?? [];
   const isCurated =
-    section?.key === "plugins" && shouldCuratePluginBrowse(browseSourceItems.length, query);
+    section?.key === "plugins" &&
+    !showEntireCatalog &&
+    shouldCuratePluginBrowse(browseSourceItems.length, query);
   const searchedItems = useMemo(() => {
     const matching = filterExtensionItems(browseSourceItems, query);
     return isCurated
@@ -3487,9 +3492,21 @@ function ExtensionBrowserDialog({
             </div>
           </div>
           {isCurated ? (
-            <div className="shrink-0 border-b border-border/60 bg-muted/10 px-6 py-2 text-[11px] text-muted-foreground">
-              Showing {searchedItems.length} featured and most-installed plugins. Search to reach
-              all {browseSourceItems.length}.
+            <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border/60 bg-muted/10 px-6 py-2 text-[11px] text-muted-foreground">
+              <span>
+                Showing {searchedItems.length} featured and most-installed plugins. Search, or
+              </span>
+              <button
+                type="button"
+                className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => {
+                  setShowEntireCatalog(true);
+                  setSort("category");
+                  setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
+                }}
+              >
+                browse all {browseSourceItems.length} by category
+              </button>
             </div>
           ) : null}
           <div className="min-h-0 p-0">
