@@ -42,6 +42,7 @@ import {
 } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
+import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -651,23 +652,38 @@ function PreviewTabFrame({
     };
   }, [onNavState, setTabTitle, setTabUrl, tab.id, threadRef]);
 
-  const framed = viewport.width !== null;
+  // The container is measured so the frame can be placed at computed
+  // coordinates: Electron positions the guest's surface from the element's own
+  // box, and a flex-centred element sits where its unscaled size says while
+  // painting somewhere else.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [container, setContainer] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (element === null) {
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) {
+        setContainer({ width: entry.contentRect.width, height: entry.contentRect.height });
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const layout = resolveBrowserViewportLayout({ container, viewport, zoomFactor });
 
   return (
     <div
-      className={cn(
-        "absolute inset-0 flex items-start justify-center overflow-auto p-3",
-        isActive ? "visible" : "invisible",
-      )}
+      ref={canvasRef}
+      className={cn("absolute inset-0 overflow-hidden", isActive ? "visible" : "invisible")}
       data-testid={`browser-frame-${tab.id}`}
+      data-fit-scale={layout.scale}
     >
       <div
-        className={cn("relative", framed ? "shrink-0" : "h-full w-full")}
-        style={
-          framed
-            ? { width: `${viewport.width}px`, height: `${viewport.height ?? 800}px` }
-            : undefined
-        }
+        className="relative"
+        style={{ width: `${layout.canvasWidth}px`, height: `${layout.canvasHeight}px` }}
       >
         <webview
           ref={(element) => {
@@ -675,25 +691,52 @@ function PreviewTabFrame({
             register(element as PreviewWebview | null);
           }}
           {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
-          className="h-full w-full bg-background"
-          style={
-            viewport.width === null
-              ? undefined
-              : {
-                  width: `${viewport.width}px`,
-                  height: `${viewport.height ?? 800}px`,
-                  flex: "none",
-                }
-          }
+          // `flex` is deliberate: Electron's webview uses its own display value
+          // to size the guest, and replacing it breaks painting.
+          className={cn("absolute flex bg-background", !layout.fills && "ring-1 ring-border")}
+          style={{
+            left: `${layout.x}px`,
+            top: `${layout.y}px`,
+            // Laid out unscaled and shrunk by a transform on the element, so
+            // the guest keeps the CSS viewport it was asked for.
+            width: `${layout.width / layout.scale}px`,
+            height: `${layout.height / layout.scale}px`,
+            ...(layout.scale < 1
+              ? { transform: `scale(${layout.scale})`, transformOrigin: "top left" }
+              : {}),
+          }}
           partition={PREVIEW_PARTITION}
           {...(tab.url ? { src: tab.url } : {})}
         />
-        {framed && isActive && onResize !== undefined ? (
-          <>
-            <ViewportResizeHandle edge="right" viewport={viewport} onResize={onResize} />
-            <ViewportResizeHandle edge="bottom" viewport={viewport} onResize={onResize} />
-            <ViewportResizeHandle edge="corner" viewport={viewport} onResize={onResize} />
-          </>
+        {!layout.fills && isActive && onResize !== undefined ? (
+          <div
+            className="pointer-events-none absolute"
+            style={{
+              left: `${layout.x}px`,
+              top: `${layout.y}px`,
+              width: `${layout.width}px`,
+              height: `${layout.height}px`,
+            }}
+          >
+            <ViewportResizeHandle
+              edge="right"
+              viewport={viewport}
+              scale={layout.scale}
+              onResize={onResize}
+            />
+            <ViewportResizeHandle
+              edge="bottom"
+              viewport={viewport}
+              scale={layout.scale}
+              onResize={onResize}
+            />
+            <ViewportResizeHandle
+              edge="corner"
+              viewport={viewport}
+              scale={layout.scale}
+              onResize={onResize}
+            />
+          </div>
         ) : null}
       </div>
     </div>
@@ -711,10 +754,13 @@ function PreviewTabFrame({
 function ViewportResizeHandle({
   edge,
   viewport,
+  scale,
   onResize,
 }: {
   edge: "right" | "bottom" | "corner";
   viewport: BrowserViewport;
+  /** Pointer travel is in screen pixels; the device is measured in its own. */
+  scale: number;
   onResize: (viewport: BrowserViewport) => void;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -737,10 +783,15 @@ function ViewportResizeHandle({
       return;
     }
     const origin = originRef.current;
+    const ratio = scale > 0 ? scale : 1;
     const width =
-      edge === "bottom" ? origin.width : Math.max(160, origin.width + (event.clientX - origin.x));
+      edge === "bottom"
+        ? origin.width
+        : Math.max(160, origin.width + (event.clientX - origin.x) / ratio);
     const height =
-      edge === "right" ? origin.height : Math.max(160, origin.height + (event.clientY - origin.y));
+      edge === "right"
+        ? origin.height
+        : Math.max(160, origin.height + (event.clientY - origin.y) / ratio);
     onResize({ width: Math.round(width), height: Math.round(height) });
   };
 
