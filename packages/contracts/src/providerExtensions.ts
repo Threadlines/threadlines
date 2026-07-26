@@ -50,8 +50,29 @@ export const ProviderExtensionPlugin = Schema.Struct({
   lastUpdated: Schema.optional(IsoDateTime),
   installCount: Schema.optional(NonNegativeInt),
   projectPath: Schema.optional(TrimmedNonEmptyString),
+  /** Remote logo URL the browser can load directly. */
+  iconUrl: Schema.optional(TrimmedNonEmptyString),
+  /** Absolute local logo path; the browser reaches it through the plugin icon route. */
+  iconPath: Schema.optional(TrimmedNonEmptyString),
+  /** Promoted by the provider's catalog, used to seed browsing before the user searches. */
+  featured: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionPlugin = typeof ProviderExtensionPlugin.Type;
+
+export const ProviderExtensionMarketplace = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  displayName: Schema.optional(TrimmedNonEmptyString),
+  /** Where the marketplace came from: a git URL, a GitHub repo, or a local path. */
+  source: Schema.optional(TrimmedNonEmptyString),
+  path: Schema.optional(TrimmedNonEmptyString),
+  pluginCount: Schema.optional(NonNegativeInt),
+  installedPluginCount: Schema.optional(NonNegativeInt),
+  /** Remote catalogs have no local manifest and cannot be removed locally. */
+  remote: Schema.optional(Schema.Boolean),
+  removable: Schema.optional(Schema.Boolean),
+  loadError: Schema.optional(TrimmedString),
+});
+export type ProviderExtensionMarketplace = typeof ProviderExtensionMarketplace.Type;
 
 /**
  * A single thing a plugin contributes to a session. Both providers describe plugins as bundles of
@@ -195,11 +216,16 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   status: ProviderExtensionProviderStatus,
   message: Schema.optional(TrimmedString),
   plugins: Schema.Array(ProviderExtensionPlugin),
+  marketplaces: Schema.Array(ProviderExtensionMarketplace),
   skills: Schema.Array(ProviderExtensionSkill),
   mcpServers: Schema.Array(ProviderExtensionMcpServer),
   mcpServersStatus: Schema.optional(ProviderExtensionMcpInventoryStatus),
   mcpServersMessage: Schema.optional(TrimmedString),
+  /** The provider returned exactly as many servers as we asked for, so the count is a floor. */
+  mcpServersTruncated: Schema.optional(Schema.Boolean),
   apps: Schema.Array(ProviderExtensionApp),
+  /** As above: the apps count is a page size, not a total. */
+  appsTruncated: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionProviderInventory = typeof ProviderExtensionProviderInventory.Type;
 
@@ -408,9 +434,40 @@ export type ProviderExtensionPluginMarketplaceRefreshInput =
 export const ProviderExtensionPluginMarketplaceRefreshResult = Schema.Struct({
   refreshed: Schema.Boolean,
   output: Schema.optional(TrimmedString),
+  refreshedMarketplaces: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  errors: Schema.optional(Schema.Array(TrimmedString)),
 });
 export type ProviderExtensionPluginMarketplaceRefreshResult =
   typeof ProviderExtensionPluginMarketplaceRefreshResult.Type;
+
+export const ProviderExtensionMarketplaceAddInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  /** A git URL, a GitHub owner/repo, or a local path, depending on what the provider accepts. */
+  source: TrimmedNonEmptyString,
+  refName: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionMarketplaceAddInput = typeof ProviderExtensionMarketplaceAddInput.Type;
+
+export const ProviderExtensionMarketplaceAddResult = Schema.Struct({
+  added: Schema.Boolean,
+  name: Schema.optional(TrimmedNonEmptyString),
+  message: Schema.optional(TrimmedString),
+});
+export type ProviderExtensionMarketplaceAddResult =
+  typeof ProviderExtensionMarketplaceAddResult.Type;
+
+export const ProviderExtensionMarketplaceRemoveInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  name: TrimmedNonEmptyString,
+});
+export type ProviderExtensionMarketplaceRemoveInput =
+  typeof ProviderExtensionMarketplaceRemoveInput.Type;
+
+export const ProviderExtensionMarketplaceRemoveResult = Schema.Struct({
+  removed: Schema.Boolean,
+});
+export type ProviderExtensionMarketplaceRemoveResult =
+  typeof ProviderExtensionMarketplaceRemoveResult.Type;
 
 export const ProviderExtensionMcpToolCallInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,

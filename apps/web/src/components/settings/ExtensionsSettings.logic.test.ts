@@ -20,6 +20,8 @@ import {
   groupPluginComponents,
   makeExtensionJsonSchemaFormDefaults,
   resolvePluginComponentTarget,
+  selectCuratedPlugins,
+  shouldCuratePluginBrowse,
   shouldRenderExtensionBrowserGroups,
   summarizePluginDetail,
 } from "./ExtensionsSettings.logic";
@@ -52,6 +54,28 @@ describe("ExtensionsSettings logic", () => {
     expect(groups[0]?.components.map((component) => component.name)).toEqual([
       "supabase-postgres-best-practices",
       "supabase",
+    ]);
+  });
+
+  it("curates an unsearched plugin catalog and steps aside once you search", () => {
+    expect(shouldCuratePluginBrowse(2227, "  ")).toBe(true);
+    expect(shouldCuratePluginBrowse(2227, "supa")).toBe(false);
+    expect(shouldCuratePluginBrowse(12, "")).toBe(false);
+
+    const catalog = [
+      { name: "unpopular", installCount: 3 },
+      { name: "installed", installed: true },
+      { name: "popular", installCount: 9000 },
+      { name: "featured", featured: true },
+      { name: "middling", installCount: 400 },
+    ];
+
+    expect(selectCuratedPlugins(catalog, (entry) => entry).map((entry) => entry.name)).toEqual([
+      "installed",
+      "featured",
+      "popular",
+      "middling",
+      "unpopular",
     ]);
   });
 

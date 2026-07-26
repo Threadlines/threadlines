@@ -128,6 +128,45 @@ export function formatTokenCount(tokens: number): string {
   return `${rounded.endsWith(".0") ? rounded.slice(0, -2) : rounded}${suffix}`;
 }
 
+/**
+ * A provider's plugin list is its entire catalog — Codex reports well over two thousand. Opening
+ * Browse onto all of them is unusable, so an unsearched catalog shows a curated slice instead:
+ * what you already have, what the provider promotes, then the most installed.
+ */
+const CURATED_PLUGIN_BROWSE_THRESHOLD = 60;
+const CURATED_PLUGIN_BROWSE_LIMIT = 24;
+
+export interface CuratedPluginCandidate {
+  readonly featured?: boolean | undefined;
+  readonly installed?: boolean | undefined;
+  readonly installCount?: number | undefined;
+}
+
+export function shouldCuratePluginBrowse(totalItems: number, query: string): boolean {
+  return query.trim().length === 0 && totalItems > CURATED_PLUGIN_BROWSE_THRESHOLD;
+}
+
+export function selectCuratedPlugins<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => CuratedPluginCandidate,
+): ReadonlyArray<T> {
+  const promoted = new Set(
+    items.filter((item) => {
+      const candidate = read(item);
+      return candidate.installed === true || candidate.featured === true;
+    }),
+  );
+  if (promoted.size >= CURATED_PLUGIN_BROWSE_LIMIT) {
+    return [...promoted].slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
+  }
+
+  const popular = items
+    .filter((item) => !promoted.has(item))
+    .toSorted((left, right) => (read(right).installCount ?? 0) - (read(left).installCount ?? 0))
+    .slice(0, CURATED_PLUGIN_BROWSE_LIMIT - promoted.size);
+  return [...promoted, ...popular];
+}
+
 /** Plain-text rendering of a plugin's contents, for surfaces that only have a text output slot. */
 export function summarizePluginDetail(detail: ProviderExtensionPluginDetail): string {
   const heading = [detail.displayName ?? detail.name, detail.version].filter(Boolean).join(" ");

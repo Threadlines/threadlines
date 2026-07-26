@@ -32,6 +32,11 @@ import {
   type ProviderExtensionMcpTool,
   type ProviderExtensionMcpToolCallInput,
   type ProviderExtensionMcpToolCallResult,
+  type ProviderExtensionMarketplace,
+  type ProviderExtensionMarketplaceAddInput,
+  type ProviderExtensionMarketplaceAddResult,
+  type ProviderExtensionMarketplaceRemoveInput,
+  type ProviderExtensionMarketplaceRemoveResult,
   type ProviderExtensionOperationStatusInput,
   type ProviderExtensionOperationStatusResult,
   type ProviderExtensionPlugin,
@@ -86,7 +91,7 @@ const decodeCodexJson = Schema.decodeUnknownSync(Schema.Json);
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
-const CODEX_PLUGIN_MARKETPLACE_ACTION_TIMEOUT = Duration.seconds(120);
+const CODEX_EXTENSION_INVENTORY_PAGE_LIMIT = 100;
 const CODEX_MCP_OAUTH_DEFAULT_TIMEOUT_SECONDS = 300;
 const CODEX_MCP_OAUTH_MAX_TIMEOUT_SECONDS = 900;
 const CLAUDE_MCP_LOGIN_VERIFY_INTERVAL_SECONDS = 3;
@@ -387,10 +392,12 @@ function codexPluginSource(source: CodexSchema.V2PluginListResponse__PluginSourc
   }
 }
 
-export function mapCodexPlugins(
-  response: CodexSchema.V2PluginListResponse,
-): ProviderExtensionPlugin[] {
+export function mapCodexPluginInventory(response: CodexSchema.V2PluginListResponse): {
+  readonly plugins: ProviderExtensionPlugin[];
+  readonly marketplaces: ProviderExtensionMarketplace[];
+} {
   const byId = new Map<string, ProviderExtensionPlugin>();
+  const featuredPluginIds = new Set(response.featuredPluginIds ?? []);
   for (const marketplace of response.marketplaces) {
     const marketplaceName = requiredText(marketplace.name);
     const marketplacePath = optionalText(marketplace.path ?? null);
@@ -402,6 +409,8 @@ export function mapCodexPlugins(
       const developerName = optionalText(plugin.interface?.developerName ?? null);
       const category = optionalText(plugin.interface?.category ?? null);
       const websiteUrl = optionalText(plugin.interface?.websiteUrl ?? null);
+      const iconUrl = optionalText(plugin.interface?.logoUrl ?? null);
+      const iconPath = optionalText(plugin.interface?.logo ?? null);
       const keywords = (plugin.keywords ?? [])
         .map((keyword) => optionalText(keyword))
         .filter((keyword): keyword is string => keyword !== undefined);
@@ -429,6 +438,9 @@ export function mapCodexPlugins(
         ...(category ? { category } : {}),
         ...(websiteUrl ? { websiteUrl } : {}),
         ...(keywords.length > 0 ? { keywords } : {}),
+        ...(iconUrl ? { iconUrl } : {}),
+        ...(iconPath ? { iconPath } : {}),
+        ...(featuredPluginIds.has(id) ? { featured: true } : {}),
       } satisfies ProviderExtensionPlugin;
       const existing = byId.get(id);
       if (!existing || (mapped.installed === true && existing.installed !== true)) {
@@ -436,7 +448,42 @@ export function mapCodexPlugins(
       }
     }
   }
-  return [...byId.values()].toSorted((left, right) => left.name.localeCompare(right.name));
+  const loadErrorsByPath = new Map(
+    (response.marketplaceLoadErrors ?? []).map((error) => [
+      error.marketplacePath,
+      sanitizeErrorMessage(error.message),
+    ]),
+  );
+  const marketplaces = response.marketplaces.flatMap((marketplace) => {
+    const name = requiredText(marketplace.name);
+    if (!name) return [];
+    const path = optionalText(marketplace.path ?? null);
+    const displayName = optionalText(marketplace.interface?.displayName ?? null);
+    const loadError = path ? loadErrorsByPath.get(path) : undefined;
+    return [
+      {
+        name,
+        ...(displayName ? { displayName } : {}),
+        ...(path ? { source: path, path } : {}),
+        pluginCount: marketplace.plugins.length,
+        installedPluginCount: marketplace.plugins.filter((plugin) => plugin.installed === true)
+          .length,
+        remote: !path,
+        removable: Boolean(path),
+        ...(loadError !== undefined ? { loadError } : {}),
+      } satisfies ProviderExtensionMarketplace,
+    ];
+  });
+  return {
+    plugins: [...byId.values()].toSorted((left, right) => left.name.localeCompare(right.name)),
+    marketplaces: marketplaces.toSorted((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+export function mapCodexPlugins(
+  response: CodexSchema.V2PluginListResponse,
+): ProviderExtensionPlugin[] {
+  return mapCodexPluginInventory(response).plugins;
 }
 
 const pluginComponentKindOrder = new Map<ProviderExtensionPluginComponentKind, number>([
@@ -808,7 +855,12 @@ type ClaudeProviderExtensionActionContext = {
 };
 
 const providerExtensionOperations = new Map<string, ProviderExtensionOperationStatusResult>();
+let currentProviderExtensionPluginIconPaths = new Set<string>();
 const isProviderExtensionsError = Schema.is(ProviderExtensionsError);
+
+export function isCurrentProviderExtensionPluginIconPath(filePath: string): boolean {
+  return currentProviderExtensionPluginIconPaths.has(filePath);
+}
 
 function recordProviderExtensionOperation(
   status: ProviderExtensionOperationStatusResult,
@@ -1063,47 +1115,6 @@ function runCodexAppServerAction<A>(
   );
 }
 
-const runCodexCommand = Effect.fn("providerExtensions.runCodexCommand")(function* (input: {
-  readonly binaryPath: string;
-  readonly args: ReadonlyArray<string>;
-  readonly cwd: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly timeout?: Duration.Duration | undefined;
-}) {
-  const result = yield* spawnAndCollect(
-    input.binaryPath,
-    ChildProcess.make(
-      input.binaryPath,
-      [...input.args],
-      hideWindowsConsole({
-        cwd: input.cwd,
-        env: input.env,
-        shell: process.platform === "win32",
-      }),
-    ),
-  ).pipe(Effect.timeoutOption(input.timeout ?? INVENTORY_COMMAND_TIMEOUT));
-  if (Option.isNone(result)) {
-    return yield* new ProviderExtensionsError({
-      message: `Timed out running ${input.binaryPath} ${input.args.join(" ")}.`,
-    });
-  }
-  return result.value;
-});
-
-function providerCommandFailureMessage(input: {
-  readonly command: string;
-  readonly args: ReadonlyArray<string>;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly code: number;
-}): string {
-  const detail = optionalText(input.stderr) ?? optionalText(input.stdout);
-  const command = `${input.command} ${input.args.join(" ")}`;
-  return detail
-    ? `${command} failed: ${detail}`
-    : `${command} failed with exit code ${input.code}.`;
-}
-
 const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppServerInventory")(
   function* (input: {
     readonly config: CodexSettings;
@@ -1115,11 +1126,14 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     Pick<
       ProviderExtensionProviderInventory,
       | "plugins"
+      | "marketplaces"
       | "skills"
       | "mcpServers"
       | "mcpServersStatus"
       | "mcpServersMessage"
+      | "mcpServersTruncated"
       | "apps"
+      | "appsTruncated"
       | "status"
       | "message"
     >,
@@ -1133,6 +1147,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         status: "error",
         message: materialized.failure.message,
         plugins: [],
+        marketplaces: [],
         skills: [],
         mcpServers: [],
         apps: [],
@@ -1160,19 +1175,19 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
 
         const mcpStatusParams = {
           detail: "toolsAndAuthOnly" as const,
-          limit: 100,
+          limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
           ...(input.providerThreadId !== undefined ? { threadId: input.providerThreadId } : {}),
         };
         const mcpStatusWithoutThreadParams = {
           detail: "toolsAndAuthOnly" as const,
-          limit: 100,
+          limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
         };
         const appListParams = {
-          limit: 100,
+          limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
           ...(input.providerThreadId !== undefined ? { threadId: input.providerThreadId } : {}),
         };
         const appListWithoutThreadParams = {
-          limit: 100,
+          limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
         };
 
         const includeMcpServers = input.includeMcpServers ?? true;
@@ -1192,7 +1207,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           [
             client.request("plugin/list", { cwds: [input.cwd] }).pipe(
               Effect.map((response) => ({
-                plugins: mapCodexPlugins(response),
+                ...mapCodexPluginInventory(response),
                 loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
               })),
               collectCodexRequest("plugins"),
@@ -1228,6 +1243,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         status: "error",
         message: codexInventoryTimeoutMessage("extension inventory"),
         plugins: [],
+        marketplaces: [],
         skills: [],
         mcpServers: [],
         apps: [],
@@ -1239,6 +1255,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         status: "error",
         message: toErrorMessage(clientResult.value.failure),
         plugins: [],
+        marketplaces: [],
         skills: [],
         mcpServers: [],
         apps: [],
@@ -1257,6 +1274,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       : undefined;
 
     const plugins = Result.isSuccess(data.plugins) ? data.plugins.success.plugins : [];
+    const marketplaces = Result.isSuccess(data.plugins) ? data.plugins.success.marketplaces : [];
     const skills = Result.isSuccess(data.skills)
       ? annotatePluginBackedSkills(data.skills.success, plugins)
       : [];
@@ -1270,11 +1288,20 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       status: messages.length > 0 ? "partial" : "ready",
       ...(messages.length > 0 ? { message: messages.join(" ") } : {}),
       plugins,
+      marketplaces,
       skills,
       mcpServers: Result.isSuccess(data.mcpServers) ? data.mcpServers.success : [],
       mcpServersStatus,
       ...(mcpServersMessage ? { mcpServersMessage } : {}),
+      ...(Result.isSuccess(data.mcpServers) &&
+      data.mcpServers.success.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
+        ? { mcpServersTruncated: true }
+        : {}),
       apps: Result.isSuccess(data.apps) ? data.apps.success : [],
+      ...(Result.isSuccess(data.apps) &&
+      data.apps.success.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
+        ? { appsTruncated: true }
+        : {}),
     };
   },
 );
@@ -1484,6 +1511,46 @@ function parseClaudePluginListEntries(output: string): ParsedClaudePluginListEnt
 
 export function parseClaudePluginList(output: string): ProviderExtensionPlugin[] {
   return parseClaudePluginListEntries(output).map((entry) => entry.plugin);
+}
+
+export function parseClaudeMarketplaceList(
+  output: string,
+  plugins: ReadonlyArray<ProviderExtensionPlugin> = [],
+): ProviderExtensionMarketplace[] {
+  const trimmed = output.trim();
+  if (!trimmed) return [];
+
+  let value: unknown;
+  try {
+    value = JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      const name = stringField(record, "name");
+      if (!name) return [];
+      const source = stringField(record, "repo") ?? stringField(record, "source");
+      const path = stringField(record, "installLocation");
+      const matchingPlugins = plugins.filter((plugin) => plugin.id.endsWith(`@${name}`));
+      return [
+        {
+          name,
+          ...(source ? { source } : {}),
+          ...(path ? { path } : {}),
+          pluginCount: matchingPlugins.length,
+          installedPluginCount: matchingPlugins.filter((plugin) => plugin.installed === true)
+            .length,
+          remote: false,
+          removable: true,
+        } satisfies ProviderExtensionMarketplace,
+      ];
+    })
+    .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
 type ParsedClaudePluginDetails = {
@@ -2408,7 +2475,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   const path = yield* Path.Path;
   const claudeHome = claudeEnvironment.HOME ?? process.env.HOME ?? process.env.USERPROFILE ?? "";
 
-  const [pluginResult, mcpResult, skillsResult] = yield* Effect.all(
+  const [pluginResult, marketplaceResult, mcpResult, skillsResult] = yield* Effect.all(
     [
       runClaudeCommand({
         binaryPath: input.config.binaryPath,
@@ -2433,6 +2500,26 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
       ),
       runClaudeCommand({
         binaryPath: input.config.binaryPath,
+        args: ["plugin", "marketplace", "list", "--json"],
+        cwd: input.cwd,
+        env: claudeEnvironment,
+      }).pipe(
+        Effect.flatMap((result) =>
+          result.code === 0
+            ? Effect.succeed(result)
+            : Effect.fail(
+                new ProviderExtensionsError({
+                  message: claudeCommandFailureMessage({
+                    args: ["plugin", "marketplace", "list", "--json"],
+                    ...result,
+                  }),
+                }),
+              ),
+        ),
+        Effect.result,
+      ),
+      runClaudeCommand({
+        binaryPath: input.config.binaryPath,
         args: ["mcp", "list"],
         cwd: input.cwd,
         env: claudeEnvironment,
@@ -2453,6 +2540,9 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   const plugins = yield* describeInstalledClaudePlugins(
     Result.isSuccess(pluginResult) ? pluginResult.success : [],
   );
+  const marketplaces = Result.isSuccess(marketplaceResult)
+    ? parseClaudeMarketplaceList(marketplaceResult.success.stdout, plugins)
+    : [];
   const skills = Result.isSuccess(skillsResult)
     ? annotatePluginBackedSkills(skillsResult.success, plugins)
     : [];
@@ -2460,12 +2550,13 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     status: messages.length > 0 ? "partial" : "ready",
     ...(messages.length > 0 ? { message: messages.join(" ") } : {}),
     plugins,
+    marketplaces,
     skills,
     mcpServers: Result.isSuccess(mcpResult) ? mcpResult.success : [],
     apps: [],
   } satisfies Pick<
     ProviderExtensionProviderInventory,
-    "plugins" | "skills" | "mcpServers" | "apps" | "status" | "message"
+    "plugins" | "marketplaces" | "skills" | "mcpServers" | "apps" | "status" | "message"
   >;
 });
 
@@ -2516,6 +2607,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
           status: "disabled",
           message: "Provider is disabled.",
           plugins: [],
+          marketplaces: [],
           skills: fallbackSkillsFromSnapshot(input.snapshot),
           mcpServers: [],
           apps: [],
@@ -2559,6 +2651,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
           status: "disabled",
           message: "Provider is disabled.",
           plugins: [],
+          marketplaces: [],
           skills: [],
           mcpServers: [],
           apps: [],
@@ -2577,6 +2670,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
       status: "unsupported",
       message: "Extension inventory is only implemented for Codex and Claude.",
       plugins: [],
+      marketplaces: [],
       skills: [],
       mcpServers: [],
       apps: [],
@@ -3163,39 +3257,164 @@ export const refreshProviderExtensionPluginMarketplaces = Effect.fn(
   ProviderExtensionsError,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver === CLAUDE_DRIVER) {
+    const context = yield* resolveClaudeActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+    });
+    const result = yield* runClaudePluginAction(context, [
+      "plugin",
+      "marketplace",
+      "update",
+      ...(input.request.marketplaceName ? [claudeShellArg(input.request.marketplaceName)] : []),
+    ]);
+    const output = optionalText(result.stdout) ?? optionalText(result.stderr);
+    return {
+      refreshed: true,
+      ...(output ? { output } : {}),
+      refreshedMarketplaces: input.request.marketplaceName ? [input.request.marketplaceName] : [],
+      errors: [],
+    };
+  }
+  if (providerConfig.driver !== CODEX_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(
+      providerConfig.driver,
+      "Plugin marketplace refresh",
+    );
+  }
   const context = yield* resolveCodexActionContext({
     cwd: input.request.cwd,
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
-  const args = [
-    "plugin",
-    "marketplace",
-    "upgrade",
-    ...(input.request.marketplaceName ? [input.request.marketplaceName] : []),
-  ];
-  const result = yield* runCodexCommand({
-    binaryPath: context.config.binaryPath,
-    args,
-    cwd: context.cwd,
-    env: context.environment,
-    timeout: CODEX_PLUGIN_MARKETPLACE_ACTION_TIMEOUT,
-  }).pipe(Effect.mapError(toProviderExtensionsError));
-  if (result.code !== 0) {
-    return yield* new ProviderExtensionsError({
-      message: providerCommandFailureMessage({
-        command: context.config.binaryPath,
-        args,
-        ...result,
-      }),
-    });
-  }
+  const response = yield* runCodexAppServerAction(context, (client) =>
+    mapCodexRequestError(
+      client.request(
+        "marketplace/upgrade",
+        input.request.marketplaceName ? { marketplaceName: input.request.marketplaceName } : {},
+      ),
+    ),
+  );
+  const errors = response.errors.map((error) =>
+    sanitizeErrorMessage(`${error.marketplaceName}: ${error.message}`),
+  );
+  const outputLines = [...response.upgradedRoots.map((root) => `Updated ${root}`), ...errors];
+  const output =
+    optionalText(outputLines.join("\n")) ??
+    optionalText(
+      response.selectedMarketplaces.length > 0
+        ? `Refreshed ${response.selectedMarketplaces.join(", ")}.`
+        : "",
+    );
   return {
-    refreshed: true,
-    ...((optionalText(result.stdout) ?? optionalText(result.stderr))
-      ? { output: optionalText(result.stdout) ?? optionalText(result.stderr) }
-      : {}),
+    refreshed: errors.length === 0,
+    ...(output ? { output } : {}),
+    refreshedMarketplaces: [...response.selectedMarketplaces],
+    errors,
   };
+});
+
+export const addProviderExtensionMarketplace = Effect.fn(
+  "providerExtensions.addProviderExtensionMarketplace",
+)(function* (input: {
+  readonly request: ProviderExtensionMarketplaceAddInput;
+  readonly settings: ServerSettings;
+}): Effect.fn.Return<
+  ProviderExtensionMarketplaceAddResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver === CLAUDE_DRIVER) {
+    const context = yield* resolveClaudeActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+    });
+    const result = yield* runClaudePluginAction(context, [
+      "plugin",
+      "marketplace",
+      "add",
+      claudeShellArg(input.request.source),
+    ]);
+    const message = optionalText(result.stdout) ?? optionalText(result.stderr);
+    return { added: true, ...(message ? { message } : {}) };
+  }
+  if (providerConfig.driver !== CODEX_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(providerConfig.driver, "Marketplace add");
+  }
+  const context = yield* resolveCodexActionContext({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  const response = yield* runCodexAppServerAction(context, (client) =>
+    mapCodexRequestError(
+      client.request("marketplace/add", {
+        source: input.request.source,
+        ...(input.request.refName ? { refName: input.request.refName } : {}),
+      }),
+    ),
+  );
+  return {
+    added: !response.alreadyAdded,
+    name: response.marketplaceName,
+    ...(response.alreadyAdded ? { message: "Marketplace was already added." } : {}),
+  };
+});
+
+export const removeProviderExtensionMarketplace = Effect.fn(
+  "providerExtensions.removeProviderExtensionMarketplace",
+)(function* (input: {
+  readonly request: ProviderExtensionMarketplaceRemoveInput;
+  readonly settings: ServerSettings;
+}): Effect.fn.Return<
+  ProviderExtensionMarketplaceRemoveResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver === CLAUDE_DRIVER) {
+    const context = yield* resolveClaudeActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+    });
+    yield* runClaudePluginAction(context, [
+      "plugin",
+      "marketplace",
+      "remove",
+      claudeShellArg(input.request.name),
+    ]);
+    return { removed: true };
+  }
+  if (providerConfig.driver !== CODEX_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(providerConfig.driver, "Marketplace removal");
+  }
+  const context = yield* resolveCodexActionContext({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  yield* runCodexAppServerAction(context, (client) =>
+    mapCodexRequestError(
+      client.request("marketplace/remove", {
+        marketplaceName: input.request.name,
+      }),
+    ),
+  );
+  return { removed: true };
 });
 
 export const callProviderExtensionMcpTool = Effect.fn(
@@ -3322,6 +3541,7 @@ export const readProviderExtensionsInventory = Effect.fn(
                 status: "error" as const,
                 message: error.message,
                 plugins: [],
+                marketplaces: [],
                 skills: fallbackSkillsFromSnapshot(snapshotsByInstanceId.get(entry.instanceId)),
                 mcpServers: [],
                 apps: [],
@@ -3334,6 +3554,12 @@ export const readProviderExtensionsInventory = Effect.fn(
       readInstructionFiles(cwd),
     ],
     { concurrency: "unbounded" },
+  );
+
+  currentProviderExtensionPluginIconPaths = new Set(
+    providers.flatMap((provider) =>
+      provider.plugins.flatMap((plugin) => (plugin.iconPath ? [plugin.iconPath] : [])),
+    ),
   );
 
   return {

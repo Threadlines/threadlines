@@ -235,6 +235,12 @@ export interface WsRpcClient {
     readonly refreshProviderExtensionPluginMarketplaces: RpcUnaryMethod<
       typeof WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces
     >;
+    readonly addProviderExtensionMarketplace: RpcUnaryMethod<
+      typeof WS_METHODS.serverAddProviderExtensionMarketplace
+    >;
+    readonly removeProviderExtensionMarketplace: RpcUnaryMethod<
+      typeof WS_METHODS.serverRemoveProviderExtensionMarketplace
+    >;
     readonly callProviderExtensionMcpTool: RpcUnaryMethod<
       typeof WS_METHODS.serverCallProviderExtensionMcpTool
     >;
@@ -606,6 +612,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       refreshProviderExtensionPluginMarketplaces: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      addProviderExtensionMarketplace: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverAddProviderExtensionMarketplace](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      removeProviderExtensionMarketplace: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverRemoveProviderExtensionMarketplace](input).pipe(
             Effect.withTracerEnabled(false),
           ),
         ),

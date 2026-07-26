@@ -118,6 +118,10 @@ import {
   ProviderExtensionMcpResourceReadResult,
   ProviderExtensionMcpToolCallInput,
   ProviderExtensionMcpToolCallResult,
+  ProviderExtensionMarketplaceAddInput,
+  ProviderExtensionMarketplaceAddResult,
+  ProviderExtensionMarketplaceRemoveInput,
+  ProviderExtensionMarketplaceRemoveResult,
   ProviderExtensionOperationStatusInput,
   ProviderExtensionOperationStatusResult,
   ProviderExtensionPluginInstallInput,
@@ -310,6 +314,8 @@ export const WS_METHODS = {
   serverUpdateProviderExtensionPlugin: "server.updateProviderExtensionPlugin",
   serverRefreshProviderExtensionPluginMarketplaces:
     "server.refreshProviderExtensionPluginMarketplaces",
+  serverAddProviderExtensionMarketplace: "server.addProviderExtensionMarketplace",
+  serverRemoveProviderExtensionMarketplace: "server.removeProviderExtensionMarketplace",
   serverCallProviderExtensionMcpTool: "server.callProviderExtensionMcpTool",
   serverReadProviderExtensionMcpResource: "server.readProviderExtensionMcpResource",
   serverGetProviderInstructionFiles: "server.getProviderInstructionFiles",
@@ -556,6 +562,24 @@ export const WsServerRefreshProviderExtensionPluginMarketplacesRpc = Rpc.make(
   {
     payload: ProviderExtensionPluginMarketplaceRefreshInput,
     success: ProviderExtensionPluginMarketplaceRefreshResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerAddProviderExtensionMarketplaceRpc = Rpc.make(
+  WS_METHODS.serverAddProviderExtensionMarketplace,
+  {
+    payload: ProviderExtensionMarketplaceAddInput,
+    success: ProviderExtensionMarketplaceAddResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerRemoveProviderExtensionMarketplaceRpc = Rpc.make(
+  WS_METHODS.serverRemoveProviderExtensionMarketplace,
+  {
+    payload: ProviderExtensionMarketplaceRemoveInput,
+    success: ProviderExtensionMarketplaceRemoveResult,
     error: ProviderExtensionsError,
   },
 );
@@ -1025,6 +1049,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSetProviderExtensionPluginEnabledRpc,
   WsServerUpdateProviderExtensionPluginRpc,
   WsServerRefreshProviderExtensionPluginMarketplacesRpc,
+  WsServerAddProviderExtensionMarketplaceRpc,
+  WsServerRemoveProviderExtensionMarketplaceRpc,
   WsServerCallProviderExtensionMcpToolRpc,
   WsServerReadProviderExtensionMcpResourceRpc,
   WsServerGetProviderInstructionFilesRpc,

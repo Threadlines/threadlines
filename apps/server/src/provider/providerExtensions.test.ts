@@ -26,8 +26,9 @@ import {
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
+  mapCodexPluginInventory,
   mapCodexPluginDetail,
-  mapCodexPlugins,
+  parseClaudeMarketplaceList,
   parseClaudeMcpList,
   parseClaudePluginDetails,
   parseClaudePluginList,
@@ -144,11 +145,20 @@ describe("provider extensions inventory", () => {
     );
   });
 
-  it("maps Codex plugin versions and marketplace interface metadata", () => {
-    const plugins = mapCodexPlugins({
+  it("maps Codex marketplaces, featured plugins, and plugin icons", () => {
+    const inventory = mapCodexPluginInventory({
+      featuredPluginIds: ["analytics"],
+      marketplaceLoadErrors: [
+        {
+          marketplacePath: "/plugins/catalog/marketplace.json",
+          message: " stale catalog ",
+        },
+      ],
       marketplaces: [
         {
           name: "catalog",
+          path: "/plugins/catalog/marketplace.json",
+          interface: { displayName: " Example Catalog " },
           plugins: [
             {
               id: "analytics",
@@ -169,6 +179,8 @@ describe("provider extensions inventory", () => {
                 category: "Data",
                 websiteUrl: " https://example.com/analytics ",
                 shortDescription: "Understand product usage",
+                logoUrl: " https://example.com/analytics.png ",
+                logo: "/plugins/catalog/analytics/logo.png",
               },
             },
             {
@@ -192,7 +204,7 @@ describe("provider extensions inventory", () => {
       ],
     });
 
-    assert.deepEqual(plugins, [
+    assert.deepEqual(inventory.plugins, [
       {
         id: "analytics",
         name: "Analytics",
@@ -205,13 +217,16 @@ describe("provider extensions inventory", () => {
         installPolicy: "AVAILABLE",
         availability: undefined,
         marketplaceName: "catalog",
-        remoteMarketplaceName: "catalog",
+        marketplacePath: "/plugins/catalog/marketplace.json",
         version: "1.5.0",
         availableVersion: "2.0.0",
         developerName: "Example Labs",
         category: "Data",
         websiteUrl: "https://example.com/analytics",
         keywords: ["metrics", "insights"],
+        iconUrl: "https://example.com/analytics.png",
+        iconPath: "/plugins/catalog/analytics/logo.png",
+        featured: true,
       },
       {
         id: "category-only",
@@ -225,9 +240,22 @@ describe("provider extensions inventory", () => {
         installPolicy: "AVAILABLE",
         availability: undefined,
         marketplaceName: "catalog",
-        remoteMarketplaceName: "catalog",
+        marketplacePath: "/plugins/catalog/marketplace.json",
         version: "3.0.0",
         category: "Productivity",
+      },
+    ]);
+    assert.deepEqual(inventory.marketplaces, [
+      {
+        name: "catalog",
+        displayName: "Example Catalog",
+        source: "/plugins/catalog/marketplace.json",
+        path: "/plugins/catalog/marketplace.json",
+        pluginCount: 2,
+        installedPluginCount: 1,
+        remote: false,
+        removable: true,
+        loadError: "stale catalog",
       },
     ]);
   });
@@ -412,6 +440,54 @@ describe("provider extensions inventory", () => {
     assert.equal(plugins[0]?.installCount, 100599);
     assert.equal(plugins[1]?.id, "vercel@claude-plugins-official");
     assert.equal(plugins[1]?.installed, false);
+  });
+
+  it("parses Claude marketplaces and derives plugin counts from plugin inventory", () => {
+    const plugins = parseClaudePluginList(
+      JSON.stringify({
+        installed: [
+          {
+            id: "supabase@claude-plugins-official",
+            enabled: true,
+          },
+        ],
+        available: [
+          {
+            pluginId: "supabase@claude-plugins-official",
+            name: "supabase",
+          },
+          {
+            pluginId: "vercel@claude-plugins-official",
+            name: "vercel",
+          },
+        ],
+      }),
+    );
+
+    assert.deepEqual(
+      parseClaudeMarketplaceList(
+        JSON.stringify([
+          {
+            name: "claude-plugins-official",
+            source: "github",
+            repo: "anthropics/claude-plugins-official",
+            installLocation: "/Users/will/.claude/plugins/marketplaces/claude-plugins-official",
+          },
+        ]),
+        plugins,
+      ),
+      [
+        {
+          name: "claude-plugins-official",
+          source: "anthropics/claude-plugins-official",
+          path: "/Users/will/.claude/plugins/marketplaces/claude-plugins-official",
+          pluginCount: 2,
+          installedPluginCount: 1,
+          remote: false,
+          removable: true,
+        },
+      ],
+    );
   });
 
   it("parses Claude plugin component inventory and projected token cost", () => {
@@ -962,7 +1038,7 @@ Per-component (rounded)
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
-  it.effect("refreshes Codex plugin marketplaces through the configured binary", () => {
+  it.effect("refreshes Claude plugin marketplaces through the configured binary", () => {
     const calls: Array<{
       readonly command: string;
       readonly args: ReadonlyArray<string>;
@@ -987,12 +1063,13 @@ Per-component (rounded)
       const result = yield* refreshProviderExtensionPluginMarketplaces({
         request: {
           cwd: process.cwd(),
-          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          marketplaceName: "team plugins",
         },
         settings: makeSettings({
           providers: {
-            codex: { enabled: true, binaryPath: "custom-codex" },
-            claudeAgent: { enabled: false },
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "custom-claude" },
             cursor: { enabled: false },
             opencode: { enabled: false },
           },
@@ -1001,8 +1078,15 @@ Per-component (rounded)
 
       assert.equal(result.refreshed, true);
       assert.equal(result.output, "marketplace updated");
-      assert.equal(calls[0]?.command, "custom-codex");
-      assert.deepEqual(calls[0]?.args, ["plugin", "marketplace", "upgrade"]);
+      assert.deepEqual(result.refreshedMarketplaces, ["team plugins"]);
+      assert.deepEqual(result.errors, []);
+      assert.equal(calls[0]?.command, "custom-claude");
+      assert.deepEqual(calls[0]?.args, [
+        "plugin",
+        "marketplace",
+        "update",
+        process.platform === "win32" ? '"team plugins"' : "team plugins",
+      ]);
       assert.equal(calls[0]?.cwd, process.cwd());
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });

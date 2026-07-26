@@ -1128,6 +1128,32 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("rejects plugin icon paths outside the current extension inventory", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outsideDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-router-plugin-icon-outside-",
+      });
+      const outsideIconPath = path.join(outsideDir, "icon.png");
+      yield* fileSystem.writeFile(outsideIconPath, new Uint8Array([137, 80, 78, 71]));
+
+      yield* buildAppUnderTest();
+
+      const response = yield* HttpClient.get(
+        `/api/plugin-icon?path=${encodeURIComponent(outsideIconPath)}`,
+        {
+          headers: {
+            cookie: yield* getAuthenticatedSessionCookieHeader(),
+          },
+        },
+      );
+
+      assert.equal(response.status, 404);
+      assert.equal(yield* response.text, "Not Found");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("serves the public environment descriptor without requiring auth", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();

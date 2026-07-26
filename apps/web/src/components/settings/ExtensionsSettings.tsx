@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type {
+  EnvironmentId,
   ProviderExtensionApp,
   ProviderExtensionMcpServer,
   ProviderExtensionMcpTool,
@@ -44,6 +45,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { openInPreferredEditor } from "../../editorPreferences";
+import { resolveEnvironmentHttpUrl } from "../../environments/runtime";
 import { ensureLocalApi } from "../../localApi";
 import {
   buildExtensionJsonSchemaFormArguments,
@@ -59,6 +61,8 @@ import {
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   formatTokenCount,
+  selectCuratedPlugins,
+  shouldCuratePluginBrowse,
   groupPluginComponents,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
@@ -104,6 +108,8 @@ import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
 import { cn } from "../../lib/utils";
 
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
+/** Installed plugin lists are short now that the catalog lives behind Browse, so show them whole. */
+const EXTENSION_INSTALLED_PLUGIN_PREVIEW_LIMIT = 25;
 const EXTENSION_BROWSER_PAGE_SIZE = 80;
 const EXTENSION_INVENTORY_CACHE_MAX_ENTRIES = 5;
 const EXTENSION_INVENTORY_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -169,6 +175,11 @@ interface ExtensionSectionConfig {
   readonly browseLabel: string;
   readonly icon: ReactNode;
   readonly items: ReadonlyArray<ExtensionItem>;
+  /** Everything reachable from Browse. Defaults to `items`; plugins add the uninstalled catalog. */
+  readonly browseItems?: ReadonlyArray<ExtensionItem> | undefined;
+  /** The provider returned exactly our page size, so `totalCount` is a floor. */
+  readonly isTruncated?: boolean | undefined;
+  readonly previewLimit?: number | undefined;
   readonly totalCount: number;
   readonly emptyLabel: string;
   readonly statusMessage?: string | undefined;
@@ -201,6 +212,60 @@ const extensionInventoryCache =
   });
 
 const extensionsSettingsPanelMemoryState: ExtensionsSettingsPanelMemoryState = {};
+
+const loadedPluginIconSrcs = new Set<string>();
+
+/**
+ * Plugin logos come either as a catalog URL or as a path inside the installed package. Local files
+ * are served through the provider's HTTP route, which relay-paired environments cannot reach, so
+ * every failure falls back to the kind glyph rather than a broken image.
+ */
+function PluginIcon({
+  environmentId,
+  iconUrl,
+  iconPath,
+  fallback,
+}: {
+  environmentId: EnvironmentId | null;
+  iconUrl?: string | undefined;
+  iconPath?: string | undefined;
+  fallback: ReactNode;
+}) {
+  const src = (() => {
+    if (iconUrl) return iconUrl;
+    if (!iconPath || !environmentId) return null;
+    try {
+      return resolveEnvironmentHttpUrl({
+        environmentId,
+        pathname: "/api/plugin-icon",
+        searchParams: { path: iconPath },
+      });
+    } catch {
+      return null;
+    }
+  })();
+  const [status, setStatus] = useState<"loading" | "loaded" | "error">(() =>
+    src && loadedPluginIconSrcs.has(src) ? "loaded" : "loading",
+  );
+
+  if (!src || status === "error") return <>{fallback}</>;
+
+  return (
+    <>
+      {status !== "loaded" ? fallback : null}
+      <img
+        src={src}
+        alt=""
+        className={`size-4 shrink-0 rounded-sm object-contain ${status === "loaded" ? "" : "hidden"}`}
+        onLoad={() => {
+          loadedPluginIconSrcs.add(src);
+          setStatus("loaded");
+        }}
+        onError={() => setStatus("error")}
+      />
+    </>
+  );
+}
 
 function extensionItemActionKey(item: ExtensionItem): string {
   return `${item.provider.instanceId}:${item.kind}:${item.id}`;
@@ -275,6 +340,7 @@ function SectionTabButton({
   label,
   value,
   totalValue,
+  isTruncated,
   active,
   icon,
   panelId,
@@ -283,12 +349,14 @@ function SectionTabButton({
   label: string;
   value: number;
   totalValue: number;
+  isTruncated?: boolean | undefined;
   active: boolean;
   icon: ReactNode;
   panelId: string;
   onClick: () => void;
 }) {
-  const countLabel = value === totalValue ? String(totalValue) : `${value}/${totalValue}`;
+  const total = formatSectionTotal(totalValue, isTruncated);
+  const countLabel = value === totalValue ? total : `${value}/${total}`;
 
   return (
     <Button
@@ -2462,8 +2530,16 @@ function ExtensionDetailDialog({
   );
 }
 
+/** A count the provider capped at our page size is a floor, not a total. */
+function formatSectionTotal(total: number, isTruncated: boolean | undefined): string {
+  return isTruncated ? `${total}+` : String(total);
+}
+
 function ExtensionPreviewSection({
   title,
+  environmentId,
+  isTruncated,
+  previewLimit,
   items,
   totalCount,
   emptyLabel,
@@ -2478,6 +2554,9 @@ function ExtensionPreviewSection({
   onBrowse,
 }: {
   title: string;
+  environmentId: EnvironmentId | null;
+  isTruncated?: boolean | undefined;
+  previewLimit?: number | undefined;
   items: ReadonlyArray<ExtensionItem>;
   totalCount: number;
   emptyLabel: string;
@@ -2492,7 +2571,7 @@ function ExtensionPreviewSection({
   onBrowse: () => void;
 }) {
   const isFiltering = filterText.trim().length > 0;
-  const visibleItems = items.slice(0, EXTENSION_SECTION_PREVIEW_LIMIT);
+  const visibleItems = items.slice(0, previewLimit ?? EXTENSION_SECTION_PREVIEW_LIMIT);
   const hiddenCount = Math.max(0, items.length - visibleItems.length);
 
   return (
@@ -2508,7 +2587,9 @@ function ExtensionPreviewSection({
           </div>
           {totalCount > 0 ? (
             <div className="mt-0.5 text-[11px] text-muted-foreground/65">
-              {isFiltering ? `${items.length} matching ${totalCount} total` : `${totalCount} total`}
+              {isFiltering
+                ? `${items.length} matching ${formatSectionTotal(totalCount, isTruncated)} total`
+                : `${formatSectionTotal(totalCount, isTruncated)} total`}
             </div>
           ) : null}
         </div>
@@ -2535,6 +2616,7 @@ function ExtensionPreviewSection({
                 onClick={() => onSelect(item)}
                 type="button"
               >
+                <ExtensionItemGlyph item={item} environmentId={environmentId} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
                   {item.detail ? (
@@ -2727,21 +2809,227 @@ function skillBundleControlForGroup(
   };
 }
 
+function ExtensionItemGlyph({
+  item,
+  environmentId,
+}: {
+  item: ExtensionItem;
+  environmentId: EnvironmentId | null;
+}) {
+  const fallback =
+    item.kind === "skill" ? (
+      <FileTextIcon className="size-4 shrink-0 text-muted-foreground/45" />
+    ) : item.kind === "mcp" ? (
+      <DatabaseIcon className="size-4 shrink-0 text-muted-foreground/45" />
+    ) : item.kind === "app" ? (
+      <BotIcon className="size-4 shrink-0 text-muted-foreground/45" />
+    ) : (
+      <PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />
+    );
+
+  if (item.kind !== "plugin") return fallback;
+  return (
+    <PluginIcon
+      environmentId={environmentId}
+      iconUrl={item.plugin.iconUrl}
+      iconPath={item.plugin.iconPath}
+      fallback={fallback}
+    />
+  );
+}
+
+/**
+ * Marketplaces sit between installed plugins and the catalog, because they are what turns one into
+ * the other. Provider-managed catalogs are shown but not removable.
+ */
+function MarketplacesBlock({
+  provider,
+  cwd,
+  onMutated,
+}: {
+  provider: ProviderExtensionProviderInventory;
+  cwd: string;
+  onMutated: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
+  const [source, setSource] = useState("");
+
+  const run = useCallback(
+    async (label: string, action: () => Promise<string | undefined>) => {
+      setBusy(label);
+      try {
+        const message = await action();
+        toastManager.add({
+          type: "success",
+          title: label,
+          description: message ?? "Done.",
+        });
+        await onMutated();
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${label} failed`,
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [onMutated],
+  );
+
+  const baseInput = {
+    ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
+    providerInstanceId: provider.instanceId,
+  };
+
+  return (
+    <section className="space-y-2 border-t border-border/50 pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+          Marketplaces
+        </h3>
+        <div className="flex gap-1">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={busy !== null}
+            onClick={() =>
+              void run("Update marketplaces", async () => {
+                const result =
+                  await ensureLocalApi().server.refreshProviderExtensionPluginMarketplaces(
+                    baseInput,
+                  );
+                return result.errors?.length
+                  ? result.errors.join(" ")
+                  : (result.refreshedMarketplaces?.join(", ") ?? result.output);
+              })
+            }
+          >
+            {busy === "Update marketplaces" ? (
+              <LoaderIcon className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCwIcon className="size-3.5" />
+            )}
+            Update all
+          </Button>
+          <Button size="xs" variant="outline" onClick={() => setIsAdding((value) => !value)}>
+            <PackagePlusIcon className="size-3.5" />
+            Add
+          </Button>
+        </div>
+      </div>
+      {isAdding ? (
+        <div className="flex gap-2">
+          <Input
+            nativeInput
+            value={source}
+            placeholder="Git URL, owner/repo, or local path"
+            aria-label="Marketplace source"
+            onChange={(event) => setSource(event.currentTarget.value)}
+          />
+          <Button
+            size="xs"
+            disabled={busy !== null || source.trim().length === 0}
+            onClick={() =>
+              void run("Add marketplace", async () => {
+                const result = await ensureLocalApi().server.addProviderExtensionMarketplace({
+                  ...baseInput,
+                  source: source.trim(),
+                });
+                setSource("");
+                setIsAdding(false);
+                return result.message ?? `Added ${result.name ?? source.trim()}.`;
+              })
+            }
+          >
+            Add
+          </Button>
+        </div>
+      ) : null}
+      {provider.marketplaces.length === 0 ? (
+        <div className="text-xs text-muted-foreground">No marketplaces configured.</div>
+      ) : (
+        <div>
+          {provider.marketplaces.map((marketplace) => (
+            <div
+              key={marketplace.name}
+              className="flex min-w-0 items-center gap-3 border-t border-border/40 py-2 first:border-t-0"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs text-foreground">
+                  {marketplace.displayName ?? marketplace.name}
+                </div>
+                <div className="truncate font-mono text-[11px] text-muted-foreground/70">
+                  {[
+                    marketplace.remote ? "remote catalog" : marketplace.source,
+                    marketplace.pluginCount !== undefined
+                      ? `${marketplace.pluginCount} plugins`
+                      : undefined,
+                    marketplace.installedPluginCount
+                      ? `${marketplace.installedPluginCount} installed`
+                      : undefined,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+                {marketplace.loadError ? (
+                  <div className="truncate text-[11px] text-destructive">
+                    {marketplace.loadError}
+                  </div>
+                ) : null}
+              </div>
+              {marketplace.removable ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={busy !== null}
+                  onClick={() =>
+                    void run(`Remove ${marketplace.name}`, async () => {
+                      const api = ensureLocalApi();
+                      const confirmed = await api.dialogs.confirm(`Remove ${marketplace.name}?`);
+                      if (!confirmed) return "Cancelled.";
+                      await api.server.removeProviderExtensionMarketplace({
+                        ...baseInput,
+                        name: marketplace.name,
+                      });
+                      return `Removed ${marketplace.name}.`;
+                    })
+                  }
+                >
+                  <PackageMinusIcon className="size-3.5" />
+                  Remove
+                </Button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ExtensionBrowserItemRow({
   item,
   groupLabel,
+  environmentId,
   onSelect,
 }: {
   item: ExtensionItem;
   groupLabel?: string | undefined;
+  environmentId: EnvironmentId | null;
   onSelect: (item: ExtensionItem) => void;
 }) {
   return (
     <button
       type="button"
-      className="group grid min-h-12 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => onSelect(item)}
     >
+      <ExtensionItemGlyph item={item} environmentId={environmentId} />
       <div className="min-w-0 space-y-1">
         <div className="flex min-w-0 items-center gap-2">
           <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
@@ -2765,6 +3053,7 @@ function ExtensionBrowserDialog({
   section,
   providerLabel,
   initialQuery,
+  environmentId,
   onClose,
   onSelect,
   onToggleSkillBundle,
@@ -2772,6 +3061,7 @@ function ExtensionBrowserDialog({
   section: ExtensionSectionConfig | null;
   providerLabel: string;
   initialQuery: string;
+  environmentId: EnvironmentId | null;
   onClose: () => void;
   onSelect: (item: ExtensionItem) => void;
   onToggleSkillBundle: (bundle: ExtensionSkillBundleControl) => Promise<void>;
@@ -2799,10 +3089,23 @@ function ExtensionBrowserDialog({
     setBusyBundleId(null);
   }, [initialQuery, section?.key]);
 
-  const searchedItems = useMemo(
-    () => filterExtensionItems(section?.items ?? [], query),
-    [query, section?.items],
-  );
+  const browseSourceItems = section?.browseItems ?? section?.items ?? [];
+  const isCurated =
+    section?.key === "plugins" && shouldCuratePluginBrowse(browseSourceItems.length, query);
+  const searchedItems = useMemo(() => {
+    const matching = filterExtensionItems(browseSourceItems, query);
+    return isCurated
+      ? selectCuratedPlugins(matching, (item) =>
+          item.kind === "plugin"
+            ? {
+                featured: item.plugin.featured,
+                installed: item.plugin.installed,
+                installCount: item.plugin.installCount,
+              }
+            : {},
+        )
+      : matching;
+  }, [browseSourceItems, isCurated, query]);
   const filterCounts = useMemo(
     () =>
       Object.fromEntries(
@@ -2888,10 +3191,12 @@ function ExtensionBrowserDialog({
               </span>
               <div className="min-w-0 space-y-1">
                 <DialogTitle className="truncate text-base">
-                  Browse {section.title.toLowerCase()}
+                  Browse {section.key === "plugins" ? "plugins" : section.title.toLowerCase()}
                 </DialogTitle>
                 <DialogDescription>
-                  {providerLabel} - {browserItems.length} visible from {section.totalCount} total
+                  {isCurated
+                    ? `${providerLabel} - featured and most installed. Search to reach all ${browseSourceItems.length}.`
+                    : `${providerLabel} - ${browserItems.length} visible from ${browseSourceItems.length} total`}
                 </DialogDescription>
               </div>
             </div>
@@ -3050,6 +3355,7 @@ function ExtensionBrowserDialog({
                                 <ExtensionBrowserItemRow
                                   key={`${item.kind}:${item.id}`}
                                   item={item}
+                                  environmentId={environmentId}
                                   onSelect={onSelect}
                                 />
                               ))}
@@ -3068,6 +3374,7 @@ function ExtensionBrowserDialog({
                         groupLabel={
                           sort === "recommended" ? undefined : extensionItemGroupLabel(item)
                         }
+                        environmentId={environmentId}
                         onSelect={onSelect}
                       />
                     ))}
@@ -3104,6 +3411,7 @@ function ExtensionBrowserDialog({
 function ProviderInventoryRow({
   provider,
   cwd,
+  environmentId,
   onSelectItem,
   onInventoryMutated,
   onLoadMcpServers,
@@ -3111,6 +3419,7 @@ function ProviderInventoryRow({
 }: {
   provider: ProviderExtensionProviderInventory;
   cwd: string;
+  environmentId: EnvironmentId | null;
   onSelectItem: (item: ExtensionItem) => void;
   onInventoryMutated: () => Promise<void>;
   onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
@@ -3135,14 +3444,20 @@ function ProviderInventoryRow({
       filterExtensionItems(items, deferredProviderFilterText),
     [deferredProviderFilterText],
   );
+  // The plugin list a provider reports is its whole catalog (2000+ for Codex). The section shows
+  // what is actually installed; everything else lives behind Browse.
+  const installedPluginItems = useMemo(
+    () => allItems.plugins.filter(extensionItemInstalled),
+    [allItems],
+  );
   const filteredItems = useMemo(
     () => ({
-      plugins: sortExtensionItems(filterProviderItems(allItems.plugins), "recommended"),
+      plugins: sortExtensionItems(filterProviderItems(installedPluginItems), "recommended"),
       skills: sortExtensionItems(filterProviderItems(allItems.skills), "recommended"),
       mcpServers: sortExtensionItems(filterProviderItems(allItems.mcpServers), "recommended"),
       apps: sortExtensionItems(filterProviderItems(allItems.apps), "recommended"),
     }),
-    [allItems, filterProviderItems],
+    [allItems, filterProviderItems, installedPluginItems],
   );
   const authenticationIssueItems = useMemo(
     () =>
@@ -3156,8 +3471,9 @@ function ProviderInventoryRow({
     () => `extensions-${String(provider.instanceId).replace(/[^a-zA-Z0-9_-]/g, "-")}`,
     [provider.instanceId],
   );
+  const catalogPluginCount = allItems.plugins.length - installedPluginItems.length;
   const initialSection =
-    provider.plugins.length > 0
+    installedPluginItems.length > 0
       ? "plugins"
       : provider.skills.length > 0
         ? "skills"
@@ -3169,13 +3485,16 @@ function ProviderInventoryRow({
   const sections: ReadonlyArray<ExtensionSectionConfig> = [
     {
       key: "plugins" as const,
-      title: "Plugins",
+      title: "Installed plugins",
       label: "Plugins",
-      browseLabel: "Browse all plugins",
+      browseLabel:
+        catalogPluginCount > 0 ? `Browse ${catalogPluginCount} more` : "Browse all plugins",
       icon: <PlugIcon className="size-3.5" />,
       items: filteredItems.plugins,
-      totalCount: provider.plugins.length,
-      emptyLabel: "No plugins reported.",
+      browseItems: sortExtensionItems(filterProviderItems(allItems.plugins), "recommended"),
+      previewLimit: EXTENSION_INSTALLED_PLUGIN_PREVIEW_LIMIT,
+      totalCount: installedPluginItems.length,
+      emptyLabel: "No plugins installed.",
     },
     {
       key: "skills" as const,
@@ -3195,6 +3514,7 @@ function ProviderInventoryRow({
       icon: <DatabaseIcon className="size-3.5" />,
       items: filteredItems.mcpServers,
       totalCount: provider.mcpServers.length,
+      isTruncated: provider.mcpServersTruncated,
       emptyLabel:
         provider.mcpServersStatus === "deferred"
           ? "MCP servers not loaded."
@@ -3219,6 +3539,7 @@ function ProviderInventoryRow({
       icon: <BotIcon className="size-3.5" />,
       items: filteredItems.apps,
       totalCount: provider.apps.length,
+      isTruncated: provider.appsTruncated,
       emptyLabel: "No apps reported.",
     },
   ];
@@ -3329,6 +3650,7 @@ function ProviderInventoryRow({
               label={section.label}
               value={section.items.length}
               totalValue={section.totalCount}
+              isTruncated={section.isTruncated}
               active={activeSection === section.key}
               icon={section.icon}
               panelId={`${panelIdBase}-${section.key}`}
@@ -3338,9 +3660,12 @@ function ProviderInventoryRow({
         </div>
         {activeSectionConfig ? (
           <ExtensionPreviewSection
+            environmentId={environmentId}
             title={activeSectionConfig.title}
             items={activeSectionConfig.items}
             totalCount={activeSectionConfig.totalCount}
+            isTruncated={activeSectionConfig.isTruncated}
+            previewLimit={activeSectionConfig.previewLimit}
             emptyLabel={activeSectionConfig.emptyLabel}
             statusMessage={activeSectionConfig.statusMessage}
             loadLabel={activeSectionConfig.loadLabel}
@@ -3353,8 +3678,12 @@ function ProviderInventoryRow({
             onBrowse={() => setBrowseSection(activeSectionConfig.key)}
           />
         ) : null}
+        {activeSection === "plugins" ? (
+          <MarketplacesBlock provider={provider} cwd={cwd} onMutated={onInventoryMutated} />
+        ) : null}
       </div>
       <ExtensionBrowserDialog
+        environmentId={environmentId}
         section={browseSectionConfig}
         providerLabel={providerTitle(provider)}
         initialQuery={providerFilterText}
@@ -3419,6 +3748,11 @@ export function ExtensionsSettingsPanel() {
   const selectedProviderEntry = useMemo(
     () => providerEntries.find((provider) => String(provider.instanceId) === providerInstanceId),
     [providerEntries, providerInstanceId],
+  );
+  // Plugin icon files are served by whichever environment owns the selected project.
+  const selectedEnvironmentId = useMemo(
+    () => projects.find((project) => project.cwd === cwd)?.environmentId ?? null,
+    [cwd, projects],
   );
   const detectedProviderThreadId = useMemo(
     () =>
@@ -3893,6 +4227,7 @@ export function ExtensionsSettingsPanel() {
         {inventory?.providers.length ? (
           inventory.providers.map((provider) => (
             <ProviderInventoryRow
+              environmentId={selectedEnvironmentId}
               key={provider.instanceId}
               provider={provider}
               cwd={cwd}
