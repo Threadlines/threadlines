@@ -45,6 +45,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { openInPreferredEditor } from "../../editorPreferences";
+import { ProjectFavicon } from "../ProjectFavicon";
 import { resolveEnvironmentHttpUrl } from "../../environments/runtime";
 import { ensureLocalApi } from "../../localApi";
 import {
@@ -3980,11 +3981,13 @@ export function ExtensionsSettingsPanel() {
     selectedProviderEntry ??
     providerEntries.find((provider) => provider.driverKind === EXTENSIONS_CODEX_DRIVER) ??
     providerEntries[0];
-  // Plugin icon files are served by whichever environment owns the selected project.
-  const selectedEnvironmentId = useMemo(
-    () => projects.find((project) => project.cwd === cwd)?.environmentId ?? null,
-    [cwd, projects],
+  // Plugin icon files are served by whichever environment owns the selected project, and the
+  // project chip shows the same favicon the sidebar uses.
+  const environmentIdByCwd = useMemo(
+    () => new Map(projects.map((project) => [project.cwd, project.environmentId] as const)),
+    [projects],
   );
+  const selectedEnvironmentId = environmentIdByCwd.get(cwd) ?? null;
   const detectedProviderThreadId = useMemo(
     () =>
       deriveDetectedProviderThreadId({
@@ -4405,17 +4408,36 @@ export function ExtensionsSettingsPanel() {
                   clearInventory({ loading: true });
                 }}
               >
-                <SelectTrigger className="h-7 w-auto min-w-32" aria-label="Project scope">
+                <SelectTrigger size="xs" className="w-auto min-w-32" aria-label="Project scope">
                   <SelectValue>
-                    {projectOptions.find((project) => project.value === cwd)?.label ?? "Project"}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {selectedEnvironmentId ? (
+                        <ProjectFavicon environmentId={selectedEnvironmentId} cwd={cwd} />
+                      ) : null}
+                      <span className="truncate">
+                        {projectOptions.find((project) => project.value === cwd)?.label ??
+                          "Project"}
+                      </span>
+                    </span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="start" alignItemWithTrigger={false}>
-                  {projectOptions.map((project) => (
-                    <SelectItem key={project.value} hideIndicator value={project.value}>
-                      {project.label}
-                    </SelectItem>
-                  ))}
+                  {projectOptions.map((project) => {
+                    const projectEnvironmentId = environmentIdByCwd.get(project.value);
+                    return (
+                      <SelectItem key={project.value} hideIndicator value={project.value}>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {projectEnvironmentId ? (
+                            <ProjectFavicon
+                              environmentId={projectEnvironmentId}
+                              cwd={project.value}
+                            />
+                          ) : null}
+                          <span className="truncate">{project.label}</span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectPopup>
               </Select>
             ) : null}

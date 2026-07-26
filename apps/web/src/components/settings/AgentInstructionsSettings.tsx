@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { ensureLocalApi } from "../../localApi";
+import { ProjectFavicon } from "../ProjectFavicon";
 import {
   selectSidebarThreadsAcrossEnvironments,
   selectWorkspaceProjectsAcrossEnvironments,
@@ -207,6 +208,11 @@ export function AgentInstructionsSettingsPanel() {
     () => deriveSettingsProjectOptions(projects, sidebarThreads),
     [projects, sidebarThreads],
   );
+  const environmentIdByCwd = useMemo(
+    () => new Map(projects.map((project) => [project.cwd, project.environmentId] as const)),
+    [projects],
+  );
+  const selectedProjectEnvironmentId = environmentIdByCwd.get(cwd);
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
   const [instructions, setInstructions] = useState<ProviderInstructionFilesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -454,15 +460,34 @@ export function AgentInstructionsSettingsPanel() {
               >
                 <SelectTrigger className="w-full sm:w-56" aria-label="Project">
                   <SelectValue>
-                    {projectOptions.find((project) => project.value === cwd)?.label ?? "Project"}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {selectedProjectEnvironmentId ? (
+                        <ProjectFavicon environmentId={selectedProjectEnvironmentId} cwd={cwd} />
+                      ) : null}
+                      <span className="truncate">
+                        {projectOptions.find((project) => project.value === cwd)?.label ??
+                          "Project"}
+                      </span>
+                    </span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {projectOptions.map((project) => (
-                    <SelectItem key={project.value} hideIndicator value={project.value}>
-                      {project.label}
-                    </SelectItem>
-                  ))}
+                  {projectOptions.map((project) => {
+                    const projectEnvironmentId = environmentIdByCwd.get(project.value);
+                    return (
+                      <SelectItem key={project.value} hideIndicator value={project.value}>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {projectEnvironmentId ? (
+                            <ProjectFavicon
+                              environmentId={projectEnvironmentId}
+                              cwd={project.value}
+                            />
+                          ) : null}
+                          <span className="truncate">{project.label}</span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectPopup>
               </Select>
             ) : null
