@@ -61,6 +61,7 @@ import {
   extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
+  formatSkillDisplayName,
   formatTokenCount,
   selectCuratedPlugins,
   shouldCuratePluginBrowse,
@@ -435,7 +436,7 @@ function skillExtensionItem(
   provider: ProviderExtensionProviderInventory,
   skill: ProviderExtensionSkill,
 ): ExtensionItem {
-  const title = skill.displayName ?? skill.name;
+  const title = skill.displayName ?? formatSkillDisplayName(skill.name, skill.bundleName);
   return {
     kind: "skill",
     provider,
@@ -2590,7 +2591,7 @@ function ExtensionPreviewSection({
         <>
           {/* Two columns: skills and apps are short-titled and numerous, so a single column is
               mostly empty space and twice the scrolling. */}
-          <div className="grid sm:grid-cols-2">
+          <div className="grid lg:grid-cols-2">
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
@@ -2951,14 +2952,24 @@ function NeedsAttention({
 function ConnectionsTable({
   items,
   environmentId,
+  isLoading,
   onSelect,
 }: {
   items: ReadonlyArray<ExtensionItem>;
   environmentId: EnvironmentId | null;
+  isLoading: boolean;
   onSelect: (item: ExtensionItem) => void;
 }) {
   if (items.length === 0) {
-    return <div className="py-2 text-xs text-muted-foreground">No connections configured.</div>;
+    // Do not assert emptiness while the inventory is still arriving.
+    return isLoading ? (
+      <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+        <LoaderIcon className="size-3.5 animate-spin" />
+        Reading connections
+      </div>
+    ) : (
+      <div className="py-2 text-xs text-muted-foreground">No connections configured.</div>
+    );
   }
 
   return (
@@ -3606,6 +3617,7 @@ function ProviderInventoryRow({
   provider,
   cwd,
   environmentId,
+  filterText,
   onSelectItem,
   onInventoryMutated,
   onLoadMcpServers,
@@ -3614,6 +3626,7 @@ function ProviderInventoryRow({
   provider: ProviderExtensionProviderInventory;
   cwd: string;
   environmentId: EnvironmentId | null;
+  filterText: string;
   onSelectItem: (item: ExtensionItem) => void;
   onInventoryMutated: () => Promise<void>;
   onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
@@ -3621,8 +3634,7 @@ function ProviderInventoryRow({
 }) {
   const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("skills");
   const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
-  const [providerFilterText, setProviderFilterText] = useState("");
-  const deferredProviderFilterText = useDeferredValue(providerFilterText);
+  const deferredProviderFilterText = filterText;
 
   const allItems = useMemo(
     () => ({
@@ -3737,7 +3749,6 @@ function ProviderInventoryRow({
   useEffect(() => {
     setActiveSection(initialSection);
     setBrowseSection(null);
-    setProviderFilterText("");
   }, [initialSection, provider.instanceId]);
 
   useEffect(() => {
@@ -3796,30 +3807,6 @@ function ProviderInventoryRow({
       }
     >
       <div className="mt-3 space-y-3 border-t border-border/50 py-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="relative min-w-0 flex-1">
-            <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
-            <Input
-              nativeInput
-              type="search"
-              value={providerFilterText}
-              onChange={(event) => setProviderFilterText(event.currentTarget.value)}
-              placeholder={`Search ${providerTitle(provider)} skills and apps`}
-              className="w-full [&_[data-slot=input]]:pl-8"
-              aria-label={`Search ${providerTitle(provider)} skills and apps`}
-            />
-          </div>
-          {providerFilterText.trim().length > 0 ? (
-            <Button
-              size="xs"
-              variant="outline"
-              className="self-start sm:self-auto"
-              onClick={() => setProviderFilterText("")}
-            >
-              Clear
-            </Button>
-          ) : null}
-        </div>
         <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Plugin section">
           {sections.map((section) => (
             <SectionTabButton
@@ -3860,7 +3847,7 @@ function ProviderInventoryRow({
         environmentId={environmentId}
         section={browseSectionConfig}
         providerLabel={providerTitle(provider)}
-        initialQuery={providerFilterText}
+        initialQuery={filterText}
         onClose={() => setBrowseSection(null)}
         onSelect={onSelectItem}
         onToggleSkillBundle={toggleSkillBundle}
@@ -4436,6 +4423,7 @@ export function ExtensionsSettingsPanel() {
           inventory.providers.map((provider) => (
             <ProviderInventoryRow
               environmentId={selectedEnvironmentId}
+              filterText={deferredPageQuery}
               key={provider.instanceId}
               provider={provider}
               cwd={cwd}
@@ -4450,33 +4438,25 @@ export function ExtensionsSettingsPanel() {
             title={
               !cwd ? (
                 "No project selected"
-              ) : !providerInstanceId ? (
-                "No provider selected"
               ) : isLoading ? (
                 <span className="inline-flex items-center gap-2">
                   <LoaderIcon className="size-3.5 animate-spin" />
-                  Loading plugins
+                  Loading skills and apps
                 </span>
               ) : error ? (
                 "Inventory failed to load"
-              ) : hasInventory ? (
-                "No plugin providers found"
               ) : (
-                "No plugin inventory"
+                "No skills or apps reported"
               )
             }
             description={
               !cwd
-                ? "Choose a project to inspect plugin surfaces."
-                : !providerInstanceId
-                  ? "Choose Codex or Claude to load plugins, skills, MCP servers, and apps."
-                  : isLoading
-                    ? "Loading plugins, skills, MCP servers, and apps for the selected provider."
-                    : error
-                      ? "The selected provider inventory could not be loaded. Details are shown above."
-                      : hasInventory
-                        ? "The selected provider returned no plugin records."
-                        : "Choose a provider to load its plugin inventory."
+                ? "Choose a project to inspect its skills and apps."
+                : isLoading
+                  ? "Reading skills and apps from Codex and Claude."
+                  : error
+                    ? "The inventory could not be loaded. Details are shown above."
+                    : "Neither provider reported skills or apps for this project."
             }
           />
         )}
@@ -4507,6 +4487,7 @@ export function ExtensionsSettingsPanel() {
           <ConnectionsTable
             items={searchedConnections}
             environmentId={selectedEnvironmentId}
+            isLoading={isLoading}
             onSelect={setSelectedItem}
           />
         </div>

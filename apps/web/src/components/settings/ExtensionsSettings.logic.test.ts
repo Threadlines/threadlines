@@ -16,6 +16,7 @@ import {
   formatExtensionGroupLabel,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
+  formatSkillDisplayName,
   formatTokenCount,
   groupPluginComponents,
   makeExtensionJsonSchemaFormDefaults,
@@ -77,6 +78,17 @@ describe("ExtensionsSettings logic", () => {
       "middling",
       "unpopular",
     ]);
+  });
+
+  it("drops a plugin prefix from a bundled skill name without mangling others", () => {
+    expect(formatSkillDisplayName("chrome:control-chrome", "chrome")).toBe("control-chrome");
+    expect(formatSkillDisplayName("computer-use:computer-use", "computer-use")).toBe(
+      "computer-use",
+    );
+    expect(formatSkillDisplayName("supabase", "supabase")).toBe("supabase");
+    expect(formatSkillDisplayName("a:b", "other")).toBe("a:b");
+    expect(formatSkillDisplayName("chrome:", "chrome")).toBe("chrome:");
+    expect(formatSkillDisplayName("review:pr", undefined)).toBe("review:pr");
   });
 
   it("formats token counts compactly across magnitudes", () => {

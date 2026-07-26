@@ -89,6 +89,18 @@ const PLUGIN_COMPONENT_KIND_LABELS: Record<
   lspServer: { one: "LSP server", many: "LSP servers" },
 };
 
+/**
+ * Providers namespace a bundled skill as `<plugin>:<skill>`, which reads as duplication once the
+ * row already says which plugin it came from. Same treatment MCP server names get.
+ */
+export function formatSkillDisplayName(name: string, bundleName: string | undefined): string {
+  const trimmed = name.trim();
+  const bundle = bundleName?.trim();
+  if (!bundle || !trimmed.toLowerCase().startsWith(`${bundle.toLowerCase()}:`)) return trimmed;
+  const remainder = trimmed.slice(bundle.length + 1).trim();
+  return remainder.length > 0 ? remainder : trimmed;
+}
+
 export function pluginComponentKindLabel(
   kind: ProviderExtensionPluginComponentKind,
   count: number,
