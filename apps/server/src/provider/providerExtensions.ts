@@ -383,7 +383,9 @@ function codexPluginSource(source: CodexSchema.V2PluginListResponse__PluginSourc
   }
 }
 
-function mapCodexPlugins(response: CodexSchema.V2PluginListResponse): ProviderExtensionPlugin[] {
+export function mapCodexPlugins(
+  response: CodexSchema.V2PluginListResponse,
+): ProviderExtensionPlugin[] {
   const byId = new Map<string, ProviderExtensionPlugin>();
   for (const marketplace of response.marketplaces) {
     const marketplaceName = requiredText(marketplace.name);
@@ -391,15 +393,20 @@ function mapCodexPlugins(response: CodexSchema.V2PluginListResponse): ProviderEx
     for (const plugin of marketplace.plugins) {
       const id = requiredText(plugin.id);
       if (!id) continue;
+      const availableVersion = optionalText(plugin.version ?? null);
+      const version = optionalText(plugin.localVersion ?? null) ?? availableVersion;
+      const developerName = optionalText(plugin.interface?.developerName ?? null);
+      const category = optionalText(plugin.interface?.category ?? null);
+      const websiteUrl = optionalText(plugin.interface?.websiteUrl ?? null);
+      const keywords = (plugin.keywords ?? [])
+        .map((keyword) => optionalText(keyword))
+        .filter((keyword): keyword is string => keyword !== undefined);
       const mapped = {
         id,
         name: requiredText(plugin.name) ?? id,
         displayName: optionalText(plugin.interface?.displayName ?? null),
         description: optionalText(
-          plugin.interface?.shortDescription ??
-            plugin.interface?.longDescription ??
-            plugin.interface?.category ??
-            null,
+          plugin.interface?.shortDescription ?? plugin.interface?.longDescription ?? null,
         ),
         enabled: plugin.enabled,
         installed: plugin.installed,
@@ -410,6 +417,14 @@ function mapCodexPlugins(response: CodexSchema.V2PluginListResponse): ProviderEx
         ...(marketplaceName ? { marketplaceName } : {}),
         ...(marketplacePath ? { marketplacePath } : {}),
         ...(!marketplacePath && marketplaceName ? { remoteMarketplaceName: marketplaceName } : {}),
+        ...(version ? { version } : {}),
+        ...(availableVersion && version && availableVersion !== version
+          ? { availableVersion }
+          : {}),
+        ...(developerName ? { developerName } : {}),
+        ...(category ? { category } : {}),
+        ...(websiteUrl ? { websiteUrl } : {}),
+        ...(keywords.length > 0 ? { keywords } : {}),
       } satisfies ProviderExtensionPlugin;
       const existing = byId.get(id);
       if (!existing || (mapped.installed === true && existing.installed !== true)) {
@@ -418,6 +433,26 @@ function mapCodexPlugins(response: CodexSchema.V2PluginListResponse): ProviderEx
     }
   }
   return [...byId.values()].toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
+export function codexMarketplaceLoadErrorMessage(
+  response: CodexSchema.V2PluginListResponse,
+): string | undefined {
+  const errors = response.marketplaceLoadErrors ?? [];
+  if (errors.length === 0) return undefined;
+
+  const namedErrors = errors
+    .slice(0, 3)
+    .map(
+      (error) =>
+        `${sanitizeErrorMessage(error.marketplacePath)} (${sanitizeErrorMessage(error.message)})`,
+    );
+  const remainingCount = errors.length - namedErrors.length;
+  const marketplaceLabel = errors.length === 1 ? "marketplace" : "marketplaces";
+  const suffix = remainingCount > 0 ? `, +${remainingCount} more` : "";
+  return sanitizeErrorMessage(
+    `Failed to load ${errors.length} plugin ${marketplaceLabel}: ${namedErrors.join(", ")}${suffix}.`,
+  );
 }
 
 function mapCodexSkills(
@@ -993,9 +1028,13 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
 
         const [plugins, skills, mcpServers, apps] = yield* Effect.all(
           [
-            client
-              .request("plugin/list", { cwds: [input.cwd] })
-              .pipe(Effect.map(mapCodexPlugins), collectCodexRequest("plugins")),
+            client.request("plugin/list", { cwds: [input.cwd] }).pipe(
+              Effect.map((response) => ({
+                plugins: mapCodexPlugins(response),
+                loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
+              })),
+              collectCodexRequest("plugins"),
+            ),
             client.request("skills/list", { cwds: [input.cwd] }).pipe(
               Effect.map((response) => mapCodexSkills(response, input.cwd)),
               collectCodexRequest("skills"),
@@ -1047,6 +1086,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     const data = clientResult.value.success;
     const messages = [
       resultMessage(data.plugins),
+      Result.isSuccess(data.plugins) ? data.plugins.success.loadErrorMessage : undefined,
       resultMessage(data.skills),
       resultMessage(data.apps),
     ].filter((message): message is string => Boolean(message));
@@ -1054,7 +1094,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       ? resultMessage(data.mcpServers)
       : undefined;
 
-    const plugins = Result.isSuccess(data.plugins) ? data.plugins.success : [];
+    const plugins = Result.isSuccess(data.plugins) ? data.plugins.success.plugins : [];
     const skills = Result.isSuccess(data.skills)
       ? annotatePluginBackedSkills(data.skills.success, plugins)
       : [];

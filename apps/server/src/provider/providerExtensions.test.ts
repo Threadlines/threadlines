@@ -19,11 +19,13 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  codexMarketplaceLoadErrorMessage,
   codexMcpLoginCommandForDisplay,
   codexSkillConfigWriteParams,
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
+  mapCodexPlugins,
   parseClaudeMcpList,
   parseClaudePluginList,
   getProviderExtensionOperationStatus,
@@ -137,6 +139,112 @@ describe("provider extensions inventory", () => {
       ),
       false,
     );
+  });
+
+  it("maps Codex plugin versions and marketplace interface metadata", () => {
+    const plugins = mapCodexPlugins({
+      marketplaces: [
+        {
+          name: "catalog",
+          plugins: [
+            {
+              id: "analytics",
+              name: "Analytics",
+              authPolicy: "ON_USE",
+              enabled: true,
+              installed: true,
+              installPolicy: "AVAILABLE",
+              source: { type: "remote" },
+              version: "2.0.0",
+              localVersion: "1.5.0",
+              keywords: [" metrics ", "", "insights"],
+              interface: {
+                capabilities: [],
+                screenshotUrls: [],
+                screenshots: [],
+                developerName: " Example Labs ",
+                category: "Data",
+                websiteUrl: " https://example.com/analytics ",
+                shortDescription: "Understand product usage",
+              },
+            },
+            {
+              id: "category-only",
+              name: "Category Only",
+              authPolicy: "ON_INSTALL",
+              enabled: false,
+              installed: false,
+              installPolicy: "AVAILABLE",
+              source: { type: "remote" },
+              version: "3.0.0",
+              interface: {
+                capabilities: [],
+                screenshotUrls: [],
+                screenshots: [],
+                category: "Productivity",
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.deepEqual(plugins, [
+      {
+        id: "analytics",
+        name: "Analytics",
+        displayName: undefined,
+        description: "Understand product usage",
+        enabled: true,
+        installed: true,
+        source: "Remote catalog",
+        authPolicy: "ON_USE",
+        installPolicy: "AVAILABLE",
+        availability: undefined,
+        marketplaceName: "catalog",
+        remoteMarketplaceName: "catalog",
+        version: "1.5.0",
+        availableVersion: "2.0.0",
+        developerName: "Example Labs",
+        category: "Data",
+        websiteUrl: "https://example.com/analytics",
+        keywords: ["metrics", "insights"],
+      },
+      {
+        id: "category-only",
+        name: "Category Only",
+        displayName: undefined,
+        description: undefined,
+        enabled: false,
+        installed: false,
+        source: "Remote catalog",
+        authPolicy: "ON_INSTALL",
+        installPolicy: "AVAILABLE",
+        availability: undefined,
+        marketplaceName: "catalog",
+        remoteMarketplaceName: "catalog",
+        version: "3.0.0",
+        category: "Productivity",
+      },
+    ]);
+  });
+
+  it("summarizes and sanitizes Codex marketplace load failures", () => {
+    const message = codexMarketplaceLoadErrorMessage({
+      marketplaceLoadErrors: [
+        { marketplacePath: "/path/one", message: "bad\nmanifest" },
+        { marketplacePath: "/path/two", message: "not found" },
+        { marketplacePath: "/path/three", message: "permission denied" },
+        { marketplacePath: "/path/four", message: "invalid source" },
+      ],
+      marketplaces: [],
+    });
+
+    assert.equal(
+      message,
+      "Failed to load 4 plugin marketplaces: /path/one (bad manifest), /path/two (not found), /path/three (permission denied), +1 more.",
+    );
+    assert.equal(codexMarketplaceLoadErrorMessage({ marketplaces: [] }), undefined);
   });
 
   it("parses Claude plugin JSON inventory with installed and marketplace entries", () => {

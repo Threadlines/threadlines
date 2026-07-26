@@ -338,6 +338,7 @@ function pluginExtensionItem(
       plugin.marketplaceName,
       plugin.marketplacePath,
       plugin.remoteMarketplaceName,
+      ...(plugin.keywords ?? []),
     ],
     plugin,
   };
@@ -1700,6 +1701,14 @@ function ExtensionDetailDialog({
                   <DetailRow label="Display" value={item.plugin.displayName} />
                   <DetailRow label="Description" value={item.plugin.description} />
                   <DetailRow label="Version" value={item.plugin.version} />
+                  <DetailRow label="Available" value={item.plugin.availableVersion} />
+                  <DetailRow label="Developer" value={item.plugin.developerName} />
+                  <DetailRow label="Category" value={item.plugin.category} />
+                  <DetailRow
+                    label="Website"
+                    value={item.plugin.websiteUrl}
+                    copyValue={item.plugin.websiteUrl}
+                  />
                   <DetailRow label="Installed" value={formatBoolean(item.plugin.installed)} />
                   <DetailRow label="Enabled" value={formatBoolean(item.plugin.enabled)} />
                   <DetailRow label="Auth Policy" value={item.plugin.authPolicy} />
