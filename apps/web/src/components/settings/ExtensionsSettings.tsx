@@ -126,7 +126,7 @@ type ExtensionBrowserFilter =
   | "needs-auth"
   | "official"
   | "local";
-type ExtensionBrowserSort = "recommended" | "bundle" | "name" | "status" | "category";
+type ExtensionBrowserSort = "recommended" | "popular" | "bundle" | "name" | "status" | "category";
 
 type ExtensionItem =
   | {
@@ -713,12 +713,21 @@ function extensionItemGroupKey(item: ExtensionItem, sort: ExtensionBrowserSort):
   return extensionItemGroupLabel(item);
 }
 
+/** Only Claude's catalog reports install counts; everything else ranks as unknown. */
+function extensionItemInstallCount(item: ExtensionItem): number {
+  return item.kind === "plugin" ? (item.plugin.installCount ?? 0) : 0;
+}
+
 function sortExtensionItems(
   items: ReadonlyArray<ExtensionItem>,
   sort: ExtensionBrowserSort,
 ): ReadonlyArray<ExtensionItem> {
   return items.toSorted((left, right) => {
     if (sort === "name") return compareExtensionItemsByTitle(left, right);
+    if (sort === "popular") {
+      const installRank = extensionItemInstallCount(right) - extensionItemInstallCount(left);
+      return installRank || compareExtensionItemsByTitle(left, right);
+    }
     if (sort === "status") {
       const statusRank = extensionItemStatusRank(left) - extensionItemStatusRank(right);
       return statusRank || compareExtensionItemsByTitle(left, right);
@@ -2675,6 +2684,7 @@ const EXTENSION_BROWSER_SORT_OPTIONS: ReadonlyArray<{
   readonly label: string;
 }> = [
   { value: "recommended", label: "Recommended" },
+  { value: "popular", label: "Most installed" },
   { value: "bundle", label: "Bundle" },
   { value: "name", label: "Name" },
   { value: "status", label: "Status" },
@@ -3337,14 +3347,14 @@ function ExtensionBrowserDialog({
       ) as Record<ExtensionBrowserFilter, number>,
     [matchingItems],
   );
-  const browserItems = useMemo(
-    () =>
-      sortExtensionItems(
-        searchedItems.filter((item) => extensionItemMatchesBrowserFilter(item, filter)),
-        sort,
-      ),
-    [filter, searchedItems, sort],
-  );
+  const browserItems = useMemo(() => {
+    const filtered = searchedItems.filter((item) =>
+      extensionItemMatchesBrowserFilter(item, filter),
+    );
+    // The curated slice is already ranked by promotion then install count. Re-sorting it under
+    // "Recommended" threw that away and left the opening view alphabetical.
+    return isCurated && sort === "recommended" ? filtered : sortExtensionItems(filtered, sort);
+  }, [filter, isCurated, searchedItems, sort]);
   const visibleItems = browserItems.slice(0, visibleLimit);
   const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
   const renderGroups =

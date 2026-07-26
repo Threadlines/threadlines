@@ -297,7 +297,8 @@ export function shouldRenderExtensionBrowserGroups(
   groups: ReadonlyArray<{ readonly items: ReadonlyArray<unknown> }>,
   sort: string,
 ): boolean {
-  if (sort === "recommended" || groups.length <= 1) return false;
+  // A ranked list is the point of these two; slicing it into groups would destroy the ranking.
+  if (sort === "recommended" || sort === "popular" || groups.length <= 1) return false;
   const singletonGroupCount = groups.filter((group) => group.items.length === 1).length;
   const singletonGroupRatio = singletonGroupCount / groups.length;
   return (
