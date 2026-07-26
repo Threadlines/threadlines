@@ -19,7 +19,8 @@ import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { ThreadRowLeadingStatus } from "./ThreadStatusIndicators";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
-import { ThreadHoverCard, ThreadHoverCardGroup } from "./sidebar/ThreadHoverCard";
+import { ThreadHoverCard } from "./sidebar/ThreadHoverCard";
+import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 
 /**
  * The Chats destination: general chats are threads with no project, so they get
@@ -92,7 +93,7 @@ export function ChatsDestinationView() {
           No chats yet.
         </p>
       ) : (
-        <ThreadHoverCardGroup>
+        <SidebarHoverCardGroup>
           {/* The rows repeat the page title's shape closely enough that a rule
               alone read as more list. A label gives the list a head of its own. */}
           <div className="mt-10 mb-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
@@ -132,7 +133,7 @@ export function ChatsDestinationView() {
               </ThreadHoverCard>
             ))}
           </div>
-        </ThreadHoverCardGroup>
+        </SidebarHoverCardGroup>
       )}
     </div>
   );

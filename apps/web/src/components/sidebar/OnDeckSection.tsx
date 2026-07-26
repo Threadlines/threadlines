@@ -8,7 +8,8 @@ import { resolveThreadRowClassName, type ThreadStatusPill } from "../Sidebar.log
 import { ThreadStatusLabel } from "../ThreadStatusIndicators";
 import { SectionLabel } from "../ui/threadline";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { ThreadHoverCard, ThreadHoverCardGroup } from "./ThreadHoverCard";
+import { ThreadHoverCard } from "./ThreadHoverCard";
+import { SidebarHoverCardGroup } from "./hoverCard";
 import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -178,7 +179,7 @@ export const OnDeckSection = memo(function OnDeckSection(props: OnDeckSectionPro
       <div className="mb-1 pl-2">
         <SectionLabel>On deck</SectionLabel>
       </div>
-      <ThreadHoverCardGroup>
+      <SidebarHoverCardGroup>
         <SidebarMenu>
           {entries.map((entry) => {
             const threadKey = scopedThreadKey(
@@ -196,7 +197,7 @@ export const OnDeckSection = memo(function OnDeckSection(props: OnDeckSectionPro
             );
           })}
         </SidebarMenu>
-      </ThreadHoverCardGroup>
+      </SidebarHoverCardGroup>
     </SidebarGroup>
   );
 });

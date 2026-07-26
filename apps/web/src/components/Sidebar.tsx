@@ -156,6 +156,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   buildOnDeckSyncInput,
+  buildProjectHoverSummary,
   excludeOnDeckThreads,
   getSidebarThreadIdsToPrewarm,
   getSidebarThreadWindow,
@@ -176,6 +177,7 @@ import {
 } from "./Sidebar.logic";
 import { OnDeckSection, type OnDeckEntry } from "./sidebar/OnDeckSection";
 import { DeckRail, type DeckRailProject } from "./sidebar/DeckRail";
+import { ProjectHoverCard } from "./sidebar/ProjectHoverCard";
 import {
   DESTINATION_ICONS,
   DestinationBand,
@@ -1265,30 +1267,35 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     return counts;
   }, [memberProjectByScopedKey, project.memberProjects, projectThreads]);
 
-  const { projectStatus, visibleProjectThreads, orderedProjectThreadKeys } = useMemo(() => {
-    const lastVisitedAtByThreadKey = new Map(
-      projectThreads.map((thread, index) => [
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        threadLastVisitedAts[index] ?? null,
-      ]),
-    );
-    const visibleProjectThreads = sortThreads(
-      projectThreads.filter((thread) => thread.archivedAt === null),
-      threadSortOrder,
-    );
-    const projectStatus = resolveProjectStatusForThreads({
-      threads: visibleProjectThreads,
-      getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      getLastVisitedAt: (threadKey) => lastVisitedAtByThreadKey.get(threadKey),
-    });
-    return {
-      orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      ),
-      projectStatus,
-      visibleProjectThreads,
-    };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+  const { hoverSummary, projectStatus, visibleProjectThreads, orderedProjectThreadKeys } =
+    useMemo(() => {
+      const lastVisitedAtByThreadKey = new Map(
+        projectThreads.map((thread, index) => [
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          threadLastVisitedAts[index] ?? null,
+        ]),
+      );
+      const visibleProjectThreads = sortThreads(
+        projectThreads.filter((thread) => thread.archivedAt === null),
+        threadSortOrder,
+      );
+      const hoverSummary = buildProjectHoverSummary({
+        name: project.displayName,
+        cwd: project.cwd,
+        environmentId: project.environmentId,
+        threads: visibleProjectThreads,
+        getLastVisitedAt: (threadKey) => lastVisitedAtByThreadKey.get(threadKey),
+      });
+      const projectStatus = hoverSummary.status;
+      return {
+        orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        ),
+        hoverSummary,
+        projectStatus,
+        visibleProjectThreads,
+      };
+    }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
 
   const {
     hiddenThreadStatus,
@@ -2197,121 +2204,123 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       {/* Sticky: stays pinned to the sidebar viewport top while this
           project's threads scroll, so context and the collapse toggle are
           always in reach. The next project header pushes it off naturally. */}
-      <div className="group/project-header sticky top-0 z-10 bg-sidebar">
-        <SidebarMenuButton
-          ref={isManualProjectSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
-          size="sm"
-          className={`gap-2 px-2 py-1.5 pr-8 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground max-sm:pr-14 ${
-            isManualProjectSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
-          }`}
-          {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.attributes : {})}
-          {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.listeners : {})}
-          aria-expanded={projectExpanded}
-          onPointerDownCapture={handleProjectButtonPointerDownCapture}
-          onClick={handleProjectButtonClick}
-          onKeyDown={handleProjectButtonKeyDown}
-          onContextMenu={handleProjectButtonContextMenu}
-        >
-          {!projectExpanded && projectStatus ? (
-            <span
-              aria-hidden="true"
-              title={projectStatus.label}
-              className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
-            >
-              <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                {projectStatus.pulse ? (
-                  <LiveNode
-                    className="size-[9px]"
-                    dotClassName={projectStatus.dotClass}
-                    haloClassName={projectStatus.dotClass}
-                  />
-                ) : (
-                  <span className={`size-[9px] rounded-full ${projectStatus.dotClass}`} />
-                )}
+      <ProjectHoverCard project={hoverSummary} side="right">
+        <div className="group/project-header sticky top-0 z-10 bg-sidebar">
+          <SidebarMenuButton
+            ref={isManualProjectSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
+            size="sm"
+            className={`gap-2 px-2 py-1.5 pr-8 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground max-sm:pr-14 ${
+              isManualProjectSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+            }`}
+            {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.attributes : {})}
+            {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.listeners : {})}
+            aria-expanded={projectExpanded}
+            onPointerDownCapture={handleProjectButtonPointerDownCapture}
+            onClick={handleProjectButtonClick}
+            onKeyDown={handleProjectButtonKeyDown}
+            onContextMenu={handleProjectButtonContextMenu}
+          >
+            {!projectExpanded && projectStatus ? (
+              <span
+                aria-hidden="true"
+                title={projectStatus.label}
+                className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
+              >
+                <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
+                  {projectStatus.pulse ? (
+                    <LiveNode
+                      className="size-[9px]"
+                      dotClassName={projectStatus.dotClass}
+                      haloClassName={projectStatus.dotClass}
+                    />
+                  ) : (
+                    <span className={`size-[9px] rounded-full ${projectStatus.dotClass}`} />
+                  )}
+                </span>
+                <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
               </span>
-              <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
+            ) : (
+              <ChevronRightIcon
+                className={`-ml-0.5 size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150 ${
+                  projectExpanded ? "rotate-90" : ""
+                }`}
+              />
+            )}
+            {project.kind === "general-chat" ? (
+              <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+            ) : (
+              <ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />
+            )}
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="truncate text-xs font-medium text-foreground/90">
+                {project.displayName}
+              </span>
+              {project.groupedProjectCount > 1 ? (
+                <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                  {project.groupedProjectCount} projects
+                </span>
+              ) : null}
+              {!projectExpanded && visibleProjectThreads.length > 0 ? (
+                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
+                  {visibleProjectThreads.length}
+                </span>
+              ) : null}
             </span>
-          ) : (
-            <ChevronRightIcon
-              className={`-ml-0.5 size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150 ${
-                projectExpanded ? "rotate-90" : ""
-              }`}
-            />
-          )}
-          {project.kind === "general-chat" ? (
-            <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-          ) : (
-            <ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />
-          )}
-          <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="truncate text-xs font-medium text-foreground/90">
-              {project.displayName}
-            </span>
-            {project.groupedProjectCount > 1 ? (
-              <span className="shrink-0 text-[10px] text-muted-foreground/60">
-                {project.groupedProjectCount} projects
-              </span>
-            ) : null}
-            {!projectExpanded && visibleProjectThreads.length > 0 ? (
-              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
-                {visibleProjectThreads.length}
-              </span>
-            ) : null}
-          </span>
-        </SidebarMenuButton>
-        {/* Environment badge – visible by default, crossfades with the
+          </SidebarMenuButton>
+          {/* Environment badge – visible by default, crossfades with the
             "new thread" button on hover using the same pointer-events +
             opacity pattern as the thread row archive/timestamp swap. */}
-        {project.environmentPresence === "remote-only" && (
+          {project.environmentPresence === "remote-only" && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label={
+                      project.environmentPresence === "remote-only"
+                        ? "Remote project"
+                        : "Available in multiple environments"
+                    }
+                    className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-opacity duration-150 max-sm:right-7 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
+                  />
+                }
+              >
+                <CloudIcon className="size-3" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                Remote environment: {project.remoteEnvironmentLabels.join(", ")}
+              </TooltipPopup>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger
               render={
-                <span
-                  aria-label={
-                    project.environmentPresence === "remote-only"
-                      ? "Remote project"
-                      : "Available in multiple environments"
-                  }
-                  className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-opacity duration-150 max-sm:right-7 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
-                />
+                <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+                  <button
+                    type="button"
+                    aria-label={
+                      project.kind === "general-chat"
+                        ? "Start a new general chat"
+                        : `Create new thread in ${project.displayName}`
+                    }
+                    data-testid="new-thread-button"
+                    className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                    onClick={handleCreateThreadClick}
+                  >
+                    <SquarePenIcon className="size-3.5" />
+                  </button>
+                </div>
               }
-            >
-              <CloudIcon className="size-3" />
-            </TooltipTrigger>
+            />
             <TooltipPopup side="top">
-              Remote environment: {project.remoteEnvironmentLabels.join(", ")}
+              {project.kind === "general-chat"
+                ? "New general chat"
+                : newThreadShortcutLabel
+                  ? `New thread (${newThreadShortcutLabel})`
+                  : "New thread"}
             </TooltipPopup>
           </Tooltip>
-        )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
-                <button
-                  type="button"
-                  aria-label={
-                    project.kind === "general-chat"
-                      ? "Start a new general chat"
-                      : `Create new thread in ${project.displayName}`
-                  }
-                  data-testid="new-thread-button"
-                  className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                  onClick={handleCreateThreadClick}
-                >
-                  <SquarePenIcon className="size-3.5" />
-                </button>
-              </div>
-            }
-          />
-          <TooltipPopup side="top">
-            {project.kind === "general-chat"
-              ? "New general chat"
-              : newThreadShortcutLabel
-                ? `New thread (${newThreadShortcutLabel})`
-                : "New thread"}
-          </TooltipPopup>
-        </Tooltip>
-      </div>
+        </div>
+      </ProjectHoverCard>
 
       <SidebarProjectThreadList
         projectKey={project.projectKey}
@@ -3441,15 +3450,13 @@ export default function Sidebar() {
     () =>
       sortedProjects.map((project) => ({
         projectKey: project.projectKey,
-        name: project.displayName,
-        cwd: project.cwd,
-        environmentId: project.environmentId,
-        status: resolveProjectStatusForThreads({
+        summary: buildProjectHoverSummary({
+          name: project.displayName,
+          cwd: project.cwd,
+          environmentId: project.environmentId,
           threads: (threadsByProjectKey.get(project.projectKey) ?? []).filter(
             (thread) => thread.archivedAt === null,
           ),
-          getThreadKey: (thread) =>
-            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           getLastVisitedAt: (threadKey) => threadLastVisitedAtById[threadKey],
         }),
       })),

@@ -9,6 +9,8 @@ import {
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
+import type { EnvironmentId } from "@threadlines/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { SidebarThreadSummary, Thread } from "../types";
 import type { OnDeckSyncInput } from "../uiStateStore";
 import { cn } from "../lib/utils";
@@ -478,6 +480,11 @@ const NEEDS_USER_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Awaiting Input",
 ]);
 
+/** True while the provider is working on the thread or waiting on the user. */
+export function isLiveThreadStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null && ON_DECK_LIVE_STATUSES.has(status.label);
+}
+
 /** True when the thread is blocked waiting on the user. */
 export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
   return status !== null && NEEDS_USER_STATUSES.has(status.label);
@@ -716,4 +723,52 @@ export function sortScopedProjectsByActivity<
     const project = projectByScopedKey.get(sorted.id);
     return project ? [project] : [];
   });
+}
+
+export interface ProjectHoverSummary {
+  name: string;
+  cwd: string;
+  environmentId: EnvironmentId;
+  status: ThreadStatusPill | null;
+  threadCount: number;
+  activeCount: number;
+  lastActivityAt: string | null;
+}
+
+/**
+ * Builds a project's hover summary from its threads. Shared so the expanded row
+ * and the collapsed rail glyph describe a project identically.
+ */
+export function buildProjectHoverSummary(input: {
+  name: string;
+  cwd: string;
+  environmentId: EnvironmentId;
+  threads: readonly SidebarThreadSummary[];
+  getLastVisitedAt: (threadKey: string) => string | null | undefined;
+}): ProjectHoverSummary {
+  const getThreadKey = (thread: SidebarThreadSummary) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const statuses = input.threads.map((thread) => {
+    const lastVisitedAt = input.getLastVisitedAt(getThreadKey(thread));
+    return resolveThreadStatusPill({
+      thread: {
+        ...thread,
+        ...(lastVisitedAt !== undefined && lastVisitedAt !== null ? { lastVisitedAt } : {}),
+      },
+    });
+  });
+  const lastActivityAt = input.threads.reduce<string | null>((latest, thread) => {
+    const at = thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
+    return latest === null || at > latest ? at : latest;
+  }, null);
+
+  return {
+    name: input.name,
+    cwd: input.cwd,
+    environmentId: input.environmentId,
+    status: resolveProjectStatusIndicator(statuses),
+    threadCount: input.threads.length,
+    activeCount: statuses.filter(isLiveThreadStatus).length,
+    lastActivityAt,
+  };
 }

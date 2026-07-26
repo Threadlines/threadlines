@@ -15,19 +15,14 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import type { ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { ThreadStatusDot } from "../ThreadStatusIndicators";
-import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
-
-function DetailRow({ icon, children }: { icon: ReactNode; children: ReactNode }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-      <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70">
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-    </div>
-  );
-}
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  HOVER_CARD_POPUP_CLASS_NAME,
+  HoverCardDetailRow,
+  HoverCardDetails,
+  HoverCardStatusLine,
+  HoverCardTitle,
+} from "./hoverCard";
 
 /**
  * The details a truncated row had to drop.
@@ -94,63 +89,39 @@ export function ThreadHoverCard({
         side={side}
         sideOffset={8}
         align="start"
-        className="w-64 rounded-lg p-3 text-left text-popover-foreground text-sm shadow-none elevate-popover"
+        className={HOVER_CARD_POPUP_CLASS_NAME}
         data-testid="thread-hover-card"
       >
-        <p className="mb-2 line-clamp-2 text-xs font-medium leading-snug text-foreground">
-          {thread.title}
-        </p>
-        <div className="mb-2 flex items-center gap-2 border-b border-border/60 pb-2 text-xs">
-          <ThreadStatusDot status={status} />
-          <span className="min-w-0 flex-1 truncate text-foreground/80">
-            {status ? status.label : "Idle"}
-          </span>
-          <span className="shrink-0 tabular-nums text-muted-foreground/60">
-            {formatRelativeTimeLabel(activityAt)}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5">
+        <HoverCardTitle>{thread.title}</HoverCardTitle>
+        <HoverCardStatusLine status={status} timestamp={formatRelativeTimeLabel(activityAt)} />
+        <HoverCardDetails>
           {project ? (
-            <DetailRow
+            <HoverCardDetailRow
               icon={<ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />}
             >
               {project.name}
-            </DetailRow>
+            </HoverCardDetailRow>
           ) : null}
           {environmentLabel ? (
-            <DetailRow icon={<ServerIcon className="size-3.5" />}>{environmentLabel}</DetailRow>
+            <HoverCardDetailRow icon={<ServerIcon className="size-3.5" />}>
+              {environmentLabel}
+            </HoverCardDetailRow>
           ) : null}
           {thread.branch || worktreeName ? (
-            <DetailRow icon={<GitBranchIcon className="size-3.5" />}>
+            <HoverCardDetailRow icon={<GitBranchIcon className="size-3.5" />}>
               {thread.branch ?? worktreeName}
               {worktreeName && thread.branch ? (
                 <span className="ml-1.5 text-muted-foreground/50">worktree</span>
               ) : null}
-            </DetailRow>
+            </HoverCardDetailRow>
           ) : null}
           {ProviderIcon || modelLabel || providerLabel ? (
-            <DetailRow icon={ProviderIcon ? <ProviderIcon className="size-3.5" /> : null}>
+            <HoverCardDetailRow icon={ProviderIcon ? <ProviderIcon className="size-3.5" /> : null}>
               {modelLabel ?? providerLabel}
-            </DetailRow>
+            </HoverCardDetailRow>
           ) : null}
-        </div>
+        </HoverCardDetails>
       </TooltipPopup>
     </Tooltip>
-  );
-}
-
-/**
- * Groups thread hover cards so a list behaves like one surface.
- *
- * The delay is there to stop a card firing while the pointer is only crossing
- * the list on its way elsewhere. Once one card is open that intent is no longer
- * in doubt, so neighbouring rows swap instantly, and `timeout` keeps the group
- * warm briefly after the last one closes.
- */
-export function ThreadHoverCardGroup({ children }: { children: ReactNode }) {
-  return (
-    <TooltipProvider delay={280} closeDelay={120} timeout={600}>
-      {children}
-    </TooltipProvider>
   );
 }

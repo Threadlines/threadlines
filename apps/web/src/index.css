@@ -7,8 +7,10 @@
 :root {
   --workspace-topbar-height: 52px;
   /* Measured bottom edge of the chat header (see useChatHeaderBottomVarRef in
-     rightPanelLayout.ts); portal overlays use it to start below the header. */
-  --chat-header-bottom: 0px;
+     rightPanelLayout.ts); portal overlays use it to start below the header, and
+     the collapsed rail aligns its top edge to it. Defaults to the titlebar
+     height so the rail is still inset before any header has mounted. */
+  --chat-header-bottom: var(--workspace-topbar-height);
   --workspace-controls-top: 0px;
   --workspace-controls-left: calc(env(safe-area-inset-left) + 0.75rem);
   --workspace-controls-right: calc(env(safe-area-inset-right) + 0.75rem);
@@ -297,8 +299,8 @@ html.electron.mac [data-collapsible="icon"][data-side="left"] [data-slot="sideba
   background: linear-gradient(
       to bottom,
       transparent 0,
-      transparent var(--workspace-topbar-height),
-      var(--border) var(--workspace-topbar-height)
+      transparent var(--chat-header-bottom),
+      var(--border) var(--chat-header-bottom)
     )
     right / 1px 100% no-repeat;
 }
@@ -306,11 +308,16 @@ html.electron.mac [data-collapsible="icon"][data-side="left"] [data-slot="sideba
 /* The rail surface itself lives on the inner element, which paints over the
    container, so the titlebar cutout has to be applied here as well. */
 html.electron.mac [data-collapsible="icon"][data-side="left"] [data-slot="sidebar-inner"] {
+  /* The last pixel before the rail begins is the same rule the chat header
+     draws, so the divider reads as one line across the whole window rather
+     than stopping at the rail. */
   background: linear-gradient(
     to bottom,
     transparent 0,
-    transparent var(--workspace-topbar-height),
-    var(--rail) var(--workspace-topbar-height)
+    transparent calc(var(--chat-header-bottom) - 1px),
+    var(--border) calc(var(--chat-header-bottom) - 1px),
+    var(--border) var(--chat-header-bottom),
+    var(--rail) var(--chat-header-bottom)
   );
 }
 

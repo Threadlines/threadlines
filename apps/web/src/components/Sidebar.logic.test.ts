@@ -3,6 +3,7 @@ import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
   buildOnDeckSyncInput,
+  buildProjectHoverSummary,
   countThreadsNeedingUser,
   createThreadJumpHintVisibilityController,
   excludeOnDeckThreads,
@@ -37,6 +38,7 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -1313,5 +1315,68 @@ describe("on deck classification", () => {
       ]),
     ).toBe(2);
     expect(countThreadsNeedingUser([])).toBe(0);
+  });
+});
+
+describe("buildProjectHoverSummary", () => {
+  const thread = (id: string, overrides: Partial<SidebarThreadSummary> = {}) =>
+    ({
+      id: ThreadId.make(id),
+      environmentId: localEnvironmentId,
+      projectId: ProjectId.make("project-badcode"),
+      title: id,
+      interactionMode: DEFAULT_INTERACTION_MODE,
+      session: null,
+      createdAt: "2026-07-20T00:00:00.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      latestTurn: null,
+      branch: null,
+      worktreePath: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      ...overrides,
+    }) as SidebarThreadSummary;
+
+  const summaryFor = (threads: readonly SidebarThreadSummary[]) =>
+    buildProjectHoverSummary({
+      name: "badcode",
+      cwd: "/repo/badcode",
+      environmentId: localEnvironmentId,
+      threads,
+      getLastVisitedAt: () => undefined,
+    });
+
+  it("counts only threads the provider is still live on", () => {
+    const summary = summaryFor([
+      thread("waiting", { hasPendingApprovals: true }),
+      thread("idle"),
+      thread("also-idle"),
+    ]);
+
+    expect(summary.threadCount).toBe(3);
+    expect(summary.activeCount).toBe(1);
+    expect(summary.status?.label).toBe("Pending Approval");
+  });
+
+  it("reports the most recent activity across the project", () => {
+    const summary = summaryFor([
+      thread("older", { latestUserMessageAt: "2026-07-21T00:00:00.000Z" }),
+      thread("newest", { latestUserMessageAt: "2026-07-24T00:00:00.000Z" }),
+      thread("middle", { latestUserMessageAt: "2026-07-22T00:00:00.000Z" }),
+    ]);
+
+    expect(summary.lastActivityAt).toBe("2026-07-24T00:00:00.000Z");
+  });
+
+  it("describes an empty project without inventing activity", () => {
+    const summary = summaryFor([]);
+
+    expect(summary.threadCount).toBe(0);
+    expect(summary.activeCount).toBe(0);
+    expect(summary.status).toBeNull();
+    expect(summary.lastActivityAt).toBeNull();
   });
 });

@@ -150,16 +150,26 @@ describe("DeckRail", () => {
       projects: [
         {
           projectKey: "badcode",
-          name: "badcode",
-          cwd: "/repo/badcode",
-          environmentId: ENVIRONMENT_ID,
-          status: status("Working"),
+          summary: {
+            name: "badcode",
+            cwd: "/repo/badcode",
+            environmentId: ENVIRONMENT_ID,
+            status: status("Working"),
+            threadCount: 3,
+            activeCount: 1,
+            lastActivityAt: "2026-07-26T00:00:00.000Z",
+          },
         },
       ],
     });
 
     const glyph = page.getByTestId("deck-rail-project-badcode");
-    await expect.element(glyph).toHaveAttribute("aria-label", "badcode · Working");
+    await expect.element(glyph).toHaveAttribute("aria-label", "badcode");
+
+    // The counts a favicon cannot carry live in the hover card.
+    await glyph.hover();
+    await expect.element(page.getByTestId("project-hover-card")).toHaveTextContent("3 threads");
+    await expect.element(page.getByTestId("project-hover-card")).toHaveTextContent("1 active");
 
     await glyph.click();
     expect(onRevealProject).toHaveBeenCalledWith("badcode");

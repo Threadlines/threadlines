@@ -13,7 +13,9 @@ import { ProjectFavicon } from "../ProjectFavicon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { OnDeckEntry } from "./OnDeckSection";
 import type { SidebarDestination } from "./DestinationBand";
-import { ThreadHoverCard, ThreadHoverCardGroup } from "./ThreadHoverCard";
+import { ThreadHoverCard } from "./ThreadHoverCard";
+import { SidebarHoverCardGroup } from "./hoverCard";
+import { ProjectHoverCard, type ProjectHoverSummary } from "./ProjectHoverCard";
 
 const RAIL_BUTTON_CLASS_NAME =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground/70 outline-hidden ring-ring transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2";
@@ -62,10 +64,7 @@ function RailButton({
 
 export interface DeckRailProject {
   projectKey: string;
-  name: string;
-  cwd: string;
-  environmentId: EnvironmentId;
-  status: ThreadStatusPill | null;
+  summary: ProjectHoverSummary;
 }
 
 export interface DeckRailProps {
@@ -153,7 +152,7 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
       {entries.length > 0 ? (
         <>
           <div className="my-1 w-5 border-border border-t" role="separator" />
-          <ThreadHoverCardGroup>
+          <SidebarHoverCardGroup>
             <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
               {entries.map((entry) => (
                 <DeckRailThread
@@ -164,7 +163,7 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
                 />
               ))}
             </div>
-          </ThreadHoverCardGroup>
+          </SidebarHoverCardGroup>
         </>
       ) : null}
 
@@ -236,36 +235,31 @@ function DeckRailProjectGlyph({
   const handleClick = useCallback(() => {
     onRevealProject(project.projectKey);
   }, [onRevealProject, project.projectKey]);
-  const label = project.status ? `${project.name} · ${project.status.label}` : project.name;
+  const { summary } = project;
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            aria-label={label}
-            data-testid={`deck-rail-project-${project.projectKey}`}
-            className={cn(RAIL_BUTTON_CLASS_NAME, "relative")}
-            onClick={handleClick}
-          >
-            <ProjectFavicon
-              cwd={project.cwd}
-              environmentId={project.environmentId}
-              className="size-4"
-            />
-            {project.status ? (
-              // Corner dot rather than a row of its own: the glyph already
-              // identifies the project, so activity only needs a mark.
-              <ThreadStatusDot
-                status={project.status}
-                className="absolute right-0.5 bottom-0.5 size-1.5 ring-2 ring-sidebar"
-              />
-            ) : null}
-          </button>
-        }
-      />
-      <TooltipPopup side="right">{label}</TooltipPopup>
-    </Tooltip>
+    <ProjectHoverCard project={summary} side="right">
+      <button
+        type="button"
+        aria-label={summary.name}
+        data-testid={`deck-rail-project-${project.projectKey}`}
+        className={cn(RAIL_BUTTON_CLASS_NAME, "relative")}
+        onClick={handleClick}
+      >
+        <ProjectFavicon
+          cwd={summary.cwd}
+          environmentId={summary.environmentId}
+          className="size-4"
+        />
+        {summary.status ? (
+          // Corner dot rather than a row of its own: the glyph already
+          // identifies the project, so activity only needs a mark.
+          <ThreadStatusDot
+            status={summary.status}
+            className="absolute right-0.5 bottom-0.5 size-1.5 ring-2 ring-sidebar"
+          />
+        ) : null}
+      </button>
+    </ProjectHoverCard>
   );
 }
