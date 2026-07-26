@@ -120,6 +120,10 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewSnapshot, PreviewAutomationError>;
     readonly openDevTools: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
+    readonly setViewport: (
+      webContentsId: number,
+      size: { width: number | null; height: number | null },
+    ) => Effect.Effect<void, PreviewAutomationError>;
     readonly setColorScheme: (
       webContentsId: number,
       colorScheme: "light" | "dark",
@@ -376,6 +380,28 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         });
       }
       return { ...buildStatus(webContentsId, contents), elements };
+    }),
+    setViewport: Effect.fn("PreviewAutomation.setViewport")(function* (
+      webContentsId: number,
+      size: { width: number | null; height: number | null },
+    ) {
+      const contents = yield* resolve(webContentsId);
+      // Resizing the element alone leaves the page believing it is still the
+      // old size: media queries do not re-evaluate and innerWidth is unchanged,
+      // so a narrow frame just clips a desktop layout instead of showing the
+      // mobile one. Overriding the metrics is what device mode actually is.
+      if (size.width === null || size.height === null) {
+        yield* sendCommand(contents, "Emulation.clearDeviceMetricsOverride", {});
+        return;
+      }
+      yield* sendCommand(contents, "Emulation.setDeviceMetricsOverride", {
+        width: size.width,
+        height: size.height,
+        // Zero means "use the host's", which keeps text crisp on a retina
+        // display rather than rendering the page at 1x.
+        deviceScaleFactor: 0,
+        mobile: false,
+      });
     }),
     setColorScheme: Effect.fn("PreviewAutomation.setColorScheme")(function* (
       webContentsId: number,

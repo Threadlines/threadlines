@@ -145,6 +145,31 @@ export function BrowserPanel({
 
   const activeWebview = () => webviewsRef.current.get(activeTabId) ?? null;
 
+  // Opening the device row on a responsive tab seeds concrete dimensions from
+  // whatever the page currently occupies. Without them there is nothing to drag
+  // and nothing to type over, so the row would open showing "auto" and do
+  // nothing until a preset was chosen.
+  const viewportAreaRef = useRef<HTMLDivElement | null>(null);
+  const measurePanelViewport = useCallback((): BrowserViewport | null => {
+    const area = viewportAreaRef.current;
+    if (area === null) {
+      return null;
+    }
+    const width = Math.max(160, Math.round(area.clientWidth - 24));
+    const height = Math.max(160, Math.round(area.clientHeight - 24));
+    return { width, height };
+  }, []);
+
+  useEffect(() => {
+    if (!deviceToolbarOpen || activeTab === null || activeTab.viewport.width !== null) {
+      return;
+    }
+    const measured = measurePanelViewport();
+    if (measured !== null) {
+      setTabViewport(threadRef, activeTab.id, measured);
+    }
+  }, [activeTab, deviceToolbarOpen, measurePanelViewport, setTabViewport, threadRef]);
+
   const submitAddress = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
@@ -201,9 +226,113 @@ export function BrowserPanel({
           <PlusIcon className="size-3.5" />
         </button>
 
-        {/* Where the panel lives belongs with the tabs, not with the controls
-            that act on the page. */}
+        {/* Controls that act on the tab or the panel, kept out of the toolbar
+            so the address row stays free for controls that act on the page --
+            annotate and element-pick will want that space. */}
         <div className="ms-auto flex shrink-0 items-center gap-0.5 self-center">
+          <NavButton label="Capture screenshot" onClick={captureScreenshot}>
+            <CameraIcon className="size-3.5" />
+          </NavButton>
+          <Menu>
+            <MenuTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="Browser options"
+                  data-testid="browser-overflow"
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                />
+              }
+            >
+              <MoreVerticalIcon className="size-3.5" />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem
+                onClick={() => {
+                  const webview = webviewsRef.current.get(activeTabId);
+                  callWhenReady(() => webview?.reloadIgnoringCache());
+                }}
+              >
+                Hard reload
+              </MenuItem>
+              <MenuItem data-testid="browser-toggle-device-bar" onClick={toggleDeviceToolbar}>
+                {deviceToolbarOpen ? "Hide device toolbar" : "Show device toolbar"}
+              </MenuItem>
+              <MenuSeparator />
+              <MenuRadioGroup
+                value={appearance}
+                onValueChange={(value) => setAppearance(value as BrowserAppearance)}
+              >
+                {/* The label belongs to the group: Base UI reads its context, and
+                    outside one it throws and takes the whole menu with it. */}
+                <MenuGroupLabel>Appearance</MenuGroupLabel>
+                {(["system", "light", "dark"] as const).map((value) => (
+                  <MenuRadioItem key={value} value={value} closeOnClick>
+                    {value === "system" ? "Follow app" : value === "light" ? "Light" : "Dark"}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+              <MenuSeparator />
+              <MenuItem
+                disabled={activeUrl === null}
+                onClick={() => {
+                  if (activeUrl !== null) {
+                    void window.desktopBridge?.openExternal?.(activeUrl);
+                  }
+                }}
+              >
+                Open in default browser
+              </MenuItem>
+              <MenuItem
+                disabled={activeUrl === null}
+                onClick={() => {
+                  if (activeUrl !== null) {
+                    void navigator.clipboard.writeText(activeUrl).catch(() => {});
+                  }
+                }}
+              >
+                Copy address
+              </MenuItem>
+              <MenuItem
+                data-testid="browser-open-devtools"
+                onClick={() => {
+                  const webview = webviewsRef.current.get(activeTabId);
+                  const id =
+                    webview === undefined ? null : callWhenReady(() => webview.getWebContentsId());
+                  if (id !== null) {
+                    void window.desktopBridge?.previewOpenDevTools?.({ webContentsId: id });
+                  }
+                }}
+              >
+                Open developer tools
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem
+                data-testid="browser-clear-cache"
+                onClick={() => {
+                  void window.desktopBridge?.previewClearCache?.().then(() => {
+                    callWhenReady(() =>
+                      webviewsRef.current.get(activeTabId)?.reloadIgnoringCache(),
+                    );
+                  });
+                }}
+              >
+                Clear cache
+              </MenuItem>
+              <MenuItem
+                data-testid="browser-clear-data"
+                onClick={() => {
+                  // Signing out of the preview is the point, so reload after: the
+                  // page on screen would otherwise still look signed in.
+                  void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
+                    callWhenReady(() => webviewsRef.current.get(activeTabId)?.reload());
+                  });
+                }}
+              >
+                Clear cookies and storage
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
           <NavButton
             label={expanded ? "Restore chat" : "Expand browser"}
             onClick={toggleExpanded}
@@ -214,6 +343,9 @@ export function BrowserPanel({
             ) : (
               <MaximizeIcon className="size-3.5" />
             )}
+          </NavButton>
+          <NavButton label="Close browser" onClick={onClose}>
+            <XIcon className="size-3.5" />
           </NavButton>
         </div>
       </div>
@@ -247,113 +379,6 @@ export function BrowserPanel({
             onChange={(event) => setAddressDraft(event.target.value)}
           />
         </form>
-
-        <NavButton label="Capture screenshot" onClick={captureScreenshot}>
-          <CameraIcon className="size-3.5" />
-        </NavButton>
-
-        <Menu>
-          <MenuTrigger
-            render={
-              <button
-                type="button"
-                aria-label="Browser options"
-                data-testid="browser-overflow"
-                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-              />
-            }
-          >
-            <MoreVerticalIcon className="size-3.5" />
-          </MenuTrigger>
-          <MenuPopup align="end">
-            <MenuItem
-              onClick={() => {
-                const webview = webviewsRef.current.get(activeTabId);
-                callWhenReady(() => webview?.reloadIgnoringCache());
-              }}
-            >
-              Hard reload
-            </MenuItem>
-            <MenuItem data-testid="browser-toggle-device-bar" onClick={toggleDeviceToolbar}>
-              {deviceToolbarOpen ? "Hide device toolbar" : "Show device toolbar"}
-            </MenuItem>
-            <MenuSeparator />
-            <MenuRadioGroup
-              value={appearance}
-              onValueChange={(value) => setAppearance(value as BrowserAppearance)}
-            >
-              {/* The label belongs to the group: Base UI reads its context, and
-                  outside one it throws and takes the whole menu with it. */}
-              <MenuGroupLabel>Appearance</MenuGroupLabel>
-              {(["system", "light", "dark"] as const).map((value) => (
-                <MenuRadioItem key={value} value={value} closeOnClick>
-                  {value === "system" ? "Follow app" : value === "light" ? "Light" : "Dark"}
-                </MenuRadioItem>
-              ))}
-            </MenuRadioGroup>
-            <MenuSeparator />
-            <MenuItem
-              disabled={activeUrl === null}
-              onClick={() => {
-                if (activeUrl !== null) {
-                  void window.desktopBridge?.openExternal?.(activeUrl);
-                }
-              }}
-            >
-              Open in default browser
-            </MenuItem>
-            <MenuItem
-              disabled={activeUrl === null}
-              onClick={() => {
-                if (activeUrl !== null) {
-                  void navigator.clipboard.writeText(activeUrl).catch(() => {});
-                }
-              }}
-            >
-              Copy address
-            </MenuItem>
-            <MenuItem
-              data-testid="browser-open-devtools"
-              onClick={() => {
-                const webview = webviewsRef.current.get(activeTabId);
-                const id =
-                  webview === undefined ? null : callWhenReady(() => webview.getWebContentsId());
-                if (id !== null) {
-                  void window.desktopBridge?.previewOpenDevTools?.({ webContentsId: id });
-                }
-              }}
-            >
-              Open developer tools
-            </MenuItem>
-            <MenuSeparator />
-            <MenuItem
-              data-testid="browser-clear-cache"
-              onClick={() => {
-                void window.desktopBridge?.previewClearCache?.().then(() => {
-                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reloadIgnoringCache());
-                });
-              }}
-            >
-              Clear cache
-            </MenuItem>
-            <MenuItem
-              data-testid="browser-clear-data"
-              onClick={() => {
-                // Signing out of the preview is the point, so reload after: the
-                // page on screen would otherwise still look signed in.
-                void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
-                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reload());
-                });
-              }}
-            >
-              Clear cookies and storage
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
-
-        <NavButton label="Close browser" onClick={onClose}>
-          <XIcon className="size-3.5" />
-        </NavButton>
       </div>
 
       {deviceToolbarOpen && activeTab !== null ? (
@@ -361,12 +386,18 @@ export function BrowserPanel({
           viewport={activeTab.viewport}
           zoomFactor={activeTab.zoomFactor}
           onViewportChange={(viewport) => setTabViewport(threadRef, activeTab.id, viewport)}
+          onFitToPanel={() => {
+            const measured = measurePanelViewport();
+            if (measured !== null) {
+              setTabViewport(threadRef, activeTab.id, measured);
+            }
+          }}
           onZoomChange={(factor) => setTabZoom(threadRef, activeTab.id, factor)}
           onClose={toggleDeviceToolbar}
         />
       ) : null}
 
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-background" ref={viewportAreaRef}>
         {!isElectron ? (
           <BrowserUnavailableNotice />
         ) : (
@@ -392,6 +423,11 @@ export function BrowserPanel({
                 viewport={tab.viewport}
                 zoomFactor={tab.zoomFactor}
                 colorScheme={guestColorScheme}
+                onResize={
+                  tab.id === activeTabId
+                    ? (next) => setTabViewport(threadRef, tab.id, next)
+                    : undefined
+                }
                 onNavState={setNavState}
                 register={(element) => {
                   if (element === null) {
@@ -470,6 +506,7 @@ function PreviewTabFrame({
   viewport,
   zoomFactor,
   colorScheme,
+  onResize,
   onNavState,
   register,
 }: {
@@ -479,6 +516,7 @@ function PreviewTabFrame({
   viewport: BrowserViewport;
   zoomFactor: number;
   colorScheme: "light" | "dark";
+  onResize?: ((viewport: BrowserViewport) => void) | undefined;
   onNavState: (state: NavState) => void;
   register: (element: PreviewWebview | null) => void;
 }) {
@@ -489,6 +527,8 @@ function PreviewTabFrame({
   isActiveRef.current = isActive;
   const colorSchemeRef = useRef(colorScheme);
   colorSchemeRef.current = colorScheme;
+  const zoomFactorRef = useRef(zoomFactor);
+  zoomFactorRef.current = zoomFactor;
 
   useEffect(() => {
     const webview = elementRef.current;
@@ -514,9 +554,25 @@ function PreviewTabFrame({
     if (webview === null || !isElectron) {
       return;
     }
+    const id = callWhenReady(() => webview.getWebContentsId());
+    if (id !== null) {
+      void window.desktopBridge?.previewSetViewport?.({
+        webContentsId: id,
+        width: viewport.width,
+        height: viewport.height,
+      });
+    }
+  }, [viewport.width, viewport.height]);
+
+  useEffect(() => {
+    const webview = elementRef.current;
+    if (webview === null || !isElectron) {
+      return;
+    }
     let attachedId: number | null = null;
     const onAttached = () => {
       attachedId = webview.getWebContentsId();
+      callWhenReady(() => webview.setZoomFactor(zoomFactorRef.current));
       void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId }).then(() => {
         // A page that respects prefers-color-scheme should follow the app
         // rather than the OS: a dark app hosting a stubbornly light page is
@@ -539,6 +595,10 @@ function PreviewTabFrame({
       }
     };
     const onNavigated = () => {
+      // Electron remembers zoom per origin inside the session, so a page
+      // visited at 125% comes back at 125% while our control still reads
+      // 100%. Reasserting on every navigation keeps the two from drifting.
+      callWhenReady(() => webview.setZoomFactor(zoomFactorRef.current));
       const url = callWhenReady(() => webview.getURL());
       if (url !== null && url !== "") {
         setTabUrl(threadRef, tab.id, url);
@@ -568,6 +628,8 @@ function PreviewTabFrame({
     };
   }, [onNavState, setTabTitle, setTabUrl, tab.id, threadRef]);
 
+  const framed = viewport.width !== null;
+
   return (
     <div
       className={cn(
@@ -576,22 +638,125 @@ function PreviewTabFrame({
       )}
       data-testid={`browser-frame-${tab.id}`}
     >
-      <webview
-        ref={(element) => {
-          elementRef.current = element as PreviewWebview | null;
-          register(element as PreviewWebview | null);
-        }}
-        {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
-        className="h-full w-full bg-background"
+      <div
+        className={cn("relative", framed ? "shrink-0" : "h-full w-full")}
         style={
-          viewport.width === null
-            ? undefined
-            : { width: `${viewport.width}px`, height: `${viewport.height ?? 800}px`, flex: "none" }
+          framed
+            ? { width: `${viewport.width}px`, height: `${viewport.height ?? 800}px` }
+            : undefined
         }
-        partition={PREVIEW_PARTITION}
-        {...(tab.url ? { src: tab.url } : {})}
-      />
+      >
+        <webview
+          ref={(element) => {
+            elementRef.current = element as PreviewWebview | null;
+            register(element as PreviewWebview | null);
+          }}
+          {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
+          className="h-full w-full bg-background"
+          style={
+            viewport.width === null
+              ? undefined
+              : {
+                  width: `${viewport.width}px`,
+                  height: `${viewport.height ?? 800}px`,
+                  flex: "none",
+                }
+          }
+          partition={PREVIEW_PARTITION}
+          {...(tab.url ? { src: tab.url } : {})}
+        />
+        {framed && isActive && onResize !== undefined ? (
+          <>
+            <ViewportResizeHandle edge="right" viewport={viewport} onResize={onResize} />
+            <ViewportResizeHandle edge="bottom" viewport={viewport} onResize={onResize} />
+            <ViewportResizeHandle edge="corner" viewport={viewport} onResize={onResize} />
+          </>
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+/**
+ * Drag handles on the page's own edges.
+ *
+ * Resizing the device by dragging is the natural gesture, and it means finding
+ * a breakpoint does not require resizing the whole app around it. A shield is
+ * raised while dragging because the pointer crosses the guest, which is a
+ * separate process and would otherwise swallow the events.
+ */
+function ViewportResizeHandle({
+  edge,
+  viewport,
+  onResize,
+}: {
+  edge: "right" | "bottom" | "corner";
+  viewport: BrowserViewport;
+  onResize: (viewport: BrowserViewport) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const originRef = useRef({ x: 0, y: 0, width: 0, height: 0 });
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    originRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      width: viewport.width ?? 0,
+      height: viewport.height ?? 0,
+    };
+    setDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging) {
+      return;
+    }
+    const origin = originRef.current;
+    const width =
+      edge === "bottom" ? origin.width : Math.max(160, origin.width + (event.clientX - origin.x));
+    const height =
+      edge === "right" ? origin.height : Math.max(160, origin.height + (event.clientY - origin.y));
+    onResize({ width: Math.round(width), height: Math.round(height) });
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    setDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const position =
+    edge === "right"
+      ? "-right-1.5 inset-y-0 w-3 cursor-col-resize"
+      : edge === "bottom"
+        ? "-bottom-1.5 inset-x-0 h-3 cursor-row-resize"
+        : "-bottom-1.5 -right-1.5 size-3 cursor-nwse-resize";
+
+  return (
+    <>
+      {dragging ? <div className="fixed inset-0 z-40 cursor-inherit" /> : null}
+      <div
+        role="separator"
+        aria-label={`Resize ${edge === "corner" ? "viewport" : edge + " edge"}`}
+        data-testid={`browser-resize-${edge}`}
+        className={cn("absolute z-50 flex items-center justify-center", position)}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        <span
+          className={cn(
+            "rounded-full bg-border transition-colors hover:bg-muted-foreground/60",
+            edge === "right" ? "h-8 w-1" : edge === "bottom" ? "h-1 w-8" : "size-2",
+            dragging && "bg-muted-foreground/70",
+          )}
+        />
+      </div>
+    </>
   );
 }
 
@@ -733,29 +898,34 @@ function DeviceToolbar({
   viewport,
   zoomFactor,
   onViewportChange,
+  onFitToPanel,
   onZoomChange,
   onClose,
 }: {
   viewport: BrowserViewport;
   zoomFactor: number;
   onViewportChange: (viewport: BrowserViewport) => void;
+  onFitToPanel: () => void;
   onZoomChange: (factor: number) => void;
   onClose: () => void;
 }) {
+  // "Responsive" is the label for a size nobody named, which is what dragging
+  // produces; a matching preset takes precedence over it.
   const matchingPreset = BROWSER_VIEWPORT_PRESETS.find(
-    (entry) => entry.width === viewport.width && entry.height === viewport.height,
+    (entry) =>
+      entry.width !== null && entry.width === viewport.width && entry.height === viewport.height,
   );
 
   return (
     <div
-      className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2"
+      className="flex h-9 shrink-0 items-center justify-center gap-1.5 overflow-x-auto border-b border-border px-2"
       data-testid="browser-device-toolbar"
     >
       <select
         aria-label="Device"
         data-testid="browser-device-preset"
-        className="shrink-0 rounded-md border border-border bg-background px-1.5 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
-        value={matchingPreset?.label ?? "Custom"}
+        className="max-w-28 shrink-0 rounded-md border border-border bg-background px-1 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
+        value={matchingPreset?.label ?? "Responsive"}
         onChange={(event) => {
           const preset = BROWSER_VIEWPORT_PRESETS.find((p) => p.label === event.target.value);
           onViewportChange(
@@ -768,7 +938,6 @@ function DeviceToolbar({
             {preset.label}
           </option>
         ))}
-        {matchingPreset === undefined ? <option value="Custom">Custom</option> : null}
       </select>
 
       <DimensionInput
@@ -802,7 +971,7 @@ function DeviceToolbar({
         <RotateCwSquareIcon className="size-3.5" />
       </button>
 
-      <div className="ms-auto flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         <button
           type="button"
           aria-label="Zoom out"
@@ -815,7 +984,7 @@ function DeviceToolbar({
           type="button"
           aria-label="Reset zoom"
           data-testid="browser-zoom-value"
-          className="min-w-10 rounded-md px-1 font-mono text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="min-w-9 shrink-0 rounded-md px-0.5 font-mono text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={() => onZoomChange(1)}
         >
           {Math.round(zoomFactor * 100)}%
@@ -871,7 +1040,7 @@ function DimensionInput({
       aria-label={label}
       data-testid={`browser-device-${label.toLowerCase()}`}
       inputMode="numeric"
-      className="w-14 rounded-md border border-border bg-background px-1.5 py-1 text-center font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
+      className="w-12 shrink-0 rounded-md border border-border bg-background px-1 py-1 text-center font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
       placeholder="auto"
       value={draft}
       onChange={(event) => setDraft(event.target.value)}

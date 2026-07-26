@@ -433,6 +433,14 @@ export const DesktopPreviewStatusSchema = Schema.Struct({
 });
 export type DesktopPreviewStatus = typeof DesktopPreviewStatusSchema.Type;
 
+export const DesktopPreviewViewportInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  /** null clears the override and lets the page size itself to the element. */
+  width: Schema.NullOr(Schema.Number),
+  height: Schema.NullOr(Schema.Number),
+});
+export type DesktopPreviewViewportInput = typeof DesktopPreviewViewportInputSchema.Type;
+
 export const DesktopPreviewColorSchemeInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   colorScheme: Schema.Literals(["light", "dark"]),
@@ -726,6 +734,7 @@ export interface DesktopBridge {
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
+  previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

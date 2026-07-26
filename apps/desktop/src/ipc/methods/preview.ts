@@ -2,6 +2,7 @@ import {
   DesktopLocalServerSchema,
   DesktopPreviewClickInputSchema,
   DesktopPreviewColorSchemeInputSchema,
+  DesktopPreviewViewportInputSchema,
   DesktopPreviewEvaluateInputSchema,
   DesktopPreviewScreenshotSchema,
   DesktopPreviewSnapshotSchema,
@@ -145,5 +146,18 @@ export const previewClearCache = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.clearCache")(function* () {
     const session = yield* PreviewSession.PreviewSession;
     yield* session.clearCache();
+  }),
+});
+
+export const previewSetViewport = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_VIEWPORT_CHANNEL,
+  payload: DesktopPreviewViewportInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setViewport")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.setViewport(input.webContentsId, {
+      width: input.width,
+      height: input.height,
+    });
   }),
 });
