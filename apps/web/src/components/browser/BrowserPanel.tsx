@@ -1,9 +1,12 @@
 import type { DesktopLocalServer, ScopedThreadRef } from "@threadlines/contracts";
+import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CameraIcon,
   ExternalLinkIcon,
+  GlobeIcon,
+  PlusIcon,
   RadioTowerIcon,
   RotateCwIcon,
   XIcon,
@@ -12,15 +15,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   BROWSER_VIEWPORT_PRESETS,
+  selectActiveTab,
   selectThreadBrowserState,
   useBrowserPanelStore,
+  type BrowserTab,
   type BrowserViewportPresetId,
 } from "../../browserPanelStore";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
-
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -41,9 +44,24 @@ declare global {
   }
 }
 
-interface PreviewWebview extends HTMLElement {
+/**
+ * A <webview> rejects imperative calls until its guest has attached and fired
+ * dom-ready. Navigation still happens: `src` is bound to the tab's url, so a
+ * tab created and immediately pointed somewhere loads from the attribute once
+ * it is ready. These helpers keep that race from surfacing as an error.
+ */
+function callWhenReady<T>(action: () => T): T | null {
+  try {
+    return action();
+  } catch {
+    return null;
+  }
+}
+
+export interface PreviewWebview extends HTMLElement {
   getWebContentsId: () => number;
   getURL: () => string;
+  getTitle: () => string;
   canGoBack: () => boolean;
   canGoForward: () => boolean;
   goBack: () => void;
@@ -51,6 +69,14 @@ interface PreviewWebview extends HTMLElement {
   reload: () => void;
   loadURL: (url: string) => Promise<void>;
 }
+
+interface NavState {
+  canGoBack: boolean;
+  canGoForward: boolean;
+  loading: boolean;
+}
+
+const IDLE_NAV_STATE: NavState = { canGoBack: false, canGoForward: false, loading: false };
 
 export function BrowserPanel({
   threadRef,
@@ -65,100 +91,61 @@ export function BrowserPanel({
   const browserState = useBrowserPanelStore((store) =>
     selectThreadBrowserState(store.browserStateByThreadKey, threadRef),
   );
-  const setBrowserUrl = useBrowserPanelStore((store) => store.setBrowserUrl);
-  const setViewportPreset = useBrowserPanelStore((store) => store.setViewportPreset);
+  const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
+  const setTabViewport = useBrowserPanelStore((store) => store.setTabViewport);
+  const openTab = useBrowserPanelStore((store) => store.openTab);
+  const closeTab = useBrowserPanelStore((store) => store.closeTab);
+  const selectTab = useBrowserPanelStore((store) => store.selectTab);
 
-  const webviewRef = useRef<PreviewWebview | null>(null);
-  const [addressDraft, setAddressDraft] = useState(browserState.url ?? "");
-  const [isLoading, setIsLoading] = useState(false);
-  const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false });
+  const activeTab = selectActiveTab(browserState);
+  const activeTabId = activeTab?.id ?? "";
 
-  // The address bar is an input the user types in, so it must not be yanked
-  // back to the store on every keystroke -- only when the page itself moves.
+  // One element per tab, so switching tabs keeps every page alive -- along with
+  // the CDP attachment collecting its console and network diagnostics.
+  const webviewsRef = useRef(new Map<string, PreviewWebview>());
+  const [navState, setNavState] = useState<NavState>(IDLE_NAV_STATE);
+  const [addressDraft, setAddressDraft] = useState(activeTab?.url ?? "");
+  const activeUrl = activeTab?.url ?? null;
+
+  // The address bar is an input the user types in, so it is only reset when the
+  // page moves or the tab changes -- never on every keystroke.
   useEffect(() => {
-    setAddressDraft(browserState.url ?? "");
-  }, [browserState.url]);
+    setAddressDraft(activeUrl ?? "");
+    setNavState(IDLE_NAV_STATE);
+  }, [activeUrl, activeTabId]);
 
-  // Attach CDP once the guest exists. Done here rather than on first tool call
-  // so console output and failed requests are being collected from the first
-  // page load: by the time anyone asks what went wrong, it has already printed.
-  useEffect(() => {
-    const webview = webviewRef.current;
-    if (webview === null || !isElectron) {
-      return;
-    }
-    let attachedId: number | null = null;
-    const onAttached = () => {
-      attachedId = webview.getWebContentsId();
-      void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId });
-    };
-    webview.addEventListener("did-attach", onAttached);
-    return () => {
-      webview.removeEventListener("did-attach", onAttached);
-      if (attachedId !== null) {
-        void window.desktopBridge?.previewDetach?.({ webContentsId: attachedId });
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const webview = webviewRef.current;
-    if (webview === null) {
-      return;
-    }
-    const syncNav = () => {
-      setNavState({ canGoBack: webview.canGoBack(), canGoForward: webview.canGoForward() });
-    };
-    const onNavigated = () => {
-      syncNav();
-      setBrowserUrl(threadRef, webview.getURL());
-    };
-    const onStart = () => setIsLoading(true);
-    const onStop = () => {
-      setIsLoading(false);
-      syncNav();
-    };
-    webview.addEventListener("did-navigate", onNavigated);
-    webview.addEventListener("did-navigate-in-page", onNavigated);
-    webview.addEventListener("did-start-loading", onStart);
-    webview.addEventListener("did-stop-loading", onStop);
-    return () => {
-      webview.removeEventListener("did-navigate", onNavigated);
-      webview.removeEventListener("did-navigate-in-page", onNavigated);
-      webview.removeEventListener("did-start-loading", onStart);
-      webview.removeEventListener("did-stop-loading", onStop);
-    };
-  }, [setBrowserUrl, threadRef]);
+  const activeWebview = () => webviewsRef.current.get(activeTabId) ?? null;
 
   const submitAddress = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
       const normalized = normalizePreviewUrl(addressDraft);
-      if (normalized === null) {
+      if (normalized === null || activeTabId === "") {
         return;
       }
-      setBrowserUrl(threadRef, normalized);
-      void webviewRef.current?.loadURL(normalized);
+      setTabUrl(threadRef, activeTabId, normalized);
+      const webview = webviewsRef.current.get(activeTabId);
+      callWhenReady(() => void webview?.loadURL(normalized));
     },
-    [addressDraft, setBrowserUrl, threadRef],
+    [activeTabId, addressDraft, setTabUrl, threadRef],
   );
 
   const captureScreenshot = useCallback(() => {
-    const webview = webviewRef.current;
-    if (webview === null || !isElectron) {
+    const webview = webviewsRef.current.get(activeTabId);
+    if (webview === undefined || !isElectron) {
       return;
     }
     void window.desktopBridge
       ?.previewScreenshot?.({ webContentsId: webview.getWebContentsId() })
       .then((shot) => {
-        if (shot?.dataUrl) {
+        if (shot.dataUrl !== "") {
           void navigator.clipboard.writeText(shot.dataUrl).catch(() => {});
         }
       });
-  }, []);
+  }, [activeTabId]);
 
   const preset =
-    BROWSER_VIEWPORT_PRESETS.find((entry) => entry.id === browserState.viewportPresetId) ??
+    BROWSER_VIEWPORT_PRESETS.find((entry) => entry.id === activeTab?.viewportPresetId) ??
     BROWSER_VIEWPORT_PRESETS[0];
 
   return (
@@ -168,23 +155,45 @@ export function BrowserPanel({
       data-testid="browser-panel"
       aria-label="Browser preview"
     >
+      <div className="flex h-9 shrink-0 items-stretch gap-px overflow-x-auto border-b border-border px-1.5 pt-1.5">
+        {browserState.tabs.map((tab) => (
+          <TabStripItem
+            key={tab.id}
+            tab={tab}
+            isActive={tab.id === activeTabId}
+            closable={browserState.tabs.length > 1}
+            onSelect={() => selectTab(threadRef, tab.id)}
+            onClose={() => closeTab(threadRef, tab.id)}
+          />
+        ))}
+        <button
+          type="button"
+          aria-label="New tab"
+          data-testid="browser-new-tab"
+          className="ms-0.5 inline-flex size-6 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+          onClick={() => openTab(threadRef)}
+        >
+          <PlusIcon className="size-3.5" />
+        </button>
+      </div>
+
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-2">
         <NavButton
           label="Back"
           disabled={!navState.canGoBack}
-          onClick={() => webviewRef.current?.goBack()}
+          onClick={() => activeWebview()?.goBack()}
         >
           <ArrowLeftIcon className="size-3.5" />
         </NavButton>
         <NavButton
           label="Forward"
           disabled={!navState.canGoForward}
-          onClick={() => webviewRef.current?.goForward()}
+          onClick={() => activeWebview()?.goForward()}
         >
           <ArrowRightIcon className="size-3.5" />
         </NavButton>
-        <NavButton label="Reload" onClick={() => webviewRef.current?.reload()}>
-          <RotateCwIcon className={cn("size-3.5", isLoading && "animate-spin")} />
+        <NavButton label="Reload" onClick={() => activeWebview()?.reload()}>
+          <RotateCwIcon className={cn("size-3.5", navState.loading && "animate-spin")} />
         </NavButton>
 
         <form className="min-w-0 flex-1" onSubmit={submitAddress}>
@@ -192,7 +201,7 @@ export function BrowserPanel({
             aria-label="Address"
             data-testid="browser-panel-address"
             className="w-full truncate rounded-md border border-border bg-background px-2 py-1 font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
-            placeholder="localhost:5173"
+            placeholder="Search or enter URL"
             value={addressDraft}
             onChange={(event) => setAddressDraft(event.target.value)}
           />
@@ -202,10 +211,12 @@ export function BrowserPanel({
           aria-label="Viewport"
           data-testid="browser-panel-viewport"
           className="shrink-0 rounded-md border border-border bg-background px-1.5 py-1 font-mono text-[10px] text-muted-foreground outline-none focus:border-ring"
-          value={browserState.viewportPresetId}
-          onChange={(event) =>
-            setViewportPreset(threadRef, event.target.value as BrowserViewportPresetId)
-          }
+          value={activeTab?.viewportPresetId ?? "fill"}
+          onChange={(event) => {
+            if (activeTabId !== "") {
+              setTabViewport(threadRef, activeTabId, event.target.value as BrowserViewportPresetId);
+            }
+          }}
         >
           {BROWSER_VIEWPORT_PRESETS.map((entry) => (
             <option key={entry.id} value={entry.id}>
@@ -217,43 +228,202 @@ export function BrowserPanel({
         <NavButton label="Capture screenshot" onClick={captureScreenshot}>
           <CameraIcon className="size-3.5" />
         </NavButton>
-
         <NavButton label="Close browser" onClick={onClose}>
           <XIcon className="size-3.5" />
         </NavButton>
       </div>
 
-      <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-background p-3">
-        {isElectron && browserState.url === null ? (
-          <LocalServerPicker
-            onSelect={(port) => {
-              const url = `http://localhost:${port}`;
-              setBrowserUrl(threadRef, url);
-              void webviewRef.current?.loadURL(url);
-            }}
-          />
-        ) : null}
-        {isElectron ? (
-          <webview
-            ref={webviewRef as never}
-            data-testid="browser-panel-webview"
-            className="h-full w-full border border-border bg-white"
-            style={
-              preset.width === null
-                ? undefined
-                : { width: `${preset.width}px`, height: `${preset.height}px`, flex: "none" }
-            }
-            partition={PREVIEW_PARTITION}
-            // Hidden rather than unmounted while empty: remounting would drop
-            // the CDP attachment and the diagnostics collected with it.
-            hidden={browserState.url === null}
-            {...(browserState.url ? { src: browserState.url } : {})}
-          />
-        ) : (
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
+        {!isElectron ? (
           <BrowserUnavailableNotice />
+        ) : (
+          <>
+            {activeTab !== null && activeTab.url === null ? (
+              <div className="absolute inset-0 z-10 overflow-auto px-3">
+                <LocalServerPicker
+                  onSelect={(port) => {
+                    const url = `http://localhost:${port}`;
+                    setTabUrl(threadRef, activeTab.id, url);
+                    const webview = webviewsRef.current.get(activeTab.id);
+                    callWhenReady(() => void webview?.loadURL(url));
+                  }}
+                />
+              </div>
+            ) : null}
+            {browserState.tabs.map((tab) => (
+              <PreviewTabFrame
+                key={tab.id}
+                tab={tab}
+                threadRef={threadRef}
+                isActive={tab.id === activeTabId}
+                preset={preset}
+                onNavState={setNavState}
+                register={(element) => {
+                  if (element === null) {
+                    webviewsRef.current.delete(tab.id);
+                  } else {
+                    webviewsRef.current.set(tab.id, element);
+                  }
+                }}
+              />
+            ))}
+          </>
         )}
       </div>
     </section>
+  );
+}
+
+function TabStripItem({
+  tab,
+  isActive,
+  closable,
+  onSelect,
+  onClose,
+}: {
+  tab: BrowserTab;
+  isActive: boolean;
+  closable: boolean;
+  onSelect: () => void;
+  onClose: () => void;
+}) {
+  const label = tab.title ?? (tab.url === null ? "New tab" : tab.url.replace(/^https?:\/\//, ""));
+  return (
+    <div
+      className={cn(
+        "group/tab flex min-w-0 max-w-44 shrink-0 items-center gap-1.5 rounded-t-md px-2 text-xs",
+        isActive
+          ? "bg-background text-foreground"
+          : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
+      )}
+      data-testid={`browser-tab-${tab.id}`}
+    >
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1.5 py-1"
+        onClick={onSelect}
+        title={label}
+      >
+        <GlobeIcon className="size-3 shrink-0 opacity-70" />
+        <span className="min-w-0 truncate">{label}</span>
+      </button>
+      {closable ? (
+        <button
+          type="button"
+          aria-label={`Close ${label}`}
+          data-testid="browser-close-tab"
+          className="inline-flex size-4 shrink-0 items-center justify-center rounded opacity-0 hover:bg-accent hover:text-foreground group-hover/tab:opacity-100"
+          onClick={onClose}
+        >
+          <XIcon className="size-3" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * One tab's guest page. Kept mounted while inactive and hidden with
+ * `visibility` rather than `display`, so the guest keeps its layout: a page
+ * collapsed to zero size would report a meaningless viewport to a screenshot
+ * or to an agent measuring an element.
+ */
+function PreviewTabFrame({
+  tab,
+  threadRef,
+  isActive,
+  preset,
+  onNavState,
+  register,
+}: {
+  tab: BrowserTab;
+  threadRef: ScopedThreadRef;
+  isActive: boolean;
+  preset: (typeof BROWSER_VIEWPORT_PRESETS)[number];
+  onNavState: (state: NavState) => void;
+  register: (element: PreviewWebview | null) => void;
+}) {
+  const elementRef = useRef<PreviewWebview | null>(null);
+  const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
+  const setTabTitle = useBrowserPanelStore((store) => store.setTabTitle);
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+
+  useEffect(() => {
+    const webview = elementRef.current;
+    if (webview === null || !isElectron) {
+      return;
+    }
+    let attachedId: number | null = null;
+    const onAttached = () => {
+      attachedId = webview.getWebContentsId();
+      void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId });
+    };
+    const publishNav = (loading: boolean) => {
+      // Only the visible tab drives the toolbar; a background tab finishing a
+      // load must not repaint controls that describe a different page.
+      if (isActiveRef.current) {
+        onNavState({
+          canGoBack: callWhenReady(() => webview.canGoBack()) ?? false,
+          canGoForward: callWhenReady(() => webview.canGoForward()) ?? false,
+          loading,
+        });
+      }
+    };
+    const onNavigated = () => {
+      const url = callWhenReady(() => webview.getURL());
+      if (url !== null && url !== "") {
+        setTabUrl(threadRef, tab.id, url);
+      }
+      publishNav(false);
+    };
+    const onTitle = () => setTabTitle(threadRef, tab.id, webview.getTitle());
+    const onStart = () => publishNav(true);
+    const onStop = () => publishNav(false);
+
+    webview.addEventListener("did-attach", onAttached);
+    webview.addEventListener("did-navigate", onNavigated);
+    webview.addEventListener("did-navigate-in-page", onNavigated);
+    webview.addEventListener("page-title-updated", onTitle);
+    webview.addEventListener("did-start-loading", onStart);
+    webview.addEventListener("did-stop-loading", onStop);
+    return () => {
+      webview.removeEventListener("did-attach", onAttached);
+      webview.removeEventListener("did-navigate", onNavigated);
+      webview.removeEventListener("did-navigate-in-page", onNavigated);
+      webview.removeEventListener("page-title-updated", onTitle);
+      webview.removeEventListener("did-start-loading", onStart);
+      webview.removeEventListener("did-stop-loading", onStop);
+      if (attachedId !== null) {
+        void window.desktopBridge?.previewDetach?.({ webContentsId: attachedId });
+      }
+    };
+  }, [onNavState, setTabTitle, setTabUrl, tab.id, threadRef]);
+
+  return (
+    <div
+      className={cn(
+        "absolute inset-0 flex items-start justify-center overflow-auto p-3",
+        isActive ? "visible" : "invisible",
+      )}
+      data-testid={`browser-frame-${tab.id}`}
+    >
+      <webview
+        ref={(element) => {
+          elementRef.current = element as PreviewWebview | null;
+          register(element as PreviewWebview | null);
+        }}
+        {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
+        className="h-full w-full border border-border bg-white"
+        style={
+          preset.width === null
+            ? undefined
+            : { width: `${preset.width}px`, height: `${preset.height}px`, flex: "none" }
+        }
+        partition={PREVIEW_PARTITION}
+        {...(tab.url ? { src: tab.url } : {})}
+      />
+    </div>
   );
 }
 
@@ -285,24 +455,6 @@ function NavButton({
       </TooltipTrigger>
       <TooltipPopup side="bottom">{label}</TooltipPopup>
     </Tooltip>
-  );
-}
-
-/**
- * The preview is a Chromium <webview>, which only exists in the desktop app.
- * Rather than degrade to an iframe -- which cannot be driven, inspected, or
- * navigated cross-origin -- the web build says so plainly.
- */
-function BrowserUnavailableNotice() {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-      <ExternalLinkIcon className="size-5 text-muted-foreground/40" />
-      <p className="text-sm text-muted-foreground">The browser preview needs the desktop app.</p>
-      <p className="max-w-xs text-xs text-muted-foreground/70">
-        It runs a real Chromium tab so pages can be inspected and driven, which a browser tab cannot
-        host.
-      </p>
-    </div>
   );
 }
 
@@ -372,6 +524,24 @@ function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
       )}
       <p className="px-1 pt-3 text-xs text-muted-foreground/60">
         Select a listening port to open it here.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The preview is a Chromium <webview>, which only exists in the desktop app.
+ * Rather than degrade to an iframe -- which cannot be driven, inspected, or
+ * navigated cross-origin -- the web build says so plainly.
+ */
+function BrowserUnavailableNotice() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+      <ExternalLinkIcon className="size-5 text-muted-foreground/40" />
+      <p className="text-sm text-muted-foreground">The browser preview needs the desktop app.</p>
+      <p className="max-w-xs text-xs text-muted-foreground/70">
+        It runs a real Chromium tab so pages can be inspected and driven, which a browser tab cannot
+        host.
       </p>
     </div>
   );
