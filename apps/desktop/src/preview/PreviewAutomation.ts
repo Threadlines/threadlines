@@ -24,6 +24,11 @@ import type {
 import { webContents, type WebContents } from "electron";
 
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
+import {
+  PICK_OVERLAY_BINDING,
+  PICK_OVERLAY_SCRIPT,
+  PICK_OVERLAY_TEARDOWN_SCRIPT,
+} from "./pickOverlayScript.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -70,28 +75,6 @@ const MAX_SNAPSHOT_ELEMENTS = 200;
 const MAX_CONSOLE_ENTRIES = 200;
 /** Long enough to choose deliberately, short enough not to strand inspect mode. */
 const PICK_TIMEOUT_MS = 60_000;
-
-/**
- * How a candidate element is highlighted while picking.
- *
- * The four colours are the CSS box regions, and each only paints if that region
- * has any thickness -- so an element with no border gets no outline, which is
- * most of them on a modern page and made picking feel unresponsive over large
- * borderless containers.
- *
- * `showExtensionLines` is what fixes that: it draws guides from the element's
- * edges out to the edges of the viewport, so the bounds are legible whatever
- * the element's box happens to be. The colours match DevTools so the regions
- * mean the same thing they do there.
- */
-const PICK_HIGHLIGHT_CONFIG = {
-  showInfo: true,
-  showExtensionLines: true,
-  contentColor: { r: 111, g: 168, b: 220, a: 0.45 },
-  paddingColor: { r: 147, g: 196, b: 125, a: 0.55 },
-  borderColor: { r: 255, g: 229, b: 153, a: 0.66 },
-  marginColor: { r: 246, g: 178, b: 107, a: 0.66 },
-} as const;
 
 const MAX_NETWORK_FAILURES = 100;
 
@@ -541,17 +524,22 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     pickElement: Effect.fn("PreviewAutomation.pickElement")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);
       yield* sendCommand(contents, "DOM.enable", {});
-      yield* sendCommand(contents, "Overlay.enable", {});
-      yield* sendCommand(contents, "Overlay.setInspectMode", {
-        mode: "searchForNode",
-        highlightConfig: PICK_HIGHLIGHT_CONFIG,
+      yield* sendCommand(contents, "Runtime.enable", {});
+      // The binding is how the injected overlay reports back. Adding it twice
+      // is harmless, and it must exist before the script that calls it runs.
+      yield* sendCommand(contents, "Runtime.addBinding", {
+        name: PICK_OVERLAY_BINDING,
+      }).pipe(Effect.ignore);
+
+      yield* sendCommand(contents, "Runtime.evaluate", {
+        expression: PICK_OVERLAY_SCRIPT,
       });
 
-      const picked = yield* Effect.tryPromise({
+      const pickedPoint = yield* Effect.tryPromise({
         try: () =>
-          new Promise<number | null>((resolve) => {
+          new Promise<{ x: number; y: number } | null>((resolve) => {
             let done = false;
-            const finish = (value: number | null) => {
+            const finish = (value: { x: number; y: number } | null) => {
               if (done) return;
               done = true;
               contents.debugger.off("message", onMessage);
@@ -563,33 +551,58 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
               method: string,
               params: Record<string, unknown>,
             ) => {
-              if (method === "Overlay.inspectNodeRequested") {
-                finish(typeof params.backendNodeId === "number" ? params.backendNodeId : null);
+              if (method !== "Runtime.bindingCalled" || params.name !== PICK_OVERLAY_BINDING) {
+                return;
+              }
+              try {
+                const payload = JSON.parse(String(params.payload ?? "{}")) as {
+                  x?: number;
+                  y?: number;
+                  cancelled?: boolean;
+                };
+                finish(
+                  payload.cancelled === true || payload.x === undefined || payload.y === undefined
+                    ? null
+                    : { x: payload.x, y: payload.y },
+                );
+              } catch {
+                finish(null);
               }
             };
             contents.debugger.on("message", onMessage);
             // Picking is a deliberate act; if the user wanders off, stop
-            // waiting rather than leaving the page in inspect mode forever.
+            // waiting rather than leaving the overlay armed forever.
             const timer = setTimeout(() => finish(null), PICK_TIMEOUT_MS);
           }),
-        catch: (cause) => new PreviewCommandError({ webContentsId, method: "Overlay.pick", cause }),
+        catch: (cause) =>
+          new PreviewCommandError({ webContentsId, method: "Runtime.bindingCalled", cause }),
       });
 
-      yield* sendCommand(contents, "Overlay.setInspectMode", {
-        mode: "none",
-        highlightConfig: {},
+      yield* sendCommand(contents, "Runtime.evaluate", {
+        expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
       }).pipe(Effect.ignore);
 
-      if (picked === null) {
+      if (pickedPoint === null) {
         return null;
       }
-      return yield* describePickedNode(sendCommand)(contents, picked);
+
+      // The click point rather than the page's own idea of the element: this
+      // resolves through the same accessibility tree the agent reads, so a
+      // picked element is described exactly as a snapshotted one is.
+      const located = (yield* sendCommand(contents, "DOM.getNodeForLocation", {
+        x: Math.round(pickedPoint.x),
+        y: Math.round(pickedPoint.y),
+        includeUserAgentShadowDOM: false,
+      })) as { backendNodeId?: number };
+      if (located.backendNodeId === undefined) {
+        return null;
+      }
+      return yield* describePickedNode(sendCommand)(contents, located.backendNodeId);
     }),
     cancelPick: Effect.fn("PreviewAutomation.cancelPick")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);
-      yield* sendCommand(contents, "Overlay.setInspectMode", {
-        mode: "none",
-        highlightConfig: {},
+      yield* sendCommand(contents, "Runtime.evaluate", {
+        expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
       }).pipe(Effect.ignore);
     }),
     setColorScheme: Effect.fn("PreviewAutomation.setColorScheme")(function* (
