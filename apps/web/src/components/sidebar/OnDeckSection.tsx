@@ -9,7 +9,6 @@ import { ThreadStatusLabel } from "../ThreadStatusIndicators";
 import { SectionLabel } from "../ui/threadline";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ThreadHoverCard } from "./ThreadHoverCard";
-import { SidebarHoverCardGroup } from "./hoverCard";
 import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -179,25 +178,23 @@ export const OnDeckSection = memo(function OnDeckSection(props: OnDeckSectionPro
       <div className="mb-1 pl-2">
         <SectionLabel>On deck</SectionLabel>
       </div>
-      <SidebarHoverCardGroup>
-        <SidebarMenu>
-          {entries.map((entry) => {
-            const threadKey = scopedThreadKey(
-              scopeThreadRef(entry.thread.environmentId, entry.thread.id),
-            );
-            return (
-              <OnDeckRow
-                key={threadKey}
-                entry={entry}
-                isActive={routeThreadKey === threadKey}
-                jumpLabel={threadJumpLabelByKey.get(threadKey) ?? null}
-                navigateToThread={navigateToThread}
-                dismissFromOnDeck={dismissFromOnDeck}
-              />
-            );
-          })}
-        </SidebarMenu>
-      </SidebarHoverCardGroup>
+      <SidebarMenu>
+        {entries.map((entry) => {
+          const threadKey = scopedThreadKey(
+            scopeThreadRef(entry.thread.environmentId, entry.thread.id),
+          );
+          return (
+            <OnDeckRow
+              key={threadKey}
+              entry={entry}
+              isActive={routeThreadKey === threadKey}
+              jumpLabel={threadJumpLabelByKey.get(threadKey) ?? null}
+              navigateToThread={navigateToThread}
+              dismissFromOnDeck={dismissFromOnDeck}
+            />
+          );
+        })}
+      </SidebarMenu>
     </SidebarGroup>
   );
 });

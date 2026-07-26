@@ -104,55 +104,55 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
   const needsUserCount = countThreadsNeedingUser(entries.map((entry) => entry.status));
 
   return (
-    <div
-      className="flex min-h-0 flex-1 flex-col items-center gap-1 py-2"
-      data-testid="sidebar-deck-rail"
-    >
-      <RailButton label="New thread" onClick={startNewThread} testId="deck-rail-new-thread">
-        <SquarePenIcon className="size-4" />
-      </RailButton>
-      <RailButton label="Search" onClick={openSearch} testId="deck-rail-search">
-        <SearchIcon className="size-4" />
-      </RailButton>
-      {destinations.length > 0 ? (
-        <>
-          <div className="my-1 w-5 border-border border-t" role="separator" />
-          {destinations.map((destination) => {
-            const Icon = destination.icon;
-            return (
-              <RailButton
-                key={destination.id}
-                label={destination.label}
-                onClick={destination.onSelect}
-                testId={`deck-rail-destination-${destination.id}`}
-                active={destination.active}
-                disabled={destination.disabled ?? false}
-              >
-                <Icon className="size-4" />
-              </RailButton>
-            );
-          })}
-        </>
-      ) : null}
-      {needsUserCount > 0 ? (
-        <RailButton
-          label={`${needsUserCount} ${needsUserCount === 1 ? "thread needs" : "threads need"} you`}
-          onClick={expandSidebar}
-          testId="deck-rail-needs-you"
-        >
-          <span className="relative inline-flex">
-            <BellDotIcon className="size-4 text-amber-600 dark:text-amber-300/90" />
-            <span className="-top-1 -right-1.5 absolute inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-amber-500 px-1 font-mono text-[9px] text-background leading-none dark:bg-amber-300/90">
-              {needsUserCount}
-            </span>
-          </span>
+    <SidebarHoverCardGroup>
+      <div
+        className="flex min-h-0 flex-1 flex-col items-center gap-1 py-2"
+        data-testid="sidebar-deck-rail"
+      >
+        <RailButton label="New thread" onClick={startNewThread} testId="deck-rail-new-thread">
+          <SquarePenIcon className="size-4" />
         </RailButton>
-      ) : null}
+        <RailButton label="Search" onClick={openSearch} testId="deck-rail-search">
+          <SearchIcon className="size-4" />
+        </RailButton>
+        {destinations.length > 0 ? (
+          <>
+            <div className="my-1 w-5 border-border border-t" role="separator" />
+            {destinations.map((destination) => {
+              const Icon = destination.icon;
+              return (
+                <RailButton
+                  key={destination.id}
+                  label={destination.label}
+                  onClick={destination.onSelect}
+                  testId={`deck-rail-destination-${destination.id}`}
+                  active={destination.active}
+                  disabled={destination.disabled ?? false}
+                >
+                  <Icon className="size-4" />
+                </RailButton>
+              );
+            })}
+          </>
+        ) : null}
+        {needsUserCount > 0 ? (
+          <RailButton
+            label={`${needsUserCount} ${needsUserCount === 1 ? "thread needs" : "threads need"} you`}
+            onClick={expandSidebar}
+            testId="deck-rail-needs-you"
+          >
+            <span className="relative inline-flex">
+              <BellDotIcon className="size-4 text-amber-600 dark:text-amber-300/90" />
+              <span className="-top-1 -right-1.5 absolute inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-amber-500 px-1 font-mono text-[9px] text-background leading-none dark:bg-amber-300/90">
+                {needsUserCount}
+              </span>
+            </span>
+          </RailButton>
+        ) : null}
 
-      {entries.length > 0 ? (
-        <>
-          <div className="my-1 w-5 border-border border-t" role="separator" />
-          <SidebarHoverCardGroup>
+        {entries.length > 0 ? (
+          <>
+            <div className="my-1 w-5 border-border border-t" role="separator" />
             <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
               {entries.map((entry) => (
                 <DeckRailThread
@@ -163,30 +163,30 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
                 />
               ))}
             </div>
-          </SidebarHoverCardGroup>
-        </>
-      ) : null}
+          </>
+        ) : null}
 
-      {projects.length > 0 ? (
-        <>
-          <div className="my-1 w-5 border-border border-t" role="separator" />
-          <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
-            {projects.map((project) => (
-              <DeckRailProjectGlyph
-                key={project.projectKey}
-                project={project}
-                onRevealProject={onRevealProject}
-              />
-            ))}
-          </div>
-        </>
-      ) : null}
+        {projects.length > 0 ? (
+          <>
+            <div className="my-1 w-5 border-border border-t" role="separator" />
+            <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
+              {projects.map((project) => (
+                <DeckRailProjectGlyph
+                  key={project.projectKey}
+                  project={project}
+                  onRevealProject={onRevealProject}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
 
-      <div className="flex-1" />
-      <RailButton label="Settings" onClick={openSettings} testId="deck-rail-settings">
-        <SettingsIcon className="size-4" />
-      </RailButton>
-    </div>
+        <div className="flex-1" />
+        <RailButton label="Settings" onClick={openSettings} testId="deck-rail-settings">
+          <SettingsIcon className="size-4" />
+        </RailButton>
+      </div>
+    </SidebarHoverCardGroup>
   );
 });
 
