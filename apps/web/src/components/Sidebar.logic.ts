@@ -452,6 +452,23 @@ export function isOnDeckDismissible(status: ThreadStatusPill | null): boolean {
 }
 
 /**
+ * Drops threads that already have a deck row, so a thread on deck appears once
+ * in the sidebar rather than twice. Must be applied *before* the preview window
+ * is computed: a deck thread should not consume a preview slot and then vanish,
+ * which would leave "Show more" counts disagreeing with the rendered rows.
+ */
+export function excludeOnDeckThreads<TThread>(input: {
+  threads: readonly TThread[];
+  onDeckThreadKeys: ReadonlySet<string>;
+  getThreadKey: (thread: TThread) => string;
+}): TThread[] {
+  if (input.onDeckThreadKeys.size === 0) {
+    return [...input.threads];
+  }
+  return input.threads.filter((thread) => !input.onDeckThreadKeys.has(input.getThreadKey(thread)));
+}
+
+/**
  * Statuses where the agent has stopped and cannot continue without the user.
  * Narrower than {@link ON_DECK_LIVE_STATUSES}: a working thread is live but
  * needs nothing, and a ready plan is an invitation rather than a block.

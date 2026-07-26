@@ -5,6 +5,7 @@ import {
   buildOnDeckSyncInput,
   countThreadsNeedingUser,
   createThreadJumpHintVisibilityController,
+  excludeOnDeckThreads,
   getSidebarThreadIdsToPrewarm,
   isOnDeckDismissible,
   getVisibleSidebarThreadIds,
@@ -1271,6 +1272,31 @@ describe("on deck classification", () => {
     expect(isOnDeckDismissible(pill("Completed"))).toBe(true);
     expect(isOnDeckDismissible(pill("Working"))).toBe(false);
     expect(isOnDeckDismissible(pill("Pending Approval"))).toBe(false);
+  });
+
+  it("excludeOnDeckThreads drops deck rows from the tree and keeps the rest in order", () => {
+    const threads = [{ key: "t-1" }, { key: "t-2" }, { key: "t-3" }];
+    const getThreadKey = (thread: { key: string }) => thread.key;
+
+    expect(
+      excludeOnDeckThreads({
+        threads,
+        onDeckThreadKeys: new Set(["t-2"]),
+        getThreadKey,
+      }),
+    ).toEqual([{ key: "t-1" }, { key: "t-3" }]);
+
+    expect(excludeOnDeckThreads({ threads, onDeckThreadKeys: new Set(), getThreadKey })).toEqual(
+      threads,
+    );
+
+    expect(
+      excludeOnDeckThreads({
+        threads,
+        onDeckThreadKeys: new Set(["t-1", "t-2", "t-3"]),
+        getThreadKey,
+      }),
+    ).toEqual([]);
   });
 
   it("countThreadsNeedingUser counts only threads blocked on the user", () => {

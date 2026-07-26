@@ -158,6 +158,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   buildOnDeckSyncInput,
+  excludeOnDeckThreads,
   getSidebarThreadIdsToPrewarm,
   getSidebarThreadWindow,
   isOnDeckDismissible,
@@ -1202,6 +1203,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
   const projectThreads = sidebarThreads;
+  // Threads with a deck row are rendered there instead of here, so the same
+  // thread never appears twice in the sidebar.
+  const onDeckThreadKeys = useUiStateStore(useShallow((state) => state.onDeckThreadKeys));
+  const onDeckThreadKeySet = useMemo(() => new Set(onDeckThreadKeys), [onDeckThreadKeys]);
   const projectExpanded = useUiStateStore(
     (state) => state.projectExpandedById[project.projectKey] ?? true,
   );
@@ -1316,8 +1321,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         },
       });
     };
-    const threadWindow = getSidebarThreadWindow({
+    const treeThreads = excludeOnDeckThreads({
       threads: visibleProjectThreads,
+      onDeckThreadKeys: onDeckThreadKeySet,
+      getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    });
+    const threadWindow = getSidebarThreadWindow({
+      threads: treeThreads,
       getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       activeThreadKey: activeRouteThreadKey,
       previewLimit: sidebarThreadPreviewCount,
@@ -1331,11 +1341,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       nextRevealCount: threadWindow.nextRevealCount,
       searchHandoffThreadCount: threadWindow.searchHandoffThreadCount,
       isThreadListRevealed: threadWindow.isRevealed,
+      // Deliberately the unfiltered list: a project whose only threads are on
+      // deck still has threads, so "no threads yet" would be a lie. It simply
+      // renders no rows of its own.
       showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
       shouldShowThreadPanel: projectExpanded,
     };
   }, [
     activeRouteThreadKey,
+    onDeckThreadKeySet,
     projectExpanded,
     projectThreads,
     revealedThreadCount,
@@ -3492,6 +3506,7 @@ export default function Sidebar() {
   );
 
   const visibleSidebarThreadKeys = useMemo(() => {
+    const onDeckKeySet = new Set(onDeckVisibleThreadKeys);
     const projectThreadKeys = [
       ...(generalChatsSnapshot ? [generalChatsSnapshot] : []),
       ...sortedProjects,
@@ -3500,12 +3515,16 @@ export default function Sidebar() {
       if (!projectExpanded) {
         return [];
       }
-      const projectThreads = sortThreads(
-        (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-          (thread) => thread.archivedAt === null,
+      const projectThreads = excludeOnDeckThreads({
+        threads: sortThreads(
+          (threadsByProjectKey.get(project.projectKey) ?? []).filter(
+            (thread) => thread.archivedAt === null,
+          ),
+          sidebarThreadSortOrder,
         ),
-        sidebarThreadSortOrder,
-      );
+        onDeckThreadKeys: onDeckKeySet,
+        getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      });
       // Mirrors SidebarProjectItem's rendering window so jump labels and
       // thread traversal line up with the rows that are actually visible.
       const { visibleThreads } = getSidebarThreadWindow({
@@ -3520,14 +3539,9 @@ export default function Sidebar() {
       );
     });
     // Deck rows render above the tree, so they lead the visual order that jump
-    // keys and thread traversal follow. A thread on deck keeps one identity:
-    // its project-tree row is deduped here so jump indices stay aligned (both
-    // rows show the deck position's label).
-    const onDeckKeySet = new Set(onDeckVisibleThreadKeys);
-    return [
-      ...onDeckVisibleThreadKeys,
-      ...projectThreadKeys.filter((threadKey) => !onDeckKeySet.has(threadKey)),
-    ];
+    // keys and thread traversal follow. The tree lists were already filtered
+    // above, so a deck thread has exactly one row and one jump index.
+    return [...onDeckVisibleThreadKeys, ...projectThreadKeys];
   }, [
     activeRouteProjectKey,
     generalChatsSnapshot,
