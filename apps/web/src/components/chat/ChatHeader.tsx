@@ -344,7 +344,14 @@ export const ChatHeader = memo(function ChatHeader({
                 <TooltipTrigger
                   render={
                     <Toggle
-                      className="shrink-0"
+                      className={cn(
+                        "shrink-0",
+                        // With the counts alongside it, the control needs room
+                        // on both sides -- the icon otherwise sits against the
+                        // hover fill -- and less between them: the base gap is
+                        // sized for icons, not for a label that belongs to one.
+                        workingTreeDiffStat !== null && !sourceControlOpen && "gap-1 px-1.5",
+                      )}
                       pressed={sourceControlOpen}
                       onPressedChange={onToggleSourceControl}
                       aria-label="Toggle source control panel"
@@ -356,7 +363,7 @@ export const ChatHeader = memo(function ChatHeader({
                       {/* Only while closed: once the panel is open it shows the
                           per-file counts, and repeating the total is noise. */}
                       {!sourceControlOpen && workingTreeDiffStat ? (
-                        <span className="ms-1 font-mono text-[10px] leading-none">
+                        <span className="font-mono text-[10px] leading-none">
                           <span className="text-success">+{workingTreeDiffStat.insertions}</span>
                           <span className="ps-1 text-destructive">
                             −{workingTreeDiffStat.deletions}

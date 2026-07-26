@@ -369,15 +369,38 @@ export function BrowserPanel({
           <RotateCwIcon className={cn("size-3.5", navState.loading && "animate-spin")} />
         </NavButton>
 
-        <form className="min-w-0 flex-1" onSubmit={submitAddress}>
+        <form className="relative min-w-0 flex-1" onSubmit={submitAddress}>
           <input
             aria-label="Address"
             data-testid="browser-panel-address"
-            className="w-full truncate rounded-md border border-border bg-background px-2 py-1 font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
+            className="w-full truncate rounded-md border border-border bg-background py-1 ps-2 pe-7 font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
             placeholder="Search or enter URL"
             value={addressDraft}
             onChange={(event) => setAddressDraft(event.target.value)}
           />
+          {/* Inside the field, where it reads as "this address, elsewhere"
+              rather than as another page control. */}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="Open in default browser"
+                  data-testid="browser-open-external"
+                  disabled={activeUrl === null}
+                  className="absolute inset-y-0 end-1 my-auto inline-flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                  onClick={() => {
+                    if (activeUrl !== null) {
+                      void window.desktopBridge?.openExternal?.(activeUrl);
+                    }
+                  }}
+                />
+              }
+            >
+              <ExternalLinkIcon className="size-3" />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">Open in default browser</TooltipPopup>
+          </Tooltip>
         </form>
       </div>
 
