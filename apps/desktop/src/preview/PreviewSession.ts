@@ -49,6 +49,7 @@ export class PreviewSession extends Context.Service<
     readonly partition: string;
     readonly getSession: () => Effect.Effect<Session, PreviewSessionCreationError>;
     readonly clearBrowsingData: () => Effect.Effect<void, PreviewSessionCreationError>;
+    readonly clearCache: () => Effect.Effect<void, PreviewSessionCreationError>;
   }
 >()("@threadlines/desktop/preview/PreviewSession") {}
 
@@ -89,6 +90,15 @@ export const make = Effect.gen(function* PreviewSessionMake() {
   return PreviewSession.of({
     partition: PREVIEW_PARTITION,
     getSession,
+    clearCache: Effect.fn("PreviewSession.clearCache")(function* () {
+      // Cache only: a stale bundle is a different complaint from being signed
+      // in, and clearing both when asked for one loses work.
+      const previewSession = yield* getSession();
+      yield* Effect.tryPromise({
+        try: () => previewSession.clearCache(),
+        catch: (cause) => new PreviewSessionCreationError({ partition: PREVIEW_PARTITION, cause }),
+      });
+    }),
     clearBrowsingData: Effect.fn("PreviewSession.clearBrowsingData")(function* () {
       const previewSession = yield* getSession();
       yield* Effect.tryPromise({

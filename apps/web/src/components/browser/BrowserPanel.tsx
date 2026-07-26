@@ -10,6 +10,7 @@ import {
   MinimizeIcon,
   MoreVerticalIcon,
   PlusIcon,
+  RotateCwSquareIcon,
   RadioTowerIcon,
   RotateCwIcon,
   XIcon,
@@ -18,16 +19,28 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   BROWSER_VIEWPORT_PRESETS,
+  RESPONSIVE_VIEWPORT,
   selectActiveTab,
   selectThreadBrowserState,
+  steppedZoom,
   useBrowserPanelStore,
+  type BrowserAppearance,
   type BrowserTab,
-  type BrowserViewportPresetId,
+  type BrowserViewport,
 } from "../../browserPanelStore";
 import { isElectron } from "../../env";
 import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { normalizePreviewUrl } from "./previewUrl";
 
@@ -72,6 +85,8 @@ export interface PreviewWebview extends HTMLElement {
   goBack: () => void;
   goForward: () => void;
   reload: () => void;
+  reloadIgnoringCache: () => void;
+  setZoomFactor: (factor: number) => void;
   loadURL: (url: string) => Promise<void>;
 }
 
@@ -103,7 +118,13 @@ export function BrowserPanel({
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
   const expanded = useBrowserPanelStore((store) => store.expanded);
   const toggleExpanded = useBrowserPanelStore((store) => store.toggleExpanded);
+  const deviceToolbarOpen = useBrowserPanelStore((store) => store.deviceToolbarOpen);
+  const toggleDeviceToolbar = useBrowserPanelStore((store) => store.toggleDeviceToolbar);
+  const appearance = useBrowserPanelStore((store) => store.appearance);
+  const setAppearance = useBrowserPanelStore((store) => store.setAppearance);
+  const setTabZoom = useBrowserPanelStore((store) => store.setTabZoom);
   const { resolvedTheme } = useTheme();
+  const guestColorScheme = appearance === "system" ? resolvedTheme : appearance;
 
   const activeTab = selectActiveTab(browserState);
   const activeTabId = activeTab?.id ?? "";
@@ -151,10 +172,6 @@ export function BrowserPanel({
         }
       });
   }, [activeTabId]);
-
-  const preset =
-    BROWSER_VIEWPORT_PRESETS.find((entry) => entry.id === activeTab?.viewportPresetId) ??
-    BROWSER_VIEWPORT_PRESETS[0];
 
   return (
     <section
@@ -231,24 +248,6 @@ export function BrowserPanel({
           />
         </form>
 
-        <select
-          aria-label="Viewport"
-          data-testid="browser-panel-viewport"
-          className="shrink-0 rounded-md border border-border bg-background px-1.5 py-1 font-mono text-[10px] text-muted-foreground outline-none focus:border-ring"
-          value={activeTab?.viewportPresetId ?? "fill"}
-          onChange={(event) => {
-            if (activeTabId !== "") {
-              setTabViewport(threadRef, activeTabId, event.target.value as BrowserViewportPresetId);
-            }
-          }}
-        >
-          {BROWSER_VIEWPORT_PRESETS.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.label}
-            </option>
-          ))}
-        </select>
-
         <NavButton label="Capture screenshot" onClick={captureScreenshot}>
           <CameraIcon className="size-3.5" />
         </NavButton>
@@ -267,6 +266,32 @@ export function BrowserPanel({
             <MoreVerticalIcon className="size-3.5" />
           </MenuTrigger>
           <MenuPopup align="end">
+            <MenuItem
+              onClick={() => {
+                const webview = webviewsRef.current.get(activeTabId);
+                callWhenReady(() => webview?.reloadIgnoringCache());
+              }}
+            >
+              Hard reload
+            </MenuItem>
+            <MenuItem data-testid="browser-toggle-device-bar" onClick={toggleDeviceToolbar}>
+              {deviceToolbarOpen ? "Hide device toolbar" : "Show device toolbar"}
+            </MenuItem>
+            <MenuSeparator />
+            <MenuRadioGroup
+              value={appearance}
+              onValueChange={(value) => setAppearance(value as BrowserAppearance)}
+            >
+              {/* The label belongs to the group: Base UI reads its context, and
+                  outside one it throws and takes the whole menu with it. */}
+              <MenuGroupLabel>Appearance</MenuGroupLabel>
+              {(["system", "light", "dark"] as const).map((value) => (
+                <MenuRadioItem key={value} value={value} closeOnClick>
+                  {value === "system" ? "Follow app" : value === "light" ? "Light" : "Dark"}
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+            <MenuSeparator />
             <MenuItem
               disabled={activeUrl === null}
               onClick={() => {
@@ -302,6 +327,16 @@ export function BrowserPanel({
             </MenuItem>
             <MenuSeparator />
             <MenuItem
+              data-testid="browser-clear-cache"
+              onClick={() => {
+                void window.desktopBridge?.previewClearCache?.().then(() => {
+                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reloadIgnoringCache());
+                });
+              }}
+            >
+              Clear cache
+            </MenuItem>
+            <MenuItem
               data-testid="browser-clear-data"
               onClick={() => {
                 // Signing out of the preview is the point, so reload after: the
@@ -320,6 +355,16 @@ export function BrowserPanel({
           <XIcon className="size-3.5" />
         </NavButton>
       </div>
+
+      {deviceToolbarOpen && activeTab !== null ? (
+        <DeviceToolbar
+          viewport={activeTab.viewport}
+          zoomFactor={activeTab.zoomFactor}
+          onViewportChange={(viewport) => setTabViewport(threadRef, activeTab.id, viewport)}
+          onZoomChange={(factor) => setTabZoom(threadRef, activeTab.id, factor)}
+          onClose={toggleDeviceToolbar}
+        />
+      ) : null}
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
         {!isElectron ? (
@@ -344,8 +389,9 @@ export function BrowserPanel({
                 tab={tab}
                 threadRef={threadRef}
                 isActive={tab.id === activeTabId}
-                preset={preset}
-                colorScheme={resolvedTheme}
+                viewport={tab.viewport}
+                zoomFactor={tab.zoomFactor}
+                colorScheme={guestColorScheme}
                 onNavState={setNavState}
                 register={(element) => {
                   if (element === null) {
@@ -421,7 +467,8 @@ function PreviewTabFrame({
   tab,
   threadRef,
   isActive,
-  preset,
+  viewport,
+  zoomFactor,
   colorScheme,
   onNavState,
   register,
@@ -429,7 +476,8 @@ function PreviewTabFrame({
   tab: BrowserTab;
   threadRef: ScopedThreadRef;
   isActive: boolean;
-  preset: (typeof BROWSER_VIEWPORT_PRESETS)[number];
+  viewport: BrowserViewport;
+  zoomFactor: number;
   colorScheme: "light" | "dark";
   onNavState: (state: NavState) => void;
   register: (element: PreviewWebview | null) => void;
@@ -452,6 +500,14 @@ function PreviewTabFrame({
       void window.desktopBridge?.previewSetColorScheme?.({ webContentsId: id, colorScheme });
     }
   }, [colorScheme]);
+
+  useEffect(() => {
+    const webview = elementRef.current;
+    if (webview === null || !isElectron) {
+      return;
+    }
+    callWhenReady(() => webview.setZoomFactor(zoomFactor));
+  }, [zoomFactor]);
 
   useEffect(() => {
     const webview = elementRef.current;
@@ -528,9 +584,9 @@ function PreviewTabFrame({
         {...(isActive ? { "data-testid": "browser-panel-webview" } : {})}
         className="h-full w-full bg-background"
         style={
-          preset.width === null
+          viewport.width === null
             ? undefined
-            : { width: `${preset.width}px`, height: `${preset.height}px`, flex: "none" }
+            : { width: `${viewport.width}px`, height: `${viewport.height ?? 800}px`, flex: "none" }
         }
         partition={PREVIEW_PARTITION}
         {...(tab.url ? { src: tab.url } : {})}
@@ -662,5 +718,169 @@ function BrowserUnavailableNotice() {
         host.
       </p>
     </div>
+  );
+}
+
+/**
+ * Size and zoom for the page under test.
+ *
+ * Hidden until asked for, because sizing is an occasional task and a permanent
+ * control costs toolbar width on every page you ever look at. Width and height
+ * are editable rather than a fixed menu of devices: the presets fill them in,
+ * and any other size is reachable by typing it.
+ */
+function DeviceToolbar({
+  viewport,
+  zoomFactor,
+  onViewportChange,
+  onZoomChange,
+  onClose,
+}: {
+  viewport: BrowserViewport;
+  zoomFactor: number;
+  onViewportChange: (viewport: BrowserViewport) => void;
+  onZoomChange: (factor: number) => void;
+  onClose: () => void;
+}) {
+  const matchingPreset = BROWSER_VIEWPORT_PRESETS.find(
+    (entry) => entry.width === viewport.width && entry.height === viewport.height,
+  );
+
+  return (
+    <div
+      className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2"
+      data-testid="browser-device-toolbar"
+    >
+      <select
+        aria-label="Device"
+        data-testid="browser-device-preset"
+        className="shrink-0 rounded-md border border-border bg-background px-1.5 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
+        value={matchingPreset?.label ?? "Custom"}
+        onChange={(event) => {
+          const preset = BROWSER_VIEWPORT_PRESETS.find((p) => p.label === event.target.value);
+          onViewportChange(
+            preset === undefined ? viewport : { width: preset.width, height: preset.height },
+          );
+        }}
+      >
+        {BROWSER_VIEWPORT_PRESETS.map((preset) => (
+          <option key={preset.label} value={preset.label}>
+            {preset.label}
+          </option>
+        ))}
+        {matchingPreset === undefined ? <option value="Custom">Custom</option> : null}
+      </select>
+
+      <DimensionInput
+        label="Width"
+        value={viewport.width}
+        onCommit={(width) =>
+          onViewportChange(
+            width === null ? RESPONSIVE_VIEWPORT : { width, height: viewport.height ?? 800 },
+          )
+        }
+      />
+      <span className="text-muted-foreground/50">×</span>
+      <DimensionInput
+        label="Height"
+        value={viewport.height}
+        onCommit={(height) =>
+          onViewportChange(
+            height === null ? RESPONSIVE_VIEWPORT : { width: viewport.width ?? 1280, height },
+          )
+        }
+      />
+
+      <button
+        type="button"
+        aria-label="Rotate"
+        data-testid="browser-device-rotate"
+        disabled={viewport.width === null}
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        onClick={() => onViewportChange({ width: viewport.height, height: viewport.width })}
+      >
+        <RotateCwSquareIcon className="size-3.5" />
+      </button>
+
+      <div className="ms-auto flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          aria-label="Zoom out"
+          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+          onClick={() => onZoomChange(steppedZoom(zoomFactor, -1))}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          aria-label="Reset zoom"
+          data-testid="browser-zoom-value"
+          className="min-w-10 rounded-md px-1 font-mono text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={() => onZoomChange(1)}
+        >
+          {Math.round(zoomFactor * 100)}%
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom in"
+          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+          onClick={() => onZoomChange(steppedZoom(zoomFactor, 1))}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          aria-label="Hide device toolbar"
+          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+          onClick={onClose}
+        >
+          <XIcon className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Empty means "let it fill", which is how you get back to responsive by typing. */
+function DimensionInput({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: number | null;
+  onCommit: (value: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(value === null ? "" : String(value));
+  useEffect(() => {
+    setDraft(value === null ? "" : String(value));
+  }, [value]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      onCommit(null);
+      return;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    onCommit(Number.isNaN(parsed) || parsed < 1 ? value : Math.min(parsed, 9999));
+  };
+
+  return (
+    <input
+      aria-label={label}
+      data-testid={`browser-device-${label.toLowerCase()}`}
+      inputMode="numeric"
+      className="w-14 rounded-md border border-border bg-background px-1.5 py-1 text-center font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
+      placeholder="auto"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          commit();
+        }
+      }}
+    />
   );
 }

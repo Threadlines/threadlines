@@ -124,6 +124,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL, input),
   previewClearBrowsingData: () =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL),
+  previewClearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   showContextMenu: (items, position) =>

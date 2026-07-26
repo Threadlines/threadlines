@@ -137,3 +137,13 @@ export const previewSetColorScheme = makeIpcMethod({
     yield* automation.setColorScheme(input.webContentsId, input.colorScheme);
   }),
 });
+
+export const previewClearCache = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.clearCache")(function* () {
+    const session = yield* PreviewSession.PreviewSession;
+    yield* session.clearCache();
+  }),
+});

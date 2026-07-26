@@ -15,15 +15,27 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-/** Named viewports, so "does this work on a phone" is one click rather than arithmetic. */
+/**
+ * Named sizes, as shortcuts for filling in a width and height rather than as
+ * the only way to choose one. Any size is reachable by typing it.
+ */
 export const BROWSER_VIEWPORT_PRESETS = [
-  { id: "fill", label: "Fill", width: null, height: null },
-  { id: "iphone-15", label: "iPhone 15", width: 393, height: 852 },
-  { id: "ipad", label: "iPad", width: 834, height: 1112 },
-  { id: "laptop", label: "Laptop", width: 1280, height: 800 },
+  { label: "Responsive", width: null, height: null },
+  { label: "iPhone 15", width: 393, height: 852 },
+  { label: "iPad", width: 834, height: 1112 },
+  { label: "Laptop", width: 1280, height: 800 },
 ] as const;
 
-export type BrowserViewportPresetId = (typeof BROWSER_VIEWPORT_PRESETS)[number]["id"];
+/** null dimensions mean the page fills the panel and reflows with it. */
+export interface BrowserViewport {
+  width: number | null;
+  height: number | null;
+}
+
+export const RESPONSIVE_VIEWPORT: BrowserViewport = Object.freeze({ width: null, height: null });
+
+/** Follows the app unless deliberately overridden for the page under test. */
+export type BrowserAppearance = "system" | "light" | "dark";
 
 export interface BrowserTab {
   id: string;
@@ -32,7 +44,8 @@ export interface BrowserTab {
   /** The page's own title, used as the tab label once it has one. */
   title: string | null;
   /** Per-tab, because the viewport belongs to the thing you are looking at. */
-  viewportPresetId: BrowserViewportPresetId;
+  viewport: BrowserViewport;
+  zoomFactor: number;
 }
 
 export interface ThreadBrowserState {
@@ -59,7 +72,7 @@ function nextTabId(): string {
 }
 
 export function makeBrowserTab(): BrowserTab {
-  return { id: nextTabId(), url: null, title: null, viewportPresetId: "fill" };
+  return { id: nextTabId(), url: null, title: null, viewport: RESPONSIVE_VIEWPORT, zoomFactor: 1 };
 }
 
 /**
@@ -75,7 +88,8 @@ const DEFAULT_TAB: BrowserTab = Object.freeze({
   id: "tab-initial",
   url: null,
   title: null,
-  viewportPresetId: "fill",
+  viewport: RESPONSIVE_VIEWPORT,
+  zoomFactor: 1,
 });
 
 const DEFAULT_THREAD_STATE: ThreadBrowserState = Object.freeze({
@@ -89,6 +103,25 @@ const EMPTY_THREAD_STATE: ThreadBrowserState = Object.freeze({
   tabs: [],
   activeTabId: "",
 });
+
+/** Chrome's range, so the familiar steps land on familiar numbers. */
+export const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
+
+export function clampZoomFactor(factor: number): number {
+  if (!Number.isFinite(factor)) {
+    return 1;
+  }
+  return Math.min(2, Math.max(0.5, factor));
+}
+
+/** The next step up or down, so zooming lands on round values rather than drifting. */
+export function steppedZoom(current: number, direction: 1 | -1): number {
+  const steps = direction === 1 ? ZOOM_STEPS : [...ZOOM_STEPS].reverse();
+  const next = steps.find((step) =>
+    direction === 1 ? step > current + 0.001 : step < current - 0.001,
+  );
+  return next ?? clampZoomFactor(current);
+}
 
 export function clampBrowserSplitFraction(fraction: number): number {
   if (!Number.isFinite(fraction)) {
@@ -127,6 +160,13 @@ interface BrowserPanelStoreState {
   splitChatFraction: number;
   /** Hides the chat so the page gets the whole centre; the split is remembered. */
   expanded: boolean;
+  /**
+   * The device row is off by default. Sizing is an occasional task, and a
+   * permanent control for it costs toolbar width on every page you ever look
+   * at, which is the wrong trade for something used a few times a session.
+   */
+  deviceToolbarOpen: boolean;
+  appearance: BrowserAppearance;
   setBrowserOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   toggleBrowserOpen: (threadRef: ScopedThreadRef) => void;
   openTab: (threadRef: ScopedThreadRef) => void;
@@ -134,11 +174,10 @@ interface BrowserPanelStoreState {
   selectTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   setTabUrl: (threadRef: ScopedThreadRef, tabId: string, url: string) => void;
   setTabTitle: (threadRef: ScopedThreadRef, tabId: string, title: string) => void;
-  setTabViewport: (
-    threadRef: ScopedThreadRef,
-    tabId: string,
-    presetId: BrowserViewportPresetId,
-  ) => void;
+  setTabViewport: (threadRef: ScopedThreadRef, tabId: string, viewport: BrowserViewport) => void;
+  setTabZoom: (threadRef: ScopedThreadRef, tabId: string, zoomFactor: number) => void;
+  toggleDeviceToolbar: () => void;
+  setAppearance: (appearance: BrowserAppearance) => void;
   setSplitChatFraction: (fraction: number) => void;
   toggleExpanded: () => void;
 }
@@ -172,6 +211,8 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       browserStateByThreadKey: {},
       splitChatFraction: DEFAULT_BROWSER_SPLIT_CHAT_FRACTION,
       expanded: false,
+      deviceToolbarOpen: false,
+      appearance: "system",
       setBrowserOpen: (threadRef, open) =>
         set((state) => updateThread(state, threadRef, (current) => ({ ...current, open }))),
       toggleBrowserOpen: (threadRef) =>
@@ -214,12 +255,18 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         set((state) =>
           updateThread(state, threadRef, (current) => updateTab(current, tabId, { title })),
         ),
-      setTabViewport: (threadRef, tabId, viewportPresetId) =>
+      setTabViewport: (threadRef, tabId, viewport) =>
+        set((state) =>
+          updateThread(state, threadRef, (current) => updateTab(current, tabId, { viewport })),
+        ),
+      setTabZoom: (threadRef, tabId, zoomFactor) =>
         set((state) =>
           updateThread(state, threadRef, (current) =>
-            updateTab(current, tabId, { viewportPresetId }),
+            updateTab(current, tabId, { zoomFactor: clampZoomFactor(zoomFactor) }),
           ),
         ),
+      toggleDeviceToolbar: () => set((state) => ({ deviceToolbarOpen: !state.deviceToolbarOpen })),
+      setAppearance: (appearance) => set(() => ({ appearance })),
       setSplitChatFraction: (fraction) =>
         set(() => ({ splitChatFraction: clampBrowserSplitFraction(fraction) })),
       toggleExpanded: () => set((state) => ({ expanded: !state.expanded })),
@@ -232,6 +279,8 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       partialize: (state) => ({
         browserStateByThreadKey: state.browserStateByThreadKey,
         splitChatFraction: state.splitChatFraction,
+        deviceToolbarOpen: state.deviceToolbarOpen,
+        appearance: state.appearance,
         // Expansion is deliberately not persisted: reopening the app to a
         // hidden chat would look like the thread had vanished.
       }),

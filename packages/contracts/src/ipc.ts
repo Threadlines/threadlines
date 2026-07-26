@@ -727,6 +727,7 @@ export interface DesktopBridge {
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
   previewClearBrowsingData?: () => Promise<void>;
+  previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],
