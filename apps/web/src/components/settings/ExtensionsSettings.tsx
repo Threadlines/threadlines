@@ -3250,7 +3250,14 @@ function ExtensionBrowserItemRow({
       className="group grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => onSelect(item)}
     >
-      <ExtensionItemGlyph item={item} environmentId={environmentId} />
+      {/* Catalog rows are two lines tall, so the artwork carries the row rather than
+          sitting in it as an afterthought. */}
+      <ExtensionItemGlyph
+        item={item}
+        environmentId={environmentId}
+        sizeClassName="size-8"
+        containerClassName="inline-flex size-8 items-center justify-center rounded-md border border-border/60 bg-muted/40"
+      />
       <div className="min-w-0 space-y-1">
         <div className="flex min-w-0 items-center gap-2">
           <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
