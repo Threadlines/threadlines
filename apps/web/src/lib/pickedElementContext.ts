@@ -12,10 +12,19 @@ import { appendBlockToPrompt } from "./fileSelectionContext";
  * still find it, and they are how elements are identified everywhere else in
  * this feature.
  */
+/** A style value tried on the page, kept as a proposal for the agent. */
+export interface PickedElementStyleChange {
+  property: string;
+  from: string;
+  to: string;
+}
+
 export interface PickedElementContext {
   /** Why this element matters, in the user's words. Optional: a bare element
    *  is still worth attaching, it just says less. */
   note: string | null;
+  /** Tweaks made while annotating; the page was a scratch pad, not an edit. */
+  styleChanges: PickedElementStyleChange[];
   tagName: string;
   role: string | null;
   name: string | null;
@@ -37,6 +46,7 @@ export function pickedElementFromPreview(
 ): PickedElementContext {
   return {
     note: element.note,
+    styleChanges: element.styleChanges.map((change) => ({ ...change })),
     tagName: element.tagName,
     role: element.role,
     name: element.name,
@@ -117,6 +127,11 @@ export function formatPickedElementDescriptor(context: PickedElementContext): st
   return snippet === null ? context.tagName : `${context.tagName} · "${snippet}"`;
 }
 
+/** "16px → 18px", the form a person would write it in. */
+export function formatStyleChange(change: PickedElementStyleChange): string {
+  return `${change.property}: ${change.from} → ${change.to}`;
+}
+
 export function formatPickedElementContextBlock(context: PickedElementContext): string {
   const lines = [
     ...(context.note === null ? [] : [`note: ${context.note}`]),
@@ -127,6 +142,11 @@ export function formatPickedElementContextBlock(context: PickedElementContext): 
     ...(context.text === null || context.text === context.name ? [] : [`text: ${context.text}`]),
     `size: ${context.width}x${context.height}`,
     `url: ${context.url}`,
+    // Labelled as proposed so the agent changes the source rather than
+    // assuming the change is already made.
+    ...(context.styleChanges.length === 0
+      ? []
+      : [`proposed styles: ${context.styleChanges.map(formatStyleChange).join("; ")}`]),
   ];
   return `<selected_element>\n${lines.join("\n")}\n</selected_element>`;
 }

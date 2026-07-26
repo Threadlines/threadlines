@@ -1,9 +1,10 @@
-import { CrosshairIcon, MousePointerClickIcon, XIcon } from "lucide-react";
+import { CrosshairIcon, MousePointerClickIcon, PaintbrushIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import {
   formatPickedElementDescriptor,
+  formatStyleChange,
   type PickedElementContextDraft,
 } from "~/lib/pickedElementContext";
 import { COMPOSER_INLINE_CHIP_DISMISS_BUTTON_CLASS_NAME } from "../composerInlineChip";
@@ -139,6 +140,16 @@ function PickedElementChip({
                   className="size-1 shrink-0 rounded-full bg-primary-readable"
                 />
               )}
+              {context.styleChanges.length === 0 ? null : (
+                <span
+                  aria-label={`${context.styleChanges.length} proposed style changes`}
+                  data-testid={`picked-element-style-count-${context.id}`}
+                  className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
+                >
+                  <PaintbrushIcon className="size-2.5" />
+                  {context.styleChanges.length}
+                </span>
+              )}
             </button>
           }
         />
@@ -153,11 +164,26 @@ function PickedElementChip({
         </button>
       </span>
 
-      <PopoverPopup className="w-80 p-3" side="top" align="start">
-        <p className="mb-1 truncate text-xs font-medium text-foreground">{descriptor}</p>
-        <p className="mb-2 truncate font-mono text-[10px] text-muted-foreground/70">
+      <PopoverPopup className="w-80 p-2" side="top" align="start">
+        <p className="truncate text-xs font-medium text-foreground">{descriptor}</p>
+        <p className="mb-1.5 truncate font-mono text-[10px] text-muted-foreground/70">
           {context.selector}
         </p>
+        {context.styleChanges.length === 0 ? null : (
+          <ul
+            className="mb-1.5 flex flex-col gap-0.5"
+            data-testid={`picked-element-styles-${context.id}`}
+          >
+            {context.styleChanges.map((change) => (
+              <li
+                key={change.property}
+                className="truncate font-mono text-[10px] text-muted-foreground"
+              >
+                {formatStyleChange(change)}
+              </li>
+            ))}
+          </ul>
+        )}
         <Textarea
           ref={noteInputRef}
           value={noteDraft}
@@ -175,20 +201,17 @@ function PickedElementChip({
             }
           }}
           placeholder="What about this element?"
-          className="min-h-16 text-xs"
+          className="min-h-12 resize-none px-2 py-1.5 text-xs"
           data-testid={`picked-element-note-${context.id}`}
         />
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-1.5 flex items-center gap-2">
           {onReveal === undefined ? null : (
             <Button
               type="button"
               size="sm"
               variant="ghost"
               data-testid={`picked-element-reveal-${context.id}`}
-              onClick={() => {
-                onReveal(context);
-                setOpen(false);
-              }}
+              onClick={() => onReveal(context)}
             >
               <CrosshairIcon className="size-3.5" />
               Show in preview

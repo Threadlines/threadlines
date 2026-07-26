@@ -495,6 +495,18 @@ export const DesktopPreviewPickedElementSchema = Schema.Struct({
   text: Schema.NullOr(Schema.String),
   /** What the user said about it while picking; the reason the element matters. */
   note: Schema.NullOr(Schema.String),
+  /**
+   * Style tweaks made on the page while annotating, as before-and-after pairs.
+   * A proposal, not an edit: the page is a scratch pad and nothing here has
+   * touched the source.
+   */
+  styleChanges: Schema.Array(
+    Schema.Struct({
+      property: Schema.String,
+      from: Schema.String,
+      to: Schema.String,
+    }),
+  ),
   rect: Schema.Struct({
     x: Schema.Number,
     y: Schema.Number,

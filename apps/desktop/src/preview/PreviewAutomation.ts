@@ -275,8 +275,9 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       };
 
       return {
-        // The note is attached by the caller: it comes from the user, not the DOM.
+        // Both come from the user rather than the DOM; the caller attaches them.
         note: null,
+        styleChanges: [],
         tagName: String(value.tagName ?? "element"),
         role: first === undefined ? null : readValue(first.role),
         name: first === undefined ? null : readValue(first.name),
@@ -554,9 +555,21 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
 
       const pickedPoint = yield* Effect.tryPromise({
         try: () =>
-          new Promise<{ x: number; y: number; note: string | null } | null>((resolve) => {
+          new Promise<{
+            x: number;
+            y: number;
+            note: string | null;
+            styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
+          } | null>((resolve) => {
             let done = false;
-            const finish = (value: { x: number; y: number; note: string | null } | null) => {
+            const finish = (
+              value: {
+                x: number;
+                y: number;
+                note: string | null;
+                styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
+              } | null,
+            ) => {
               if (done) return;
               done = true;
               contents.debugger.off("message", onMessage);
@@ -576,12 +589,18 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
                   x?: number;
                   y?: number;
                   note?: string | null;
+                  styleChanges?: ReadonlyArray<{ property: string; from: string; to: string }>;
                   cancelled?: boolean;
                 };
                 finish(
                   payload.cancelled === true || payload.x === undefined || payload.y === undefined
                     ? null
-                    : { x: payload.x, y: payload.y, note: payload.note ?? null },
+                    : {
+                        x: payload.x,
+                        y: payload.y,
+                        note: payload.note ?? null,
+                        styleChanges: payload.styleChanges ?? [],
+                      },
                 );
               } catch {
                 finish(null);
@@ -616,7 +635,9 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         return null;
       }
       const described = yield* describePickedNode(sendCommand)(contents, located.backendNodeId);
-      return described === null ? null : { ...described, note: pickedPoint.note };
+      return described === null
+        ? null
+        : { ...described, note: pickedPoint.note, styleChanges: pickedPoint.styleChanges };
     }),
     revealElement: Effect.fn("PreviewAutomation.revealElement")(function* (
       webContentsId: number,

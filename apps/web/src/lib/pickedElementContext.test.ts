@@ -11,6 +11,7 @@ import {
 
 const context: PickedElementContext = {
   note: null,
+  styleChanges: [],
   tagName: "button",
   role: "button",
   name: "Sign in",
@@ -93,6 +94,21 @@ describe("normalizePickedElementContextDraft", () => {
 });
 
 describe("appendPickedElementContextsToPrompt", () => {
+  it("labels style tweaks as proposed, since nothing has touched the source", () => {
+    const prompt = appendPickedElementContextsToPrompt("", [
+      {
+        ...context,
+        styleChanges: [{ property: "font-size", from: "16px", to: "18px" }],
+      },
+    ]);
+
+    expect(prompt).toContain("proposed styles: font-size: 16px → 18px");
+  });
+
+  it("says nothing about styles when none were tried", () => {
+    expect(appendPickedElementContextsToPrompt("", [context])).not.toContain("proposed styles");
+  });
+
   it("appends a block the agent can read without disturbing the message", () => {
     const prompt = appendPickedElementContextsToPrompt("this button is misaligned", [context]);
 
@@ -127,6 +143,7 @@ describe("pickedElementFromPreview", () => {
     expect(
       pickedElementFromPreview({
         note: null,
+        styleChanges: [],
         tagName: "a",
         role: "link",
         name: "Docs",

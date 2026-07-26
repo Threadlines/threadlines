@@ -115,6 +115,18 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
     ".input::placeholder{color:rgba(232,230,225,0.4)}" +
     ".hint{color:rgba(232,230,225,0.45);" +
     "font:400 10px/1.3 ui-sans-serif,system-ui,sans-serif}" +
+    ".tweaks{display:flex;align-items:center;gap:10px}" +
+    ".tweak{display:flex;align-items:center;gap:4px;color:rgba(232,230,225,0.6);" +
+    "font:400 10px/1.3 ui-sans-serif,system-ui,sans-serif}" +
+    ".size{width:44px;padding:2px 4px;border-radius:3px;background:#0f1115;" +
+    "border:1px solid rgba(255,255,255,0.16);color:#e8e6e1;outline:none;" +
+    "font:400 11px ui-monospace,SFMono-Regular,Menlo,monospace}" +
+    ".unit{color:rgba(232,230,225,0.4)}" +
+    ".colour{width:22px;height:18px;padding:0;border:1px solid rgba(255,255,255,0.16);" +
+    "border-radius:3px;background:none;cursor:pointer}" +
+    ".reset{margin-left:auto;padding:2px 6px;border-radius:3px;cursor:pointer;" +
+    "background:none;border:1px solid rgba(255,255,255,0.16);color:rgba(232,230,225,0.7);" +
+    "font:400 10px ui-sans-serif,system-ui,sans-serif}" +
     "</style>" +
     "<div class='box' hidden></div><div class='tag' hidden></div>";
   const box = root.querySelector(".box");
@@ -176,9 +188,83 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
     field.className = "note";
     field.innerHTML =
       "<input class='input' type='text' placeholder='What about this element?' />" +
+      "<div class='tweaks'>" +
+      "<label class='tweak'>size<input class='size' type='number' min='1' max='200' step='1' /><span class='unit'>px</span></label>" +
+      "<label class='tweak'>colour<input class='colour' type='color' /></label>" +
+      "<button type='button' class='reset' hidden>reset</button>" +
+      "</div>" +
       "<span class='hint'>Enter to attach · Esc to cancel</span>";
     root.appendChild(field);
     const input = field.querySelector(".input");
+
+    // Style tweaks are applied to the element as you make them, so the note can
+    // say "like this" instead of describing a value in words. They are recorded
+    // as before-and-after and sent as a proposal: the page is a scratch pad, and
+    // nothing here changes the source until the agent does it.
+    const sizeInput = field.querySelector(".size");
+    const colourInput = field.querySelector(".colour");
+    const resetButton = field.querySelector(".reset");
+    const computed = getComputedStyle(chosen);
+    const originals = {
+      "font-size": computed.fontSize,
+      color: computed.color,
+    };
+    // The colour input only speaks hex, and computed colour is rgb().
+    // Deliberately regex-free. This script lives in a template literal, where a
+    // backslash escape collapses to the bare letter before the page ever sees
+    // it -- which turned a digit class into a literal, left the pattern with an
+    // unbalanced group, and took the whole overlay down with a syntax error.
+    const toHex = (value) => {
+      const open = value.indexOf("(");
+      const close = value.indexOf(")");
+      if (open < 0 || close < 0) return "#000000";
+      const parts = value.slice(open + 1, close).split(",");
+      if (parts.length < 3) return "#000000";
+      return (
+        "#" +
+        parts
+          .slice(0, 3)
+          .map((part) => {
+            const channel = Math.max(0, Math.min(255, Math.round(Number(part.trim()) || 0)));
+            return channel.toString(16).padStart(2, "0");
+          })
+          .join("")
+      );
+    };
+    sizeInput.value = String(Math.round(parseFloat(originals["font-size"])) || 16);
+    colourInput.value = toHex(originals.color);
+
+    const tweaks = new Map();
+    const recordTweak = (property, from, to) => {
+      if (from === to) {
+        tweaks.delete(property);
+      } else {
+        tweaks.set(property, { property, from, to });
+      }
+      resetButton.hidden = tweaks.size === 0;
+    };
+    sizeInput.addEventListener("input", () => {
+      const next = sizeInput.value + "px";
+      chosen.style.fontSize = next;
+      recordTweak("font-size", originals["font-size"], next);
+    });
+    colourInput.addEventListener("input", () => {
+      chosen.style.color = colourInput.value;
+      recordTweak("color", toHex(originals.color), colourInput.value);
+    });
+    resetButton.addEventListener("click", () => {
+      chosen.style.fontSize = "";
+      chosen.style.color = "";
+      sizeInput.value = String(Math.round(parseFloat(originals["font-size"])) || 16);
+      colourInput.value = toHex(originals.color);
+      tweaks.clear();
+      resetButton.hidden = true;
+      input.focus();
+    });
+    // Typing in a number field must not submit the annotation.
+    for (const control of [sizeInput, colourInput]) {
+      control.addEventListener("keydown", (event) => event.stopPropagation());
+    }
 
     const rect = chosen.getBoundingClientRect();
     // Below the element, or above it when there is no room underneath.
@@ -194,8 +280,16 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
       if (event.key === "Enter") {
         event.preventDefault();
         const note = input.value.trim();
+        const styleChanges = [...tweaks.values()];
         dispose();
-        window[BINDING](JSON.stringify({ x: point.x, y: point.y, note: note === "" ? null : note }));
+        window[BINDING](
+          JSON.stringify({
+            x: point.x,
+            y: point.y,
+            note: note === "" ? null : note,
+            styleChanges,
+          }),
+        );
       } else if (event.key === "Escape") {
         event.preventDefault();
         dispose();

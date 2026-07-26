@@ -148,6 +148,9 @@ const PersistedPickedElementContextDraft = Schema.Struct({
   threadId: ThreadId,
   createdAt: Schema.String,
   note: Schema.NullOr(Schema.String),
+  styleChanges: Schema.Array(
+    Schema.Struct({ property: Schema.String, from: Schema.String, to: Schema.String }),
+  ),
   tagName: Schema.String,
   role: Schema.NullOr(Schema.String),
   name: Schema.NullOr(Schema.String),
@@ -2224,7 +2227,10 @@ function toHydratedThreadDraft(
       persistedDraft.fileSelectionContexts?.map((context) => ({ ...context })) ?? [],
     pickedElementContexts:
       persistedDraft.pickedElementContexts?.flatMap((context) => {
-        const normalized = normalizePickedElementContextDraft({ ...context });
+        const normalized = normalizePickedElementContextDraft({
+          ...context,
+          styleChanges: context.styleChanges.map((change) => ({ ...change })),
+        });
         return normalized === null ? [] : [normalized];
       }) ?? [],
     modelSelectionByProvider,
