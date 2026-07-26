@@ -1,4 +1,5 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MessagesSquareIcon } from "lucide-react";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -6,7 +7,7 @@ import { render } from "vitest-browser-react";
 
 import type { ThreadStatusPill } from "../Sidebar.logic";
 import type { SidebarThreadSummary } from "../../types";
-import { DeckRail } from "./DeckRail";
+import { DeckRail, type DeckRailProject } from "./DeckRail";
 import type { OnDeckEntry } from "./OnDeckSection";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -51,31 +52,43 @@ function entry(
   };
 }
 
-function renderRail(entries: readonly OnDeckEntry[], overrides?: { routeThreadKey?: string }) {
+function renderRail(
+  entries: readonly OnDeckEntry[],
+  overrides?: { routeThreadKey?: string; projects?: readonly DeckRailProject[] },
+) {
   const navigateToThread = vi.fn();
   const expandSidebar = vi.fn();
   const onSelectChats = vi.fn();
+  const onRevealProject = vi.fn();
+  // Project glyphs render a favicon, which fetches over react-query.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   const screen = render(
-    <DeckRail
-      entries={entries}
-      routeThreadKey={overrides?.routeThreadKey ?? null}
-      navigateToThread={navigateToThread}
-      destinations={[
-        {
-          id: "chats",
-          label: "General chats",
-          icon: MessagesSquareIcon,
-          active: false,
-          onSelect: onSelectChats,
-        },
-      ]}
-      openSearch={vi.fn()}
-      openSettings={vi.fn()}
-      startNewThread={vi.fn()}
-      expandSidebar={expandSidebar}
-    />,
+    <QueryClientProvider client={queryClient}>
+      <DeckRail
+        entries={entries}
+        projects={overrides?.projects ?? []}
+        onRevealProject={onRevealProject}
+        routeThreadKey={overrides?.routeThreadKey ?? null}
+        navigateToThread={navigateToThread}
+        destinations={[
+          {
+            id: "chats",
+            label: "General chats",
+            icon: MessagesSquareIcon,
+            active: false,
+            onSelect: onSelectChats,
+          },
+        ]}
+        openSearch={vi.fn()}
+        openSettings={vi.fn()}
+        startNewThread={vi.fn()}
+        expandSidebar={expandSidebar}
+      />
+    </QueryClientProvider>,
   );
-  return { expandSidebar, navigateToThread, onSelectChats, screen };
+  return { expandSidebar, navigateToThread, onRevealProject, onSelectChats, screen };
 }
 
 describe("DeckRail", () => {
@@ -130,6 +143,26 @@ describe("DeckRail", () => {
 
     await chats.click();
     expect(onSelectChats).toHaveBeenCalledOnce();
+  });
+
+  it("shows a project glyph that opens the pane at that project", async () => {
+    const { onRevealProject } = renderRail([], {
+      projects: [
+        {
+          projectKey: "badcode",
+          name: "badcode",
+          cwd: "/repo/badcode",
+          environmentId: ENVIRONMENT_ID,
+          status: status("Working"),
+        },
+      ],
+    });
+
+    const glyph = page.getByTestId("deck-rail-project-badcode");
+    await expect.element(glyph).toHaveAttribute("aria-label", "badcode · Working");
+
+    await glyph.click();
+    expect(onRevealProject).toHaveBeenCalledWith("badcode");
   });
 
   it("omits the attention badge when nothing is waiting on the user", async () => {

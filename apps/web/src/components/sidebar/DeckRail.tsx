@@ -1,10 +1,15 @@
 import { BellDotIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { memo, useCallback } from "react";
-import type { ScopedThreadRef } from "@threadlines/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { cn } from "../../lib/utils";
-import { countThreadsNeedingUser, isNeedsUserStatus } from "../Sidebar.logic";
+import {
+  countThreadsNeedingUser,
+  isNeedsUserStatus,
+  type ThreadStatusPill,
+} from "../Sidebar.logic";
 import { ThreadStatusDot } from "../ThreadStatusIndicators";
+import { ProjectFavicon } from "../ProjectFavicon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { OnDeckEntry } from "./OnDeckSection";
 import type { SidebarDestination } from "./DestinationBand";
@@ -55,8 +60,18 @@ function RailButton({
   );
 }
 
+export interface DeckRailProject {
+  projectKey: string;
+  name: string;
+  cwd: string;
+  environmentId: EnvironmentId;
+  status: ThreadStatusPill | null;
+}
+
 export interface DeckRailProps {
   entries: readonly OnDeckEntry[];
+  projects: readonly DeckRailProject[];
+  onRevealProject: (projectKey: string) => void;
   destinations: readonly SidebarDestination[];
   routeThreadKey: string | null;
   navigateToThread: (threadRef: ScopedThreadRef) => void;
@@ -77,6 +92,8 @@ export interface DeckRailProps {
 export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
   const {
     entries,
+    projects,
+    onRevealProject,
     destinations,
     routeThreadKey,
     navigateToThread,
@@ -151,6 +168,21 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
         </>
       ) : null}
 
+      {projects.length > 0 ? (
+        <>
+          <div className="my-1 w-5 border-border border-t" role="separator" />
+          <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
+            {projects.map((project) => (
+              <DeckRailProjectGlyph
+                key={project.projectKey}
+                project={project}
+                onRevealProject={onRevealProject}
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+
       <div className="flex-1" />
       <RailButton label="Settings" onClick={openSettings} testId="deck-rail-settings">
         <SettingsIcon className="size-4" />
@@ -191,5 +223,49 @@ function DeckRailThread(props: {
         <ThreadStatusDot status={entry.status} />
       </button>
     </ThreadHoverCard>
+  );
+}
+
+function DeckRailProjectGlyph({
+  project,
+  onRevealProject,
+}: {
+  project: DeckRailProject;
+  onRevealProject: (projectKey: string) => void;
+}) {
+  const handleClick = useCallback(() => {
+    onRevealProject(project.projectKey);
+  }, [onRevealProject, project.projectKey]);
+  const label = project.status ? `${project.name} · ${project.status.label}` : project.name;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            data-testid={`deck-rail-project-${project.projectKey}`}
+            className={cn(RAIL_BUTTON_CLASS_NAME, "relative")}
+            onClick={handleClick}
+          >
+            <ProjectFavicon
+              cwd={project.cwd}
+              environmentId={project.environmentId}
+              className="size-4"
+            />
+            {project.status ? (
+              // Corner dot rather than a row of its own: the glyph already
+              // identifies the project, so activity only needs a mark.
+              <ThreadStatusDot
+                status={project.status}
+                className="absolute right-0.5 bottom-0.5 size-1.5 ring-2 ring-sidebar"
+              />
+            ) : null}
+          </button>
+        }
+      />
+      <TooltipPopup side="right">{label}</TooltipPopup>
+    </Tooltip>
   );
 }

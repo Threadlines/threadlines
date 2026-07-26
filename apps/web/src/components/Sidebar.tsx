@@ -160,6 +160,7 @@ import {
   isOnDeckDismissible,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
+  resolveProjectStatusForThreads,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
@@ -172,7 +173,7 @@ import {
   ThreadStatusPill,
 } from "./Sidebar.logic";
 import { OnDeckSection, type OnDeckEntry } from "./sidebar/OnDeckSection";
-import { DeckRail } from "./sidebar/DeckRail";
+import { DeckRail, type DeckRailProject } from "./sidebar/DeckRail";
 import {
   DESTINATION_ICONS,
   DestinationBand,
@@ -1269,24 +1270,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         threadLastVisitedAts[index] ?? null,
       ]),
     );
-    const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
-      const lastVisitedAt = lastVisitedAtByThreadKey.get(
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      );
-      return resolveThreadStatusPill({
-        thread: {
-          ...thread,
-          ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
-        },
-      });
-    };
     const visibleProjectThreads = sortThreads(
       projectThreads.filter((thread) => thread.archivedAt === null),
       threadSortOrder,
     );
-    const projectStatus = resolveProjectStatusIndicator(
-      visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
-    );
+    const projectStatus = resolveProjectStatusForThreads({
+      threads: visibleProjectThreads,
+      getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      getLastVisitedAt: (threadKey) => lastVisitedAtByThreadKey.get(threadKey),
+    });
     return {
       orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -3234,6 +3226,16 @@ export default function Sidebar() {
   const expandSidebar = useCallback(() => {
     void setOpen(true);
   }, [setOpen]);
+  const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
+  // The rail has nowhere to show a thread list, so a glyph opens the pane with
+  // that project already unfolded rather than navigating somewhere unasked.
+  const revealProject = useCallback(
+    (projectKey: string) => {
+      setProjectExpanded(projectKey, true);
+      void setOpen(true);
+    },
+    [setOpen, setProjectExpanded],
+  );
   const openSettings = useCallback(() => {
     void navigate({ to: "/settings" });
   }, [navigate]);
@@ -3417,6 +3419,27 @@ export default function Sidebar() {
       routeThreadKey,
     );
   }, [deckEligibleThreads, onDeckStatusByThreadKey, routeThreadKey, syncOnDeck]);
+
+  // The rail drops the project tree, so each project keeps a glyph carrying the
+  // same aggregate status its expanded row shows.
+  const railProjects = useMemo<DeckRailProject[]>(
+    () =>
+      sortedProjects.map((project) => ({
+        projectKey: project.projectKey,
+        name: project.displayName,
+        cwd: project.cwd,
+        environmentId: project.environmentId,
+        status: resolveProjectStatusForThreads({
+          threads: (threadsByProjectKey.get(project.projectKey) ?? []).filter(
+            (thread) => thread.archivedAt === null,
+          ),
+          getThreadKey: (thread) =>
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          getLastVisitedAt: (threadKey) => threadLastVisitedAtById[threadKey],
+        }),
+      })),
+    [sortedProjects, threadLastVisitedAtById, threadsByProjectKey],
+  );
 
   const onDeckEntries = useMemo<OnDeckEntry[]>(() => {
     return onDeckThreadKeys.flatMap((threadKey) => {
@@ -3773,6 +3796,8 @@ export default function Sidebar() {
         <SidebarChromeHeader isElectron={isElectron} collapsed />
         <DeckRail
           entries={onDeckEntries}
+          projects={railProjects}
+          onRevealProject={revealProject}
           destinations={destinations}
           routeThreadKey={routeThreadKey}
           navigateToThread={navigateToThread}

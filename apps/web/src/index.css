@@ -285,6 +285,19 @@ html.electron {
   --app-window-resize-edge-inset: 6px;
 }
 
+/* macOS traffic lights are wider than the collapsed rail, so painting the rail
+   colour behind them splits the titlebar into two greys that meet mid-button.
+   Start the rail below the titlebar instead, leaving one continuous strip
+   across the top. Only in Electron: nothing else draws window controls. */
+html.electron [data-collapsible="icon"][data-side="left"] [data-slot="sidebar-container"] {
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--workspace-topbar-height),
+    var(--rail) var(--workspace-topbar-height)
+  );
+}
+
 body {
   font-family: var(--font-sans);
   margin: 0;

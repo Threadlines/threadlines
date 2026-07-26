@@ -495,6 +495,32 @@ export function countThreadsNeedingUser(statuses: ReadonlyArray<ThreadStatusPill
   return count;
 }
 
+/**
+ * A project's aggregate status, derived from its threads.
+ *
+ * Both the expanded project row and the collapsed rail's project glyph have to
+ * answer the same question, so they share this derivation rather than each
+ * rolling their own and drifting apart.
+ */
+export function resolveProjectStatusForThreads(input: {
+  threads: readonly SidebarThreadSummary[];
+  getThreadKey: (thread: SidebarThreadSummary) => string;
+  /** Lookup rather than a record so callers can pass a Map or an object. */
+  getLastVisitedAt: (threadKey: string) => string | null | undefined;
+}): ThreadStatusPill | null {
+  return resolveProjectStatusIndicator(
+    input.threads.map((thread) => {
+      const lastVisitedAt = input.getLastVisitedAt(input.getThreadKey(thread));
+      return resolveThreadStatusPill({
+        thread: {
+          ...thread,
+          ...(lastVisitedAt !== undefined && lastVisitedAt !== null ? { lastVisitedAt } : {}),
+        },
+      });
+    }),
+  );
+}
+
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,
 ): ThreadStatusPill | null {
