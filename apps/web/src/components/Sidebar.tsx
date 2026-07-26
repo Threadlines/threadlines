@@ -5,7 +5,6 @@ import {
   ChevronUpIcon,
   CloudIcon,
   FolderPlusIcon,
-  MessageCirclePlusIcon,
   MessagesSquareIcon,
   PinIcon,
   PinOffIcon,
@@ -46,7 +45,6 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
   ProjectId,
-  type ScopedProjectRef,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
   type ThreadEnvMode,
@@ -72,9 +70,7 @@ import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
-import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import {
-  selectGeneralChatsProjectAcrossEnvironments,
   selectProjectByRef,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsForProjectRefs,
@@ -177,6 +173,11 @@ import {
 } from "./Sidebar.logic";
 import { OnDeckSection, type OnDeckEntry } from "./sidebar/OnDeckSection";
 import { DeckRail } from "./sidebar/DeckRail";
+import {
+  DESTINATION_ICONS,
+  DestinationBand,
+  type SidebarDestination,
+} from "./sidebar/DestinationBand";
 import { startNewGeneralChatThread, startNewThreadFromContext } from "../lib/chatThreadActions";
 import { sortThreads } from "../lib/threadSort";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
@@ -2789,9 +2790,8 @@ interface SidebarProjectsContentProps {
   openAddProject: () => void;
   /** The On Deck working-set group, rendered between search and the tree. */
   onDeckSection: React.ReactNode;
-  generalChatsProjectRef: ScopedProjectRef | null;
+  destinationBand: React.ReactNode;
   /** Pinned above the Projects section; null while there are no general chats. */
-  generalChatsProject: SidebarProjectSnapshot | null;
   isManualProjectSorting: boolean;
   projectDnDSensors: ReturnType<typeof useSensors>;
   projectCollisionDetection: CollisionDetection;
@@ -2831,8 +2831,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     updateSettings,
     openAddProject,
     onDeckSection,
-    generalChatsProjectRef,
-    generalChatsProject,
+    destinationBand,
     isManualProjectSorting,
     projectDnDSensors,
     projectCollisionDetection,
@@ -2912,59 +2911,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroup>
+      {destinationBand}
       {onDeckSection}
-      {/* The slot below search is always the General Chats home: a quiet
-          new-chat action row until the first chat exists, then the group
-          itself (whose hover button takes over starting new chats). */}
-      {!generalChatsProject && generalChatsProjectRef ? (
-        <SidebarGroup className="px-2 pt-3 pb-1">
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="sm"
-                className="justify-center gap-2 rounded-md border border-dashed border-border/70 px-2 py-1.5 text-muted-foreground/75 transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
-                data-testid="sidebar-new-general-chat-trigger"
-                onClick={() => {
-                  void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
-                }}
-              >
-                <MessageCirclePlusIcon className="size-3.5" />
-                <span className="truncate text-xs">New general chat</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-      ) : null}
-      {generalChatsProject ? (
-        <SidebarGroup className="px-2 pt-3 pb-4">
-          <SidebarMenu>
-            <SidebarProjectItem
-              project={generalChatsProject}
-              revealedThreadCount={
-                revealedThreadCountsByProject.get(generalChatsProject.projectKey) ?? 0
-              }
-              activeRouteThreadKey={
-                activeRouteProjectKey === generalChatsProject.projectKey ? routeThreadKey : null
-              }
-              newThreadShortcutLabel={newThreadShortcutLabel}
-              handleNewThread={handleNewThread}
-              archiveThread={archiveThread}
-              pinThread={pinThread}
-              unpinThread={unpinThread}
-              deleteThread={deleteThread}
-              threadJumpLabelByKey={threadJumpLabelByKey}
-              attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
-              expandThreadListForProject={expandThreadListForProject}
-              collapseThreadListForProject={collapseThreadListForProject}
-              dragInProgressRef={dragInProgressRef}
-              suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
-              suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
-              isManualProjectSorting={false}
-              dragHandleProps={null}
-            />
-          </SidebarMenu>
-        </SidebarGroup>
-      ) : null}
       <SidebarGroup className="px-2 py-2">
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
           <SectionLabel>Projects</SectionLabel>
@@ -3089,18 +3037,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 
 export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
-  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const generalChatsProjectRef = useMemo(
-    () =>
-      resolveGeneralChatsProjectRef({
-        generalChatsProject,
-        activeEnvironmentId,
-        primaryEnvironmentId,
-      }),
-    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
-  );
   const workspaceProjectsLength = projects.filter(
     (project) => project.kind !== "general-chat",
   ).length;
@@ -3421,16 +3358,6 @@ export default function Sidebar() {
   ]);
   // Pinned above the Projects section, hidden until it has chats; discovery
   // happens through the header's new-general-chat button.
-  const generalChatsSnapshot = useMemo(() => {
-    const snapshot = sidebarProjects.find((project) => project.kind === "general-chat");
-    if (!snapshot) {
-      return null;
-    }
-    const hasVisibleThreads = (threadsByProjectKey.get(snapshot.projectKey) ?? []).some(
-      (thread) => thread.archivedAt === null,
-    );
-    return hasVisibleThreads ? snapshot : null;
-  }, [sidebarProjects, threadsByProjectKey]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
 
   // On Deck: the cross-project working set pinned above the project browser.
@@ -3507,10 +3434,7 @@ export default function Sidebar() {
 
   const visibleSidebarThreadKeys = useMemo(() => {
     const onDeckKeySet = new Set(onDeckVisibleThreadKeys);
-    const projectThreadKeys = [
-      ...(generalChatsSnapshot ? [generalChatsSnapshot] : []),
-      ...sortedProjects,
-    ].flatMap((project) => {
+    const projectThreadKeys = sortedProjects.flatMap((project) => {
       const projectExpanded = projectExpandedById[project.projectKey] ?? true;
       if (!projectExpanded) {
         return [];
@@ -3544,7 +3468,6 @@ export default function Sidebar() {
     return [...onDeckVisibleThreadKeys, ...projectThreadKeys];
   }, [
     activeRouteProjectKey,
-    generalChatsSnapshot,
     onDeckVisibleThreadKeys,
     routeThreadKey,
     sidebarThreadSortOrder,
@@ -3604,6 +3527,26 @@ export default function Sidebar() {
   const visibleThreadJumpLabelByKey = showThreadJumpHints
     ? threadJumpLabelByKey
     : EMPTY_THREAD_JUMP_LABELS;
+  // One list, rendered as rows in the pane and as icons in the rail, so both
+  // densities offer the same destinations in the same order.
+  const destinations = useMemo<SidebarDestination[]>(
+    () => [
+      {
+        id: "chats",
+        label: "Chats",
+        icon: DESTINATION_ICONS.chats,
+        active: pathname.startsWith("/chats"),
+        onSelect: () => {
+          void navigate({ to: "/chats" });
+        },
+      },
+    ],
+    [navigate, pathname],
+  );
+  const destinationBand = useMemo(
+    () => <DestinationBand destinations={destinations} />,
+    [destinations],
+  );
   const onDeckSection = useMemo(
     () =>
       onDeckEntries.length > 0 ? (
@@ -3783,6 +3726,7 @@ export default function Sidebar() {
         <SidebarChromeHeader isElectron={isElectron} collapsed />
         <DeckRail
           entries={onDeckEntries}
+          destinations={destinations}
           routeThreadKey={routeThreadKey}
           navigateToThread={navigateToThread}
           openSearch={toggleCommandPalette}
@@ -3812,8 +3756,7 @@ export default function Sidebar() {
             updateSettings={updateSettings}
             openAddProject={openAddProjectCommandPalette}
             onDeckSection={onDeckSection}
-            generalChatsProjectRef={generalChatsProjectRef}
-            generalChatsProject={generalChatsSnapshot}
+            destinationBand={destinationBand}
             isManualProjectSorting={isManualProjectSorting}
             projectDnDSensors={projectDnDSensors}
             projectCollisionDetection={projectCollisionDetection}

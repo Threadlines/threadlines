@@ -7,6 +7,7 @@ import { countThreadsNeedingUser, isNeedsUserStatus } from "../Sidebar.logic";
 import { ThreadStatusDot } from "../ThreadStatusIndicators";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { OnDeckEntry } from "./OnDeckSection";
+import type { SidebarDestination } from "./DestinationBand";
 
 const RAIL_BUTTON_CLASS_NAME =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground/70 outline-hidden ring-ring transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2";
@@ -16,10 +17,18 @@ interface RailButtonProps {
   onClick: () => void;
   testId?: string;
   active?: boolean;
+  disabled?: boolean;
   children: React.ReactNode;
 }
 
-function RailButton({ label, onClick, testId, active = false, children }: RailButtonProps) {
+function RailButton({
+  label,
+  onClick,
+  testId,
+  active = false,
+  disabled = false,
+  children,
+}: RailButtonProps) {
   return (
     <Tooltip>
       <TooltipTrigger
@@ -28,7 +37,12 @@ function RailButton({ label, onClick, testId, active = false, children }: RailBu
             type="button"
             aria-label={label}
             data-testid={testId}
-            className={cn(RAIL_BUTTON_CLASS_NAME, active && "bg-sidebar-accent text-foreground")}
+            disabled={disabled}
+            className={cn(
+              RAIL_BUTTON_CLASS_NAME,
+              active && "bg-sidebar-accent text-foreground",
+              disabled && "cursor-default opacity-40 hover:bg-transparent hover:text-inherit",
+            )}
             onClick={onClick}
           >
             {children}
@@ -42,6 +56,7 @@ function RailButton({ label, onClick, testId, active = false, children }: RailBu
 
 export interface DeckRailProps {
   entries: readonly OnDeckEntry[];
+  destinations: readonly SidebarDestination[];
   routeThreadKey: string | null;
   navigateToThread: (threadRef: ScopedThreadRef) => void;
   openSearch: () => void;
@@ -61,6 +76,7 @@ export interface DeckRailProps {
 export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
   const {
     entries,
+    destinations,
     routeThreadKey,
     navigateToThread,
     openSearch,
@@ -81,6 +97,26 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
       <RailButton label="Search" onClick={openSearch} testId="deck-rail-search">
         <SearchIcon className="size-4" />
       </RailButton>
+      {destinations.length > 0 ? (
+        <>
+          <div className="my-1 w-5 border-border border-t" role="separator" />
+          {destinations.map((destination) => {
+            const Icon = destination.icon;
+            return (
+              <RailButton
+                key={destination.id}
+                label={destination.label}
+                onClick={destination.onSelect}
+                testId={`deck-rail-destination-${destination.id}`}
+                active={destination.active}
+                disabled={destination.disabled ?? false}
+              >
+                <Icon className="size-4" />
+              </RailButton>
+            );
+          })}
+        </>
+      ) : null}
       {needsUserCount > 0 ? (
         <RailButton
           label={`${needsUserCount} ${needsUserCount === 1 ? "thread needs" : "threads need"} you`}

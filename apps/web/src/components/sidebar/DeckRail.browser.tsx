@@ -1,4 +1,5 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
+import { MessagesSquareIcon } from "lucide-react";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -47,18 +48,28 @@ function entry(
 function renderRail(entries: readonly OnDeckEntry[], overrides?: { routeThreadKey?: string }) {
   const navigateToThread = vi.fn();
   const expandSidebar = vi.fn();
+  const onSelectChats = vi.fn();
   const screen = render(
     <DeckRail
       entries={entries}
       routeThreadKey={overrides?.routeThreadKey ?? null}
       navigateToThread={navigateToThread}
+      destinations={[
+        {
+          id: "chats",
+          label: "Chats",
+          icon: MessagesSquareIcon,
+          active: false,
+          onSelect: onSelectChats,
+        },
+      ]}
       openSearch={vi.fn()}
       openSettings={vi.fn()}
       startNewThread={vi.fn()}
       expandSidebar={expandSidebar}
     />,
   );
-  return { expandSidebar, navigateToThread, screen };
+  return { expandSidebar, navigateToThread, onSelectChats, screen };
 }
 
 describe("DeckRail", () => {
@@ -98,6 +109,16 @@ describe("DeckRail", () => {
 
     await badge.click();
     expect(expandSidebar).toHaveBeenCalledOnce();
+  });
+
+  it("offers the same destinations the expanded pane does", async () => {
+    const { onSelectChats } = renderRail([]);
+
+    const chats = page.getByTestId("deck-rail-destination-chats");
+    await expect.element(chats).toHaveAttribute("aria-label", "Chats");
+
+    await chats.click();
+    expect(onSelectChats).toHaveBeenCalledOnce();
   });
 
   it("omits the attention badge when nothing is waiting on the user", async () => {
