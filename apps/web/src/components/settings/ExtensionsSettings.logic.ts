@@ -151,7 +151,7 @@ export function formatTokenCount(tokens: number): string {
  * what you already have, what the provider promotes, then the most installed.
  */
 const CURATED_PLUGIN_BROWSE_THRESHOLD = 60;
-const CURATED_PLUGIN_BROWSE_LIMIT = 24;
+const CURATED_PLUGIN_BROWSE_LIMIT = 50;
 
 export interface CuratedPluginCandidate {
   readonly featured?: boolean | undefined;
@@ -167,21 +167,18 @@ export function selectCuratedPlugins<T>(
   items: ReadonlyArray<T>,
   read: (item: T) => CuratedPluginCandidate,
 ): ReadonlyArray<T> {
-  const promoted = new Set(
-    items.filter((item) => {
-      const candidate = read(item);
-      return candidate.installed === true || candidate.featured === true;
-    }),
-  );
-  if (promoted.size >= CURATED_PLUGIN_BROWSE_LIMIT) {
-    return [...promoted].slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
-  }
+  // What you already have is listed on the page above; spending discovery slots on it is what made
+  // this view mostly a duplicate. Rank by what the provider promotes, then by what others install.
+  const candidates = items.filter((item) => read(item).installed !== true);
+  const featured = candidates.filter((item) => read(item).featured === true);
+  const featuredSet = new Set(featured);
+  const popular = candidates
+    .filter((item) => !featuredSet.has(item))
+    .toSorted((left, right) => (read(right).installCount ?? 0) - (read(left).installCount ?? 0));
 
-  const popular = items
-    .filter((item) => !promoted.has(item))
-    .toSorted((left, right) => (read(right).installCount ?? 0) - (read(left).installCount ?? 0))
-    .slice(0, CURATED_PLUGIN_BROWSE_LIMIT - promoted.size);
-  return [...promoted, ...popular];
+  const curated = [...featured, ...popular].slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
+  // A catalog of only-installed plugins would otherwise curate down to nothing.
+  return curated.length > 0 ? curated : items.slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
 }
 
 /** Plain-text rendering of a plugin's contents, for surfaces that only have a text output slot. */

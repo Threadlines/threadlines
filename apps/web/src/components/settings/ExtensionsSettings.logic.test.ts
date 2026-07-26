@@ -65,19 +65,26 @@ describe("ExtensionsSettings logic", () => {
 
     const catalog = [
       { name: "unpopular", installCount: 3 },
-      { name: "installed", installed: true },
+      { name: "already-installed", installed: true, installCount: 100_000 },
       { name: "popular", installCount: 9000 },
       { name: "featured", featured: true },
       { name: "middling", installCount: 400 },
     ];
 
+    // Installed plugins are listed on the page already, so the discovery view leaves them out.
     expect(selectCuratedPlugins(catalog, (entry) => entry).map((entry) => entry.name)).toEqual([
-      "installed",
       "featured",
       "popular",
       "middling",
       "unpopular",
     ]);
+
+    // A catalog with nothing left to discover still shows something rather than going blank.
+    expect(
+      selectCuratedPlugins([{ name: "only", installed: true }], (entry) => entry).map(
+        (entry) => entry.name,
+      ),
+    ).toEqual(["only"]);
   });
 
   it("drops a plugin prefix from a bundled skill name without mangling others", () => {
