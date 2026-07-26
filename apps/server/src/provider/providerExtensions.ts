@@ -1648,6 +1648,110 @@ export function parseClaudeMarketplaceList(
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+export type ClaudeMarketplaceManifestPlugin = {
+  readonly displayName?: string | undefined;
+  readonly description?: string | undefined;
+  readonly category?: string | undefined;
+  readonly developerName?: string | undefined;
+  readonly websiteUrl?: string | undefined;
+  readonly keywords?: ReadonlyArray<string> | undefined;
+  readonly source?:
+    | string
+    | {
+        readonly url?: string | undefined;
+      }
+    | undefined;
+};
+
+const ClaudeMarketplaceManifestSchema = Schema.Struct({
+  plugins: Schema.optional(Schema.Array(Schema.Unknown)),
+});
+const decodeClaudeMarketplaceManifest = Schema.decodeUnknownOption(ClaudeMarketplaceManifestSchema);
+
+export function parseClaudeMarketplaceManifest(
+  value: unknown,
+): Map<string, ClaudeMarketplaceManifestPlugin> {
+  const decoded = decodeClaudeMarketplaceManifest(value);
+  if (Option.isNone(decoded)) return new Map();
+
+  const plugins = new Map<string, ClaudeMarketplaceManifestPlugin>();
+  for (const entry of decoded.value.plugins ?? []) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const name = stringField(record, "name");
+    if (!name) continue;
+
+    const author = record.author;
+    const developerName =
+      typeof author === "string"
+        ? optionalText(author)
+        : author && typeof author === "object" && !Array.isArray(author)
+          ? stringField(author as Record<string, unknown>, "name")
+          : undefined;
+    const keywords = Array.isArray(record.keywords)
+      ? record.keywords
+          .map((keyword) => (typeof keyword === "string" ? optionalText(keyword) : undefined))
+          .filter((keyword): keyword is string => keyword !== undefined)
+      : [];
+    const rawSource = record.source;
+    const sourceUrl =
+      rawSource && typeof rawSource === "object" && !Array.isArray(rawSource)
+        ? stringField(rawSource as Record<string, unknown>, "url")
+        : undefined;
+    const source =
+      typeof rawSource === "string"
+        ? optionalText(rawSource)
+        : sourceUrl
+          ? { url: sourceUrl }
+          : undefined;
+
+    plugins.set(name, {
+      ...(stringField(record, "displayName")
+        ? { displayName: stringField(record, "displayName") }
+        : {}),
+      ...(stringField(record, "description")
+        ? { description: stringField(record, "description") }
+        : {}),
+      ...(stringField(record, "category") ? { category: stringField(record, "category") } : {}),
+      ...(developerName ? { developerName } : {}),
+      ...(stringField(record, "homepage") ? { websiteUrl: stringField(record, "homepage") } : {}),
+      ...(keywords.length > 0 ? { keywords } : {}),
+      ...(source ? { source } : {}),
+    });
+  }
+  return plugins;
+}
+
+export function deriveClaudePluginGitHubOwner(
+  source: unknown,
+  marketplaceRepo: string | undefined,
+): string | undefined {
+  if (source && typeof source === "object" && !Array.isArray(source)) {
+    const url = stringField(source as Record<string, unknown>, "url");
+    if (!url) return undefined;
+    try {
+      const parsed = new URL(url);
+      const [owner, repository] = parsed.pathname.split("/").filter(Boolean);
+      return parsed.protocol === "https:" &&
+        parsed.hostname.toLowerCase() === "github.com" &&
+        owner &&
+        repository
+        ? owner
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const sourcePath = typeof source === "string" ? optionalText(source) : undefined;
+  if (!sourcePath || (!sourcePath.startsWith("./") && /^[a-z][a-z\d+.-]*:\/\//i.test(sourcePath))) {
+    return undefined;
+  }
+  const normalizedRepo = optionalText(marketplaceRepo);
+  if (!normalizedRepo || !/^[^/\s]+\/[^/\s]+$/.test(normalizedRepo)) return undefined;
+  return optionalText(normalizedRepo.split("/")[0]);
+}
+
 type ParsedClaudePluginDetails = {
   readonly name?: string | undefined;
   readonly version?: string | undefined;
@@ -1819,6 +1923,22 @@ const readClaudePluginManifest = Effect.fn("providerExtensions.readClaudePluginM
       return parseClaudePluginManifest(JSON.parse(contents));
     } catch {
       return {};
+    }
+  },
+);
+
+const readClaudeMarketplaceManifest = Effect.fn("providerExtensions.readClaudeMarketplaceManifest")(
+  function* (installLocation: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const contents = yield* fileSystem
+      .readFileString(path.join(installLocation, ".claude-plugin", "marketplace.json"))
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    if (contents === null) return new Map<string, ClaudeMarketplaceManifestPlugin>();
+    try {
+      return parseClaudeMarketplaceManifest(JSON.parse(contents));
+    } catch {
+      return new Map<string, ClaudeMarketplaceManifestPlugin>();
     }
   },
 );
@@ -2613,6 +2733,54 @@ const describeInstalledClaudePlugins = Effect.fn(
   });
 });
 
+function enrichClaudePluginsFromMarketplaceManifests(
+  plugins: ReadonlyArray<ProviderExtensionPlugin>,
+  marketplaces: ReadonlyArray<ProviderExtensionMarketplace>,
+  manifests: ReadonlyMap<string, ReadonlyMap<string, ClaudeMarketplaceManifestPlugin>>,
+): ProviderExtensionPlugin[] {
+  const marketplacesByName = new Map(
+    marketplaces.map((marketplace) => [marketplace.name, marketplace] as const),
+  );
+
+  return plugins.map((plugin) => {
+    const separatorIndex = plugin.id.lastIndexOf("@");
+    if (separatorIndex <= 0 || separatorIndex === plugin.id.length - 1) return plugin;
+    const pluginName = plugin.id.slice(0, separatorIndex);
+    const marketplaceName = plugin.id.slice(separatorIndex + 1);
+    const manifest = manifests.get(marketplaceName)?.get(pluginName);
+    if (!manifest) return plugin;
+
+    const displayName = optionalText(plugin.displayName) ?? manifest.displayName;
+    const description = optionalText(plugin.description) ?? manifest.description;
+    const category = optionalText(plugin.category) ?? manifest.category;
+    const developerName = optionalText(plugin.developerName) ?? manifest.developerName;
+    const websiteUrl = optionalText(plugin.websiteUrl) ?? manifest.websiteUrl;
+    const existingKeywords = (plugin.keywords ?? [])
+      .map((keyword) => optionalText(keyword))
+      .filter((keyword): keyword is string => keyword !== undefined);
+    const keywords = existingKeywords.length > 0 ? existingKeywords : manifest.keywords;
+    const githubOwner = deriveClaudePluginGitHubOwner(
+      manifest.source,
+      marketplacesByName.get(marketplaceName)?.source,
+    );
+    // These load from github.com at render time; this is a deliberate tradeoff for catalog legibility.
+    const iconUrl =
+      optionalText(plugin.iconUrl) ??
+      (githubOwner ? `https://github.com/${githubOwner}.png?size=80` : undefined);
+
+    return {
+      ...plugin,
+      ...(displayName ? { displayName } : {}),
+      ...(description ? { description } : {}),
+      ...(category ? { category } : {}),
+      ...(developerName ? { developerName } : {}),
+      ...(websiteUrl ? { websiteUrl } : {}),
+      ...(keywords && keywords.length > 0 ? { keywords: [...keywords] } : {}),
+      ...(iconUrl ? { iconUrl } : {}),
+    };
+  });
+}
+
 const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(function* (input: {
   readonly config: ClaudeSettings;
   readonly cwd: string;
@@ -2682,10 +2850,31 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     resultMessage(skillsResult),
   ].filter((message): message is string => Boolean(message));
   const pluginEntries = Result.isSuccess(pluginResult) ? pluginResult.success : [];
-  const plugins = yield* describeInstalledClaudePlugins(pluginEntries.map((entry) => entry.plugin));
+  const describedPlugins = yield* describeInstalledClaudePlugins(
+    pluginEntries.map((entry) => entry.plugin),
+  );
   const marketplaces = Result.isSuccess(marketplaceResult)
-    ? parseClaudeMarketplaceList(marketplaceResult.success.stdout, plugins)
+    ? parseClaudeMarketplaceList(marketplaceResult.success.stdout, describedPlugins)
     : [];
+  const marketplaceManifests = new Map(
+    yield* Effect.all(
+      marketplaces.flatMap((marketplace) => {
+        const installLocation = optionalText(marketplace.path);
+        if (!installLocation) return [];
+        return [
+          readClaudeMarketplaceManifest(installLocation).pipe(
+            Effect.map((manifest) => [marketplace.name, manifest] as const),
+          ),
+        ];
+      }),
+      { concurrency: 4 },
+    ),
+  );
+  const plugins = enrichClaudePluginsFromMarketplaceManifests(
+    describedPlugins,
+    marketplaces,
+    marketplaceManifests,
+  );
   const skills = Result.isSuccess(skillsResult)
     ? annotatePluginBackedSkills(skillsResult.success, plugins)
     : [];

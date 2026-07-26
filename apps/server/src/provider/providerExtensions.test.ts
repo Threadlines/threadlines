@@ -23,11 +23,13 @@ import {
   codexMarketplaceLoadErrorMessage,
   codexMcpLoginCommandForDisplay,
   codexSkillConfigWriteParams,
+  deriveClaudePluginGitHubOwner,
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
   mapCodexPluginInventory,
   mapCodexPluginDetail,
+  parseClaudeMarketplaceManifest,
   parseClaudeMarketplaceList,
   parseClaudeMcpList,
   parseClaudePluginDetails,
@@ -488,6 +490,193 @@ describe("provider extensions inventory", () => {
         },
       ],
     );
+  });
+
+  it("parses Claude marketplace manifest metadata with optional authors", () => {
+    const manifest = parseClaudeMarketplaceManifest({
+      name: "claude-plugins-official",
+      plugins: [
+        {
+          name: "acrobat",
+          displayName: "Adobe Acrobat",
+          description: "Work with PDF documents.",
+          author: { name: "Adobe", email: "plugins@example.com" },
+          category: "productivity",
+          homepage: "https://www.adobe.com/acrobat",
+          keywords: [" pdf ", "", "documents"],
+          source: {
+            source: "git-subdir",
+            url: "https://github.com/adobe/acrobat-claude-plugin.git",
+          },
+        },
+        {
+          name: "agent-sdk-dev",
+          description: "Build Claude agents.",
+          source: "./plugins/agent-sdk-dev",
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      manifest,
+      new Map([
+        [
+          "acrobat",
+          {
+            displayName: "Adobe Acrobat",
+            description: "Work with PDF documents.",
+            category: "productivity",
+            developerName: "Adobe",
+            websiteUrl: "https://www.adobe.com/acrobat",
+            keywords: ["pdf", "documents"],
+            source: { url: "https://github.com/adobe/acrobat-claude-plugin.git" },
+          },
+        ],
+        [
+          "agent-sdk-dev",
+          {
+            description: "Build Claude agents.",
+            source: "./plugins/agent-sdk-dev",
+          },
+        ],
+      ]),
+    );
+    assert.deepEqual(parseClaudeMarketplaceManifest({ plugins: "invalid" }), new Map());
+  });
+
+  it("derives Claude plugin GitHub owners from plugin and marketplace sources", () => {
+    assert.equal(
+      deriveClaudePluginGitHubOwner(
+        {
+          source: "git-subdir",
+          url: "https://github.com/42Crunch-AI/claude-plugins.git",
+        },
+        "anthropics/claude-plugins-official",
+      ),
+      "42Crunch-AI",
+    );
+    assert.equal(
+      deriveClaudePluginGitHubOwner(
+        "./plugins/agent-sdk-dev",
+        "anthropics/claude-plugins-official",
+      ),
+      "anthropics",
+    );
+    assert.equal(
+      deriveClaudePluginGitHubOwner(
+        { url: "https://gitlab.com/example/claude-plugin.git" },
+        "anthropics/claude-plugins-official",
+      ),
+      undefined,
+    );
+  });
+
+  it.effect("enriches Claude inventory without replacing an installed plugin description", () => {
+    let pluginInstallPath = "";
+    let marketplacePath = "";
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      const args = childProcess.args;
+      if (args[0] === "plugin" && args[1] === "list") {
+        return Effect.succeed(
+          makeProcessResult(
+            JSON.stringify({
+              installed: [
+                {
+                  id: "agent-sdk-dev@claude-plugins-official",
+                  enabled: true,
+                  installPath: pluginInstallPath,
+                },
+              ],
+              available: [
+                {
+                  pluginId: "agent-sdk-dev@claude-plugins-official",
+                  name: "agent-sdk-dev",
+                  marketplaceName: "claude-plugins-official",
+                },
+              ],
+            }),
+          ),
+        );
+      }
+      if (args[0] === "plugin" && args[1] === "marketplace" && args[2] === "list") {
+        return Effect.succeed(
+          makeProcessResult(
+            JSON.stringify([
+              {
+                name: "claude-plugins-official",
+                repo: "anthropics/claude-plugins-official",
+                installLocation: marketplacePath,
+              },
+            ]),
+          ),
+        );
+      }
+      if (args[0] === "mcp" && args[1] === "list") {
+        return Effect.succeed(makeProcessResult(""));
+      }
+      return Effect.succeed(
+        makeProcessResult("", `unexpected claude command: ${args.join(" ")}`, 1),
+      );
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-marketplace-",
+      });
+      const claudeHome = path.join(workspace, "home");
+      pluginInstallPath = path.join(workspace, "installed", "agent-sdk-dev");
+      marketplacePath = path.join(workspace, "marketplace");
+      yield* fileSystem.makeDirectory(path.join(pluginInstallPath, ".claude-plugin"), {
+        recursive: true,
+      });
+      yield* fileSystem.makeDirectory(path.join(marketplacePath, ".claude-plugin"), {
+        recursive: true,
+      });
+      yield* fileSystem.writeFileString(
+        path.join(pluginInstallPath, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ description: "Installed plugin description." }),
+      );
+      yield* fileSystem.writeFileString(
+        path.join(marketplacePath, ".claude-plugin", "marketplace.json"),
+        JSON.stringify({
+          plugins: [
+            {
+              name: "agent-sdk-dev",
+              description: "Marketplace description.",
+              category: "development",
+              source: "./plugins/agent-sdk-dev",
+            },
+          ],
+        }),
+      );
+
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd: workspace,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+        providers: [],
+      });
+      const plugin = result.providers[0]?.plugins[0];
+
+      assert.equal(plugin?.description, "Installed plugin description.");
+      assert.equal(plugin?.category, "development");
+      assert.equal(plugin?.iconUrl, "https://github.com/anthropics.png?size=80");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
   it("parses Claude plugin component inventory and projected token cost", () => {
