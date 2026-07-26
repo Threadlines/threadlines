@@ -584,6 +584,50 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("re-sticks to the bottom when the viewport resizes under an armed timeline", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const props = buildProps();
+    const timelineEntries = [buildUserTimelineEntry("Message sent from a phone.")];
+    const screen = await renderTimeline(
+      <MessagesTimeline {...props} timelineEntries={timelineEntries} />,
+    );
+
+    try {
+      const legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+      expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+
+      scrollToEndSpy.mockClear();
+
+      // The on-screen keyboard closing after a send.
+      window.visualViewport?.dispatchEvent(new Event("resize"));
+
+      await vi.waitFor(() => {
+        expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+      });
+
+      // A user who scrolled away from the end stays where they are.
+      legendList?.dispatchEvent(new WheelEvent("wheel", { deltaY: -24, bubbles: true }));
+      await vi.waitFor(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(list?.getAttribute("data-maintain-scroll-at-end")).toBe("false");
+      });
+
+      scrollToEndSpy.mockClear();
+      window.visualViewport?.dispatchEvent(new Event("resize"));
+
+      expect(scrollToEndSpy).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps following new live output after a parent stick request", async () => {
     vi.spyOn(window, "requestAnimationFrame").mockImplementation(
       (callback: FrameRequestCallback) => {
