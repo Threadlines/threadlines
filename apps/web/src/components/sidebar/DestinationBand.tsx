@@ -26,7 +26,7 @@ export function DestinationBand({ destinations }: { destinations: readonly Sideb
   }
 
   return (
-    <SidebarGroup className="px-2 pt-2 pb-1" data-testid="sidebar-destination-band">
+    <SidebarGroup className="px-2 pt-0 pb-2" data-testid="sidebar-destination-band">
       <SidebarMenu>
         {destinations.map((destination) => {
           const Icon = destination.icon;
@@ -38,7 +38,7 @@ export function DestinationBand({ destinations }: { destinations: readonly Sideb
                 disabled={destination.disabled ?? false}
                 data-testid={`sidebar-destination-${destination.id}`}
                 className={cn(
-                  "gap-2 px-2 py-1.5 text-muted-foreground/80 hover:bg-accent hover:text-foreground",
+                  "gap-1.5 px-2 py-1.5 text-muted-foreground/80 hover:bg-accent hover:text-foreground",
                   destination.active && "text-foreground",
                 )}
                 onClick={destination.onSelect}

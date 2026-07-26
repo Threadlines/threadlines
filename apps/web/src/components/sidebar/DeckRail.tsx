@@ -8,7 +8,7 @@ import { ThreadStatusDot } from "../ThreadStatusIndicators";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { OnDeckEntry } from "./OnDeckSection";
 import type { SidebarDestination } from "./DestinationBand";
-import { ThreadHoverCard } from "./ThreadHoverCard";
+import { ThreadHoverCard, ThreadHoverCardGroup } from "./ThreadHoverCard";
 
 const RAIL_BUTTON_CLASS_NAME =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground/70 outline-hidden ring-ring transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2";
@@ -136,16 +136,18 @@ export const DeckRail = memo(function DeckRail(props: DeckRailProps) {
       {entries.length > 0 ? (
         <>
           <div className="my-1 w-5 border-border border-t" role="separator" />
-          <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
-            {entries.map((entry) => (
-              <DeckRailThread
-                key={scopedThreadKey(scopeThreadRef(entry.thread.environmentId, entry.thread.id))}
-                entry={entry}
-                routeThreadKey={routeThreadKey}
-                navigateToThread={navigateToThread}
-              />
-            ))}
-          </div>
+          <ThreadHoverCardGroup>
+            <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto">
+              {entries.map((entry) => (
+                <DeckRailThread
+                  key={scopedThreadKey(scopeThreadRef(entry.thread.environmentId, entry.thread.id))}
+                  entry={entry}
+                  routeThreadKey={routeThreadKey}
+                  navigateToThread={navigateToThread}
+                />
+              ))}
+            </div>
+          </ThreadHoverCardGroup>
         </>
       ) : null}
 

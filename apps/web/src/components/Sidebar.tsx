@@ -2912,6 +2912,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarMenu>
       </SidebarGroup>
       {destinationBand}
+      <SidebarSeparator className="mx-2 w-auto" />
       {onDeckSection}
       <SidebarGroup className="px-2 py-2">
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">

@@ -16,7 +16,7 @@ import type { SidebarThreadSummary } from "../../types";
 import type { ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ThreadStatusDot } from "../ThreadStatusIndicators";
-import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from "../ui/preview-card";
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 
 function DetailRow({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
@@ -85,11 +85,15 @@ export function ThreadHoverCard({
   const worktreeName = thread.worktreePath ? thread.worktreePath.split("/").pop() : null;
 
   return (
-    <PreviewCard>
-      {/* Quick enough to feel like a tooltip, slow enough not to fire while
-          the pointer is only travelling across the rail. */}
-      <PreviewCardTrigger delay={260} closeDelay={120} render={children as never} />
-      <PreviewCardPopup side={side} className="w-64" data-testid="thread-hover-card">
+    <Tooltip>
+      <TooltipTrigger render={children as never} />
+      <TooltipPopup
+        side={side}
+        sideOffset={8}
+        align="start"
+        className="w-64 rounded-lg p-3 text-left text-popover-foreground text-sm shadow-none elevate-popover"
+        data-testid="thread-hover-card"
+      >
         <p className="mb-2 line-clamp-3 text-sm font-medium leading-snug text-foreground">
           {thread.title}
         </p>
@@ -127,7 +131,23 @@ export function ThreadHoverCard({
             </DetailRow>
           ) : null}
         </div>
-      </PreviewCardPopup>
-    </PreviewCard>
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/**
+ * Groups thread hover cards so a list behaves like one surface.
+ *
+ * The delay is there to stop a card firing while the pointer is only crossing
+ * the list on its way elsewhere. Once one card is open that intent is no longer
+ * in doubt, so neighbouring rows swap instantly, and `timeout` keeps the group
+ * warm briefly after the last one closes.
+ */
+export function ThreadHoverCardGroup({ children }: { children: ReactNode }) {
+  return (
+    <TooltipProvider delay={280} closeDelay={120} timeout={600}>
+      {children}
+    </TooltipProvider>
   );
 }
