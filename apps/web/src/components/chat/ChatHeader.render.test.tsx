@@ -26,6 +26,8 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     sourceControlToggleShortcutLabel: null,
     sourceControlOpen: false,
     sourceControlAvailable: false,
+    browserAvailable: true,
+    browserOpen: false,
     workingTreeDiffStat: null,
     fileBrowserAvailable: false,
     taskProgress: null,
@@ -41,6 +43,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     onOpenForkSourceThread: vi.fn(),
     onToggleTerminal: vi.fn(),
     onToggleSourceControl: vi.fn(),
+    onToggleBrowser: vi.fn(),
     ...overrides,
   } satisfies ComponentProps<typeof ChatHeader>;
 

@@ -248,6 +248,9 @@ import {
   type RevertConfirmView,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
+import { BrowserPanel } from "./browser/BrowserPanel";
+import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
   useServerAvailableEditors,
@@ -2504,6 +2507,26 @@ export default function ChatView(props: ChatViewProps) {
       : (storeServerTerminalLaunchContext ?? null);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const browserPanelState = useBrowserPanelStore((store) =>
+    selectThreadBrowserState(store.browserStateByThreadKey, routeThreadRef),
+  );
+  const toggleBrowserOpen = useBrowserPanelStore((store) => store.toggleBrowserOpen);
+  const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
+  const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
+  const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
+  // General chats have no project and therefore no dev server to look at.
+  const browserAvailable = !isGeneralChatThread;
+  const browserOpen = browserAvailable && browserPanelState.open;
+  const handleToggleBrowser = useCallback(() => {
+    if (routeThreadRef !== null) {
+      toggleBrowserOpen(routeThreadRef);
+    }
+  }, [routeThreadRef, toggleBrowserOpen]);
+  const handleCloseBrowser = useCallback(() => {
+    if (routeThreadRef !== null) {
+      setBrowserOpen(routeThreadRef, false);
+    }
+  }, [routeThreadRef, setBrowserOpen]);
   const workingTreeDiffStat = useMemo(
     () => resolveWorkingTreeDiffStat(gitStatusQuery.data ?? null),
     [gitStatusQuery.data],
@@ -6012,6 +6035,9 @@ export default function ChatView(props: ChatViewProps) {
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
           sourceControlOpen={rightPanelEngaged && !isGeneralChatThread}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
+          browserAvailable={browserAvailable}
+          browserOpen={browserOpen}
+          onToggleBrowser={handleToggleBrowser}
           workingTreeDiffStat={workingTreeDiffStat}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
@@ -6099,7 +6125,10 @@ export default function ChatView(props: ChatViewProps) {
       {/* Main content area */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          className="flex min-h-0 min-w-0 flex-col"
+          style={browserOpen ? { flex: `${splitChatFraction} 1 0%` } : { flex: "1 1 0%" }}
+        >
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
@@ -6370,6 +6399,16 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
+        {browserOpen && routeThreadRef !== null ? (
+          <>
+            <BrowserSplitHandle chatFraction={splitChatFraction} onChange={setSplitChatFraction} />
+            <BrowserPanel
+              threadRef={routeThreadRef}
+              flexGrow={1 - splitChatFraction}
+              onClose={handleCloseBrowser}
+            />
+          </>
+        ) : null}
       </div>
       {/* end horizontal flex container */}
 

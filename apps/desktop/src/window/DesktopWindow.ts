@@ -1,4 +1,5 @@
 import type { DesktopMenuActionPayload } from "@threadlines/contracts";
+import { PREVIEW_PARTITION } from "../preview/PreviewSession.ts";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -323,7 +324,23 @@ const make = Effect.gen(function* () {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // The in-app browser preview is a <webview> in the renderer, which
+        // keeps it inside normal CSS layout instead of a native view floating
+        // over the window. `will-attach-webview` below is what makes enabling
+        // this safe.
+        webviewTag: true,
       },
+    });
+
+    // Preview content is untrusted. Whatever the renderer asks for, a preview
+    // webview gets no Node, no custom preload, and the preview partition --
+    // never the app's own session.
+    window.webContents.on("will-attach-webview", (_event, webPreferences, params) => {
+      delete webPreferences.preload;
+      webPreferences.nodeIntegration = false;
+      webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+      params.partition = PREVIEW_PARTITION;
     });
 
     if (Option.isSome(persistedWindowState) && persistedWindowState.value.isMaximized) {
