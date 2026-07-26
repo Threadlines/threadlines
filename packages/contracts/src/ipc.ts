@@ -433,6 +433,21 @@ export const DesktopPreviewStatusSchema = Schema.Struct({
 });
 export type DesktopPreviewStatus = typeof DesktopPreviewStatusSchema.Type;
 
+export const DesktopPreviewScreenshotSchema = Schema.Struct({
+  dataUrl: Schema.String,
+  width: Schema.Number,
+  height: Schema.Number,
+});
+export type DesktopPreviewScreenshot = typeof DesktopPreviewScreenshotSchema.Type;
+
+/** A server listening on this machine, offered as a destination for the preview. */
+export const DesktopLocalServerSchema = Schema.Struct({
+  port: Schema.Number,
+  processName: Schema.String,
+  pid: Schema.Number,
+});
+export type DesktopLocalServer = typeof DesktopLocalServerSchema.Type;
+
 export const DesktopPreviewSnapshotSchema = Schema.Struct({
   ...DesktopPreviewStatusSchema.fields,
   elements: Schema.Array(DesktopPreviewElementSchema),
@@ -699,6 +714,8 @@ export interface DesktopBridge {
   previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
   previewClick?: (input: DesktopPreviewClickInput) => Promise<void>;
   previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
+  previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
+  previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],

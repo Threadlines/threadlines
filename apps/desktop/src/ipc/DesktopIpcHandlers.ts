@@ -53,6 +53,8 @@ import {
   previewClick,
   previewDetach,
   previewEvaluate,
+  previewLocalServers,
+  previewScreenshot,
   previewSnapshot,
   previewStatus,
   previewType,
@@ -88,6 +90,8 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewSnapshot);
   yield* ipc.handle(previewClick);
   yield* ipc.handle(previewType);
+  yield* ipc.handle(previewLocalServers);
+  yield* ipc.handle(previewScreenshot);
 
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);

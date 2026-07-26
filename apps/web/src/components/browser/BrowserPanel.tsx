@@ -1,5 +1,13 @@
-import type { ScopedThreadRef } from "@threadlines/contracts";
-import { ArrowLeftIcon, ArrowRightIcon, ExternalLinkIcon, RotateCwIcon, XIcon } from "lucide-react";
+import type { DesktopLocalServer, ScopedThreadRef } from "@threadlines/contracts";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  CameraIcon,
+  ExternalLinkIcon,
+  RadioTowerIcon,
+  RotateCwIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -135,6 +143,20 @@ export function BrowserPanel({
     [addressDraft, setBrowserUrl, threadRef],
   );
 
+  const captureScreenshot = useCallback(() => {
+    const webview = webviewRef.current;
+    if (webview === null || !isElectron) {
+      return;
+    }
+    void window.desktopBridge
+      ?.previewScreenshot?.({ webContentsId: webview.getWebContentsId() })
+      .then((shot) => {
+        if (shot?.dataUrl) {
+          void navigator.clipboard.writeText(shot.dataUrl).catch(() => {});
+        }
+      });
+  }, []);
+
   const preset =
     BROWSER_VIEWPORT_PRESETS.find((entry) => entry.id === browserState.viewportPresetId) ??
     BROWSER_VIEWPORT_PRESETS[0];
@@ -192,12 +214,25 @@ export function BrowserPanel({
           ))}
         </select>
 
+        <NavButton label="Capture screenshot" onClick={captureScreenshot}>
+          <CameraIcon className="size-3.5" />
+        </NavButton>
+
         <NavButton label="Close browser" onClick={onClose}>
           <XIcon className="size-3.5" />
         </NavButton>
       </div>
 
       <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-background p-3">
+        {isElectron && browserState.url === null ? (
+          <LocalServerPicker
+            onSelect={(port) => {
+              const url = `http://localhost:${port}`;
+              setBrowserUrl(threadRef, url);
+              void webviewRef.current?.loadURL(url);
+            }}
+          />
+        ) : null}
         {isElectron ? (
           <webview
             ref={webviewRef as never}
@@ -209,6 +244,9 @@ export function BrowserPanel({
                 : { width: `${preset.width}px`, height: `${preset.height}px`, flex: "none" }
             }
             partition={PREVIEW_PARTITION}
+            // Hidden rather than unmounted while empty: remounting would drop
+            // the CDP attachment and the diagnostics collected with it.
+            hidden={browserState.url === null}
             {...(browserState.url ? { src: browserState.url } : {})}
           />
         ) : (
@@ -263,6 +301,77 @@ function BrowserUnavailableNotice() {
       <p className="max-w-xs text-xs text-muted-foreground/70">
         It runs a real Chromium tab so pages can be inspected and driven, which a browser tab cannot
         host.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * What is listening right now, offered as destinations.
+ *
+ * A blank address bar is a worse starting point than it looks: the port a dev
+ * server picked is exactly the thing nobody remembers. Rows rather than tiles,
+ * separated by rules, so it reads as a list of facts.
+ */
+function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
+  const [servers, setServers] = useState<ReadonlyArray<DesktopLocalServer>>([]);
+  const [scanned, setScanned] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const scan = () => {
+      void window.desktopBridge?.previewLocalServers?.().then((found) => {
+        if (!cancelled) {
+          setServers(found);
+          setScanned(true);
+        }
+      });
+    };
+    scan();
+    // Servers start and stop while the panel is open; a stale list would send
+    // the user to a port that has since died.
+    const interval = window.setInterval(scan, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  return (
+    <div className="mx-auto w-full max-w-md py-8">
+      <div className="mb-2 flex items-center gap-2 px-1 text-muted-foreground">
+        <RadioTowerIcon className="size-4" />
+        <span className="text-sm">Local servers</span>
+      </div>
+      {servers.length === 0 ? (
+        <p className="px-1 py-6 text-xs text-muted-foreground/70">
+          {scanned ? "Nothing is listening right now." : "Looking for local servers…"}
+        </p>
+      ) : (
+        <div className="flex flex-col border-t border-border/60">
+          {servers.map((server) => (
+            <button
+              key={server.port}
+              type="button"
+              data-testid={`local-server-${server.port}`}
+              className="flex items-center gap-3 border-b border-border/60 px-1 py-2.5 text-left hover:bg-accent"
+              onClick={() => onSelect(server.port)}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm text-foreground">
+                  {server.processName === "" ? "Unknown process" : server.processName}
+                </span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground/70">
+                  localhost:{server.port}
+                </span>
+              </span>
+              <span className="size-1.5 shrink-0 rounded-full bg-success" />
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="px-1 pt-3 text-xs text-muted-foreground/60">
+        Select a listening port to open it here.
       </p>
     </div>
   );

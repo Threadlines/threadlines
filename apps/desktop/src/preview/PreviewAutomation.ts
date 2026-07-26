@@ -17,6 +17,7 @@ import type {
   DesktopPreviewElement,
   DesktopPreviewNetworkFailure,
   DesktopPreviewSnapshot,
+  DesktopPreviewScreenshot,
   DesktopPreviewStatus,
 } from "@threadlines/contracts";
 import { webContents, type WebContents } from "electron";
@@ -118,6 +119,9 @@ export class PreviewAutomation extends Context.Service<
     readonly snapshot: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewSnapshot, PreviewAutomationError>;
+    readonly screenshot: (
+      webContentsId: number,
+    ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
     readonly click: (
       webContentsId: number,
       ref: number,
@@ -367,6 +371,23 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         });
       }
       return { ...buildStatus(webContentsId, contents), elements };
+    }),
+    screenshot: Effect.fn("PreviewAutomation.screenshot")(function* (webContentsId: number) {
+      const contents = yield* resolve(webContentsId);
+      // Captured through CDP rather than capturePage so the image is the page
+      // itself, unaffected by the window being occluded or offscreen.
+      const shot = (yield* sendCommand(contents, "Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: false,
+      })) as { data?: string };
+      const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
+        cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
+      };
+      return {
+        dataUrl: `data:image/png;base64,${shot.data ?? ""}`,
+        width: Math.round(metrics.cssVisualViewport?.clientWidth ?? 0),
+        height: Math.round(metrics.cssVisualViewport?.clientHeight ?? 0),
+      };
     }),
     click: Effect.fn("PreviewAutomation.click")(function* (webContentsId: number, ref: number) {
       const contents = yield* resolve(webContentsId);
