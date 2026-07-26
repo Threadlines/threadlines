@@ -601,7 +601,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   <button
                     type="button"
                     aria-label={prStatus.tooltip}
-                    className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
+                    className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-ring`}
                     onClick={handlePrClick}
                   >
                     <ChangeRequestStatusIcon className="size-3" />
@@ -679,7 +679,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 data-thread-selection-safe
                 data-testid={`thread-archive-confirm-${thread.id}`}
                 aria-label={`Confirm archive ${thread.title}`}
-                className="absolute top-1/2 right-1 inline-flex h-5 -translate-y-1/2 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
+                className="absolute top-1/2 right-1 inline-flex h-5 -translate-y-1/2 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
                 onPointerDown={stopPropagationOnPointerDown}
                 onClick={handleConfirmArchiveClick}
               >
@@ -696,7 +696,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         data-testid={`thread-pin-${thread.id}`}
                         aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
                         aria-pressed={isPinned}
-                        className={`inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
+                        className={`inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center transition-colors focus-ring ${
                           isPinned
                             ? "text-primary-readable hover:text-primary"
                             : "text-muted-foreground/60 hover:text-foreground"
@@ -720,7 +720,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     data-thread-selection-safe
                     data-testid={`thread-archive-${thread.id}`}
                     aria-label={`Archive ${thread.title}`}
-                    className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                    className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors hover:text-foreground focus-ring"
                     onPointerDown={stopPropagationOnPointerDown}
                     onClick={handleStartArchiveConfirmation}
                   >
@@ -735,7 +735,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           data-thread-selection-safe
                           data-testid={`thread-archive-${thread.id}`}
                           aria-label={`Archive ${thread.title}`}
-                          className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                          className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors hover:text-foreground focus-ring"
                           onPointerDown={stopPropagationOnPointerDown}
                           onClick={handleArchiveImmediateClick}
                         >
@@ -978,7 +978,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               <button
                 type="button"
                 data-thread-selection-safe
-                className="inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                className="inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/80 focus-ring"
                 onClick={() => {
                   expandThreadListForProject(projectKey, nextRevealCount);
                 }}
@@ -990,7 +990,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               <button
                 type="button"
                 data-thread-selection-safe
-                className="inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                className="inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/80 focus-ring"
                 onClick={() => {
                   collapseThreadListForProject(projectKey);
                 }}
@@ -1008,7 +1008,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
                       type="button"
                       data-thread-selection-safe
                       aria-label={`Search all ${searchHandoffThreadCount} threads`}
-                      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/90 focus-ring"
                       onClick={onSearchAllThreads}
                     >
                       <SearchIcon className="size-3" />
@@ -1028,7 +1028,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
                       type="button"
                       data-thread-selection-safe
                       aria-label="Show less"
-                      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/90 focus-ring"
                       onClick={() => {
                         collapseThreadListForProject(projectKey);
                       }}
@@ -2287,7 +2287,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                       : `Create new thread in ${project.displayName}`
                   }
                   data-testid="new-thread-button"
-                  className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                  className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-ring"
                   onClick={handleCreateThreadClick}
                 >
                   <SquarePenIcon className="size-3.5" />
@@ -2682,7 +2682,7 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
           render={
             <Link
               aria-label={`Go to ${APP_BASE_NAME} home`}
-              className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden ring-ring transition-opacity hover:opacity-85 focus-visible:ring-2"
+              className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden transition-opacity hover:opacity-85 focus-ring"
               to="/"
             >
               <ThreadlinesGlyph aria-hidden="true" className="h-3 w-auto shrink-0" />
@@ -2863,7 +2863,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               render={
                 <SidebarMenuButton
                   size="sm"
-                  className="gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-muted-foreground/70 transition-colors hover:border-border hover:bg-muted/50 hover:text-foreground focus-visible:ring-0"
+                  className="gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-muted-foreground/70 transition-colors hover:border-border hover:bg-muted/50 hover:text-foreground"
                   data-testid="command-palette-trigger"
                 />
               }

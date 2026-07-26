@@ -90,7 +90,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
                   <button
                     className={cn(
                       "flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 transition-opacity",
-                      "focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+                      "focus-visible:opacity-100 focus-ring",
                       props.isFavorite
                         ? "opacity-100 text-yellow-500/80 hover:text-yellow-500"
                         : "opacity-0 text-muted-foreground/50 hover:text-foreground group-hover:opacity-100 group-data-highlighted:opacity-100 pointer-coarse:opacity-100",

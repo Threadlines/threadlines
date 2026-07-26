@@ -1206,7 +1206,7 @@ export default function DiffPanel({
           <button
             type="button"
             aria-label="Back to source control"
-            className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-ring"
             onClick={onBackToSourceControl}
           >
             <ChevronLeftIcon className="size-3.5 shrink-0 opacity-80" />

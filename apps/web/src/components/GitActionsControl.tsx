@@ -710,7 +710,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                         value={option.value}
                         className={cn(
                           "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 text-left outline-none transition-[background-color,border-color,box-shadow]",
-                          "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                          "focus-ring",
                           isSelected
                             ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
                             : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
@@ -801,7 +801,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                             value={option.value}
                             className={cn(
                               "relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow]",
-                              "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                              "focus-ring",
                               isSelected
                                 ? "border-primary bg-background shadow-sm ring-2 ring-primary/35"
                                 : "border-border bg-background hover:border-foreground/20 hover:bg-muted/50",
@@ -898,7 +898,7 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                                 value={value}
                                 className={cn(
                                   "rounded-md border px-3 py-1.5 text-center text-sm font-medium outline-none transition",
-                                  "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                                  "focus-ring",
                                   isSelected
                                     ? "border-primary bg-background ring-2 ring-primary/35 text-foreground"
                                     : "border-border bg-background text-muted-foreground hover:border-foreground/20 hover:text-foreground",

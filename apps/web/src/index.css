@@ -57,6 +57,7 @@
   --color-info: var(--info);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-ring: var(--ring);
+  --color-focus-ring: var(--focus-ring);
   --color-input: var(--input);
   --color-border: var(--border);
   --color-control-active: var(--control-active);
@@ -127,7 +128,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-focus-ring;
   }
   /* Tailwind v4 preflight resets buttons to cursor: default; the app treats
      every enabled button as clickable, so restore the pointer globally. */
@@ -216,6 +217,11 @@
   --border: --alpha(var(--color-black) / 8%);
   --input: --alpha(var(--color-black) / 10%);
   --ring: var(--app-accent-blue);
+  /* Keyboard focus is neutral, not accent: blue keeps meaning state (primary
+     action, unread, selected) instead of "the browser moved focus here". Alpha is
+     tuned to clear the 3:1 focus-indicator contrast bar against every surface in
+     the elevation ladder. */
+  --focus-ring: --alpha(var(--color-black) / 50%);
   --destructive-foreground: var(--color-red-700);
   --info: var(--app-accent-blue);
   --info-foreground: var(--primary-readable);
@@ -269,6 +275,7 @@
     --border: --alpha(var(--color-white) / 14%);
     --input: --alpha(var(--color-white) / 13%);
     --ring: var(--app-accent-blue);
+    --focus-ring: --alpha(var(--color-white) / 55%);
     --destructive-foreground: var(--color-red-400);
     --info: var(--app-accent-blue);
     --info-foreground: var(--primary-readable);
@@ -393,6 +400,27 @@ code {
     --elevate-popover: 0 2px 4px -2px rgb(0 0 0 / 0.28), 0 8px 18px -8px rgb(0 0 0 / 0.3);
     --elevate-overlay: 0 8px 24px -6px rgb(0 0 0 / 0.45), 0 18px 48px -16px rgb(0 0 0 / 0.4);
     --recess: inset 0 1px 2px 0 rgb(0 0 0 / 0.3), inset 0 -1px 0 0 rgb(255 255 255 / 0.03);
+  }
+}
+
+/* The app-wide keyboard focus indicator. Every focusable surface uses this and
+   nothing else, so the treatment is tuned in one place: a neutral hairline that
+   hugs the control edge, with no offset gap (an offset ring has to guess which
+   surface it sits on, and guesses wrong inside cards and popovers).
+
+   Ring-based rather than `outline`, so per-element overrides that recolor focus
+   (`focus-visible:aria-invalid:ring-destructive/48`) still land on top. */
+@utility focus-ring {
+  &:focus-visible {
+    @apply outline-hidden ring-1 ring-focus-ring;
+  }
+}
+
+/* Same indicator for input wrappers, where the focused element is the inner
+   control rather than the styled surface. */
+@utility focus-ring-within {
+  &:has(:focus-visible) {
+    @apply ring-1 ring-focus-ring;
   }
 }
 

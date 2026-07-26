@@ -810,7 +810,7 @@ function ExtensionAuthenticationIssues({
             <button
               key={`${item.kind}:${item.id}`}
               type="button"
-              className="group flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-warning/10 focus-ring"
               onClick={() => onSelect(item)}
             >
               <span className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-warning/10 text-warning">
@@ -2293,7 +2293,7 @@ function ExtensionPreviewSection({
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
-                className="group flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/55 focus-ring"
                 onClick={() => onSelect(item)}
                 type="button"
               >
@@ -2312,7 +2312,7 @@ function ExtensionPreviewSection({
           </div>
           {items.length > 0 ? (
             <button
-              className="w-full border-t border-border/50 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="w-full border-t border-border/50 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
               onClick={onBrowse}
               type="button"
             >
@@ -2501,7 +2501,7 @@ function ExtensionBrowserItemRow({
   return (
     <button
       type="button"
-      className="group grid min-h-12 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group grid min-h-12 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-ring"
       onClick={() => onSelect(item)}
     >
       <div className="min-w-0 space-y-1">
@@ -2756,7 +2756,7 @@ function ExtensionBrowserDialog({
                           <div className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 backdrop-blur">
                             <button
                               type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground focus-ring"
                               onClick={() => toggleGroup(group.key)}
                               aria-expanded={!collapsed}
                             >
@@ -2793,7 +2793,7 @@ function ExtensionBrowserDialog({
                               ) : null}
                               <button
                                 type="button"
-                                className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-ring"
                                 onClick={() => toggleGroup(group.key)}
                                 aria-label={collapsed ? "Expand bundle" : "Collapse bundle"}
                               >
@@ -2837,7 +2837,7 @@ function ExtensionBrowserDialog({
                 )}
                 {hiddenCount > 0 ? (
                   <button
-                    className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
                     onClick={() =>
                       setVisibleLimit((current) =>
                         Math.min(browserItems.length, current + EXTENSION_BROWSER_PAGE_SIZE),

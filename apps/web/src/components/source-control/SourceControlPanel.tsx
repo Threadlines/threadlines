@@ -3848,7 +3848,7 @@ export function SourceControlPanel({
         <button
           type="button"
           aria-label={`Open diff for ${entry.path}`}
-          className="grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-ring"
           onClick={() => openChangedFileDiff(entry.path)}
         >
           <TooltipWrapper tooltip={statusDescription}>

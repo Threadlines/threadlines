@@ -846,7 +846,7 @@ function TaskSection({
             className={cn(
               "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-left",
               onViewProposedPlan &&
-                "cursor-pointer rounded-sm transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50",
+                "cursor-pointer rounded-sm transition-colors hover:text-foreground focus-ring",
             )}
             disabled={!onViewProposedPlan}
             aria-label="View plan in conversation"
@@ -1184,7 +1184,7 @@ function BackgroundRunsSection({
                           <button
                             type="button"
                             className={cn(
-                              "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50",
+                              "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-ring",
                               run.terminalVisible && "bg-background/70 text-foreground",
                             )}
                             aria-label={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
@@ -1203,7 +1203,7 @@ function BackgroundRunsSection({
                         <TooltipWrapper tooltip={`Stop ${run.label}`}>
                           <button
                             type="button"
-                            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
+                            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-ring"
                             aria-label={`Stop ${run.label}`}
                             onClick={() => {
                               onStopBackgroundRun(run);

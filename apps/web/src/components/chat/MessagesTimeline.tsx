@@ -2503,7 +2503,7 @@ function ExpandableSubagentInstructionText({ text }: { text: string }) {
     "mt-0.5 w-full text-left text-[11px] leading-4 text-muted-foreground/70",
     !expanded && "line-clamp-2",
     (truncated || expanded) &&
-      "cursor-pointer rounded-sm transition-colors hover:text-muted-foreground/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45",
+      "cursor-pointer rounded-sm transition-colors hover:text-muted-foreground/90 focus-ring",
   );
 
   if (truncated || expanded) {
@@ -3872,7 +3872,7 @@ const UserMessageTranscriptHighlightInlineLabel = memo(
             <button
               type="button"
               aria-label={`View note on highlighted ${roleWord} text`}
-              className="inline-flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-border/70 bg-background/55 px-2 py-0.5 text-[11px] leading-5 text-muted-foreground/85 outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-border/70 bg-background/55 px-2 py-0.5 text-[11px] leading-5 text-muted-foreground/85 outline-none transition-colors hover:text-foreground focus-ring"
             >
               <SquarePenIcon className="size-3.5 shrink-0 opacity-70" />
               <span className="min-w-0 truncate">{`"${preview}"`}</span>
@@ -5368,7 +5368,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {hasExpandableOutput ? (
         <button
           type="button"
-          className="flex w-full cursor-pointer items-center gap-2 rounded-md text-left transition-[opacity,translate] duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          className="flex w-full cursor-pointer items-center gap-2 rounded-md text-left transition-[opacity,translate] duration-200 outline-none focus-ring"
           aria-expanded={isOutputExpanded}
           aria-label={isOutputExpanded ? "Hide command output" : "Show command output"}
           onClick={() => setIsOutputExpanded((value) => !value)}
