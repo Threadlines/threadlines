@@ -43,13 +43,6 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   terminalAvailable: boolean;
-  /**
-   * False where a terminal makes no sense at all rather than being temporarily
-   * unavailable. A thread without a project still shows a disabled toggle that
-   * explains itself; a general chat has no checkout to run anything in, so the
-   * control is absent instead.
-   */
-  terminalApplicable: boolean;
   terminalOpen: boolean;
   terminalToggleShortcutLabel: string | null;
   sourceControlToggleShortcutLabel: string | null;
@@ -120,7 +113,6 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   terminalAvailable,
-  terminalApplicable,
   terminalOpen,
   terminalToggleShortcutLabel,
   sourceControlToggleShortcutLabel,
@@ -291,32 +283,30 @@ export const ChatHeader = memo(function ChatHeader({
             </Tooltip>
           ) : null}
           <Group aria-label="Thread panels">
-            {terminalApplicable ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Toggle
-                      className="shrink-0"
-                      pressed={terminalOpen}
-                      onPressedChange={onToggleTerminal}
-                      aria-label="Toggle terminal drawer"
-                      variant="outline"
-                      size="xs"
-                      disabled={!terminalAvailable}
-                    >
-                      <TerminalSquareIcon className="size-3" />
-                    </Toggle>
-                  }
-                />
-                <TooltipPopup side="bottom">
-                  {!terminalAvailable
-                    ? "Terminal is unavailable until this thread has an active project."
-                    : terminalToggleShortcutLabel
-                      ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-                      : "Toggle terminal drawer"}
-                </TooltipPopup>
-              </Tooltip>
-            ) : null}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className="shrink-0"
+                    pressed={terminalOpen}
+                    onPressedChange={onToggleTerminal}
+                    aria-label="Toggle terminal drawer"
+                    variant="outline"
+                    size="xs"
+                    disabled={!terminalAvailable}
+                  >
+                    <TerminalSquareIcon className="size-3" />
+                  </Toggle>
+                }
+              />
+              <TooltipPopup side="bottom">
+                {!terminalAvailable
+                  ? "Terminal is unavailable until this thread has an active project."
+                  : terminalToggleShortcutLabel
+                    ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
+                    : "Toggle terminal drawer"}
+              </TooltipPopup>
+            </Tooltip>
             {sourceControlAvailable || sourceControlOpen ? (
               <Tooltip>
                 <TooltipTrigger

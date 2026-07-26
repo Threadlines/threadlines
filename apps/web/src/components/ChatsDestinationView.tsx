@@ -71,7 +71,7 @@ export function ChatsDestinationView() {
       data-testid="chats-view"
     >
       <div className="mb-1 flex items-center gap-3">
-        <h1 className="flex-1 text-lg font-medium tracking-tight">Chats</h1>
+        <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
         <button
           type="button"
           className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"

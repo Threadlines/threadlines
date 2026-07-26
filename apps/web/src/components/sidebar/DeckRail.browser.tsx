@@ -63,7 +63,7 @@ function renderRail(entries: readonly OnDeckEntry[], overrides?: { routeThreadKe
       destinations={[
         {
           id: "chats",
-          label: "Chats",
+          label: "General chats",
           icon: MessagesSquareIcon,
           active: false,
           onSelect: onSelectChats,
@@ -126,7 +126,7 @@ describe("DeckRail", () => {
     const { onSelectChats } = renderRail([]);
 
     const chats = page.getByTestId("deck-rail-destination-chats");
-    await expect.element(chats).toHaveAttribute("aria-label", "Chats");
+    await expect.element(chats).toHaveAttribute("aria-label", "General chats");
 
     await chats.click();
     expect(onSelectChats).toHaveBeenCalledOnce();

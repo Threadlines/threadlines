@@ -3579,7 +3579,7 @@ export default function Sidebar() {
     () => [
       {
         id: "chats",
-        label: "Chats",
+        label: "General chats",
         icon: DESTINATION_ICONS.chats,
         active: pathname.startsWith("/chats"),
         status: chatsStatus,

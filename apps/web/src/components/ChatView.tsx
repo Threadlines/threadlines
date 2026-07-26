@@ -5997,7 +5997,7 @@ export default function ChatView(props: ChatViewProps) {
           }
           // "General Chats" is the backing project, not a place the user chose
           // to be. Chats present as their own mode, so the crumb says so.
-          activeProjectName={isGeneralChatThread ? "Chats" : activeProject?.name}
+          activeProjectName={isGeneralChatThread ? "General chats" : activeProject?.name}
           isGitRepo={isGitRepo}
           openInCwd={isGeneralChatThread ? null : gitCwd}
           activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
@@ -6007,7 +6007,6 @@ export default function ChatView(props: ChatViewProps) {
           keybindings={keybindings}
           availableEditors={availableEditors}
           terminalAvailable={activeProject !== undefined}
-          terminalApplicable={!isGeneralChatThread}
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
