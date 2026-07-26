@@ -3682,6 +3682,32 @@ export const refreshProviderExtensionPluginMarketplaces = Effect.fn(
   };
 });
 
+const CODEX_MARKETPLACE_SETTLE_ATTEMPTS = 5;
+const CODEX_MARKETPLACE_SETTLE_INTERVAL = Duration.millis(400);
+
+/**
+ * Poll `plugin/list` until the newly added marketplace shows up, so the action does not report
+ * success before the provider will admit the marketplace exists. Gives up quietly: a stale list is
+ * a worse outcome than a slightly slow one, but not worth failing an add that actually worked.
+ */
+const waitForCodexMarketplace = Effect.fn("providerExtensions.waitForCodexMarketplace")(function* (
+  client: CodexClient.CodexAppServerClientShape,
+  cwd: string | undefined,
+  marketplaceName: string,
+) {
+  const cwds = cwd ? [cwd] : [];
+  for (let attempt = 0; attempt < CODEX_MARKETPLACE_SETTLE_ATTEMPTS; attempt += 1) {
+    const listed = yield* client.request("plugin/list", { cwds }).pipe(
+      Effect.map((response) =>
+        response.marketplaces.some((marketplace) => marketplace.name === marketplaceName),
+      ),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+    if (listed) return;
+    yield* Effect.sleep(CODEX_MARKETPLACE_SETTLE_INTERVAL);
+  }
+});
+
 export const addProviderExtensionMarketplace = Effect.fn(
   "providerExtensions.addProviderExtensionMarketplace",
 )(function* (input: {
@@ -3725,6 +3751,13 @@ export const addProviderExtensionMarketplace = Effect.fn(
         source: input.request.source,
         ...(input.request.refName ? { refName: input.request.refName } : {}),
       }),
+    ).pipe(
+      // `marketplace/add` can return before a freshly spawned app-server would list the new
+      // marketplace, so the caller's refresh came back without it and the add looked like a no-op.
+      // Settle here, on the session that just made the change, rather than making the UI poll.
+      Effect.tap((added) =>
+        waitForCodexMarketplace(client, input.request.cwd, added.marketplaceName),
+      ),
     ),
   );
   return {
