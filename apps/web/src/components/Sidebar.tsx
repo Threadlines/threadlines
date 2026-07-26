@@ -67,6 +67,7 @@ import {
   type SidebarThreadPreviewCount,
   type SidebarThreadSortOrder,
 } from "@threadlines/contracts/settings";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
@@ -374,7 +375,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       [thread.environmentId, thread.projectId],
     ),
   );
-  const gitCwd = thread.worktreePath ?? threadProjectCwd ?? props.projectCwd;
+  const gitCwd = resolveThreadWorkingCwd({
+    projectCwd: threadProjectCwd ?? props.projectCwd,
+    worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
+  });
   const gitStatus = useGitStatus({
     environmentId: thread.environmentId,
     cwd: thread.branch != null ? gitCwd : null,

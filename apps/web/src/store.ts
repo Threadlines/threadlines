@@ -348,6 +348,7 @@ function mapThreadShell(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
@@ -436,6 +437,7 @@ function toSidebarThreadSummary(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
     latestUserMessageAt,
     hasPendingApprovals: hasActivityEvidence
       ? derivePendingApprovals(thread.activities).length > 0
@@ -510,6 +512,7 @@ function sidebarThreadSummariesEqual(
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
+    left.effectiveCwd === right.effectiveCwd &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&

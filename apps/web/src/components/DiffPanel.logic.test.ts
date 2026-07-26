@@ -7,6 +7,7 @@ import {
   computeFileDiffStat,
   formatDiffFileCount,
   resolveActiveDiffFileIndex,
+  resolveDiffPanelCwd,
   resolveTurnDiffSummaryStats,
   stripPatchContextLines,
   sumDiffFileStats,
@@ -33,6 +34,54 @@ function makeStatus(input: {
     workingTree: { files: input.files ?? [] },
   } as unknown as VcsStatusResult;
 }
+
+describe("resolveDiffPanelCwd", () => {
+  it("prefers the session's observed cwd over the configured checkout", () => {
+    expect(
+      resolveDiffPanelCwd({
+        thread: { worktreePath: null, effectiveCwd: "/repo/.worktrees/feature" },
+        draftThread: null,
+        projectCwd: "/repo",
+      }),
+    ).toBe("/repo/.worktrees/feature");
+  });
+
+  it("falls back to the configured worktree, then the project root", () => {
+    expect(
+      resolveDiffPanelCwd({
+        thread: { worktreePath: "/repo/.worktrees/configured", effectiveCwd: null },
+        draftThread: null,
+        projectCwd: "/repo",
+      }),
+    ).toBe("/repo/.worktrees/configured");
+    expect(resolveDiffPanelCwd({ thread: {}, draftThread: null, projectCwd: "/repo" })).toBe(
+      "/repo",
+    );
+  });
+
+  it("resolves drafts from their configured worktree", () => {
+    expect(
+      resolveDiffPanelCwd({
+        thread: null,
+        draftThread: { worktreePath: "/repo/.worktrees/draft" },
+        projectCwd: "/repo",
+      }),
+    ).toBe("/repo/.worktrees/draft");
+  });
+
+  it("returns undefined without a thread or project", () => {
+    expect(
+      resolveDiffPanelCwd({ thread: null, draftThread: null, projectCwd: "/repo" }),
+    ).toBeUndefined();
+    expect(
+      resolveDiffPanelCwd({
+        thread: null,
+        draftThread: { worktreePath: null },
+        projectCwd: null,
+      }),
+    ).toBeUndefined();
+  });
+});
 
 describe("computeFileDiffStat", () => {
   it("sums addition and deletion lines across hunks", () => {

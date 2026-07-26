@@ -4,7 +4,6 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { type ContextMenuItem, TurnId } from "@threadlines/contracts";
 import type { DiffRenderMode } from "@threadlines/contracts/settings";
-import { projectScriptCwd } from "@threadlines/shared/projectScripts";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -52,6 +51,7 @@ import {
   type DiffFileStat,
   formatDiffFileCount,
   resolveActiveDiffFileIndex,
+  resolveDiffPanelCwd,
   resolveTurnDiffSummaryStats,
   stripPatchContextLines,
   sumDiffFileStats,
@@ -320,14 +320,11 @@ export default function DiffPanel({
   const activeProject = useStore(
     useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
   );
-  const activeCwd = activeThread
-    ? (activeThread.worktreePath ?? activeProject?.cwd)
-    : draftThread && activeProject
-      ? projectScriptCwd({
-          project: { cwd: activeProject.cwd },
-          worktreePath: draftThread.worktreePath ?? null,
-        })
-      : undefined;
+  const activeCwd = resolveDiffPanelCwd({
+    thread: activeThread ?? null,
+    draftThread,
+    projectCwd: activeProject?.cwd,
+  });
   const gitStatusQuery = useGitStatus({
     environmentId: activeEnvironmentId,
     cwd: activeCwd ?? null,

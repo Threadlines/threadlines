@@ -1,7 +1,42 @@
 import type { FileDiffMetadata } from "@pierre/diffs/react";
 import type { VcsStatusResult } from "@threadlines/contracts";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 
 import type { TurnDiffSummary } from "../types";
+
+/**
+ * Working directory the diff panel reads uncommitted changes from.
+ *
+ * Must stay in step with the source control panel, which resolves the same
+ * thread through `resolveThreadWorkingCwd`: a session that moved into a git
+ * worktree mid-turn reports `effectiveCwd`, and diffing the configured
+ * checkout instead shows an unrelated (usually clean) tree. Drafts have no
+ * provider session, so they never carry an observed cwd.
+ */
+export function resolveDiffPanelCwd(input: {
+  readonly thread: {
+    readonly worktreePath?: string | null | undefined;
+    readonly effectiveCwd?: string | null | undefined;
+  } | null;
+  readonly draftThread: { readonly worktreePath?: string | null | undefined } | null;
+  readonly projectCwd: string | null | undefined;
+}): string | undefined {
+  const { draftThread, projectCwd, thread } = input;
+  if (thread) {
+    if (projectCwd == null) {
+      return thread.effectiveCwd ?? thread.worktreePath ?? undefined;
+    }
+    return resolveThreadWorkingCwd({
+      projectCwd,
+      worktreePath: thread.worktreePath ?? null,
+      effectiveCwd: thread.effectiveCwd ?? null,
+    });
+  }
+  if (draftThread && projectCwd != null) {
+    return resolveThreadWorkingCwd({ projectCwd, worktreePath: draftThread.worktreePath ?? null });
+  }
+  return undefined;
+}
 
 export interface DiffFileStat {
   readonly additions: number;

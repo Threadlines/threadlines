@@ -48,6 +48,7 @@ function thread(id: string, overrides: Partial<SidebarThreadSummary> = {}): Side
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    effectiveCwd: null,
     latestUserMessageAt: daysAgo(45),
     hasPendingApprovals: false,
     hasPendingUserInput: false,

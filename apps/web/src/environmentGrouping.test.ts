@@ -77,6 +77,7 @@ function makeSidebarThreadSummary(
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    effectiveCwd: null,
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
