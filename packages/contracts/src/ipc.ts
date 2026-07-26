@@ -451,6 +451,8 @@ export const DesktopLocalServerSchema = Schema.Struct({
   port: Schema.Number,
   processName: Schema.String,
   pid: Schema.Number,
+  /** The served page's title, which identifies a server better than "node". */
+  title: Schema.NullOr(Schema.String),
 });
 export type DesktopLocalServer = typeof DesktopLocalServerSchema.Type;
 

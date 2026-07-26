@@ -608,12 +608,12 @@ function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
 
   return (
     <div className="mx-auto w-full max-w-md py-8">
-      <div className="mb-2 flex items-center gap-2 px-1 text-muted-foreground">
+      <div className="mb-2 flex items-center gap-2 px-2 text-muted-foreground">
         <RadioTowerIcon className="size-4" />
         <span className="text-sm">Local servers</span>
       </div>
       {servers.length === 0 ? (
-        <p className="px-1 py-6 text-xs text-muted-foreground/70">
+        <p className="px-2 py-6 text-xs text-muted-foreground/70">
           {scanned ? "Nothing is listening right now." : "Looking for local servers…"}
         </p>
       ) : (
@@ -623,12 +623,13 @@ function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
               key={server.port}
               type="button"
               data-testid={`local-server-${server.port}`}
-              className="flex items-center gap-3 border-b border-border/60 px-1 py-2.5 text-left hover:bg-accent"
+              className="flex items-center gap-3 rounded-md border-b border-border/60 px-2 py-2.5 text-left hover:bg-accent"
               onClick={() => onSelect(server.port)}
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm text-foreground">
-                  {server.processName === "" ? "Unknown process" : server.processName}
+                  {server.title ??
+                    (server.processName === "" ? "Unknown server" : server.processName)}
                 </span>
                 <span className="block truncate font-mono text-[11px] text-muted-foreground/70">
                   localhost:{server.port}
@@ -639,7 +640,7 @@ function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
           ))}
         </div>
       )}
-      <p className="px-1 pt-3 text-xs text-muted-foreground/60">
+      <p className="px-2 pt-3 text-xs text-muted-foreground/60">
         Select a listening port to open it here.
       </p>
     </div>
