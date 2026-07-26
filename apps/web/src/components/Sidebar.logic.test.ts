@@ -3,6 +3,7 @@ import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
   buildOnDeckSyncInput,
+  countThreadsNeedingUser,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
   isOnDeckDismissible,
@@ -1270,5 +1271,21 @@ describe("on deck classification", () => {
     expect(isOnDeckDismissible(pill("Completed"))).toBe(true);
     expect(isOnDeckDismissible(pill("Working"))).toBe(false);
     expect(isOnDeckDismissible(pill("Pending Approval"))).toBe(false);
+  });
+
+  it("countThreadsNeedingUser counts only threads blocked on the user", () => {
+    expect(
+      countThreadsNeedingUser([
+        pill("Pending Approval"),
+        pill("Awaiting Input"),
+        // Live but unblocked, so the rail badge must ignore these.
+        pill("Working"),
+        pill("Starting"),
+        pill("Plan Ready"),
+        pill("Completed"),
+        null,
+      ]),
+    ).toBe(2);
+    expect(countThreadsNeedingUser([])).toBe(0);
   });
 });

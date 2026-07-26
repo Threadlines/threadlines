@@ -451,6 +451,33 @@ export function isOnDeckDismissible(status: ThreadStatusPill | null): boolean {
   return status === null || !ON_DECK_LIVE_STATUSES.has(status.label);
 }
 
+/**
+ * Statuses where the agent has stopped and cannot continue without the user.
+ * Narrower than {@link ON_DECK_LIVE_STATUSES}: a working thread is live but
+ * needs nothing, and a ready plan is an invitation rather than a block.
+ */
+const NEEDS_USER_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Pending Approval",
+  "Awaiting Input",
+]);
+
+/** True when the thread is blocked waiting on the user. */
+export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null && NEEDS_USER_STATUSES.has(status.label);
+}
+
+/**
+ * How many threads are blocked on the user. The collapsed sidebar rail drops
+ * per-thread titles, so this aggregate is the only attention signal left.
+ */
+export function countThreadsNeedingUser(statuses: ReadonlyArray<ThreadStatusPill | null>): number {
+  let count = 0;
+  for (const status of statuses) {
+    if (isNeedsUserStatus(status)) count += 1;
+  }
+  return count;
+}
+
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,
 ): ThreadStatusPill | null {

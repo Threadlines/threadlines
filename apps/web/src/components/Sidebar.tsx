@@ -97,7 +97,7 @@ import { useShortcutModifierState } from "../shortcutModifierState";
 import { useGitStatus } from "../lib/gitStatusState";
 import { readLocalApi } from "../localApi";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { useNewThreadHandler } from "../hooks/useHandleNewThread";
+import { useHandleNewThread, useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 
 import { useThreadActions } from "../hooks/useThreadActions";
@@ -175,7 +175,8 @@ import {
   ThreadStatusPill,
 } from "./Sidebar.logic";
 import { OnDeckSection, type OnDeckEntry } from "./sidebar/OnDeckSection";
-import { startNewGeneralChatThread } from "../lib/chatThreadActions";
+import { DeckRail } from "./sidebar/DeckRail";
+import { startNewGeneralChatThread, startNewThreadFromContext } from "../lib/chatThreadActions";
 import { sortThreads } from "../lib/threadSort";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
@@ -2663,8 +2664,10 @@ function SortableProjectItem({
 
 const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
+  collapsed = false,
 }: {
   isElectron: boolean;
+  collapsed?: boolean;
 }) {
   const electronWordmarkLayout = resolveElectronSidebarWordmarkLayout(
     typeof navigator === "undefined" ? "" : navigator.platform,
@@ -2699,6 +2702,20 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
       </Tooltip>
     </div>
   );
+
+  // The rail is too narrow for the wordmark, and its top-left is already the
+  // collapse trigger's fixed home — so the collapsed header is a bare spacer
+  // that keeps the titlebar height (and, on Electron, the drag region).
+  if (collapsed) {
+    return (
+      <SidebarHeader
+        className={cn(
+          "h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 gap-0 px-0 py-0",
+          isElectron && "drag-region",
+        )}
+      />
+    );
+  }
 
   return isElectron ? (
     <SidebarHeader className="drag-region shrink-0 gap-0 px-0 py-0">
@@ -3090,9 +3107,16 @@ export default function Sidebar() {
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const sidebarThreadPreviewCount = useSettings((s) => s.sidebarThreadPreviewCount);
   const { updateSettings } = useUpdateSettings();
-  const { handleNewThread } = useNewThreadHandler();
+  // The full hook (rather than `useNewThreadHandler`) because the deck rail's
+  // new-thread button has to resolve the same default project and draft context
+  // the app menu's "New thread" action uses.
+  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
+    useHandleNewThread();
+  const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
+    (settings) => settings.defaultThreadEnvMode,
+  );
   const { archiveThread, deleteThread, pinThread, unpinThread } = useThreadActions();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpen, setOpenMobile, state: sidebarState } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
@@ -3100,6 +3124,7 @@ export default function Sidebar() {
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
   const keybindings = useServerKeybindings();
   const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
+  const toggleCommandPalette = useCommandPaletteStore((store) => store.toggleOpen);
   // Extra thread rows revealed beyond the preview, per project ("Show more").
   const [revealedThreadCountsByProject, setRevealedThreadCountsByProject] = useState<
     ReadonlyMap<string, number>
@@ -3253,6 +3278,24 @@ export default function Sidebar() {
     },
     [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
   );
+
+  const expandSidebar = useCallback(() => {
+    void setOpen(true);
+  }, [setOpen]);
+  const openSettings = useCallback(() => {
+    void navigate({ to: "/settings" });
+  }, [navigate]);
+  const startNewThreadFromRail = useCallback(() => {
+    void startNewThreadFromContext({
+      activeDraftThread,
+      activeThread,
+      defaultProjectRef,
+      defaultThreadEnvMode: resolveSidebarNewThreadEnvMode({
+        defaultEnvMode: defaultThreadEnvMode,
+      }),
+      handleNewThread,
+    });
+  }, [activeDraftThread, activeThread, defaultProjectRef, defaultThreadEnvMode, handleNewThread]);
 
   const projectDnDSensors = useSensors(
     useSensor(PointerSensor, {
@@ -3716,6 +3759,26 @@ export default function Sidebar() {
         : new Map([[activeRouteProjectKey, kept]]);
     });
   }, [activeRouteProjectKey]);
+
+  // Collapsed desktop density: the deck rail replaces the pane entirely rather
+  // than sitting beside it, so nothing is shown twice. Mobile keeps using the
+  // off-canvas sheet, which has no collapsed state to render.
+  if (!isMobile && sidebarState === "collapsed") {
+    return (
+      <>
+        <SidebarChromeHeader isElectron={isElectron} collapsed />
+        <DeckRail
+          entries={onDeckEntries}
+          routeThreadKey={routeThreadKey}
+          navigateToThread={navigateToThread}
+          openSearch={toggleCommandPalette}
+          openSettings={openSettings}
+          startNewThread={startNewThreadFromRail}
+          expandSidebar={expandSidebar}
+        />
+      </>
+    );
+  }
 
   return (
     <>
