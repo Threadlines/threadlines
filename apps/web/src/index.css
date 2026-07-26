@@ -290,6 +290,22 @@ html.electron {
    Start the rail below the titlebar instead, leaving one continuous strip
    across the top. Only in Electron: nothing else draws window controls. */
 html.electron [data-collapsible="icon"][data-side="left"] [data-slot="sidebar-container"] {
+  /* The right edge is drawn as a background layer rather than a border so it
+     can start below the titlebar too; a real border spans the full height and
+     would strike the window controls. */
+  border-right-color: transparent;
+  background: linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent var(--workspace-topbar-height),
+      var(--border) var(--workspace-topbar-height)
+    )
+    right / 1px 100% no-repeat;
+}
+
+/* The rail surface itself lives on the inner element, which paints over the
+   container, so the titlebar cutout has to be applied here as well. */
+html.electron [data-collapsible="icon"][data-side="left"] [data-slot="sidebar-inner"] {
   background: linear-gradient(
     to bottom,
     transparent 0,
