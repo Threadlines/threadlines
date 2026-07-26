@@ -207,14 +207,17 @@ export function BrowserPanel({
     }
     setPicking(true);
     try {
-      const element = await window.desktopBridge?.previewPickElement?.({ webContentsId });
+      const element = await window.desktopBridge?.previewPickElement?.({
+        webContentsId,
+        colorScheme: guestColorScheme,
+      });
       if (element !== null && element !== undefined) {
         onPickElement?.(element);
       }
     } finally {
       setPicking(false);
     }
-  }, [activeTabId, onPickElement, picking]);
+  }, [activeTabId, guestColorScheme, onPickElement, picking]);
 
   const captureScreenshot = useCallback(() => {
     const webview = webviewsRef.current.get(activeTabId);

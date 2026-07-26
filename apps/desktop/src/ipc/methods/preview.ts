@@ -9,6 +9,7 @@ import {
   DesktopPreviewTypeInputSchema,
   DesktopPreviewStatusSchema,
   DesktopPreviewPickedElementSchema,
+  DesktopPreviewPickInputSchema,
   DesktopPreviewTargetSchema,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -142,11 +143,11 @@ export const previewSetColorScheme = makeIpcMethod({
 
 export const previewPickElement = makeIpcMethod({
   channel: IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL,
-  payload: DesktopPreviewTargetSchema,
+  payload: DesktopPreviewPickInputSchema,
   result: Schema.NullOr(DesktopPreviewPickedElementSchema),
   handler: Effect.fn("desktop.ipc.preview.pickElement")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    return yield* automation.pickElement(input.webContentsId);
+    return yield* automation.pickElement(input.webContentsId, input.colorScheme);
   }),
 });
 

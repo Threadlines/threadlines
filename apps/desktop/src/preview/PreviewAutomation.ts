@@ -25,8 +25,8 @@ import { webContents, type WebContents } from "electron";
 
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import {
+  buildPickOverlayScript,
   PICK_OVERLAY_BINDING,
-  PICK_OVERLAY_SCRIPT,
   PICK_OVERLAY_TEARDOWN_SCRIPT,
 } from "./pickOverlayScript.ts";
 import * as Context from "effect/Context";
@@ -135,6 +135,7 @@ export class PreviewAutomation extends Context.Service<
     ) => Effect.Effect<void, PreviewAutomationError>;
     readonly pickElement: (
       webContentsId: number,
+      colorScheme: "light" | "dark",
     ) => Effect.Effect<DesktopPreviewPickedElement | null, PreviewAutomationError>;
     readonly cancelPick: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
     readonly setColorScheme: (
@@ -527,7 +528,10 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
      * and the highlight the user sees while choosing is Chromium's, so it
      * behaves exactly as it does in DevTools.
      */
-    pickElement: Effect.fn("PreviewAutomation.pickElement")(function* (webContentsId: number) {
+    pickElement: Effect.fn("PreviewAutomation.pickElement")(function* (
+      webContentsId: number,
+      colorScheme: "light" | "dark",
+    ) {
       const contents = yield* resolve(webContentsId);
       yield* sendCommand(contents, "DOM.enable", {});
       yield* sendCommand(contents, "Runtime.enable", {});
@@ -538,7 +542,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       }).pipe(Effect.ignore);
 
       yield* sendCommand(contents, "Runtime.evaluate", {
-        expression: PICK_OVERLAY_SCRIPT,
+        expression: buildPickOverlayScript(colorScheme),
       });
 
       const pickedPoint = yield* Effect.tryPromise({

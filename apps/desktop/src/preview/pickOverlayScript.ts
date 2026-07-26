@@ -19,26 +19,33 @@
 /**
  * The pointer used while picking.
  *
- * A crosshair says "aim", but it loses the sense that you are still pointing at
- * things, and the page's own cursors (an I-beam over text, a hand over links)
- * read as "interact with this" at exactly the moment interaction is disabled.
- * So: the ordinary arrow, outlined in the same blue as the highlight, which
- * reads as pointing while still saying a mode is on.
+ * The page's own cursors leak through otherwise -- an I-beam over text, a hand
+ * over links -- which says "interact with this" at the moment interaction is
+ * disabled. One cursor over everything fixes that.
  *
- * White fill with a blue stroke so it stays legible on dark and light pages
- * alike, and `default` is kept as a fallback in case the image is refused.
+ * The shape is the arrow from the toolbar's pick icon, so the mode looks like
+ * the button that started it, and it is drawn small: a cursor is furniture, not
+ * a graphic. The fill follows the app's theme and the outline is the highlight
+ * blue, which is what keeps it legible either way.
  */
-const ARROW_CURSOR_SVG = [
-  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="24" viewBox="0 0 18 24">',
-  '<path d="M2 2 L2 18.2 L6.4 14 L9.1 20 L11.9 18.7 L9.2 12.8 L14.9 12.8 Z"',
-  ' fill="#ffffff" stroke="#4c8dff" stroke-width="1.8" stroke-linejoin="round"/>',
-  "</svg>",
-].join("");
+const ARROW_CURSOR_FILL = { dark: "#16181c", light: "#ffffff" } as const;
 
-const ARROW_CURSOR_DATA_URL = `data:image/svg+xml;base64,${Buffer.from(ARROW_CURSOR_SVG).toString("base64")}`;
-
-/** Hotspot on the arrow's tip, so what you point at is what gets picked. */
-const PICK_CURSOR_CSS = `url("${ARROW_CURSOR_DATA_URL}") 2 2, default`;
+function arrowCursorCss(colorScheme: "light" | "dark"): string {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">',
+    // lucide's mouse-pointer, body only -- its tail would read as clutter at
+    // cursor size.
+    '<path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083',
+    'a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"',
+    ` fill="${ARROW_CURSOR_FILL[colorScheme]}" stroke="#4c8dff" stroke-width="1.6"`,
+    ' stroke-linejoin="round"/>',
+    "</svg>",
+  ].join("");
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+  // Hotspot on the tip, so what you point at is what gets picked, and `default`
+  // stays as a fallback in case the image is ever refused.
+  return `url("${dataUrl}") 2 2, default`;
+}
 
 export const PICK_OVERLAY_BINDING = "__threadlinesPickElement";
 const OVERLAY_ID = "__threadlines-pick-overlay";
@@ -55,7 +62,8 @@ export const PICK_OVERLAY_TEARDOWN_SCRIPT = `
 })();
 `;
 
-export const PICK_OVERLAY_SCRIPT = `
+export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
+  return `
 (() => {
   const OVERLAY_ID = ${JSON.stringify(OVERLAY_ID)};
   const BINDING = ${JSON.stringify(PICK_OVERLAY_BINDING)};
@@ -74,7 +82,7 @@ export const PICK_OVERLAY_SCRIPT = `
   const cursorStyle = document.createElement("style");
   cursorStyle.id = OVERLAY_ID + "-cursor";
   cursorStyle.textContent =
-    "*,*::before,*::after{cursor:" + ${JSON.stringify(PICK_CURSOR_CSS)} + " !important}";
+    "*,*::before,*::after{cursor:" + ${JSON.stringify(arrowCursorCss(colorScheme))} + " !important}";
   document.documentElement.appendChild(cursorStyle);
 
   const host = document.createElement("div");
@@ -190,3 +198,4 @@ export const PICK_OVERLAY_SCRIPT = `
   window.addEventListener("resize", onScroll, true);
 })();
 `;
+}

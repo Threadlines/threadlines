@@ -405,6 +405,13 @@ export const DesktopPreviewElementSchema = Schema.Struct({
 });
 export type DesktopPreviewElement = typeof DesktopPreviewElementSchema.Type;
 
+export const DesktopPreviewPickInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  /** The app's resolved theme; the pick cursor is drawn to match it. */
+  colorScheme: Schema.Literals(["light", "dark"]),
+});
+export type DesktopPreviewPickInput = typeof DesktopPreviewPickInputSchema.Type;
+
 export const DesktopPreviewClickInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   ref: Schema.Number,
@@ -761,7 +768,9 @@ export interface DesktopBridge {
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
   /** Resolves null when picking is cancelled or times out. */
-  previewPickElement?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewPickedElement | null>;
+  previewPickElement?: (
+    input: DesktopPreviewPickInput,
+  ) => Promise<DesktopPreviewPickedElement | null>;
   previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;
   previewClearBrowsingData?: () => Promise<void>;
