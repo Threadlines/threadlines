@@ -53,6 +53,12 @@ interface AttachedTab {
   contents: WebContents;
   console: DesktopPreviewConsoleEntry[];
   networkFailures: DesktopPreviewNetworkFailure[];
+  /**
+   * requestId -> url, because `Network.loadingFailed` reports only the id.
+   * Without this a request that fails below HTTP -- DNS, connection refused,
+   * blocked -- would be reported as an opaque id instead of an address.
+   */
+  requestUrls: Map<string, string>;
   dispose: () => void;
 }
 
@@ -113,6 +119,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       contents,
       console: [],
       networkFailures: [],
+      requestUrls: new Map(),
       dispose: () => {},
     };
 
@@ -154,14 +161,36 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         });
         return;
       }
+      if (method === "Network.requestWillBeSent") {
+        const requestId = String(params.requestId ?? "");
+        const request = params.request as { url?: string } | undefined;
+        if (requestId !== "" && request?.url !== undefined) {
+          tab.requestUrls.set(requestId, request.url);
+        }
+        return;
+      }
       if (method === "Network.loadingFailed") {
+        const requestId = String(params.requestId ?? "");
         tab.networkFailures.push({
-          url: String(params.requestId ?? ""),
+          url: tab.requestUrls.get(requestId) ?? "",
           status: null,
           errorText: String(params.errorText ?? "request failed"),
           at: new Date().toISOString(),
         });
+        tab.requestUrls.delete(requestId);
         if (tab.networkFailures.length > MAX_NETWORK_FAILURES) tab.networkFailures.shift();
+        return;
+      }
+      if (method === "Log.entryAdded") {
+        // Browser-level messages the page never printed itself: CSP violations,
+        // CORS refusals, mixed content. Exactly the failures a developer asks
+        // an agent about, and invisible to Runtime.consoleAPICalled.
+        const entry = params.entry as { level?: string; text?: string } | undefined;
+        pushConsole({
+          level: entry?.level ?? "info",
+          text: entry?.text ?? "",
+          at: new Date().toISOString(),
+        });
         return;
       }
       if (method === "Network.responseReceived") {
@@ -184,6 +213,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         if (frame?.parentId === undefined) {
           tab.console.length = 0;
           tab.networkFailures.length = 0;
+          tab.requestUrls.clear();
         }
       }
     };
@@ -199,7 +229,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     };
     attached.set(webContentsId, tab);
 
-    for (const method of ["Runtime.enable", "Page.enable", "Network.enable"]) {
+    for (const method of ["Runtime.enable", "Page.enable", "Network.enable", "Log.enable"]) {
       yield* sendCommand(contents, method);
     }
 
