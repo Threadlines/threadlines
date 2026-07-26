@@ -2554,9 +2554,35 @@ function uniqueClaudeSkillRoots(
   return [...byPath.values()].toSorted((left, right) => right.priority - left.priority);
 }
 
+/**
+ * Installed plugins ship skills inside their own package. Nothing else scans there, so a plugin's
+ * skills were invisible in the skills inventory even while its detail dialog counted them.
+ */
+export function claudePluginSkillRoots(
+  path: Path.Path,
+  plugins: ReadonlyArray<ProviderExtensionPlugin>,
+): ClaudeSkillRoot[] {
+  return plugins.flatMap((plugin) => {
+    const installPath = optionalText(plugin.installPath);
+    // A disabled plugin contributes nothing to a session, so its bundled skills are not available
+    // and should not pad the inventory.
+    if (plugin.installed !== true || plugin.enabled === false || !installPath) return [];
+    return [
+      {
+        root: path.join(installPath, "skills"),
+        scope: "user" as const,
+        source: `Claude plugin: ${plugin.name}`,
+        // Below project and user roots: a skill you wrote should win over a bundled one.
+        priority: -1,
+      },
+    ];
+  });
+}
+
 const readClaudeSkills = Effect.fn("providerExtensions.readClaudeSkills")(function* (
   claudeHome: string,
   cwd: string,
+  plugins: ReadonlyArray<ProviderExtensionPlugin> = [],
 ) {
   const path = yield* Path.Path;
   const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
@@ -2570,6 +2596,7 @@ const readClaudeSkills = Effect.fn("providerExtensions.readClaudeSkills")(functi
         source: "Claude user",
         priority: 0,
       },
+      ...claudePluginSkillRoots(path, plugins),
     ],
     path,
   );
@@ -2790,7 +2817,7 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
   const path = yield* Path.Path;
   const claudeHome = claudeEnvironment.HOME ?? process.env.HOME ?? process.env.USERPROFILE ?? "";
 
-  const [pluginResult, marketplaceResult, mcpResult, skillsResult] = yield* Effect.all(
+  const [pluginResult, marketplaceResult, mcpResult] = yield* Effect.all(
     [
       runClaudeCommand({
         binaryPath: input.config.binaryPath,
@@ -2839,16 +2866,10 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
         cwd: input.cwd,
         env: claudeEnvironment,
       }).pipe(Effect.result),
-      readClaudeSkills(path.resolve(claudeHome), input.cwd).pipe(Effect.result),
     ],
     { concurrency: "unbounded" },
   );
 
-  const messages = [
-    resultMessage(pluginResult),
-    resultMessage(mcpResult),
-    resultMessage(skillsResult),
-  ].filter((message): message is string => Boolean(message));
   const pluginEntries = Result.isSuccess(pluginResult) ? pluginResult.success : [];
   const describedPlugins = yield* describeInstalledClaudePlugins(
     pluginEntries.map((entry) => entry.plugin),
@@ -2875,6 +2896,14 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     marketplaces,
     marketplaceManifests,
   );
+  const skillsResult = yield* readClaudeSkills(path.resolve(claudeHome), input.cwd, plugins).pipe(
+    Effect.result,
+  );
+  const messages = [
+    resultMessage(pluginResult),
+    resultMessage(mcpResult),
+    resultMessage(skillsResult),
+  ].filter((message): message is string => Boolean(message));
   const skills = Result.isSuccess(skillsResult)
     ? annotatePluginBackedSkills(skillsResult.success, plugins)
     : [];

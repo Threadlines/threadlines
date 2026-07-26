@@ -24,6 +24,7 @@ import {
   codexMcpLoginCommandForDisplay,
   codexSkillConfigWriteParams,
   deriveClaudePluginGitHubOwner,
+  claudePluginSkillRoots,
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
@@ -877,6 +878,39 @@ Per-component (rounded)
       ],
     );
   });
+
+  it.effect("scans skills only for plugins a session would actually load", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const roots = claudePluginSkillRoots(path, [
+        {
+          id: "supabase@official",
+          name: "supabase",
+          installed: true,
+          installPath: "/plugins/supabase",
+        },
+        {
+          id: "off@official",
+          name: "off",
+          installed: true,
+          enabled: false,
+          installPath: "/plugins/off",
+        },
+        {
+          id: "absent@official",
+          name: "absent",
+          installed: false,
+          installPath: "/plugins/absent",
+        },
+        { id: "nopath@official", name: "nopath", installed: true },
+      ]);
+
+      assert.deepEqual(
+        roots.map((root) => root.root),
+        [path.join("/plugins/supabase", "skills")],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it("derives plugin bundle metadata from cached skill paths", () => {
     assert.deepEqual(
