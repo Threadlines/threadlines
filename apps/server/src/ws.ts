@@ -82,6 +82,7 @@ import { startProviderReviewForThread } from "./provider/ProviderReviewCoordinat
 import { importExternalProviderThread } from "./provider/ExternalThreadImport.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
+  addProviderExtensionMarketplace,
   callProviderExtensionMcpTool,
   getProviderExtensionOperationStatus,
   installProviderExtensionPlugin,
@@ -89,7 +90,9 @@ import {
   readProviderExtensionsInventory,
   readProviderExtensionMcpResource,
   readProviderExtensionPlugin,
+  readProviderExtensionSkill,
   refreshProviderExtensionPluginMarketplaces,
+  removeProviderExtensionMarketplace,
   reloadProviderExtensionMcpServers,
   setProviderExtensionPluginEnabled,
   setProviderExtensionSkillEnabled,
@@ -1232,6 +1235,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverReadProviderExtensionSkill]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadProviderExtensionSkill,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* readProviderExtensionSkill({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverReadProviderExtensionPlugin]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadProviderExtensionPlugin,
@@ -1286,6 +1298,24 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 request: input,
                 settings,
               });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverAddProviderExtensionMarketplace]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAddProviderExtensionMarketplace,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* addProviderExtensionMarketplace({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverRemoveProviderExtensionMarketplace]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRemoveProviderExtensionMarketplace,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* removeProviderExtensionMarketplace({ request: input, settings });
             }),
             { "rpc.aggregate": "server" },
           ),

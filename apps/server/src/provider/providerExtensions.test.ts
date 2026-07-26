@@ -11,6 +11,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { PtyAdapter } from "./../terminal/Services/PTY.ts";
+import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -19,22 +21,91 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  codexMarketplaceLoadErrorMessage,
   codexMcpLoginCommandForDisplay,
   codexSkillConfigWriteParams,
+  deriveClaudePluginGitHubOwner,
+  claudePluginSkillRoots,
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
+  mapCodexPluginInventory,
+  mapCodexPluginDetail,
+  parseClaudeMarketplaceManifest,
+  parseClaudeMarketplaceList,
   parseClaudeMcpList,
+  parseClaudePluginDetails,
   parseClaudePluginList,
   getProviderExtensionOperationStatus,
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
+  readProviderExtensionSkill,
   refreshProviderExtensionPluginMarketplaces,
   startProviderExtensionMcpOAuth,
   writeInstructionFile,
 } from "./providerExtensions.ts";
 
 const encoder = new TextEncoder();
+
+/**
+ * Claude's `mcp login` needs a terminal, so the action spawns through the PTY adapter. This stub
+ * records what was launched and reports whatever exit code the test wants.
+ */
+/** Waits for a still-running operation to reach the message a step is expected to publish. */
+const awaitOperationMessage = Effect.fn(function* (operationId: string, pattern: RegExp) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const status = yield* getProviderExtensionOperationStatus({ operationId });
+    if (pattern.test(status.message ?? "")) return status;
+    yield* Effect.yieldNow;
+  }
+  return yield* getProviderExtensionOperationStatus({ operationId });
+});
+
+const settleOperation = Effect.fn(function* (operationId: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const status = yield* getProviderExtensionOperationStatus({ operationId });
+    if (status.status !== "running") return status;
+    yield* Effect.yieldNow;
+  }
+  return yield* getProviderExtensionOperationStatus({ operationId });
+});
+
+function makeStubPtyLayer(options?: {
+  readonly exitCode?: number;
+  readonly output?: string;
+  readonly calls?: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }>;
+}) {
+  return Layer.succeed(PtyAdapter, {
+    spawn: (input) =>
+      Effect.sync(() => {
+        options?.calls?.push({ shell: input.shell, args: input.args ?? [] });
+        let onExit: ((event: { exitCode: number; signal: number | null }) => void) | null = null;
+        let onData: ((data: string) => void) | null = null;
+        queueMicrotask(() => {
+          if (options?.output) onData?.(options.output);
+          onExit?.({ exitCode: options?.exitCode ?? 0, signal: null });
+        });
+        return {
+          pid: 4242,
+          write: () => {},
+          resize: () => {},
+          kill: () => {},
+          onData: (callback) => {
+            onData = callback;
+            return () => {
+              onData = null;
+            };
+          },
+          onExit: (callback) => {
+            onExit = callback;
+            return () => {
+              onExit = null;
+            };
+          },
+        };
+      }),
+  });
+}
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 
 function makeNeverFinishingProcess() {
@@ -139,6 +210,260 @@ describe("provider extensions inventory", () => {
     );
   });
 
+  it("maps Codex marketplaces, featured plugins, and plugin icons", () => {
+    const inventory = mapCodexPluginInventory({
+      featuredPluginIds: ["analytics"],
+      marketplaceLoadErrors: [
+        {
+          marketplacePath: "/plugins/catalog/marketplace.json",
+          message: " stale catalog ",
+        },
+      ],
+      marketplaces: [
+        {
+          name: "catalog",
+          path: "/plugins/catalog/marketplace.json",
+          interface: { displayName: " Example Catalog " },
+          plugins: [
+            {
+              id: "analytics",
+              name: "Analytics",
+              authPolicy: "ON_USE",
+              enabled: true,
+              installed: true,
+              installPolicy: "AVAILABLE",
+              source: { type: "remote" },
+              version: "2.0.0",
+              localVersion: "1.5.0",
+              keywords: [" metrics ", "", "insights"],
+              interface: {
+                capabilities: [],
+                screenshotUrls: [],
+                screenshots: [],
+                developerName: " Example Labs ",
+                category: "Data",
+                websiteUrl: " https://example.com/analytics ",
+                shortDescription: "Understand product usage",
+                logoUrl: " https://example.com/analytics.png ",
+                logo: "/plugins/catalog/analytics/logo.png",
+              },
+            },
+            {
+              id: "category-only",
+              name: "Category Only",
+              authPolicy: "ON_INSTALL",
+              enabled: false,
+              installed: false,
+              installPolicy: "AVAILABLE",
+              source: { type: "remote" },
+              version: "3.0.0",
+              interface: {
+                capabilities: [],
+                screenshotUrls: [],
+                screenshots: [],
+                category: "Productivity",
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.deepEqual(inventory.plugins, [
+      {
+        id: "analytics",
+        name: "Analytics",
+        displayName: undefined,
+        description: "Understand product usage",
+        enabled: true,
+        installed: true,
+        source: "Remote catalog",
+        authPolicy: "ON_USE",
+        installPolicy: "AVAILABLE",
+        availability: undefined,
+        marketplaceName: "catalog",
+        marketplacePath: "/plugins/catalog/marketplace.json",
+        version: "1.5.0",
+        availableVersion: "2.0.0",
+        developerName: "Example Labs",
+        category: "Data",
+        websiteUrl: "https://example.com/analytics",
+        keywords: ["metrics", "insights"],
+        iconUrl: "https://example.com/analytics.png",
+        iconPath: "/plugins/catalog/analytics/logo.png",
+        featured: true,
+      },
+      {
+        id: "category-only",
+        name: "Category Only",
+        displayName: undefined,
+        description: undefined,
+        enabled: false,
+        installed: false,
+        source: "Remote catalog",
+        authPolicy: "ON_INSTALL",
+        installPolicy: "AVAILABLE",
+        availability: undefined,
+        marketplaceName: "catalog",
+        marketplacePath: "/plugins/catalog/marketplace.json",
+        version: "3.0.0",
+        category: "Productivity",
+      },
+    ]);
+    assert.deepEqual(inventory.marketplaces, [
+      {
+        name: "catalog",
+        displayName: "Example Catalog",
+        source: "/plugins/catalog/marketplace.json",
+        path: "/plugins/catalog/marketplace.json",
+        pluginCount: 2,
+        installedPluginCount: 1,
+        remote: false,
+        removable: true,
+        loadError: "stale catalog",
+      },
+    ]);
+  });
+
+  it("maps typed Codex plugin detail and sorts its component inventory", () => {
+    const detail = mapCodexPluginDetail({
+      appTemplates: [
+        {
+          templateId: "warehouse-template",
+          name: "Warehouse",
+          category: "Data",
+          description: "Connect a warehouse",
+          materializedAppIds: [],
+        },
+      ],
+      apps: [
+        {
+          id: "dashboard-app",
+          name: "Dashboard",
+          category: "Analytics",
+          description: "Open dashboards",
+        },
+      ],
+      description: "Installed analytics toolkit",
+      hooks: [{ eventName: "postToolUse", key: "record-usage" }],
+      marketplaceName: "catalog",
+      marketplacePath: "/plugins/catalog",
+      mcpServers: ["metrics-api"],
+      scheduledTasks: [
+        {
+          key: "weekly-report",
+          name: "Weekly report",
+          prompt: "Summarize usage",
+          schedule: { type: "weekly", days: ["MO", "FR"], time: "09:00" },
+        },
+      ],
+      shareUrl: null,
+      skills: [
+        {
+          name: "summarize",
+          description: "Summarize product usage",
+          enabled: true,
+          path: "/plugins/analytics/skills/summarize/SKILL.md",
+          shortDescription: "Summarize usage",
+        },
+        {
+          name: "analyze",
+          description: "Analyze funnels",
+          enabled: false,
+        },
+      ],
+      summary: {
+        authPolicy: "ON_USE",
+        enabled: true,
+        id: "analytics",
+        installPolicy: "AVAILABLE",
+        installed: true,
+        interface: {
+          capabilities: [],
+          screenshotUrls: [],
+          screenshots: [],
+          displayName: "Analytics Toolkit",
+          developerName: "Example Labs",
+          websiteUrl: "https://example.com/analytics",
+          shortDescription: "Remote description",
+        },
+        localVersion: "1.5.0",
+        name: "Analytics",
+        shareContext: {
+          remotePluginId: "remote-analytics",
+          shareUrl: "https://example.com/share/analytics",
+        },
+        source: { type: "remote" },
+        version: "2.0.0",
+      },
+    } satisfies CodexSchema.V2PluginReadResponse__PluginDetail);
+
+    assert.deepEqual(detail, {
+      pluginId: "analytics",
+      name: "Analytics",
+      displayName: "Analytics Toolkit",
+      description: "Installed analytics toolkit",
+      version: "1.5.0",
+      developerName: "Example Labs",
+      websiteUrl: "https://example.com/analytics",
+      marketplaceName: "catalog",
+      marketplacePath: "/plugins/catalog",
+      shareUrl: "https://example.com/share/analytics",
+      components: [
+        {
+          kind: "skill",
+          name: "analyze",
+          description: "Analyze funnels",
+          enabled: false,
+        },
+        {
+          kind: "skill",
+          name: "summarize",
+          description: "Summarize usage",
+          path: "/plugins/analytics/skills/summarize/SKILL.md",
+          enabled: true,
+        },
+        { kind: "hook", name: "record-usage", detail: "postToolUse" },
+        { kind: "mcpServer", name: "metrics-api" },
+        {
+          kind: "app",
+          name: "Dashboard",
+          description: "Open dashboards",
+          detail: "Analytics",
+        },
+        {
+          kind: "appTemplate",
+          name: "Warehouse",
+          description: "Connect a warehouse",
+          detail: "Data",
+        },
+        {
+          kind: "scheduledTask",
+          name: "Weekly report",
+          detail: "MO, FR at 09:00",
+        },
+      ],
+    });
+  });
+
+  it("summarizes and sanitizes Codex marketplace load failures", () => {
+    const message = codexMarketplaceLoadErrorMessage({
+      marketplaceLoadErrors: [
+        { marketplacePath: "/path/one", message: "bad\nmanifest" },
+        { marketplacePath: "/path/two", message: "not found" },
+        { marketplacePath: "/path/three", message: "permission denied" },
+        { marketplacePath: "/path/four", message: "invalid source" },
+      ],
+      marketplaces: [],
+    });
+
+    assert.equal(
+      message,
+      "Failed to load 4 plugin marketplaces: /path/one (bad manifest), /path/two (not found), /path/three (permission denied), +1 more.",
+    );
+    assert.equal(codexMarketplaceLoadErrorMessage({ marketplaces: [] }), undefined);
+  });
+
   it("parses Claude plugin JSON inventory with installed and marketplace entries", () => {
     const plugins = parseClaudePluginList(
       JSON.stringify({
@@ -182,6 +507,297 @@ describe("provider extensions inventory", () => {
     assert.equal(plugins[1]?.installed, false);
   });
 
+  it("parses Claude marketplaces and derives plugin counts from plugin inventory", () => {
+    const plugins = parseClaudePluginList(
+      JSON.stringify({
+        installed: [
+          {
+            id: "supabase@claude-plugins-official",
+            enabled: true,
+          },
+        ],
+        available: [
+          {
+            pluginId: "supabase@claude-plugins-official",
+            name: "supabase",
+          },
+          {
+            pluginId: "vercel@claude-plugins-official",
+            name: "vercel",
+          },
+        ],
+      }),
+    );
+
+    assert.deepEqual(
+      parseClaudeMarketplaceList(
+        JSON.stringify([
+          {
+            name: "claude-plugins-official",
+            source: "github",
+            repo: "anthropics/claude-plugins-official",
+            installLocation: "/Users/will/.claude/plugins/marketplaces/claude-plugins-official",
+          },
+        ]),
+        plugins,
+      ),
+      [
+        {
+          name: "claude-plugins-official",
+          source: "anthropics/claude-plugins-official",
+          path: "/Users/will/.claude/plugins/marketplaces/claude-plugins-official",
+          pluginCount: 2,
+          installedPluginCount: 1,
+          remote: false,
+          removable: true,
+        },
+      ],
+    );
+  });
+
+  it("parses Claude marketplace manifest metadata with optional authors", () => {
+    const manifest = parseClaudeMarketplaceManifest({
+      name: "claude-plugins-official",
+      plugins: [
+        {
+          name: "acrobat",
+          displayName: "Adobe Acrobat",
+          description: "Work with PDF documents.",
+          author: { name: "Adobe", email: "plugins@example.com" },
+          category: "productivity",
+          homepage: "https://www.adobe.com/acrobat",
+          keywords: [" pdf ", "", "documents"],
+          source: {
+            source: "git-subdir",
+            url: "https://github.com/adobe/acrobat-claude-plugin.git",
+          },
+        },
+        {
+          name: "agent-sdk-dev",
+          description: "Build Claude agents.",
+          source: "./plugins/agent-sdk-dev",
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      manifest,
+      new Map([
+        [
+          "acrobat",
+          {
+            displayName: "Adobe Acrobat",
+            description: "Work with PDF documents.",
+            category: "productivity",
+            developerName: "Adobe",
+            websiteUrl: "https://www.adobe.com/acrobat",
+            keywords: ["pdf", "documents"],
+            source: { url: "https://github.com/adobe/acrobat-claude-plugin.git" },
+          },
+        ],
+        [
+          "agent-sdk-dev",
+          {
+            description: "Build Claude agents.",
+            source: "./plugins/agent-sdk-dev",
+          },
+        ],
+      ]),
+    );
+    assert.deepEqual(parseClaudeMarketplaceManifest({ plugins: "invalid" }), new Map());
+  });
+
+  it("derives Claude plugin GitHub owners from plugin and marketplace sources", () => {
+    assert.equal(
+      deriveClaudePluginGitHubOwner(
+        {
+          source: "git-subdir",
+          url: "https://github.com/42Crunch-AI/claude-plugins.git",
+        },
+        "anthropics/claude-plugins-official",
+      ),
+      "42Crunch-AI",
+    );
+    assert.equal(
+      deriveClaudePluginGitHubOwner(
+        "./plugins/agent-sdk-dev",
+        "anthropics/claude-plugins-official",
+      ),
+      "anthropics",
+    );
+    assert.equal(
+      deriveClaudePluginGitHubOwner(
+        { url: "https://gitlab.com/example/claude-plugin.git" },
+        "anthropics/claude-plugins-official",
+      ),
+      undefined,
+    );
+  });
+
+  it.effect("enriches Claude inventory without replacing an installed plugin description", () => {
+    let pluginInstallPath = "";
+    let marketplacePath = "";
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      const args = childProcess.args;
+      if (args[0] === "plugin" && args[1] === "list") {
+        return Effect.succeed(
+          makeProcessResult(
+            JSON.stringify({
+              installed: [
+                {
+                  id: "agent-sdk-dev@claude-plugins-official",
+                  enabled: true,
+                  installPath: pluginInstallPath,
+                },
+              ],
+              available: [
+                {
+                  pluginId: "agent-sdk-dev@claude-plugins-official",
+                  name: "agent-sdk-dev",
+                  marketplaceName: "claude-plugins-official",
+                },
+              ],
+            }),
+          ),
+        );
+      }
+      if (args[0] === "plugin" && args[1] === "marketplace" && args[2] === "list") {
+        return Effect.succeed(
+          makeProcessResult(
+            JSON.stringify([
+              {
+                name: "claude-plugins-official",
+                repo: "anthropics/claude-plugins-official",
+                installLocation: marketplacePath,
+              },
+            ]),
+          ),
+        );
+      }
+      if (args[0] === "mcp" && args[1] === "list") {
+        return Effect.succeed(makeProcessResult(""));
+      }
+      return Effect.succeed(
+        makeProcessResult("", `unexpected claude command: ${args.join(" ")}`, 1),
+      );
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-marketplace-",
+      });
+      const claudeHome = path.join(workspace, "home");
+      pluginInstallPath = path.join(workspace, "installed", "agent-sdk-dev");
+      marketplacePath = path.join(workspace, "marketplace");
+      yield* fileSystem.makeDirectory(path.join(pluginInstallPath, ".claude-plugin"), {
+        recursive: true,
+      });
+      yield* fileSystem.makeDirectory(path.join(marketplacePath, ".claude-plugin"), {
+        recursive: true,
+      });
+      yield* fileSystem.writeFileString(
+        path.join(pluginInstallPath, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ description: "Installed plugin description." }),
+      );
+      yield* fileSystem.writeFileString(
+        path.join(marketplacePath, ".claude-plugin", "marketplace.json"),
+        JSON.stringify({
+          plugins: [
+            {
+              name: "agent-sdk-dev",
+              description: "Marketplace description.",
+              category: "development",
+              source: "./plugins/agent-sdk-dev",
+            },
+          ],
+        }),
+      );
+
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd: workspace,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+        providers: [],
+      });
+      const plugin = result.providers[0]?.plugins[0];
+
+      assert.equal(plugin?.description, "Installed plugin description.");
+      assert.equal(plugin?.category, "development");
+      assert.equal(plugin?.iconUrl, "https://github.com/anthropics.png?size=80");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it("parses Claude plugin component inventory and projected token cost", () => {
+    const details = parseClaudePluginDetails(`supabase 0.1.12
+  Official Supabase plugin for Claude Code with bundled Supabase skills and MCP access for project management, database work, auth, storage, and Postgres best practices.
+  Source: supabase@inline
+
+Component inventory
+  Skills (2)  supabase, supabase-postgres-best-practices
+  Agents (0)
+  Hooks (0)
+  MCP servers (0)
+  LSP servers (0)
+
+Projected token cost
+  Always-on:   ~298 tok   added to every session
+
+Per-component (rounded)
+  component                         always-on  on-invoke
+  supabase-postgres-best-practices        ~90       ~640
+  supabase                               ~210      ~4.1k
+
+  On-invoke cost is paid each time a skill or agent fires.
+  Token counts are estimates and may differ from actual usage.`);
+
+    assert.deepEqual(details, {
+      name: "supabase",
+      version: "0.1.12",
+      description:
+        "Official Supabase plugin for Claude Code with bundled Supabase skills and MCP access for project management, database work, auth, storage, and Postgres best practices.",
+      components: [
+        { kind: "skill", name: "supabase" },
+        { kind: "skill", name: "supabase-postgres-best-practices" },
+      ],
+      tokenCost: {
+        alwaysOnTokens: 298,
+        components: [
+          {
+            name: "supabase-postgres-best-practices",
+            alwaysOnTokens: 90,
+            onInvokeTokens: 640,
+          },
+          {
+            name: "supabase",
+            alwaysOnTokens: 210,
+            onInvokeTokens: 4100,
+          },
+        ],
+      },
+    });
+  });
+
+  it("degrades malformed Claude plugin details to empty enrichment", () => {
+    assert.deepEqual(parseClaudePluginDetails("unexpected output without stable sections"), {
+      components: [],
+    });
+  });
+
   it("maps Codex MCP auth status without treating unsupported auth as server failure", () => {
     const servers = mapCodexMcpServers({
       data: [
@@ -217,20 +833,146 @@ describe("provider extensions inventory", () => {
     assert.equal(servers[1]?.authStatus, "Not logged in");
   });
 
-  it("parses Claude plugin MCP entries without collapsing the name to plugin", () => {
+  it("maps Claude MCP origins from plugin prefixes and plugin inventories", () => {
     const servers = parseClaudeMcpList(
       [
         "Checking MCP server health...",
         "plugin:supabase:supabase: https://mcp.supabase.com/mcp (HTTP) - ! Needs authentication",
+        "figma: https://mcp.figma.com/mcp (HTTP) - Connected",
+        "local-tools: npx local-tools (stdio) - Connected",
       ].join("\n"),
+      [
+        {
+          plugin: {
+            id: "supabase@openai-curated",
+            name: "supabase",
+            installed: true,
+          },
+          mcpServers: {},
+        },
+        {
+          plugin: {
+            id: "design@openai-curated",
+            name: "design",
+            installed: true,
+          },
+          mcpServers: { figma: { type: "http" } },
+        },
+      ],
     );
 
-    assert.equal(servers[0]?.name, "supabase");
-    assert.equal(servers[0]?.status, "Needs authentication");
-    assert.equal(servers[0]?.authStatus, "Needs authentication");
-    assert.equal(servers[0]?.transport, "HTTP");
-    assert.equal(servers[0]?.detail, "https://mcp.supabase.com/mcp");
+    // The CLI keys off the configured name, so collapsing it for display must not lose it:
+    // `claude mcp login supabase` fails for a server configured as `plugin:supabase:supabase`.
+    assert.deepEqual(
+      servers.map((server) => ({ name: server.name, configuredName: server.configuredName })),
+      [
+        { name: "figma", configuredName: undefined },
+        { name: "local-tools", configuredName: undefined },
+        { name: "supabase", configuredName: "plugin:supabase:supabase" },
+      ],
+    );
+
+    assert.deepEqual(
+      servers.map((server) => ({ name: server.name, origin: server.origin })),
+      [
+        {
+          name: "figma",
+          origin: {
+            kind: "plugin",
+            pluginId: "design@openai-curated",
+            pluginName: "design",
+          },
+        },
+        { name: "local-tools", origin: { kind: "user" } },
+        {
+          name: "supabase",
+          origin: {
+            kind: "plugin",
+            pluginId: "supabase@openai-curated",
+            pluginName: "supabase",
+          },
+        },
+      ],
+    );
   });
+
+  it("maps Codex MCP servers to the installed plugin that provides them", () => {
+    const servers = mapCodexMcpServers(
+      {
+        data: [
+          {
+            name: "figma",
+            authStatus: "oAuth",
+            tools: {},
+            resources: [],
+            resourceTemplates: [],
+          },
+          {
+            name: "local-tools",
+            authStatus: "unsupported",
+            tools: {},
+            resources: [],
+            resourceTemplates: [],
+          },
+        ],
+      },
+      [
+        {
+          pluginId: "design@openai-curated",
+          pluginName: "Design",
+          mcpServers: ["figma"],
+        },
+      ],
+    );
+
+    assert.deepEqual(
+      servers.map((server) => ({ name: server.name, origin: server.origin })),
+      [
+        {
+          name: "figma",
+          origin: {
+            kind: "plugin",
+            pluginId: "design@openai-curated",
+            pluginName: "Design",
+          },
+        },
+        { name: "local-tools", origin: { kind: "user" } },
+      ],
+    );
+  });
+
+  it.effect("scans skills only for plugins a session would actually load", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const roots = claudePluginSkillRoots(path, [
+        {
+          id: "supabase@official",
+          name: "supabase",
+          installed: true,
+          installPath: "/plugins/supabase",
+        },
+        {
+          id: "off@official",
+          name: "off",
+          installed: true,
+          enabled: false,
+          installPath: "/plugins/off",
+        },
+        {
+          id: "absent@official",
+          name: "absent",
+          installed: false,
+          installPath: "/plugins/absent",
+        },
+        { id: "nopath@official", name: "nopath", installed: true },
+      ]);
+
+      assert.deepEqual(
+        roots.map((root) => root.root),
+        [path.join("/plugins/supabase", "skills")],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it("derives plugin bundle metadata from cached skill paths", () => {
     assert.deepEqual(
@@ -384,6 +1126,108 @@ describe("provider extensions inventory", () => {
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
+  it.effect("reads contents for a skill in the current inventory", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-home-",
+      });
+      const skillPath = path.join(claudeHome, ".claude", "skills", "readable", "SKILL.md");
+      const contents = "# Readable skill\n\nKeep the instructions visible.\n";
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(skillPath, contents);
+      const settings = makeSettings({
+        providers: {
+          codex: { enabled: false },
+          claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+          cursor: { enabled: false },
+          opencode: { enabled: false },
+        },
+      });
+
+      yield* readProviderExtensionsInventory({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings,
+        providers: [],
+      });
+      const result = yield* readProviderExtensionSkill({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          path: skillPath,
+        },
+        settings,
+      });
+
+      assert.deepEqual(result, { contents });
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("rejects a skill path outside the current inventory", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-read-home-",
+      });
+      const outsidePath = path.join(cwd, "outside-inventory.md");
+      yield* fileSystem.writeFileString(outsidePath, "Do not expose this file.\n");
+      const settings = makeSettings({
+        providers: {
+          codex: { enabled: false },
+          claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+          cursor: { enabled: false },
+          opencode: { enabled: false },
+        },
+      });
+
+      yield* readProviderExtensionsInventory({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings,
+        providers: [],
+      });
+      const error = yield* readProviderExtensionSkill({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          path: outsidePath,
+        },
+        settings,
+      }).pipe(Effect.flip);
+
+      assert.equal(error.message, "Skill is not in the current provider extensions inventory.");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
   it.effect("discovers Claude skills from user, ancestor, current, and nested roots", () => {
     const spawner = ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
@@ -497,6 +1341,7 @@ describe("provider extensions inventory", () => {
   });
 
   it.effect("starts Claude MCP login through the configured Claude CLI", () => {
+    const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const calls: Array<{
       readonly command: string;
       readonly args: ReadonlyArray<string>;
@@ -546,27 +1391,28 @@ describe("provider extensions inventory", () => {
         }),
       });
 
-      yield* Effect.yieldNow;
+      const status = yield* settleOperation(result.operationId);
 
-      const status = yield* getProviderExtensionOperationStatus({
-        operationId: result.operationId,
-      });
-
-      assert.equal(result.authorizationUrl, undefined);
       assert.equal(result.terminalCommand, 'claude mcp login "claude.ai Google Drive"');
-      assert.equal(calls[0]?.command, "custom-claude");
-      assert.deepEqual(calls[0]?.args, [
+      // The login runs under a PTY because the CLI refuses a non-terminal stdin.
+      assert.equal(ptyCalls[0]?.shell, "custom-claude");
+      assert.deepEqual(ptyCalls[0]?.args, [
         "mcp",
         "login",
         process.platform === "win32" ? '"claude.ai Google Drive"' : "claude.ai Google Drive",
       ]);
-      assert.equal(calls[0]?.cwd, cwd);
-      assert.deepEqual(calls[1]?.args, ["mcp", "list"]);
+      // Verification still goes through the ordinary child process.
+      assert.deepEqual(calls[0]?.args, ["mcp", "list"]);
       assert.equal(status.status, "completed");
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, spawnerLayer, makeStubPtyLayer({ calls: ptyCalls })),
+      ),
+    );
   });
 
   it.effect("keeps Claude MCP login failed when post-login status still needs auth", () => {
+    const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const spawner = ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
         readonly args: ReadonlyArray<string>;
@@ -604,11 +1450,10 @@ describe("provider extensions inventory", () => {
         }),
       });
 
-      yield* Effect.yieldNow;
-
-      const runningStatus = yield* getProviderExtensionOperationStatus({
-        operationId: result.operationId,
-      });
+      const runningStatus = yield* awaitOperationMessage(
+        result.operationId,
+        /Waiting for .*browser sign-in/i,
+      );
 
       assert.equal(runningStatus.status, "running");
       assert.match(runningStatus.message ?? "", /Waiting for .*browser sign-in/i);
@@ -622,10 +1467,20 @@ describe("provider extensions inventory", () => {
       assert.equal(status.status, "failed");
       assert.match(status.message ?? "", /not completed/i);
       assert.match(status.error ?? "", /still needs authentication after waiting/i);
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer())));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          spawnerLayer,
+          TestClock.layer(),
+          makeStubPtyLayer({ calls: ptyCalls }),
+        ),
+      ),
+    );
   });
 
   it.effect("explains Claude MCP approval failures", () => {
+    const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const spawner = ChildProcessSpawner.make(() =>
       Effect.succeed(
         makeProcessResult(
@@ -662,19 +1517,30 @@ describe("provider extensions inventory", () => {
         }),
       });
 
-      yield* Effect.yieldNow;
-
-      const status = yield* getProviderExtensionOperationStatus({
-        operationId: result.operationId,
-      });
+      const status = yield* settleOperation(result.operationId);
 
       assert.equal(status.status, "failed");
       assert.match(status.error ?? "", /approve the MCP configuration/i);
       assert.match(status.error ?? "", /retry authorization in Threadlines/i);
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          spawnerLayer,
+          makeStubPtyLayer({
+            calls: ptyCalls,
+            exitCode: 1,
+            output: [
+              'No MCP server named "claude.ai".',
+              "Configured servers: claude.ai Google Drive (.mcp.json servers are awaiting approval — run `claude` in this directory to review them.)",
+            ].join(" "),
+          }),
+        ),
+      ),
+    );
   });
 
-  it.effect("refreshes Codex plugin marketplaces through the configured binary", () => {
+  it.effect("refreshes Claude plugin marketplaces through the configured binary", () => {
     const calls: Array<{
       readonly command: string;
       readonly args: ReadonlyArray<string>;
@@ -699,12 +1565,13 @@ describe("provider extensions inventory", () => {
       const result = yield* refreshProviderExtensionPluginMarketplaces({
         request: {
           cwd: process.cwd(),
-          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          marketplaceName: "team plugins",
         },
         settings: makeSettings({
           providers: {
-            codex: { enabled: true, binaryPath: "custom-codex" },
-            claudeAgent: { enabled: false },
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "custom-claude" },
             cursor: { enabled: false },
             opencode: { enabled: false },
           },
@@ -713,8 +1580,15 @@ describe("provider extensions inventory", () => {
 
       assert.equal(result.refreshed, true);
       assert.equal(result.output, "marketplace updated");
-      assert.equal(calls[0]?.command, "custom-codex");
-      assert.deepEqual(calls[0]?.args, ["plugin", "marketplace", "upgrade"]);
+      assert.deepEqual(result.refreshedMarketplaces, ["team plugins"]);
+      assert.deepEqual(result.errors, []);
+      assert.equal(calls[0]?.command, "custom-claude");
+      assert.deepEqual(calls[0]?.args, [
+        "plugin",
+        "marketplace",
+        "update",
+        process.platform === "win32" ? '"team plugins"' : "team plugins",
+      ]);
       assert.equal(calls[0]?.cwd, process.cwd());
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });

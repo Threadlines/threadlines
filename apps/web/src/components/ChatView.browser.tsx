@@ -8146,6 +8146,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               driver: ProviderDriverKind.make("codex"),
               status: "ready",
               plugins: [],
+              marketplaces: [],
               skills: [
                 {
                   name: "agent-browser",

@@ -217,6 +217,9 @@ export interface WsRpcClient {
     readonly setProviderExtensionSkillEnabled: RpcUnaryMethod<
       typeof WS_METHODS.serverSetProviderExtensionSkillEnabled
     >;
+    readonly readProviderExtensionSkill: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadProviderExtensionSkill
+    >;
     readonly readProviderExtensionPlugin: RpcUnaryMethod<
       typeof WS_METHODS.serverReadProviderExtensionPlugin
     >;
@@ -234,6 +237,12 @@ export interface WsRpcClient {
     >;
     readonly refreshProviderExtensionPluginMarketplaces: RpcUnaryMethod<
       typeof WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces
+    >;
+    readonly addProviderExtensionMarketplace: RpcUnaryMethod<
+      typeof WS_METHODS.serverAddProviderExtensionMarketplace
+    >;
+    readonly removeProviderExtensionMarketplace: RpcUnaryMethod<
+      typeof WS_METHODS.serverRemoveProviderExtensionMarketplace
     >;
     readonly callProviderExtensionMcpTool: RpcUnaryMethod<
       typeof WS_METHODS.serverCallProviderExtensionMcpTool
@@ -573,6 +582,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
             Effect.withTracerEnabled(false),
           ),
         ),
+      readProviderExtensionSkill: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReadProviderExtensionSkill](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
       readProviderExtensionPlugin: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverReadProviderExtensionPlugin](input).pipe(
@@ -606,6 +621,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       refreshProviderExtensionPluginMarketplaces: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      addProviderExtensionMarketplace: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverAddProviderExtensionMarketplace](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      removeProviderExtensionMarketplace: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverRemoveProviderExtensionMarketplace](input).pipe(
             Effect.withTracerEnabled(false),
           ),
         ),

@@ -201,6 +201,10 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         rpcClient
           ? rpcClient.server.setProviderExtensionSkillEnabled(input)
           : Promise.reject(unavailableLocalBackendError()),
+      readProviderExtensionSkill: (input) =>
+        rpcClient
+          ? rpcClient.server.readProviderExtensionSkill(input)
+          : Promise.reject(unavailableLocalBackendError()),
       readProviderExtensionPlugin: (input) =>
         rpcClient
           ? rpcClient.server.readProviderExtensionPlugin(input)
@@ -224,6 +228,14 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
       refreshProviderExtensionPluginMarketplaces: (input) =>
         rpcClient
           ? rpcClient.server.refreshProviderExtensionPluginMarketplaces(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      addProviderExtensionMarketplace: (input) =>
+        rpcClient
+          ? rpcClient.server.addProviderExtensionMarketplace(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      removeProviderExtensionMarketplace: (input) =>
+        rpcClient
+          ? rpcClient.server.removeProviderExtensionMarketplace(input)
           : Promise.reject(unavailableLocalBackendError()),
       callProviderExtensionMcpTool: (input) =>
         rpcClient

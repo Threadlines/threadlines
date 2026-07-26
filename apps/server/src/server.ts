@@ -6,6 +6,7 @@ import { ServerConfig } from "./config.ts";
 import {
   attachmentsRouteLayer,
   otlpTracesProxyRouteLayer,
+  pluginIconRouteLayer,
   projectFaviconRouteLayer,
   serverEnvironmentRouteLayer,
   legacyServerEnvironmentRouteLayer,
@@ -235,7 +236,9 @@ const CheckpointingLayerLive = Layer.empty.pipe(
   Layer.provideMerge(CheckpointStoreLive.pipe(Layer.provide(VcsDriverRegistryLayerLive))),
 );
 
-const TerminalLayerLive = TerminalManagerLive.pipe(Layer.provide(PtyAdapterLive));
+// provideMerge rather than provide: the PTY is also how Claude's `mcp login` gets a terminal, which
+// it refuses to run without, so the adapter has to stay visible to the RPC handlers.
+const TerminalLayerLive = TerminalManagerLive.pipe(Layer.provideMerge(PtyAdapterLive));
 
 const WorkspaceEntriesLayerLive = WorkspaceEntriesLive.pipe(
   Layer.provide(WorkspacePathsLive),
@@ -330,6 +333,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationDispatchRouteLayer,
   orchestrationSnapshotRouteLayer,
   otlpTracesProxyRouteLayer,
+  pluginIconRouteLayer,
   projectFaviconRouteLayer,
   legacyServerEnvironmentRouteLayer,
   serverEnvironmentRouteLayer,

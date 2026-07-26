@@ -83,6 +83,10 @@ import type {
   ProviderExtensionOperationStatusResult,
   ProviderExtensionPluginInstallInput,
   ProviderExtensionPluginInstallResult,
+  ProviderExtensionMarketplaceAddInput,
+  ProviderExtensionMarketplaceAddResult,
+  ProviderExtensionMarketplaceRemoveInput,
+  ProviderExtensionMarketplaceRemoveResult,
   ProviderExtensionPluginMarketplaceRefreshInput,
   ProviderExtensionPluginMarketplaceRefreshResult,
   ProviderExtensionPluginReadInput,
@@ -93,6 +97,8 @@ import type {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillReadInput,
+  ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
   ProviderExtensionSkillToggleResult,
   ProviderExtensionsInventoryInput,
@@ -718,6 +724,9 @@ export interface LocalApi {
     setProviderExtensionSkillEnabled: (
       input: ProviderExtensionSkillToggleInput,
     ) => Promise<ProviderExtensionSkillToggleResult>;
+    readProviderExtensionSkill: (
+      input: ProviderExtensionSkillReadInput,
+    ) => Promise<ProviderExtensionSkillReadResult>;
     readProviderExtensionPlugin: (
       input: ProviderExtensionPluginReadInput,
     ) => Promise<ProviderExtensionPluginReadResult>;
@@ -736,6 +745,12 @@ export interface LocalApi {
     refreshProviderExtensionPluginMarketplaces: (
       input: ProviderExtensionPluginMarketplaceRefreshInput,
     ) => Promise<ProviderExtensionPluginMarketplaceRefreshResult>;
+    addProviderExtensionMarketplace: (
+      input: ProviderExtensionMarketplaceAddInput,
+    ) => Promise<ProviderExtensionMarketplaceAddResult>;
+    removeProviderExtensionMarketplace: (
+      input: ProviderExtensionMarketplaceRemoveInput,
+    ) => Promise<ProviderExtensionMarketplaceRemoveResult>;
     callProviderExtensionMcpTool: (
       input: ProviderExtensionMcpToolCallInput,
     ) => Promise<ProviderExtensionMcpToolCallResult>;

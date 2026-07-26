@@ -39,6 +39,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { PtyAdapter } from "./terminal/Services/PTY.ts";
 import {
   FetchHttpClient,
   HttpBody,
@@ -533,14 +534,28 @@ const buildAppUnderTest = (options?: {
       disableLogger: true,
     }).pipe(
       Layer.provide(
-        Layer.mock(Keybindings)({
-          loadConfigState: Effect.succeed({
-            keybindings: [],
-            issues: [],
+        Layer.mergeAll(
+          // Claude's `mcp login` RPC spawns through the PTY adapter; this seam never runs it.
+          Layer.succeed(PtyAdapter, {
+            spawn: () =>
+              Effect.succeed({
+                pid: 0,
+                write: () => {},
+                resize: () => {},
+                kill: () => {},
+                onData: () => () => {},
+                onExit: () => () => {},
+              }),
           }),
-          streamChanges: Stream.empty,
-          ...options?.layers?.keybindings,
-        }),
+          Layer.mock(Keybindings)({
+            loadConfigState: Effect.succeed({
+              keybindings: [],
+              issues: [],
+            }),
+            streamChanges: Stream.empty,
+            ...options?.layers?.keybindings,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mergeAll(
@@ -1125,6 +1140,32 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.include(yield* response.text, 'data-fallback="project-favicon"');
       assert.equal(response.headers["cache-control"], "no-store");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects plugin icon paths outside the current extension inventory", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outsideDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-router-plugin-icon-outside-",
+      });
+      const outsideIconPath = path.join(outsideDir, "icon.png");
+      yield* fileSystem.writeFile(outsideIconPath, new Uint8Array([137, 80, 78, 71]));
+
+      yield* buildAppUnderTest();
+
+      const response = yield* HttpClient.get(
+        `/api/plugin-icon?path=${encodeURIComponent(outsideIconPath)}`,
+        {
+          headers: {
+            cookie: yield* getAuthenticatedSessionCookieHeader(),
+          },
+        },
+      );
+
+      assert.equal(response.status, 404);
+      assert.equal(yield* response.text, "Not Found");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
