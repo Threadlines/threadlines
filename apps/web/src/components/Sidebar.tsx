@@ -3553,6 +3553,28 @@ export default function Sidebar() {
     : EMPTY_THREAD_JUMP_LABELS;
   // One list, rendered as rows in the pane and as icons in the rail, so both
   // densities offer the same destinations in the same order.
+  const chatsStatus = useMemo(() => {
+    const chatThreads = visibleThreads.filter((thread) =>
+      generalChatProjectKeys.has(
+        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+      ),
+    );
+    if (chatThreads.length === 0) {
+      return null;
+    }
+    return resolveProjectStatusIndicator(
+      chatThreads.map((thread) => {
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        const lastVisitedAt = threadLastVisitedAtById[threadKey];
+        return resolveThreadStatusPill({
+          thread: {
+            ...thread,
+            ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+          },
+        });
+      }),
+    );
+  }, [generalChatProjectKeys, threadLastVisitedAtById, visibleThreads]);
   const destinations = useMemo<SidebarDestination[]>(
     () => [
       {
@@ -3560,12 +3582,13 @@ export default function Sidebar() {
         label: "Chats",
         icon: DESTINATION_ICONS.chats,
         active: pathname.startsWith("/chats"),
+        status: chatsStatus,
         onSelect: () => {
           void navigate({ to: "/chats" });
         },
       },
     ],
-    [navigate, pathname],
+    [chatsStatus, navigate, pathname],
   );
   const destinationBand = useMemo(
     () => <DestinationBand destinations={destinations} />,

@@ -154,6 +154,7 @@ export function DraftEmptyState({
       <RecentThreadsList
         className="no-thread-rise mt-10 w-full [--no-thread-delay:0.4s]"
         limit={5}
+        scope={isGeneralChat ? "chats" : "projects"}
         testId="draft-empty-recent-thread"
       />
     </div>

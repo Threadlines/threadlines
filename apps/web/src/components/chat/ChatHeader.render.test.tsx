@@ -21,6 +21,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     keybindings: [],
     availableEditors: [],
     terminalAvailable: true,
+    terminalApplicable: true,
     terminalOpen: false,
     terminalToggleShortcutLabel: null,
     sourceControlToggleShortcutLabel: null,

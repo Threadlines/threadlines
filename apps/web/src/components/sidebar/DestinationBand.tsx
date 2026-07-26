@@ -1,6 +1,8 @@
 import { MessageCirclePlusIcon, MessagesSquareIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "../../lib/utils";
+import type { ThreadStatusPill } from "../Sidebar.logic";
+import { ThreadStatusDot } from "../ThreadStatusIndicators";
 import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 
 export interface SidebarDestination {
@@ -9,6 +11,12 @@ export interface SidebarDestination {
   icon: LucideIcon;
   active: boolean;
   disabled?: boolean;
+  /**
+   * Activity behind the destination. Chats no longer appear on the deck, so
+   * without this a running chat would have no ambient signal anywhere. The
+   * destination carries its own status rather than earning a second row.
+   */
+  status?: ThreadStatusPill | null;
   onSelect: () => void;
 }
 
@@ -44,7 +52,13 @@ export function DestinationBand({ destinations }: { destinations: readonly Sideb
                 onClick={destination.onSelect}
               >
                 <Icon className="size-3.5 shrink-0" />
-                <span className="truncate text-xs">{destination.label}</span>
+                <span className="min-w-0 flex-1 truncate text-xs">{destination.label}</span>
+                {destination.status ? (
+                  <ThreadStatusDot
+                    status={destination.status}
+                    className="ms-auto shrink-0 size-1.5"
+                  />
+                ) : null}
               </SidebarMenuButton>
             </SidebarMenuItem>
           );

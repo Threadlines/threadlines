@@ -5992,8 +5992,12 @@ export default function ChatView(props: ChatViewProps) {
         <ChatHeader
           activeThreadEnvironmentId={activeThread.environmentId}
           activeThreadId={activeThread.id}
-          activeThreadTitle={activeThread.title}
-          activeProjectName={activeProject?.name}
+          activeThreadTitle={
+            isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
+          }
+          // "General Chats" is the backing project, not a place the user chose
+          // to be. Chats present as their own mode, so the crumb says so.
+          activeProjectName={isGeneralChatThread ? "Chats" : activeProject?.name}
           isGitRepo={isGitRepo}
           openInCwd={isGeneralChatThread ? null : gitCwd}
           activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
@@ -6003,6 +6007,7 @@ export default function ChatView(props: ChatViewProps) {
           keybindings={keybindings}
           availableEditors={availableEditors}
           terminalAvailable={activeProject !== undefined}
+          terminalApplicable={!isGeneralChatThread}
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}

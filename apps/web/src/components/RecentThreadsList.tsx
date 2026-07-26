@@ -21,22 +21,39 @@ interface RecentThreadsListProps {
   limit?: number;
   testId: string;
   className?: string;
+  /**
+   * Which side of the chat/project divide to list. Chats and project threads
+   * are separate modes, so a draft in one never advertises the other.
+   */
+  scope?: "all" | "chats" | "projects";
 }
 
-export function RecentThreadsList({ limit = 3, testId, className }: RecentThreadsListProps) {
+export function RecentThreadsList({
+  limit = 3,
+  testId,
+  className,
+  scope = "all",
+}: RecentThreadsListProps) {
   const navigate = useNavigate();
   const { orderedProjects } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
-  const recentThreads = useMemo(
-    () =>
-      sortThreads(
-        threads.filter((thread) => thread.archivedAt === null),
-        sidebarThreadSortOrder,
-      ).slice(0, limit),
-    [limit, sidebarThreadSortOrder, threads],
-  );
+  const recentThreads = useMemo(() => {
+    const isGeneralChat = (thread: (typeof threads)[number]) =>
+      generalChatsProject !== null &&
+      thread.environmentId === generalChatsProject.environmentId &&
+      thread.projectId === generalChatsProject.id;
+    return sortThreads(
+      threads.filter((thread) => {
+        if (thread.archivedAt !== null) return false;
+        if (scope === "chats") return isGeneralChat(thread);
+        if (scope === "projects") return !isGeneralChat(thread);
+        return true;
+      }),
+      sidebarThreadSortOrder,
+    ).slice(0, limit);
+  }, [generalChatsProject, limit, scope, sidebarThreadSortOrder, threads]);
   const projectByScopedKey = useMemo(
     () =>
       new Map(
@@ -55,7 +72,7 @@ export function RecentThreadsList({ limit = 3, testId, className }: RecentThread
   return (
     <div className={className}>
       <div className="mb-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
-        Recent threads
+        {scope === "chats" ? "Recent chats" : "Recent threads"}
       </div>
       <div className="flex flex-col divide-y divide-border/50">
         {recentThreads.map((thread) => {
@@ -83,7 +100,7 @@ export function RecentThreadsList({ limit = 3, testId, className }: RecentThread
               <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
                 {thread.title}
               </span>
-              {isGeneralChat ? (
+              {isGeneralChat && scope !== "chats" ? (
                 <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground/60">
                   <MessagesSquareIcon className="size-3 shrink-0" />
                   General

@@ -53,7 +53,10 @@ export function ThreadHoverCard({
     () => scopeProjectRef(thread.environmentId, thread.projectId),
     [thread.environmentId, thread.projectId],
   );
-  const project = useStore((state) => selectProjectByRef(state, projectRef));
+  const backingProject = useStore((state) => selectProjectByRef(state, projectRef));
+  // General chats are backed by a hidden project. Surfacing it here would put
+  // "General Chats" in front of the user as though they had chosen it.
+  const project = backingProject?.kind === "general-chat" ? undefined : backingProject;
   const threadRef = useMemo(
     () => scopeThreadRef(thread.environmentId, thread.id),
     [thread.environmentId, thread.id],
