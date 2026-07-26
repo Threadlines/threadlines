@@ -225,11 +225,13 @@ function PluginIcon({
   iconUrl,
   iconPath,
   fallback,
+  sizeClassName = "size-4",
 }: {
   environmentId: EnvironmentId | null;
   iconUrl?: string | undefined;
   iconPath?: string | undefined;
   fallback: ReactNode;
+  sizeClassName?: string;
 }) {
   const src = (() => {
     if (iconUrl) return iconUrl;
@@ -256,7 +258,7 @@ function PluginIcon({
       <img
         src={src}
         alt=""
-        className={`size-4 shrink-0 rounded-sm object-contain ${status === "loaded" ? "" : "hidden"}`}
+        className={`${sizeClassName} shrink-0 rounded-md object-contain ${status === "loaded" ? "" : "hidden"}`}
         onLoad={() => {
           loadedPluginIconSrcs.add(src);
           setStatus("loaded");
@@ -1545,6 +1547,7 @@ function ExtensionDetailDialog({
   item,
   onClose,
   onSelectItem,
+  environmentId,
   cwd,
   providerThreadId,
   onInventoryMutated,
@@ -1554,6 +1557,7 @@ function ExtensionDetailDialog({
   item: ExtensionItem | null;
   onClose: () => void;
   onSelectItem: (item: ExtensionItem) => void;
+  environmentId: EnvironmentId | null;
   cwd: string;
   providerThreadId: string;
   onInventoryMutated: () => Promise<void>;
@@ -1952,12 +1956,13 @@ function ExtensionDetailDialog({
         <DialogPopup className="max-w-2xl overflow-hidden">
           <DialogHeader className="border-b border-border/70 bg-background">
             <div className="flex min-w-0 items-start gap-3 pr-8">
-              <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground">
-                {item.kind === "skill" ? (
-                  <FileTextIcon className="size-4" />
-                ) : (
-                  <PlugIcon className="size-4" />
-                )}
+              <span className="mt-0.5 shrink-0">
+                <ExtensionItemGlyph
+                  item={item}
+                  environmentId={environmentId}
+                  sizeClassName="size-8"
+                  containerClassName="inline-flex size-8 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground"
+                />
               </span>
               <div className="min-w-0 space-y-1">
                 <DialogTitle className="truncate text-base">{item.title}</DialogTitle>
@@ -2617,11 +2622,13 @@ function ExtensionPreviewSection({
       </div>
       {visibleItems.length > 0 ? (
         <>
-          <div className="divide-y divide-border/50">
+          {/* Two columns: skills and apps are short-titled and numerous, so a single column is
+              mostly empty space and twice the scrolling. */}
+          <div className="grid sm:grid-cols-2">
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
-                className="group flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group flex min-h-10 w-full items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:[&:nth-child(2)]:border-t-0"
                 onClick={() => onSelect(item)}
                 type="button"
               >
@@ -2821,28 +2828,44 @@ function skillBundleControlForGroup(
 function ExtensionItemGlyph({
   item,
   environmentId,
+  sizeClassName = "size-4",
+  containerClassName,
 }: {
   item: ExtensionItem;
   environmentId: EnvironmentId | null;
+  sizeClassName?: string;
+  /** Wraps the kind glyph only. Real plugin artwork brings its own tile. */
+  containerClassName?: string | undefined;
 }) {
+  const glyphClassName = containerClassName
+    ? "size-4 shrink-0 text-muted-foreground/45"
+    : `${sizeClassName} shrink-0 text-muted-foreground/45`;
+  const fallbackClassName = glyphClassName;
   const fallback =
     item.kind === "skill" ? (
-      <FileTextIcon className="size-4 shrink-0 text-muted-foreground/45" />
+      <FileTextIcon className={fallbackClassName} />
     ) : item.kind === "mcp" ? (
-      <DatabaseIcon className="size-4 shrink-0 text-muted-foreground/45" />
+      <DatabaseIcon className={fallbackClassName} />
     ) : item.kind === "app" ? (
-      <BotIcon className="size-4 shrink-0 text-muted-foreground/45" />
+      <BotIcon className={fallbackClassName} />
     ) : (
-      <PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />
+      <PlugIcon className={fallbackClassName} />
     );
 
-  if (item.kind !== "plugin") return fallback;
+  const wrappedFallback = containerClassName ? (
+    <span className={containerClassName}>{fallback}</span>
+  ) : (
+    fallback
+  );
+
+  if (item.kind !== "plugin") return wrappedFallback;
   return (
     <PluginIcon
       environmentId={environmentId}
       iconUrl={item.plugin.iconUrl}
       iconPath={item.plugin.iconPath}
-      fallback={fallback}
+      fallback={wrappedFallback}
+      sizeClassName={sizeClassName}
     />
   );
 }
@@ -2870,11 +2893,24 @@ function InstalledStrip({
             render={
               <button
                 type="button"
-                className="inline-flex size-9 items-center justify-center rounded-md border border-border/60 bg-background transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex size-9 items-center justify-center rounded-md transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => onSelect(item)}
                 aria-label={item.title}
               >
-                <ExtensionItemGlyph item={item} environmentId={environmentId} />
+                {/* Plugin artwork already ships its own tile and background, so wrapping it in
+                    another square just shrinks it and fights whatever the icon draws. Only the
+                    fallback needs a container of ours. */}
+                <PluginIcon
+                  environmentId={environmentId}
+                  iconUrl={item.kind === "plugin" ? item.plugin.iconUrl : undefined}
+                  iconPath={item.kind === "plugin" ? item.plugin.iconPath : undefined}
+                  sizeClassName="size-9"
+                  fallback={
+                    <span className="inline-flex size-9 items-center justify-center rounded-md border border-border/60 bg-muted/40">
+                      <PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />
+                    </span>
+                  }
+                />
               </button>
             }
           />
@@ -3808,9 +3844,9 @@ function ProviderInventoryRow({
               type="search"
               value={providerFilterText}
               onChange={(event) => setProviderFilterText(event.currentTarget.value)}
-              placeholder={`Search ${providerTitle(provider)} plugins`}
+              placeholder={`Search ${providerTitle(provider)} skills and apps`}
               className="w-full [&_[data-slot=input]]:pl-8"
-              aria-label={`Search ${providerTitle(provider)} plugins`}
+              aria-label={`Search ${providerTitle(provider)} skills and apps`}
             />
           </div>
           {providerFilterText.trim().length > 0 ? (
@@ -4394,6 +4430,68 @@ export function ExtensionsSettingsPanel() {
         </div>
       </SettingsSection>
 
+      <SettingsSection
+        title="Skills and apps"
+        icon={<FileTextIcon className="size-3.5" />}
+        headerAction={
+          hasInventory && isLoading ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <LoaderIcon className="size-3 animate-spin" />
+              Refreshing
+            </span>
+          ) : null
+        }
+      >
+        {inventory?.providers.length ? (
+          inventory.providers.map((provider) => (
+            <ProviderInventoryRow
+              environmentId={selectedEnvironmentId}
+              key={provider.instanceId}
+              provider={provider}
+              cwd={cwd}
+              onSelectItem={setSelectedItem}
+              onInventoryMutated={refreshAfterMutation}
+              onLoadMcpServers={loadMcpServers}
+              isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
+            />
+          ))
+        ) : (
+          <SettingsRow
+            title={
+              !cwd ? (
+                "No project selected"
+              ) : !providerInstanceId ? (
+                "No provider selected"
+              ) : isLoading ? (
+                <span className="inline-flex items-center gap-2">
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                  Loading plugins
+                </span>
+              ) : error ? (
+                "Inventory failed to load"
+              ) : hasInventory ? (
+                "No plugin providers found"
+              ) : (
+                "No plugin inventory"
+              )
+            }
+            description={
+              !cwd
+                ? "Choose a project to inspect plugin surfaces."
+                : !providerInstanceId
+                  ? "Choose Codex or Claude to load plugins, skills, MCP servers, and apps."
+                  : isLoading
+                    ? "Loading plugins, skills, MCP servers, and apps for the selected provider."
+                    : error
+                      ? "The selected provider inventory could not be loaded. Details are shown above."
+                      : hasInventory
+                        ? "The selected provider returned no plugin records."
+                        : "Choose a provider to load its plugin inventory."
+            }
+          />
+        )}
+      </SettingsSection>
+
       <SettingsSection title="Connections" icon={<DatabaseIcon className="size-3.5" />}>
         <div className="px-4 py-3.5 sm:px-5">
           <ConnectionsTable
@@ -4481,67 +4579,6 @@ export function ExtensionsSettingsPanel() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection
-        title="Skills and apps"
-        icon={<FileTextIcon className="size-3.5" />}
-        headerAction={
-          hasInventory && isLoading ? (
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <LoaderIcon className="size-3 animate-spin" />
-              Refreshing
-            </span>
-          ) : null
-        }
-      >
-        {inventory?.providers.length ? (
-          inventory.providers.map((provider) => (
-            <ProviderInventoryRow
-              environmentId={selectedEnvironmentId}
-              key={provider.instanceId}
-              provider={provider}
-              cwd={cwd}
-              onSelectItem={setSelectedItem}
-              onInventoryMutated={refreshAfterMutation}
-              onLoadMcpServers={loadMcpServers}
-              isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
-            />
-          ))
-        ) : (
-          <SettingsRow
-            title={
-              !cwd ? (
-                "No project selected"
-              ) : !providerInstanceId ? (
-                "No provider selected"
-              ) : isLoading ? (
-                <span className="inline-flex items-center gap-2">
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                  Loading plugins
-                </span>
-              ) : error ? (
-                "Inventory failed to load"
-              ) : hasInventory ? (
-                "No plugin providers found"
-              ) : (
-                "No plugin inventory"
-              )
-            }
-            description={
-              !cwd
-                ? "Choose a project to inspect plugin surfaces."
-                : !providerInstanceId
-                  ? "Choose Codex or Claude to load plugins, skills, MCP servers, and apps."
-                  : isLoading
-                    ? "Loading plugins, skills, MCP servers, and apps for the selected provider."
-                    : error
-                      ? "The selected provider inventory could not be loaded. Details are shown above."
-                      : hasInventory
-                        ? "The selected provider returned no plugin records."
-                        : "Choose a provider to load its plugin inventory."
-            }
-          />
-        )}
-      </SettingsSection>
       <ExtensionBrowserDialog
         environmentId={selectedEnvironmentId}
         section={isBrowsingCatalog ? catalogSection : null}
@@ -4558,6 +4595,7 @@ export function ExtensionsSettingsPanel() {
       />
       <ExtensionDetailDialog
         item={selectedItem}
+        environmentId={selectedEnvironmentId}
         cwd={cwd}
         providerThreadId={effectiveProviderThreadId}
         onClose={() => setSelectedItem(null)}
