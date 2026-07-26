@@ -84,6 +84,7 @@ import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
 import { deriveProviderInstanceConfigMap } from "./Layers/ProviderInstanceRegistryHydration.ts";
 import { mergeProviderInstanceEnvironment } from "./ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "./providerSnapshot.ts";
+import { PtyAdapter } from "../terminal/Services/PTY.ts";
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
@@ -2613,6 +2614,82 @@ const readClaudeSkills = Effect.fn("providerExtensions.readClaudeSkills")(functi
   return finalizeClaudeSkills(discovered.flat());
 });
 
+const CLAUDE_PTY_COLUMNS = 120;
+const CLAUDE_PTY_ROWS = 30;
+const ANSI_ESCAPE_PATTERN =
+  /\u001B\[[0-9;?]*[A-Za-z]|\u001B\]8;[^\u0007\u001B]*(?:\u0007|\u001B\\)/g;
+
+function stripTerminalEscapes(value: string): string {
+  return value.replace(ANSI_ESCAPE_PATTERN, "");
+}
+
+export function findAuthorizationUrl(output: string): string | undefined {
+  const match = stripTerminalEscapes(output).match(/https:\/\/[^\s"'<>]+/);
+  return match ? optionalText(match[0]) : undefined;
+}
+
+/**
+ * `claude mcp login` refuses to run when stdin is not a terminal, even though it completes the flow
+ * through a localhost callback rather than through stdin. Piped stdio therefore fails before the
+ * browser is ever opened, so this path borrows the terminal feature's PTY.
+ */
+const runClaudeCommandInPty = Effect.fn("providerExtensions.runClaudeCommandInPty")(
+  function* (input: {
+    readonly binaryPath: string;
+    readonly args: ReadonlyArray<string>;
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly timeout: Duration.Duration;
+  }): Effect.fn.Return<
+    { readonly code: number; readonly output: string },
+    ProviderExtensionsError,
+    PtyAdapter
+  > {
+    const pty = yield* PtyAdapter;
+    const process = yield* pty
+      .spawn({
+        shell: input.binaryPath,
+        args: [...input.args],
+        cwd: input.cwd,
+        cols: CLAUDE_PTY_COLUMNS,
+        rows: CLAUDE_PTY_ROWS,
+        env: input.env,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderExtensionsError({
+              message: `Could not start a terminal for ${input.binaryPath}: ${cause.message}`,
+              cause,
+            }),
+        ),
+      );
+
+    let output = "";
+    const exited = Effect.callback<{ readonly code: number; readonly output: string }>((resume) => {
+      const offData = process.onData((chunk) => {
+        output += chunk;
+      });
+      const offExit = process.onExit((event) => {
+        resume(Effect.succeed({ code: event.exitCode, output }));
+      });
+      return Effect.sync(() => {
+        offData();
+        offExit();
+      });
+    });
+
+    const result = yield* exited.pipe(Effect.timeoutOption(input.timeout));
+    if (Option.isNone(result)) {
+      yield* Effect.sync(() => process.kill());
+      return yield* new ProviderExtensionsError({
+        message: `Timed out waiting for ${input.binaryPath} ${input.args.join(" ")}.`,
+      });
+    }
+    return { code: result.value.code, output: stripTerminalEscapes(result.value.output) };
+  },
+);
+
 const runClaudeCommand = Effect.fn("providerExtensions.runClaudeCommand")(function* (input: {
   readonly binaryPath: string;
   readonly args: ReadonlyArray<string>;
@@ -3056,7 +3133,7 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
 }): Effect.fn.Return<
   ProviderExtensionMcpOAuthStartResult,
   ProviderExtensionsError,
-  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner | PtyAdapter
 > {
   const providerConfig = yield* resolveProviderActionConfig({
     providerInstanceId: input.request.providerInstanceId,
@@ -3081,7 +3158,7 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
       message: `Opening ${input.request.serverName} login with Claude.`,
     });
 
-    yield* runClaudeCommand({
+    yield* runClaudeCommandInPty({
       binaryPath: context.config.binaryPath,
       args,
       cwd: context.cwd,
@@ -3127,7 +3204,9 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
             error: claudeMcpLoginFailureMessage({
               serverName: input.request.serverName,
               args,
-              ...result,
+              code: result.code,
+              stdout: result.output,
+              stderr: "",
             }),
             completedAt,
           });

@@ -39,6 +39,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { PtyAdapter } from "./terminal/Services/PTY.ts";
 import {
   FetchHttpClient,
   HttpBody,
@@ -533,14 +534,28 @@ const buildAppUnderTest = (options?: {
       disableLogger: true,
     }).pipe(
       Layer.provide(
-        Layer.mock(Keybindings)({
-          loadConfigState: Effect.succeed({
-            keybindings: [],
-            issues: [],
+        Layer.mergeAll(
+          // Claude's `mcp login` RPC spawns through the PTY adapter; this seam never runs it.
+          Layer.succeed(PtyAdapter, {
+            spawn: () =>
+              Effect.succeed({
+                pid: 0,
+                write: () => {},
+                resize: () => {},
+                kill: () => {},
+                onData: () => () => {},
+                onExit: () => () => {},
+              }),
           }),
-          streamChanges: Stream.empty,
-          ...options?.layers?.keybindings,
-        }),
+          Layer.mock(Keybindings)({
+            loadConfigState: Effect.succeed({
+              keybindings: [],
+              issues: [],
+            }),
+            streamChanges: Stream.empty,
+            ...options?.layers?.keybindings,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mergeAll(

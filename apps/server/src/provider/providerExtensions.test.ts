@@ -11,6 +11,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { PtyAdapter } from "./../terminal/Services/PTY.ts";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
   ProviderDriverKind,
@@ -45,6 +46,66 @@ import {
 } from "./providerExtensions.ts";
 
 const encoder = new TextEncoder();
+
+/**
+ * Claude's `mcp login` needs a terminal, so the action spawns through the PTY adapter. This stub
+ * records what was launched and reports whatever exit code the test wants.
+ */
+/** Waits for a still-running operation to reach the message a step is expected to publish. */
+const awaitOperationMessage = Effect.fn(function* (operationId: string, pattern: RegExp) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const status = yield* getProviderExtensionOperationStatus({ operationId });
+    if (pattern.test(status.message ?? "")) return status;
+    yield* Effect.yieldNow;
+  }
+  return yield* getProviderExtensionOperationStatus({ operationId });
+});
+
+const settleOperation = Effect.fn(function* (operationId: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const status = yield* getProviderExtensionOperationStatus({ operationId });
+    if (status.status !== "running") return status;
+    yield* Effect.yieldNow;
+  }
+  return yield* getProviderExtensionOperationStatus({ operationId });
+});
+
+function makeStubPtyLayer(options?: {
+  readonly exitCode?: number;
+  readonly output?: string;
+  readonly calls?: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }>;
+}) {
+  return Layer.succeed(PtyAdapter, {
+    spawn: (input) =>
+      Effect.sync(() => {
+        options?.calls?.push({ shell: input.shell, args: input.args ?? [] });
+        let onExit: ((event: { exitCode: number; signal: number | null }) => void) | null = null;
+        let onData: ((data: string) => void) | null = null;
+        queueMicrotask(() => {
+          if (options?.output) onData?.(options.output);
+          onExit?.({ exitCode: options?.exitCode ?? 0, signal: null });
+        });
+        return {
+          pid: 4242,
+          write: () => {},
+          resize: () => {},
+          kill: () => {},
+          onData: (callback) => {
+            onData = callback;
+            return () => {
+              onData = null;
+            };
+          },
+          onExit: (callback) => {
+            onExit = callback;
+            return () => {
+              onExit = null;
+            };
+          },
+        };
+      }),
+  });
+}
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 
 function makeNeverFinishingProcess() {
@@ -1280,6 +1341,7 @@ Per-component (rounded)
   });
 
   it.effect("starts Claude MCP login through the configured Claude CLI", () => {
+    const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const calls: Array<{
       readonly command: string;
       readonly args: ReadonlyArray<string>;
@@ -1329,27 +1391,28 @@ Per-component (rounded)
         }),
       });
 
-      yield* Effect.yieldNow;
+      const status = yield* settleOperation(result.operationId);
 
-      const status = yield* getProviderExtensionOperationStatus({
-        operationId: result.operationId,
-      });
-
-      assert.equal(result.authorizationUrl, undefined);
       assert.equal(result.terminalCommand, 'claude mcp login "claude.ai Google Drive"');
-      assert.equal(calls[0]?.command, "custom-claude");
-      assert.deepEqual(calls[0]?.args, [
+      // The login runs under a PTY because the CLI refuses a non-terminal stdin.
+      assert.equal(ptyCalls[0]?.shell, "custom-claude");
+      assert.deepEqual(ptyCalls[0]?.args, [
         "mcp",
         "login",
         process.platform === "win32" ? '"claude.ai Google Drive"' : "claude.ai Google Drive",
       ]);
-      assert.equal(calls[0]?.cwd, cwd);
-      assert.deepEqual(calls[1]?.args, ["mcp", "list"]);
+      // Verification still goes through the ordinary child process.
+      assert.deepEqual(calls[0]?.args, ["mcp", "list"]);
       assert.equal(status.status, "completed");
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, spawnerLayer, makeStubPtyLayer({ calls: ptyCalls })),
+      ),
+    );
   });
 
   it.effect("keeps Claude MCP login failed when post-login status still needs auth", () => {
+    const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const spawner = ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
         readonly args: ReadonlyArray<string>;
@@ -1387,11 +1450,10 @@ Per-component (rounded)
         }),
       });
 
-      yield* Effect.yieldNow;
-
-      const runningStatus = yield* getProviderExtensionOperationStatus({
-        operationId: result.operationId,
-      });
+      const runningStatus = yield* awaitOperationMessage(
+        result.operationId,
+        /Waiting for .*browser sign-in/i,
+      );
 
       assert.equal(runningStatus.status, "running");
       assert.match(runningStatus.message ?? "", /Waiting for .*browser sign-in/i);
@@ -1405,10 +1467,20 @@ Per-component (rounded)
       assert.equal(status.status, "failed");
       assert.match(status.message ?? "", /not completed/i);
       assert.match(status.error ?? "", /still needs authentication after waiting/i);
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer())));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          spawnerLayer,
+          TestClock.layer(),
+          makeStubPtyLayer({ calls: ptyCalls }),
+        ),
+      ),
+    );
   });
 
   it.effect("explains Claude MCP approval failures", () => {
+    const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const spawner = ChildProcessSpawner.make(() =>
       Effect.succeed(
         makeProcessResult(
@@ -1445,16 +1517,27 @@ Per-component (rounded)
         }),
       });
 
-      yield* Effect.yieldNow;
-
-      const status = yield* getProviderExtensionOperationStatus({
-        operationId: result.operationId,
-      });
+      const status = yield* settleOperation(result.operationId);
 
       assert.equal(status.status, "failed");
       assert.match(status.error ?? "", /approve the MCP configuration/i);
       assert.match(status.error ?? "", /retry authorization in Threadlines/i);
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          spawnerLayer,
+          makeStubPtyLayer({
+            calls: ptyCalls,
+            exitCode: 1,
+            output: [
+              'No MCP server named "claude.ai".',
+              "Configured servers: claude.ai Google Drive (.mcp.json servers are awaiting approval — run `claude` in this directory to review them.)",
+            ].join(" "),
+          }),
+        ),
+      ),
+    );
   });
 
   it.effect("refreshes Claude plugin marketplaces through the configured binary", () => {
