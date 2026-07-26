@@ -10,7 +10,6 @@ import {
 import { COMPOSER_INLINE_CHIP_DISMISS_BUTTON_CLASS_NAME } from "../composerInlineChip";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Textarea } from "../ui/textarea";
 
 interface ComposerPendingPickedElementContextsProps {
   contexts: ReadonlyArray<PickedElementContextDraft>;
@@ -164,7 +163,12 @@ function PickedElementChip({
         </button>
       </span>
 
-      <PopoverPopup className="w-80 p-2" side="top" align="start">
+      <PopoverPopup
+        className="w-72"
+        viewportClassName="p-2 [--viewport-inline-padding:--spacing(2)]"
+        side="top"
+        align="start"
+      >
         <p className="truncate text-xs font-medium text-foreground">{descriptor}</p>
         <p className="mb-1.5 truncate font-mono text-[10px] text-muted-foreground/70">
           {context.selector}
@@ -184,8 +188,12 @@ function PickedElementChip({
             ))}
           </ul>
         )}
-        <Textarea
+        {/* A plain field rather than the shared Textarea: that one hardcodes a
+            70px floor and form-sized padding on its inner element, which no
+            prop from out here can reach. This card is meant to be small. */}
+        <textarea
           ref={noteInputRef}
+          rows={2}
           value={noteDraft}
           onChange={(event) => setNoteDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -201,7 +209,7 @@ function PickedElementChip({
             }
           }}
           placeholder="What about this element?"
-          className="min-h-12 resize-none px-2 py-1.5 text-xs"
+          className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring"
           data-testid={`picked-element-note-${context.id}`}
         />
         <div className="mt-1.5 flex items-center gap-2">
