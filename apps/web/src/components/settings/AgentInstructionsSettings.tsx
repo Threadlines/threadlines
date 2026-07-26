@@ -212,8 +212,8 @@ export function AgentInstructionsSettingsPanel() {
     () => new Map(projects.map((project) => [project.cwd, project.environmentId] as const)),
     [projects],
   );
-  const selectedProjectEnvironmentId = environmentIdByCwd.get(cwd);
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
+  const selectedProjectEnvironmentId = environmentIdByCwd.get(cwd);
   const [instructions, setInstructions] = useState<ProviderInstructionFilesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
