@@ -1,5 +1,5 @@
 import type { DesktopMenuActionPayload } from "@threadlines/contracts";
-import { PREVIEW_PARTITION } from "../preview/PreviewSession.ts";
+import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -332,15 +332,23 @@ const make = Effect.gen(function* () {
       },
     });
 
-    // Preview content is untrusted. Whatever the renderer asks for, a preview
-    // webview gets no Node, no custom preload, and the preview partition --
-    // never the app's own session.
-    window.webContents.on("will-attach-webview", (_event, webPreferences, params) => {
+    // Preview content is untrusted: no Node, no custom preload, and it must run
+    // in the preview partition rather than the app's own session.
+    //
+    // The partition is enforced, not assigned. Electron resolves the guest's
+    // session from the element's `partition` attribute before this fires, so
+    // assigning `params.partition` here silently does nothing and the guest
+    // would inherit the default session -- sharing cookies with Threadlines.
+    // Refusing the attach is the only way to make the renderer's attribute
+    // load-bearing.
+    window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       delete webPreferences.preload;
       webPreferences.nodeIntegration = false;
       webPreferences.contextIsolation = true;
       webPreferences.sandbox = true;
-      params.partition = PREVIEW_PARTITION;
+      if (params.partition !== PREVIEW_PARTITION) {
+        event.preventDefault();
+      }
     });
 
     if (Option.isSome(persistedWindowState) && persistedWindowState.value.isMaximized) {

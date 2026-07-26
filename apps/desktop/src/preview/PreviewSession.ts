@@ -15,8 +15,9 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import { session, type Session } from "electron";
+import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 
-export const PREVIEW_PARTITION = "persist:threadlines-preview";
+export { PREVIEW_PARTITION };
 
 /**
  * Permissions preview content may use. Deliberately short: a page under

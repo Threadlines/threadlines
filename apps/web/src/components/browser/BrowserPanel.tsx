@@ -11,6 +11,8 @@ import {
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
+
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -183,6 +185,7 @@ export function BrowserPanel({
                 ? undefined
                 : { width: `${preset.width}px`, height: `${preset.height}px`, flex: "none" }
             }
+            partition={PREVIEW_PARTITION}
             {...(browserState.url ? { src: browserState.url } : {})}
           />
         ) : (
