@@ -143,7 +143,7 @@ the Vercel Preview check to inspect the rendered page. Merging the PR approves
 the marketing and GitHub release copy. The X draft links to the GitHub release
 so X renders GitHub's release card. It never posts to social media.
 
-The generator uses GitHub Models through the `GITHUB_MODELS_TOKEN` repository
+The generator uses GitHub Models through the `RELEASE_MODELS_TOKEN` repository
 secret. Create a fine-grained personal access token with only the `Models: read`
 account permission, then save it as an Actions repository secret with that name.
 Keep the token owner’s paid GitHub Models usage disabled if release drafting
@@ -154,7 +154,7 @@ variable to choose another model from the GitHub Models catalog.
 For a local draft, use:
 
 ```bash
-GITHUB_MODELS_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
+RELEASE_MODELS_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
 ```
 
 For a local run, `GITHUB_TOKEN` remains supported as a fallback. Whichever token
