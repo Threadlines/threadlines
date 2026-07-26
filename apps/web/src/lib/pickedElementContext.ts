@@ -68,9 +68,36 @@ export function pickedElementContextDedupKey(context: PickedElementContext): str
   return `${context.url}::${context.selector}`;
 }
 
+/** Enough words to recognise a region by, without turning a chip into a paragraph. */
+function firstWords(text: string, maxLength: number): string | null {
+  // Only the first line: an element's opening line is what identifies it, and
+  // everything after it belongs to its children.
+  const collapsed = (text.split("\n")[0] ?? "").replace(/\s+/g, " ").trim();
+  if (collapsed === "") {
+    return null;
+  }
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+  const cut = collapsed.slice(0, maxLength);
+  const lastSpace = cut.lastIndexOf(" ");
+  // Break on a word so the label reads as language rather than a truncation,
+  // and drop the punctuation left at the break -- "environment.…" reads worse
+  // than the sentence it came from.
+  const stem = (lastSpace > maxLength / 2 ? cut.slice(0, lastSpace) : cut).replace(
+    /[\s.,;:!?-]+$/,
+    "",
+  );
+  return `${stem}…`;
+}
+
 /**
- * The chip's label. Role and name first, because that is how you would ask
- * someone else to find the thing on screen.
+ * The chip's label.
+ *
+ * Role and name first, because that is how you would ask someone else to find
+ * the thing on screen. Failing that, the element's own words -- a section is
+ * recognisable by what it says, not by the path that reaches it. A CSS path is
+ * the last thing a person wants to read, so it lives in the tooltip instead.
  */
 export function formatPickedElementContextLabel(context: PickedElementContext): string {
   if (context.role !== null && context.name !== null) {
@@ -79,7 +106,8 @@ export function formatPickedElementContextLabel(context: PickedElementContext): 
   if (context.name !== null) {
     return `"${context.name}"`;
   }
-  return context.selector === "" ? `<${context.tagName}>` : context.selector;
+  const snippet = context.text === null ? null : firstWords(context.text, 32);
+  return snippet === null ? context.tagName : `${context.tagName} · "${snippet}"`;
 }
 
 export function formatPickedElementContextBlock(context: PickedElementContext): string {

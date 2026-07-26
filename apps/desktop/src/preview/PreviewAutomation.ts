@@ -223,7 +223,13 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         }
         return parts.join(' > ');
       };
-      const text = (element.innerText || element.textContent || '').trim().replace(/\\s+/g, ' ');
+      // Spaces collapse but line breaks survive: a heading and the paragraph
+      // after it are different lines, and squashing them together reads as one
+      // run-on sentence wherever this is shown.
+      const text = (element.innerText || element.textContent || '')
+        .replace(/[^\\S\\n]+/g, ' ')
+        .replace(/\\n{2,}/g, '\\n')
+        .trim();
       return {
         tagName: element.tagName.toLowerCase(),
         selector: path(element),

@@ -32,8 +32,43 @@ describe("formatPickedElementContextLabel", () => {
     expect(formatPickedElementContextLabel(context)).toBe('button "Sign in"');
   });
 
-  it("falls back to the selector when the element has no accessible name", () => {
-    expect(formatPickedElementContextLabel({ ...context, role: null, name: null })).toBe("#cta");
+  it("falls back to the element's own words, not its CSS path", () => {
+    // A generic section is recognisable by what it says; "#root > div > section"
+    // is not something anyone wants to read in a chip.
+    expect(
+      formatPickedElementContextLabel({
+        ...context,
+        tagName: "section",
+        role: null,
+        name: null,
+        selector: "#root > div > section",
+        text: "Pair with this environment. This environment expects a trusted credential.",
+      }),
+    ).toBe('section · "Pair with this environment…"');
+  });
+
+  it("breaks the snippet on a word rather than mid-syllable", () => {
+    const label = formatPickedElementContextLabel({
+      ...context,
+      role: null,
+      name: null,
+      text: "Supercalifragilistic expialidocious incantation follows here",
+    });
+
+    expect(label).not.toContain("Supercalifragilisticexp");
+    expect(label.endsWith('…"')).toBe(true);
+  });
+
+  it("uses the tag alone when the element has nothing to say", () => {
+    expect(
+      formatPickedElementContextLabel({
+        ...context,
+        tagName: "div",
+        role: null,
+        name: null,
+        text: null,
+      }),
+    ).toBe("div");
   });
 });
 

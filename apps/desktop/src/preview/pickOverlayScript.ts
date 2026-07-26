@@ -16,6 +16,30 @@
  * stay hit-testable for this to work at all.
  */
 
+/**
+ * The pointer used while picking.
+ *
+ * A crosshair says "aim", but it loses the sense that you are still pointing at
+ * things, and the page's own cursors (an I-beam over text, a hand over links)
+ * read as "interact with this" at exactly the moment interaction is disabled.
+ * So: the ordinary arrow, outlined in the same blue as the highlight, which
+ * reads as pointing while still saying a mode is on.
+ *
+ * White fill with a blue stroke so it stays legible on dark and light pages
+ * alike, and `default` is kept as a fallback in case the image is refused.
+ */
+const ARROW_CURSOR_SVG = [
+  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="24" viewBox="0 0 18 24">',
+  '<path d="M2 2 L2 18.2 L6.4 14 L9.1 20 L11.9 18.7 L9.2 12.8 L14.9 12.8 Z"',
+  ' fill="#ffffff" stroke="#4c8dff" stroke-width="1.8" stroke-linejoin="round"/>',
+  "</svg>",
+].join("");
+
+const ARROW_CURSOR_DATA_URL = `data:image/svg+xml;base64,${Buffer.from(ARROW_CURSOR_SVG).toString("base64")}`;
+
+/** Hotspot on the arrow's tip, so what you point at is what gets picked. */
+const PICK_CURSOR_CSS = `url("${ARROW_CURSOR_DATA_URL}") 2 2, default`;
+
 export const PICK_OVERLAY_BINDING = "__threadlinesPickElement";
 const OVERLAY_ID = "__threadlines-pick-overlay";
 
@@ -27,6 +51,7 @@ export const PICK_OVERLAY_TEARDOWN_SCRIPT = `
     existing.__threadlinesDispose?.();
     existing.remove();
   }
+  document.getElementById(${JSON.stringify(OVERLAY_ID)} + "-cursor")?.remove();
 })();
 `;
 
@@ -40,6 +65,17 @@ export const PICK_OVERLAY_SCRIPT = `
     previous.__threadlinesDispose?.();
     previous.remove();
   }
+
+  // The page's own cursors leak through while picking -- an I-beam over text,
+  // a hand over links -- which reads as "interact with this" at exactly the
+  // moment interaction is disabled. One cursor over everything fixes that. It
+  // has to live in the page's own stylesheet: the overlay is in a shadow root
+  // and its styles cannot reach out.
+  const cursorStyle = document.createElement("style");
+  cursorStyle.id = OVERLAY_ID + "-cursor";
+  cursorStyle.textContent =
+    "*,*::before,*::after{cursor:" + ${JSON.stringify(PICK_CURSOR_CSS)} + " !important}";
+  document.documentElement.appendChild(cursorStyle);
 
   const host = document.createElement("div");
   host.id = OVERLAY_ID;
@@ -137,6 +173,7 @@ export const PICK_OVERLAY_SCRIPT = `
   };
 
   function dispose() {
+    cursorStyle.remove();
     document.removeEventListener("mousemove", onMove, true);
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("keydown", onKeyDown, true);
