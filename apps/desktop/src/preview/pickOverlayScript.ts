@@ -121,6 +121,9 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
     "border:1px solid rgba(255,255,255,0.16);color:rgba(232,230,225,0.65)}" +
     ".toggle:hover{color:#e8e6e1;background:rgba(255,255,255,0.06)}" +
     ".toggle.on{color:#4c8dff;border-color:#4c8dff;background:rgba(76,141,255,0.12)}" +
+    // display in author CSS overrides the [hidden] rule from the UA sheet, so
+    // hiding has to be stated explicitly or the attribute does nothing at all.
+    "[hidden]{display:none !important}" +
     ".panel{display:flex;flex-direction:column;gap:2px;max-height:190px;" +
     "overflow-y:auto;padding:6px 2px 2px;margin-top:6px;" +
     "border-top:1px solid rgba(255,255,255,0.1)}" +
@@ -132,13 +135,21 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
     "font:400 10px/1.4 ui-sans-serif,system-ui,sans-serif}" +
     // The native stepper is a light-mode Aqua control and cannot be themed;
     // the field keeps its arrow-key and scroll behaviour without it.
-    ".num{width:56px;padding:2px 5px;border-radius:3px;background:#0f1115;" +
+    ".num{width:42px;padding:2px 5px;border-radius:3px;background:#0f1115;" +
     "border:1px solid rgba(255,255,255,0.16);color:#e8e6e1;outline:none;" +
     "appearance:textfield;-moz-appearance:textfield;" +
     "font:400 10px ui-monospace,SFMono-Regular,Menlo,monospace}" +
     ".num::-webkit-outer-spin-button,.num::-webkit-inner-spin-button" +
     "{-webkit-appearance:none;margin:0}" +
     ".num:focus{border-color:#4c8dff}" +
+    ".num{text-align:center;border-radius:0;border-left:none;border-right:none}" +
+    ".stepper{display:flex;align-items:stretch}" +
+    ".step{width:18px;padding:0;cursor:pointer;background:#0f1115;" +
+    "border:1px solid rgba(255,255,255,0.16);color:rgba(232,230,225,0.7);" +
+    "font:400 11px/1 ui-sans-serif,system-ui,sans-serif}" +
+    ".step:first-child{border-radius:3px 0 0 3px}" +
+    ".step:last-child{border-radius:0 3px 3px 0}" +
+    ".step:hover{color:#e8e6e1;background:rgba(255,255,255,0.08)}" +
     ".colour{width:26px;height:18px;padding:0;border:1px solid rgba(255,255,255,0.16);" +
     "border-radius:3px;background:none;cursor:pointer}" +
     ".colour::-webkit-color-swatch-wrapper{padding:2px}" +
@@ -254,26 +265,36 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
           : below) + "px";
     };
 
-    // Computed colours arrive as rgb(); the colour input only speaks hex.
-    // Deliberately regex-free: this script is built inside a template literal,
-    // where a backslash escape collapses to a bare letter before the page sees
-    // it, which previously destroyed a pattern and the whole overlay with it.
+    // A computed colour is whatever the page authored: rgb(), but just as
+    // often oklch() or lab(). Neither string parsing nor canvas normalisation
+    // handles those -- canvas accepts oklch and hands it straight back in the
+    // same space -- so the colour is painted onto a single pixel and read back
+    // as bytes. Whatever the browser can render, this can convert.
+    const scratch = document.createElement("canvas");
+    scratch.width = 1;
+    scratch.height = 1;
+    const scratchContext = scratch.getContext("2d", { willReadFrequently: true });
     const toHex = (value) => {
-      const open = value.indexOf("(");
-      const close = value.indexOf(")");
-      if (open < 0 || close < 0) return "#000000";
-      const parts = value.slice(open + 1, close).split(",");
-      if (parts.length < 3) return "#000000";
-      return (
-        "#" +
-        parts
-          .slice(0, 3)
-          .map((part) => {
-            const channel = Math.max(0, Math.min(255, Math.round(Number(part.trim()) || 0)));
-            return channel.toString(16).padStart(2, "0");
-          })
-          .join("")
-      );
+      if (!value) return "#000000";
+      scratchContext.clearRect(0, 0, 1, 1);
+      scratchContext.fillStyle = "#000000";
+      try {
+        scratchContext.fillStyle = value;
+      } catch {
+        return "#000000";
+      }
+      scratchContext.fillRect(0, 0, 1, 1);
+      try {
+        const pixel = scratchContext.getImageData(0, 0, 1, 1).data;
+        return (
+          "#" +
+          [pixel[0], pixel[1], pixel[2]]
+            .map((channel) => channel.toString(16).padStart(2, "0"))
+            .join("")
+        );
+      } catch {
+        return "#000000";
+      }
     };
 
     const computed = getComputedStyle(chosen);
@@ -323,7 +344,41 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
       });
       // Arrow keys and typing belong to the field, not to the annotation.
       control.addEventListener("keydown", (event) => event.stopPropagation());
-      row.appendChild(control);
+      if (tweak.kind === "colour") {
+        row.appendChild(control);
+      } else {
+        // A stepper of our own: the platform's is a light-mode control that
+        // cannot be themed, but nudging a value one step at a time is the
+        // point of a number field.
+        const stepper = document.createElement("span");
+        stepper.className = "stepper";
+        const step = (direction) => {
+          const amount = Number(control.step) || 1;
+          const next = (Number(control.value) || 0) + direction * amount;
+          const min = control.min === "" ? -Infinity : Number(control.min);
+          const max = control.max === "" ? Infinity : Number(control.max);
+          // Rounded because repeated fractional steps drift (0.05 at a time
+          // reaches 0.30000000000000004).
+          control.value = String(
+            Math.round(Math.max(min, Math.min(max, next)) * 1000) / 1000,
+          );
+          control.dispatchEvent(new Event("input", { bubbles: true }));
+        };
+        const down = document.createElement("button");
+        down.type = "button";
+        down.className = "step";
+        down.textContent = "\u2212";
+        down.addEventListener("click", () => step(-1));
+        const up = document.createElement("button");
+        up.type = "button";
+        up.className = "step";
+        up.textContent = "+";
+        up.addEventListener("click", () => step(1));
+        stepper.appendChild(down);
+        stepper.appendChild(control);
+        stepper.appendChild(up);
+        row.appendChild(stepper);
+      }
       if (tweak.kind === "px") {
         const unit = document.createElement("span");
         unit.className = "unit";
