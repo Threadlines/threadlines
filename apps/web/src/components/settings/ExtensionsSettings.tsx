@@ -324,9 +324,18 @@ function extensionKindLabel(kind: ExtensionItemKind): string {
 }
 
 function optionalDetail(parts: ReadonlyArray<string | null | undefined>): string | undefined {
+  // Providers often repeat the same phrase across status fields ("Needs authentication" as both the
+  // auth status and the status), so de-duplicate rather than rendering it twice.
+  const seen = new Set<string>();
   const detail = parts
     .map((part) => part?.trim())
     .filter((part): part is string => Boolean(part))
+    .filter((part) => {
+      const key = part.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .join(" - ");
   return detail.length > 0 ? detail : undefined;
 }
@@ -2839,6 +2848,182 @@ function ExtensionItemGlyph({
 }
 
 /**
+ * Everything installed, as logos. A dozen icons in one line answers "what do I have" faster than a
+ * dozen text rows, and it is the one place a plugin's identity is worth more than its metadata.
+ */
+function InstalledStrip({
+  items,
+  environmentId,
+  onSelect,
+}: {
+  items: ReadonlyArray<ExtensionItem>;
+  environmentId: EnvironmentId | null;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((item) => (
+        <Tooltip key={`${item.provider.instanceId}:${item.id}`}>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                className="inline-flex size-9 items-center justify-center rounded-md border border-border/60 bg-background transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => onSelect(item)}
+                aria-label={item.title}
+              >
+                <ExtensionItemGlyph item={item} environmentId={environmentId} />
+              </button>
+            }
+          />
+          <TooltipPopup side="bottom">{item.title}</TooltipPopup>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+interface ExtensionAttentionEntry {
+  readonly key: string;
+  readonly title: string;
+  readonly detail: string;
+  readonly item?: ExtensionItem | undefined;
+}
+
+/** Things that are broken or half-configured, above the fold instead of inside a collapsed panel. */
+function NeedsAttention({
+  entries,
+  onSelect,
+}: {
+  entries: ReadonlyArray<ExtensionAttentionEntry>;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  if (entries.length === 0) return null;
+
+  return (
+    <section className="space-y-1">
+      <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+        Needs attention
+      </h3>
+      <div>
+        {entries.map((entry) => {
+          const body = (
+            <>
+              <KeyRoundIcon className="size-3.5 shrink-0 text-warning-foreground/80" />
+              <span className="min-w-0 flex-1 truncate text-xs text-foreground">{entry.title}</span>
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground/70">
+                {entry.detail}
+              </span>
+            </>
+          );
+          return entry.item ? (
+            <button
+              key={entry.key}
+              type="button"
+              className="flex w-full min-w-0 items-center gap-2 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => entry.item && onSelect(entry.item)}
+            >
+              {body}
+              <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45" />
+            </button>
+          ) : (
+            <div
+              key={entry.key}
+              className="flex min-w-0 items-center gap-2 border-t border-border/40 py-2 first:border-t-0"
+            >
+              {body}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One table over every provider's MCP servers. The origin column is the point: a connection that
+ * arrived with a plugin should say so and lead back to it, rather than looking hand-configured.
+ */
+function ConnectionsTable({
+  items,
+  environmentId,
+  onSelect,
+}: {
+  items: ReadonlyArray<ExtensionItem>;
+  environmentId: EnvironmentId | null;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  if (items.length === 0) {
+    return <div className="py-2 text-xs text-muted-foreground">No connections configured.</div>;
+  }
+
+  return (
+    <div>
+      <div className="grid grid-cols-[minmax(0,1fr)_9rem_8rem] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+        <span>Connection</span>
+        <span>Type</span>
+        <span>Status</span>
+      </div>
+      {items.map((item) => {
+        if (item.kind !== "mcp") return null;
+        const origin = item.server.origin;
+        const needsAuth = extensionItemNeedsAuth(item);
+        return (
+          <button
+            key={`${item.provider.instanceId}:${item.id}`}
+            type="button"
+            className="grid w-full grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => onSelect(item)}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <ExtensionItemGlyph item={item} environmentId={environmentId} />
+              <span className="min-w-0">
+                <span className="block truncate text-xs text-foreground">{item.title}</span>
+                {origin?.kind === "plugin" ? (
+                  <span className="block truncate text-[11px] text-muted-foreground/70">
+                    Provided by the {origin.pluginName ?? origin.pluginId} plugin
+                  </span>
+                ) : null}
+              </span>
+            </span>
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate text-xs text-foreground/90">
+                {providerTitle(item.provider)}
+              </span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                {item.server.transport ? (
+                  <span className="truncate font-mono text-[11px] text-muted-foreground/70">
+                    {item.server.transport}
+                  </span>
+                ) : null}
+                {origin?.kind === "plugin" ? (
+                  <Badge size="sm" variant="outline">
+                    Plugin
+                  </Badge>
+                ) : null}
+              </span>
+            </span>
+            <span className="min-w-0">
+              {needsAuth ? (
+                <Badge size="sm" variant="warning">
+                  Needs auth
+                </Badge>
+              ) : (
+                <span className="truncate text-[11px] text-muted-foreground/70">
+                  {item.server.status ?? "Ready"}
+                </span>
+              )}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * Marketplaces sit between installed plugins and the catalog, because they are what turns one into
  * the other. Provider-managed catalogs are shown but not removable.
  */
@@ -2887,10 +3072,10 @@ function MarketplacesBlock({
   };
 
   return (
-    <section className="space-y-2 border-t border-border/50 pt-3">
+    <section className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-          Marketplaces
+          {providerTitle(provider)}
         </h3>
         <div className="flex gap-1">
           <Button
@@ -3425,7 +3610,7 @@ function ProviderInventoryRow({
   onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
   isLoadingMcpServers: boolean;
 }) {
-  const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("plugins");
+  const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("skills");
   const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
   const [providerFilterText, setProviderFilterText] = useState("");
   const deferredProviderFilterText = useDeferredValue(providerFilterText);
@@ -3472,17 +3657,8 @@ function ProviderInventoryRow({
     [provider.instanceId],
   );
   const catalogPluginCount = allItems.plugins.length - installedPluginItems.length;
-  const initialSection =
-    installedPluginItems.length > 0
-      ? "plugins"
-      : provider.skills.length > 0
-        ? "skills"
-        : provider.mcpServers.length > 0
-          ? "mcpServers"
-          : provider.apps.length > 0
-            ? "apps"
-            : "plugins";
-  const sections: ReadonlyArray<ExtensionSectionConfig> = [
+  const initialSection = provider.skills.length > 0 ? "skills" : "apps";
+  const allSections: ReadonlyArray<ExtensionSectionConfig> = [
     {
       key: "plugins" as const,
       title: "Installed plugins",
@@ -3543,6 +3719,11 @@ function ProviderInventoryRow({
       emptyLabel: "No apps reported.",
     },
   ];
+  // Installed plugins and MCP connections are rendered above the fold by the page itself, so this
+  // row is only the two surfaces that have nowhere else to live.
+  const sections = allSections.filter(
+    (section) => section.key === "skills" || section.key === "apps",
+  );
   const activeSectionConfig =
     sections.find((section) => section.key === activeSection) ?? sections[0];
   const browseSectionConfig = sections.find((section) => section.key === browseSection) ?? null;
@@ -3678,9 +3859,6 @@ function ProviderInventoryRow({
             onBrowse={() => setBrowseSection(activeSectionConfig.key)}
           />
         ) : null}
-        {activeSection === "plugins" ? (
-          <MarketplacesBlock provider={provider} cwd={cwd} onMutated={onInventoryMutated} />
-        ) : null}
       </div>
       <ExtensionBrowserDialog
         environmentId={environmentId}
@@ -3743,12 +3921,20 @@ export function ExtensionsSettingsPanel() {
   const [showAdvancedContext, setShowAdvancedContext] = useState(
     () => extensionsSettingsPanelMemoryState.showAdvancedContext ?? false,
   );
+  const [pageQuery, setPageQuery] = useState("");
+  const deferredPageQuery = useDeferredValue(pageQuery);
   const refreshRequestRef = useRef(0);
   const inventoryRequestKeyRef = useRef("");
   const selectedProviderEntry = useMemo(
     () => providerEntries.find((provider) => String(provider.instanceId) === providerInstanceId),
     [providerEntries, providerInstanceId],
   );
+  // MCP tool calls need a Codex thread. With no provider filter there is still exactly one Codex
+  // instance to scope against, so keep detecting it rather than losing the capability.
+  const threadScopeProviderEntry =
+    selectedProviderEntry ??
+    providerEntries.find((provider) => provider.driverKind === EXTENSIONS_CODEX_DRIVER) ??
+    providerEntries[0];
   // Plugin icon files are served by whichever environment owns the selected project.
   const selectedEnvironmentId = useMemo(
     () => projects.find((project) => project.cwd === cwd)?.environmentId ?? null,
@@ -3758,8 +3944,10 @@ export function ExtensionsSettingsPanel() {
     () =>
       deriveDetectedProviderThreadId({
         cwd,
-        providerDriver: selectedProviderEntry ? String(selectedProviderEntry.driverKind) : "",
-        providerInstanceId,
+        providerDriver: threadScopeProviderEntry ? String(threadScopeProviderEntry.driverKind) : "",
+        providerInstanceId: threadScopeProviderEntry
+          ? String(threadScopeProviderEntry.instanceId)
+          : "",
         projects: projects.map((project) => ({
           environmentId: project.environmentId,
           id: project.id,
@@ -3781,7 +3969,7 @@ export function ExtensionsSettingsPanel() {
         })),
         threadLastVisitedAtById,
       }),
-    [cwd, projects, providerInstanceId, selectedProviderEntry, threadLastVisitedAtById, threads],
+    [cwd, projects, threadScopeProviderEntry, threadLastVisitedAtById, threads],
   );
   const effectiveProviderThreadId = manualProviderThreadId.trim() || detectedProviderThreadId;
   const providerThreadContextSource = manualProviderThreadId.trim()
@@ -3799,7 +3987,7 @@ export function ExtensionsSettingsPanel() {
     () =>
       makeExtensionInventoryCacheKey({
         cwd,
-        providerInstanceId,
+        providerInstanceId: providerInstanceId || "all",
         providerThreadId: effectiveProviderThreadId,
       }) ?? "",
     [cwd, effectiveProviderThreadId, providerInstanceId],
@@ -3815,12 +4003,12 @@ export function ExtensionsSettingsPanel() {
     () => initialCachedInventory?.value ?? null,
   );
   const [selectedItem, setSelectedItem] = useState<ExtensionItem | null>(null);
+  const [isBrowsingCatalog, setIsBrowsingCatalog] = useState(false);
   const [actionHistoryByItem, setActionHistoryByItem] = useState<
     Record<string, ExtensionActionHistoryEntry>
   >({});
   const [isLoading, setIsLoading] = useState(false);
   const [mcpLoadingProviderId, setMcpLoadingProviderId] = useState<string | null>(null);
-  const [isRefreshingMarketplaces, setIsRefreshingMarketplaces] = useState(false);
   const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(
     () => initialCachedInventory?.loadDurationMs ?? null,
   );
@@ -3931,7 +4119,7 @@ export function ExtensionsSettingsPanel() {
       const requestKey = inventoryRequestKey;
       const requestCwd = cwd.trim();
       const includeMcpServers = options?.includeMcpServers ?? mcpInventoryRequestedRef.current;
-      if (!requestCwd || !providerInstanceId) {
+      if (!requestCwd) {
         setInventory(null);
         setLastInventoryLoadMs(null);
         setError(null);
@@ -3951,7 +4139,11 @@ export function ExtensionsSettingsPanel() {
       try {
         const result = await ensureLocalApi().server.getProviderExtensions({
           cwd: requestCwd,
-          providerInstanceId: providerInstanceId as ProviderInstanceId,
+          // An empty filter means "every configured provider"; the server already fans out when
+          // no instance id is supplied.
+          ...(providerInstanceId
+            ? { providerInstanceId: providerInstanceId as ProviderInstanceId }
+            : {}),
           ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
           includeMcpServers,
         });
@@ -3997,38 +4189,7 @@ export function ExtensionsSettingsPanel() {
     return () => window.clearTimeout(timeoutId);
   }, [manualProviderThreadId, refresh]);
 
-  const canReadInventory = cwd.trim().length > 0 && providerInstanceId.length > 0;
   const hasInventory = inventory !== null;
-  const canRefreshCodexMarketplaces =
-    canReadInventory && selectedProviderEntry?.driverKind === EXTENSIONS_CODEX_DRIVER;
-  const refreshCodexMarketplaces = useCallback(async () => {
-    const requestCwd = cwd.trim();
-    if (!requestCwd || !providerInstanceId) return;
-
-    setIsRefreshingMarketplaces(true);
-    try {
-      const result = await ensureLocalApi().server.refreshProviderExtensionPluginMarketplaces({
-        cwd: requestCwd,
-        providerInstanceId: providerInstanceId as ProviderInstanceId,
-      });
-      toastManager.add({
-        type: "success",
-        title: "Marketplace refreshed",
-        description: result.output ?? "Codex plugin marketplace metadata is up to date.",
-      });
-      await refresh({ invalidateCache: true });
-    } catch (refreshError) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Marketplace refresh failed",
-          description: refreshError instanceof Error ? refreshError.message : "An error occurred.",
-        }),
-      );
-    } finally {
-      setIsRefreshingMarketplaces(false);
-    }
-  }, [cwd, providerInstanceId, refresh]);
   const selectedItemActionKey = selectedItem ? extensionItemActionKey(selectedItem) : null;
   const selectedItemLastAction = selectedItemActionKey
     ? actionHistoryByItem[selectedItemActionKey]
@@ -4055,34 +4216,156 @@ export function ExtensionsSettingsPanel() {
     [mcpLoadingProviderId, refresh],
   );
 
+  const providerScopedInventory = useMemo(
+    () =>
+      (inventory?.providers ?? []).filter(
+        (provider) => !providerInstanceId || String(provider.instanceId) === providerInstanceId,
+      ),
+    [inventory, providerInstanceId],
+  );
+  const allPluginItems = useMemo(
+    () =>
+      providerScopedInventory.flatMap((provider) =>
+        provider.plugins.map((plugin) => pluginExtensionItem(provider, plugin)),
+      ),
+    [providerScopedInventory],
+  );
+  const allMcpItems = useMemo(
+    () =>
+      providerScopedInventory.flatMap((provider) =>
+        provider.mcpServers.map((server) => mcpExtensionItem(provider, server)),
+      ),
+    [providerScopedInventory],
+  );
+  const searchedInstalledPlugins = useMemo(
+    () =>
+      sortExtensionItems(
+        filterExtensionItems(allPluginItems.filter(extensionItemInstalled), deferredPageQuery),
+        "recommended",
+      ),
+    [allPluginItems, deferredPageQuery],
+  );
+  const searchedConnections = useMemo(
+    () => sortExtensionItems(filterExtensionItems(allMcpItems, deferredPageQuery), "recommended"),
+    [allMcpItems, deferredPageQuery],
+  );
+  const catalogSection = useMemo((): ExtensionSectionConfig => {
+    const installed = searchedInstalledPlugins;
+    const browseItems = sortExtensionItems(
+      filterExtensionItems(allPluginItems, deferredPageQuery),
+      "recommended",
+    );
+    return {
+      key: "plugins",
+      title: "Plugins",
+      label: "Plugins",
+      browseLabel: "Browse catalog",
+      icon: <PlugIcon className="size-3.5" />,
+      items: installed,
+      browseItems,
+      totalCount: installed.length,
+      emptyLabel: "No plugins installed.",
+    };
+  }, [allPluginItems, deferredPageQuery, searchedInstalledPlugins]);
+  const catalogPluginCount = Math.max(0, allPluginItems.length - searchedInstalledPlugins.length);
+
+  const attentionEntries = useMemo((): ReadonlyArray<ExtensionAttentionEntry> => {
+    const connectionIssues = allMcpItems.filter(extensionItemNeedsAuth).map((item) => ({
+      key: `mcp:${item.provider.instanceId}:${item.id}`,
+      title: item.title,
+      detail: extensionAuthIssueDetail(item),
+      item,
+    }));
+    const providerIssues = providerScopedInventory.flatMap((provider) =>
+      provider.status === "error" || provider.status === "partial"
+        ? [
+            {
+              key: `provider:${provider.instanceId}`,
+              title: providerTitle(provider),
+              detail: provider.message ?? "Inventory partially loaded.",
+            },
+          ]
+        : [],
+    );
+    const marketplaceIssues = providerScopedInventory.flatMap((provider) =>
+      provider.marketplaces.flatMap((marketplace) =>
+        marketplace.loadError
+          ? [
+              {
+                key: `marketplace:${provider.instanceId}:${marketplace.name}`,
+                title: marketplace.displayName ?? marketplace.name,
+                detail: marketplace.loadError,
+              },
+            ]
+          : [],
+      ),
+    );
+    return [...connectionIssues, ...providerIssues, ...marketplaceIssues];
+  }, [allMcpItems, providerScopedInventory]);
+
   return (
     <SettingsPageContainer className="max-w-5xl">
-      <SettingsSection title="Plugins" icon={<PlugIcon className="size-3.5" />}>
-        <SettingsRow
-          title="Project"
-          description={
-            inventory?.generatedAt
-              ? `Inventory generated ${new Date(inventory.generatedAt).toLocaleString()}${
+      <SettingsSection
+        title="Plugins"
+        icon={<PlugIcon className="size-3.5" />}
+        headerAction={
+          isLoading ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <LoaderIcon className="size-3 animate-spin" />
+              Loading
+            </span>
+          ) : null
+        }
+      >
+        <div className="space-y-4 py-1">
+          <p className="text-xs text-muted-foreground">
+            Plugins and connections available to Codex and Claude in this project.
+            {inventory?.generatedAt
+              ? ` Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
                   lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
                 }.`
-              : "Pick the project context used for project plugins, skills, and MCP status."
-          }
-          control={
-            projectOptions.length > 0 ? (
+              : ""}
+          </p>
+          <Input
+            nativeInput
+            value={pageQuery}
+            placeholder="Search plugins and connections"
+            aria-label="Search plugins and connections"
+            onChange={(event) => setPageQuery(event.currentTarget.value)}
+          />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="xs"
+              variant={providerInstanceId ? "outline" : "default"}
+              onClick={() => setProviderInstanceId("")}
+            >
+              All providers
+            </Button>
+            {providerOptions.map((provider) => (
+              <Button
+                key={provider.value}
+                size="xs"
+                variant={providerInstanceId === provider.value ? "default" : "outline"}
+                onClick={() => setProviderInstanceId(provider.value)}
+              >
+                {provider.label}
+              </Button>
+            ))}
+            {projectOptions.length > 0 ? (
               <Select
                 value={cwd}
                 onValueChange={(value) => {
                   if (!value) return;
                   setCwd(value);
-                  clearInventory({ loading: providerInstanceId.length > 0 });
+                  clearInventory({ loading: true });
                 }}
               >
-                <SelectTrigger className="w-full sm:w-56" aria-label="Project">
+                <SelectTrigger className="h-7 w-auto min-w-32" aria-label="Project scope">
                   <SelectValue>
                     {projectOptions.find((project) => project.value === cwd)?.label ?? "Project"}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectPopup align="start" alignItemWithTrigger={false}>
                   {projectOptions.map((project) => (
                     <SelectItem key={project.value} hideIndicator value={project.value}>
                       {project.label}
@@ -4090,67 +4373,53 @@ export function ExtensionsSettingsPanel() {
                   ))}
                 </SelectPopup>
               </Select>
-            ) : null
-          }
-        />
-        <SettingsRow
-          title="Provider"
-          description="Choose a supported provider to load plugins, skills, MCP servers, and apps."
-          status={error}
-          control={
-            providerOptions.length > 0 ? (
-              <div className="flex w-full items-center gap-1.5 sm:w-auto">
-                {canRefreshCodexMarketplaces ? (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          className="size-7 shrink-0 rounded-sm"
-                          size="icon-xs"
-                          variant="outline"
-                          disabled={isLoading || isRefreshingMarketplaces}
-                          onClick={() => void refreshCodexMarketplaces()}
-                          aria-label="Refresh Codex plugin marketplace"
-                        >
-                          {isRefreshingMarketplaces ? (
-                            <LoaderIcon className="size-3.5 animate-spin" />
-                          ) : (
-                            <PackagePlusIcon className="size-3.5" />
-                          )}
-                        </Button>
-                      }
-                    />
-                    <TooltipPopup side="top">Refresh Codex marketplace</TooltipPopup>
-                  </Tooltip>
-                ) : null}
-                <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
-                  <Select
-                    value={providerInstanceId}
-                    onValueChange={(value) => {
-                      if (!value) return;
-                      setProviderInstanceId(value);
-                      clearInventory({ loading: cwd.trim().length > 0 });
-                    }}
-                  >
-                    <SelectTrigger className="w-full sm:w-56" aria-label="Provider">
-                      <SelectValue>
-                        {providerOptions.find((provider) => provider.value === providerInstanceId)
-                          ?.label ?? "Select provider"}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectPopup align="end" alignItemWithTrigger={false}>
-                      {providerOptions.map((provider) => (
-                        <SelectItem key={provider.value} hideIndicator value={provider.value}>
-                          {provider.label}
-                        </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                </div>
-              </div>
-            ) : null
-          }
-        />
+            ) : null}
+            <Button
+              size="xs"
+              variant="outline"
+              className="ml-auto"
+              disabled={allPluginItems.length === 0}
+              onClick={() => setIsBrowsingCatalog(true)}
+            >
+              <SearchIcon className="size-3.5" />
+              {catalogPluginCount > 0 ? `Browse ${catalogPluginCount} more` : "Browse catalog"}
+            </Button>
+          </div>
+          <InstalledStrip
+            items={searchedInstalledPlugins}
+            environmentId={selectedEnvironmentId}
+            onSelect={setSelectedItem}
+          />
+          <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Connections" icon={<DatabaseIcon className="size-3.5" />}>
+        <div className="py-1">
+          <ConnectionsTable
+            items={searchedConnections}
+            environmentId={selectedEnvironmentId}
+            onSelect={setSelectedItem}
+          />
+        </div>
+      </SettingsSection>
+
+      {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
+        <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
+          <div className="space-y-3 py-1">
+            {providerScopedInventory.map((provider) => (
+              <MarketplacesBlock
+                key={provider.instanceId}
+                provider={provider}
+                cwd={cwd}
+                onMutated={refreshAfterMutation}
+              />
+            ))}
+          </div>
+        </SettingsSection>
+      ) : null}
+
+      <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
         <SettingsRow
           title="MCP context"
           description={providerThreadContextDescription}
@@ -4213,8 +4482,8 @@ export function ExtensionsSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection
-        title="Providers"
-        icon={<BotIcon className="size-3.5" />}
+        title="Skills and apps"
+        icon={<FileTextIcon className="size-3.5" />}
         headerAction={
           hasInventory && isLoading ? (
             <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -4273,6 +4542,20 @@ export function ExtensionsSettingsPanel() {
           />
         )}
       </SettingsSection>
+      <ExtensionBrowserDialog
+        environmentId={selectedEnvironmentId}
+        section={isBrowsingCatalog ? catalogSection : null}
+        providerLabel={
+          providerInstanceId ? (selectedProviderEntry?.displayName ?? "") : "All providers"
+        }
+        initialQuery={pageQuery}
+        onClose={() => setIsBrowsingCatalog(false)}
+        onSelect={(item) => {
+          setIsBrowsingCatalog(false);
+          setSelectedItem(item);
+        }}
+        onToggleSkillBundle={async () => {}}
+      />
       <ExtensionDetailDialog
         item={selectedItem}
         cwd={cwd}
