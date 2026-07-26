@@ -682,6 +682,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const setComposerDraftPickedElementContexts = useComposerDraftStore(
     (store) => store.setPickedElementContexts,
   );
+  const updatePickedElementNote = useCallback(
+    (contextId: string, note: string) => {
+      setComposerDraftPickedElementContexts(
+        composerDraftTarget,
+        composerPickedElementContextsRef.current.map((context) =>
+          context.id === contextId ? { ...context, note: note === "" ? null : note } : context,
+        ),
+      );
+    },
+    [composerDraftTarget, composerPickedElementContextsRef, setComposerDraftPickedElementContexts],
+  );
   const removePickedElementContext = useCallback(
     (contextId: string) => {
       setComposerDraftPickedElementContexts(
@@ -2838,6 +2849,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingPickedElementContexts
                   contexts={composerPickedElementContexts}
                   onRemove={removePickedElementContext}
+                  onUpdateNote={updatePickedElementNote}
                   onReveal={onRevealPickedElement}
                   className="mb-2"
                 />

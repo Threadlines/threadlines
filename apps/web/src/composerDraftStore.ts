@@ -147,6 +147,7 @@ const PersistedPickedElementContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,
   createdAt: Schema.String,
+  note: Schema.NullOr(Schema.String),
   tagName: Schema.String,
   role: Schema.NullOr(Schema.String),
   name: Schema.NullOr(Schema.String),

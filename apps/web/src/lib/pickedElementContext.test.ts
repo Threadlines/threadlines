@@ -3,13 +3,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   appendPickedElementContextsToPrompt,
-  formatPickedElementContextLabel,
+  formatPickedElementDescriptor,
   normalizePickedElementContextDraft,
   pickedElementFromPreview,
   type PickedElementContext,
 } from "./pickedElementContext";
 
 const context: PickedElementContext = {
+  note: null,
   tagName: "button",
   role: "button",
   name: "Sign in",
@@ -27,16 +28,23 @@ const draft = {
   createdAt: "2026-07-26T00:00:00.000Z",
 };
 
-describe("formatPickedElementContextLabel", () => {
+describe("formatPickedElementDescriptor", () => {
+  it("describes the element regardless of any note attached to it", () => {
+    // The note lives behind the chip now, so the descriptor must stay stable.
+    expect(formatPickedElementDescriptor({ ...context, note: "this is misaligned" })).toBe(
+      'button "Sign in"',
+    );
+  });
+
   it("leads with role and name, which is how you would describe it aloud", () => {
-    expect(formatPickedElementContextLabel(context)).toBe('button "Sign in"');
+    expect(formatPickedElementDescriptor(context)).toBe('button "Sign in"');
   });
 
   it("falls back to the element's own words, not its CSS path", () => {
     // A generic section is recognisable by what it says; "#root > div > section"
     // is not something anyone wants to read in a chip.
     expect(
-      formatPickedElementContextLabel({
+      formatPickedElementDescriptor({
         ...context,
         tagName: "section",
         role: null,
@@ -48,7 +56,7 @@ describe("formatPickedElementContextLabel", () => {
   });
 
   it("breaks the snippet on a word rather than mid-syllable", () => {
-    const label = formatPickedElementContextLabel({
+    const label = formatPickedElementDescriptor({
       ...context,
       role: null,
       name: null,
@@ -61,7 +69,7 @@ describe("formatPickedElementContextLabel", () => {
 
   it("uses the tag alone when the element has nothing to say", () => {
     expect(
-      formatPickedElementContextLabel({
+      formatPickedElementDescriptor({
         ...context,
         tagName: "div",
         role: null,
@@ -118,6 +126,7 @@ describe("pickedElementFromPreview", () => {
   it("flattens the rect, since only the size is worth carrying", () => {
     expect(
       pickedElementFromPreview({
+        note: null,
         tagName: "a",
         role: "link",
         name: "Docs",

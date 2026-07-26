@@ -13,6 +13,9 @@ import { appendBlockToPrompt } from "./fileSelectionContext";
  * this feature.
  */
 export interface PickedElementContext {
+  /** Why this element matters, in the user's words. Optional: a bare element
+   *  is still worth attaching, it just says less. */
+  note: string | null;
   tagName: string;
   role: string | null;
   name: string | null;
@@ -33,6 +36,7 @@ export function pickedElementFromPreview(
   element: DesktopPreviewPickedElement,
 ): PickedElementContext {
   return {
+    note: element.note,
     tagName: element.tagName,
     role: element.role,
     name: element.name,
@@ -53,8 +57,10 @@ export function normalizePickedElementContextDraft(
   if (selector === "") {
     return null;
   }
+  const note = draft.note?.trim();
   return {
     ...draft,
+    note: note === undefined || note === "" ? null : note,
     selector,
     tagName: draft.tagName.trim() === "" ? "element" : draft.tagName.trim(),
     role: draft.role?.trim() === "" ? null : (draft.role ?? null),
@@ -99,7 +105,8 @@ function firstWords(text: string, maxLength: number): string | null {
  * recognisable by what it says, not by the path that reaches it. A CSS path is
  * the last thing a person wants to read, so it lives in the tooltip instead.
  */
-export function formatPickedElementContextLabel(context: PickedElementContext): string {
+/** What the element is, independent of what was said about it. */
+export function formatPickedElementDescriptor(context: PickedElementContext): string {
   if (context.role !== null && context.name !== null) {
     return `${context.role} "${context.name}"`;
   }
@@ -112,6 +119,7 @@ export function formatPickedElementContextLabel(context: PickedElementContext): 
 
 export function formatPickedElementContextBlock(context: PickedElementContext): string {
   const lines = [
+    ...(context.note === null ? [] : [`note: ${context.note}`]),
     `tag: ${context.tagName}`,
     ...(context.role === null ? [] : [`role: ${context.role}`]),
     ...(context.name === null ? [] : [`name: ${context.name}`]),

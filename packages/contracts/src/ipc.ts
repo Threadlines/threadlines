@@ -493,6 +493,8 @@ export const DesktopPreviewPickedElementSchema = Schema.Struct({
   /** A CSS path good enough to find the element again by hand. */
   selector: Schema.String,
   text: Schema.NullOr(Schema.String),
+  /** What the user said about it while picking; the reason the element matters. */
+  note: Schema.NullOr(Schema.String),
   rect: Schema.Struct({
     x: Schema.Number,
     y: Schema.Number,

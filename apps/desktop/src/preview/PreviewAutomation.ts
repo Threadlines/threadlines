@@ -275,6 +275,8 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       };
 
       return {
+        // The note is attached by the caller: it comes from the user, not the DOM.
+        note: null,
         tagName: String(value.tagName ?? "element"),
         role: first === undefined ? null : readValue(first.role),
         name: first === undefined ? null : readValue(first.name),
@@ -552,9 +554,9 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
 
       const pickedPoint = yield* Effect.tryPromise({
         try: () =>
-          new Promise<{ x: number; y: number } | null>((resolve) => {
+          new Promise<{ x: number; y: number; note: string | null } | null>((resolve) => {
             let done = false;
-            const finish = (value: { x: number; y: number } | null) => {
+            const finish = (value: { x: number; y: number; note: string | null } | null) => {
               if (done) return;
               done = true;
               contents.debugger.off("message", onMessage);
@@ -573,12 +575,13 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
                 const payload = JSON.parse(String(params.payload ?? "{}")) as {
                   x?: number;
                   y?: number;
+                  note?: string | null;
                   cancelled?: boolean;
                 };
                 finish(
                   payload.cancelled === true || payload.x === undefined || payload.y === undefined
                     ? null
-                    : { x: payload.x, y: payload.y },
+                    : { x: payload.x, y: payload.y, note: payload.note ?? null },
                 );
               } catch {
                 finish(null);
@@ -612,7 +615,8 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       if (located.backendNodeId === undefined) {
         return null;
       }
-      return yield* describePickedNode(sendCommand)(contents, located.backendNodeId);
+      const described = yield* describePickedNode(sendCommand)(contents, located.backendNodeId);
+      return described === null ? null : { ...described, note: pickedPoint.note };
     }),
     revealElement: Effect.fn("PreviewAutomation.revealElement")(function* (
       webContentsId: number,

@@ -106,6 +106,15 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
     ".name{color:#4c8dff;font-weight:600}" +
     ".dim{color:rgba(232,230,225,0.55);" +
     "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}" +
+    ".note{position:fixed;display:flex;flex-direction:column;gap:4px;" +
+    "padding:8px;border-radius:6px;background:#16181c;pointer-events:auto;" +
+    "border:1px solid rgba(255,255,255,0.14);box-shadow:0 4px 16px rgba(0,0,0,0.45)}" +
+    ".input{width:260px;padding:5px 7px;border-radius:4px;background:#0f1115;" +
+    "border:1px solid #4c8dff;color:#e8e6e1;outline:none;" +
+    "font:400 12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    ".input::placeholder{color:rgba(232,230,225,0.4)}" +
+    ".hint{color:rgba(232,230,225,0.45);" +
+    "font:400 10px/1.3 ui-sans-serif,system-ui,sans-serif}" +
     "</style>" +
     "<div class='box' hidden></div><div class='tag' hidden></div>";
   const box = root.querySelector(".box");
@@ -158,14 +167,63 @@ export function buildPickOverlayScript(colorScheme: "light" | "dark"): string {
     paint(element);
   };
 
+  // Where the note input sits once an element is chosen. Until then the
+  // overlay only tracks the pointer.
+  let chosen = null;
+
+  const showNoteInput = (point) => {
+    const field = document.createElement("div");
+    field.className = "note";
+    field.innerHTML =
+      "<input class='input' type='text' placeholder='What about this element?' />" +
+      "<span class='hint'>Enter to attach · Esc to cancel</span>";
+    root.appendChild(field);
+    const input = field.querySelector(".input");
+
+    const rect = chosen.getBoundingClientRect();
+    // Below the element, or above it when there is no room underneath.
+    const below = rect.bottom + 8;
+    field.style.left =
+      Math.max(8, Math.min(rect.left, innerWidth - field.offsetWidth - 8)) + "px";
+    field.style.top =
+      (below + field.offsetHeight > innerHeight ? Math.max(8, rect.top - field.offsetHeight - 8) : below) +
+      "px";
+
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const note = input.value.trim();
+        dispose();
+        window[BINDING](JSON.stringify({ x: point.x, y: point.y, note: note === "" ? null : note }));
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        dispose();
+        window[BINDING](JSON.stringify({ cancelled: true }));
+      }
+    });
+    // The page may hold focus aggressively; take it on the next frame.
+    requestAnimationFrame(() => input.focus());
+  };
+
   const onClick = (event) => {
     // Capture phase and fully swallowed: picking a "Delete" button must not
     // also press it.
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    dispose();
-    window[BINDING](JSON.stringify({ x: event.clientX, y: event.clientY }));
+    if (chosen !== null) {
+      return;
+    }
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    if (!element || element === host) {
+      return;
+    }
+    chosen = element;
+    paint(element);
+    // Stop following the pointer: the highlight now belongs to the choice.
+    document.removeEventListener("mousemove", onMove, true);
+    showNoteInput({ x: event.clientX, y: event.clientY });
   };
 
   const onKeyDown = (event) => {
