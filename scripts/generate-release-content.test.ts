@@ -2,6 +2,7 @@ import { assert, expect, it } from "@effect/vitest";
 import { parse as parseYaml } from "yaml";
 
 import {
+  parseReleaseContentPolicy,
   parseReleaseEvidenceLog,
   renderChangelogEntry,
   renderDraftPrBody,
@@ -49,6 +50,15 @@ const draft: ReleaseSummaryDraft = {
     "Threadlines v0.2.5 is out 🧵\n\n• Codex Goals\n• Live subagent progress\n\nRelease notes: https://github.com/Threadlines/threadlines/releases/tag/v0.2.5",
 };
 
+const excludedTopics = parseReleaseContentPolicy(`
+excludedTopics:
+  - name: Realtime voice mode
+    reason: It is dormant and unavailable to users.
+    terms:
+      - realtime voice
+      - voice mode
+`);
+
 it("turns a grounded summary into editable changelog and PR review artifacts", () => {
   const validated = validateReleaseSummary(draft, {
     version: "0.2.5",
@@ -93,6 +103,32 @@ it("rejects public claims that cite commits outside the release range", () => {
         { version: "0.2.5", repository: "Threadlines/threadlines", evidence },
       ),
     /unknown evidence hash/,
+  );
+});
+
+it("rejects public copy for features excluded by release policy", () => {
+  assert.throws(
+    () =>
+      validateReleaseSummary(
+        {
+          ...draft,
+          highlights: [
+            {
+              ...draft.highlights[0],
+              title: "Realtime voice mode",
+              description: "Talk to Codex from the composer.",
+            },
+            draft.highlights[1],
+          ],
+        },
+        {
+          version: "0.2.5",
+          repository: "Threadlines/threadlines",
+          evidence,
+          excludedTopics,
+        },
+      ),
+    /mentions excluded topic 'Realtime voice mode'/,
   );
 });
 
@@ -167,6 +203,7 @@ it("uses schema-constrained GitHub Models output and defaults a blank model", as
       currentRef: "main",
       repository: "Threadlines/threadlines",
       evidence,
+      excludedTopics,
     },
     { token: "test-token", model: "   ", fetch: fakeFetch },
   );
@@ -174,6 +211,7 @@ it("uses schema-constrained GitHub Models output and defaults a blank model", as
   assert.deepEqual(result, draft);
   assert.equal(requestUrl, "https://models.github.ai/inference/chat/completions");
   assert.equal(requestBody?.model, "openai/gpt-4.1");
+  assert.match(JSON.stringify(requestBody?.messages), /Realtime voice mode/);
   assert.equal(
     (requestBody?.response_format as { type?: unknown } | undefined)?.type,
     "json_schema",

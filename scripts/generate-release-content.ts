@@ -2,11 +2,11 @@
 // @effect-diagnostics nodeBuiltinImport:off
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { resolvePreviousStableTag } from "./lib/release-tags.ts";
 
@@ -15,6 +15,7 @@ const GITHUB_MODELS_API_URL = "https://models.github.ai/inference/chat/completio
 const DEFAULT_REPOSITORY = "Threadlines/threadlines";
 const DEFAULT_OUTPUT_DIRECTORY = "apps/marketing/src/content/changelog";
 const DEFAULT_PR_BODY = "release-content-pr.md";
+const DEFAULT_POLICY_PATH = ".github/release-content-policy.yml";
 const MAX_SOCIAL_CHARACTERS = 280;
 const SOCIAL_BRAND_MARKER = "🧵";
 
@@ -46,6 +47,12 @@ export interface ReleaseSummaryDraft {
   readonly social: string;
 }
 
+export interface ReleaseExcludedTopic {
+  readonly name: string;
+  readonly reason: string;
+  readonly terms: ReadonlyArray<string>;
+}
+
 interface GenerateReleaseContentInput {
   readonly version: string;
   readonly releaseDate: string;
@@ -53,6 +60,7 @@ interface GenerateReleaseContentInput {
   readonly currentRef: string;
   readonly repository: string;
   readonly evidence: ReadonlyArray<ReleaseEvidenceCommit>;
+  readonly excludedTopics?: ReadonlyArray<ReleaseExcludedTopic>;
 }
 
 interface GitHubModelsResponseBody {
@@ -180,6 +188,29 @@ export function parseReleaseEvidenceLog(output: string): ReadonlyArray<ReleaseEv
     });
 }
 
+export function parseReleaseContentPolicy(source: string): ReadonlyArray<ReleaseExcludedTopic> {
+  const policy = expectRecord(parseYaml(source), "release content policy");
+  if (!Array.isArray(policy.excludedTopics)) {
+    throw new Error("Release content policy must contain an excludedTopics array.");
+  }
+
+  return policy.excludedTopics.map((entry, index) => {
+    const topic = expectRecord(entry, `excludedTopics[${index}]`);
+    const name = expectString(topic.name, `excludedTopics[${index}].name`);
+    const reason = expectString(topic.reason, `excludedTopics[${index}].reason`);
+    if (!Array.isArray(topic.terms) || topic.terms.length === 0) {
+      throw new Error(`Expected excludedTopics[${index}].terms to contain matching phrases.`);
+    }
+    return {
+      name,
+      reason,
+      terms: topic.terms.map((term, termIndex) =>
+        expectString(term, `excludedTopics[${index}].terms[${termIndex}]`),
+      ),
+    };
+  });
+}
+
 function listReleaseEvidence(
   previousTag: string,
   currentRef: string,
@@ -227,6 +258,9 @@ function buildPrompt(input: GenerateReleaseContentInput): string {
     "Success criteria:",
     "- Group related commits into 2-5 user-facing product themes instead of repeating the commit list.",
     "- Prefer observable workflow improvements. Omit tests, formatting, CI, and internal refactors unless they materially affect reliability, performance, compatibility, or security.",
+    "- Only describe functionality available to users in the default product experience. Omit dormant, disabled, hidden, feature-flagged, internal-only, API-key-only, and unreleased functionality.",
+    "- If later evidence disables or hides functionality introduced by earlier evidence, omit the entire functionality rather than describing its implementation.",
+    "- Never mention any topic listed in the release content policy, including synonyms represented by its matching terms.",
     "- Every highlight and smaller improvement must cite one or more exact short hashes from the supplied evidence.",
     "- Do not invent capabilities, outcomes, metrics, dates, platforms, or roadmap claims.",
     "- Use direct, restrained language. Avoid hype, superlatives, and implementation jargon.",
@@ -241,6 +275,9 @@ function buildPrompt(input: GenerateReleaseContentInput): string {
     `Current ref: ${input.currentRef}`,
     `GitHub release: ${releaseUrl(input.repository, input.version)}`,
     `Marketing changelog: ${changelogUrl(input.version)}`,
+    "",
+    "Release content policy (JSON):",
+    JSON.stringify({ excludedTopics: input.excludedTopics ?? [] }),
     "",
     "Commit evidence (JSON):",
     JSON.stringify(evidence),
@@ -374,7 +411,10 @@ function normalizeGeneratedReleaseSummary(
 
 export function validateReleaseSummary(
   value: unknown,
-  input: Pick<GenerateReleaseContentInput, "version" | "repository" | "evidence">,
+  input: Pick<
+    GenerateReleaseContentInput,
+    "version" | "repository" | "evidence" | "excludedTopics"
+  >,
 ): ReleaseSummaryDraft {
   const record = expectRecord(value, "release summary");
   const version = expectString(record.version, "version");
@@ -421,6 +461,24 @@ export function validateReleaseSummary(
   }
 
   const social = expectString(record.social, "social");
+  const publicCopy = [
+    title,
+    expectString(record.summary, "summary"),
+    social,
+    ...highlights.flatMap((item) => [item.title, item.description]),
+    ...alsoImproved.map((item) => item.description),
+  ]
+    .join("\n")
+    .toLocaleLowerCase();
+  for (const topic of input.excludedTopics ?? []) {
+    for (const term of topic.terms) {
+      if (publicCopy.includes(term.toLocaleLowerCase())) {
+        throw new Error(
+          `Release summary mentions excluded topic '${topic.name}' via matching term '${term}'.`,
+        );
+      }
+    }
+  }
   const socialLength = Array.from(social).length;
   if (socialLength > MAX_SOCIAL_CHARACTERS) {
     throw new Error(
@@ -602,6 +660,7 @@ async function main(): Promise<void> {
       repository: { type: "string", default: DEFAULT_REPOSITORY },
       "output-directory": { type: "string", default: DEFAULT_OUTPUT_DIRECTORY },
       "pr-body": { type: "string", default: DEFAULT_PR_BODY },
+      policy: { type: "string", default: DEFAULT_POLICY_PATH },
       model: { type: "string" },
     },
   });
@@ -632,7 +691,17 @@ async function main(): Promise<void> {
     );
   }
 
-  const input = { version, releaseDate, previousTag, currentRef, repository, evidence };
+  const policyPath = normalizeRequiredString(values.policy, "policy");
+  const excludedTopics = parseReleaseContentPolicy(readFileSync(policyPath, "utf8"));
+  const input = {
+    version,
+    releaseDate,
+    previousTag,
+    currentRef,
+    repository,
+    evidence,
+    excludedTopics,
+  };
   const draft = await requestReleaseSummary(input, {
     token,
     model: values.model ?? process.env.GITHUB_RELEASE_SUMMARY_MODEL ?? DEFAULT_MODEL,
