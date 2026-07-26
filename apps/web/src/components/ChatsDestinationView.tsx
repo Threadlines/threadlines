@@ -83,16 +83,21 @@ export function ChatsDestinationView() {
           New chat
         </button>
       </div>
-      <p className="mb-5 text-sm text-muted-foreground/70">
+      <p className="text-sm text-muted-foreground/70">
         Conversations that aren&apos;t tied to a project.
       </p>
 
       {chats.length === 0 ? (
-        <p className="border-t border-border/50 py-6 text-sm text-muted-foreground/60">
+        <p className="mt-10 border-t border-border/50 py-6 text-sm text-muted-foreground/60">
           No chats yet.
         </p>
       ) : (
         <ThreadHoverCardGroup>
+          {/* The rows repeat the page title's shape closely enough that a rule
+              alone read as more list. A label gives the list a head of its own. */}
+          <div className="mt-10 mb-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
+            {chats.length} {chats.length === 1 ? "chat" : "chats"}
+          </div>
           <div className="flex flex-col divide-y divide-border/50 border-t border-border/50">
             {chats.map((thread) => (
               <ThreadHoverCard
@@ -115,7 +120,7 @@ export function ChatsDestinationView() {
                   }}
                 >
                   <ThreadRowLeadingStatus thread={thread} />
-                  <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
+                  <span className="min-w-0 flex-1 truncate text-sm text-foreground/80">
                     {thread.title}
                   </span>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground/50">

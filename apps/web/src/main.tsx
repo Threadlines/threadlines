@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 
 import { isElectron } from "./env";
+import { isMacPlatform } from "./lib/utils";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
 import { syncDocumentWindowControlsOverlayClass } from "./lib/windowControlsOverlay";
@@ -21,6 +22,11 @@ const router = getRouter(history);
 
 if (isElectron) {
   document.documentElement.classList.add("electron");
+  // macOS draws its window controls over the app's top-left corner; Windows
+  // and Linux put them on the right, where they never meet the sidebar.
+  if (isMacPlatform(navigator.platform)) {
+    document.documentElement.classList.add("mac");
+  }
   syncDocumentWindowControlsOverlayClass();
 }
 

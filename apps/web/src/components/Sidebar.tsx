@@ -66,12 +66,14 @@ import {
   type SidebarThreadSortOrder,
 } from "@threadlines/contracts/settings";
 import { usePrimaryEnvironmentId } from "../environments/primary";
+import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import {
   selectProjectByRef,
+  selectGeneralChatsProjectAcrossEnvironments,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsForProjectRefs,
   selectSidebarThreadsAcrossEnvironments,
@@ -3031,6 +3033,19 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  // Needed for the destination row's new-chat action: the helper falls back to
+  // the active environment when no general-chat project exists yet.
+  const generalChatsProjectRef = useMemo(
+    () =>
+      resolveGeneralChatsProjectRef({
+        generalChatsProject,
+        activeEnvironmentId,
+        primaryEnvironmentId,
+      }),
+    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
+  );
   const workspaceProjectsLength = projects.filter(
     (project) => project.kind !== "general-chat",
   ).length;
@@ -3606,12 +3621,21 @@ export default function Sidebar() {
         icon: DESTINATION_ICONS.chats,
         active: pathname.startsWith("/chats"),
         status: chatsStatus,
+        action: {
+          label: "New chat",
+          icon: DESTINATION_ICONS.newChat,
+          onSelect: () => {
+            if (generalChatsProjectRef) {
+              void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
+            }
+          },
+        },
         onSelect: () => {
           void navigate({ to: "/chats" });
         },
       },
     ],
-    [chatsStatus, navigate, pathname],
+    [chatsStatus, generalChatsProjectRef, handleNewThread, navigate, pathname],
   );
   const destinationBand = useMemo(
     () => <DestinationBand destinations={destinations} />,

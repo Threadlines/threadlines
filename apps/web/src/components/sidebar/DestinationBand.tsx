@@ -3,7 +3,14 @@ import { MessageCirclePlusIcon, MessagesSquareIcon, type LucideIcon } from "luci
 import { cn } from "../../lib/utils";
 import type { ThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusDot } from "../ThreadStatusIndicators";
-import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
+import {
+  SidebarGroup,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "../ui/sidebar";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface SidebarDestination {
   id: string;
@@ -17,6 +24,15 @@ export interface SidebarDestination {
    * destination carries its own status rather than earning a second row.
    */
   status?: ThreadStatusPill | null;
+  /**
+   * Optional trailing action, mirroring the project rows' new-thread button so
+   * the common action is reachable without first opening the destination.
+   */
+  action?: {
+    label: string;
+    icon: LucideIcon;
+    onSelect: () => void;
+  };
   onSelect: () => void;
 }
 
@@ -38,8 +54,9 @@ export function DestinationBand({ destinations }: { destinations: readonly Sideb
       <SidebarMenu>
         {destinations.map((destination) => {
           const Icon = destination.icon;
+          const ActionIcon = destination.action?.icon;
           return (
-            <SidebarMenuItem key={destination.id}>
+            <SidebarMenuItem key={destination.id} className="group/menu-item relative">
               <SidebarMenuButton
                 size="sm"
                 isActive={destination.active}
@@ -56,10 +73,33 @@ export function DestinationBand({ destinations }: { destinations: readonly Sideb
                 {destination.status ? (
                   <ThreadStatusDot
                     status={destination.status}
-                    className="ms-auto shrink-0 size-1.5"
+                    className={cn(
+                      "ms-auto shrink-0 size-1.5",
+                      // The action takes this corner on hover; the dot yields
+                      // rather than the two stacking up.
+                      destination.action &&
+                        "transition-opacity group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0",
+                    )}
                   />
                 ) : null}
               </SidebarMenuButton>
+              {destination.action && ActionIcon ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <SidebarMenuAction
+                        showOnHover
+                        aria-label={destination.action.label}
+                        data-testid={`sidebar-destination-${destination.id}-action`}
+                        onClick={destination.action.onSelect}
+                      >
+                        <ActionIcon className="size-3.5" />
+                      </SidebarMenuAction>
+                    }
+                  />
+                  <TooltipPopup side="right">{destination.action.label}</TooltipPopup>
+                </Tooltip>
+              ) : null}
             </SidebarMenuItem>
           );
         })}

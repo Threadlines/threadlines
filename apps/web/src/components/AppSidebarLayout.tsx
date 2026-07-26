@@ -149,7 +149,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         }}
       >
         <ThreadSidebar />
-        <SidebarRail />
+        {/* Only the expanded pane resizes; a handle on the fixed-width rail
+            would advertise a drag that does nothing. */}
+        <SidebarRail className="group-data-[collapsible=icon]:hidden" />
       </Sidebar>
       {children}
       <SidebarControl />
