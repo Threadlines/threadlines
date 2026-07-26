@@ -104,7 +104,7 @@ function toastDismissContainerClassName(stackedActionLayout: boolean): string {
 const toastCornerOrbClass = cn(
   "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/50 opacity-60 outline-none sm:opacity-0",
   "transition-[color,background-color,opacity] hover:bg-accent/60 hover:text-foreground hover:opacity-100 group-hover/toast:opacity-100 focus-visible:opacity-100",
-  "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+  "focus-ring",
 );
 
 function handleToastDismissClick(
@@ -121,7 +121,7 @@ function CopyErrorButton({ text }: { text: string }) {
 
   return (
     <button
-      className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+      className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground focus-ring"
       onClick={() => copyToClipboard(text)}
       title="Copy error"
       type="button"
@@ -225,7 +225,7 @@ function ToastDescriptionAndExpandable({
         className={cn(
           "group flex min-w-0 w-full cursor-pointer select-none items-start gap-1.5 rounded-sm text-left outline-none ring-offset-background",
           "transition-colors hover:bg-muted/30",
-          "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+          "focus-ring",
         )}
         onClick={toggle}
         onKeyDown={onKeyDown}
@@ -272,7 +272,7 @@ function toastInlineActionClassName(
 
   return cn(
     "inline-flex h-5 shrink-0 cursor-pointer items-center justify-center rounded-md px-1.5 text-xs font-medium outline-none transition-colors",
-    "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50",
+    "focus-ring disabled:pointer-events-none disabled:opacity-50",
     destructive
       ? "text-destructive/85 hover:bg-destructive/8 hover:text-destructive"
       : "text-muted-foreground/80 hover:bg-accent/50 hover:text-foreground",
@@ -411,7 +411,7 @@ function ToastBodyContent({
               "min-w-0 flex-1 rounded-sm outline-none ring-offset-background",
               compactTextExpanded ? "flex flex-col gap-0.5 pr-1" : "flex items-baseline gap-1.5",
               canExpandCompactText &&
-                "cursor-pointer transition-colors hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                "cursor-pointer transition-colors hover:bg-muted/35 focus-ring",
             )}
             onClick={canExpandCompactText ? toggleCompactTextExpanded : undefined}
             onKeyDown={canExpandCompactText ? onCompactTextKeyDown : undefined}

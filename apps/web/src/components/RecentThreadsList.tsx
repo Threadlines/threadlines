@@ -62,7 +62,7 @@ export function RecentThreadsList({ limit = 3, testId, className }: RecentThread
             thread.projectId === generalChatsProject.id;
           return (
             <button
-              className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+              className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted focus-ring"
               data-testid={testId}
               key={`${thread.environmentId}:${thread.id}`}
               onClick={() => {

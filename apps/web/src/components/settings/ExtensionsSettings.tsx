@@ -1375,7 +1375,7 @@ function PluginComponentRow({
   return (
     <button
       type="button"
-      className="group flex min-w-0 items-center gap-2 border-t border-border/40 py-1.5 text-left transition-colors first:border-t-0 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group flex min-w-0 items-center gap-2 border-t border-border/40 py-1.5 text-left transition-colors first:border-t-0 hover:text-foreground focus-ring"
       onClick={onInvoke}
     >
       {body}
@@ -2609,7 +2609,7 @@ function ExtensionPreviewSection({
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
-                className="group flex min-h-10 w-full items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:[&:nth-child(2)]:border-t-0"
+                className="group flex min-h-10 w-full items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-ring sm:[&:nth-child(2)]:border-t-0"
                 onClick={() => onSelect(item)}
                 type="button"
               >
@@ -2629,7 +2629,7 @@ function ExtensionPreviewSection({
           </div>
           {items.length > 0 ? (
             <button
-              className="w-full border-t border-border/50 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="w-full border-t border-border/50 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
               onClick={onBrowse}
               type="button"
             >
@@ -2874,7 +2874,7 @@ function InstalledStrip({
             render={
               <button
                 type="button"
-                className="inline-flex size-9 items-center justify-center rounded-md transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex size-9 items-center justify-center rounded-md transition-opacity hover:opacity-80 focus-ring"
                 onClick={() => onSelect(item)}
                 aria-label={item.title}
               >
@@ -2939,7 +2939,7 @@ function NeedsAttention({
             <button
               key={entry.key}
               type="button"
-              className="flex w-full min-w-0 items-center gap-2 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex w-full min-w-0 items-center gap-2 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring"
               onClick={() => entry.item && onSelect(entry.item)}
             >
               {body}
@@ -3001,7 +3001,7 @@ function ConnectionsTable({
           <button
             key={`${item.provider.instanceId}:${item.id}`}
             type="button"
-            className="grid w-full grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="grid w-full grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring"
             onClick={() => onSelect(item)}
           >
             <span className="flex min-w-0 items-center gap-2">
@@ -3240,7 +3240,7 @@ function ExtensionBrowserItemRow({
   return (
     <button
       type="button"
-      className="group grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-ring"
       onClick={() => onSelect(item)}
     >
       {/* Catalog rows are two lines tall, so the artwork carries the row rather than
@@ -3542,7 +3542,7 @@ function ExtensionBrowserDialog({
               </span>
               <button
                 type="button"
-                className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="font-medium text-foreground underline-offset-2 hover:underline focus-ring"
                 onClick={() => {
                   setShowEntireCatalog(true);
                   setSort("category");
@@ -3571,7 +3571,7 @@ function ExtensionBrowserDialog({
                           <div className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 backdrop-blur">
                             <button
                               type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground focus-ring"
                               onClick={() => toggleGroup(group.key)}
                               aria-expanded={!collapsed}
                             >
@@ -3608,7 +3608,7 @@ function ExtensionBrowserDialog({
                               ) : null}
                               <button
                                 type="button"
-                                className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-ring"
                                 onClick={() => toggleGroup(group.key)}
                                 aria-label={collapsed ? "Expand bundle" : "Collapse bundle"}
                               >
@@ -3656,7 +3656,7 @@ function ExtensionBrowserDialog({
                 )}
                 {hiddenCount > 0 ? (
                   <button
-                    className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-ring"
                     onClick={() =>
                       setVisibleLimit((current) =>
                         Math.min(browserItems.length, current + EXTENSION_BROWSER_PAGE_SIZE),

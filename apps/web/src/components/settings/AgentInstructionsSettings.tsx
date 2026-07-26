@@ -187,7 +187,7 @@ function InstructionFileEditor({
           <textarea
             value={draft.contents}
             onChange={(event) => onChange(event.currentTarget.value)}
-            className="h-full min-h-0 w-full resize-none rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-xs/5 outline-none ring-ring/24 transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] dark:bg-input/32"
+            className="h-full min-h-0 w-full resize-none rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-xs/5 outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-focus-ring focus-ring dark:bg-input/32"
             spellCheck={false}
             aria-label={`${provider} instruction file contents`}
           />

@@ -413,7 +413,9 @@ describe("ThreadActivityPopover", () => {
       await expect.element(page.getByLabelText("Database subagent inspector")).toBeVisible();
       await expect.element(page.getByText("Read-only transcript")).toBeVisible();
       await expect.element(page.getByText("Current child output")).toBeVisible();
-      expect(document.body.textContent).not.toContain("2 subagents active");
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-slot='popover-popup']")).toBeNull();
+      });
       expect(document.querySelector("[data-subagent-inspector='true']")).not.toBeNull();
       const dialogViewport = document.querySelector<HTMLElement>("[data-slot='dialog-viewport']");
       const dialogPopup = document.querySelector<HTMLElement>("[data-slot='dialog-popup']");

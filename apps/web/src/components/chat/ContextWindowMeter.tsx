@@ -24,7 +24,7 @@ function isDomNode(value: unknown): value is Node {
 }
 
 const contextWindowActionButtonClassName =
-  "h-5 shrink-0 cursor-pointer rounded-sm border border-border/70 px-1.5 font-medium text-[10px] text-foreground leading-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:bg-muted focus-visible:outline-none disabled:pointer-events-none disabled:cursor-default disabled:opacity-55";
+  "h-5 shrink-0 cursor-pointer rounded-sm border border-border/70 px-1.5 font-medium text-[10px] text-foreground leading-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-focus-ring focus-visible:bg-muted focus-visible:outline-none disabled:pointer-events-none disabled:cursor-default disabled:opacity-55";
 
 function AccountUsageBar(props: {
   usageLabel: string;
@@ -168,7 +168,7 @@ export function ContextWindowMeter(props: {
             type="button"
             className={cn(
               "group/context-meter inline-flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none ring-1 ring-transparent transition-[background-color,box-shadow,color] duration-200",
-              "hover:bg-muted/45 hover:text-foreground hover:ring-border/70 focus-visible:bg-muted/45 focus-visible:text-foreground focus-visible:ring-ring/55",
+              "hover:bg-muted/45 hover:text-foreground hover:ring-border/70 focus-visible:bg-muted/45 focus-visible:text-foreground focus-ring",
               isMeterActive && "bg-muted/45 text-foreground ring-border/70",
             )}
             aria-expanded={isOpen}

@@ -725,7 +725,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                           title={`${tab.label} · ${tabModelCountLabel(tab.modelCount)}`}
                           className={cn(
                             "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs font-medium transition-colors",
-                            "focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+                            "focus-ring",
                             isActive
                               ? "bg-accent text-foreground"
                               : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
@@ -756,7 +756,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   type="button"
                   aria-label="Search models"
                   data-model-picker-search-toggle
-                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/70 hover:text-foreground focus-ring"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={openSearch}
                 >
@@ -815,7 +815,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 <button
                   type="button"
                   aria-label="Clear search"
-                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/70 hover:text-foreground focus-ring"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={closeSearch}
                 >

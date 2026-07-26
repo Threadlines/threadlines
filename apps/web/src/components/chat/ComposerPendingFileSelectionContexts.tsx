@@ -19,7 +19,7 @@ const CHIP_CONTAINER_CLASS_NAME =
   "inline-flex max-w-56 items-center gap-0.5 rounded-md border border-border/70 bg-accent/40 py-1 pr-1 pl-2 transition-colors hover:bg-accent/60";
 
 const CHIP_TRIGGER_CLASS_NAME =
-  "inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-[12px] font-medium leading-tight text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  "inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-[12px] font-medium leading-tight text-foreground outline-none focus-ring";
 
 /**
  * Quoted file spans attached to the draft, rendered as composer chips like

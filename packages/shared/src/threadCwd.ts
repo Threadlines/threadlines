@@ -11,8 +11,22 @@ export function resolveThreadWorkingCwd(input: {
   projectCwd: string;
   worktreePath?: string | null | undefined;
   effectiveCwd?: string | null | undefined;
-}): string {
-  return input.effectiveCwd ?? input.worktreePath ?? input.projectCwd;
+}): string;
+/**
+ * Sidebar-style callers resolve the project lazily, so the root can still be
+ * missing; the observed cwd and worktree remain usable on their own.
+ */
+export function resolveThreadWorkingCwd(input: {
+  projectCwd: string | null | undefined;
+  worktreePath?: string | null | undefined;
+  effectiveCwd?: string | null | undefined;
+}): string | null;
+export function resolveThreadWorkingCwd(input: {
+  projectCwd: string | null | undefined;
+  worktreePath?: string | null | undefined;
+  effectiveCwd?: string | null | undefined;
+}): string | null {
+  return input.effectiveCwd ?? input.worktreePath ?? input.projectCwd ?? null;
 }
 
 /** Compact label for an observed working directory (its basename). */
