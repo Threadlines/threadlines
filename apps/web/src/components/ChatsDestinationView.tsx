@@ -18,6 +18,8 @@ import {
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { ThreadRowLeadingStatus } from "./ThreadStatusIndicators";
+import { resolveThreadStatusPill } from "./Sidebar.logic";
+import { ThreadHoverCard } from "./sidebar/ThreadHoverCard";
 
 /**
  * The Chats destination: general chats are threads with no project, so they get
@@ -92,28 +94,34 @@ export function ChatsDestinationView() {
       ) : (
         <div className="flex flex-col divide-y divide-border/50 border-t border-border/50">
           {chats.map((thread) => (
-            <button
+            <ThreadHoverCard
               key={`${thread.environmentId}:${thread.id}`}
-              type="button"
-              className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-1 py-2.5 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-              data-testid="chats-view-row"
-              onClick={() => {
-                void navigate({
-                  to: "/$environmentId/$threadId",
-                  params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
-                });
-              }}
+              thread={thread}
+              status={resolveThreadStatusPill({ thread })}
+              side="right"
             >
-              <ThreadRowLeadingStatus thread={thread} />
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
-                {thread.title}
-              </span>
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground/50">
-                {formatRelativeTimeLabel(
-                  thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-                )}
-              </span>
-            </button>
+              <button
+                type="button"
+                className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-1 py-2.5 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                data-testid="chats-view-row"
+                onClick={() => {
+                  void navigate({
+                    to: "/$environmentId/$threadId",
+                    params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+                  });
+                }}
+              >
+                <ThreadRowLeadingStatus thread={thread} />
+                <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
+                  {thread.title}
+                </span>
+                <span className="shrink-0 text-xs tabular-nums text-muted-foreground/50">
+                  {formatRelativeTimeLabel(
+                    thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                  )}
+                </span>
+              </button>
+            </ThreadHoverCard>
           ))}
         </div>
       )}

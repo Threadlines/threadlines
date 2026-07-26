@@ -42,7 +42,13 @@ function entry(
   pill: ThreadStatusPill | null,
   projectLabel: string | null = "badcode",
 ): OnDeckEntry {
-  return { thread: thread(id, title), status: pill, projectLabel, dismissible: false };
+  return {
+    thread: thread(id, title),
+    status: pill,
+    projectLabel,
+    projectCwd: "/repo/badcode",
+    dismissible: false,
+  };
 }
 
 function renderRail(entries: readonly OnDeckEntry[], overrides?: { routeThreadKey?: string }) {
@@ -88,12 +94,17 @@ describe("DeckRail", () => {
     );
   });
 
-  it("names the thread in place of the title the rail dropped", async () => {
+  it("labels the dot with the thread title and details it on hover", async () => {
     renderRail([entry("thread-a", "Fix reconnect race", status("Awaiting Input"))]);
 
+    // The dot itself carries only the title; project, status and branch are
+    // the hover card's job now.
     await expect
       .element(page.getByTestId("deck-rail-thread-thread-a"))
-      .toHaveAttribute("aria-label", "Fix reconnect race · badcode · Awaiting Input");
+      .toHaveAttribute("aria-label", "Fix reconnect race");
+
+    await page.getByTestId("deck-rail-thread-thread-a").hover();
+    await expect.element(page.getByTestId("thread-hover-card")).toHaveTextContent("Awaiting Input");
   });
 
   it("badges how many threads are blocked on the user and expands the pane", async () => {

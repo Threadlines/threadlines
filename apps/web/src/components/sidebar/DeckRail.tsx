@@ -8,6 +8,7 @@ import { ThreadStatusDot } from "../ThreadStatusIndicators";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { OnDeckEntry } from "./OnDeckSection";
 import type { SidebarDestination } from "./DestinationBand";
+import { ThreadHoverCard } from "./ThreadHoverCard";
 
 const RAIL_BUTTON_CLASS_NAME =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground/70 outline-hidden ring-ring transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2";
@@ -169,35 +170,24 @@ function DeckRailThread(props: {
     navigateToThread(threadRef);
   }, [navigateToThread, threadRef]);
 
-  // The tooltip names the thread because the rail has dropped the title; the
-  // status is appended so the dot's colour never has to be decoded on its own.
-  const tooltip = [entry.thread.title, entry.projectLabel, entry.status ? entry.status.label : null]
-    .filter((part): part is string => part !== null && part.length > 0)
-    .join(" · ");
-
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            aria-label={tooltip}
-            aria-current={isActive ? "true" : undefined}
-            data-testid={`deck-rail-thread-${entry.thread.id}`}
-            className={cn(
-              RAIL_BUTTON_CLASS_NAME,
-              "relative",
-              isActive && "bg-sidebar-accent",
-              isNeedsUserStatus(entry.status) &&
-                "after:absolute after:inset-y-1 after:-left-0.5 after:w-0.5 after:rounded-full after:bg-amber-500 dark:after:bg-amber-300/90",
-            )}
-            onClick={handleClick}
-          >
-            <ThreadStatusDot status={entry.status} />
-          </button>
-        }
-      />
-      <TooltipPopup side="right">{tooltip}</TooltipPopup>
-    </Tooltip>
+    <ThreadHoverCard thread={entry.thread} status={entry.status} side="right">
+      <button
+        type="button"
+        aria-label={entry.thread.title}
+        aria-current={isActive ? "true" : undefined}
+        data-testid={`deck-rail-thread-${entry.thread.id}`}
+        className={cn(
+          RAIL_BUTTON_CLASS_NAME,
+          "relative",
+          isActive && "bg-sidebar-accent",
+          isNeedsUserStatus(entry.status) &&
+            "after:absolute after:inset-y-1 after:-left-0.5 after:w-0.5 after:rounded-full after:bg-amber-500 dark:after:bg-amber-300/90",
+        )}
+        onClick={handleClick}
+      >
+        <ThreadStatusDot status={entry.status} />
+      </button>
+    </ThreadHoverCard>
   );
 }

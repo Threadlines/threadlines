@@ -3412,6 +3412,7 @@ export default function Sidebar() {
           thread,
           status,
           projectLabel: project?.kind === "general-chat" ? "chats" : (project?.displayName ?? null),
+          projectCwd: project?.kind === "general-chat" ? null : (project?.cwd ?? null),
           dismissible: isOnDeckDismissible(status),
         },
       ];
