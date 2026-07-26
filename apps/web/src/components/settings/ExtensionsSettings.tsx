@@ -3298,34 +3298,44 @@ function ExtensionBrowserDialog({
   }, [initialQuery, section?.key]);
 
   const browseSourceItems = section?.browseItems ?? section?.items ?? [];
+  const matchingItems = useMemo(
+    () => filterExtensionItems(browseSourceItems, query),
+    [browseSourceItems, query],
+  );
+  // Curation is only the opening view. Any explicit refinement — a search or a filter — means the
+  // user asked for something specific, and answering it from a 50-item slice would be a lie.
   const isCurated =
     section?.key === "plugins" &&
     !showEntireCatalog &&
+    filter === "all" &&
     shouldCuratePluginBrowse(browseSourceItems.length, query);
-  const searchedItems = useMemo(() => {
-    const matching = filterExtensionItems(browseSourceItems, query);
-    return isCurated
-      ? selectCuratedPlugins(matching, (item) =>
-          item.kind === "plugin"
-            ? {
-                featured: item.plugin.featured,
-                installed: item.plugin.installed,
-                installCount: item.plugin.installCount,
-              }
-            : {},
-        )
-      : matching;
-  }, [browseSourceItems, isCurated, query]);
+  const searchedItems = useMemo(
+    () =>
+      isCurated
+        ? selectCuratedPlugins(matchingItems, (item) =>
+            item.kind === "plugin"
+              ? {
+                  featured: item.plugin.featured,
+                  installed: item.plugin.installed,
+                  installCount: item.plugin.installCount,
+                }
+              : {},
+          )
+        : matchingItems,
+    [isCurated, matchingItems],
+  );
+  // Counts describe the whole catalog, not the slice on screen: "Installed 0" while you have 18
+  // installed reads as a fact about your machine rather than about this list.
   const filterCounts = useMemo(
     () =>
       Object.fromEntries(
         EXTENSION_BROWSER_FILTER_OPTIONS.map((option) => [
           option.value,
-          searchedItems.filter((item) => extensionItemMatchesBrowserFilter(item, option.value))
+          matchingItems.filter((item) => extensionItemMatchesBrowserFilter(item, option.value))
             .length,
         ]),
       ) as Record<ExtensionBrowserFilter, number>,
-    [searchedItems],
+    [matchingItems],
   );
   const browserItems = useMemo(
     () =>
@@ -3469,7 +3479,9 @@ function ExtensionBrowserDialog({
                 >
                   {isCurated && option.value === "all" ? "Featured" : option.label}
                   <span className="font-mono tabular-nums text-foreground/80">
-                    {filterCounts[option.value]}
+                    {isCurated && option.value === "all"
+                      ? searchedItems.length
+                      : filterCounts[option.value]}
                   </span>
                 </Button>
               ))}
