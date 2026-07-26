@@ -18,6 +18,8 @@ import type {
   DesktopPreviewStatus,
 } from "@threadlines/contracts";
 import { webContents, type WebContents } from "electron";
+
+import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -122,10 +124,18 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       });
     }
 
+    const pushConsole = (entry: DesktopPreviewConsoleEntry) => {
+      if (isHostInjectedConsoleEntry(entry)) {
+        return;
+      }
+      tab.console.push(entry);
+      if (tab.console.length > MAX_CONSOLE_ENTRIES) tab.console.shift();
+    };
+
     const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => {
       if (method === "Runtime.consoleAPICalled") {
         const args = (params.args as ReadonlyArray<{ value?: unknown }> | undefined) ?? [];
-        tab.console.push({
+        pushConsole({
           level: String(params.type ?? "log"),
           text: args
             .map((arg) => (arg.value === undefined ? "" : String(arg.value)))
@@ -133,17 +143,15 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
             .trim(),
           at: new Date().toISOString(),
         });
-        if (tab.console.length > MAX_CONSOLE_ENTRIES) tab.console.shift();
         return;
       }
       if (method === "Runtime.exceptionThrown") {
         const details = params.exceptionDetails as { text?: string } | undefined;
-        tab.console.push({
+        pushConsole({
           level: "error",
           text: details?.text ?? "Uncaught exception",
           at: new Date().toISOString(),
         });
-        if (tab.console.length > MAX_CONSOLE_ENTRIES) tab.console.shift();
         return;
       }
       if (method === "Network.loadingFailed") {
