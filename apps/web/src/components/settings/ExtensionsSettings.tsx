@@ -784,9 +784,21 @@ function mcpLoginProviderForItem(item: ExtensionItem): ExtensionMcpLoginProvider
   return item.provider.driver === EXTENSIONS_CLAUDE_DRIVER ? "claudeAgent" : "codex";
 }
 
-function ExtensionItemBadges({ item }: { item: ExtensionItem }) {
+function ExtensionItemBadges({
+  item,
+  showProvider = false,
+}: {
+  item: ExtensionItem;
+  showProvider?: boolean;
+}) {
   return (
     <div className="flex shrink-0 flex-wrap justify-end gap-1">
+      {/* Both providers ship a "figma"; without this the rows are indistinguishable. */}
+      {showProvider ? (
+        <Badge size="sm" variant="outline">
+          {providerTitle(item.provider)}
+        </Badge>
+      ) : null}
       {extensionItemNeedsAuth(item) ? (
         <Badge size="sm" variant="warning">
           Auth
@@ -3225,11 +3237,13 @@ function ExtensionBrowserItemRow({
   item,
   groupLabel,
   environmentId,
+  showProvider,
   onSelect,
 }: {
   item: ExtensionItem;
   groupLabel?: string | undefined;
   environmentId: EnvironmentId | null;
+  showProvider: boolean;
   onSelect: (item: ExtensionItem) => void;
 }) {
   return (
@@ -3259,7 +3273,7 @@ function ExtensionBrowserItemRow({
           <div className="truncate text-[11px] text-muted-foreground/70">{item.detail}</div>
         ) : null}
       </div>
-      <ExtensionItemBadges item={item} />
+      <ExtensionItemBadges item={item} showProvider={showProvider} />
       <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
     </button>
   );
@@ -3308,6 +3322,8 @@ function ExtensionBrowserDialog({
   }, [initialQuery, section?.key]);
 
   const browseSourceItems = section?.browseItems ?? section?.items ?? [];
+  const spansProviders =
+    new Set(browseSourceItems.map((item) => String(item.provider.instanceId))).size > 1;
   const matchingItems = useMemo(
     () => filterExtensionItems(browseSourceItems, query),
     [browseSourceItems, query],
@@ -3606,6 +3622,7 @@ function ExtensionBrowserDialog({
                                   key={`${item.kind}:${item.id}`}
                                   item={item}
                                   environmentId={environmentId}
+                                  showProvider={spansProviders}
                                   onSelect={onSelect}
                                 />
                               ))}
@@ -3625,6 +3642,7 @@ function ExtensionBrowserDialog({
                           sort === "recommended" ? undefined : extensionItemGroupLabel(item)
                         }
                         environmentId={environmentId}
+                        showProvider={spansProviders}
                         onSelect={onSelect}
                       />
                     ))}
