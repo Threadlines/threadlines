@@ -10,7 +10,6 @@ import {
   MinimizeIcon,
   MoreVerticalIcon,
   PlusIcon,
-  RotateCwSquareIcon,
   RadioTowerIcon,
   RotateCwIcon,
   XIcon,
@@ -42,6 +41,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { RotateDeviceIcon } from "../Icons";
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -200,7 +200,7 @@ export function BrowserPanel({
 
   return (
     <section
-      className="flex min-w-0 flex-col border-l border-border bg-rail"
+      className="@container/browser flex min-w-0 flex-col border-l border-border bg-rail"
       style={{ flex: `${flexGrow} 1 0%` }}
       data-testid="browser-panel"
       aria-label="Browser preview"
@@ -924,7 +924,7 @@ function DeviceToolbar({
       <select
         aria-label="Device"
         data-testid="browser-device-preset"
-        className="max-w-28 shrink-0 rounded-md border border-border bg-background px-1 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
+        className="min-w-0 max-w-28 shrink rounded-md border border-border bg-background px-1 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
         value={matchingPreset?.label ?? "Responsive"}
         onChange={(event) => {
           const preset = BROWSER_VIEWPORT_PRESETS.find((p) => p.label === event.target.value);
@@ -965,13 +965,13 @@ function DeviceToolbar({
         aria-label="Rotate"
         data-testid="browser-device-rotate"
         disabled={viewport.width === null}
-        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        className="hidden size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 @xs/browser:inline-flex"
         onClick={() => onViewportChange({ width: viewport.height, height: viewport.width })}
       >
-        <RotateCwSquareIcon className="size-3.5" />
+        <RotateDeviceIcon className="size-3.5" />
       </button>
 
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="hidden shrink-0 items-center gap-1 @sm/browser:flex">
         <button
           type="button"
           aria-label="Zoom out"
@@ -997,15 +997,16 @@ function DeviceToolbar({
         >
           +
         </button>
-        <button
-          type="button"
-          aria-label="Hide device toolbar"
-          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-          onClick={onClose}
-        >
-          <XIcon className="size-3.5" />
-        </button>
       </div>
+
+      <button
+        type="button"
+        aria-label="Hide device toolbar"
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+        onClick={onClose}
+      >
+        <XIcon className="size-3.5" />
+      </button>
     </div>
   );
 }
