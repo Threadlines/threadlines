@@ -625,9 +625,11 @@ async function main(): Promise<void> {
     throw new Error(`No commits found in ${previousTag}..${currentRef}.`);
   }
 
-  const token = process.env.GITHUB_TOKEN?.trim();
+  const token = process.env.GITHUB_MODELS_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
   if (!token) {
-    throw new Error("GITHUB_TOKEN with models: read permission is required to draft content.");
+    throw new Error(
+      "GITHUB_MODELS_TOKEN or GITHUB_TOKEN with models: read permission is required to draft content.",
+    );
   }
 
   const input = { version, releaseDate, previousTag, currentRef, repository, evidence };

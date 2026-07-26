@@ -34,6 +34,7 @@ jobs:
     timeout-minutes: 15
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN }}
       GITHUB_RELEASE_SUMMARY_MODEL: ${{ vars.GITHUB_RELEASE_SUMMARY_MODEL }}
       VERSION_INPUT: ${{ inputs.version }}
       CURRENT_REF_INPUT: ${{ inputs.current_ref }}
@@ -60,8 +61,8 @@ jobs:
       - name: Verify release drafting token
         run: |
           set -euo pipefail
-          if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-            echo "::error::The workflow GITHUB_TOKEN is unavailable."
+          if [[ -z "${GITHUB_MODELS_TOKEN:-}" ]]; then
+            echo "::error::The GITHUB_MODELS_TOKEN repository secret is unavailable. Add a fine-grained personal access token with Models: read permission before preparing stable release content."
             exit 1
           fi
 

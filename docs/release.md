@@ -143,19 +143,22 @@ the Vercel Preview check to inspect the rendered page. Merging the PR approves
 the marketing and GitHub release copy. The X draft links to the GitHub release
 so X renders GitHub's release card. It never posts to social media.
 
-The generator uses GitHub Models through the workflow's built-in `GITHUB_TOKEN`
-and `models: read` permission, so it does not require a custom API secret. GitHub
-Models' free API usage is currently a rate-limited public preview. The default
-model is `openai/gpt-4.1`; set the optional `GITHUB_RELEASE_SUMMARY_MODEL`
-repository variable to choose another model from the GitHub Models catalog.
+The generator uses GitHub Models through the `GITHUB_MODELS_TOKEN` repository
+secret. Create a fine-grained personal access token with only the `Models: read`
+account permission, then save it as an Actions repository secret with that name.
+Keep the token owner’s paid GitHub Models usage disabled if release drafting
+must remain within the free, rate-limited allowance. The default model is
+`openai/gpt-4.1`; set the optional `GITHUB_RELEASE_SUMMARY_MODEL` repository
+variable to choose another model from the GitHub Models catalog.
 
 For a local draft, use:
 
 ```bash
-GITHUB_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
+GITHUB_MODELS_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
 ```
 
-For a local run, the token needs `models: read` permission.
+For a local run, `GITHUB_TOKEN` remains supported as a fallback. Whichever token
+is used needs `models: read` permission.
 
 The stable release workflow refuses to publish when the matching reviewed entry
 is missing. Its GitHub release body places those highlights first and keeps the
