@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { buildInjectedRuntimeScript } from "./injectedRuntime.ts";
 import {
   extractInjectedScript,
   INJECTED_SCRIPT_MODULE_PATH,
@@ -80,6 +81,27 @@ describe("the vendored copy", () => {
     for (const marker of INJECTED_SCRIPT_REQUIRED_MARKERS) {
       expect(vendored).toContain(marker);
     }
+  });
+
+  it("is constructed with options this version of the engine reads", () => {
+    // The gap the hash check cannot cover: an upgrade whose bytes legitimately
+    // change AND that renames a constructor option. The script would extract
+    // cleanly, pass every marker check, and then quietly ignore what we passed
+    // it. Comparing what we send against what its constructor actually reads
+    // catches that without needing a DOM to run in.
+    const constructorStart = vendored.indexOf("var InjectedScript = class {");
+    const nextMethod = /\n {2}[a-zA-Z_$][\w$]*\(/.exec(vendored.slice(constructorStart + 40));
+    const constructorBody = vendored.slice(
+      constructorStart,
+      constructorStart + 40 + (nextMethod?.index ?? 0),
+    );
+    const read = new Set([...constructorBody.matchAll(/options\.(\w+)/g)].map((m) => m[1]));
+
+    const wrapper = buildInjectedRuntimeScript("/* engine */");
+    const passed = [...wrapper.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]);
+
+    expect(passed.length).toBeGreaterThan(0);
+    expect(passed.filter((name) => !read.has(name))).toEqual([]);
   });
 
   it("evaluates to a constructible InjectedScript", () => {
