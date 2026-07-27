@@ -59,15 +59,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-/**
- * Roles worth handing to an agent. The full accessibility tree of a real page
- * runs to thousands of nodes, most of them generic containers and text, which
- * would bury the handful of things that can actually be acted on.
- */
-
-/** Kept for orientation: they tell the agent where it is, not what to press. */
-
-/** Enough to explain a failure without letting a chatty page grow unboundedly. */
 /** Enough to explain a failure without letting a chatty page grow unboundedly. */
 const MAX_CONSOLE_ENTRIES = 200;
 /** Long enough to choose deliberately, short enough not to strand inspect mode. */
