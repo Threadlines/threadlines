@@ -408,7 +408,16 @@ export function mapCodexSubagentTranscript(
   const entries = thread.turns.flatMap((turn) =>
     turn.items.flatMap((item) => {
       const entry = mapCodexStoredItem(item);
-      return entry === undefined ? [] : [entry];
+      return entry === undefined
+        ? []
+        : [
+            {
+              ...entry,
+              ...(turn.startedAt !== undefined && turn.startedAt !== null
+                ? { at: isoFromEpochSeconds(turn.startedAt) }
+                : {}),
+            },
+          ];
     }),
   );
   const limit =
@@ -422,6 +431,7 @@ export function mapCodexSubagentTranscript(
   return {
     entries: page,
     truncated: offset > 0 || offset + page.length < entries.length,
+    agent: { id: thread.id },
     offset,
     totalEntries: entries.length,
   };

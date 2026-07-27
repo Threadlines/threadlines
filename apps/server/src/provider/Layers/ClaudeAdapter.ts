@@ -72,6 +72,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -82,11 +83,11 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { ensureClaudeSessionTranscript } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
-  claudeProjectDirectoryName,
-  ensureClaudeSessionTranscript,
-  resolveClaudeConfigDir,
-} from "../Drivers/ClaudeSessionTranscripts.ts";
+  locateClaudeSubagentTranscript,
+  readClaudeSubagentTranscriptEntries,
+} from "../Drivers/ClaudeSubagentTranscripts.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
   claudeModelSupportsAutoRuntimeMode,
@@ -1934,43 +1935,42 @@ function capTranscriptText(value: string, maxChars: number): string {
   return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
 }
 
-/**
- * Maps a subagent transcript JSONL (Claude Code's on-disk
- * `subagents/agent-<id>.jsonl`) into renderable entries: thinking becomes its
- * own muted entry, assistant text and tool calls stay together, and tool
- * results surface as capped output previews.
- */
-export function mapClaudeSubagentTranscript(
-  jsonl: string,
+/** Maps complete Claude subagent JSONL records into renderable entries, and
+ *  reports the model the records were produced by. A spawn that overrides no
+ *  model leaves the parent's choice implicit everywhere else, so the agent's
+ *  own records are the only place its model is stated. */
+export function mapClaudeSubagentTranscriptRecords(
+  lines: Iterable<string>,
+  options?: { readonly cwd?: string | undefined },
+): {
+  readonly entries: ProviderSubagentTranscriptEntry[];
+  readonly model?: string;
+} {
+  let model: string | undefined;
+  const entries = mapClaudeSubagentTranscriptLines(lines, {
+    ...options,
+    onModel: (value) => {
+      model = value;
+    },
+  });
+  return { entries, ...(model ? { model } : {}) };
+}
+
+/** Maps complete Claude subagent JSONL records into renderable entries. The
+ *  cwd only affects how tool arguments are summarized for display. */
+export function mapClaudeSubagentTranscriptLines(
+  lines: Iterable<string>,
   options?: {
-    readonly limit?: number;
-    readonly offset?: number;
-    readonly fromEnd?: boolean;
+    readonly cwd?: string | undefined;
+    readonly onModel?: (model: string) => void;
   },
-): ProviderSubagentTranscriptResult {
-  const limit =
-    options?.limit !== undefined && options.limit > 0
-      ? options.limit
-      : SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
-  const requestedOffset = options?.offset ?? 0;
+): ProviderSubagentTranscriptEntry[] {
   const entries: Array<ProviderSubagentTranscriptEntry> = [];
-  let totalEntries = 0;
   const push = (entry: ProviderSubagentTranscriptEntry): void => {
-    const entryIndex = totalEntries;
-    totalEntries += 1;
-    if (options?.fromEnd) {
-      entries.push(entry);
-      if (entries.length > limit) {
-        entries.shift();
-      }
-      return;
-    }
-    if (entryIndex >= requestedOffset && entries.length < limit) {
-      entries.push(entry);
-    }
+    entries.push(entry);
   };
 
-  for (const line of jsonl.split("\n")) {
+  for (const line of lines) {
     const record = line.trim();
     if (record.length === 0) {
       continue;
@@ -1984,16 +1984,26 @@ export function mapClaudeSubagentTranscript(
     if (!parsed || typeof parsed !== "object") {
       continue;
     }
-    const { type, message } = parsed as { type?: unknown; message?: unknown };
+    const { type, message, timestamp } = parsed as {
+      type?: unknown;
+      message?: unknown;
+      timestamp?: unknown;
+    };
     if (type !== "user" && type !== "assistant") {
       continue;
+    }
+    const at =
+      typeof timestamp === "string" && timestamp.trim().length > 0 ? timestamp.trim() : undefined;
+    const recordModel = nonEmptyString((message as { model?: unknown } | undefined)?.model);
+    if (recordModel) {
+      options?.onModel?.(recordModel);
     }
     const content = (message as { content?: unknown } | undefined)?.content;
 
     if (typeof content === "string") {
       const text = capTranscriptText(content, SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
       if (text.length > 0) {
-        push({ role: type, text, toolUses: [] });
+        push({ role: type, text, ...(at ? { at } : {}), toolUses: [] });
       }
       continue;
     }
@@ -2022,7 +2032,7 @@ export function mapClaudeSubagentTranscript(
           SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS,
         );
         if (thinkingText.length > 0) {
-          push({ role: "thinking", text: thinkingText, toolUses: [] });
+          push({ role: "thinking", text: thinkingText, ...(at ? { at } : {}), toolUses: [] });
         }
         continue;
       }
@@ -2037,7 +2047,13 @@ export function mapClaudeSubagentTranscript(
             : {};
         toolUses.push({
           name: blockRecord.name,
-          summary: summarizeGenericToolArguments(input) ?? "",
+          // The same preview the main timeline shows for a tool call, so a
+          // subagent's steps read the way the parent thread's steps do.
+          summary: summarizeToolRequest(
+            blockRecord.name,
+            input,
+            options?.cwd ? { cwd: options.cwd } : undefined,
+          ),
         });
         continue;
       }
@@ -2061,21 +2077,65 @@ export function mapClaudeSubagentTranscript(
       push({
         role: type,
         text,
+        ...(at ? { at } : {}),
         toolUses,
         ...(outputPreview.length > 0 ? { outputPreview } : {}),
       });
     }
   }
 
+  return entries;
+}
+
+/** Applies absolute pagination to a retained suffix of mapped transcript entries. */
+export function pageClaudeSubagentTranscriptEntries(
+  entries: ReadonlyArray<ProviderSubagentTranscriptEntry>,
+  options?: {
+    readonly limit?: number;
+    readonly offset?: number;
+    readonly fromEnd?: boolean;
+  },
+  droppedEntries = 0,
+): ProviderSubagentTranscriptResult {
+  const limit =
+    options?.limit !== undefined && options.limit > 0
+      ? options.limit
+      : SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+  const totalEntries = droppedEntries + entries.length;
+  const requestedOffset = options?.offset ?? 0;
   const offset = options?.fromEnd
-    ? Math.max(0, totalEntries - limit)
-    : Math.min(requestedOffset, totalEntries);
+    ? Math.max(droppedEntries, totalEntries - limit)
+    : requestedOffset < droppedEntries
+      ? droppedEntries
+      : Math.min(requestedOffset, totalEntries);
+  const page = entries.slice(offset - droppedEntries, offset - droppedEntries + limit);
   return {
-    entries,
-    truncated: offset > 0 || offset + entries.length < totalEntries,
+    entries: page,
+    truncated:
+      requestedOffset < droppedEntries || offset > 0 || offset + page.length < totalEntries,
     offset,
     totalEntries,
   };
+}
+
+/**
+ * Maps a subagent transcript JSONL (Claude Code's on-disk
+ * `subagents/agent-<id>.jsonl`) into renderable entries: thinking becomes its
+ * own muted entry, assistant text and tool calls stay together, and tool
+ * results surface as capped output previews.
+ */
+export function mapClaudeSubagentTranscript(
+  jsonl: string,
+  options?: {
+    readonly limit?: number;
+    readonly offset?: number;
+    readonly fromEnd?: boolean;
+  },
+): ProviderSubagentTranscriptResult {
+  return pageClaudeSubagentTranscriptEntries(
+    mapClaudeSubagentTranscriptLines(jsonl.split("\n")),
+    options,
+  );
 }
 
 /** Non-null `parent_tool_use_id` marks a message forwarded from inside a
@@ -4731,6 +4791,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (text.length === 0) {
       return;
     }
+    // A spawn names its model as an alias, or not at all when the agent
+    // inherits. The agent's own messages state the resolved id, which is the
+    // only place the exact model appears while it runs.
+    const subagentModel = nonEmptyString((message.message as { model?: unknown }).model);
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
       type: "item.updated",
@@ -4754,6 +4818,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           input: tool.input,
           subagentLiveText: text,
           subagentLiveTextAt: stamp.createdAt,
+          ...(subagentModel ? { subagentModel } : {}),
         },
       },
       providerRefs: nativeProviderRefs(context, {
@@ -5954,51 +6019,50 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       if (!cwd) {
         return yield* requestError("The Claude session has no working directory.");
       }
-      // Claude Code writes each spawned agent's conversation next to the
-      // parent transcript: <config>/projects/<cwd-slug>/<sessionId>/subagents/.
-      // Resolved through the instance environment so custom CLAUDE_CONFIG_DIR
-      // and HOME overrides are honored.
-      const projectDir = path.join(
-        resolveClaudeConfigDir(claudeEnvironment, path),
-        "projects",
-        claudeProjectDirectoryName(cwd),
+      const mapTranscriptError = (cause: PlatformError.PlatformError) =>
+        requestError(`Failed to read the subagent transcript: ${cause.message}`);
+      const location = yield* locateClaudeSubagentTranscript({
+        environment: claudeEnvironment,
+        cwd,
+        sessionId,
+        agentId: input.agentId,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(mapTranscriptError),
       );
-      const transcriptFileName = `agent-${input.agentId}.jsonl`;
-      const pathExists = (candidate: string) =>
-        fileSystem.exists(candidate).pipe(Effect.catch(() => Effect.succeed(false)));
-      let transcriptPath = path.join(projectDir, sessionId, "subagents", transcriptFileName);
-      if (!(yield* pathExists(transcriptPath))) {
-        // Session ids rotate on resume; the agent may have been spawned by an
-        // earlier session of this cwd. Scan the project's session directories
-        // for the transcript before giving up.
-        const sessionDirs = yield* fileSystem
-          .readDirectory(projectDir)
-          .pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
-        let found: string | undefined;
-        for (const entry of sessionDirs) {
-          const candidate = path.join(projectDir, entry, "subagents", transcriptFileName);
-          if (yield* pathExists(candidate)) {
-            found = candidate;
-            break;
-          }
-        }
-        if (found === undefined) {
-          return yield* requestError("No transcript found for this subagent yet.");
-        }
-        transcriptPath = found;
+      if (!location) {
+        return yield* requestError("No transcript found for this subagent yet.");
       }
-      const transcript = yield* fileSystem
-        .readFileString(transcriptPath)
-        .pipe(
-          Effect.mapError((cause) =>
-            requestError(`Failed to read the subagent transcript: ${cause.message}`),
-          ),
-        );
-      return mapClaudeSubagentTranscript(transcript, {
-        ...(input.limit !== undefined ? { limit: input.limit } : {}),
-        ...(input.offset !== undefined ? { offset: input.offset } : {}),
-        ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
-      });
+      const transcript = yield* readClaudeSubagentTranscriptEntries({
+        transcriptPath: location.transcriptPath,
+        mapLines: (lines) => mapClaudeSubagentTranscriptRecords(lines, { cwd }),
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.mapError(mapTranscriptError),
+      );
+      const result = pageClaudeSubagentTranscriptEntries(
+        transcript.entries,
+        {
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          ...(input.offset !== undefined ? { offset: input.offset } : {}),
+          ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+        },
+        transcript.droppedEntries,
+      );
+      const meta = location.meta;
+      return {
+        ...result,
+        agent: {
+          id: location.agentId,
+          ...(meta?.agentType ? { agentType: meta.agentType } : {}),
+          ...(meta?.description ? { description: meta.description } : {}),
+          // The spawn's declared model reads better than the resolved id, but
+          // an agent that inherited its model only states one in its records.
+          ...((meta?.model ?? transcript.model) ? { model: meta?.model ?? transcript.model! } : {}),
+          ...(meta?.spawnDepth !== undefined ? { spawnDepth: meta.spawnDepth } : {}),
+        },
+      };
     });
 
   const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (

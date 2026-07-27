@@ -1,5 +1,10 @@
-import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
-import { BotIcon, ClockIcon, XIcon } from "lucide-react";
+import type {
+  EnvironmentId,
+  ProviderSubagentTranscriptResult,
+  ThreadId,
+} from "@threadlines/contracts";
+import { BotIcon, XIcon } from "lucide-react";
+import { useCallback, useState } from "react";
 
 import {
   formatSubagentDisplayName,
@@ -7,18 +12,20 @@ import {
   type SubagentProgressItem,
 } from "../../session-logic";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
+import { useServerProviders } from "../../rpc/serverState";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { LiveNode } from "../ui/threadline";
+import type { SubagentDisplayDetails } from "./ThreadActivityPopover";
+import { formatSubagentMetaParts, resolveSubagentModelLabel } from "./subagentMeta";
 import { SubagentTranscript } from "./SubagentTranscript";
 
 interface SubagentInspectorProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   item: SubagentProgressItem;
-  details: {
-    goal: string | null;
-    metadata: ReadonlyArray<{ title: string; label: string }>;
-  };
+  details: SubagentDisplayDetails;
+  cwd?: string | undefined;
   onClose: () => void;
 }
 
@@ -37,10 +44,31 @@ export function SubagentInspector({
   threadId,
   item,
   details,
+  cwd,
   onClose,
 }: SubagentInspectorProps) {
+  const [providerAgent, setProviderAgent] = useState<ProviderSubagentTranscriptResult["agent"]>();
+  const [goalExpanded, setGoalExpanded] = useState(false);
+  const providers = useServerProviders();
   const displayName = formatSubagentDisplayName(item);
   const active = isActiveSubagentStatus(item.status);
+  const transcriptAgentId = item.transcriptAgentId ?? item.agentThreadId;
+  const handleAgentResolved = useCallback((agent: ProviderSubagentTranscriptResult["agent"]) => {
+    setProviderAgent(agent);
+  }, []);
+  // The spawning tool call rarely names the model a Claude agent runs on; the
+  // provider's own record of the agent does.
+  const model = item.model ?? providerAgent?.model ?? null;
+  const metaParts = formatSubagentMetaParts(
+    { ...item, model },
+    {
+      context: details.context,
+      modelLabel: resolveSubagentModelLabel(providers, model),
+      elapsed: active
+        ? formatElapsedDurationLabel(item.createdAt)
+        : `Updated ${formatRelativeTimeLabel(item.updatedAt)}`,
+    },
+  );
 
   return (
     <section
@@ -48,7 +76,7 @@ export function SubagentInspector({
       aria-label={`${displayName} subagent inspector`}
       data-subagent-inspector="true"
     >
-      <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
+      <header className="shrink-0 border-b border-border/65 px-4 py-3">
         <div className="flex min-w-0 items-start gap-2">
           <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
             <BotIcon className="size-3.5" aria-hidden="true" />
@@ -58,26 +86,47 @@ export function SubagentInspector({
               <h2 className="truncate text-[13px] font-medium text-foreground">{displayName}</h2>
               <span
                 className={cn(
-                  "shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none font-medium",
+                  "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-none font-medium",
                   statusClassName(item.status),
                 )}
               >
+                {active ? <LiveNode className="size-1.5" /> : null}
                 {item.statusLabel}
               </span>
             </div>
-            <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground/65">
-              <span className="inline-flex items-center gap-1">
-                <ClockIcon className="size-2.5" aria-hidden="true" />
-                {active
-                  ? formatElapsedDurationLabel(item.createdAt)
-                  : `Updated ${formatRelativeTimeLabel(item.updatedAt)}`}
-              </span>
-              {item.agentPath ? (
-                <span className="max-w-full truncate font-mono" title={item.agentPath}>
-                  {item.agentPath}
+            {details.goal ? (
+              <button
+                type="button"
+                className="mt-1 block w-full text-left text-[12px] leading-4 text-foreground/85"
+                aria-expanded={goalExpanded}
+                title={details.title ?? details.goal}
+                onClick={() => setGoalExpanded((value) => !value)}
+                data-subagent-inspector-goal="true"
+              >
+                <span className={cn("block", goalExpanded ? undefined : "line-clamp-2")}>
+                  {details.goal}
                 </span>
-              ) : null}
+              </button>
+            ) : null}
+            <div
+              className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] text-muted-foreground/60"
+              data-subagent-inspector-meta="true"
+            >
+              {metaParts.map((part, index) => (
+                <span key={part} className="inline-flex items-center gap-1.5">
+                  {index > 0 ? <span className="text-muted-foreground/30">·</span> : null}
+                  <span className="max-w-full truncate">{part}</span>
+                </span>
+              ))}
             </div>
+            {item.agentPath ? (
+              <p
+                className="mt-0.5 max-w-full truncate font-mono text-[10px] text-muted-foreground/45"
+                title={item.agentPath}
+              >
+                {item.agentPath}
+              </p>
+            ) : null}
           </div>
           <Button
             type="button"
@@ -90,50 +139,16 @@ export function SubagentInspector({
             <XIcon className="size-3.5" aria-hidden="true" />
           </Button>
         </div>
-
-        {details.goal ? (
-          <div className="mt-2 border-t border-border/45 pt-2">
-            <p className="text-[9px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
-              Goal
-            </p>
-            <p className="mt-0.5 max-h-20 overflow-y-auto text-[11px] leading-4 text-foreground/80">
-              {details.goal}
-            </p>
-          </div>
-        ) : null}
-
-        {details.metadata.length > 0 ? (
-          <div className="mt-1.5 flex min-w-0 flex-wrap gap-1">
-            {details.metadata.map((chip) => (
-              <span
-                key={`${chip.title}:${chip.label}`}
-                className="inline-flex max-w-full items-center gap-1 rounded border border-border/55 bg-background/55 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75"
-                title={`${chip.title}: ${chip.label}`}
-              >
-                <span className="text-muted-foreground/50">{chip.title}</span>
-                <span className="min-w-0 truncate">{chip.label}</span>
-              </span>
-            ))}
-          </div>
-        ) : null}
-
-        {item.liveBody && active ? (
-          <div className="mt-2 border-t border-border/45 pt-2" data-subagent-inspector-live="true">
-            <p className="text-[9px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
-              Latest activity
-            </p>
-            <p className="mt-0.5 line-clamp-3 text-[11px] leading-4 text-muted-foreground/80">
-              {item.liveBody}
-            </p>
-          </div>
-        ) : null}
       </header>
 
       <SubagentTranscript
         environmentId={environmentId}
         threadId={threadId}
-        agentIds={[item.agentThreadId].filter((agentId): agentId is string => agentId !== null)}
+        agentIds={transcriptAgentId === null ? [] : [transcriptAgentId]}
         follow={active}
+        cwd={cwd}
+        fallbackBody={item.liveBody}
+        onAgentResolved={handleAgentResolved}
         scrollable
       />
     </section>

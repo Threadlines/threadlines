@@ -194,6 +194,7 @@ export const ChatHeader = memo(function ChatHeader({
           activeThreadId={activeThreadId}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
+          threadCwd={openInCwd}
           backgroundRuns={backgroundRuns}
           onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
           onStopBackgroundRun={onStopBackgroundRun}

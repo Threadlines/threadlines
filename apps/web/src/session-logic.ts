@@ -187,9 +187,25 @@ export type SubagentProgressStatus =
   | "failed"
   | "interrupted";
 
+/** Live counters a provider reports for a running agent. Claude streams these
+ *  on every `task.progress`; providers without task telemetry leave them null. */
+export interface SubagentTelemetry {
+  /** What the agent is doing right now, e.g. "Running the test suite". */
+  step: string | null;
+  lastToolName: string | null;
+  totalTokens: number | null;
+  toolUses: number | null;
+  durationMs: number | null;
+}
+
 export interface SubagentProgressItem {
   id: string;
   agentThreadId: string | null;
+  /** Provider id that addresses this agent's transcript. Claude names each
+   *  transcript after the task id it reports on the task stream, which differs
+   *  from the spawning tool call id this record is keyed by; Codex addresses
+   *  transcripts by the child thread id, which is already the record id. */
+  transcriptAgentId: string | null;
   /** Stable V2 hierarchy path (for example `/root/research/database`). */
   agentPath?: string | null;
   parentAgentPath?: string | null;
@@ -207,6 +223,8 @@ export interface SubagentProgressItem {
   /** Latest streamed message from the still-running agent
    *  (`forwardSubagentText`); null once the terminal result lands. */
   liveBody: string | null;
+  /** Provider task counters, when the provider reports them. */
+  telemetry: SubagentTelemetry | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -734,6 +752,10 @@ export function hasActionableProposedPlan(
 }
 
 interface InternalSubagentRecord extends SubagentProgressItem {
+  /** Exact model id from the agent's own messages, as opposed to the alias a
+   *  spawn asked for. Sticky: later lifecycle rows only carry the alias
+   *  again, and the model has not changed. */
+  resolvedModel: string | null;
   liveBodyUpdatedAt: string | null;
   resultActivityId: string | null;
   resultBody: string | null;
@@ -762,6 +784,7 @@ export function deriveSubagentProgressState(input: {
   );
   const items = visibleRecords.map(
     ({
+      resolvedModel: _resolvedModel,
       liveBodyUpdatedAt: _liveBodyUpdatedAt,
       resultActivityId: _resultActivityId,
       resultBody: _resultBody,
@@ -947,6 +970,11 @@ function collectSubagentActivityRecords(
   // spawn turn settles. Spawns linked to a still-live task bypass turn scoping
   // below so the popover keeps showing them until the task completes.
   const liveBackgroundTaskToolUseIds = new Set<string>();
+  // The same task stream carries per-agent counters and the provider's own
+  // agent id. They arrive on their own activities, so they are collected up
+  // front and merged into the record the spawning tool call builds.
+  const telemetryByToolUseId = new Map<string, SubagentTelemetry>();
+  const taskIdByToolUseId = new Map<string, string>();
   for (const activity of sortedActivities) {
     if (
       activity.kind !== "task.started" &&
@@ -955,7 +983,8 @@ function collectSubagentActivityRecords(
     ) {
       continue;
     }
-    const toolUseId = asTrimmedString(asRecord(activity.payload)?.toolUseId);
+    const payload = asRecord(activity.payload);
+    const toolUseId = asTrimmedString(payload?.toolUseId);
     if (!toolUseId) {
       continue;
     }
@@ -963,6 +992,20 @@ function collectSubagentActivityRecords(
       liveBackgroundTaskToolUseIds.delete(toolUseId);
     } else {
       liveBackgroundTaskToolUseIds.add(toolUseId);
+    }
+    const taskId = asTrimmedString(payload?.taskId);
+    if (taskId && !taskIdByToolUseId.has(toolUseId)) {
+      taskIdByToolUseId.set(toolUseId, taskId);
+    }
+    const telemetry = mergeSubagentTelemetry(
+      telemetryByToolUseId.get(toolUseId),
+      payload ?? {},
+      // A settled task is no longer working on a step; its totals still are
+      // the best summary of what the agent did.
+      activity.kind === "task.completed",
+    );
+    if (telemetry) {
+      telemetryByToolUseId.set(toolUseId, telemetry);
     }
   }
 
@@ -1006,6 +1049,7 @@ function collectSubagentActivityRecords(
     const tool = asTrimmedString(item.tool)?.trim() ?? null;
     const prompt = asTrimmedString(item.prompt) ?? asTrimmedString(payload?.detail);
     const model = asTrimmedString(item.model);
+    const resolvedModel = asTrimmedString(item.resolvedModel);
     const reasoningEffort = asTrimmedString(item.reasoningEffort);
     const receiverThreadIds = stringArray(item.receiverThreadIds);
     const agentStates = extractCollabAgentStates(item.agentsStates);
@@ -1100,6 +1144,9 @@ function collectSubagentActivityRecords(
       byAgentId.set(agentId, {
         id: agentId,
         agentThreadId: pendingAgent ? null : agentId,
+        transcriptAgentId: pendingAgent
+          ? null
+          : (taskIdByToolUseId.get(agentId) ?? previous?.transcriptAgentId ?? agentId),
         agentPath: pathMetadata?.agentPath ?? null,
         parentAgentPath: pathMetadata?.parentAgentPath ?? null,
         treeDepth: pathMetadata?.treeDepth ?? 0,
@@ -1110,10 +1157,14 @@ function collectSubagentActivityRecords(
         objective,
         status,
         statusLabel: subagentProgressStatusLabel(status),
-        model: model ?? previous?.model ?? null,
+        resolvedModel: resolvedModel ?? previous?.resolvedModel ?? null,
+        model: resolvedModel ?? previous?.resolvedModel ?? model ?? previous?.model ?? null,
         reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
         liveBody,
         liveBodyUpdatedAt,
+        // Claude keys task telemetry by the spawning tool call, which is also
+        // this record's id. Codex reports no task stream and stays null.
+        telemetry: telemetryByToolUseId.get(agentId) ?? previous?.telemetry ?? null,
         createdAt: previous?.createdAt ?? activity.createdAt,
         updatedAt: activity.createdAt,
         resultActivityId,
@@ -1127,6 +1178,39 @@ function collectSubagentActivityRecords(
     const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
     return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
   });
+}
+
+/** Folds one task activity into the running telemetry for an agent. Counters
+ *  are cumulative and only ever move forward, so a later activity that omits
+ *  them (task.completed carries no usage) keeps the last known totals. Only
+ *  task.progress reports a step; task.started/completed carry the task
+ *  description instead, which the record already shows as the goal. */
+function mergeSubagentTelemetry(
+  previous: SubagentTelemetry | undefined,
+  payload: Record<string, unknown>,
+  settled: boolean,
+): SubagentTelemetry | null {
+  const usage = asRecord(payload.usage);
+  const step = settled ? null : asTrimmedString(payload.detail);
+  const lastToolName = settled ? null : asTrimmedString(payload.lastToolName);
+  const next: SubagentTelemetry = {
+    step: step ?? (settled ? null : (previous?.step ?? null)),
+    lastToolName: lastToolName ?? (settled ? null : (previous?.lastToolName ?? null)),
+    totalTokens: asPositiveNumber(usage?.total_tokens) ?? previous?.totalTokens ?? null,
+    toolUses: asPositiveNumber(usage?.tool_uses) ?? previous?.toolUses ?? null,
+    durationMs: asPositiveNumber(usage?.duration_ms) ?? previous?.durationMs ?? null,
+  };
+  return next.step === null &&
+    next.lastToolName === null &&
+    next.totalTokens === null &&
+    next.toolUses === null &&
+    next.durationMs === null
+    ? null
+    : next;
+}
+
+function asPositiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 /** Settles a spawned agent's status from a task.completed activity that links
@@ -1152,6 +1236,9 @@ function applySubagentTaskCompletion(
     // The task settled; live progress text no longer describes the agent.
     liveBody: null,
     liveBodyUpdatedAt: null,
+    telemetry: record.telemetry
+      ? { ...record.telemetry, step: null, lastToolName: null }
+      : record.telemetry,
     updatedAt: activity.createdAt,
   });
 }
@@ -1205,6 +1292,13 @@ function asClaudeSubagentActivityItem(input: {
     asTrimmedString(toolInput?.description) ??
     asTrimmedString(toolInput?.prompt) ??
     asTrimmedString(input.payload.detail);
+  // A spawn only names a model when the parent overrides one, and names it as
+  // an alias ("opus"). The agent's own forwarded messages state the resolved
+  // id, which is what the UI should prefer.
+  const model = asTrimmedString(toolInput?.model);
+  const resolvedModel = asTrimmedString(input.data?.subagentModel);
+  const reasoningEffort =
+    asTrimmedString(toolInput?.effort) ?? asTrimmedString(toolInput?.reasoning_effort);
 
   return {
     id: toolCallId,
@@ -1214,6 +1308,9 @@ function asClaudeSubagentActivityItem(input: {
     ...(prompt ? { prompt } : {}),
     ...(role ? { agentRole: role } : {}),
     ...(nickname ? { agentNickname: nickname } : {}),
+    ...(model ? { model } : {}),
+    ...(resolvedModel ? { resolvedModel } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     receiverThreadIds: [toolCallId],
     agentsStates: {
       [toolCallId]: {

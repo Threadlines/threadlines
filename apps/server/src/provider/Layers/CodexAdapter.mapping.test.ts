@@ -121,6 +121,7 @@ describe("CodexAdapter item mapping", () => {
         {
           id: "turn-child-1",
           status: "completed",
+          startedAt: 1_769_947_200,
           items: [
             {
               id: "user-1",
@@ -155,20 +156,33 @@ describe("CodexAdapter item mapping", () => {
     assert.equal(readCodexSubagentParentThreadId(thread), "parent-thread");
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread), {
       truncated: false,
+      agent: { id: "child-thread" },
       offset: 0,
       totalEntries: 4,
       entries: [
-        { role: "user", text: "Inspect the update path", toolUses: [] },
-        { role: "thinking", text: "Checking the runtime wiring", toolUses: [] },
+        {
+          role: "user",
+          text: "Inspect the update path",
+          at: "2026-02-01T12:00:00.000Z",
+          toolUses: [],
+        },
+        {
+          role: "thinking",
+          text: "Checking the runtime wiring",
+          at: "2026-02-01T12:00:00.000Z",
+          toolUses: [],
+        },
         {
           role: "assistant",
           text: "",
+          at: "2026-02-01T12:00:00.000Z",
           toolUses: [{ name: "shell_command", summary: "rg -n update apps/server" }],
           outputPreview: "apps/server/src/update.ts:10",
         },
         {
           role: "assistant",
           text: "The update path is correctly wired.",
+          at: "2026-02-01T12:00:00.000Z",
           toolUses: [],
         },
       ],
@@ -201,24 +215,28 @@ describe("CodexAdapter item mapping", () => {
     assert.equal(readCodexSubagentParentThreadId(thread), "child-thread");
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1 }), {
       truncated: true,
+      agent: { id: "grandchild-thread" },
       offset: 0,
       totalEntries: 2,
       entries: [{ role: "assistant", text: "First", toolUses: [] }],
     });
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1, fromEnd: true }), {
       truncated: true,
+      agent: { id: "grandchild-thread" },
       offset: 1,
       totalEntries: 2,
       entries: [{ role: "assistant", text: "Second", toolUses: [] }],
     });
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1, offset: 1 }), {
       truncated: true,
+      agent: { id: "grandchild-thread" },
       offset: 1,
       totalEntries: 2,
       entries: [{ role: "assistant", text: "Second", toolUses: [] }],
     });
     assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 0 }), {
       truncated: false,
+      agent: { id: "grandchild-thread" },
       offset: 0,
       totalEntries: 2,
       entries: [

@@ -3,16 +3,42 @@ import {
   type ProviderSubagentTranscriptEntry,
   type ProviderSubagentTranscriptResult,
   type ThreadId,
+  type TimestampFormat,
 } from "@threadlines/contracts";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { requireEnvironmentConnection } from "../../environments/runtime/service";
+import { useSettings } from "../../hooks/useSettings";
+import { formatShortTimestamp } from "../../timestampFormat";
 import { cn } from "~/lib/utils";
+import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
+import { LiveNode, SpineRow, spineAccentRowStyle } from "../ui/threadline";
+import { readSubagentTranscriptPage } from "./subagentTranscriptClient";
+import {
+  buildSubagentTranscriptView,
+  formatSubagentToolLabel,
+  formatSubagentToolPreview,
+  isSameSubagentTranscriptItem,
+  shouldShowSubagentLiveTail,
+  splitSubagentTranscriptLead,
+  type SubagentTranscriptViewItem,
+} from "./SubagentTranscript.logic";
 
-const TRANSCRIPT_PAGE_SIZE = 80;
-const LIVE_REFRESH_INTERVAL_MS = 2_000;
-const BOTTOM_STICK_THRESHOLD_PX = 24;
+const TRANSCRIPT_PAGE_SIZE = 60;
+const LIVE_REFRESH_INTERVAL_MS = 1_000;
+/** Generous enough that ordinary momentum scrolling near the end keeps
+ *  following, small enough that a deliberate scroll up releases. */
+const BOTTOM_STICK_THRESHOLD_PX = 48;
 
 type SubagentTranscriptFetchState =
   | { readonly status: "loading" }
@@ -31,6 +57,14 @@ interface SubagentTranscriptProps {
   agentIds: ReadonlyArray<string>;
   follow?: boolean;
   scrollable?: boolean;
+  /** Working directory used to resolve file references in agent prose. */
+  cwd?: string | undefined;
+  /** Shown when the provider has no transcript yet, so a just-spawned agent
+   *  still says something useful. */
+  fallbackBody?: string | null;
+  /** Reports the provider's own record of the agent (its id, type and model),
+   *  which the spawning tool call does not always carry. */
+  onAgentResolved?: (agent: ProviderSubagentTranscriptResult["agent"]) => void;
   className?: string;
 }
 
@@ -126,24 +160,6 @@ function transcriptRevision(
     .join("\u0001");
 }
 
-function keyedTranscriptToolUses(
-  toolUses: ProviderSubagentTranscriptEntry["toolUses"],
-): ReadonlyArray<{
-  readonly key: string;
-  readonly toolUse: ProviderSubagentTranscriptEntry["toolUses"][number];
-}> {
-  const occurrences = new Map<string, number>();
-  return toolUses.map((toolUse) => {
-    const contentKey = `${toolUse.name}\u0000${toolUse.summary}`;
-    const occurrence = occurrences.get(contentKey) ?? 0;
-    occurrences.set(contentKey, occurrence + 1);
-    return {
-      key: `${contentKey}\u0000${occurrence}`,
-      toolUse,
-    };
-  });
-}
-
 /** Lazily reads the provider-owned, read-only conversation for one or more
  * spawned agents. The server validates that every agent belongs to threadId. */
 export function SubagentTranscript({
@@ -152,6 +168,9 @@ export function SubagentTranscript({
   agentIds,
   follow = false,
   scrollable = false,
+  cwd,
+  fallbackBody = null,
+  onAgentResolved,
   className,
 }: SubagentTranscriptProps) {
   const [state, setState] = useState<SubagentTranscriptFetchState>({ status: "loading" });
@@ -159,7 +178,9 @@ export function SubagentTranscript({
   const [earlierLoadError, setEarlierLoadError] = useState<string | null>(null);
   const [hasUnseenUpdates, setHasUnseenUpdates] = useState(false);
   const scrollElementRef = useRef<HTMLDivElement | null>(null);
+  const contentElementRef = useRef<HTMLDivElement | null>(null);
   const sticksToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
   const previousRevisionRef = useRef<string | null>(null);
   const prependScrollHeightRef = useRef<number | null>(null);
   const agentIdsKey = agentIds.join("\u0000");
@@ -171,10 +192,10 @@ export function SubagentTranscript({
     setState({ status: "loading" });
 
     const readLatestSections = async () => {
-      const connection = requireEnvironmentConnection(environmentId);
       const sections: Array<{ agentId: string; result: ProviderSubagentTranscriptResult }> = [];
       for (const agentId of requestedAgentIds) {
-        const result = await connection.client.server.readSubagentTranscript({
+        const result = await readSubagentTranscriptPage({
+          environmentId,
           threadId,
           agentId,
           limit: TRANSCRIPT_PAGE_SIZE,
@@ -260,6 +281,17 @@ export function SubagentTranscript({
     [state],
   );
 
+  const resolvedAgent = state.status === "loaded" ? state.sections[0]?.result.agent : undefined;
+  const reportedAgentRef = useRef<string | null>(null);
+  useEffect(() => {
+    const serialized = resolvedAgent ? JSON.stringify(resolvedAgent) : null;
+    if (serialized === reportedAgentRef.current) {
+      return;
+    }
+    reportedAgentRef.current = serialized;
+    onAgentResolved?.(resolvedAgent);
+  }, [onAgentResolved, resolvedAgent]);
+
   useLayoutEffect(() => {
     if (!scrollable) {
       return;
@@ -281,16 +313,39 @@ export function SubagentTranscript({
     }
   }, [revision, scrollable]);
 
+  useEffect(() => {
+    const element = scrollElementRef.current;
+    const content = contentElementRef.current;
+    if (!scrollable || !element || !content || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    // Markdown blocks highlight asynchronously, so the transcript keeps growing
+    // after a refresh renders. Re-pin on every growth rather than once.
+    const observer = new ResizeObserver(() => {
+      if (sticksToBottomRef.current) {
+        element.scrollTop = element.scrollHeight;
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollable]);
+
   const handleTranscriptScroll = useCallback(() => {
     const element = scrollElementRef.current;
     if (!element) {
       return;
     }
-    const sticksToBottom =
+    const previousTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = element.scrollTop;
+    const atBottom =
       element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_STICK_THRESHOLD_PX;
-    sticksToBottomRef.current = sticksToBottom;
-    if (sticksToBottom) {
+    // Reading back through the transcript releases the follow; returning to the
+    // end resumes it. Anything else would yank the reader around mid-scroll.
+    if (atBottom) {
+      sticksToBottomRef.current = true;
       setHasUnseenUpdates(false);
+    } else if (element.scrollTop < previousTop - 1) {
+      sticksToBottomRef.current = false;
     }
   }, []);
 
@@ -315,8 +370,8 @@ export function SubagentTranscript({
       setLoadingEarlierAgentId(agentId);
       setEarlierLoadError(null);
       try {
-        const connection = requireEnvironmentConnection(environmentId);
-        const earlierResult = await connection.client.server.readSubagentTranscript({
+        const earlierResult = await readSubagentTranscriptPage({
+          environmentId,
           threadId,
           agentId,
           offset,
@@ -351,114 +406,156 @@ export function SubagentTranscript({
     [environmentId, loadingEarlierAgentId, threadId],
   );
 
+  const timestampFormat = useSettings().timestampFormat;
+
   return (
     <div className={cn("relative", scrollable && "flex min-h-0 flex-1 flex-col", className)}>
       <div
+        className={cn(
+          "flex items-center justify-between gap-2",
+          scrollable ? "shrink-0 border-b border-border/45 px-4 py-2" : "mb-1",
+        )}
+      >
+        <p className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
+          Read-only transcript
+        </p>
+        {follow ? (
+          <span
+            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/60"
+            data-subagent-transcript-following="true"
+          >
+            <span className="size-1.5 animate-pulse rounded-full bg-primary/70 motion-reduce:animate-none" />
+            Following live
+          </span>
+        ) : null}
+      </div>
+      <div
         ref={scrollElementRef}
-        className={cn(scrollable && "min-h-0 flex-1 overflow-y-auto px-3 py-2.5")}
+        className={cn(scrollable && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3")}
         data-subagent-transcript="true"
         onScroll={scrollable ? handleTranscriptScroll : undefined}
       >
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <p className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
-            Read-only transcript
-          </p>
-          {follow ? (
-            <span
-              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/60"
-              data-subagent-transcript-following="true"
-            >
-              <span className="size-1.5 animate-pulse rounded-full bg-primary/70 motion-reduce:animate-none" />
-              Following live
-            </span>
-          ) : null}
-        </div>
-        {state.status === "loading" ? (
-          <p className="text-[11px] text-muted-foreground/60">Loading transcript...</p>
-        ) : state.status === "error" ? (
-          <p className="text-[11px] text-muted-foreground/60" data-subagent-transcript-error="true">
-            {state.message}
-          </p>
-        ) : (
-          state.sections.map((section) => (
-            <div key={section.agentId} className="space-y-1.5">
-              {(section.result.offset ?? 0) > 0 ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  className="h-6 px-1.5 text-[10px] text-muted-foreground/70"
-                  disabled={loadingEarlierAgentId !== null}
-                  onClick={() => void loadEarlier(section.agentId, section.result)}
-                >
-                  {loadingEarlierAgentId === section.agentId ? "Loading earlier…" : "Load earlier"}
-                </Button>
-              ) : null}
-              {earlierLoadError ? (
-                <p className="text-[10px] text-destructive/80">{earlierLoadError}</p>
-              ) : null}
-              {state.sections.length > 1 ? (
-                <p className="font-mono text-[10px] text-muted-foreground/50">
-                  Agent {section.agentId}
-                </p>
-              ) : null}
-              {section.result.entries.map((entry, entryIndex) => {
-                const entryPosition = (section.result.offset ?? 0) + entryIndex;
-                return (
-                  <div
-                    key={`${section.agentId}:${entryPosition}`}
-                    data-subagent-transcript-entry={entry.role}
-                  >
-                    {entry.role === "thinking" ? (
-                      <p className="text-[11px] leading-4 text-muted-foreground/50 italic">
-                        {entry.text}
-                      </p>
-                    ) : entry.text.length > 0 ? (
-                      <p className="text-[11px] leading-4 whitespace-pre-wrap wrap-break-word">
-                        <span className="mr-1 text-[9px] tracking-[0.08em] text-muted-foreground/50 uppercase">
-                          {entry.role}
-                        </span>
-                        {entry.text}
-                      </p>
-                    ) : null}
-                    {entry.toolUses.length > 0 ? (
-                      <div className="mt-0.5 flex flex-wrap gap-1">
-                        {keyedTranscriptToolUses(entry.toolUses).map(({ key, toolUse }) => (
-                          <span
-                            key={`${section.agentId}:${entryPosition}:${key}`}
-                            className="inline-flex max-w-full items-center rounded border border-border/55 bg-background/60 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/75"
-                            title={toolUse.summary || toolUse.name}
-                          >
-                            <span className="min-w-0 truncate">
-                              {toolUse.summary
-                                ? `${toolUse.name}: ${toolUse.summary}`
-                                : toolUse.name}
-                            </span>
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    {entry.outputPreview ? (
-                      <pre className="mt-0.5 max-h-40 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1 font-mono text-[10px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/70">
-                        {entry.outputPreview}
-                      </pre>
+        <div ref={contentElementRef}>
+          {state.status === "loading" ? (
+            <p className="text-[11px] text-muted-foreground/60">Loading transcript...</p>
+          ) : state.status === "error" ? (
+            <TranscriptUnavailable
+              message={state.message}
+              fallbackBody={fallbackBody}
+              follow={follow}
+            />
+          ) : (
+            state.sections.map((section, sectionIndex) => {
+              const items = buildSubagentTranscriptView(
+                section.result.entries,
+                section.result.offset ?? 0,
+              );
+              const { lead, steps } = splitSubagentTranscriptLead(
+                items,
+                (section.result.offset ?? 0) === 0,
+              );
+              const showLiveTail =
+                follow &&
+                sectionIndex === state.sections.length - 1 &&
+                shouldShowSubagentLiveTail(items, fallbackBody);
+              return (
+                <div key={section.agentId} className="space-y-2">
+                  {(section.result.offset ?? 0) > 0 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      className="h-6 px-1.5 text-[10px] text-muted-foreground/70"
+                      disabled={loadingEarlierAgentId !== null}
+                      onClick={() => void loadEarlier(section.agentId, section.result)}
+                    >
+                      {loadingEarlierAgentId === section.agentId
+                        ? "Loading earlier\u2026"
+                        : "Load earlier"}
+                    </Button>
+                  ) : null}
+                  {earlierLoadError ? (
+                    <p className="text-[10px] text-destructive/80">{earlierLoadError}</p>
+                  ) : null}
+                  {state.sections.length > 1 ? (
+                    <p className="font-mono text-[10px] text-muted-foreground/50">
+                      Agent {section.agentId}
+                    </p>
+                  ) : null}
+                  {lead ? (
+                    <TranscriptInstruction
+                      item={lead}
+                      environmentId={environmentId}
+                      threadId={threadId}
+                      cwd={cwd}
+                      timestampFormat={timestampFormat}
+                    />
+                  ) : null}
+                  <div style={TRANSCRIPT_SPINE_STYLE}>
+                    {steps.map((item, itemIndex) => {
+                      const lastItem = itemIndex === steps.length - 1;
+                      // One live terminus per surface: the newest row, and only
+                      // while the agent is still working.
+                      const live = follow && lastItem && !showLiveTail;
+                      return (
+                        <SpineRow
+                          key={`${section.agentId}:${item.id}`}
+                          node={<TranscriptSpineNode item={item} live={live} />}
+                          connectTop={itemIndex > 0}
+                          connectBottom={!lastItem || showLiveTail}
+                          style={
+                            follow
+                              ? spineAccentRowStyle(
+                                  steps.length - 1 - itemIndex + (showLiveTail ? 1 : 0),
+                                )
+                              : undefined
+                          }
+                        >
+                          {/* Padding lives on the content, not the row: the
+                              spine gutter stretches to the row's content box,
+                              so row padding would break the line. */}
+                          <div className="py-1">
+                            <TranscriptItem
+                              item={item}
+                              environmentId={environmentId}
+                              threadId={threadId}
+                              cwd={cwd}
+                              timestampFormat={timestampFormat}
+                            />
+                          </div>
+                        </SpineRow>
+                      );
+                    })}
+                    {showLiveTail && fallbackBody ? (
+                      <SpineRow
+                        node={<LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />}
+                        connectTop={steps.length > 0}
+                        connectBottom={false}
+                        style={spineAccentRowStyle(0)}
+                      >
+                        <div className="py-1">
+                          <LiveTail body={fallbackBody} />
+                        </div>
+                      </SpineRow>
                     ) : null}
                   </div>
-                );
-              })}
-              {section.result.truncated && section.result.offset === undefined ? (
-                <p className="text-[10px] text-muted-foreground/50">
-                  Transcript truncated to {section.result.entries.length} entries.
-                </p>
-              ) : null}
-              {section.result.entries.length === 0 ? (
-                <p className="text-[11px] text-muted-foreground/60">
-                  No transcript entries available yet.
-                </p>
-              ) : null}
-            </div>
-          ))
-        )}
+                  {section.result.truncated && section.result.offset === undefined ? (
+                    <p className="text-[10px] text-muted-foreground/50">
+                      Transcript truncated to {section.result.entries.length} entries.
+                    </p>
+                  ) : null}
+                  {section.result.entries.length === 0 && !showLiveTail ? (
+                    <TranscriptUnavailable
+                      message={null}
+                      fallbackBody={fallbackBody}
+                      follow={follow}
+                    />
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
         {hasUnseenUpdates ? (
           <div className="sticky bottom-2 mt-2 flex justify-center">
             <Button
@@ -473,6 +570,420 @@ export function SubagentTranscript({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function TranscriptTimestamp({
+  at,
+  timestampFormat,
+}: {
+  at: string | null;
+  timestampFormat: TimestampFormat;
+}) {
+  if (!at) {
+    return null;
+  }
+  return (
+    <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/40 tabular-nums">
+      {formatShortTimestamp(at, timestampFormat)}
+    </span>
+  );
+}
+
+function DisclosureButton({
+  expanded,
+  label,
+  onToggle,
+}: {
+  expanded: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="shrink-0 text-[9px] font-medium tracking-[0.12em] text-muted-foreground/50 uppercase transition-colors duration-150 hover:text-foreground/75"
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      {expanded ? "Hide" : label}
+    </button>
+  );
+}
+
+/** Indented body under a row, matching the timeline's detail rail. */
+function DetailRail({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-1 ml-1 border-l border-border/45 pl-3 text-muted-foreground/70">
+      {children}
+    </div>
+  );
+}
+
+const ToolGroup = memo(function ToolGroup({
+  item,
+  timestampFormat,
+}: {
+  item: Extract<SubagentTranscriptViewItem, { kind: "tools" }>;
+  timestampFormat: TimestampFormat;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const outputLines = item.output ? item.output.split("\n").length : 0;
+
+  return (
+    <div className="min-w-0" data-subagent-transcript-entry="tool">
+      {item.tools.map((toolUse, toolIndex) => {
+        const preview = formatSubagentToolPreview(toolUse);
+        const first = toolIndex === 0;
+        return (
+          <div
+            key={toolUse.id}
+            className="flex min-w-0 items-center gap-1.5 leading-5"
+            title={formatSubagentToolLabel(toolUse)}
+          >
+            <span className="shrink-0 text-[11px] leading-5 text-foreground/80">
+              {toolUse.name}
+            </span>
+            {preview ? (
+              <>
+                <span className="shrink-0 text-muted-foreground/40">-</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
+                  {preview}
+                </span>
+              </>
+            ) : (
+              <span className="flex-1" />
+            )}
+            {first ? <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} /> : null}
+            {first && item.output ? (
+              <DisclosureButton
+                expanded={expanded}
+                label={outputLines > 1 ? `${outputLines} lines` : "Output"}
+                onToggle={() => setExpanded((value) => !value)}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+      {item.output && (expanded || item.tools.length === 0) ? (
+        <DetailRail>
+          <pre className="max-h-64 overflow-y-auto font-mono text-[10px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/65">
+            {item.output}
+          </pre>
+        </DetailRail>
+      ) : null}
+    </div>
+  );
+});
+
+const ThinkingBlock = memo(function ThinkingBlock({
+  item,
+  timestampFormat,
+}: {
+  item: Extract<SubagentTranscriptViewItem, { kind: "thinking" }>;
+  timestampFormat: TimestampFormat;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="min-w-0" data-subagent-transcript-entry="thinking">
+      <div className="flex min-w-0 items-center gap-1.5 leading-5">
+        <span className="min-w-0 flex-1 truncate text-[11px] leading-5 text-muted-foreground/45 italic">
+          {item.text}
+        </span>
+        <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} />
+        <DisclosureButton
+          expanded={expanded}
+          label="Reasoning"
+          onToggle={() => setExpanded((value) => !value)}
+        />
+      </div>
+      {expanded ? (
+        <DetailRail>
+          <p className="text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/60 italic">
+            {item.text}
+          </p>
+        </DetailRail>
+      ) : null}
+    </div>
+  );
+});
+
+/** Agent prose is authored for a chat column; inside a dense inspector its
+ *  headings need to come down to the size of the rows around them. */
+const TRANSCRIPT_MARKDOWN_CLASS = cn(
+  "text-[12px] leading-5",
+  "[&_.chat-markdown]:text-[12px] [&_.chat-markdown]:leading-5",
+  "[&_.chat-markdown_p]:my-1.5 [&_.chat-markdown_ul]:my-1.5 [&_.chat-markdown_ol]:my-1.5",
+  "[&_.chat-markdown_pre]:my-1.5",
+  "[&_h1]:mt-2 [&_h1]:mb-1 [&_h1]:text-[13px] [&_h1]:font-semibold",
+  "[&_h2]:mt-2 [&_h2]:mb-1 [&_h2]:text-[12px] [&_h2]:font-semibold",
+  "[&_h3]:mt-1.5 [&_h3]:mb-0.5 [&_h3]:text-[12px] [&_h3]:font-medium",
+  "[&_h4]:mt-1.5 [&_h4]:mb-0.5 [&_h4]:text-[12px] [&_h4]:font-medium",
+);
+
+const TranscriptMessage = memo(function TranscriptMessage({
+  item,
+  environmentId,
+  threadId,
+  cwd,
+  timestampFormat,
+}: {
+  item: Extract<SubagentTranscriptViewItem, { kind: "message" }>;
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  cwd: string | undefined;
+  timestampFormat: TimestampFormat;
+}) {
+  // The agent is the default voice here, so only the other roles are labelled.
+  const label = item.role === "user" ? "Instruction" : item.role === "system" ? "System" : null;
+  // A spawn prompt runs to dozens of lines and is the least interesting thing
+  // in a running transcript, so it opens folded to its first line.
+  const foldable = item.role !== "assistant";
+  const [expanded, setExpanded] = useState(false);
+  const folded = foldable && !expanded;
+
+  return (
+    <div className="min-w-0" data-subagent-transcript-entry={item.role}>
+      {label || item.at ? (
+        <div className="flex min-w-0 items-baseline gap-2">
+          {label ? (
+            <button
+              type="button"
+              className={cn(
+                "shrink-0 text-[9px] font-medium tracking-[0.12em] uppercase",
+                foldable
+                  ? "text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
+                  : "pointer-events-none text-muted-foreground/45",
+              )}
+              aria-expanded={foldable ? expanded : undefined}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {label}
+            </button>
+          ) : null}
+          {folded ? (
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left text-[11px] leading-5 text-muted-foreground/55 transition-colors duration-150 hover:text-muted-foreground/80"
+              aria-expanded={expanded}
+              onClick={() => setExpanded(true)}
+              title={item.text}
+            >
+              {firstLine(item.text)}
+            </button>
+          ) : (
+            <span className="flex-1" />
+          )}
+          <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} />
+        </div>
+      ) : null}
+      {folded ? null : (
+        <div className={TRANSCRIPT_MARKDOWN_CLASS} data-subagent-transcript-message="true">
+          <ChatMarkdown
+            text={item.text}
+            cwd={cwd}
+            environmentId={environmentId}
+            threadId={threadId}
+          />
+        </div>
+      )}
+    </div>
+  );
+});
+
+function firstLine(text: string): string {
+  const line = text
+    .split("\n")
+    .map((value) => value.trim())
+    .find((value) => value.length > 0);
+  return line ?? text.trim();
+}
+
+const TranscriptItem = memo(
+  function TranscriptItem({
+    item,
+    environmentId,
+    threadId,
+    cwd,
+    timestampFormat,
+  }: {
+    item: SubagentTranscriptViewItem;
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    cwd: string | undefined;
+    timestampFormat: TimestampFormat;
+  }) {
+    if (item.kind === "thinking") {
+      return <ThinkingBlock item={item} timestampFormat={timestampFormat} />;
+    }
+    if (item.kind === "tools") {
+      return <ToolGroup item={item} timestampFormat={timestampFormat} />;
+    }
+    return (
+      <TranscriptMessage
+        item={item}
+        environmentId={environmentId}
+        threadId={threadId}
+        cwd={cwd}
+        timestampFormat={timestampFormat}
+      />
+    );
+  },
+  (previous, next) =>
+    previous.environmentId === next.environmentId &&
+    previous.threadId === next.threadId &&
+    previous.cwd === next.cwd &&
+    previous.timestampFormat === next.timestampFormat &&
+    isSameSubagentTranscriptItem(previous.item, next.item),
+);
+
+/** Past this, an instruction is long enough to be worth folding. */
+const INSTRUCTION_COLLAPSED_LINES = 4;
+const INSTRUCTION_FOLD_CHARS = 220;
+
+/** The prompt the agent was spawned with. It sits above the thread rather than
+ *  on it: it is the setup for every step below, not a step of its own. */
+const TranscriptInstruction = memo(function TranscriptInstruction({
+  item,
+  environmentId,
+  threadId,
+  cwd,
+  timestampFormat,
+}: {
+  item: Extract<SubagentTranscriptViewItem, { kind: "message" }>;
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  cwd: string | undefined;
+  timestampFormat: TimestampFormat;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const foldable =
+    item.text.length > INSTRUCTION_FOLD_CHARS ||
+    item.text.split("\n").length > INSTRUCTION_COLLAPSED_LINES;
+  const folded = foldable && !expanded;
+
+  return (
+    <div
+      className="min-w-0 border-b border-border/45 pb-2.5"
+      data-subagent-transcript-instruction="true"
+      data-subagent-transcript-entry={item.role}
+    >
+      <div className="flex min-w-0 items-baseline gap-2">
+        <span className="shrink-0 text-[9px] font-medium tracking-[0.12em] text-muted-foreground/45 uppercase">
+          {item.role === "user" ? "Instruction" : "System"}
+        </span>
+        <span className="flex-1" />
+        <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} />
+        {foldable ? (
+          <DisclosureButton
+            expanded={expanded}
+            label="Show all"
+            onToggle={() => setExpanded((value) => !value)}
+          />
+        ) : null}
+      </div>
+      {folded ? (
+        <p className="mt-1 line-clamp-4 text-[11.5px] leading-5 whitespace-pre-wrap wrap-break-word text-muted-foreground/70">
+          {item.text}
+        </p>
+      ) : (
+        <div
+          className={cn(TRANSCRIPT_MARKDOWN_CLASS, "mt-1 text-muted-foreground/80")}
+          data-subagent-transcript-message="true"
+        >
+          <ChatMarkdown
+            text={item.text}
+            cwd={cwd}
+            environmentId={environmentId}
+            threadId={threadId}
+          />
+        </div>
+      )}
+    </div>
+  );
+});
+
+/** The spine reads as one unbroken thread, so its own colour stays neutral and
+ *  only the rows near the live terminus warm toward accent. */
+const TRANSCRIPT_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties;
+
+/** Settled steps are quiet dots, foldable rows are hollow rings (same family,
+ *  reads as openable), and the one live row carries the halo. */
+function TranscriptSpineNode({ item, live }: { item: SubagentTranscriptViewItem; live: boolean }) {
+  if (live) {
+    return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
+  }
+  if (item.kind === "thinking" || (item.kind === "message" && item.role !== "assistant")) {
+    return (
+      <span
+        aria-hidden="true"
+        className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
+    />
+  );
+}
+
+/** The agent's newest words, streamed ahead of the written transcript. */
+const LiveTail = memo(function LiveTail({ body }: { body: string }) {
+  return (
+    <div className="min-w-0" data-subagent-transcript-live="true">
+      {/* The spine already carries the live halo for this row. */}
+      <span className="text-[9px] font-medium tracking-[0.12em] text-muted-foreground/45 uppercase">
+        Writing
+      </span>
+      <p className="mt-0.5 text-[12px] leading-5 whitespace-pre-wrap wrap-break-word text-foreground/70">
+        {body}
+      </p>
+    </div>
+  );
+});
+
+/** A transcript can be legitimately absent: the provider may not have flushed
+ *  the agent's first message yet. Lead with what the agent is doing and keep
+ *  the provider's own wording available rather than in the reader's face. */
+function TranscriptUnavailable({
+  message,
+  fallbackBody,
+  follow,
+}: {
+  message: string | null;
+  fallbackBody: string | null;
+  follow: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="space-y-1.5" data-subagent-transcript-error="true">
+      <p className="text-[11px] leading-4 text-muted-foreground/60">
+        {follow
+          ? "Waiting for the agent's first transcript entry."
+          : "No transcript is available for this agent."}
+      </p>
+      {fallbackBody ? (
+        <p className="border-l border-border/45 pl-3 text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/75">
+          {fallbackBody}
+        </p>
+      ) : null}
+      {message ? (
+        <div>
+          <DisclosureButton
+            expanded={expanded}
+            label="Details"
+            onToggle={() => setExpanded((value) => !value)}
+          />
+          {expanded ? (
+            <p className="mt-1 text-[10px] leading-4 text-muted-foreground/55">{message}</p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

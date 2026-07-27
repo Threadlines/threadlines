@@ -44,6 +44,7 @@ import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.
 import {
   makeClaudeAdapter,
   mapClaudeSubagentTranscript,
+  pageClaudeSubagentTranscriptEntries,
   parseEnterWorktreeCwd,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
@@ -398,6 +399,7 @@ describe("mapClaudeSubagentTranscript", () => {
       transcriptLine({ type: "system", message: { content: "ignored" } }),
       transcriptLine({
         type: "assistant",
+        timestamp: "2026-07-26T12:00:00.000Z",
         message: {
           content: [
             { type: "thinking", thinking: "Plan the directory listing first." },
@@ -408,11 +410,16 @@ describe("mapClaudeSubagentTranscript", () => {
       }),
       transcriptLine({
         type: "user",
+        timestamp: "2026-07-26T12:00:01.000Z",
         message: {
           content: [{ type: "tool_result", content: [{ type: "text", text: "apps/\npackages/" }] }],
         },
       }),
-      transcriptLine({ type: "user", message: { content: "plain user text" } }),
+      transcriptLine({
+        type: "user",
+        timestamp: "2026-07-26T12:00:02.000Z",
+        message: { content: "plain user text" },
+      }),
     ].join("\n");
 
     const result = mapClaudeSubagentTranscript(jsonl);
@@ -421,21 +428,25 @@ describe("mapClaudeSubagentTranscript", () => {
     assert.deepStrictEqual(result.entries[0], {
       role: "thinking",
       text: "Plan the directory listing first.",
+      at: "2026-07-26T12:00:00.000Z",
       toolUses: [],
     });
     assert.equal(result.entries[1]?.role, "assistant");
     assert.equal(result.entries[1]?.text, "Listing the project now.");
+    assert.equal(result.entries[1]?.at, "2026-07-26T12:00:00.000Z");
     assert.equal(result.entries[1]?.toolUses[0]?.name, "Bash");
     assert.ok(result.entries[1]?.toolUses[0]?.summary.includes("ls apps"));
     assert.deepStrictEqual(result.entries[2], {
       role: "user",
       text: "",
+      at: "2026-07-26T12:00:01.000Z",
       toolUses: [],
       outputPreview: "apps/\npackages/",
     });
     assert.deepStrictEqual(result.entries[3], {
       role: "user",
       text: "plain user text",
+      at: "2026-07-26T12:00:02.000Z",
       toolUses: [],
     });
   });
@@ -485,6 +496,23 @@ describe("mapClaudeSubagentTranscript", () => {
     const zeroLimit = mapClaudeSubagentTranscript(many, { limit: 0 });
     assert.equal(zeroLimit.entries.length, 5);
     assert.equal(zeroLimit.truncated, false);
+  });
+
+  it("uses absolute offsets when the incremental cache dropped older entries", () => {
+    const retained = ["six", "seven", "eight"].map((text) => ({
+      role: "assistant" as const,
+      text,
+      toolUses: [],
+    }));
+    assert.deepStrictEqual(
+      pageClaudeSubagentTranscriptEntries(retained, { limit: 2, offset: 1 }, 5),
+      {
+        entries: retained.slice(0, 2),
+        truncated: true,
+        offset: 5,
+        totalEntries: 8,
+      },
+    );
   });
 });
 

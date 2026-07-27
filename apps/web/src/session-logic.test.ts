@@ -3738,6 +3738,65 @@ describe("deriveSubagentProgressState", () => {
     ).toBeNull();
   });
 
+  it("reports the model and effort a Claude spawn asked for, plus its task counters", () => {
+    const spawn = makeActivity({
+      id: "claude-model-spawn",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.started",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Subagent task",
+        toolCallId: "toolu_model",
+        data: {
+          toolName: "Task",
+          input: {
+            description: "Survey the repo",
+            subagent_type: "Explore",
+            model: "opus",
+            effort: "high",
+          },
+        },
+      },
+    });
+    const progress = makeActivity({
+      id: "claude-model-progress",
+      createdAt: "2026-02-23T00:00:04.000Z",
+      kind: "task.progress",
+      turnId: "turn-1",
+      payload: {
+        taskId: "a720e480",
+        toolUseId: "toolu_model",
+        subagentType: "Explore",
+        detail: "Running Show recent commits",
+        lastToolName: "Bash",
+        usage: { total_tokens: 18_204, tool_uses: 8, duration_ms: 30_120 },
+      },
+    });
+
+    const state = deriveSubagentProgressState({
+      activities: [spawn, progress],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+
+    expect(state?.items[0]).toMatchObject({
+      model: "opus",
+      reasoningEffort: "high",
+      // The provider's task id addresses the transcript; the record is keyed by
+      // the spawning tool call.
+      transcriptAgentId: "a720e480",
+      telemetry: {
+        step: "Running Show recent commits",
+        lastToolName: "Bash",
+        totalTokens: 18_204,
+        toolUses: 8,
+        durationMs: 30_120,
+      },
+    });
+  });
+
   it("streams live subagent text and clears it once the result lands", () => {
     const taskInput = {
       description: "Audit the SQL changes",

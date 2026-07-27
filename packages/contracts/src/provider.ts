@@ -335,8 +335,8 @@ export class ProviderExternalThreadError extends Schema.TaggedErrorClass<Provide
 
 export const ProviderSubagentTranscriptInput = Schema.Struct({
   threadId: ThreadId,
-  /** Provider-side subagent id — for Claude this is the task id backing the
-   *  spawned agent's transcript file. */
+  /** Provider-side subagent id. For Claude this is either the on-disk agent id
+   *  or the spawning tool_use id; the adapter resolves both. */
   agentId: TrimmedNonEmptyString,
   limit: Schema.optional(NonNegativeInt),
   /** Zero-based entry offset for paginated transcript reads. */
@@ -351,6 +351,8 @@ export type ProviderSubagentTranscriptInput = typeof ProviderSubagentTranscriptI
 export const ProviderSubagentTranscriptEntry = Schema.Struct({
   role: Schema.Literals(["user", "assistant", "system", "thinking"]),
   text: Schema.String,
+  /** ISO 8601 timestamp of the transcript record, when the provider records one. */
+  at: Schema.optional(TrimmedNonEmptyString),
   toolUses: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -364,6 +366,16 @@ export type ProviderSubagentTranscriptEntry = typeof ProviderSubagentTranscriptE
 export const ProviderSubagentTranscriptResult = Schema.Struct({
   entries: Schema.Array(ProviderSubagentTranscriptEntry),
   truncated: Schema.Boolean,
+  /** Provider-reported identity of the agent whose transcript this is. */
+  agent: Schema.optional(
+    Schema.Struct({
+      id: TrimmedNonEmptyString,
+      agentType: Schema.optional(TrimmedNonEmptyString),
+      description: Schema.optional(TrimmedNonEmptyString),
+      model: Schema.optional(TrimmedNonEmptyString),
+      spawnDepth: Schema.optional(NonNegativeInt),
+    }),
+  ),
   /** Zero-based index of the first returned entry. Optional for compatibility
    *  with older Threadlines servers. */
   offset: Schema.optional(NonNegativeInt),
