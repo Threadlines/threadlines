@@ -1,11 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
-import { ThreadId, type PreviewAutomationRequest } from "@threadlines/contracts";
+import { ThreadId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import { make, PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES } from "./PreviewAutomationBroker.ts";
+import {
+  make,
+  PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES,
+  type PreviewAutomationBrokerService,
+} from "./PreviewAutomationBroker.ts";
 
 const threadId = ThreadId.make("thread-browser-a");
 const otherThreadId = ThreadId.make("thread-browser-b");
@@ -20,7 +24,7 @@ const otherThreadId = ThreadId.make("thread-browser-b");
  * which these tests have replaced with a fake one.
  */
 const attachHost = Effect.fn(function* (
-  broker: Effect.Effect.Success<typeof make>,
+  broker: PreviewAutomationBrokerService,
   options?: {
     readonly threadId?: ThreadId;
     readonly operations?: ReadonlyArray<"click" | "snapshot">;

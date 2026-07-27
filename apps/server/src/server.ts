@@ -46,6 +46,7 @@ import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
+import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
@@ -276,6 +277,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ThreadContextSeedBuilderLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(TerminalLayerLive),
+  // The browser side of the agent's tools. Holds no resources of its own --
+  // it is a rendezvous between a provider turn and whichever client is showing
+  // the thread -- so it merges in flat, with nothing beneath it.
+  Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
   Layer.provideMerge(ProviderRegistryLive),

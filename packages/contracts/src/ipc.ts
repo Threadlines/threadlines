@@ -125,6 +125,12 @@ import type {
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
 import * as Schema from "effect/Schema";
+
+import type {
+  PreviewAutomationHost,
+  PreviewAutomationRequest,
+  PreviewAutomationResponse,
+} from "./previewAutomation.ts";
 import type {
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
@@ -147,6 +153,7 @@ import { AuthBearerBootstrapResult, AuthSessionState, AuthWebSocketTokenResult }
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { PreviewAutomationTargetSchema } from "./previewAutomation.ts";
 import type { ClientSettings, ServerSettings, ServerSettingsPatch } from "./settings.ts";
 import type {
   SourceControlCloneRepositoryInput,
@@ -448,18 +455,42 @@ export type DesktopPreviewRevealInput = typeof DesktopPreviewRevealInputSchema.T
 
 export const DesktopPreviewClickInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
-  ref: Schema.Number,
+  target: PreviewAutomationTargetSchema,
 });
 export type DesktopPreviewClickInput = typeof DesktopPreviewClickInputSchema.Type;
 
 export const DesktopPreviewTypeInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
-  ref: Schema.Number,
+  target: PreviewAutomationTargetSchema,
   text: Schema.String,
   /** Replace what is already in the field rather than appending to it. */
   clear: Schema.optional(Schema.Boolean),
 });
 export type DesktopPreviewTypeInput = typeof DesktopPreviewTypeInputSchema.Type;
+
+export const DesktopPreviewPressInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  key: Schema.String,
+  modifiers: Schema.optionalKey(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
+});
+export type DesktopPreviewPressInput = typeof DesktopPreviewPressInputSchema.Type;
+
+export const DesktopPreviewScrollInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  deltaX: Schema.optionalKey(Schema.Number),
+  deltaY: Schema.optionalKey(Schema.Number),
+  target: Schema.optionalKey(PreviewAutomationTargetSchema),
+});
+export type DesktopPreviewScrollInput = typeof DesktopPreviewScrollInputSchema.Type;
+
+export const DesktopPreviewWaitForInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  target: Schema.optionalKey(PreviewAutomationTargetSchema),
+  text: Schema.optionalKey(Schema.String),
+  urlContains: Schema.optionalKey(Schema.String),
+  timeoutMs: Schema.optionalKey(Schema.Number),
+});
+export type DesktopPreviewWaitForInput = typeof DesktopPreviewWaitForInputSchema.Type;
 
 export const DesktopPreviewStatusSchema = Schema.Struct({
   webContentsId: Schema.Number,
@@ -811,6 +842,9 @@ export interface DesktopBridge {
   previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
   previewClick?: (input: DesktopPreviewClickInput) => Promise<void>;
   previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
+  previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
+  previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
+  previewWaitFor?: (input: DesktopPreviewWaitForInput) => Promise<void>;
   previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
@@ -972,6 +1006,14 @@ export interface LocalApi {
  * `environmentId` rather than reaching through the local desktop bridge.
  */
 export interface EnvironmentApi {
+  /** Offers this client's browser panel as the page the agent acts on. */
+  previewAutomation: {
+    connect: (
+      input: PreviewAutomationHost,
+      listener: (request: PreviewAutomationRequest) => void,
+    ) => () => void;
+    respond: (response: PreviewAutomationResponse) => Promise<void>;
+  };
   terminal: {
     open: (input: typeof TerminalOpenInput.Encoded) => Promise<TerminalSessionSnapshot>;
     write: (input: typeof TerminalWriteInput.Encoded) => Promise<void>;

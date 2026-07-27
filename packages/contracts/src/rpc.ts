@@ -5,6 +5,11 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  PreviewAutomationHostSchema,
+  PreviewAutomationRequestSchema,
+  PreviewAutomationResponseSchema,
+} from "./previewAutomation.ts";
+import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   FilesystemBrowseError,
@@ -304,6 +309,8 @@ export const WS_METHODS = {
   sourceControlPublishRepository: "sourceControl.publishRepository",
 
   // Streaming subscriptions
+  previewAutomationConnect: "previewAutomationConnect",
+  previewAutomationRespond: "previewAutomationRespond",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
@@ -658,6 +665,29 @@ export const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   error: FilesystemBrowseError,
 });
 
+/**
+ * A client offering itself as the browser for one thread, and the requests it
+ * is then sent.
+ *
+ * A subscription rather than polling because the server is the one with
+ * something to say: a tool call arrives when the agent decides it does, and the
+ * client cannot know to ask. Ending the subscription is how the browser panel
+ * says it is gone -- closing it, navigating away, or the socket dropping all
+ * arrive here as the same event, which is the point.
+ */
+export const WsPreviewAutomationConnectRpc = Rpc.make(WS_METHODS.previewAutomationConnect, {
+  payload: PreviewAutomationHostSchema,
+  success: PreviewAutomationRequestSchema,
+  stream: true,
+});
+
+/** The answer to one of those requests. Fire and forget: the caller waiting on
+ *  it is a provider turn on the other side of the broker, not this client. */
+export const WsPreviewAutomationRespondRpc = Rpc.make(WS_METHODS.previewAutomationRespond, {
+  payload: PreviewAutomationResponseSchema,
+  success: Schema.Void,
+});
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -993,6 +1023,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsReadRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
+  WsPreviewAutomationConnectRpc,
+  WsPreviewAutomationRespondRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshLocalStatusRpc,

@@ -55,6 +55,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
+import { usePreviewAutomationHost } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -168,6 +169,30 @@ export function BrowserPanel({
   }, [activeUrl, activeTabId]);
 
   const activeWebview = () => webviewsRef.current.get(activeTabId) ?? null;
+
+  // Offers this panel as the page the agent acts on, for as long as it is here.
+  usePreviewAutomationHost({
+    threadRef,
+    enabled: isElectron,
+    resolveTarget: () => {
+      const webview = activeWebview();
+      return {
+        webContentsId: webview === null ? null : webview.getWebContentsId(),
+        // The address belongs to the element, so this is the one operation the
+        // main process cannot do on the agent's behalf.
+        navigate: async (url) => {
+          const normalized = normalizePreviewUrl(url);
+          // Refused rather than silently doing nothing: the agent gave an
+          // address, and it needs to know if that address was not one.
+          if (normalized === null) {
+            throw new Error(`${JSON.stringify(url)} is not a URL this browser can open.`);
+          }
+          setTabUrl(threadRef, activeTabId, normalized);
+          await webview?.loadURL(normalized);
+        },
+      };
+    },
+  });
 
   // Opening the device row on a responsive tab seeds concrete dimensions from
   // whatever the page currently occupies. Without them there is nothing to drag

@@ -14,17 +14,25 @@
 
 import type {
   DesktopPreviewAnnotationMode,
+  DesktopPreviewClickInput,
   DesktopPreviewPickedElement,
   DesktopPreviewPickMode,
   DesktopPreviewConsoleEntry,
   DesktopPreviewElement,
+  DesktopPreviewEvaluateInput,
   DesktopPreviewNetworkFailure,
+  DesktopPreviewPressInput,
+  DesktopPreviewScrollInput,
   DesktopPreviewSnapshot,
   DesktopPreviewScreenshot,
   DesktopPreviewStatus,
+  DesktopPreviewTypeInput,
+  DesktopPreviewWaitForInput,
+  PreviewAutomationTarget,
 } from "@threadlines/contracts";
 import { webContents, type WebContents } from "electron";
 
+import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import { buildDrawOverlayScript, DRAW_OVERLAY_TEARDOWN_SCRIPT } from "./drawOverlayScript.ts";
 import { buildRevealElementScript } from "./revealElementScript.ts";
@@ -97,7 +105,13 @@ export class PreviewCommandError extends Schema.TaggedErrorClass<PreviewCommandE
   { webContentsId: Schema.Number, method: Schema.String, cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return `Preview command ${this.method} failed for webContents ${this.webContentsId}.`;
+    const detail =
+      this.cause instanceof Error
+        ? this.cause.message
+        : typeof this.cause === "string"
+          ? this.cause
+          : String(this.cause);
+    return `Preview command ${this.method} failed for webContents ${this.webContentsId}: ${detail}`;
   }
 }
 
@@ -127,8 +141,7 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewStatus, PreviewAutomationError>;
     readonly evaluate: (
-      webContentsId: number,
-      expression: string,
+      input: DesktopPreviewEvaluateInput,
     ) => Effect.Effect<unknown, PreviewAutomationError>;
     readonly snapshot: (
       webContentsId: number,
@@ -160,15 +173,18 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
     readonly click: (
-      webContentsId: number,
-      ref: number,
+      input: DesktopPreviewClickInput,
     ) => Effect.Effect<void, PreviewAutomationError>;
-    readonly type: (input: {
-      webContentsId: number;
-      ref: number;
-      text: string;
-      clear?: boolean | undefined;
-    }) => Effect.Effect<void, PreviewAutomationError>;
+    readonly type: (input: DesktopPreviewTypeInput) => Effect.Effect<void, PreviewAutomationError>;
+    readonly press: (
+      input: DesktopPreviewPressInput,
+    ) => Effect.Effect<void, PreviewAutomationError>;
+    readonly scroll: (
+      input: DesktopPreviewScrollInput,
+    ) => Effect.Effect<void, PreviewAutomationError>;
+    readonly waitFor: (
+      input: DesktopPreviewWaitForInput,
+    ) => Effect.Effect<void, PreviewAutomationError>;
   }
 >()("@threadlines/desktop/preview/PreviewAutomation") {}
 
@@ -180,7 +196,7 @@ interface PickResult {
   styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
 }
 
-export const make = Effect.gen(function* PreviewAutomationMake() {
+export const make = Effect.sync(function PreviewAutomationMake() {
   const attached = new Map<number, AttachedTab>();
   /**
    * The pick a page is currently waiting on, if any.
@@ -205,6 +221,174 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       try: () => contents.debugger.sendCommand(method, params ?? {}),
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
     });
+
+  const failCommand = (contents: WebContents, method: string, cause: string) =>
+    Effect.fail(new PreviewCommandError({ webContentsId: contents.id, method, cause }));
+
+  const targetDescription = (target: PreviewAutomationTarget): string =>
+    "ref" in target
+      ? `ref ${target.ref}`
+      : "selector" in target
+        ? `selector ${JSON.stringify(target.selector)}`
+        : `text ${JSON.stringify(target.text)}`;
+
+  const resolveTarget = Effect.fn("PreviewAutomation.resolveTarget")(function* (
+    contents: WebContents,
+    target: PreviewAutomationTarget,
+  ) {
+    if ("ref" in target) {
+      yield* sendCommand(contents, "DOM.describeNode", { backendNodeId: target.ref }).pipe(
+        Effect.catch(() =>
+          failCommand(
+            contents,
+            "resolveTarget",
+            `element ref ${target.ref} no longer resolves; take a new snapshot and use its ref`,
+          ),
+        ),
+      );
+      return target.ref;
+    }
+
+    if ("selector" in target) {
+      const document = (yield* sendCommand(contents, "DOM.getDocument", {})) as {
+        root?: { nodeId?: number };
+      };
+      const nodeId = document.root?.nodeId;
+      if (nodeId === undefined) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
+        );
+      }
+
+      const match = (yield* sendCommand(contents, "DOM.querySelector", {
+        nodeId,
+        selector: target.selector,
+      }).pipe(
+        Effect.catch(() =>
+          failCommand(
+            contents,
+            "resolveTarget",
+            `no element matches selector ${JSON.stringify(target.selector)}; use a valid selector or take a new snapshot`,
+          ),
+        ),
+      )) as { nodeId?: number };
+      if (match.nodeId === undefined || match.nodeId === 0) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
+        );
+      }
+
+      const described = (yield* sendCommand(contents, "DOM.describeNode", {
+        nodeId: match.nodeId,
+      }).pipe(
+        Effect.catch(() =>
+          failCommand(
+            contents,
+            "resolveTarget",
+            `the element matching selector ${JSON.stringify(target.selector)} disappeared; take a new snapshot and try again`,
+          ),
+        ),
+      )) as { node?: { backendNodeId?: number } };
+      const backendNodeId = described.node?.backendNodeId;
+      if (backendNodeId === undefined) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
+        );
+      }
+      return backendNodeId;
+    }
+
+    if (target.text.trim() === "") {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        "an empty text target cannot identify an element; provide visible text, a selector, or a snapshot ref",
+      );
+    }
+
+    const evaluated = (yield* sendCommand(contents, "Runtime.evaluate", {
+      expression: `(() => {
+        const wanted = ${JSON.stringify(target.text)};
+        const clickableSelector = 'button, a, [role="button"], input, summary';
+        const depth = (element) => {
+          let value = 0;
+          for (let current = element; current.parentElement; current = current.parentElement) {
+            value += 1;
+          }
+          return value;
+        };
+        const visible = (element) => {
+          const style = getComputedStyle(element);
+          if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            Number(style.opacity) === 0
+          ) {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const candidates = [...document.querySelectorAll('*')]
+          .filter(visible)
+          .map((element) => ({ element, text: (element.innerText || '').trim() }))
+          .filter((candidate) => candidate.text !== '');
+        const rank = (left, right) => {
+          const clickable =
+            Number(right.element.matches(clickableSelector)) -
+            Number(left.element.matches(clickableSelector));
+          return clickable !== 0 ? clickable : depth(left.element) - depth(right.element);
+        };
+        const exact = candidates.filter((candidate) => candidate.text === wanted).sort(rank);
+        if (exact.length > 0) {
+          return exact[0].element;
+        }
+        const containing = candidates
+          .filter((candidate) => candidate.text.includes(wanted))
+          .sort(rank);
+        return containing.length > 0 ? containing[0].element : null;
+      })()`,
+    })) as {
+      result?: { objectId?: string };
+      exceptionDetails?: { text?: string; exception?: { description?: string } };
+    };
+    const objectId = evaluated.result?.objectId;
+    if (objectId === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `no visible element has text ${JSON.stringify(target.text)}; take a new snapshot, use a selector, or try a shorter text`,
+      );
+    }
+
+    const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId }).pipe(
+      Effect.ensuring(
+        sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore),
+      ),
+      Effect.catch(() =>
+        failCommand(
+          contents,
+          "resolveTarget",
+          `the element with text ${JSON.stringify(target.text)} disappeared; take a new snapshot and try again`,
+        ),
+      ),
+    )) as { node?: { backendNodeId?: number } };
+    const backendNodeId = described.node?.backendNodeId;
+    if (backendNodeId === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `no visible element has text ${JSON.stringify(target.text)}; take a new snapshot or use a selector`,
+      );
+    }
+    return backendNodeId;
+  });
 
   /**
    * Turns a picked node into something that still means something later.
@@ -757,9 +941,10 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         height: Math.round(metrics.cssVisualViewport?.clientHeight ?? 0),
       };
     }),
-    click: Effect.fn("PreviewAutomation.click")(function* (webContentsId: number, ref: number) {
-      const contents = yield* resolve(webContentsId);
-      const point = yield* centerOf(contents, ref);
+    click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
+      const contents = yield* resolve(input.webContentsId);
+      const backendNodeId = yield* resolveTarget(contents, input.target);
+      const point = yield* centerOf(contents, backendNodeId);
       // Real input events rather than element.click(): hover, focus and blur
       // fire as they would for a person, and a handler that checks isTrusted
       // behaves the same way too.
@@ -778,14 +963,10 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         clickCount: 1,
       });
     }),
-    type: Effect.fn("PreviewAutomation.type")(function* (input: {
-      webContentsId: number;
-      ref: number;
-      text: string;
-      clear?: boolean | undefined;
-    }) {
+    type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
       const contents = yield* resolve(input.webContentsId);
-      const point = yield* centerOf(contents, input.ref);
+      const backendNodeId = yield* resolveTarget(contents, input.target);
+      const point = yield* centerOf(contents, backendNodeId);
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
         type: "mousePressed",
         x: point.x,
@@ -823,17 +1004,116 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       }
       yield* sendCommand(contents, "Input.insertText", { text: input.text });
     }),
+    press: Effect.fn("PreviewAutomation.press")(function* (input: DesktopPreviewPressInput) {
+      const contents = yield* resolve(input.webContentsId);
+      const definition = toCdpKeyDefinition(input.key);
+      const modifiers = toCdpModifierBitmask(input.modifiers);
+      yield* sendCommand(contents, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        ...definition,
+        modifiers,
+      });
+      const { text: _text, ...releasedDefinition } = definition;
+      yield* sendCommand(contents, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        ...releasedDefinition,
+        modifiers,
+      });
+    }),
+    scroll: Effect.fn("PreviewAutomation.scroll")(function* (input: DesktopPreviewScrollInput) {
+      const contents = yield* resolve(input.webContentsId);
+      if (input.target !== undefined) {
+        const backendNodeId = yield* resolveTarget(contents, input.target);
+        yield* sendCommand(contents, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
+        return;
+      }
+
+      const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
+        cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
+      };
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: (metrics.cssVisualViewport?.clientWidth ?? 0) / 2,
+        y: (metrics.cssVisualViewport?.clientHeight ?? 0) / 2,
+        deltaX: input.deltaX ?? 0,
+        deltaY: input.deltaY ?? 0,
+      });
+    }),
     evaluate: Effect.fn("PreviewAutomation.evaluate")(function* (
-      webContentsId: number,
-      expression: string,
+      input: DesktopPreviewEvaluateInput,
     ) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolve(input.webContentsId);
       const result = (yield* sendCommand(contents, "Runtime.evaluate", {
-        expression,
+        expression: input.expression,
         returnByValue: true,
         awaitPromise: true,
-      })) as { result?: { value?: unknown } };
-      return result.result?.value ?? null;
+      })) as {
+        result?: { value?: unknown };
+        exceptionDetails?: {
+          text?: string;
+          exception?: { description?: string; value?: unknown };
+        };
+      };
+      if (result.exceptionDetails !== undefined) {
+        const exception = result.exceptionDetails.exception;
+        const detail =
+          exception?.description ??
+          (exception?.value === undefined ? undefined : String(exception.value)) ??
+          result.exceptionDetails.text ??
+          "the expression threw an exception";
+        return yield* failCommand(contents, "Runtime.evaluate", detail);
+      }
+      return result.result?.value;
+    }),
+    waitFor: Effect.fn("PreviewAutomation.waitFor")(function* (input: DesktopPreviewWaitForInput) {
+      const contents = yield* resolve(input.webContentsId);
+      const timeoutMs = Math.max(0, input.timeoutMs ?? 10_000);
+      const startedAt = Date.now();
+      let unmet: string[] = [];
+
+      while (true) {
+        unmet = [];
+
+        if (input.target !== undefined) {
+          const found = yield* resolveTarget(contents, input.target).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+          if (!found) {
+            unmet.push(`target ${targetDescription(input.target)}`);
+          }
+        }
+
+        if (input.text !== undefined) {
+          const textResult = (yield* sendCommand(contents, "Runtime.evaluate", {
+            expression: `Boolean(document.body?.innerText.includes(${JSON.stringify(input.text)}))`,
+            returnByValue: true,
+          }).pipe(Effect.orElseSucceed(() => ({ result: { value: false } })))) as {
+            result?: { value?: unknown };
+          };
+          if (textResult.result?.value !== true) {
+            unmet.push(`page text ${JSON.stringify(input.text)}`);
+          }
+        }
+
+        if (input.urlContains !== undefined && !contents.getURL().includes(input.urlContains)) {
+          unmet.push(`URL containing ${JSON.stringify(input.urlContains)}`);
+        }
+
+        if (unmet.length === 0) {
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          return yield* failCommand(
+            contents,
+            "waitFor",
+            `timed out after ${timeoutMs}ms; these conditions never became true together: ${unmet.join(", ")}`,
+          );
+        }
+
+        yield* Effect.sleep("150 millis");
+      }
     }),
   });
 }).pipe(Effect.withSpan("PreviewAutomation.make"));

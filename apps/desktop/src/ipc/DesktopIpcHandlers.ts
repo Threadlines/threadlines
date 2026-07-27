@@ -60,13 +60,16 @@ import {
   previewScreenshot,
   previewCancelPick,
   previewPickElement,
+  previewPress,
   previewSetAnnotationMode,
   previewRevealElement,
+  previewScroll,
   previewSetColorScheme,
   previewSetViewport,
   previewSnapshot,
   previewStatus,
   previewType,
+  previewWaitFor,
 } from "./methods/preview.ts";
 
 export const installDesktopIpcHandlers = Effect.gen(function* () {
@@ -99,6 +102,9 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewSnapshot);
   yield* ipc.handle(previewClick);
   yield* ipc.handle(previewType);
+  yield* ipc.handle(previewPress);
+  yield* ipc.handle(previewScroll);
+  yield* ipc.handle(previewWaitFor);
   yield* ipc.handle(previewLocalServers);
   yield* ipc.handle(previewScreenshot);
   yield* ipc.handle(previewOpenDevTools);

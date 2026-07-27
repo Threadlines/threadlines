@@ -77,6 +77,9 @@ export class PreviewAutomationBroker extends Context.Service<
   }
 >()("@threadlines/server/preview/PreviewAutomationBroker") {}
 
+/** The broker itself, for callers that hold one rather than resolve it. */
+export type PreviewAutomationBrokerService = PreviewAutomationBroker["Service"];
+
 interface HostConnection {
   readonly hostId: string;
   readonly operations: ReadonlySet<PreviewAutomationOperation>;
@@ -237,7 +240,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
-  const service: PreviewAutomationBroker["Service"] = {
+  const service: PreviewAutomationBrokerService = {
     connect,
     respond,
     invoke,

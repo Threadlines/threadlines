@@ -11,8 +11,11 @@ import {
   DesktopPreviewPickedElementSchema,
   DesktopPreviewAnnotateInputSchema,
   DesktopPreviewPickInputSchema,
+  DesktopPreviewPressInputSchema,
   DesktopPreviewRevealInputSchema,
+  DesktopPreviewScrollInputSchema,
   DesktopPreviewTargetSchema,
+  DesktopPreviewWaitForInputSchema,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -59,7 +62,7 @@ export const previewEvaluate = makeIpcMethod({
   result: Schema.Unknown,
   handler: Effect.fn("desktop.ipc.preview.evaluate")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    return yield* automation.evaluate(input.webContentsId, input.expression);
+    return yield* automation.evaluate(input);
   }),
 });
 
@@ -79,7 +82,7 @@ export const previewClick = makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.click")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    yield* automation.click(input.webContentsId, input.ref);
+    yield* automation.click(input);
   }),
 });
 
@@ -90,6 +93,36 @@ export const previewType = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.type")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.type(input);
+  }),
+});
+
+export const previewPress = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_PRESS_CHANNEL,
+  payload: DesktopPreviewPressInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.press")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.press(input);
+  }),
+});
+
+export const previewScroll = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SCROLL_CHANNEL,
+  payload: DesktopPreviewScrollInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.scroll")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.scroll(input);
+  }),
+});
+
+export const previewWaitFor = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_WAIT_FOR_CHANNEL,
+  payload: DesktopPreviewWaitForInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.waitFor")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.waitFor(input);
   }),
 });
 

@@ -116,6 +116,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewSnapshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SNAPSHOT_CHANNEL, input),
   previewClick: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLICK_CHANNEL, input),
   previewType: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_TYPE_CHANNEL, input),
+  previewPress: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_PRESS_CHANNEL, input),
+  previewScroll: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCROLL_CHANNEL, input),
+  previewWaitFor: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_WAIT_FOR_CHANNEL, input),
   previewLocalServers: () => ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SERVERS_CHANNEL),
   previewScreenshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCREENSHOT_CHANNEL, input),
   previewOpenDevTools: (input) =>
