@@ -161,8 +161,8 @@ export function buildPickOverlayScript(
     "border:1px solid #4c8dff;color:#e8e6e1;outline:none;" +
     "font:400 12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
     ".input::placeholder{color:rgba(232,230,225,0.4)}" +
-    ".hint{color:rgba(232,230,225,0.45);" +
-    "font:400 10px/1.3 ui-sans-serif,system-ui,sans-serif}" +
+    ".hint{white-space:nowrap;color:rgba(232,230,225,0.3);" +
+    "font:400 10px/1.2 ui-sans-serif,system-ui,sans-serif}" +
     ".row{display:flex;align-items:center;gap:6px}" +
     ".toggle{display:flex;align-items:center;justify-content:center;width:24px;" +
     "height:24px;padding:0;border-radius:4px;cursor:pointer;background:none;" +
@@ -204,8 +204,18 @@ export function buildPickOverlayScript(
     ".colour::-webkit-color-swatch{border:none;border-radius:2px}" +
     ".unit{width:14px;color:rgba(232,230,225,0.4);" +
     "font:400 10px ui-sans-serif,system-ui,sans-serif}" +
-    ".foot{display:flex;align-items:center;gap:8px;margin-top:6px}" +
-    ".reset{margin-left:auto;padding:2px 6px;border-radius:3px;cursor:pointer;" +
+    ".foot{display:flex;align-items:center;gap:6px;margin-top:6px}" +
+    // The two things you can do, said as buttons. The keys still work and the
+    // hint still says so, but quietly: a line of instructions is not what you
+    // want to read every time you point at something.
+    ".act{padding:4px 9px;border-radius:5px;cursor:pointer;border:1px solid transparent;" +
+    "font:500 11px/1.2 ui-sans-serif,system-ui,sans-serif}" +
+    ".attach{background:#4c8dff;color:#0b1220}" +
+    ".attach:hover{filter:brightness(1.08)}" +
+    ".cancel{margin-left:auto;background:none;color:rgba(232,230,225,0.7);" +
+    "border-color:rgba(255,255,255,0.16)}" +
+    ".cancel:hover{color:#e8e6e1;background:rgba(255,255,255,0.06)}" +
+    ".reset{padding:2px 6px;border-radius:3px;cursor:pointer;" +
     "background:none;border:1px solid rgba(255,255,255,0.16);color:rgba(232,230,225,0.7);" +
     "font:400 10px ui-sans-serif,system-ui,sans-serif}" +
     ".reset:hover{color:#e8e6e1;background:rgba(255,255,255,0.06)}" +
@@ -350,8 +360,10 @@ export function buildPickOverlayScript(
       "<input class='input' type='text' />" +
       "</div>" +
       "<div class='panel' hidden></div>" +
-      "<div class='foot'><span class='hint'>Enter to attach · Esc to cancel</span>" +
-      "<button type='button' class='reset' hidden>reset</button></div>";
+      "<div class='foot'><span class='hint'>⏎ · esc</span>" +
+      "<button type='button' class='reset' hidden>reset</button>" +
+      "<button type='button' class='act cancel'>Cancel</button>" +
+      "<button type='button' class='act attach'>Attach</button></div>";
     root.appendChild(field);
     const input = field.querySelector(".input");
     const panel = field.querySelector(".panel");
@@ -527,6 +539,10 @@ export function buildPickOverlayScript(
 
     place();
 
+    field.querySelector(".attach").addEventListener("click", () => {
+      attach(input.value.trim(), [...tweaks.values()]);
+    });
+    field.querySelector(".cancel").addEventListener("click", cancel);
     input.addEventListener("keydown", (event) => {
       event.stopPropagation();
       if (event.key === "Enter") {

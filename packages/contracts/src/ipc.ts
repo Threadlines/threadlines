@@ -576,6 +576,20 @@ export const DesktopPreviewPickedElementSchema = Schema.Struct({
 });
 export type DesktopPreviewPickedElement = typeof DesktopPreviewPickedElementSchema.Type;
 
+/**
+ * A drawing, once the user has said what it is about.
+ *
+ * Two kinds of evidence from one gesture, because circling something says both
+ * how it looks and which thing it is: the caller photographs the page with the
+ * ink still on it, and these are the elements the strokes went round, so the
+ * agent can find them in the source rather than only look at them.
+ */
+export const DesktopPreviewDrawingSchema = Schema.Struct({
+  note: Schema.NullOr(Schema.String),
+  elements: Schema.Array(DesktopPreviewPickedElementSchema),
+});
+export type DesktopPreviewDrawing = typeof DesktopPreviewDrawingSchema.Type;
+
 export const DesktopPreviewSnapshotSchema = Schema.Struct({
   ...DesktopPreviewStatusSchema.fields,
   elements: Schema.Array(DesktopPreviewElementSchema),
@@ -857,6 +871,8 @@ export interface DesktopBridge {
   previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
   /** Arms drawing or erasing on the page, or clears the marks when null. */
   previewSetAnnotationMode?: (input: DesktopPreviewAnnotateInput) => Promise<void>;
+  /** Resolves when a drawing is attached, or null if it is discarded. */
+  previewAwaitDrawing?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewDrawing | null>;
   /** Resolves false when the element is no longer on the page. */
   previewRevealElement?: (input: DesktopPreviewRevealInput) => Promise<boolean>;
   previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;

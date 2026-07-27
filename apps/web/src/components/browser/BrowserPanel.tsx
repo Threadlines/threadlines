@@ -170,6 +170,16 @@ export function BrowserPanel({
 
   const activeWebview = () => webviewsRef.current.get(activeTabId) ?? null;
 
+  // Host rather than hostname: on a dev box every page is localhost and the
+  // port is the only thing telling two captures apart.
+  const screenshotName = useCallback(() => {
+    try {
+      return new URL(activeUrl ?? "").host.replace(":", "-") || "page";
+    } catch {
+      return "page";
+    }
+  }, [activeUrl]);
+
   // Offers this panel as the page the agent acts on, for as long as it is here.
   usePreviewAutomationHost({
     threadRef,
@@ -275,6 +285,30 @@ export function BrowserPanel({
         // the eraser exists to fix the stroke you just drew, and clearing on
         // the way there would leave nothing to fix.
         await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: next });
+        // One wait covers the whole session with the pen, including any trips
+        // to the eraser: it settles when the drawing is attached or discarded,
+        // not when the mode changes.
+        if (isInkTool(previous)) {
+          return;
+        }
+        const drawing = await window.desktopBridge?.previewAwaitDrawing?.({ webContentsId });
+        if (drawing === null || drawing === undefined) {
+          return;
+        }
+        // Photographed before the marks come down, because the ink is half of
+        // what the drawing says.
+        const shot = await window.desktopBridge?.previewScreenshot?.({ webContentsId });
+        if (shot !== undefined && shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1) !== "") {
+          onScreenshot?.({ dataUrl: shot.dataUrl, name: `${screenshotName()}.png` });
+        }
+        // The elements the strokes went round, so the agent can find them in
+        // the source rather than only look at them in the picture.
+        for (const element of drawing.elements) {
+          onPickElement?.(element);
+        }
+        await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: null });
+        armedToolRef.current = null;
+        setArmedTool(null);
         return;
       }
       try {
@@ -296,7 +330,7 @@ export function BrowserPanel({
         }
       }
     },
-    [activeTabId, guestColorScheme, onPickElement],
+    [activeTabId, guestColorScheme, onPickElement, onScreenshot, screenshotName],
   );
 
   // Everything these tools act on lives in the guest document, which a new
@@ -394,18 +428,9 @@ export function BrowserPanel({
         if (shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1) === "") {
           return;
         }
-        const host = (() => {
-          try {
-            // Host rather than hostname: on a dev box every page is localhost
-            // and the port is the only thing telling two shots apart.
-            return new URL(activeUrl ?? "").host.replace(":", "-") || "page";
-          } catch {
-            return "page";
-          }
-        })();
-        onScreenshot?.({ dataUrl: shot.dataUrl, name: `${host}.png` });
+        onScreenshot?.({ dataUrl: shot.dataUrl, name: `${screenshotName()}.png` });
       });
-  }, [activeTabId, activeUrl, onScreenshot]);
+  }, [activeTabId, onScreenshot, screenshotName]);
 
   return (
     <section
@@ -1066,11 +1091,14 @@ function ViewportResizeHandle({
  * Choosing from the menu arms it too -- reaching for a tool is the same act as
  * picking it up.
  */
+// One word each. The menu is a list of four things that differ only in what
+// they point at, and a sentence apiece made the card wider than the panel it
+// hangs off without saying more than the icon already does.
 const PAGE_TOOLS = [
-  { tool: "element", label: "Pick an element", Icon: MousePointerClickIcon },
-  { tool: "region", label: "Select a region", Icon: SquareDashedMousePointerIcon },
-  { tool: "draw", label: "Draw on the page", Icon: PencilIcon },
-  { tool: "erase", label: "Erase a stroke", Icon: EraserIcon },
+  { tool: "element", label: "Annotate", Icon: MousePointerClickIcon },
+  { tool: "region", label: "Region", Icon: SquareDashedMousePointerIcon },
+  { tool: "draw", label: "Draw", Icon: PencilIcon },
+  { tool: "erase", label: "Erase", Icon: EraserIcon },
 ] as const satisfies ReadonlyArray<{ tool: PageTool; label: string; Icon: typeof PencilIcon }>;
 
 type PageTool = DesktopPreviewPickMode | DesktopPreviewAnnotationMode;
@@ -1149,8 +1177,12 @@ function PageToolControl({
                 value={entry.tool}
                 data-testid={`browser-page-tool-${entry.tool}`}
               >
-                <entry.Icon className="size-3.5 text-muted-foreground/70" />
-                {entry.label}
+                {/* Flexed because the reset makes an svg a block, which would
+                    otherwise drop the label onto its own line. */}
+                <span className="flex items-center gap-2">
+                  <entry.Icon className="size-3.5 text-muted-foreground/70" />
+                  {entry.label}
+                </span>
               </MenuRadioItem>
             ))}
           </MenuRadioGroup>

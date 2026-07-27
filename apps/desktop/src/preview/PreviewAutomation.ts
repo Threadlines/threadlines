@@ -14,6 +14,7 @@
 
 import type {
   DesktopPreviewAnnotationMode,
+  DesktopPreviewDrawing,
   DesktopPreviewClickInput,
   DesktopPreviewPickedElement,
   DesktopPreviewPickMode,
@@ -34,7 +35,12 @@ import { webContents, type WebContents } from "electron";
 
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
-import { buildDrawOverlayScript, DRAW_OVERLAY_TEARDOWN_SCRIPT } from "./drawOverlayScript.ts";
+import {
+  buildDrawOverlayScript,
+  DRAW_OVERLAY_BINDING,
+  DRAW_OVERLAY_STASH,
+  DRAW_OVERLAY_TEARDOWN_SCRIPT,
+} from "./drawOverlayScript.ts";
 import { buildRevealElementScript } from "./revealElementScript.ts";
 import {
   buildPickOverlayScript,
@@ -161,6 +167,11 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
       mode: DesktopPreviewAnnotationMode | null,
     ) => Effect.Effect<void, PreviewAutomationError>;
+    /** Resolves when the user attaches a drawing, or empty if they discard it
+     *  or the mode is turned off. */
+    readonly awaitDrawing: (
+      webContentsId: number,
+    ) => Effect.Effect<DesktopPreviewDrawing | null, PreviewAutomationError>;
     readonly revealElement: (
       webContentsId: number,
       selector: string,
@@ -207,6 +218,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * overlay belonging to whatever replaced it.
    */
   const pendingPicks = new Map<number, { supersede: () => void }>();
+  /** Whoever is waiting for a drawing to be attached, so turning the mode off
+   *  can release them. */
+  const drawWaiters = new Map<number, () => void>();
 
   const resolve = (webContentsId: number) =>
     Effect.suspend(() => {
@@ -497,6 +511,45 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         url: String(value.url ?? ""),
       } satisfies DesktopPreviewPickedElement;
     });
+
+  /**
+   * Describes the elements an overlay left behind for us.
+   *
+   * Read back by identity rather than by hit-testing a point again: the second
+   * test can land on a different element than the one the user watched light
+   * up, and for a region or a circled group no single point names the set at
+   * all. Must run before the overlay is torn down, since the teardown is what
+   * drops the handles.
+   */
+  const describeStashed = Effect.fn("PreviewAutomation.describeStashed")(function* (
+    contents: WebContents,
+    stash: string,
+    count: number,
+  ) {
+    const described: DesktopPreviewPickedElement[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const handle = (yield* sendCommand(contents, "Runtime.evaluate", {
+        expression: `window[${JSON.stringify(stash)}][${index}]`,
+      })) as { result?: { objectId?: string } };
+      const objectId = handle.result?.objectId;
+      if (objectId === undefined) {
+        continue;
+      }
+      const node = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
+        node?: { backendNodeId?: number };
+      };
+      yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
+      const backendNodeId = node.node?.backendNodeId;
+      if (backendNodeId === undefined) {
+        continue;
+      }
+      const element = yield* describePickedNode(sendCommand)(contents, backendNodeId);
+      if (element !== null) {
+        described.push(element);
+      }
+    }
+    return described;
+  });
 
   const buildStatus = (webContentsId: number, contents: WebContents): DesktopPreviewStatus => {
     const tab = attached.get(webContentsId);
@@ -834,37 +887,16 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       // the overlay's handles on the elements it chose.
       const described: DesktopPreviewPickedElement[] = [];
       if (current && picked !== null) {
-        for (let index = 0; index < picked.count; index += 1) {
-          // Read back by identity rather than by hit-testing the click point
-          // again: the second test can land on a different element than the one
-          // the user watched light up, and for a region no single point names
-          // the set at all.
-          const handle = (yield* sendCommand(contents, "Runtime.evaluate", {
-            expression: `window[${JSON.stringify(PICK_OVERLAY_STASH)}][${index}]`,
-          })) as { result?: { objectId?: string } };
-          const objectId = handle.result?.objectId;
-          if (objectId === undefined) {
-            continue;
-          }
-          const node = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
-            node?: { backendNodeId?: number };
-          };
-          yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
-          const backendNodeId = node.node?.backendNodeId;
-          if (backendNodeId === undefined) {
-            continue;
-          }
-          const element = yield* describePickedNode(sendCommand)(contents, backendNodeId);
-          if (element !== null) {
-            described.push({
-              ...element,
-              note: picked.note,
-              // Attached to the element they were made on. A region shares one
-              // note but tweaks only ever apply to a lone element, so this is
-              // never spread across a set.
-              styleChanges: picked.styleChanges,
-            });
-          }
+        const elements = yield* describeStashed(contents, PICK_OVERLAY_STASH, picked.count);
+        for (const element of elements) {
+          described.push({
+            ...element,
+            note: picked.note,
+            // Attached to the element they were made on. A region shares one
+            // note but tweaks only ever apply to a lone element, so this is
+            // never spread across a set.
+            styleChanges: picked.styleChanges,
+          });
         }
       }
 
@@ -876,11 +908,79 @@ export const make = Effect.sync(function PreviewAutomationMake() {
 
       return described;
     }),
+    awaitDrawing: Effect.fn("PreviewAutomation.awaitDrawing")(function* (webContentsId: number) {
+      const contents = yield* resolve(webContentsId);
+      yield* sendCommand(contents, "DOM.enable", {});
+      yield* sendCommand(contents, "Runtime.enable", {});
+      yield* sendCommand(contents, "Runtime.addBinding", {
+        name: DRAW_OVERLAY_BINDING,
+      }).pipe(Effect.ignore);
+
+      const attached = yield* Effect.tryPromise({
+        try: () =>
+          new Promise<{ note: string | null; count: number } | null>((settle) => {
+            let done = false;
+            const finish = (value: { note: string | null; count: number } | null) => {
+              if (done) return;
+              done = true;
+              contents.debugger.off("message", onMessage);
+              settle(value);
+            };
+            const onMessage = (
+              _event: unknown,
+              method: string,
+              params: Record<string, unknown>,
+            ) => {
+              if (method !== "Runtime.bindingCalled" || params.name !== DRAW_OVERLAY_BINDING) {
+                return;
+              }
+              try {
+                const payload = JSON.parse(String(params.payload ?? "{}")) as {
+                  note?: string | null;
+                  count?: number;
+                  cancelled?: boolean;
+                };
+                finish(
+                  payload.cancelled === true
+                    ? null
+                    : { note: payload.note ?? null, count: payload.count ?? 0 },
+                );
+              } catch {
+                finish(null);
+              }
+            };
+            contents.debugger.on("message", onMessage);
+            // No timeout: unlike a pick, drawing is not a question waiting on an
+            // answer. The mode stays armed until the user puts the pen down,
+            // and turning it off is what cancels this.
+            drawWaiters.set(webContentsId, () => finish(null));
+          }),
+        catch: (cause) =>
+          new PreviewCommandError({ webContentsId, method: "Runtime.bindingCalled", cause }),
+      });
+      drawWaiters.delete(webContentsId);
+      if (attached === null) {
+        return null;
+      }
+
+      // Described while the ink is still up, because the caller photographs the
+      // page next and the strokes have to be in the picture.
+      const elements = yield* describeStashed(contents, DRAW_OVERLAY_STASH, attached.count);
+      return {
+        note: attached.note,
+        elements: elements.map((element) => ({ ...element, note: attached.note })),
+      } satisfies DesktopPreviewDrawing;
+    }),
     setAnnotationMode: Effect.fn("PreviewAutomation.setAnnotationMode")(function* (
       webContentsId: number,
       mode: DesktopPreviewAnnotationMode | null,
     ) {
       const contents = yield* resolve(webContentsId);
+      if (mode === null) {
+        // Clearing the marks is also how a drawing is abandoned, so whoever is
+        // waiting on one has to stop waiting rather than outlive the overlay.
+        drawWaiters.get(webContentsId)?.();
+      }
       // Nothing is read back, so this is a plain evaluation rather than the
       // binding round trip picking needs.
       yield* sendCommand(contents, "Runtime.evaluate", {

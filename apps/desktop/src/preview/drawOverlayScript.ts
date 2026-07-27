@@ -15,7 +15,17 @@
  * on the thing it was drawn on when the page scrolls.
  */
 
+import { coveredBoxIndicesSource } from "./regionSelection.ts";
+
 const DRAW_OVERLAY_ID = "__threadlines-draw-overlay";
+/** Reported when the user attaches a drawing, mirroring the picker's binding. */
+export const DRAW_OVERLAY_BINDING = "__threadlinesAttachDrawing";
+/** Where the elements the strokes enclose are left, for the caller to describe. */
+export const DRAW_OVERLAY_STASH = "__threadlinesDrawnElements";
+/** How much of an element a stroke has to enclose to count as circled. */
+const DRAW_COVERAGE = 0.7;
+/** A scribble across a page should not attach forty chips. */
+const DRAW_MAX_ELEMENTS = 8;
 /** The highlight blue the picker uses, so the whole feature reads as one thing. */
 const INK = "#4c8dff";
 const INK_WIDTH = 3;
@@ -42,6 +52,14 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
   const INK_WIDTH = ${INK_WIDTH};
   const HIT_WIDTH = ${ERASE_HIT_WIDTH};
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const BINDING = ${JSON.stringify("__threadlinesAttachDrawing")};
+  const STASH = ${JSON.stringify("__threadlinesDrawnElements")};
+  const COVERAGE = ${DRAW_COVERAGE};
+  const MAX_ELEMENTS = ${DRAW_MAX_ELEMENTS};
+
+  // The same rule the region tool uses, inlined so the page runs exactly what
+  // the tests cover.
+  ${coveredBoxIndicesSource()}
 
   const existing = document.getElementById(OVERLAY_ID);
   if (existing) {
@@ -67,6 +85,29 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
     ".hit{fill:none;stroke:transparent;stroke-width:" + HIT_WIDTH + ";" +
     "stroke-linecap:round;stroke-linejoin:round;pointer-events:none}" +
     ":host([data-mode='erase']) .hit{pointer-events:stroke;cursor:pointer}" +
+    // The same card the picker uses, so attaching a drawing and attaching an
+    // element look like the same act.
+    // One row: a field and the two things you can do with it. The keys still
+    // work and the hint still says so, but quietly -- a line of instructions is
+    // not what you want to read every time you draw a circle.
+    ".note{position:fixed;display:flex;align-items:center;gap:6px;" +
+    "padding:6px;border-radius:8px;background:#16181c;pointer-events:auto;" +
+    "border:1px solid rgba(255,255,255,0.14);box-shadow:0 4px 16px rgba(0,0,0,0.45)}" +
+    ".input{width:220px;padding:5px 8px;border-radius:5px;background:#0f1115;" +
+    "border:1px solid rgba(255,255,255,0.16);color:#e8e6e1;outline:none;" +
+    "font:400 12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    ".input:focus{border-color:" + INK + "}" +
+    ".input::placeholder{color:rgba(232,230,225,0.4)}" +
+    ".act{padding:5px 10px;border-radius:5px;cursor:pointer;border:1px solid transparent;" +
+    "font:500 12px/1.2 ui-sans-serif,system-ui,sans-serif}" +
+    ".attach{background:" + INK + ";color:#0b1220}" +
+    ".attach:hover{filter:brightness(1.08)}" +
+    ".cancel{background:none;color:rgba(232,230,225,0.7);" +
+    "border-color:rgba(255,255,255,0.16)}" +
+    ".cancel:hover{color:#e8e6e1;background:rgba(255,255,255,0.06)}" +
+    ".hint{margin-left:2px;white-space:nowrap;color:rgba(232,230,225,0.3);" +
+    "font:400 10px/1.2 ui-sans-serif,system-ui,sans-serif}" +
+    "[hidden]{display:none !important}" +
     "</style>" +
     "<svg xmlns='" + SVG_NS + "'></svg>";
   const svg = root.querySelector("svg");
@@ -153,6 +194,7 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
   const onUp = () => {
     stroke = null;
     points = [];
+    showNote();
   };
 
   // Erasing is a click on a stroke, which only reaches us because the hit twin
@@ -165,6 +207,113 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
       event.stopPropagation();
       target.parentNode.remove();
     }
+  };
+
+  /**
+   * What the strokes are drawn around.
+   *
+   * Per stroke rather than over all of them together: circling two things in
+   * different corners means those two things, and a box around the pair would
+   * sweep up everything between them.
+   */
+  const enclosedElements = () => {
+    const strokes = [...svg.children].map((group) => {
+      const box = group.getBoundingClientRect();
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    });
+    if (strokes.length === 0) {
+      return [];
+    }
+    const candidates = [];
+    for (const element of document.body.querySelectorAll("*")) {
+      if (host.contains(element) || element === host) continue;
+      const tagName = element.tagName;
+      if (tagName === "SCRIPT" || tagName === "STYLE" || tagName === "BR") continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.width * rect.height < 64) continue;
+      if (rect.bottom < 0 || rect.top > innerHeight || rect.right < 0 || rect.left > innerWidth) {
+        continue;
+      }
+      const style = getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") {
+        continue;
+      }
+      candidates.push({ element, rect });
+    }
+    const found = [];
+    for (const strokeBox of strokes) {
+      const boxes = candidates.map((candidate) => candidate.rect);
+      for (const index of coveredBoxIndices(boxes, strokeBox, COVERAGE)) {
+        const element = candidates[index].element;
+        if (!found.includes(element)) {
+          found.push(element);
+        }
+      }
+    }
+    // Outermost only, for the same reason the region tool does it: a circle
+    // around a card means the card, not the card and its children.
+    return found
+      .filter((element) => !found.some((other) => other !== element && other.contains(element)))
+      .slice(0, MAX_ELEMENTS);
+  };
+
+  let noteField = null;
+
+  /**
+   * Appears once there is something to attach.
+   *
+   * Every other tool here ends with the same question, so this one does too --
+   * the drawing says which thing, and the note says what about it.
+   */
+  const showNote = () => {
+    if (noteField !== null || svg.children.length === 0) {
+      return;
+    }
+    noteField = document.createElement("div");
+    noteField.className = "note";
+    noteField.innerHTML =
+      "<input class='input' type='text' placeholder='Describe the change…' />" +
+      "<button type='button' class='act attach'>Attach</button>" +
+      "<button type='button' class='act cancel'>Cancel</button>" +
+      "<span class='hint'>⏎ · esc</span>";
+    root.appendChild(noteField);
+    const input = noteField.querySelector(".input");
+
+    // Parked in a corner rather than hung off the strokes: the drawing grows
+    // while you make it, and a bar that chased it would move under the cursor
+    // exactly when you were reaching for it.
+    noteField.style.right = "16px";
+    noteField.style.bottom = "16px";
+
+    const attach = () => {
+      const note = input.value.trim();
+      // The elements are read and the bar removed before the caller hears
+      // anything, because the next thing it does is photograph the page and the
+      // bar must not be in the picture.
+      window[STASH] = enclosedElements();
+      noteField.remove();
+      noteField = null;
+      window[BINDING](
+        JSON.stringify({ note: note === "" ? null : note, count: window[STASH].length }),
+      );
+    };
+    const cancel = () => {
+      window[BINDING](JSON.stringify({ cancelled: true }));
+    };
+
+    noteField.querySelector(".attach").addEventListener("click", attach);
+    noteField.querySelector(".cancel").addEventListener("click", cancel);
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        attach();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancel();
+      }
+    });
+    requestAnimationFrame(() => input.focus());
   };
 
   host.addEventListener("pointerdown", onDown);

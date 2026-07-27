@@ -10,6 +10,7 @@ import {
   DesktopPreviewStatusSchema,
   DesktopPreviewPickedElementSchema,
   DesktopPreviewAnnotateInputSchema,
+  DesktopPreviewDrawingSchema,
   DesktopPreviewPickInputSchema,
   DesktopPreviewPressInputSchema,
   DesktopPreviewRevealInputSchema,
@@ -203,6 +204,16 @@ export const previewSetAnnotationMode = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.setAnnotationMode")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.setAnnotationMode(input.webContentsId, input.mode);
+  }),
+});
+
+export const previewAwaitDrawing = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AWAIT_DRAWING_CHANNEL,
+  payload: DesktopPreviewTargetSchema,
+  result: Schema.NullOr(DesktopPreviewDrawingSchema),
+  handler: Effect.fn("desktop.ipc.preview.awaitDrawing")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.awaitDrawing(input.webContentsId);
   }),
 });
 

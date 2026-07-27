@@ -18,6 +18,7 @@ export const PREVIEW_SET_COLOR_SCHEME_CHANNEL = "desktop:preview-set-color-schem
 export const PREVIEW_PICK_ELEMENT_CHANNEL = "desktop:preview-pick-element";
 export const PREVIEW_CANCEL_PICK_CHANNEL = "desktop:preview-cancel-pick";
 export const PREVIEW_SET_ANNOTATION_MODE_CHANNEL = "desktop:preview-set-annotation-mode";
+export const PREVIEW_AWAIT_DRAWING_CHANNEL = "desktop:preview-await-drawing";
 export const PREVIEW_REVEAL_ELEMENT_CHANNEL = "desktop:preview-reveal-element";
 export const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop:preview-set-viewport";
 export const PREVIEW_CLEAR_BROWSING_DATA_CHANNEL = "desktop:preview-clear-browsing-data";
