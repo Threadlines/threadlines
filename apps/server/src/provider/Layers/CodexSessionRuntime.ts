@@ -52,6 +52,7 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import { CODEX_APP_SERVER_ARGS } from "../codexAppServerArgs.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
@@ -535,10 +536,14 @@ function buildCodexCollaborationMode(input: {
     settings: {
       model,
       ...(input.effort ? { reasoning_effort: input.effort } : {}),
-      developer_instructions:
+      // Appended rather than replacing the mode block: which browser the user
+      // means is orthogonal to how the model is collaborating.
+      developer_instructions: [
         input.interactionMode === "plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+        CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
+      ].join("\n\n"),
     },
   };
 }

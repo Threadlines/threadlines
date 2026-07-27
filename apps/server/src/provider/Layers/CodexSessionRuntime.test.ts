@@ -10,6 +10,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import {
   buildPermissionsApprovalResponse,
@@ -86,7 +87,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: `${CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS}\n\n${CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS}`,
         },
       },
     });
@@ -130,7 +131,7 @@ describe("buildTurnStartParams", () => {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
-          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: `${CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS}\n\n${CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS}`,
         },
       },
     });
