@@ -424,6 +424,22 @@ export const DesktopPreviewPickInputSchema = Schema.Struct({
 });
 export type DesktopPreviewPickInput = typeof DesktopPreviewPickInputSchema.Type;
 
+/**
+ * Marking up the page rather than pointing at it.
+ *
+ * "draw" leaves ink, "erase" takes a stroke back off, null clears the lot. The
+ * marks are never reported anywhere: they exist so a screenshot can carry them,
+ * which is why turning the mode off is also how you start over.
+ */
+export const DesktopPreviewAnnotationModeSchema = Schema.Literals(["draw", "erase"]);
+export type DesktopPreviewAnnotationMode = typeof DesktopPreviewAnnotationModeSchema.Type;
+
+export const DesktopPreviewAnnotateInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  mode: Schema.NullOr(DesktopPreviewAnnotationModeSchema),
+});
+export type DesktopPreviewAnnotateInput = typeof DesktopPreviewAnnotateInputSchema.Type;
+
 export const DesktopPreviewRevealInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   selector: Schema.String,
@@ -805,6 +821,8 @@ export interface DesktopBridge {
     input: DesktopPreviewPickInput,
   ) => Promise<readonly DesktopPreviewPickedElement[]>;
   previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
+  /** Arms drawing or erasing on the page, or clears the marks when null. */
+  previewSetAnnotationMode?: (input: DesktopPreviewAnnotateInput) => Promise<void>;
   /** Resolves false when the element is no longer on the page. */
   previewRevealElement?: (input: DesktopPreviewRevealInput) => Promise<boolean>;
   previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;

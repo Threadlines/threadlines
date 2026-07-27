@@ -1,6 +1,7 @@
 import type { PickedElementContextDraft } from "../../lib/pickedElementContext";
 import type {
   DesktopLocalServer,
+  DesktopPreviewAnnotationMode,
   DesktopPreviewPickedElement,
   DesktopPreviewPickMode,
   ScopedThreadRef,
@@ -14,7 +15,9 @@ import {
   GlobeIcon,
   MaximizeIcon,
   MinimizeIcon,
+  EraserIcon,
   MousePointerClickIcon,
+  PencilIcon,
   SquareDashedMousePointerIcon,
   MoreVerticalIcon,
   PlusIcon,
@@ -224,6 +227,9 @@ export function BrowserPanel({
           return;
         }
       }
+      // Ink and picking both want the pointer, so arming one puts the other
+      // away.
+      await setAnnotation(null);
       setPicking(mode);
       try {
         const elements = await window.desktopBridge?.previewPickElement?.({
@@ -240,6 +246,55 @@ export function BrowserPanel({
     },
     [activeTabId, guestColorScheme, onPickElement, picking],
   );
+
+  /**
+   * Marking the page up rather than pointing at it.
+   *
+   * Kept in the panel rather than the store: the marks live in the guest page
+   * and die with it, so remembering the mode across a reload would light a
+   * button up over a page with nothing on it.
+   */
+  const [annotation, setAnnotationState] = useState<DesktopPreviewAnnotationMode | null>(null);
+  const setAnnotation = useCallback(
+    async (mode: DesktopPreviewAnnotationMode | null) => {
+      const webview = webviewsRef.current.get(activeTabId);
+      if (webview === null || webview === undefined || !isElectron) {
+        return;
+      }
+      setAnnotationState(mode);
+      await window.desktopBridge?.previewSetAnnotationMode?.({
+        webContentsId: webview.getWebContentsId(),
+        mode,
+      });
+    },
+    [activeTabId],
+  );
+  const toggleAnnotation = useCallback(
+    async (mode: DesktopPreviewAnnotationMode) => {
+      if (picking !== null) {
+        const webview = webviewsRef.current.get(activeTabId);
+        if (webview !== null && webview !== undefined) {
+          await window.desktopBridge?.previewCancelPick?.({
+            webContentsId: webview.getWebContentsId(),
+          });
+        }
+        setPicking(null);
+      }
+      // Pressing the lit button is how you clear the marks: there is no
+      // separate clear, because putting the pen down and being done with the
+      // drawing are the same moment.
+      await setAnnotation(annotation === mode ? null : mode);
+    },
+    [activeTabId, annotation, picking, setAnnotation],
+  );
+
+  // Marks live in the guest document and die with it, so a new address leaves
+  // the button lit over a page with nothing on it. Switching tabs is the same
+  // story: the mode was armed on the other one.
+  const activeTabUrl = activeTab?.url ?? null;
+  useEffect(() => {
+    setAnnotationState(null);
+  }, [activeTabUrl, activeTabId]);
 
   // A reveal request arrives from the composer, which cannot know which tab is
   // showing the page it came from -- or whether the panel was even open. The
@@ -458,6 +513,22 @@ export function BrowserPanel({
           testId="browser-pick-region"
         >
           <SquareDashedMousePointerIcon className="size-3.5" />
+        </NavButton>
+        <NavButton
+          label={annotation === "draw" ? "Clear drawing" : "Draw on the page"}
+          onClick={() => void toggleAnnotation("draw")}
+          active={annotation === "draw"}
+          testId="browser-draw"
+        >
+          <PencilIcon className="size-3.5" />
+        </NavButton>
+        <NavButton
+          label={annotation === "erase" ? "Clear drawing" : "Erase a stroke"}
+          onClick={() => void toggleAnnotation("erase")}
+          active={annotation === "erase"}
+          testId="browser-erase"
+        >
+          <EraserIcon className="size-3.5" />
         </NavButton>
         <NavButton
           label="Capture screenshot"

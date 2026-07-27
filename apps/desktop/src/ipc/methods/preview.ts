@@ -9,6 +9,7 @@ import {
   DesktopPreviewTypeInputSchema,
   DesktopPreviewStatusSchema,
   DesktopPreviewPickedElementSchema,
+  DesktopPreviewAnnotateInputSchema,
   DesktopPreviewPickInputSchema,
   DesktopPreviewRevealInputSchema,
   DesktopPreviewTargetSchema,
@@ -159,6 +160,16 @@ export const previewCancelPick = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.cancelPick")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.cancelPick(input.webContentsId);
+  }),
+});
+
+export const previewSetAnnotationMode = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_ANNOTATION_MODE_CHANNEL,
+  payload: DesktopPreviewAnnotateInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setAnnotationMode")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.setAnnotationMode(input.webContentsId, input.mode);
   }),
 });
 

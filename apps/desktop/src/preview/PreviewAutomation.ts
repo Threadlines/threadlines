@@ -13,6 +13,7 @@
  */
 
 import type {
+  DesktopPreviewAnnotationMode,
   DesktopPreviewPickedElement,
   DesktopPreviewPickMode,
   DesktopPreviewConsoleEntry,
@@ -25,6 +26,7 @@ import type {
 import { webContents, type WebContents } from "electron";
 
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
+import { buildDrawOverlayScript, DRAW_OVERLAY_TEARDOWN_SCRIPT } from "./drawOverlayScript.ts";
 import { buildRevealElementScript } from "./revealElementScript.ts";
 import {
   buildPickOverlayScript,
@@ -142,6 +144,10 @@ export class PreviewAutomation extends Context.Service<
       mode: DesktopPreviewPickMode,
     ) => Effect.Effect<ReadonlyArray<DesktopPreviewPickedElement>, PreviewAutomationError>;
     readonly cancelPick: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
+    readonly setAnnotationMode: (
+      webContentsId: number,
+      mode: DesktopPreviewAnnotationMode | null,
+    ) => Effect.Effect<void, PreviewAutomationError>;
     readonly revealElement: (
       webContentsId: number,
       selector: string,
@@ -656,6 +662,17 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       }).pipe(Effect.ignore);
 
       return described;
+    }),
+    setAnnotationMode: Effect.fn("PreviewAutomation.setAnnotationMode")(function* (
+      webContentsId: number,
+      mode: DesktopPreviewAnnotationMode | null,
+    ) {
+      const contents = yield* resolve(webContentsId);
+      // Nothing is read back, so this is a plain evaluation rather than the
+      // binding round trip picking needs.
+      yield* sendCommand(contents, "Runtime.evaluate", {
+        expression: mode === null ? DRAW_OVERLAY_TEARDOWN_SCRIPT : buildDrawOverlayScript(mode),
+      });
     }),
     revealElement: Effect.fn("PreviewAutomation.revealElement")(function* (
       webContentsId: number,

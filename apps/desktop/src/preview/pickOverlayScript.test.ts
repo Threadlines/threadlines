@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { buildDrawOverlayScript, DRAW_OVERLAY_TEARDOWN_SCRIPT } from "./drawOverlayScript";
 import { buildPickOverlayScript, PICK_OVERLAY_TEARDOWN_SCRIPT } from "./pickOverlayScript";
 
 /**
@@ -24,6 +25,12 @@ describe("buildPickOverlayScript", () => {
 
   it("parses the teardown script", () => {
     expect(() => new Function(PICK_OVERLAY_TEARDOWN_SCRIPT)).not.toThrow();
+  });
+
+  it("parses the drawing overlay in both of its modes", () => {
+    expect(() => new Function(buildDrawOverlayScript("draw"))).not.toThrow();
+    expect(() => new Function(buildDrawOverlayScript("erase"))).not.toThrow();
+    expect(() => new Function(DRAW_OVERLAY_TEARDOWN_SCRIPT)).not.toThrow();
   });
 
   it("arms the pointer handlers each mode needs and no others", () => {

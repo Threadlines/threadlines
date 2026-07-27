@@ -127,6 +127,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewPickElement: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, input),
   previewCancelPick: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CANCEL_PICK_CHANNEL, input),
+  previewSetAnnotationMode: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_ANNOTATION_MODE_CHANNEL, input),
   previewRevealElement: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_REVEAL_ELEMENT_CHANNEL, input),
   previewClearBrowsingData: () =>
