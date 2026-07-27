@@ -136,15 +136,20 @@ export function buildPickOverlayScript(
   root.innerHTML =
     "<style>" +
     ":host{all:initial}" +
-    ".box{position:fixed;border:2px solid #4c8dff;border-radius:3px;" +
+    // Outline, not border. The box is placed at the element's own rect, and a
+    // border would be drawn outside that rect on the right and bottom while
+    // overlapping it on the left and top -- so the highlight sat a couple of
+    // pixels down and to the right of the thing it was pointing at. An outline
+    // takes no space and surrounds the rect evenly, which is the whole job.
+    ".box{position:fixed;outline:2px solid #4c8dff;border-radius:3px;" +
     "background:rgba(76,141,255,0.14);pointer-events:none;" +
     "transition:all 60ms ease-out}" +
     // No transition on region members: they appear and disappear as the drag
     // crosses them, and easing a box in from its neighbour's position reads as
     // the selection sliding around rather than changing.
-    ".box.member{transition:none;border-width:1.5px}" +
+    ".box.member{transition:none;outline-width:1.5px}" +
     // The dragged rectangle itself, distinct from what it has caught.
-    ".band{position:fixed;border:1px dashed #4c8dff;border-radius:2px;" +
+    ".band{position:fixed;box-sizing:border-box;border:1px dashed #4c8dff;border-radius:2px;" +
     "background:rgba(76,141,255,0.07);pointer-events:none}" +
     ".tag{position:fixed;display:flex;gap:8px;align-items:baseline;" +
     "padding:3px 7px;border-radius:4px;background:#16181c;color:#e8e6e1;" +

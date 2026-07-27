@@ -44,7 +44,12 @@ export function buildRevealElementScript(selector: string): string {
   root.innerHTML =
     "<style>" +
     ":host{all:initial}" +
-    ".box{position:fixed;border:2px solid #4c8dff;border-radius:3px;" +
+    // Outline, not border. The box is placed at the element's own rect, and a
+    // border would be drawn outside that rect on the right and bottom while
+    // overlapping it on the left and top -- so the highlight sat a couple of
+    // pixels down and to the right of the thing it was pointing at. An outline
+    // takes no space and surrounds the rect evenly, which is the whole job.
+    ".box{position:fixed;outline:2px solid #4c8dff;border-radius:3px;" +
     "background:rgba(76,141,255,0.14);pointer-events:none;" +
     "transition:opacity 220ms ease-out;opacity:1}" +
     ".fade{opacity:0}" +
