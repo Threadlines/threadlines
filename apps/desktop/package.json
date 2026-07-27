@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "build": "vp pack",
+    "build": "vp pack && node scripts/preview-vendor.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:bundle": "vp pack --watch",
     "dev:electron": "node scripts/dev-electron.mjs",

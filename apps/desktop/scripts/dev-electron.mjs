@@ -3,6 +3,7 @@ import { unwatchFile, watch, watchFile } from "node:fs";
 import { join } from "node:path";
 
 import { desktopDir, resolveElectronPath } from "./electron-launcher.mjs";
+import { copyPreviewVendor } from "./preview-vendor.mjs";
 import { waitForResources } from "./wait-for-resources.mjs";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL?.trim();
@@ -181,6 +182,11 @@ function startApp() {
   if (shuttingDown || currentApp !== null) {
     return;
   }
+
+  // Every launch, not once at startup: `vp pack --watch` clears its output
+  // directory, and a restart triggered by that rebuild would otherwise start an
+  // Electron whose vendored assets had just been deleted.
+  copyPreviewVendor();
 
   const launchArgs = [
     "--threadlines-dev-root=" + devProcessIdentity,

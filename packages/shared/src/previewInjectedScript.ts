@@ -31,6 +31,20 @@ export const INJECTED_SCRIPT_MODULE_PATH =
   "packages/playwright-core/src/generated/injectedScriptSource.ts";
 
 /**
+ * Where the extracted script sits, in the source tree and beside the bundle.
+ *
+ * Named here, once, because four places need to agree on it: the extractor that
+ * writes it, the runtime that reads it, the build step that copies it next to
+ * the bundle, and the packager that refuses to ship without it. When they
+ * disagree the failure is a missing file at the moment an agent asks for a
+ * snapshot -- which is exactly how this was found, in a session where the model
+ * quietly fell back to screenshots and nobody noticed for hours.
+ */
+export const VENDOR_DIRECTORY_NAME = "vendor";
+export const VENDORED_INJECTED_SCRIPT_FILENAME = "playwrightInjected.js";
+export const VENDORED_INJECTED_MANIFEST_FILENAME = "playwrightInjected.json";
+
+/**
  * Below this it is not the injected script.
  *
  * The real one is a few hundred kilobytes. The competitor's check was 100KB and

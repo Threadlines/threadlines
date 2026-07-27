@@ -17,6 +17,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import {
+  VENDOR_DIRECTORY_NAME,
+  VENDORED_INJECTED_SCRIPT_FILENAME,
+} from "@threadlines/shared/previewInjectedScript";
+
 /**
  * The vendored script, read once.
  *
@@ -28,7 +33,7 @@ let cachedSource: string | null = null;
 
 export function injectedScriptSource(): string {
   cachedSource ??= readFileSync(
-    join(import.meta.dirname, "vendor", "playwrightInjected.js"),
+    join(import.meta.dirname, VENDOR_DIRECTORY_NAME, VENDORED_INJECTED_SCRIPT_FILENAME),
     "utf8",
   );
   return cachedSource;

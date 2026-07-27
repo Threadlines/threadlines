@@ -19,12 +19,15 @@ import { fileURLToPath } from "node:url";
 import {
   extractInjectedScript,
   INJECTED_SCRIPT_MODULE_PATH,
-} from "../apps/desktop/src/preview/injectedScriptSource.ts";
+  VENDOR_DIRECTORY_NAME,
+  VENDORED_INJECTED_MANIFEST_FILENAME,
+  VENDORED_INJECTED_SCRIPT_FILENAME,
+} from "@threadlines/shared/previewInjectedScript";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const vendoredPath = join(here, "..", "apps", "desktop", "src", "preview", "vendor");
-const scriptPath = join(vendoredPath, "playwrightInjected.js");
-const manifestPath = join(vendoredPath, "playwrightInjected.json");
+const vendoredPath = join(here, "..", "apps", "desktop", "src", "preview", VENDOR_DIRECTORY_NAME);
+const scriptPath = join(vendoredPath, VENDORED_INJECTED_SCRIPT_FILENAME);
+const manifestPath = join(vendoredPath, VENDORED_INJECTED_MANIFEST_FILENAME);
 
 function resolveBundle(): { source: string; version: string } {
   // Resolved from the package that declares the dependency, so this reads the
