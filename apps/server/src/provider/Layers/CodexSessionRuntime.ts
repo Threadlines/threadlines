@@ -1,3 +1,5 @@
+import { codexBrowserThreadConfig } from "../../mcp/McpHttpServer.ts";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -173,6 +175,9 @@ type CodexThreadItem =
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
+  /** Where this server is listening, so the thread can be told how to reach
+   *  the browser tools. */
+  readonly serverPort: number;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly binaryPath: string;
   readonly homePath?: string;
@@ -455,6 +460,8 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  /** Absent when the thread has no browser tools to offer. */
+  readonly browserConfig: Record<string, string> | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -462,6 +469,7 @@ function buildThreadStartParams(input: {
     threadSource: CODEX_THREAD_SOURCE,
     approvalPolicy: config.approvalPolicy,
     sandbox: config.sandbox,
+    ...(input.browserConfig === undefined ? {} : { config: input.browserConfig }),
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
@@ -475,11 +483,13 @@ function buildThreadForkParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly browserConfig: Record<string, string> | undefined;
 }): EffectCodexSchema.V2ThreadForkParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     threadId: input.sourceThreadId,
     threadSource: CODEX_THREAD_SOURCE,
+    ...(input.browserConfig === undefined ? {} : { config: input.browserConfig }),
     ...(input.lastTurnId !== undefined ? { lastTurnId: input.lastTurnId } : {}),
     cwd: input.cwd,
     approvalPolicy: config.approvalPolicy,
@@ -780,6 +790,8 @@ export const openCodexThread = (input: {
    *  falls back to a fresh start. Lets callers surface the degraded resume
    *  instead of silently continuing without history. */
   readonly onResumeFallback?: (cause: string) => Effect.Effect<void>;
+  /** The browser the user has open, as an MCP server Codex can reach. */
+  readonly browserConfig?: Record<string, string> | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -787,6 +799,7 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    browserConfig: input.browserConfig,
   });
 
   if (resumeThreadId === undefined) {
@@ -802,6 +815,7 @@ export const openCodexThread = (input: {
             runtimeMode: input.runtimeMode,
             model: input.requestedModel,
             serviceTier: input.serviceTier,
+            browserConfig: input.browserConfig,
           }),
         );
       const forkRequest =
@@ -815,6 +829,7 @@ export const openCodexThread = (input: {
                   runtimeMode: input.runtimeMode,
                   model: input.requestedModel,
                   serviceTier: input.serviceTier,
+                  browserConfig: input.browserConfig,
                 }),
                 beforeTurnId: forkFrom.beforeTurnId,
               })
@@ -1920,6 +1935,14 @@ export const makeCodexSessionRuntime = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
+      // The same endpoint Claude is given, reached the way Codex reaches MCP
+      // servers: a flat config overlay rather than a structured field.
+      const browserCredential = yield* mcpSessionRegistry.credentialFor(options.threadId);
+      const browserThreadConfig = codexBrowserThreadConfig({
+        port: options.serverPort,
+        credential: browserCredential,
+      });
+
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
@@ -1927,6 +1950,7 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
+        browserConfig: browserThreadConfig,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
         resumeRequired: options.resumeRequired,
         forkFrom: options.forkFrom,
@@ -2300,6 +2324,13 @@ export const makeCodexSessionRuntime = (
                   runtimeMode: options.runtimeMode,
                   model: normalizeCodexModelSlug(session.model),
                   serviceTier: options.serviceTier,
+                  // Rolling back re-opens the same thread, so it keeps the same
+                  // tools; the credential is the thread's, not the fork's, and
+                  // asking again returns the one already minted for it.
+                  browserConfig: codexBrowserThreadConfig({
+                    port: options.serverPort,
+                    credential: yield* mcpSessionRegistry.credentialFor(options.threadId),
+                  }),
                 }),
               ),
             );

@@ -79,6 +79,8 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   claudeProjectDirectoryName,
@@ -5425,8 +5427,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(flagSettings.fastMode ? { fastMode: true } : {}),
         ...(flagSettings.ultracode ? { ultracode: true } : {}),
       };
+      // The browser the user has open, offered as tools. Over HTTP rather than
+      // as an in-process server so Claude and Codex reach the same endpoint,
+      // and with a credential that names the thread, because the tools take no
+      // thread argument and must not.
+      const browserCredential = yield* mcpSessionRegistry.credentialFor(threadId);
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
+        mcpServers: {
+          [BROWSER_MCP_SERVER_NAME]: {
+            type: "http",
+            url: mcpEndpointUrl(serverConfig.port),
+            headers: { Authorization: `Bearer ${browserCredential}` },
+          },
+        },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
         systemPrompt: { type: "preset", preset: "claude_code" },
