@@ -17,6 +17,7 @@ const handlerFor = (
     webContentsId,
     navigate,
     viewport: () => ({ width: 800, height: 600 }),
+    onAgentPoint: () => {},
   }));
 
 describe("createPreviewAutomationHandler", () => {
@@ -25,7 +26,7 @@ describe("createPreviewAutomationHandler", () => {
     const handle = handlerFor({
       previewClick: (input) => {
         seen.push(input);
-        return Promise.resolve();
+        return Promise.resolve({ x: 10, y: 20 });
       },
       previewStatus: () =>
         Promise.resolve({ url: "http://x/", title: "X", loading: false }) as never,
@@ -46,6 +47,28 @@ describe("createPreviewAutomationHandler", () => {
       width: 800,
       height: 600,
     });
+  });
+
+  it("reports where a click landed so the panel can show it happening", async () => {
+    // Without this an agent changes the page with nothing to say it was the
+    // agent, and "did the click land?" has no answer but another snapshot.
+    const points: unknown[] = [];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewClick: () => Promise.resolve({ x: 120, y: 48 }),
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: (point) => points.push(point),
+      }),
+    );
+
+    await handle(request("click", { target: { ref: 1 } }));
+
+    expect(points).toEqual([{ x: 120, y: 48 }]);
   });
 
   it("wraps an evaluate result so an array is not a validation failure", async () => {

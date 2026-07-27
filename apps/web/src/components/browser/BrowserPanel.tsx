@@ -59,6 +59,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
+import { AgentPointer, type AgentPointerPosition } from "./AgentPointer";
 import { usePreviewAutomationHost } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
 
@@ -175,6 +176,10 @@ export function BrowserPanel({
     setNavState(IDLE_NAV_STATE);
   }, [activeUrl, activeTabId]);
 
+  // The agent's last touch on the page, shown over the webview so it is
+  // visible working rather than silently changing things.
+  const [agentPoint, setAgentPoint] = useState<AgentPointerPosition | null>(null);
+
   const activeWebview = () => webviewsRef.current.get(activeTabId) ?? null;
 
   // Host rather than hostname: on a dev box every page is localhost and the
@@ -195,6 +200,12 @@ export function BrowserPanel({
       const webview = activeWebview();
       return {
         webContentsId: webview === null ? null : webview.getWebContentsId(),
+        onAgentPoint: (point) => {
+          setAgentPoint((previous) => ({
+            ...point,
+            sequence: (previous?.sequence ?? 0) + 1,
+          }));
+        },
         viewport: () => {
           const rect = webview?.getBoundingClientRect();
           return {
@@ -728,6 +739,7 @@ export function BrowserPanel({
                     : undefined
                 }
                 onNavState={setNavState}
+                agentPoint={agentPoint}
                 register={(element) => {
                   if (element === null) {
                     webviewsRef.current.delete(tab.id);
@@ -808,6 +820,7 @@ function PreviewTabFrame({
   onResize,
   onNavState,
   register,
+  agentPoint,
 }: {
   tab: BrowserTab;
   threadRef: ScopedThreadRef;
@@ -818,6 +831,8 @@ function PreviewTabFrame({
   onResize?: ((viewport: BrowserViewport) => void) | undefined;
   onNavState: (state: NavState) => void;
   register: (element: PreviewWebview | null) => void;
+  /** The agent's last touch, drawn over this tab when it is the visible one. */
+  agentPoint: AgentPointerPosition | null;
 }) {
   const elementRef = useRef<PreviewWebview | null>(null);
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
@@ -983,6 +998,16 @@ function PreviewTabFrame({
           partition={PREVIEW_PARTITION}
           {...(tab.url ? { src: tab.url } : {})}
         />
+        {isActive ? (
+          // Positioned in the same frame as the guest, so a page pixel and a
+          // panel pixel mean the same thing to it.
+          <div
+            className="pointer-events-none absolute"
+            style={{ left: `${layout.x}px`, top: `${layout.y}px` }}
+          >
+            <AgentPointer position={agentPoint} scale={layout.scale} />
+          </div>
+        ) : null}
         {!layout.fills && isActive && onResize !== undefined ? (
           <div
             className="pointer-events-none absolute"

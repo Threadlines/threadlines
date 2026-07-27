@@ -58,6 +58,8 @@ export interface PreviewAutomationHostTarget {
    *  main process cannot see the element and this module should not reach for
    *  it. A question about layout is a question about this. */
   readonly viewport: () => { width: number; height: number };
+  /** Where the agent just acted, so the panel can show it happening. */
+  readonly onAgentPoint: (point: { x: number; y: number }) => void;
 }
 
 /**
@@ -142,9 +144,13 @@ async function dispatch(
     // Every action answers with where the page ended up. An action that
     // returned nothing failed MCP validation and was shown to the agent as an
     // error, which invited a retry -- and a retried click clicks twice.
-    case "click":
-      await call(bridge.previewClick, input);
+    case "click": {
+      const point = await call(bridge.previewClick, input);
+      // Shown before the page is asked what changed, so the mark lands while
+      // the click is still the most recent thing that happened.
+      target.onAgentPoint(point);
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    }
     case "type":
       await call(bridge.previewType, input);
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());

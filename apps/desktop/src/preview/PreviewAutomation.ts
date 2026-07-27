@@ -17,6 +17,7 @@ import type {
   DesktopPreviewDrawing,
   DesktopPreviewClickInput,
   DesktopPreviewPickedElement,
+  DesktopPreviewPoint,
   DesktopPreviewPickMode,
   DesktopPreviewConsoleEntry,
   DesktopPreviewElement,
@@ -185,7 +186,7 @@ export class PreviewAutomation extends Context.Service<
     ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
     readonly click: (
       input: DesktopPreviewClickInput,
-    ) => Effect.Effect<void, PreviewAutomationError>;
+    ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
     readonly type: (input: DesktopPreviewTypeInput) => Effect.Effect<void, PreviewAutomationError>;
     readonly press: (
       input: DesktopPreviewPressInput,
@@ -1107,6 +1108,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         button: "left",
         clickCount: 1,
       });
+      return point;
     }),
     type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
       const contents = yield* resolveAttached(input.webContentsId);

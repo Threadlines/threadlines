@@ -11,6 +11,7 @@ import {
   DesktopPreviewPickedElementSchema,
   DesktopPreviewAnnotateInputSchema,
   DesktopPreviewDrawingSchema,
+  DesktopPreviewPointSchema,
   DesktopPreviewPickInputSchema,
   DesktopPreviewPressInputSchema,
   DesktopPreviewRevealInputSchema,
@@ -80,10 +81,10 @@ export const previewSnapshot = makeIpcMethod({
 export const previewClick = makeIpcMethod({
   channel: IpcChannels.PREVIEW_CLICK_CHANNEL,
   payload: DesktopPreviewClickInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewPointSchema,
   handler: Effect.fn("desktop.ipc.preview.click")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    yield* automation.click(input);
+    return yield* automation.click(input);
   }),
 });
 

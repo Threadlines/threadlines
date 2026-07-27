@@ -448,6 +448,20 @@ export const DesktopPreviewAnnotateInputSchema = Schema.Struct({
 });
 export type DesktopPreviewAnnotateInput = typeof DesktopPreviewAnnotateInputSchema.Type;
 
+/**
+ * Where an agent's action landed on the page.
+ *
+ * Reported because an agent driving a browser the user is watching should be
+ * visible doing it. The coordinates are already computed to dispatch the event;
+ * throwing them away and then inventing a way to find them again would be the
+ * long road to the same place.
+ */
+export const DesktopPreviewPointSchema = Schema.Struct({
+  x: Schema.Finite,
+  y: Schema.Finite,
+});
+export type DesktopPreviewPoint = typeof DesktopPreviewPointSchema.Type;
+
 export const DesktopPreviewRevealInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   selector: Schema.String,
@@ -855,7 +869,8 @@ export interface DesktopBridge {
   previewStatus?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
   previewEvaluate?: (input: DesktopPreviewEvaluateInput) => Promise<unknown>;
   previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
-  previewClick?: (input: DesktopPreviewClickInput) => Promise<void>;
+  /** Resolves with the point the click landed on, so the UI can show it. */
+  previewClick?: (input: DesktopPreviewClickInput) => Promise<DesktopPreviewPoint>;
   previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
   previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
   previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
