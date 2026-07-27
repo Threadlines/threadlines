@@ -22,6 +22,37 @@ export const CODEX_APP_SERVER_ARGS: ReadonlyArray<string> = [
   "suppress_unstable_features_warning=true",
 ];
 
+/** The env var the spawned app server reads the browser credential from. */
+export const CODEX_BROWSER_TOKEN_ENV_VAR = "THREADLINES_MCP_BEARER_TOKEN";
+
+/**
+ * Argv for one thread's app server, including the browser tools.
+ *
+ * MCP servers are read when the app server starts, the same as plugins, so a
+ * `thread/start` config overlay naming one arrives far too late -- the thread
+ * begins with no such server and the model is told the browser is unavailable.
+ * We spawn one app server per thread, so the server can be named here, where it
+ * is early enough to matter.
+ *
+ * The credential goes through the environment rather than into argv, because
+ * argv is readable by anything that can run `ps`.
+ */
+export function codexAppServerArgs(browser?: {
+  readonly url: string;
+  readonly serverName: string;
+}): ReadonlyArray<string> {
+  if (browser === undefined) {
+    return CODEX_APP_SERVER_ARGS;
+  }
+  return [
+    ...CODEX_APP_SERVER_ARGS,
+    "-c",
+    `mcp_servers.${browser.serverName}.url=${browser.url}`,
+    "-c",
+    `mcp_servers.${browser.serverName}.bearer_token_env_var="${CODEX_BROWSER_TOKEN_ENV_VAR}"`,
+  ];
+}
+
 /**
  * Spawn fields for `CodexClient.layerCommand`, planned so argv survives every
  * platform: native executables spawn shell-less; Windows batch shims get a
