@@ -14,6 +14,7 @@
 
 import type {
   DesktopPreviewPickedElement,
+  DesktopPreviewPickMode,
   DesktopPreviewConsoleEntry,
   DesktopPreviewElement,
   DesktopPreviewNetworkFailure,
@@ -28,6 +29,7 @@ import { buildRevealElementScript } from "./revealElementScript.ts";
 import {
   buildPickOverlayScript,
   PICK_OVERLAY_BINDING,
+  PICK_OVERLAY_STASH,
   PICK_OVERLAY_TEARDOWN_SCRIPT,
 } from "./pickOverlayScript.ts";
 import * as Context from "effect/Context";
@@ -137,7 +139,8 @@ export class PreviewAutomation extends Context.Service<
     readonly pickElement: (
       webContentsId: number,
       colorScheme: "light" | "dark",
-    ) => Effect.Effect<DesktopPreviewPickedElement | null, PreviewAutomationError>;
+      mode: DesktopPreviewPickMode,
+    ) => Effect.Effect<ReadonlyArray<DesktopPreviewPickedElement>, PreviewAutomationError>;
     readonly cancelPick: (webContentsId: number) => Effect.Effect<void, PreviewAutomationError>;
     readonly revealElement: (
       webContentsId: number,
@@ -162,6 +165,14 @@ export class PreviewAutomation extends Context.Service<
     }) => Effect.Effect<void, PreviewAutomationError>;
   }
 >()("@threadlines/desktop/preview/PreviewAutomation") {}
+
+/** What the overlay reports: how many elements it left behind, and what the
+ *  user said about them. */
+interface PickResult {
+  count: number;
+  note: string | null;
+  styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
+}
 
 export const make = Effect.gen(function* PreviewAutomationMake() {
   const attached = new Map<number, AttachedTab>();
@@ -539,6 +550,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     pickElement: Effect.fn("PreviewAutomation.pickElement")(function* (
       webContentsId: number,
       colorScheme: "light" | "dark",
+      mode: DesktopPreviewPickMode,
     ) {
       const contents = yield* resolve(webContentsId);
       yield* sendCommand(contents, "DOM.enable", {});
@@ -550,26 +562,14 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       }).pipe(Effect.ignore);
 
       yield* sendCommand(contents, "Runtime.evaluate", {
-        expression: buildPickOverlayScript(colorScheme),
+        expression: buildPickOverlayScript(colorScheme, mode),
       });
 
-      const pickedPoint = yield* Effect.tryPromise({
+      const picked = yield* Effect.tryPromise({
         try: () =>
-          new Promise<{
-            x: number;
-            y: number;
-            note: string | null;
-            styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
-          } | null>((resolve) => {
+          new Promise<PickResult | null>((resolve) => {
             let done = false;
-            const finish = (
-              value: {
-                x: number;
-                y: number;
-                note: string | null;
-                styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
-              } | null,
-            ) => {
+            const finish = (value: PickResult | null) => {
               if (done) return;
               done = true;
               contents.debugger.off("message", onMessage);
@@ -586,18 +586,16 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
               }
               try {
                 const payload = JSON.parse(String(params.payload ?? "{}")) as {
-                  x?: number;
-                  y?: number;
+                  count?: number;
                   note?: string | null;
                   styleChanges?: ReadonlyArray<{ property: string; from: string; to: string }>;
                   cancelled?: boolean;
                 };
                 finish(
-                  payload.cancelled === true || payload.x === undefined || payload.y === undefined
+                  payload.cancelled === true || payload.count === undefined || payload.count < 1
                     ? null
                     : {
-                        x: payload.x,
-                        y: payload.y,
+                        count: payload.count,
                         note: payload.note ?? null,
                         styleChanges: payload.styleChanges ?? [],
                       },
@@ -615,29 +613,49 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
           new PreviewCommandError({ webContentsId, method: "Runtime.bindingCalled", cause }),
       });
 
+      // Described before the teardown runs, because the teardown is what drops
+      // the overlay's handles on the elements it chose.
+      const described: DesktopPreviewPickedElement[] = [];
+      if (picked !== null) {
+        for (let index = 0; index < picked.count; index += 1) {
+          // Read back by identity rather than by hit-testing the click point
+          // again: the second test can land on a different element than the one
+          // the user watched light up, and for a region no single point names
+          // the set at all.
+          const handle = (yield* sendCommand(contents, "Runtime.evaluate", {
+            expression: `window[${JSON.stringify(PICK_OVERLAY_STASH)}][${index}]`,
+          })) as { result?: { objectId?: string } };
+          const objectId = handle.result?.objectId;
+          if (objectId === undefined) {
+            continue;
+          }
+          const node = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
+            node?: { backendNodeId?: number };
+          };
+          yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
+          const backendNodeId = node.node?.backendNodeId;
+          if (backendNodeId === undefined) {
+            continue;
+          }
+          const element = yield* describePickedNode(sendCommand)(contents, backendNodeId);
+          if (element !== null) {
+            described.push({
+              ...element,
+              note: picked.note,
+              // Attached to the element they were made on. A region shares one
+              // note but tweaks only ever apply to a lone element, so this is
+              // never spread across a set.
+              styleChanges: picked.styleChanges,
+            });
+          }
+        }
+      }
+
       yield* sendCommand(contents, "Runtime.evaluate", {
         expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
       }).pipe(Effect.ignore);
 
-      if (pickedPoint === null) {
-        return null;
-      }
-
-      // The click point rather than the page's own idea of the element: this
-      // resolves through the same accessibility tree the agent reads, so a
-      // picked element is described exactly as a snapshotted one is.
-      const located = (yield* sendCommand(contents, "DOM.getNodeForLocation", {
-        x: Math.round(pickedPoint.x),
-        y: Math.round(pickedPoint.y),
-        includeUserAgentShadowDOM: false,
-      })) as { backendNodeId?: number };
-      if (located.backendNodeId === undefined) {
-        return null;
-      }
-      const described = yield* describePickedNode(sendCommand)(contents, located.backendNodeId);
-      return described === null
-        ? null
-        : { ...described, note: pickedPoint.note, styleChanges: pickedPoint.styleChanges };
+      return described;
     }),
     revealElement: Effect.fn("PreviewAutomation.revealElement")(function* (
       webContentsId: number,

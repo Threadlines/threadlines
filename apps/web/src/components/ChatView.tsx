@@ -6461,6 +6461,7 @@ export default function ChatView(props: ChatViewProps) {
               flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
               onClose={handleCloseBrowser}
               onPickElement={appendPickedElementToComposer}
+              onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot)}
               pendingReveal={pendingElementReveal}
               onRevealHandled={() => setPendingElementReveal(null)}
             />

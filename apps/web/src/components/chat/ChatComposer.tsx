@@ -418,6 +418,8 @@ export interface ChatComposerHandle {
   addTranscriptHighlightContext: (selection: TranscriptHighlightContextSelection) => void;
   /** Attach an element picked in the browser preview. */
   addPickedElementContext: (context: PickedElementContext) => void;
+  /** Attach a screenshot captured from the browser preview. */
+  addScreenshotAttachment: (input: { dataUrl: string; name: string }) => void;
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
@@ -682,25 +684,38 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const setComposerDraftPickedElementContexts = useComposerDraftStore(
     (store) => store.setPickedElementContexts,
   );
+  /**
+   * Writes the list to the store and through to the ref that reads it back.
+   *
+   * The ref is refreshed by an effect, so it still holds the pre-call value
+   * until the next render. Two of these in one tick would each build on that
+   * same stale list and the second would overwrite the first -- which is
+   * exactly what a region pick does, arriving as several elements at once.
+   */
+  const commitPickedElementContexts = useCallback(
+    (next: PickedElementContextDraft[]) => {
+      composerPickedElementContextsRef.current = next;
+      setComposerDraftPickedElementContexts(composerDraftTarget, next);
+    },
+    [composerDraftTarget, composerPickedElementContextsRef, setComposerDraftPickedElementContexts],
+  );
   const updatePickedElementNote = useCallback(
     (contextId: string, note: string) => {
-      setComposerDraftPickedElementContexts(
-        composerDraftTarget,
+      commitPickedElementContexts(
         composerPickedElementContextsRef.current.map((context) =>
           context.id === contextId ? { ...context, note: note === "" ? null : note } : context,
         ),
       );
     },
-    [composerDraftTarget, composerPickedElementContextsRef, setComposerDraftPickedElementContexts],
+    [commitPickedElementContexts, composerPickedElementContextsRef],
   );
   const removePickedElementContext = useCallback(
     (contextId: string) => {
-      setComposerDraftPickedElementContexts(
-        composerDraftTarget,
+      commitPickedElementContexts(
         composerPickedElementContextsRef.current.filter((context) => context.id !== contextId),
       );
     },
-    [composerDraftTarget, composerPickedElementContextsRef, setComposerDraftPickedElementContexts],
+    [commitPickedElementContexts, composerPickedElementContextsRef],
   );
   const removeComposerDraftTranscriptHighlightContext = useComposerDraftStore(
     (store) => store.removeTranscriptHighlightContext,
@@ -2406,7 +2421,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (existing.some((entry) => pickedElementContextDedupKey(entry) === key)) {
           return;
         }
-        setComposerDraftPickedElementContexts(composerDraftTarget, [
+        commitPickedElementContexts([
           ...existing,
           {
             ...context,
@@ -2418,6 +2433,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         window.requestAnimationFrame(() => {
           composerEditorRef.current?.focusAtEnd();
         });
+      },
+      addScreenshotAttachment: ({ dataUrl, name }) => {
+        // The same two steps the desktop screen capture takes, for the same
+        // reasons: the converter rejects anything that is not a PNG data URL,
+        // and addComposerFiles applies the model-accepts-images check, the size
+        // limits and the dedupe that this would otherwise have to restate.
+        const file = desktopCapturedScreenshotToFile({ dataUrl, name, mimeType: "image/png" });
+        if (file === null) {
+          toastManager.add({
+            type: "error",
+            title: "Screenshot capture failed.",
+            description: "The captured image could not be read.",
+          });
+          return;
+        }
+        addComposerFiles([file]);
+        focusComposer();
       },
       getSendContext: () => ({
         prompt: promptRef.current,

@@ -405,10 +405,22 @@ export const DesktopPreviewElementSchema = Schema.Struct({
 });
 export type DesktopPreviewElement = typeof DesktopPreviewElementSchema.Type;
 
+/**
+ * How the user points at the page.
+ *
+ * "element" is one thing under the cursor. "region" is a dragged rectangle, for
+ * when the thing worth talking about is a row of cards or a whole section
+ * rather than any single node -- describing that one element at a time is the
+ * work the rectangle exists to avoid.
+ */
+export const DesktopPreviewPickModeSchema = Schema.Literals(["element", "region"]);
+export type DesktopPreviewPickMode = typeof DesktopPreviewPickModeSchema.Type;
+
 export const DesktopPreviewPickInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   /** The app's resolved theme; the pick cursor is drawn to match it. */
   colorScheme: Schema.Literals(["light", "dark"]),
+  mode: DesktopPreviewPickModeSchema,
 });
 export type DesktopPreviewPickInput = typeof DesktopPreviewPickInputSchema.Type;
 
@@ -787,10 +799,11 @@ export interface DesktopBridge {
   previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
-  /** Resolves null when picking is cancelled or times out. */
+  /** Resolves empty when picking is cancelled or times out. Region picks
+   *  resolve many elements at once; element picks resolve at most one. */
   previewPickElement?: (
     input: DesktopPreviewPickInput,
-  ) => Promise<DesktopPreviewPickedElement | null>;
+  ) => Promise<readonly DesktopPreviewPickedElement[]>;
   previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
   /** Resolves false when the element is no longer on the page. */
   previewRevealElement?: (input: DesktopPreviewRevealInput) => Promise<boolean>;

@@ -145,10 +145,10 @@ export const previewSetColorScheme = makeIpcMethod({
 export const previewPickElement = makeIpcMethod({
   channel: IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL,
   payload: DesktopPreviewPickInputSchema,
-  result: Schema.NullOr(DesktopPreviewPickedElementSchema),
+  result: Schema.Array(DesktopPreviewPickedElementSchema),
   handler: Effect.fn("desktop.ipc.preview.pickElement")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    return yield* automation.pickElement(input.webContentsId, input.colorScheme);
+    return yield* automation.pickElement(input.webContentsId, input.colorScheme, input.mode);
   }),
 });
 

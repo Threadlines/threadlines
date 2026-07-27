@@ -2,6 +2,7 @@ import type { PickedElementContextDraft } from "../../lib/pickedElementContext";
 import type {
   DesktopLocalServer,
   DesktopPreviewPickedElement,
+  DesktopPreviewPickMode,
   ScopedThreadRef,
 } from "@threadlines/contracts";
 import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
@@ -14,6 +15,7 @@ import {
   MaximizeIcon,
   MinimizeIcon,
   MousePointerClickIcon,
+  SquareDashedMousePointerIcon,
   MoreVerticalIcon,
   PlusIcon,
   RadioTowerIcon,
@@ -110,6 +112,7 @@ export function BrowserPanel({
   flexGrow,
   onClose,
   onPickElement,
+  onScreenshot,
   pendingReveal,
   onRevealHandled,
 }: {
@@ -119,6 +122,8 @@ export function BrowserPanel({
   onClose: () => void;
   /** Hands a picked element to the composer as context for the next message. */
   onPickElement?: ((element: DesktopPreviewPickedElement) => void) | undefined;
+  /** Attaches a captured screenshot to the message being written. */
+  onScreenshot?: ((input: { dataUrl: string; name: string }) => void) | undefined;
   /** An element to show again, requested from a composer chip. */
   pendingReveal?: PickedElementContextDraft | null | undefined;
   onRevealHandled?: (() => void) | undefined;
@@ -199,31 +204,42 @@ export function BrowserPanel({
     [activeTabId, addressDraft, setTabUrl, threadRef],
   );
 
-  const [picking, setPicking] = useState(false);
-  const pickElement = useCallback(async () => {
-    const webview = webviewsRef.current.get(activeTabId);
-    if (webview === null || webview === undefined || !isElectron) {
-      return;
-    }
-    const webContentsId = webview.getWebContentsId();
-    if (picking) {
-      setPicking(false);
-      await window.desktopBridge?.previewCancelPick?.({ webContentsId });
-      return;
-    }
-    setPicking(true);
-    try {
-      const element = await window.desktopBridge?.previewPickElement?.({
-        webContentsId,
-        colorScheme: guestColorScheme,
-      });
-      if (element !== null && element !== undefined) {
-        onPickElement?.(element);
+  // Which pointing mode is armed, or null when the pointer belongs to the page
+  // again. One piece of state for both buttons: they are the same gesture
+  // aimed at a different amount of the page, and only one can be live.
+  const [picking, setPicking] = useState<DesktopPreviewPickMode | null>(null);
+  const pickElement = useCallback(
+    async (mode: DesktopPreviewPickMode) => {
+      const webview = webviewsRef.current.get(activeTabId);
+      if (webview === null || webview === undefined || !isElectron) {
+        return;
       }
-    } finally {
-      setPicking(false);
-    }
-  }, [activeTabId, guestColorScheme, onPickElement, picking]);
+      const webContentsId = webview.getWebContentsId();
+      if (picking !== null) {
+        setPicking(null);
+        await window.desktopBridge?.previewCancelPick?.({ webContentsId });
+        // Pressing the other mode's button while one is armed switches to it
+        // rather than just disarming: the second press said what was wanted.
+        if (picking === mode) {
+          return;
+        }
+      }
+      setPicking(mode);
+      try {
+        const elements = await window.desktopBridge?.previewPickElement?.({
+          webContentsId,
+          colorScheme: guestColorScheme,
+          mode,
+        });
+        for (const element of elements ?? []) {
+          onPickElement?.(element);
+        }
+      } finally {
+        setPicking(null);
+      }
+    },
+    [activeTabId, guestColorScheme, onPickElement, picking],
+  );
 
   // A reveal request arrives from the composer, which cannot know which tab is
   // showing the page it came from -- or whether the panel was even open. The
@@ -289,6 +305,15 @@ export function BrowserPanel({
     [browserState.tabs.length, closeTab, onClose, threadRef],
   );
 
+  /**
+   * Straight into the composer rather than onto the clipboard.
+   *
+   * It used to write the data URL to the clipboard as text, which looked like
+   * nothing happening and pasted a wall of base64. A screenshot is evidence for
+   * the message being written, and everything else picked from the page already
+   * attaches itself -- making this one a copy-then-paste errand would be the
+   * odd one out.
+   */
   const captureScreenshot = useCallback(() => {
     const webview = webviewsRef.current.get(activeTabId);
     if (webview === undefined || !isElectron) {
@@ -297,11 +322,23 @@ export function BrowserPanel({
     void window.desktopBridge
       ?.previewScreenshot?.({ webContentsId: webview.getWebContentsId() })
       .then((shot) => {
-        if (shot.dataUrl !== "") {
-          void navigator.clipboard.writeText(shot.dataUrl).catch(() => {});
+        // A payload-less data URL is still a non-empty string, so the emptiness
+        // check has to look past the header.
+        if (shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1) === "") {
+          return;
         }
+        const host = (() => {
+          try {
+            // Host rather than hostname: on a dev box every page is localhost
+            // and the port is the only thing telling two shots apart.
+            return new URL(activeUrl ?? "").host.replace(":", "-") || "page";
+          } catch {
+            return "page";
+          }
+        })();
+        onScreenshot?.({ dataUrl: shot.dataUrl, name: `${host}.png` });
       });
-  }, [activeTabId]);
+  }, [activeTabId, activeUrl, onScreenshot]);
 
   return (
     <section
@@ -407,14 +444,26 @@ export function BrowserPanel({
         {/* Beside the address they act on, which is also where both reference
             browsers put them. */}
         <NavButton
-          label={picking ? "Cancel pick" : "Pick an element"}
-          onClick={() => void pickElement()}
-          active={picking}
+          label={picking === "element" ? "Cancel pick" : "Pick an element"}
+          onClick={() => void pickElement("element")}
+          active={picking === "element"}
           testId="browser-pick-element"
         >
           <MousePointerClickIcon className="size-3.5" />
         </NavButton>
-        <NavButton label="Capture screenshot" onClick={captureScreenshot}>
+        <NavButton
+          label={picking === "region" ? "Cancel selection" : "Select a region"}
+          onClick={() => void pickElement("region")}
+          active={picking === "region"}
+          testId="browser-pick-region"
+        >
+          <SquareDashedMousePointerIcon className="size-3.5" />
+        </NavButton>
+        <NavButton
+          label="Capture screenshot"
+          onClick={captureScreenshot}
+          testId="browser-screenshot"
+        >
           <CameraIcon className="size-3.5" />
         </NavButton>
         <Menu>
@@ -522,12 +571,6 @@ export function BrowserPanel({
           viewport={activeTab.viewport}
           zoomFactor={activeTab.zoomFactor}
           onViewportChange={(viewport) => setTabViewport(threadRef, activeTab.id, viewport)}
-          onFitToPanel={() => {
-            const measured = measurePanelViewport();
-            if (measured !== null) {
-              setTabViewport(threadRef, activeTab.id, measured);
-            }
-          }}
           onZoomChange={(factor) => setTabZoom(threadRef, activeTab.id, factor)}
           onClose={toggleDeviceToolbar}
         />
@@ -1095,14 +1138,12 @@ function DeviceToolbar({
   viewport,
   zoomFactor,
   onViewportChange,
-  onFitToPanel,
   onZoomChange,
   onClose,
 }: {
   viewport: BrowserViewport;
   zoomFactor: number;
   onViewportChange: (viewport: BrowserViewport) => void;
-  onFitToPanel: () => void;
   onZoomChange: (factor: number) => void;
   onClose: () => void;
 }) {
