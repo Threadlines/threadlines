@@ -273,6 +273,22 @@ export function BrowserPanel({
     return () => clearTimeout(timer);
   }, [revealMissing]);
 
+  /**
+   * Closing the last tab closes the panel rather than leaving a blank one.
+   * Clicking close and being handed a fresh tab reads as nothing having
+   * happened, and reopening the panel provides one anyway.
+   */
+  const closeBrowserTab = useCallback(
+    (tabId: string) => {
+      if (browserState.tabs.length <= 1) {
+        onClose();
+        return;
+      }
+      closeTab(threadRef, tabId);
+    },
+    [browserState.tabs.length, closeTab, onClose, threadRef],
+  );
+
   const captureScreenshot = useCallback(() => {
     const webview = webviewsRef.current.get(activeTabId);
     if (webview === undefined || !isElectron) {
@@ -300,9 +316,9 @@ export function BrowserPanel({
             key={tab.id}
             tab={tab}
             isActive={tab.id === activeTabId}
-            closable={browserState.tabs.length > 1}
+            closable
             onSelect={() => selectTab(threadRef, tab.id)}
-            onClose={() => closeTab(threadRef, tab.id)}
+            onClose={() => closeBrowserTab(tab.id)}
           />
         ))}
         <button
@@ -315,121 +331,9 @@ export function BrowserPanel({
           <PlusIcon className="size-3.5" />
         </button>
 
-        {/* Controls that act on the tab or the panel, kept out of the toolbar
-            so the address row stays free for controls that act on the page --
-            annotate and element-pick will want that space. */}
+        {/* Panel-level controls only: where the browser sits and whether it is
+            open. What acts on the page lives with the address it acts on. */}
         <div className="ms-auto flex shrink-0 items-center gap-0.5 self-center">
-          <NavButton
-            label={picking ? "Cancel pick" : "Pick an element"}
-            onClick={() => void pickElement()}
-            active={picking}
-            testId="browser-pick-element"
-          >
-            <MousePointerClickIcon className="size-3.5" />
-          </NavButton>
-          <NavButton label="Capture screenshot" onClick={captureScreenshot}>
-            <CameraIcon className="size-3.5" />
-          </NavButton>
-          <Menu>
-            <MenuTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="Browser options"
-                  data-testid="browser-overflow"
-                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                />
-              }
-            >
-              <MoreVerticalIcon className="size-3.5" />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem
-                onClick={() => {
-                  const webview = webviewsRef.current.get(activeTabId);
-                  callWhenReady(() => webview?.reloadIgnoringCache());
-                }}
-              >
-                Hard reload
-              </MenuItem>
-              <MenuItem data-testid="browser-toggle-device-bar" onClick={toggleDeviceToolbar}>
-                {deviceToolbarOpen ? "Hide device toolbar" : "Show device toolbar"}
-              </MenuItem>
-              <MenuSeparator />
-              <MenuRadioGroup
-                value={appearance}
-                onValueChange={(value) => setAppearance(value as BrowserAppearance)}
-              >
-                {/* The label belongs to the group: Base UI reads its context, and
-                    outside one it throws and takes the whole menu with it. */}
-                <MenuGroupLabel>Appearance</MenuGroupLabel>
-                {(["system", "light", "dark"] as const).map((value) => (
-                  <MenuRadioItem key={value} value={value} closeOnClick>
-                    {value === "system" ? "Follow app" : value === "light" ? "Light" : "Dark"}
-                  </MenuRadioItem>
-                ))}
-              </MenuRadioGroup>
-              <MenuSeparator />
-              <MenuItem
-                disabled={activeUrl === null}
-                onClick={() => {
-                  if (activeUrl !== null) {
-                    void window.desktopBridge?.openExternal?.(activeUrl);
-                  }
-                }}
-              >
-                Open in default browser
-              </MenuItem>
-              <MenuItem
-                disabled={activeUrl === null}
-                onClick={() => {
-                  if (activeUrl !== null) {
-                    void navigator.clipboard.writeText(activeUrl).catch(() => {});
-                  }
-                }}
-              >
-                Copy address
-              </MenuItem>
-              <MenuItem
-                data-testid="browser-open-devtools"
-                onClick={() => {
-                  const webview = webviewsRef.current.get(activeTabId);
-                  const id =
-                    webview === undefined ? null : callWhenReady(() => webview.getWebContentsId());
-                  if (id !== null) {
-                    void window.desktopBridge?.previewOpenDevTools?.({ webContentsId: id });
-                  }
-                }}
-              >
-                Open developer tools
-              </MenuItem>
-              <MenuSeparator />
-              <MenuItem
-                data-testid="browser-clear-cache"
-                onClick={() => {
-                  void window.desktopBridge?.previewClearCache?.().then(() => {
-                    callWhenReady(() =>
-                      webviewsRef.current.get(activeTabId)?.reloadIgnoringCache(),
-                    );
-                  });
-                }}
-              >
-                Clear cache
-              </MenuItem>
-              <MenuItem
-                data-testid="browser-clear-data"
-                onClick={() => {
-                  // Signing out of the preview is the point, so reload after: the
-                  // page on screen would otherwise still look signed in.
-                  void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
-                    callWhenReady(() => webviewsRef.current.get(activeTabId)?.reload());
-                  });
-                }}
-              >
-                Clear cookies and storage
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
           <NavButton
             label={expanded ? "Restore chat" : "Expand browser"}
             onClick={toggleExpanded}
@@ -499,6 +403,118 @@ export function BrowserPanel({
             <TooltipPopup side="bottom">Open in default browser</TooltipPopup>
           </Tooltip>
         </form>
+
+        {/* Beside the address they act on, which is also where both reference
+            browsers put them. */}
+        <NavButton
+          label={picking ? "Cancel pick" : "Pick an element"}
+          onClick={() => void pickElement()}
+          active={picking}
+          testId="browser-pick-element"
+        >
+          <MousePointerClickIcon className="size-3.5" />
+        </NavButton>
+        <NavButton label="Capture screenshot" onClick={captureScreenshot}>
+          <CameraIcon className="size-3.5" />
+        </NavButton>
+        <Menu>
+          <MenuTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Browser options"
+                data-testid="browser-overflow"
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+              />
+            }
+          >
+            <MoreVerticalIcon className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem
+              onClick={() => {
+                const webview = webviewsRef.current.get(activeTabId);
+                callWhenReady(() => webview?.reloadIgnoringCache());
+              }}
+            >
+              Hard reload
+            </MenuItem>
+            <MenuItem data-testid="browser-toggle-device-bar" onClick={toggleDeviceToolbar}>
+              {deviceToolbarOpen ? "Hide device toolbar" : "Show device toolbar"}
+            </MenuItem>
+            <MenuSeparator />
+            <MenuRadioGroup
+              value={appearance}
+              onValueChange={(value) => setAppearance(value as BrowserAppearance)}
+            >
+              {/* The label belongs to the group: Base UI reads its context, and
+                  outside one it throws and takes the whole menu with it. */}
+              <MenuGroupLabel>Appearance</MenuGroupLabel>
+              {(["system", "light", "dark"] as const).map((value) => (
+                <MenuRadioItem key={value} value={value} closeOnClick>
+                  {value === "system" ? "Follow app" : value === "light" ? "Light" : "Dark"}
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+            <MenuSeparator />
+            <MenuItem
+              disabled={activeUrl === null}
+              onClick={() => {
+                if (activeUrl !== null) {
+                  void window.desktopBridge?.openExternal?.(activeUrl);
+                }
+              }}
+            >
+              Open in default browser
+            </MenuItem>
+            <MenuItem
+              disabled={activeUrl === null}
+              onClick={() => {
+                if (activeUrl !== null) {
+                  void navigator.clipboard.writeText(activeUrl).catch(() => {});
+                }
+              }}
+            >
+              Copy address
+            </MenuItem>
+            <MenuItem
+              data-testid="browser-open-devtools"
+              onClick={() => {
+                const webview = webviewsRef.current.get(activeTabId);
+                const id =
+                  webview === undefined ? null : callWhenReady(() => webview.getWebContentsId());
+                if (id !== null) {
+                  void window.desktopBridge?.previewOpenDevTools?.({ webContentsId: id });
+                }
+              }}
+            >
+              Open developer tools
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem
+              data-testid="browser-clear-cache"
+              onClick={() => {
+                void window.desktopBridge?.previewClearCache?.().then(() => {
+                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reloadIgnoringCache());
+                });
+              }}
+            >
+              Clear cache
+            </MenuItem>
+            <MenuItem
+              data-testid="browser-clear-data"
+              onClick={() => {
+                // Signing out of the preview is the point, so reload after: the
+                // page on screen would otherwise still look signed in.
+                void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
+                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reload());
+                });
+              }}
+            >
+              Clear cookies and storage
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
       </div>
 
       {deviceToolbarOpen && activeTab !== null ? (
