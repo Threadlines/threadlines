@@ -872,26 +872,34 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState]);
 
   const enableAutoStickIfAtEnd = useCallback(() => {
-    if (!isTimelineListAtEnd(listRef.current)) {
+    // A finger still on the glass is mid-gesture even when it pauses, and a
+    // paused drag that has only just left the bottom is still inside the at-end
+    // tolerance. Re-arming here would yank the list back under the touch.
+    // `handleTouchEndCapture` re-checks once the gesture lifts.
+    if (touchStartYRef.current !== null || !isTimelineListAtEnd(listRef.current)) {
       return;
     }
     setAutoStickToBottomState(true);
     onIsAtEndChange(true);
   }, [listRef, onIsAtEndChange, setAutoStickToBottomState]);
 
+  const scheduleStickReArmCheck = useCallback(() => {
+    clearUserScrollLockTimer();
+    userScrollLockTimerRef.current = window.setTimeout(() => {
+      userScrollLockTimerRef.current = null;
+      enableAutoStickIfAtEnd();
+    }, USER_SCROLL_STICK_LOCK_MS);
+  }, [clearUserScrollLockTimer, enableAutoStickIfAtEnd]);
+
   const markUserScrollIntent = useCallback(
     (options?: { notifyAwayFromEnd?: boolean }) => {
-      clearUserScrollLockTimer();
       setAutoStickToBottomState(false);
       if (options?.notifyAwayFromEnd) {
         onIsAtEndChange(false);
       }
-      userScrollLockTimerRef.current = window.setTimeout(() => {
-        userScrollLockTimerRef.current = null;
-        enableAutoStickIfAtEnd();
-      }, USER_SCROLL_STICK_LOCK_MS);
+      scheduleStickReArmCheck();
     },
-    [clearUserScrollLockTimer, enableAutoStickIfAtEnd, onIsAtEndChange, setAutoStickToBottomState],
+    [onIsAtEndChange, scheduleStickReArmCheck, setAutoStickToBottomState],
   );
 
   const stickToBottomRequestPending =
@@ -917,14 +925,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onIsAtEndChange(true);
         return;
       }
-      if (nextIsAtEnd) {
-        clearUserScrollLockTimer();
+      // Only re-arm from a scroll event once the user-scroll lock has expired.
+      // A touch drag clears the intent threshold (a few px) long before it
+      // clears the at-end tolerance (24px), so re-arming here would stick the
+      // list back to the bottom under the moving finger, report at-end on the
+      // next frame, and stick again — the list flickers instead of scrolling.
+      // Pointer devices never hit this because one wheel notch clears the
+      // tolerance outright. The lock timer re-checks once scrolling settles.
+      if (nextIsAtEnd && userScrollLockTimerRef.current === null) {
         setAutoStickToBottomState(true);
       }
       onIsAtEndChange(nextIsAtEnd);
     },
     [
-      clearUserScrollLockTimer,
       listRef,
       onIsAtEndChange,
       refreshTranscriptNoteHighlightRects,
@@ -1042,7 +1055,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleTouchEndCapture = useCallback(() => {
     touchStartYRef.current = null;
-  }, []);
+    if (autoStickToBottomRef.current) {
+      return;
+    }
+    // The gesture may have ended at the bottom, or momentum may still be
+    // running. Re-check after it settles rather than mid-flick.
+    scheduleStickReArmCheck();
+  }, [scheduleStickReArmCheck]);
 
   const handleKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent) => {
@@ -1093,7 +1112,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
     let cancelStickFrames: (() => void) | null = null;
     const restickIfArmed = () => {
-      if (!autoStickToBottomRef.current) {
+      // Mobile browsers collapse and expand the URL bar as the user scrolls,
+      // which resizes the visual viewport mid-gesture. Never re-stick under a
+      // finger that is on the glass — the touch handlers own the scroll then.
+      if (!autoStickToBottomRef.current || touchStartYRef.current !== null) {
         return;
       }
       cancelStickFrames?.();
