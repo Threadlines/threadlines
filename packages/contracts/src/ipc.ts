@@ -434,11 +434,12 @@ export type DesktopPreviewPickInput = typeof DesktopPreviewPickInputSchema.Type;
 /**
  * Marking up the page rather than pointing at it.
  *
- * "draw" leaves ink, "erase" takes a stroke back off, null clears the lot. The
+ * "draw" leaves ink, "erase" takes a stroke back off, "idle" leaves the marks
+ * alone but gives the pointer back to the page, and null clears the lot. The
  * marks are never reported anywhere: they exist so a screenshot can carry them,
  * which is why turning the mode off is also how you start over.
  */
-export const DesktopPreviewAnnotationModeSchema = Schema.Literals(["draw", "erase"]);
+export const DesktopPreviewAnnotationModeSchema = Schema.Literals(["draw", "erase", "idle"]);
 export type DesktopPreviewAnnotationMode = typeof DesktopPreviewAnnotationModeSchema.Type;
 
 export const DesktopPreviewAnnotateInputSchema = Schema.Struct({

@@ -280,7 +280,14 @@ export function BrowserPanel({
       const next = options?.toggle !== false && previous === requested ? null : requested;
 
       if (isInkTool(previous) && !isInkTool(next)) {
-        await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: null });
+        // Parked, not binned. A drawing you have not attached yet is unsent
+        // work, and reaching for the picker to name something inside what you
+        // just circled should not throw the circle away. Pressing the lit pen
+        // is how you clear it, and that comes through here as next === null.
+        await window.desktopBridge?.previewSetAnnotationMode?.({
+          webContentsId,
+          mode: next === null ? null : "idle",
+        });
       } else if (previous !== null && !isInkTool(previous)) {
         await window.desktopBridge?.previewCancelPick?.({ webContentsId });
       }
@@ -295,9 +302,9 @@ export function BrowserPanel({
         // the eraser exists to fix the stroke you just drew, and clearing on
         // the way there would leave nothing to fix.
         await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: next });
-        // One wait covers the whole session with the pen, including any trips
-        // to the eraser: it settles when the drawing is attached or discarded,
-        // not when the mode changes.
+        // One wait covers a stretch with the pen, including trips to the
+        // eraser. Coming back after using another tool starts a fresh one,
+        // because parking the ink settled the last.
         if (isInkTool(previous)) {
           return;
         }

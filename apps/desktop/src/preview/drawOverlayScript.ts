@@ -51,10 +51,12 @@ document.getElementById(${JSON.stringify(DRAW_OVERLAY_ID)})?.remove();
 /**
  * Arms the overlay, or switches the mode of one already on the page.
  *
- * Switching keeps the ink: the point of the eraser is to fix a stroke you just
- * drew, and clearing on the way there would leave nothing to fix.
+ * Switching keeps the ink. The eraser exists to fix a stroke you just drew, so
+ * clearing on the way there would leave nothing to fix -- and going idle, which
+ * is what happens when another tool takes the pointer, has to keep it for the
+ * same reason: an unattached drawing is work the user has not sent yet.
  */
-export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
+export function buildDrawOverlayScript(mode: "draw" | "erase" | "idle"): string {
   return `
 (() => {
   const OVERLAY_ID = ${JSON.stringify(DRAW_OVERLAY_ID)};
@@ -148,13 +150,22 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
     mode = next;
     host.setAttribute("data-mode", next);
     // Drawing wants the whole surface; erasing wants only the strokes, so the
-    // page underneath stays scrollable and clickable between them.
+    // page underneath stays scrollable and clickable between them. Idle wants
+    // nothing: the marks are still there to look at, but another tool has the
+    // pointer now.
     host.style.pointerEvents = next === "draw" ? "auto" : "none";
     host.style.cursor = next === "draw" ? "crosshair" : "default";
+    if (next === "idle") {
+      // The question goes away with the pen. It comes back with it too.
+      noteField?.remove();
+      noteField = null;
+      return;
+    }
+    showNote();
   };
   host.__threadlinesSetMode = setMode;
-  setMode(MODE);
 
+  let noteField = null;
   let stroke = null;
   let points = [];
 
@@ -284,8 +295,6 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
       .slice(0, MAX_ELEMENTS);
   };
 
-  let noteField = null;
-
   /**
    * Appears once there is something to attach.
    *
@@ -342,6 +351,10 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
     });
     requestAnimationFrame(() => input.focus());
   };
+
+  // Applied last: setMode reaches for the attach bar, and running it before
+  // that is declared would throw and take the whole overlay down without a word.
+  setMode(MODE);
 
   host.addEventListener("pointerdown", onDown);
   host.addEventListener("pointermove", onMove);

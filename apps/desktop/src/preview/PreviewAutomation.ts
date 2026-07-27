@@ -564,10 +564,29 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     };
   };
 
+  /**
+   * Attaches the debugger, or re-attaches one that has gone.
+   *
+   * The bookkeeping map is not the question: it records that we set a tab up,
+   * not that the debugger is still on it. Only one client may attach at a time,
+   * so opening DevTools on the page takes it away from us, and a crashed or
+   * reloaded guest drops it too. Asking the map alone meant that once the
+   * attachment was lost it never came back, and every command after that failed
+   * with "No target available" -- which reads as the whole browser being broken
+   * rather than as one thing to redo.
+   */
   const attach = Effect.fn("PreviewAutomation.attach")(function* (webContentsId: number) {
     const contents = yield* resolve(webContentsId);
-    if (attached.has(webContentsId)) {
+    if (attached.has(webContentsId) && contents.debugger.isAttached()) {
       return buildStatus(webContentsId, contents);
+    }
+    // Set up once before, but not attached now: the old listeners belong to an
+    // attachment that no longer exists, and leaving them would double every
+    // console entry once a new one is made.
+    const stale = attached.get(webContentsId);
+    if (stale !== undefined) {
+      stale.dispose();
+      attached.delete(webContentsId);
     }
 
     const tab: AttachedTab = {
@@ -677,9 +696,18 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     const onDestroyed = () => {
       attached.delete(webContentsId);
     };
+    // Electron tells us when the attachment goes -- DevTools opening, the guest
+    // crashing, someone calling detach. Dropping the record here is what lets
+    // the next command notice and rebuild rather than fail.
+    const onDetach = () => {
+      attached.get(webContentsId)?.dispose();
+      attached.delete(webContentsId);
+    };
     contents.once("destroyed", onDestroyed);
+    contents.debugger.on("detach", onDetach);
     tab.dispose = () => {
       contents.debugger.off("message", onMessage);
+      contents.debugger.off("detach", onDetach);
       contents.off("destroyed", onDestroyed);
     };
     attached.set(webContentsId, tab);
@@ -695,6 +723,21 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     }
 
     return buildStatus(webContentsId, contents);
+  });
+
+  /**
+   * The tab, with a debugger certainly on it.
+   *
+   * Every operation goes through this rather than through `resolve`, because
+   * the attachment can be taken away at any moment -- DevTools opening on the
+   * page is enough -- and the alternative is a browser that works until it
+   * quietly does not. Attaching is cheap when it is already attached.
+   */
+  const resolveAttached = Effect.fn("PreviewAutomation.resolveAttached")(function* (
+    webContentsId: number,
+  ) {
+    yield* attach(webContentsId);
+    return yield* resolve(webContentsId);
   });
 
   const centerOf = Effect.fn("PreviewAutomation.centerOf")(function* (
@@ -734,11 +777,11 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         }
       }),
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       return buildStatus(webContentsId, contents);
     }),
     snapshot: Effect.fn("PreviewAutomation.snapshot")(function* (webContentsId: number) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       const tree = (yield* sendCommand(contents, "Accessibility.getFullAXTree", {})) as {
         nodes?: ReadonlyArray<Record<string, unknown>>;
       };
@@ -775,7 +818,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       webContentsId: number,
       size: { width: number | null; height: number | null },
     ) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       // Resizing the element alone leaves the page believing it is still the
       // old size: media queries do not re-evaluate and innerWidth is unchanged,
       // so a narrow frame just clips a desktop layout instead of showing the
@@ -804,7 +847,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       colorScheme: "light" | "dark",
       mode: DesktopPreviewPickMode,
     ) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       let supersede = () => {};
       const token = { supersede: () => supersede() };
       pendingPicks.get(webContentsId)?.supersede();
@@ -909,7 +952,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return described;
     }),
     awaitDrawing: Effect.fn("PreviewAutomation.awaitDrawing")(function* (webContentsId: number) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       yield* sendCommand(contents, "DOM.enable", {});
       yield* sendCommand(contents, "Runtime.enable", {});
       yield* sendCommand(contents, "Runtime.addBinding", {
@@ -975,10 +1018,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       webContentsId: number,
       mode: DesktopPreviewAnnotationMode | null,
     ) {
-      const contents = yield* resolve(webContentsId);
-      if (mode === null) {
-        // Clearing the marks is also how a drawing is abandoned, so whoever is
-        // waiting on one has to stop waiting rather than outlive the overlay.
+      const contents = yield* resolveAttached(webContentsId);
+      if (mode === null || mode === "idle") {
+        // Clearing the marks is how a drawing is abandoned and parking them is
+        // how it is set aside; either way whoever is waiting on one has to stop
+        // waiting rather than outlive the pen. Coming back to it starts a new
+        // wait, and the ink is still there to attach.
         drawWaiters.get(webContentsId)?.();
       }
       // Nothing is read back, so this is a plain evaluation rather than the
@@ -991,7 +1036,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       webContentsId: number,
       selector: string,
     ) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       const result = (yield* sendCommand(contents, "Runtime.evaluate", {
         expression: buildRevealElementScript(selector),
         returnByValue: true,
@@ -999,7 +1044,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return result.result?.value === true;
     }),
     cancelPick: Effect.fn("PreviewAutomation.cancelPick")(function* (webContentsId: number) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       pendingPicks.get(webContentsId)?.supersede();
       yield* sendCommand(contents, "Runtime.evaluate", {
         expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
@@ -1009,7 +1054,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       webContentsId: number,
       colorScheme: "light" | "dark",
     ) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       // Emulated rather than set on the guest: the page decides what to do with
       // prefers-color-scheme, and pages that ignore it are left alone.
       yield* sendCommand(contents, "Emulation.setEmulatedMedia", {
@@ -1017,7 +1062,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       });
     }),
     openDevTools: Effect.fn("PreviewAutomation.openDevTools")(function* (webContentsId: number) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       // Undocked: the guest is a small pane inside our layout, and devtools
       // docked into it would leave almost nothing of the page visible.
       yield* Effect.sync(() => {
@@ -1025,7 +1070,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       });
     }),
     screenshot: Effect.fn("PreviewAutomation.screenshot")(function* (webContentsId: number) {
-      const contents = yield* resolve(webContentsId);
+      const contents = yield* resolveAttached(webContentsId);
       // Captured through CDP rather than capturePage so the image is the page
       // itself, unaffected by the window being occluded or offscreen.
       const shot = (yield* sendCommand(contents, "Page.captureScreenshot", {
@@ -1042,7 +1087,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       };
     }),
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
-      const contents = yield* resolve(input.webContentsId);
+      const contents = yield* resolveAttached(input.webContentsId);
       const backendNodeId = yield* resolveTarget(contents, input.target);
       const point = yield* centerOf(contents, backendNodeId);
       // Real input events rather than element.click(): hover, focus and blur
@@ -1064,7 +1109,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       });
     }),
     type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
-      const contents = yield* resolve(input.webContentsId);
+      const contents = yield* resolveAttached(input.webContentsId);
       const backendNodeId = yield* resolveTarget(contents, input.target);
       const point = yield* centerOf(contents, backendNodeId);
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
@@ -1105,7 +1150,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       yield* sendCommand(contents, "Input.insertText", { text: input.text });
     }),
     press: Effect.fn("PreviewAutomation.press")(function* (input: DesktopPreviewPressInput) {
-      const contents = yield* resolve(input.webContentsId);
+      const contents = yield* resolveAttached(input.webContentsId);
       const definition = toCdpKeyDefinition(input.key);
       const modifiers = toCdpModifierBitmask(input.modifiers);
       yield* sendCommand(contents, "Input.dispatchKeyEvent", {
@@ -1121,7 +1166,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       });
     }),
     scroll: Effect.fn("PreviewAutomation.scroll")(function* (input: DesktopPreviewScrollInput) {
-      const contents = yield* resolve(input.webContentsId);
+      const contents = yield* resolveAttached(input.webContentsId);
       if (input.target !== undefined) {
         const backendNodeId = yield* resolveTarget(contents, input.target);
         yield* sendCommand(contents, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
@@ -1142,7 +1187,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     evaluate: Effect.fn("PreviewAutomation.evaluate")(function* (
       input: DesktopPreviewEvaluateInput,
     ) {
-      const contents = yield* resolve(input.webContentsId);
+      const contents = yield* resolveAttached(input.webContentsId);
       const result = (yield* sendCommand(contents, "Runtime.evaluate", {
         expression: input.expression,
         returnByValue: true,
@@ -1166,7 +1211,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return result.result?.value;
     }),
     waitFor: Effect.fn("PreviewAutomation.waitFor")(function* (input: DesktopPreviewWaitForInput) {
-      const contents = yield* resolve(input.webContentsId);
+      const contents = yield* resolveAttached(input.webContentsId);
       const timeoutMs = Math.max(0, input.timeoutMs ?? 10_000);
       const startedAt = Date.now();
       let unmet: string[] = [];
