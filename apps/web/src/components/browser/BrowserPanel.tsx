@@ -60,7 +60,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { AgentPointer, type AgentPointerPosition } from "./AgentPointer";
-import { usePreviewAutomationHost } from "./previewAutomationHost";
+import { usePreviewAutomationHost, type AgentActivity } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -192,12 +192,43 @@ export function BrowserPanel({
     }
   }, [activeUrl]);
 
+  /**
+   * The tab the agent works in.
+   *
+   * Pinned on its first action and kept, rather than resolved fresh each time.
+   * Resolving each time meant two things went wrong at once: the agent's next
+   * click landed on whatever tab the user had just switched to, and a
+   * navigation moved the page out from under someone reading it. The pin only
+   * lets go when the tab does.
+   */
+  const [agentTabId, setAgentTabId] = useState<string | null>(null);
+  const agentTabIdRef = useRef<string | null>(null);
+  agentTabIdRef.current = agentTabId;
+
+  /** What the agent last did, shown while it is working. */
+  const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
+
+  useEffect(() => {
+    // The agent's tab has been closed. Letting go here is what makes its next
+    // action pick up the tab the user is actually looking at.
+    if (agentTabId !== null && !browserState.tabs.some((tab) => tab.id === agentTabId)) {
+      setAgentTabId(null);
+      setAgentActivity(null);
+    }
+  }, [agentTabId, browserState.tabs]);
+
   // Offers this panel as the page the agent acts on, for as long as it is here.
   usePreviewAutomationHost({
     threadRef,
     enabled: isElectron,
     resolveTarget: () => {
-      const webview = activeWebview();
+      const pinned = agentTabIdRef.current;
+      const tabId = pinned !== null && webviewsRef.current.has(pinned) ? pinned : activeTabId;
+      if (tabId !== pinned) {
+        agentTabIdRef.current = tabId;
+        setAgentTabId(tabId);
+      }
+      const webview = webviewsRef.current.get(tabId) ?? null;
       return {
         webContentsId: webview === null ? null : webview.getWebContentsId(),
         onAgentPoint: (point) => {
@@ -206,6 +237,7 @@ export function BrowserPanel({
             sequence: (previous?.sequence ?? 0) + 1,
           }));
         },
+        onAgentActivity: (activity) => setAgentActivity(activity),
         viewport: () => {
           const rect = webview?.getBoundingClientRect();
           return {
@@ -214,7 +246,8 @@ export function BrowserPanel({
           };
         },
         // The address belongs to the element, so this is the one operation the
-        // main process cannot do on the agent's behalf.
+        // main process cannot do on the agent's behalf. Note that it never
+        // touches which tab is selected: the agent moves its page, not the view.
         navigate: async (url) => {
           const normalized = normalizePreviewUrl(url);
           // Refused rather than silently doing nothing: the agent gave an
@@ -222,7 +255,7 @@ export function BrowserPanel({
           if (normalized === null) {
             throw new Error(`${JSON.stringify(url)} is not a URL this browser can open.`);
           }
-          setTabUrl(threadRef, activeTabId, normalized);
+          setTabUrl(threadRef, tabId, normalized);
           await webview?.loadURL(normalized);
         },
       };
@@ -484,6 +517,13 @@ export function BrowserPanel({
             tab={tab}
             isActive={tab.id === activeTabId}
             closable
+            agentState={
+              tab.id !== agentTabId
+                ? "none"
+                : agentActivity?.phase === "running"
+                  ? "working"
+                  : "pinned"
+            }
             onSelect={() => selectTab(threadRef, tab.id)}
             onClose={() => closeBrowserTab(tab.id)}
           />
@@ -689,6 +729,14 @@ export function BrowserPanel({
         </Menu>
       </div>
 
+      {agentTabId !== null && agentActivity !== null ? (
+        <AgentActivityLine
+          activity={agentActivity}
+          isOnAgentTab={agentTabId === activeTabId}
+          onGoToAgentTab={() => selectTab(threadRef, agentTabId)}
+        />
+      ) : null}
+
       {deviceToolbarOpen && activeTab !== null ? (
         <DeviceToolbar
           viewport={activeTab.viewport}
@@ -760,12 +808,15 @@ function TabStripItem({
   tab,
   isActive,
   closable,
+  agentState,
   onSelect,
   onClose,
 }: {
   tab: BrowserTab;
   isActive: boolean;
   closable: boolean;
+  /** Whether the agent is working in this tab, and whether right now. */
+  agentState: "none" | "pinned" | "working";
   onSelect: () => void;
   onClose: () => void;
 }) {
@@ -774,6 +825,9 @@ function TabStripItem({
     <div
       className={cn(
         "group/tab flex min-w-0 max-w-44 shrink-0 items-center gap-1.5 rounded-t-md px-2 text-xs",
+        // A hairline under the agent's tab, so it is findable at a glance
+        // without competing with which tab is selected.
+        agentState !== "none" && "border-b-2 border-primary-readable",
         isActive
           ? "bg-background text-foreground"
           : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
@@ -786,7 +840,21 @@ function TabStripItem({
         onClick={onSelect}
         title={label}
       >
-        <GlobeIcon className="size-3 shrink-0 opacity-70" />
+        {/* A dot rather than a badge: the tab still has to read as a tab, and
+            this only needs to answer "is the agent in here". It pulses while a
+            call is in flight and holds steady between them. */}
+        {agentState === "none" ? (
+          <GlobeIcon className="size-3 shrink-0 opacity-70" />
+        ) : (
+          <span
+            aria-label={agentState === "working" ? "Agent working here" : "The agent's tab"}
+            data-testid={`browser-tab-agent-${tab.id}`}
+            className={cn(
+              "size-1.5 shrink-0 rounded-full bg-primary-readable",
+              agentState === "working" && "animate-pulse",
+            )}
+          />
+        )}
         <span className="min-w-0 truncate">{label}</span>
       </button>
       {closable ? (
@@ -1241,6 +1309,65 @@ function PageToolControl({
         </MenuPopup>
       </Menu>
     </span>
+  );
+}
+
+/**
+ * What the agent is doing, in one line under the toolbar.
+ *
+ * The tab dot says where; this says what. Without it the only evidence an
+ * agent is working is the page changing on its own, which reads the same as
+ * the page being broken.
+ *
+ * Clicking it goes to the agent's tab, which is the whole follow affordance --
+ * a mode that moved your selection for you would be the yanking this was built
+ * to stop.
+ */
+export function AgentActivityLine({
+  activity,
+  isOnAgentTab,
+  onGoToAgentTab,
+}: {
+  activity: AgentActivity;
+  isOnAgentTab: boolean;
+  onGoToAgentTab: () => void;
+}) {
+  const body = (
+    <>
+      <span
+        className={cn(
+          "size-1.5 shrink-0 rounded-full bg-primary-readable",
+          activity.phase === "running" && "animate-pulse",
+        )}
+      />
+      <span className="shrink-0 text-foreground">Agent</span>
+      <span className="min-w-0 truncate">
+        {activity.verb}
+        {activity.detail === null ? "" : ` ${activity.detail}`}
+      </span>
+    </>
+  );
+  const className =
+    "flex h-[22px] w-full shrink-0 items-center gap-1.5 border-b border-border px-2 font-mono text-[11px] text-muted-foreground";
+
+  if (isOnAgentTab) {
+    return (
+      <div className={className} data-testid="agent-activity-line">
+        {body}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onGoToAgentTab}
+      title="Go to the tab the agent is working in"
+      data-testid="agent-activity-line"
+      className={cn(className, "text-left hover:bg-accent hover:text-foreground")}
+    >
+      {body}
+      <span className="ms-auto shrink-0 text-muted-foreground/60">show</span>
+    </button>
   );
 }
 

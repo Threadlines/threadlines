@@ -1,7 +1,7 @@
 import type { DesktopBridge, PreviewAutomationRequest } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
-import { createPreviewAutomationHandler } from "./previewAutomationHost";
+import { createPreviewAutomationHandler, type AgentActivity } from "./previewAutomationHost";
 
 const request = (
   operation: PreviewAutomationRequest["operation"],
@@ -18,6 +18,7 @@ const handlerFor = (
     navigate,
     viewport: () => ({ width: 800, height: 600 }),
     onAgentPoint: () => {},
+    onAgentActivity: () => {},
   }));
 
 describe("createPreviewAutomationHandler", () => {
@@ -63,6 +64,7 @@ describe("createPreviewAutomationHandler", () => {
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
         onAgentPoint: (point) => points.push(point),
+        onAgentActivity: () => {},
       }),
     );
 
@@ -79,6 +81,54 @@ describe("createPreviewAutomationHandler", () => {
     const response = await handle(request("evaluate", { expression: "[1,2,3]" }));
 
     expect(response.result).toEqual({ result: [1, 2, 3] });
+  });
+
+  it("says what it is doing in words, before and after", async () => {
+    // The line under the toolbar is the only thing that distinguishes an agent
+    // working from a page misbehaving on its own.
+    const seen: AgentActivity[] = [];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewClick: () => Promise.resolve({ x: 1, y: 2 }),
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: () => {},
+        onAgentActivity: (activity) => seen.push(activity),
+      }),
+    );
+
+    await handle(request("click", { target: { text: "Sign in" } }));
+
+    // A verb and the thing's own words, not a tool name and a selector.
+    expect(seen.map((a) => `${a.phase}: ${a.verb} ${a.detail}`)).toEqual([
+      'running: clicked "Sign in"',
+      'done: clicked "Sign in"',
+    ]);
+  });
+
+  it("stops saying it is working when the action fails", async () => {
+    // A line left mid-sentence would claim an action never finished.
+    const seen: AgentActivity[] = [];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewClick: () => Promise.reject(new Error("no element matched")),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: () => {},
+        onAgentActivity: (activity) => seen.push(activity),
+      }),
+    );
+
+    await handle(request("click", { target: { ref: "e3" } }));
+
+    expect(seen.at(-1)?.phase).toBe("done");
   });
 
   it("answers with the failure instead of rejecting", async () => {

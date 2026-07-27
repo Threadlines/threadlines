@@ -60,6 +60,64 @@ export interface PreviewAutomationHostTarget {
   readonly viewport: () => { width: number; height: number };
   /** Where the agent just acted, so the panel can show it happening. */
   readonly onAgentPoint: (point: { x: number; y: number }) => void;
+  /** What the agent is doing, in words, for the line under the toolbar. */
+  readonly onAgentActivity: (activity: AgentActivity) => void;
+}
+
+/**
+ * One line of what the agent just did.
+ *
+ * Emitted here because this is the only place that knows both the operation and
+ * what it was aimed at. Without it the only evidence an agent is working is the
+ * page changing by itself, which is indistinguishable from the page being
+ * broken.
+ */
+export interface AgentActivity {
+  /** Present tense while it runs, past tense once it has answered. */
+  readonly phase: "running" | "done";
+  /** "clicked", "typed into", "went to" -- a verb, not a tool name. */
+  readonly verb: string;
+  /** What it acted on, when that is nameable. */
+  readonly detail: string | null;
+  /** Distinguishes two identical actions in a row. */
+  readonly sequence: number;
+}
+
+/** The agent's own vocabulary, turned into a person's. */
+const ACTIVITY_VERBS: Record<PreviewAutomationOperation, string> = {
+  status: "checked",
+  snapshot: "read the page",
+  navigate: "went to",
+  click: "clicked",
+  type: "typed into",
+  press: "pressed",
+  scroll: "scrolled",
+  evaluate: "ran script on",
+  waitFor: "waited on",
+  screenshot: "looked at the page",
+  resize: "resized",
+  setAppearance: "restyled",
+};
+
+/** What the action was aimed at, said the way the user would say it. */
+function describeSubject(operation: PreviewAutomationOperation, input: unknown): string | null {
+  const value = (input ?? {}) as Record<string, unknown>;
+  if (operation === "navigate") {
+    return typeof value.url === "string" ? value.url : null;
+  }
+  if (operation === "press") {
+    return typeof value.key === "string" ? value.key : null;
+  }
+  const target = value.target as Record<string, unknown> | undefined;
+  if (target === undefined) {
+    return null;
+  }
+  // A locator or a selector is machinery; the text on a thing is its name.
+  if (typeof target.text === "string") return `"${target.text}"`;
+  if (typeof target.ref === "string") return target.ref;
+  if (typeof target.selector === "string") return target.selector;
+  if (typeof target.locator === "string") return target.locator;
+  return null;
 }
 
 /**
@@ -74,8 +132,17 @@ export function createPreviewAutomationHandler(
   bridge: DesktopBridge,
   resolveTarget: () => PreviewAutomationHostTarget,
 ): (request: PreviewAutomationRequest) => Promise<PreviewAutomationResponse> {
+  let sequence = 0;
   return async (request: PreviewAutomationRequest): Promise<PreviewAutomationResponse> => {
     const target = resolveTarget();
+    sequence += 1;
+    const verb = ACTIVITY_VERBS[request.operation];
+    const detail = describeSubject(request.operation, request.input);
+    target.onAgentActivity({ phase: "running", verb, detail, sequence });
+    const settle = <T>(response: T): T => {
+      target.onAgentActivity({ phase: "done", verb, detail, sequence });
+      return response;
+    };
     if (target.webContentsId === null) {
       return {
         requestId: request.requestId,
@@ -86,14 +153,18 @@ export function createPreviewAutomationHandler(
       const result = await dispatch(bridge, target, target.webContentsId, request);
       // The key is omitted rather than set to undefined: an operation with
       // nothing to report should send nothing, not a hole.
-      return result === undefined
-        ? { requestId: request.requestId }
-        : {
-            requestId: request.requestId,
-            result: result as Exclude<PreviewAutomationResponse["result"], undefined>,
-          };
+      return settle(
+        result === undefined
+          ? { requestId: request.requestId }
+          : {
+              requestId: request.requestId,
+              result: result as Exclude<PreviewAutomationResponse["result"], undefined>,
+            },
+      );
     } catch (cause) {
-      return { requestId: request.requestId, error: describe(cause) };
+      // Settled on the way out too: an action that failed has still stopped,
+      // and a line left saying "clicking" would claim it never did.
+      return settle({ requestId: request.requestId, error: describe(cause) });
     }
   };
 }
