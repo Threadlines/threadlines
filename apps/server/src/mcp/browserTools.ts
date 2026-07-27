@@ -21,9 +21,11 @@ import {
   PreviewAutomationPressInputSchema,
   PreviewAutomationResizeInputSchema,
   PreviewAutomationScreenshotSchema,
+  PreviewAutomationSelectTabInputSchema,
   PreviewAutomationScrollInputSchema,
   PreviewAutomationSnapshotSchema,
   PreviewAutomationStatusSchema,
+  PreviewAutomationTabsSchema,
   PreviewAutomationTypeInputSchema,
   PreviewAutomationWaitForInputSchema,
 } from "@threadlines/contracts";
@@ -72,6 +74,27 @@ export const BrowserStatusTool = readsOnly(
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Check the browser"),
+);
+
+export const BrowserTabsTool = readsOnly(
+  Tool.make("browser_tabs", {
+    description:
+      "Every page open in the Threadlines preview panel, with the one the user is looking at and the one your actions land on both marked. Check this before saying a page is not open: the user may be looking at a tab you are not on, and switching tabs is theirs to do, not yours.",
+    success: PreviewAutomationTabsSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  }).annotate(Tool.Title, "List tabs"),
+);
+
+export const BrowserSelectTabTool = changesThePage(
+  Tool.make("browser_select_tab", {
+    description:
+      "Move to another open tab, by its position in browser_tabs. This also brings that tab to the front for the user, so they see the page you are working on. Use it when what they are asking about is not on the tab you are currently on.",
+    parameters: PreviewAutomationSelectTabInputSchema,
+    success: PreviewAutomationStatusSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  }).annotate(Tool.Title, "Switch tab"),
 );
 
 export const BrowserNavigateTool = changesThePage(
@@ -198,6 +221,8 @@ export const BrowserResizeTool = changesThePage(
 export const BrowserStandardToolkit = Toolkit.make(
   BrowserSnapshotTool,
   BrowserStatusTool,
+  BrowserTabsTool,
+  BrowserSelectTabTool,
   BrowserNavigateTool,
   BrowserClickTool,
   BrowserMoveTool,

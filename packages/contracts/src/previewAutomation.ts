@@ -34,6 +34,8 @@ import { ThreadId } from "./baseSchemas.ts";
  */
 export const PreviewAutomationOperationSchema = Schema.Literals([
   "status",
+  "tabs",
+  "selectTab",
   "snapshot",
   "navigate",
   "click",
@@ -52,6 +54,8 @@ export type PreviewAutomationOperation = typeof PreviewAutomationOperationSchema
 
 export const PREVIEW_AUTOMATION_OPERATIONS = [
   "status",
+  "tabs",
+  "selectTab",
   "snapshot",
   "navigate",
   "click",
@@ -196,6 +200,39 @@ export type PreviewAutomationResponse = typeof PreviewAutomationResponseSchema.T
 
 export const PreviewAutomationNavigateInputSchema = Schema.Struct({
   url: Schema.String,
+});
+
+/**
+ * Every page the panel has open, not just the one being acted on.
+ *
+ * Without this an agent has no way to know a second tab exists, so it answers
+ * questions about the tab it happens to be on and states, wrongly and with
+ * confidence, that there is nothing else.
+ */
+export const PreviewAutomationTabSchema = Schema.Struct({
+  title: Schema.String,
+  url: Schema.String,
+  /** The tab the user is looking at, which is the one they mean. */
+  active: Schema.Boolean,
+  /** The tab this agent's actions land on. */
+  agent: Schema.Boolean,
+});
+
+export const PreviewAutomationTabsSchema = Schema.Struct({
+  tabs: Schema.Array(PreviewAutomationTabSchema),
+});
+
+/**
+ * Switching tabs also switches what the user is looking at.
+ *
+ * Deliberately: an agent acting on a tab nobody is watching can click something
+ * destructive with no witness. Tying the two together keeps the rule that the
+ * page the agent works on is the page in front of you -- and makes moving
+ * between tabs a thing you can see it decide to do.
+ */
+export const PreviewAutomationSelectTabInputSchema = Schema.Struct({
+  /** Position in the browser_tabs listing, counting from zero. */
+  index: Schema.Finite,
 });
 
 export const PreviewAutomationClickInputSchema = Schema.Struct({

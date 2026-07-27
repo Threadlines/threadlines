@@ -207,6 +207,25 @@ export function BrowserPanel({
 
   /** What the agent last did, shown while it is working. */
   const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
+  const agentActivityRef = useRef<AgentActivity | null>(null);
+  agentActivityRef.current = agentActivity;
+
+  useEffect(() => {
+    // The agent pins itself to a tab so a turn in flight cannot lose its page
+    // when you glance somewhere else. Holding that pin after the turn is over
+    // is what made it answer questions about a tab you had left: you open a
+    // new one, ask about what is in front of you, and it reports the old page
+    // and tells you no other page exists. So an idle agent lets go, and its
+    // next action picks up whatever you are looking at now.
+    const activity = agentActivityRef.current;
+    if (activity === null || activity.phase === "done") {
+      agentTabIdRef.current = null;
+      setAgentTabId(null);
+    }
+    // Only when the visible tab changes: reacting to the activity itself would
+    // hand the tab over in the middle of a turn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId]);
 
   useEffect(() => {
     // The agent's tab has been closed. Letting go here is what makes its next
@@ -246,6 +265,24 @@ export function BrowserPanel({
           }));
         },
         onAgentActivity: (activity) => setAgentActivity(activity),
+        selectTab: (index) => {
+          const chosen = browserState.tabs[index];
+          if (chosen === undefined) {
+            return;
+          }
+          // Move the pin with the view. Without this the agent would keep
+          // acting on the tab it was pinned to while showing you another.
+          agentTabIdRef.current = chosen.id;
+          setAgentTabId(chosen.id);
+          selectTab(threadRef, chosen.id);
+        },
+        tabs: () =>
+          browserState.tabs.map((entry) => ({
+            title: entry.title ?? "",
+            url: entry.url ?? "",
+            active: entry.id === activeTabId,
+            agent: entry.id === tabId,
+          })),
         viewport: () => {
           const rect = webview?.getBoundingClientRect();
           return {

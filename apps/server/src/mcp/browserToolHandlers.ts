@@ -26,6 +26,8 @@ const forward =
 export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_snapshot: forward("snapshot"),
   browser_status: forward("status"),
+  browser_tabs: forward("tabs"),
+  browser_select_tab: forward("selectTab"),
   browser_navigate: forward("navigate"),
   browser_click: forward("click"),
   browser_move: forward("move"),

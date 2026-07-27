@@ -18,6 +18,8 @@ const handlerFor = (
     navigate,
     viewport: () => ({ width: 800, height: 600 }),
     onAgentPoint: () => {},
+    tabs: () => [],
+    selectTab: () => {},
     onAgentActivity: () => {},
   }));
 
@@ -64,6 +66,8 @@ describe("createPreviewAutomationHandler", () => {
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
         onAgentPoint: (point) => points.push(point),
+        tabs: () => [],
+        selectTab: () => {},
         onAgentActivity: () => {},
       }),
     );
@@ -88,6 +92,8 @@ describe("createPreviewAutomationHandler", () => {
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
         onAgentPoint: (point) => points.push(point),
+        tabs: () => [],
+        selectTab: () => {},
         onAgentActivity: (entry) => activity.push(entry.detail),
       }),
     );
@@ -97,6 +103,38 @@ describe("createPreviewAutomationHandler", () => {
     expect(points).toEqual([{ x: 90, y: 20, from: { x: 10, y: 20 } }]);
     // "dragged" on its own says nothing about what moved.
     expect(activity.at(-1)).toBe('"Sign in" \u2192 "fixture"');
+  });
+
+  it("reports every tab, marking the user's and its own", async () => {
+    // The agent pins itself to a tab. Without a way to see the others it
+    // reports on the one it is pinned to and states that nothing else is open,
+    // which is what it did when a second tab was the one being asked about.
+    const handle = createPreviewAutomationHandler(
+      {
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: () => {},
+        onAgentActivity: () => {},
+        selectTab: () => {},
+        tabs: () => [
+          { title: "Fixture", url: "http://localhost:18821/", active: false, agent: true },
+          { title: "Manuals", url: "https://example.com/", active: true, agent: false },
+        ],
+      }),
+    );
+
+    const response = await handle(request("tabs", {}));
+
+    expect(response.result).toEqual({
+      tabs: [
+        { title: "Fixture", url: "http://localhost:18821/", active: false, agent: true },
+        { title: "Manuals", url: "https://example.com/", active: true, agent: false },
+      ],
+    });
   });
 
   it("wraps an evaluate result so an array is not a validation failure", async () => {
@@ -123,6 +161,8 @@ describe("createPreviewAutomationHandler", () => {
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
         onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
         onAgentActivity: (activity) => seen.push(activity),
       }),
     );
@@ -148,6 +188,8 @@ describe("createPreviewAutomationHandler", () => {
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
         onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
         onAgentActivity: (activity) => seen.push(activity),
       }),
     );

@@ -31,6 +31,8 @@ import { ensureEnvironmentApi } from "../../environmentApi";
  */
 export const PREVIEW_AUTOMATION_HOST_OPERATIONS = [
   "status",
+  "tabs",
+  "selectTab",
   "snapshot",
   "navigate",
   "click",
@@ -67,6 +69,16 @@ export interface PreviewAutomationHostTarget {
     /** Where a drag began, when this point is the end of one. */
     from?: { x: number; y: number };
   }) => void;
+  /** Every page the panel has open. Renderer state, like the viewport: the
+   *  main process cannot see the tab strip. */
+  readonly tabs: () => ReadonlyArray<{
+    title: string;
+    url: string;
+    active: boolean;
+    agent: boolean;
+  }>;
+  /** Bring a tab to the front, which is also how the agent moves to it. */
+  readonly selectTab: (index: number) => void;
   /** What the agent is doing, in words, for the line under the toolbar. */
   readonly onAgentActivity: (activity: AgentActivity) => void;
 }
@@ -93,6 +105,8 @@ export interface AgentActivity {
 /** The agent's own vocabulary, turned into a person's. */
 const ACTIVITY_VERBS: Record<PreviewAutomationOperation, string> = {
   status: "checked",
+  tabs: "looked at the tabs",
+  selectTab: "switched to",
   snapshot: "read the page",
   navigate: "went to",
   click: "clicked",
@@ -116,6 +130,9 @@ function describeSubject(operation: PreviewAutomationOperation, input: unknown):
   }
   if (operation === "press") {
     return typeof value.key === "string" ? value.key : null;
+  }
+  if (operation === "selectTab") {
+    return typeof value.index === "number" ? `tab ${value.index + 1}` : null;
   }
   if (operation === "drag") {
     // Both ends, because "dragged" on its own says nothing about what moved.
@@ -250,6 +267,12 @@ async function dispatch(
       // other. Sending only the result would show the destination and lose the
       // gesture, which is the part worth seeing.
       target.onAgentPoint({ ...gesture.to, from: gesture.from });
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    }
+    case "tabs":
+      return { tabs: target.tabs() };
+    case "selectTab": {
+      target.selectTab((input as unknown as { index: number }).index);
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     }
     case "type": {
