@@ -13,9 +13,11 @@
  */
 import {
   PreviewAutomationClickInputSchema,
+  PreviewAutomationDragInputSchema,
   PreviewAutomationErrorSchema,
   PreviewAutomationEvaluateInputSchema,
   PreviewAutomationNavigateInputSchema,
+  PreviewAutomationMoveInputSchema,
   PreviewAutomationPressInputSchema,
   PreviewAutomationResizeInputSchema,
   PreviewAutomationScreenshotSchema,
@@ -92,6 +94,28 @@ export const BrowserClickTool = changesThePage(
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Click"),
+);
+
+export const BrowserMoveTool = changesThePage(
+  Tool.make("browser_move", {
+    description:
+      "Move the pointer onto something without clicking it. Use it for menus, tooltips and controls that only appear on hover, and to show where you are about to work. Name the target the same way as browser_click.",
+    parameters: PreviewAutomationMoveInputSchema,
+    success: PreviewAutomationStatusSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  }).annotate(Tool.Title, "Move"),
+);
+
+export const BrowserDragTool = changesThePage(
+  Tool.make("browser_drag", {
+    description:
+      "Press on one thing, drag to another, release. This is how you select a range of text, reorder an item in a list, or work a slider. Name both ends the same way as browser_click.",
+    parameters: PreviewAutomationDragInputSchema,
+    success: PreviewAutomationStatusSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  }).annotate(Tool.Title, "Drag"),
 );
 
 export const BrowserTypeTool = changesThePage(
@@ -176,6 +200,8 @@ export const BrowserStandardToolkit = Toolkit.make(
   BrowserStatusTool,
   BrowserNavigateTool,
   BrowserClickTool,
+  BrowserMoveTool,
+  BrowserDragTool,
   BrowserTypeTool,
   BrowserPressTool,
   BrowserScrollTool,

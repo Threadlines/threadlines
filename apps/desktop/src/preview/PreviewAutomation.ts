@@ -16,12 +16,15 @@ import type {
   DesktopPreviewAnnotationMode,
   DesktopPreviewDrawing,
   DesktopPreviewClickInput,
+  DesktopPreviewDragInput,
+  DesktopPreviewDragResult,
   DesktopPreviewPickedElement,
   DesktopPreviewPoint,
   DesktopPreviewPickMode,
   DesktopPreviewConsoleEntry,
   DesktopPreviewEvaluateInput,
   DesktopPreviewNetworkFailure,
+  DesktopPreviewMoveInput,
   DesktopPreviewPressInput,
   DesktopPreviewScrollInput,
   DesktopPreviewSnapshot,
@@ -63,6 +66,8 @@ import * as Schema from "effect/Schema";
 const MAX_CONSOLE_ENTRIES = 200;
 /** Long enough to choose deliberately, short enough not to strand inspect mode. */
 const PICK_TIMEOUT_MS = 60_000;
+/** Drag-and-drop and text selection depend on held movement between press and release. */
+const DRAG_MOVE_STEPS = 10;
 
 const MAX_NETWORK_FAILURES = 100;
 
@@ -155,6 +160,12 @@ export class PreviewAutomation extends Context.Service<
     readonly click: (
       input: DesktopPreviewClickInput,
     ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
+    readonly move: (
+      input: DesktopPreviewMoveInput,
+    ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
+    readonly drag: (
+      input: DesktopPreviewDragInput,
+    ) => Effect.Effect<DesktopPreviewDragResult, PreviewAutomationError>;
     readonly type: (
       input: DesktopPreviewTypeInput,
     ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
@@ -851,6 +862,14 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     };
   });
 
+  const targetPoint = Effect.fn("PreviewAutomation.targetPoint")(function* (
+    contents: WebContents,
+    target: PreviewAutomationTarget,
+  ) {
+    const backendNodeId = yield* resolveTarget(contents, target);
+    return yield* centerOf(contents, backendNodeId);
+  });
+
   return PreviewAutomation.of({
     attach,
     detach: (webContentsId: number) =>
@@ -1155,8 +1174,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     }),
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
       const contents = yield* resolveAttached(input.webContentsId);
-      const backendNodeId = yield* resolveTarget(contents, input.target);
-      const point = yield* centerOf(contents, backendNodeId);
+      const point = yield* targetPoint(contents, input.target);
       // Real input events rather than element.click(): hover, focus and blur
       // fire as they would for a person, and a handler that checks isTrusted
       // behaves the same way too.
@@ -1176,10 +1194,49 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       });
       return point;
     }),
+    move: Effect.fn("PreviewAutomation.move")(function* (input: DesktopPreviewMoveInput) {
+      const contents = yield* resolveAttached(input.webContentsId);
+      const point = yield* targetPoint(contents, input.target);
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+      });
+      return point;
+    }),
+    drag: Effect.fn("PreviewAutomation.drag")(function* (input: DesktopPreviewDragInput) {
+      const contents = yield* resolveAttached(input.webContentsId);
+      const from = yield* targetPoint(contents, input.from);
+      const to = yield* targetPoint(contents, input.to);
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: from.x,
+        y: from.y,
+        button: "left",
+        clickCount: 1,
+      });
+      for (let step = 1; step <= DRAG_MOVE_STEPS; step += 1) {
+        const progress = step / DRAG_MOVE_STEPS;
+        yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: from.x + (to.x - from.x) * progress,
+          y: from.y + (to.y - from.y) * progress,
+          button: "left",
+          buttons: 1,
+        });
+      }
+      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: to.x,
+        y: to.y,
+        button: "left",
+        clickCount: 1,
+      });
+      return { from, to };
+    }),
     type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
       const contents = yield* resolveAttached(input.webContentsId);
-      const backendNodeId = yield* resolveTarget(contents, input.target);
-      const point = yield* centerOf(contents, backendNodeId);
+      const point = yield* targetPoint(contents, input.target);
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
         type: "mousePressed",
         x: point.x,

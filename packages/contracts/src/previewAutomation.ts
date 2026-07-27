@@ -37,6 +37,8 @@ export const PreviewAutomationOperationSchema = Schema.Literals([
   "snapshot",
   "navigate",
   "click",
+  "move",
+  "drag",
   "type",
   "press",
   "scroll",
@@ -53,6 +55,8 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "snapshot",
   "navigate",
   "click",
+  "move",
+  "drag",
   "type",
   "press",
   "scroll",
@@ -198,6 +202,15 @@ export const PreviewAutomationClickInputSchema = Schema.Struct({
   target: PreviewAutomationTargetSchema,
   /** A double click is one gesture, not two calls: two calls are two clicks. */
   doubleClick: Schema.optionalKey(Schema.Boolean),
+});
+
+export const PreviewAutomationMoveInputSchema = Schema.Struct({
+  target: PreviewAutomationTargetSchema,
+});
+
+export const PreviewAutomationDragInputSchema = Schema.Struct({
+  from: PreviewAutomationTargetSchema,
+  to: PreviewAutomationTargetSchema,
 });
 
 export const PreviewAutomationTypeInputSchema = Schema.Struct({

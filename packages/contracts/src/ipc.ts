@@ -490,6 +490,26 @@ export const DesktopPreviewClickInputSchema = Schema.Struct({
 });
 export type DesktopPreviewClickInput = typeof DesktopPreviewClickInputSchema.Type;
 
+export const DesktopPreviewMoveInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  target: PreviewAutomationTargetSchema,
+});
+export type DesktopPreviewMoveInput = typeof DesktopPreviewMoveInputSchema.Type;
+
+export const DesktopPreviewDragInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  from: PreviewAutomationTargetSchema,
+  to: PreviewAutomationTargetSchema,
+});
+export type DesktopPreviewDragInput = typeof DesktopPreviewDragInputSchema.Type;
+
+/** Both ends of a drag, so the UI can replay the gesture rather than the result. */
+export const DesktopPreviewDragResultSchema = Schema.Struct({
+  from: DesktopPreviewPointSchema,
+  to: DesktopPreviewPointSchema,
+});
+export type DesktopPreviewDragResult = typeof DesktopPreviewDragResultSchema.Type;
+
 export const DesktopPreviewTypeInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   target: PreviewAutomationTargetSchema,
@@ -888,6 +908,8 @@ export interface DesktopBridge {
   previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
   /** Resolve with the point the input landed on, so the UI can show it. */
   previewClick?: (input: DesktopPreviewClickInput) => Promise<DesktopPreviewPoint>;
+  previewMove?: (input: DesktopPreviewMoveInput) => Promise<DesktopPreviewPoint>;
+  previewDrag?: (input: DesktopPreviewDragInput) => Promise<DesktopPreviewDragResult>;
   previewType?: (input: DesktopPreviewTypeInput) => Promise<DesktopPreviewPoint>;
   previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
   previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;

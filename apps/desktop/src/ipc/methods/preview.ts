@@ -2,8 +2,11 @@ import {
   DesktopLocalServerSchema,
   DesktopPreviewClickInputSchema,
   DesktopPreviewColorSchemeInputSchema,
+  DesktopPreviewDragInputSchema,
+  DesktopPreviewDragResultSchema,
   DesktopPreviewViewportInputSchema,
   DesktopPreviewEvaluateInputSchema,
+  DesktopPreviewMoveInputSchema,
   DesktopPreviewScreenshotSchema,
   DesktopPreviewSnapshotSchema,
   DesktopPreviewTypeInputSchema,
@@ -85,6 +88,26 @@ export const previewClick = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.click")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     return yield* automation.click(input);
+  }),
+});
+
+export const previewMove = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_MOVE_CHANNEL,
+  payload: DesktopPreviewMoveInputSchema,
+  result: DesktopPreviewPointSchema,
+  handler: Effect.fn("desktop.ipc.preview.move")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.move(input);
+  }),
+});
+
+export const previewDrag = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_DRAG_CHANNEL,
+  payload: DesktopPreviewDragInputSchema,
+  result: DesktopPreviewDragResultSchema,
+  handler: Effect.fn("desktop.ipc.preview.drag")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    return yield* automation.drag(input);
   }),
 });
 

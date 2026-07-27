@@ -73,6 +73,32 @@ describe("createPreviewAutomationHandler", () => {
     expect(points).toEqual([{ x: 120, y: 48 }]);
   });
 
+  it("reports both ends of a drag, so the pointer can replay the gesture", async () => {
+    // Only the destination would show where the drag finished and lose the
+    // drag, which is the part a watching user cannot otherwise see.
+    const points: unknown[] = [];
+    const activity: Array<string | null> = [];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewDrag: () => Promise.resolve({ from: { x: 10, y: 20 }, to: { x: 90, y: 20 } }),
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: (point) => points.push(point),
+        onAgentActivity: (entry) => activity.push(entry.detail),
+      }),
+    );
+
+    await handle(request("drag", { from: { text: "Sign in" }, to: { text: "fixture" } }));
+
+    expect(points).toEqual([{ x: 90, y: 20, from: { x: 10, y: 20 } }]);
+    // "dragged" on its own says nothing about what moved.
+    expect(activity.at(-1)).toBe('"Sign in" \u2192 "fixture"');
+  });
+
   it("wraps an evaluate result so an array is not a validation failure", async () => {
     // The expression has already run by the time the result is checked, so a
     // bare array used to \"fail\" after mutating the page.

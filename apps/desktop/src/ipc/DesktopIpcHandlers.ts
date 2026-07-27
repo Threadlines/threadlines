@@ -51,9 +51,11 @@ import {
 import {
   previewAttach,
   previewClick,
+  previewDrag,
   previewDetach,
   previewEvaluate,
   previewLocalServers,
+  previewMove,
   previewClearBrowsingData,
   previewClearCache,
   previewOpenDevTools,
@@ -102,6 +104,8 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewEvaluate);
   yield* ipc.handle(previewSnapshot);
   yield* ipc.handle(previewClick);
+  yield* ipc.handle(previewMove);
+  yield* ipc.handle(previewDrag);
   yield* ipc.handle(previewType);
   yield* ipc.handle(previewPress);
   yield* ipc.handle(previewScroll);

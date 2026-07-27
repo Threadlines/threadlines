@@ -28,6 +28,8 @@ export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_status: forward("status"),
   browser_navigate: forward("navigate"),
   browser_click: forward("click"),
+  browser_move: forward("move"),
+  browser_drag: forward("drag"),
   browser_type: forward("type"),
   browser_press: forward("press"),
   browser_scroll: forward("scroll"),

@@ -33,6 +33,9 @@ const POINTER_SETTLE_MS = 900;
  */
 const POINTER_PING_MS = 620;
 
+/** One frame at the start of a drag, so there is somewhere to travel from. */
+const HOLD_SETTLE_MS = 60;
+
 /** Bounds on the glide. Below the floor it reads as a jump; above the ceiling
  *  the pointer is still travelling after the page has already changed. */
 const POINTER_TRAVEL_MIN_MS = 140;
@@ -45,6 +48,14 @@ export interface AgentPointerPosition {
   readonly y: number;
   /** Distinguishes two actions in the same spot, which should read as two. */
   readonly sequence: number;
+  /**
+   * Where a drag began, when this point is the end of one.
+   *
+   * The gesture is over by the time we hear about it, so this is a replay
+   * rather than a live feed: the mark presses at one end, travels, releases at
+   * the other. Showing only where it finished would lose the part worth seeing.
+   */
+  readonly from?: { readonly x: number; readonly y: number } | undefined;
 }
 
 export function travelDurationMs(
@@ -75,6 +86,7 @@ export function AgentPointer({
 }) {
   const [settled, setSettled] = useState(false);
   const previous = useRef<{ x: number; y: number } | null>(null);
+  const gesture = useDragReplay(position, scale);
 
   const sequence = position?.sequence ?? null;
   useEffect(() => {
@@ -93,7 +105,7 @@ export function AgentPointer({
     return null;
   }
 
-  const point = { x: position.x * scale, y: position.y * scale };
+  const point = gesture.point ?? { x: position.x * scale, y: position.y * scale };
   const duration = travelDurationMs(previous.current, point);
   previous.current = point;
 
@@ -115,7 +127,7 @@ export function AgentPointer({
         transitionDuration: `${duration}ms, 400ms`,
       }}
     >
-      <ClickRing sequence={position.sequence} />
+      {gesture.held ? <HeldRing /> : <ClickRing sequence={position.sequence} />}
       {/* An arrow, because an arrow is what a pointer looks like and this
           should need no explaining. Filled in our colour with a rim around it,
           rather than the hollow outline every system cursor uses, so it reads
@@ -134,6 +146,64 @@ export function AgentPointer({
         />
       </svg>
     </div>
+  );
+}
+
+/**
+ * Replays a drag: pressed at one end, travelling, released at the other.
+ *
+ * Two renders, because a single state change would batch into one and the mark
+ * would simply appear at the destination -- there has to be a frame where it is
+ * at the start for there to be anything to travel from.
+ */
+function useDragReplay(
+  position: AgentPointerPosition | null,
+  scale: number,
+): { point: { x: number; y: number } | null; held: boolean } {
+  const [state, setState] = useState<{
+    point: { x: number; y: number } | null;
+    held: boolean;
+  }>({ point: null, held: false });
+
+  const sequence = position?.sequence ?? null;
+  const from = position?.from;
+  const x = position?.x ?? 0;
+  const y = position?.y ?? 0;
+
+  useEffect(() => {
+    if (sequence === null || from === undefined) {
+      setState({ point: null, held: false });
+      return;
+    }
+    const start = { x: from.x * scale, y: from.y * scale };
+    const end = { x: x * scale, y: y * scale };
+    setState({ point: start, held: true });
+
+    const travel = window.setTimeout(() => setState({ point: end, held: true }), HOLD_SETTLE_MS);
+    // Let go once it has arrived, so the ring expands where the drag ended.
+    const release = window.setTimeout(
+      () => setState({ point: end, held: false }),
+      HOLD_SETTLE_MS + travelDurationMs(start, end),
+    );
+    return () => {
+      window.clearTimeout(travel);
+      window.clearTimeout(release);
+    };
+  }, [sequence, from, x, y, scale]);
+
+  return state;
+}
+
+/**
+ * The button, held down.
+ *
+ * Still rather than animating: a pulsing ring during travel reads as repeated
+ * clicking, and one continuous gesture is what actually happened. The stillness
+ * is the signal, and it costs nothing to render.
+ */
+function HeldRing() {
+  return (
+    <span className="absolute -left-2.5 -top-2.5 size-5 rounded-full border-2 border-primary-readable/70 bg-primary-readable/10" />
   );
 }
 

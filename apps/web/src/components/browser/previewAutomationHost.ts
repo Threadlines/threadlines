@@ -34,6 +34,8 @@ export const PREVIEW_AUTOMATION_HOST_OPERATIONS = [
   "snapshot",
   "navigate",
   "click",
+  "move",
+  "drag",
   "type",
   "press",
   "scroll",
@@ -59,7 +61,12 @@ export interface PreviewAutomationHostTarget {
    *  it. A question about layout is a question about this. */
   readonly viewport: () => { width: number; height: number };
   /** Where the agent just acted, so the panel can show it happening. */
-  readonly onAgentPoint: (point: { x: number; y: number }) => void;
+  readonly onAgentPoint: (point: {
+    x: number;
+    y: number;
+    /** Where a drag began, when this point is the end of one. */
+    from?: { x: number; y: number };
+  }) => void;
   /** What the agent is doing, in words, for the line under the toolbar. */
   readonly onAgentActivity: (activity: AgentActivity) => void;
 }
@@ -89,6 +96,8 @@ const ACTIVITY_VERBS: Record<PreviewAutomationOperation, string> = {
   snapshot: "read the page",
   navigate: "went to",
   click: "clicked",
+  move: "moved to",
+  drag: "dragged",
   type: "typed into",
   press: "pressed",
   scroll: "scrolled",
@@ -108,7 +117,20 @@ function describeSubject(operation: PreviewAutomationOperation, input: unknown):
   if (operation === "press") {
     return typeof value.key === "string" ? value.key : null;
   }
-  const target = value.target as Record<string, unknown> | undefined;
+  if (operation === "drag") {
+    // Both ends, because "dragged" on its own says nothing about what moved.
+    const from = nameTarget(value.from);
+    const to = nameTarget(value.to);
+    if (from === null || to === null) {
+      return from ?? to;
+    }
+    return `${from} \u2192 ${to}`;
+  }
+  return nameTarget(value.target);
+}
+
+function nameTarget(candidate: unknown): string | null {
+  const target = candidate as Record<string, unknown> | undefined;
   if (target === undefined) {
     return null;
   }
@@ -214,6 +236,20 @@ async function dispatch(
       // Shown before the page is asked what changed, so the mark lands while
       // the click is still the most recent thing that happened.
       target.onAgentPoint(point);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    }
+    case "move": {
+      const point = await call(bridge.previewMove, input);
+      target.onAgentPoint(point);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    }
+    case "drag": {
+      const gesture = await call(bridge.previewDrag, input);
+      // The whole drag has already happened by the time we hear about it, so
+      // the pointer replays it: pressed at one end, travelling, released at the
+      // other. Sending only the result would show the destination and lose the
+      // gesture, which is the part worth seeing.
+      target.onAgentPoint({ ...gesture.to, from: gesture.from });
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     }
     case "type": {
