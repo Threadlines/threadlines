@@ -29,6 +29,7 @@ import { ensureGeneralChatsProject } from "./orchestration/generalChats.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
+import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
 import { pauseActiveThreadGoalForStop } from "./orchestration/threadGoalLifecycle.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
@@ -322,6 +323,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const keybindings = yield* Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper;
+  const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
   const sleepInhibitor = yield* SleepInhibitor;
   const lifecycleEvents = yield* ServerLifecycleEvents;
   const serverSettings = yield* ServerSettingsService;
@@ -379,6 +381,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
+        yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));
         yield* sleepInhibitor.start().pipe(Scope.provide(reactorScope));
       }),
     );

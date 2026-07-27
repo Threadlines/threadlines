@@ -16,6 +16,7 @@ import { useCallback, useRef } from "react";
 
 import type { WsRpcClient } from "./wsRpcClient";
 import { appAtomRegistry, resetAppAtomRegistryForTests } from "./atomRegistry";
+import { applyServerConfigStreamEvent } from "./serverConfigEvents";
 
 export type ServerConfigUpdateSource = ServerConfigStreamEvent["type"];
 
@@ -90,64 +91,39 @@ export function setServerConfigSnapshot(config: ServerConfig): void {
 }
 
 export function applyServerConfigEvent(event: ServerConfigStreamEvent): void {
-  switch (event.type) {
-    case "snapshot": {
-      setServerConfigSnapshot(event.config);
-      return;
-    }
-    case "keybindingsUpdated": {
-      const latestServerConfig = getServerConfig();
-      if (!latestServerConfig) {
-        return;
-      }
-      const nextConfig = {
-        ...latestServerConfig,
-        keybindings: event.payload.keybindings,
-        issues: event.payload.issues,
-      } satisfies ServerConfig;
-      resolveServerConfig(nextConfig);
-      emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
-      return;
-    }
-    case "providerStatuses": {
-      applyProvidersUpdated(event.payload);
-      return;
-    }
-    case "settingsUpdated": {
-      applySettingsUpdated(event.payload.settings);
-      return;
-    }
+  if (event.type === "snapshot") {
+    setServerConfigSnapshot(event.config);
+    return;
   }
+  if (event.type === "providerStatuses") {
+    // Providers are emitted even before the first snapshot so subscribers that
+    // only track provider status are not gated on full config.
+    emitProvidersUpdated(event.payload);
+  }
+
+  const nextConfig = applyServerConfigStreamEvent(getServerConfig(), event);
+  if (!nextConfig) {
+    return;
+  }
+  resolveServerConfig(nextConfig);
+  emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
 }
 
 export function applyProvidersUpdated(payload: ServerProviderUpdatedPayload): void {
-  const latestServerConfig = getServerConfig();
-  emitProvidersUpdated(payload);
-
-  if (!latestServerConfig) {
-    return;
-  }
-
-  const nextConfig = {
-    ...latestServerConfig,
-    providers: payload.providers,
-  } satisfies ServerConfig;
-  resolveServerConfig(nextConfig);
-  emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "providerStatuses");
+  applyServerConfigEvent({ version: 1, type: "providerStatuses", payload });
 }
 
 export function applySettingsUpdated(settings: ServerSettings): void {
-  const latestServerConfig = getServerConfig();
-  if (!latestServerConfig) {
-    return;
-  }
+  applyServerConfigEvent({ version: 1, type: "settingsUpdated", payload: { settings } });
+}
 
-  const nextConfig = {
-    ...latestServerConfig,
-    settings,
-  } satisfies ServerConfig;
-  resolveServerConfig(nextConfig);
-  emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "settingsUpdated");
+/**
+ * Drops app-level server config. The hosted app mirrors the paired computer's
+ * config here, so it must be able to clear it when that pairing goes away
+ * rather than leaving another machine's providers on screen.
+ */
+export function clearServerConfig(): void {
+  appAtomRegistry.set(serverConfigAtom, null);
 }
 
 export function emitWelcome(payload: ServerLifecycleWelcomePayload): void {

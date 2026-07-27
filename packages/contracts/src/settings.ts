@@ -377,9 +377,8 @@ export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(2);
 
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  // Machine-wide thread retention policy (0 = disabled). Server-authoritative
-  // so every connected client (desktop, phone) enforces the same value;
-  // enforcement currently runs in the web client's auto-archive coordinator.
+  // Machine-wide thread retention policy (0 = disabled), enforced by the
+  // server that owns the threads.
   autoArchiveInactiveThreadsDays: AutoArchiveInactiveThreadsDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS)),
   ),

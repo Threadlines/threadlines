@@ -23,6 +23,7 @@ export {
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
   markRelaySavedEnvironmentLinkExpired,
+  readBackendEnvironmentConnection,
   readEnvironmentConnection,
   reconnectSavedEnvironment,
   RELAY_LINK_EXPIRED_MESSAGE,

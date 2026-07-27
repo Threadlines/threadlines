@@ -130,7 +130,7 @@ const rpcClientMock = {
 };
 
 vi.mock("./environments/runtime", () => ({
-  getPrimaryEnvironmentConnection: () => ({
+  readBackendEnvironmentConnection: () => ({
     kind: "primary" as const,
     knownEnvironment: {
       id: "environment-local",

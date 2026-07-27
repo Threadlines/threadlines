@@ -15,6 +15,9 @@ function MockWsTransport() {
   return undefined;
 }
 
+const savedEnvironmentRuntimeById: Record<string, Record<string, unknown>> = {};
+let activeEnvironmentId: EnvironmentId | null = null;
+
 vi.mock("../primary", () => ({
   getPrimaryKnownEnvironment: vi.fn(() => ({
     id: "env-1",
@@ -53,8 +56,14 @@ vi.mock("./catalog", () => ({
   },
   useSavedEnvironmentRuntimeStore: {
     getState: () => ({
+      byId: savedEnvironmentRuntimeById,
       ensure: vi.fn(),
-      patch: vi.fn(),
+      patch: (environmentId: EnvironmentId, patch: Record<string, unknown>) => {
+        savedEnvironmentRuntimeById[environmentId] = {
+          ...savedEnvironmentRuntimeById[environmentId],
+          ...patch,
+        };
+      },
       clear: vi.fn(),
     }),
   },
@@ -119,6 +128,9 @@ vi.mock("~/lib/providerReactQuery", () => ({
 vi.mock("~/store", () => ({
   useStore: {
     getState: () => ({
+      get activeEnvironmentId() {
+        return activeEnvironmentId;
+      },
       syncServerShellSnapshot: vi.fn(),
       syncServerThreadDetail: vi.fn(),
       removeServerThreadDetail: vi.fn(),
@@ -225,6 +237,11 @@ describe("saved environment startup", () => {
     vi.resetModules();
     vi.clearAllMocks();
 
+    for (const environmentId of Object.keys(savedEnvironmentRuntimeById)) {
+      delete savedEnvironmentRuntimeById[environmentId];
+    }
+    activeEnvironmentId = null;
+
     mockFetchRemoteSessionState.mockResolvedValue({
       authenticated: true,
       role: "owner",
@@ -240,7 +257,7 @@ describe("saved environment startup", () => {
     mockCreateEnvironmentConnection.mockImplementation((input) => {
       if (input.kind === "saved") {
         queueMicrotask(() => {
-          input.onConfigSnapshot?.(configSnapshot);
+          input.onConfigEvent?.({ version: 1, type: "snapshot", config: configSnapshot });
         });
       }
 
@@ -277,6 +294,57 @@ describe("saved environment startup", () => {
     const savedClient = savedConnectionCall?.[0]?.client;
     expect(savedClient.server.getConfig).not.toHaveBeenCalled();
     expect(mockFetchRemoteSessionState).toHaveBeenCalledTimes(1);
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("keeps the stored config current as live provider statuses arrive", async () => {
+    const { startEnvironmentConnectionService, resetEnvironmentServiceForTests } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.runAllTimersAsync();
+
+    const savedConnectionInput = mockCreateEnvironmentConnection.mock.calls.find(
+      ([input]) => input.kind === "saved",
+    )?.[0];
+    const providers = [{ instanceId: "codex", status: "ready" }];
+    savedConnectionInput.onConfigEvent({
+      version: 1,
+      type: "providerStatuses",
+      payload: { providers },
+    });
+
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]?.serverConfig).toEqual({
+      ...configSnapshot,
+      providers,
+    });
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("treats the active environment as the backend when the app has none of its own", async () => {
+    const { getPrimaryKnownEnvironment } = await import("../primary");
+    const {
+      startEnvironmentConnectionService,
+      readBackendEnvironmentConnection,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.runAllTimersAsync();
+
+    // The hosted app serves no backend of its own; the paired environment the
+    // user is looking at answers settings and provider calls instead.
+    vi.mocked(getPrimaryKnownEnvironment).mockReturnValue(null);
+    activeEnvironmentId = savedRecord.environmentId;
+
+    expect(readBackendEnvironmentConnection()?.environmentId).toBe(savedRecord.environmentId);
+
+    activeEnvironmentId = null;
+    expect(readBackendEnvironmentConnection()).toBeNull();
 
     stop();
     await resetEnvironmentServiceForTests();

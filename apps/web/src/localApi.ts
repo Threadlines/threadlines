@@ -6,14 +6,11 @@ import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
 import { resetServerStateForTests } from "./rpc/serverState";
 import { resetWsConnectionStateForTests } from "./rpc/wsConnectionState";
 import {
+  readBackendEnvironmentConnection,
+  resetEnvironmentServiceForTests,
   resetSavedEnvironmentRegistryStoreForTests,
   resetSavedEnvironmentRuntimeStoreForTests,
 } from "./environments/runtime";
-import {
-  getPrimaryEnvironmentConnection,
-  resetEnvironmentServiceForTests,
-} from "./environments/runtime";
-import { getPrimaryKnownEnvironment } from "./environments/primary";
 import { type WsRpcClient } from "./rpc/wsRpcClient";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import {
@@ -32,7 +29,19 @@ function unavailableLocalBackendError(): Error {
   return new Error("Local backend API is unavailable before a backend is paired.");
 }
 
-function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
+function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): LocalApi {
+  // Resolved per call, not captured: the hosted app's backend is whichever
+  // computer is currently paired, and that can change while the app is open.
+  const withClient = async <A>(run: (client: WsRpcClient) => Promise<A>): Promise<A> => {
+    const client = resolveRpcClient?.() ?? null;
+    if (!client) {
+      throw unavailableLocalBackendError();
+    }
+    return run(client);
+  };
+  const withServer = <A>(run: (server: WsRpcClient["server"]) => Promise<A>): Promise<A> =>
+    withClient((client) => run(client.server));
+
   return {
     dialogs: {
       pickFolder: async (options) => {
@@ -48,9 +57,7 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
     },
     shell: {
       openInEditor: (cwd, editor) =>
-        rpcClient
-          ? rpcClient.shell.openInEditor({ cwd, editor })
-          : Promise.reject(unavailableLocalBackendError()),
+        withClient((client) => client.shell.openInEditor({ cwd, editor })),
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);
@@ -119,146 +126,69 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
       },
     },
     server: {
-      getConfig: () =>
-        rpcClient ? rpcClient.server.getConfig() : Promise.reject(unavailableLocalBackendError()),
+      getConfig: () => withServer((server) => server.getConfig()),
       refreshProviders: (input) =>
-        rpcClient
-          ? input
-            ? rpcClient.server.refreshProviders(input)
-            : rpcClient.server.refreshProviders()
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) =>
+          input ? server.refreshProviders(input) : server.refreshProviders(),
+        ),
       consumeProviderRateLimitResetCredit: (input) =>
-        rpcClient
-          ? rpcClient.server.consumeProviderRateLimitResetCredit(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      updateProvider: (input) =>
-        rpcClient
-          ? rpcClient.server.updateProvider(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.consumeProviderRateLimitResetCredit(input)),
+      updateProvider: (input) => withServer((server) => server.updateProvider(input)),
       resolveProviderUpdateBlockers: (input) =>
-        rpcClient
-          ? rpcClient.server.resolveProviderUpdateBlockers(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      upsertKeybinding: (input) =>
-        rpcClient
-          ? rpcClient.server.upsertKeybinding(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      removeKeybinding: (input) =>
-        rpcClient
-          ? rpcClient.server.removeKeybinding(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      getSettings: () =>
-        rpcClient ? rpcClient.server.getSettings() : Promise.reject(unavailableLocalBackendError()),
-      updateSettings: (patch) =>
-        rpcClient
-          ? rpcClient.server.updateSettings(patch)
-          : Promise.reject(unavailableLocalBackendError()),
-      discoverSourceControl: () =>
-        rpcClient
-          ? rpcClient.server.discoverSourceControl()
-          : Promise.reject(unavailableLocalBackendError()),
-      getTraceDiagnostics: () =>
-        rpcClient
-          ? rpcClient.server.getTraceDiagnostics()
-          : Promise.reject(unavailableLocalBackendError()),
-      getProcessDiagnostics: () =>
-        rpcClient
-          ? rpcClient.server.getProcessDiagnostics()
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.resolveProviderUpdateBlockers(input)),
+      upsertKeybinding: (input) => withServer((server) => server.upsertKeybinding(input)),
+      removeKeybinding: (input) => withServer((server) => server.removeKeybinding(input)),
+      getSettings: () => withServer((server) => server.getSettings()),
+      updateSettings: (patch) => withServer((server) => server.updateSettings(patch)),
+      discoverSourceControl: () => withServer((server) => server.discoverSourceControl()),
+      getTraceDiagnostics: () => withServer((server) => server.getTraceDiagnostics()),
+      getProcessDiagnostics: () => withServer((server) => server.getProcessDiagnostics()),
       getProcessResourceHistory: (input) =>
-        rpcClient
-          ? rpcClient.server.getProcessResourceHistory(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      signalProcess: (input) =>
-        rpcClient
-          ? rpcClient.server.signalProcess(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      resolveBackgroundRuns: (input) =>
-        rpcClient
-          ? rpcClient.server.resolveBackgroundRuns(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      stopBackgroundRun: (input) =>
-        rpcClient
-          ? rpcClient.server.stopBackgroundRun(input)
-          : Promise.reject(unavailableLocalBackendError()),
-      getProviderExtensions: (input) =>
-        rpcClient
-          ? rpcClient.server.getProviderExtensions(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.getProcessResourceHistory(input)),
+      signalProcess: (input) => withServer((server) => server.signalProcess(input)),
+      resolveBackgroundRuns: (input) => withServer((server) => server.resolveBackgroundRuns(input)),
+      stopBackgroundRun: (input) => withServer((server) => server.stopBackgroundRun(input)),
+      getProviderExtensions: (input) => withServer((server) => server.getProviderExtensions(input)),
       startProviderExtensionMcpOAuth: (input) =>
-        rpcClient
-          ? rpcClient.server.startProviderExtensionMcpOAuth(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.startProviderExtensionMcpOAuth(input)),
       getProviderExtensionOperationStatus: (input) =>
-        rpcClient
-          ? rpcClient.server.getProviderExtensionOperationStatus(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.getProviderExtensionOperationStatus(input)),
       reloadProviderExtensionMcpServers: (input) =>
-        rpcClient
-          ? rpcClient.server.reloadProviderExtensionMcpServers(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.reloadProviderExtensionMcpServers(input)),
       setProviderExtensionSkillEnabled: (input) =>
-        rpcClient
-          ? rpcClient.server.setProviderExtensionSkillEnabled(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.setProviderExtensionSkillEnabled(input)),
       readProviderExtensionSkill: (input) =>
-        rpcClient
-          ? rpcClient.server.readProviderExtensionSkill(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.readProviderExtensionSkill(input)),
       readProviderExtensionPlugin: (input) =>
-        rpcClient
-          ? rpcClient.server.readProviderExtensionPlugin(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.readProviderExtensionPlugin(input)),
       installProviderExtensionPlugin: (input) =>
-        rpcClient
-          ? rpcClient.server.installProviderExtensionPlugin(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.installProviderExtensionPlugin(input)),
       uninstallProviderExtensionPlugin: (input) =>
-        rpcClient
-          ? rpcClient.server.uninstallProviderExtensionPlugin(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.uninstallProviderExtensionPlugin(input)),
       setProviderExtensionPluginEnabled: (input) =>
-        rpcClient
-          ? rpcClient.server.setProviderExtensionPluginEnabled(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.setProviderExtensionPluginEnabled(input)),
       updateProviderExtensionPlugin: (input) =>
-        rpcClient
-          ? rpcClient.server.updateProviderExtensionPlugin(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.updateProviderExtensionPlugin(input)),
       refreshProviderExtensionPluginMarketplaces: (input) =>
-        rpcClient
-          ? rpcClient.server.refreshProviderExtensionPluginMarketplaces(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.refreshProviderExtensionPluginMarketplaces(input)),
       addProviderExtensionMarketplace: (input) =>
-        rpcClient
-          ? rpcClient.server.addProviderExtensionMarketplace(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.addProviderExtensionMarketplace(input)),
       removeProviderExtensionMarketplace: (input) =>
-        rpcClient
-          ? rpcClient.server.removeProviderExtensionMarketplace(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.removeProviderExtensionMarketplace(input)),
       callProviderExtensionMcpTool: (input) =>
-        rpcClient
-          ? rpcClient.server.callProviderExtensionMcpTool(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.callProviderExtensionMcpTool(input)),
       readProviderExtensionMcpResource: (input) =>
-        rpcClient
-          ? rpcClient.server.readProviderExtensionMcpResource(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.readProviderExtensionMcpResource(input)),
       getProviderInstructionFiles: (input) =>
-        rpcClient
-          ? rpcClient.server.getProviderInstructionFiles(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.getProviderInstructionFiles(input)),
       writeProviderInstructionFile: (input) =>
-        rpcClient
-          ? rpcClient.server.writeProviderInstructionFile(input)
-          : Promise.reject(unavailableLocalBackendError()),
+        withServer((server) => server.writeProviderInstructionFile(input)),
     },
   };
 }
 
 export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
-  return createBrowserLocalApi(rpcClient);
+  return createBrowserLocalApi(() => rpcClient);
 }
 
 export function readLocalApi(): LocalApi | undefined {
@@ -270,10 +200,7 @@ export function readLocalApi(): LocalApi | undefined {
     return cachedApi;
   }
 
-  const primaryEnvironment = getPrimaryKnownEnvironment();
-  cachedApi = primaryEnvironment
-    ? createLocalApi(getPrimaryEnvironmentConnection().client)
-    : createBrowserLocalApi();
+  cachedApi = createBrowserLocalApi(() => readBackendEnvironmentConnection()?.client ?? null);
   return cachedApi;
 }
 

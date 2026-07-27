@@ -155,6 +155,10 @@
       "types": "./src/threadCwd.ts",
       "import": "./src/threadCwd.ts"
     },
+    "./threadAutoArchive": {
+      "types": "./src/threadAutoArchive.ts",
+      "import": "./src/threadAutoArchive.ts"
+    },
     "./uuid": {
       "types": "./src/uuid.ts",
       "import": "./src/uuid.ts"
