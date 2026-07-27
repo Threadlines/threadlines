@@ -112,6 +112,8 @@ import {
   type TurnDiffSummary,
   type ChatAttachment,
 } from "../types";
+import { useAutoCollapseSidebar } from "../hooks/useAutoCollapseSidebar";
+import { useSidebar } from "./ui/sidebar";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -2542,6 +2544,16 @@ export default function ChatView(props: ChatViewProps) {
   // General chats have no project and therefore no dev server to look at.
   const browserAvailable = !isGeneralChatThread;
   const browserOpen = browserAvailable && browserPanelState.open;
+
+  // With source control and the browser both open the chat column is what pays
+  // for it, so the sidebar folds down to its rail -- once, and never again if
+  // you expand it back.
+  const { setOpen: setSidebarOpen, state: sidebarState } = useSidebar();
+  useAutoCollapseSidebar({
+    squeezed: browserOpen && rightPanelEngaged,
+    expanded: sidebarState === "expanded",
+    setExpanded: setSidebarOpen,
+  });
   const handleToggleBrowser = useCallback(() => {
     if (routeThreadRef !== null) {
       toggleBrowserOpen(routeThreadRef);
