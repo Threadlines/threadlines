@@ -9,7 +9,7 @@
  */
 import * as Effect from "effect/Effect";
 
-import { BrowserToolkit } from "./browserTools.ts";
+import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "./browserTools.ts";
 import { McpInvocationContext } from "./McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
 import type { PreviewAutomationOperation } from "@threadlines/contracts";
@@ -23,9 +23,8 @@ const forward =
       return yield* broker.invoke({ threadId, operation, input });
     }) as Effect.Effect<never, never, never>;
 
-export const BrowserToolkitHandlersLive = BrowserToolkit.toLayer({
+export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_snapshot: forward("snapshot"),
-  browser_screenshot: forward("screenshot"),
   browser_status: forward("status"),
   browser_navigate: forward("navigate"),
   browser_click: forward("click"),
@@ -35,4 +34,10 @@ export const BrowserToolkitHandlersLive = BrowserToolkit.toLayer({
   browser_wait_for: forward("waitFor"),
   browser_evaluate: forward("evaluate"),
   browser_resize: forward("resize"),
+});
+
+/** The screenshot's handler, built separately so the manual registration in
+ *  McpHttpServer can wrap its result in an image block. */
+export const BrowserScreenshotHandlersLive = BrowserScreenshotToolkit.toLayer({
+  browser_screenshot: forward("screenshot"),
 });

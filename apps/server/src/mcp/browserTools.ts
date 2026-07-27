@@ -164,9 +164,15 @@ export const BrowserResizeTool = changesThePage(
     .annotate(Tool.Destructive, false),
 );
 
-export const BrowserToolkit = Toolkit.make(
+/**
+ * Everything except the screenshot.
+ *
+ * The screenshot is registered by hand rather than through the toolkit,
+ * because a toolkit puts a tool's result in `structuredContent` and a picture
+ * in a JSON string is a picture nobody can see. See McpHttpServer.
+ */
+export const BrowserStandardToolkit = Toolkit.make(
   BrowserSnapshotTool,
-  BrowserScreenshotTool,
   BrowserStatusTool,
   BrowserNavigateTool,
   BrowserClickTool,
@@ -177,3 +183,6 @@ export const BrowserToolkit = Toolkit.make(
   BrowserEvaluateTool,
   BrowserResizeTool,
 );
+
+/** On its own, so it can answer with an image instead of a description of one. */
+export const BrowserScreenshotToolkit = Toolkit.make(BrowserScreenshotTool);

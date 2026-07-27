@@ -461,7 +461,7 @@ function buildThreadStartParams(input: {
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   /** Absent when the thread has no browser tools to offer. */
-  readonly browserConfig: Record<string, string> | undefined;
+  readonly browserConfig: NonNullable<EffectCodexSchema.V2ThreadStartParams["config"]> | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -483,7 +483,7 @@ function buildThreadForkParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
-  readonly browserConfig: Record<string, string> | undefined;
+  readonly browserConfig: NonNullable<EffectCodexSchema.V2ThreadStartParams["config"]> | undefined;
 }): EffectCodexSchema.V2ThreadForkParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -791,7 +791,7 @@ export const openCodexThread = (input: {
    *  instead of silently continuing without history. */
   readonly onResumeFallback?: (cause: string) => Effect.Effect<void>;
   /** The browser the user has open, as an MCP server Codex can reach. */
-  readonly browserConfig?: Record<string, string> | undefined;
+  readonly browserConfig?: NonNullable<EffectCodexSchema.V2ThreadStartParams["config"]> | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
