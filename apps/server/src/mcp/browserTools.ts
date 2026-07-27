@@ -45,7 +45,7 @@ const changesThePage = <T extends Tool.Any>(tool: T): T =>
 export const BrowserSnapshotTool = readsOnly(
   Tool.make("browser_snapshot", {
     description:
-      "Read the page the user has open: its URL and title, the elements you can act on, and anything the page has logged or failed to load. Call this before clicking or typing. Every element comes back with a `ref`, and a ref is the reliable way to name it in the other tools -- CSS selectors break on a redesign, refs do not. Console errors and failed requests are included because they are usually the answer.",
+      'Read the page the user has open. Returns it as an accessibility tree -- nesting, roles, accessible names and the actual text -- with a `[ref=eN]` on every node, plus the URL, title, console output and failed requests. Call this before acting. Name things by their `ref` where you can; where you cannot, `locator` takes a Playwright locator and is the only way to say something like "the delete button in the third row". Console errors are included because they are usually the answer.',
     success: PreviewAutomationSnapshotSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -86,7 +86,7 @@ export const BrowserNavigateTool = changesThePage(
 export const BrowserClickTool = changesThePage(
   Tool.make("browser_click", {
     description:
-      "Click one thing, and get back the page state afterwards so you can see what changed. Name it with a `ref` from browser_snapshot where you can; `selector` matches CSS, and `text` matches an element whose visible text equals what you give (falling back to a substring), preferring a clickable one. The page is real -- a button that deletes something will delete it, so do not retry a click that reported success.",
+      'Click one thing, and get back the page state afterwards so you can see what changed. Name it with a `ref` from browser_snapshot where you can. `locator` takes a Playwright locator for anything a ref cannot reach -- `internal:role=button[name="Save"i]`, or `tbody > tr:nth-child(3) >> internal:role=button` for the third row\'s button -- and refuses rather than guessing when it matches more than one thing. `selector` is plain CSS and `text` matches visible text. The page is real: a button that deletes something will delete it, so do not retry a click that reported success.',
     parameters: PreviewAutomationClickInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,

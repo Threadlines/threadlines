@@ -20,7 +20,6 @@ import type {
   DesktopPreviewPoint,
   DesktopPreviewPickMode,
   DesktopPreviewConsoleEntry,
-  DesktopPreviewElement,
   DesktopPreviewEvaluateInput,
   DesktopPreviewNetworkFailure,
   DesktopPreviewPressInput,
@@ -35,6 +34,12 @@ import type {
 import { webContents, type WebContents } from "electron";
 
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
+import {
+  buildAriaSnapshotScript,
+  buildInjectedRuntimeScript,
+  buildLocatorQueryScript,
+  INJECTED_WORLD_NAME,
+} from "./injectedRuntime.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import {
   buildDrawOverlayScript,
@@ -59,38 +64,10 @@ import * as Schema from "effect/Schema";
  * runs to thousands of nodes, most of them generic containers and text, which
  * would bury the handful of things that can actually be acted on.
  */
-const ACTIONABLE_ROLES: ReadonlySet<string> = new Set([
-  "button",
-  "link",
-  "textbox",
-  "searchbox",
-  "checkbox",
-  "radio",
-  "combobox",
-  "listbox",
-  "menuitem",
-  "menuitemcheckbox",
-  "menuitemradio",
-  "option",
-  "slider",
-  "spinbutton",
-  "switch",
-  "tab",
-  "textarea",
-]);
 
 /** Kept for orientation: they tell the agent where it is, not what to press. */
-const LANDMARK_ROLES: ReadonlySet<string> = new Set([
-  "heading",
-  "alert",
-  "status",
-  "dialog",
-  "navigation",
-  "main",
-]);
 
-const MAX_SNAPSHOT_ELEMENTS = 200;
-
+/** Enough to explain a failure without letting a chatty page grow unboundedly. */
 /** Enough to explain a failure without letting a chatty page grow unboundedly. */
 const MAX_CONSOLE_ENTRIES = 200;
 /** Long enough to choose deliberately, short enough not to strand inspect mode. */
@@ -243,25 +220,141 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   const targetDescription = (target: PreviewAutomationTarget): string =>
     "ref" in target
       ? `ref ${target.ref}`
-      : "selector" in target
-        ? `selector ${JSON.stringify(target.selector)}`
-        : `text ${JSON.stringify(target.text)}`;
+      : "locator" in target
+        ? `locator ${JSON.stringify(target.locator)}`
+        : "selector" in target
+          ? `selector ${JSON.stringify(target.selector)}`
+          : `text ${JSON.stringify(target.text)}`;
+
+  /**
+   * The isolated world our element engine lives in, created if it is not there.
+   *
+   * Asked for on every use rather than tracked: Chrome returns the existing
+   * world for a name it already knows, and a navigation quietly destroys the
+   * old one. Tracking it ourselves would mean holding an id that goes stale
+   * exactly when a page changes, which is the moment this gets used.
+   */
+  const injectedWorld = Effect.fn("PreviewAutomation.injectedWorld")(function* (
+    contents: WebContents,
+  ) {
+    yield* sendCommand(contents, "Page.enable", {});
+    const tree = (yield* sendCommand(contents, "Page.getFrameTree", {})) as {
+      frameTree?: { frame?: { id?: string } };
+    };
+    const frameId = tree.frameTree?.frame?.id;
+    if (frameId === undefined) {
+      return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+    }
+    const world = (yield* sendCommand(contents, "Page.createIsolatedWorld", {
+      frameId,
+      worldName: INJECTED_WORLD_NAME,
+      grantUniveralAccess: false,
+    })) as { executionContextId?: number };
+    const contextId = world.executionContextId;
+    if (contextId === undefined) {
+      return yield* failCommand(
+        contents,
+        "Page.createIsolatedWorld",
+        "could not create an isolated world for the element engine",
+      );
+    }
+    yield* sendCommand(contents, "Runtime.evaluate", {
+      expression: buildInjectedRuntimeScript(),
+      contextId,
+      returnByValue: true,
+    });
+    return contextId;
+  });
+
+  /** Runs an expression in the engine's world, surfacing a page-side throw. */
+  const evaluateInjected = Effect.fn("PreviewAutomation.evaluateInjected")(function* (
+    contents: WebContents,
+    expression: string,
+    options?: { readonly returnByValue?: boolean },
+  ) {
+    const contextId = yield* injectedWorld(contents);
+    const result = (yield* sendCommand(contents, "Runtime.evaluate", {
+      expression,
+      contextId,
+      returnByValue: options?.returnByValue ?? false,
+      awaitPromise: true,
+    })) as {
+      result?: { objectId?: string; value?: unknown };
+      exceptionDetails?: { exception?: { description?: string; value?: unknown }; text?: string };
+    };
+    if (result.exceptionDetails !== undefined) {
+      const exception = result.exceptionDetails.exception;
+      // The engine's own messages say what to do differently, so they are
+      // carried through rather than replaced with something generic.
+      const detail =
+        (typeof exception?.value === "string" ? exception.value : undefined) ??
+        exception?.description?.split("\n")[0] ??
+        result.exceptionDetails.text ??
+        "the element engine failed";
+      return yield* failCommand(contents, "injected.evaluate", detail);
+    }
+    return result.result ?? {};
+  });
 
   const resolveTarget = Effect.fn("PreviewAutomation.resolveTarget")(function* (
     contents: WebContents,
     target: PreviewAutomationTarget,
   ) {
+    if ("locator" in target) {
+      const handle = yield* evaluateInjected(contents, buildLocatorQueryScript(target.locator));
+      const objectId = handle.objectId;
+      if (objectId === undefined) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `the locator ${JSON.stringify(target.locator)} did not resolve to an element`,
+        );
+      }
+      const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
+        node?: { backendNodeId?: number };
+      };
+      yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
+      const backendNodeId = described.node?.backendNodeId;
+      if (backendNodeId === undefined) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `the element matching ${JSON.stringify(target.locator)} disappeared; take a new snapshot`,
+        );
+      }
+      return backendNodeId;
+    }
+
     if ("ref" in target) {
-      yield* sendCommand(contents, "DOM.describeNode", { backendNodeId: target.ref }).pipe(
-        Effect.catch(() =>
-          failCommand(
-            contents,
-            "resolveTarget",
-            `element ref ${target.ref} no longer resolves; take a new snapshot and use its ref`,
-          ),
-        ),
+      // A ref is the `eN` from the aria snapshot, and Playwright's own
+      // `aria-ref=` engine is what resolves it against the tree that issued it.
+      // Resolving it as anything else -- a node id, an index -- would work
+      // right up until the page re-rendered.
+      const handle = yield* evaluateInjected(
+        contents,
+        buildLocatorQueryScript(`aria-ref=${target.ref}`),
       );
-      return target.ref;
+      const objectId = handle.objectId;
+      if (objectId === undefined) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `ref ${target.ref} no longer resolves; take a new snapshot and use its refs`,
+        );
+      }
+      const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
+        node?: { backendNodeId?: number };
+      };
+      yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
+      const backendNodeId = described.node?.backendNodeId;
+      if (backendNodeId === undefined) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          `the element at ref ${target.ref} disappeared; take a new snapshot and try again`,
+        );
+      }
+      return backendNodeId;
     }
 
     if ("selector" in target) {
@@ -783,37 +876,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     }),
     snapshot: Effect.fn("PreviewAutomation.snapshot")(function* (webContentsId: number) {
       const contents = yield* resolveAttached(webContentsId);
-      const tree = (yield* sendCommand(contents, "Accessibility.getFullAXTree", {})) as {
-        nodes?: ReadonlyArray<Record<string, unknown>>;
-      };
-      const elements: DesktopPreviewElement[] = [];
-      for (const node of tree.nodes ?? []) {
-        if (elements.length >= MAX_SNAPSHOT_ELEMENTS) break;
-        if (node.ignored === true) continue;
-        const role = String((node.role as { value?: unknown } | undefined)?.value ?? "");
-        const isActionable = ACTIONABLE_ROLES.has(role);
-        if (!isActionable && !LANDMARK_ROLES.has(role)) continue;
-        const name = String((node.name as { value?: unknown } | undefined)?.value ?? "").trim();
-        // An actionable control with no accessible name cannot be described to
-        // an agent, and is usually decorative; a landmark without one is noise.
-        if (name === "") continue;
-        const backendNodeId = node.backendDOMNodeId;
-        if (typeof backendNodeId !== "number") continue;
-        const properties =
-          (node.properties as ReadonlyArray<{ name?: string; value?: { value?: unknown } }>) ?? [];
-        const disabled = properties.some(
-          (property) => property.name === "disabled" && property.value?.value === true,
-        );
-        const rawValue = (node.value as { value?: unknown } | undefined)?.value;
-        elements.push({
-          ref: backendNodeId,
-          role,
-          name,
-          value: rawValue === undefined || rawValue === null ? null : String(rawValue),
-          disabled,
-        });
-      }
-      return { ...buildStatus(webContentsId, contents), elements };
+      // Playwright's aria snapshot rather than our own walk of the CDP tree.
+      // Ours kept actionable and landmark nodes that had an accessible name,
+      // which meant an agent could see every button on a page and not one word
+      // of what the page said -- asked what a paragraph read, it had to fall
+      // back to running JavaScript. This carries the text, the structure and a
+      // ref on everything, in one string that costs less than the array did.
+      const result = yield* evaluateInjected(contents, buildAriaSnapshotScript(), {
+        returnByValue: true,
+      });
+      const page = typeof result.value === "string" ? result.value : "";
+      return { ...buildStatus(webContentsId, contents), page };
     }),
     setViewport: Effect.fn("PreviewAutomation.setViewport")(function* (
       webContentsId: number,

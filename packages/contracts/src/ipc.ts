@@ -607,7 +607,8 @@ export type DesktopPreviewDrawing = typeof DesktopPreviewDrawingSchema.Type;
 
 export const DesktopPreviewSnapshotSchema = Schema.Struct({
   ...DesktopPreviewStatusSchema.fields,
-  elements: Schema.Array(DesktopPreviewElementSchema),
+  /** The page as an aria tree: roles, names, text and a ref on everything. */
+  page: Schema.String,
 });
 export type DesktopPreviewSnapshot = typeof DesktopPreviewSnapshotSchema.Type;
 

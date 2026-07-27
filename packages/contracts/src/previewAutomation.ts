@@ -66,13 +66,16 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
 /**
  * How the agent names a thing on the page.
  *
- * `ref` is what a snapshot handed it, and is the only one that cannot go stale
- * in an interesting way -- it is checked against the snapshot it came from.
- * `selector` is the escape hatch for a page the snapshot described poorly, and
- * `text` is for the times the agent knows what the button says and nothing else.
+ * `ref` is what a snapshot handed it -- the `eN` beside each node, resolved
+ * against the tree it came from. `locator` is a Playwright locator, which
+ * is the only one of these that can say "the delete button in the third row" --
+ * a thing that is ordinary to want and impossible to express as a role and a
+ * name. `selector` is plain CSS, and `text` is for when the agent knows what
+ * the button says and nothing else.
  */
 export const PreviewAutomationTargetSchema = Schema.Union([
-  Schema.Struct({ ref: Schema.Finite }),
+  Schema.Struct({ ref: Schema.String }),
+  Schema.Struct({ locator: Schema.String }),
   Schema.Struct({ selector: Schema.String }),
   Schema.Struct({ text: Schema.String }),
 ]);
@@ -255,27 +258,15 @@ export const PreviewAutomationStatusSchema = Schema.Struct({
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatusSchema.Type;
 
-/**
- * One element as the agent sees it.
- *
- * `ref` is the handle for every later call. Role and name come from the
- * accessibility tree, which is the same vocabulary a person uses to describe a
- * control -- "the Sign in button" -- and is far steadier across a redesign than
- * a class name.
- */
-export const PreviewAutomationElementSchema = Schema.Struct({
-  ref: Schema.Finite,
-  role: Schema.String,
-  name: Schema.String,
-  /** Present when it is a field, so the agent knows what is already in it. */
-  value: Schema.optionalKey(Schema.String),
-  disabled: Schema.optionalKey(Schema.Boolean),
-});
-export type PreviewAutomationElement = typeof PreviewAutomationElementSchema.Type;
-
 export const PreviewAutomationSnapshotSchema = Schema.Struct({
   ...PreviewAutomationStatusSchema.fields,
-  elements: Schema.Array(PreviewAutomationElementSchema),
+  /**
+   * The page as an aria tree, the way Playwright renders it: nesting, roles,
+   * accessible names, the actual text, and a `[ref=eN]` on everything. One
+   * string rather than an array of elements, because the shape of a page is
+   * half of what it means and a flat list throws that away.
+   */
+  page: Schema.String,
   /** What the page has complained about since it loaded. Usually the answer. */
   console: Schema.Array(Schema.Struct({ level: Schema.String, text: Schema.String })),
   networkFailures: Schema.Array(Schema.Struct({ url: Schema.String, detail: Schema.String })),

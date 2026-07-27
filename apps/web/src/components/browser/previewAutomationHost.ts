@@ -124,13 +124,7 @@ async function dispatch(
       const snapshot = await call(bridge.previewSnapshot, {});
       return {
         ...toStatus(snapshot, target.viewport()),
-        elements: snapshot.elements.map((element) => ({
-          ref: element.ref,
-          role: element.role,
-          name: element.name,
-          ...(element.value === null ? {} : { value: element.value }),
-          ...(element.disabled ? { disabled: true } : {}),
-        })),
+        page: snapshot.page,
         console: snapshot.console.map((entry) => ({ level: entry.level, text: entry.text })),
         networkFailures: snapshot.networkFailures.map((failure) => ({
           url: failure.url,
