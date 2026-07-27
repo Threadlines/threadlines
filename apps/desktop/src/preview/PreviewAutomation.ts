@@ -182,6 +182,15 @@ interface PickResult {
 
 export const make = Effect.gen(function* PreviewAutomationMake() {
   const attached = new Map<number, AttachedTab>();
+  /**
+   * The pick a page is currently waiting on, if any.
+   *
+   * Only one can be armed at a time, so starting another -- or cancelling --
+   * has to settle the previous one now. Left to time out on its own it would
+   * eventually run its teardown, which by then would be tearing down the
+   * overlay belonging to whatever replaced it.
+   */
+  const pendingPicks = new Map<number, { supersede: () => void }>();
 
   const resolve = (webContentsId: number) =>
     Effect.suspend(() => {
@@ -559,6 +568,11 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       mode: DesktopPreviewPickMode,
     ) {
       const contents = yield* resolve(webContentsId);
+      let supersede = () => {};
+      const token = { supersede: () => supersede() };
+      pendingPicks.get(webContentsId)?.supersede();
+      pendingPicks.set(webContentsId, token);
+
       yield* sendCommand(contents, "DOM.enable", {});
       yield* sendCommand(contents, "Runtime.enable", {});
       // The binding is how the injected overlay reports back. Adding it twice
@@ -611,6 +625,12 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
               }
             };
             contents.debugger.on("message", onMessage);
+            // Reaching for another tool settles this one, rather than leaving
+            // it waiting on a binding that will never be called.
+            supersede = () => {
+              pendingPicks.delete(webContentsId);
+              finish(null);
+            };
             // Picking is a deliberate act; if the user wanders off, stop
             // waiting rather than leaving the overlay armed forever.
             const timer = setTimeout(() => finish(null), PICK_TIMEOUT_MS);
@@ -619,10 +639,17 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
           new PreviewCommandError({ webContentsId, method: "Runtime.bindingCalled", cause }),
       });
 
+      // A superseded pick owns nothing on the page any more: its overlay was
+      // replaced, and tearing down would take its replacement with it.
+      const current = pendingPicks.get(webContentsId) === token;
+      if (current) {
+        pendingPicks.delete(webContentsId);
+      }
+
       // Described before the teardown runs, because the teardown is what drops
       // the overlay's handles on the elements it chose.
       const described: DesktopPreviewPickedElement[] = [];
-      if (picked !== null) {
+      if (current && picked !== null) {
         for (let index = 0; index < picked.count; index += 1) {
           // Read back by identity rather than by hit-testing the click point
           // again: the second test can land on a different element than the one
@@ -657,9 +684,11 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         }
       }
 
-      yield* sendCommand(contents, "Runtime.evaluate", {
-        expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
-      }).pipe(Effect.ignore);
+      if (current) {
+        yield* sendCommand(contents, "Runtime.evaluate", {
+          expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
+        }).pipe(Effect.ignore);
+      }
 
       return described;
     }),
@@ -687,6 +716,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     }),
     cancelPick: Effect.fn("PreviewAutomation.cancelPick")(function* (webContentsId: number) {
       const contents = yield* resolve(webContentsId);
+      pendingPicks.get(webContentsId)?.supersede();
       yield* sendCommand(contents, "Runtime.evaluate", {
         expression: PICK_OVERLAY_TEARDOWN_SCRIPT,
       }).pipe(Effect.ignore);

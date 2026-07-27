@@ -15,6 +15,7 @@ import {
   GlobeIcon,
   MaximizeIcon,
   MinimizeIcon,
+  ChevronDownIcon,
   EraserIcon,
   MousePointerClickIcon,
   PencilIcon,
@@ -207,93 +208,79 @@ export function BrowserPanel({
     [activeTabId, addressDraft, setTabUrl, threadRef],
   );
 
-  // Which pointing mode is armed, or null when the pointer belongs to the page
-  // again. One piece of state for both buttons: they are the same gesture
-  // aimed at a different amount of the page, and only one can be live.
-  const [picking, setPicking] = useState<DesktopPreviewPickMode | null>(null);
-  const pickElement = useCallback(
-    async (mode: DesktopPreviewPickMode) => {
+  /**
+   * Which page tool is armed, or null when the pointer belongs to the page.
+   *
+   * One piece of state for all four: they are the same act of pointing at the
+   * page, they all want the pointer, and only one can be live. Kept here rather
+   * than in the store because what they act on -- the guest document, and any
+   * ink on it -- dies with the page, so a remembered mode would light the
+   * control up over nothing.
+   */
+  const [armedTool, setArmedTool] = useState<PageTool | null>(null);
+  // Read inside the pick round trip, which outlives the render that started it.
+  const armedToolRef = useRef<PageTool | null>(null);
+  const [selectedTool, setSelectedTool] = useState<PageTool>("element");
+
+  const armTool = useCallback(
+    async (requested: PageTool | null) => {
       const webview = webviewsRef.current.get(activeTabId);
       if (webview === null || webview === undefined || !isElectron) {
         return;
       }
       const webContentsId = webview.getWebContentsId();
-      if (picking !== null) {
-        setPicking(null);
+      const previous = armedToolRef.current;
+      // Pressing the lit control puts the tool away, which for ink is also how
+      // you clear it: putting the pen down and being done are the same moment.
+      const next = previous === requested ? null : requested;
+
+      if (isInkTool(previous) && !isInkTool(next)) {
+        await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: null });
+      } else if (previous !== null && !isInkTool(previous)) {
         await window.desktopBridge?.previewCancelPick?.({ webContentsId });
-        // Pressing the other mode's button while one is armed switches to it
-        // rather than just disarming: the second press said what was wanted.
-        if (picking === mode) {
-          return;
-        }
       }
-      // Ink and picking both want the pointer, so arming one puts the other
-      // away.
-      await setAnnotation(null);
-      setPicking(mode);
+
+      armedToolRef.current = next;
+      setArmedTool(next);
+      if (next === null) {
+        return;
+      }
+      if (isInkTool(next)) {
+        // Straight to the new mode when moving between the pen and the eraser:
+        // the eraser exists to fix the stroke you just drew, and clearing on
+        // the way there would leave nothing to fix.
+        await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: next });
+        return;
+      }
       try {
         const elements = await window.desktopBridge?.previewPickElement?.({
           webContentsId,
           colorScheme: guestColorScheme,
-          mode,
+          mode: next,
         });
         for (const element of elements ?? []) {
           onPickElement?.(element);
         }
       } finally {
-        setPicking(null);
-      }
-    },
-    [activeTabId, guestColorScheme, onPickElement, picking],
-  );
-
-  /**
-   * Marking the page up rather than pointing at it.
-   *
-   * Kept in the panel rather than the store: the marks live in the guest page
-   * and die with it, so remembering the mode across a reload would light a
-   * button up over a page with nothing on it.
-   */
-  const [annotation, setAnnotationState] = useState<DesktopPreviewAnnotationMode | null>(null);
-  const setAnnotation = useCallback(
-    async (mode: DesktopPreviewAnnotationMode | null) => {
-      const webview = webviewsRef.current.get(activeTabId);
-      if (webview === null || webview === undefined || !isElectron) {
-        return;
-      }
-      setAnnotationState(mode);
-      await window.desktopBridge?.previewSetAnnotationMode?.({
-        webContentsId: webview.getWebContentsId(),
-        mode,
-      });
-    },
-    [activeTabId],
-  );
-  const toggleAnnotation = useCallback(
-    async (mode: DesktopPreviewAnnotationMode) => {
-      if (picking !== null) {
-        const webview = webviewsRef.current.get(activeTabId);
-        if (webview !== null && webview !== undefined) {
-          await window.desktopBridge?.previewCancelPick?.({
-            webContentsId: webview.getWebContentsId(),
-          });
+        // Only if nothing else took the pointer while this was waiting: arming
+        // another tool cancels this pick, and its resolution must not then
+        // disarm the tool that replaced it.
+        if (armedToolRef.current === next) {
+          armedToolRef.current = null;
+          setArmedTool(null);
         }
-        setPicking(null);
       }
-      // Pressing the lit button is how you clear the marks: there is no
-      // separate clear, because putting the pen down and being done with the
-      // drawing are the same moment.
-      await setAnnotation(annotation === mode ? null : mode);
     },
-    [activeTabId, annotation, picking, setAnnotation],
+    [activeTabId, guestColorScheme, onPickElement],
   );
 
-  // Marks live in the guest document and die with it, so a new address leaves
-  // the button lit over a page with nothing on it. Switching tabs is the same
-  // story: the mode was armed on the other one.
+  // Everything these tools act on lives in the guest document, which a new
+  // address replaces. Switching tabs is the same story: the tool was armed on
+  // the other one.
   const activeTabUrl = activeTab?.url ?? null;
   useEffect(() => {
-    setAnnotationState(null);
+    armedToolRef.current = null;
+    setArmedTool(null);
   }, [activeTabUrl, activeTabId]);
 
   // A reveal request arrives from the composer, which cannot know which tab is
@@ -498,38 +485,15 @@ export function BrowserPanel({
 
         {/* Beside the address they act on, which is also where both reference
             browsers put them. */}
-        <NavButton
-          label={picking === "element" ? "Cancel pick" : "Pick an element"}
-          onClick={() => void pickElement("element")}
-          active={picking === "element"}
-          testId="browser-pick-element"
-        >
-          <MousePointerClickIcon className="size-3.5" />
-        </NavButton>
-        <NavButton
-          label={picking === "region" ? "Cancel selection" : "Select a region"}
-          onClick={() => void pickElement("region")}
-          active={picking === "region"}
-          testId="browser-pick-region"
-        >
-          <SquareDashedMousePointerIcon className="size-3.5" />
-        </NavButton>
-        <NavButton
-          label={annotation === "draw" ? "Clear drawing" : "Draw on the page"}
-          onClick={() => void toggleAnnotation("draw")}
-          active={annotation === "draw"}
-          testId="browser-draw"
-        >
-          <PencilIcon className="size-3.5" />
-        </NavButton>
-        <NavButton
-          label={annotation === "erase" ? "Clear drawing" : "Erase a stroke"}
-          onClick={() => void toggleAnnotation("erase")}
-          active={annotation === "erase"}
-          testId="browser-erase"
-        >
-          <EraserIcon className="size-3.5" />
-        </NavButton>
+        <PageToolControl
+          armed={armedTool}
+          selected={selectedTool}
+          onArm={(tool) => void armTool(tool)}
+          onSelect={(tool) => {
+            setSelectedTool(tool);
+            void armTool(tool);
+          }}
+        />
         <NavButton
           label="Capture screenshot"
           onClick={captureScreenshot}
@@ -1065,6 +1029,109 @@ function ViewportResizeHandle({
         />
       </div>
     </>
+  );
+}
+
+/**
+ * The four ways of pointing at the page, behind one control.
+ *
+ * Four buttons in a row read as four unrelated things and crowd the address
+ * out of a panel that is often narrow. They are one gesture aimed differently,
+ * so they get one slot: the tool you last chose, and a caret to change it.
+ * Choosing from the menu arms it too -- reaching for a tool is the same act as
+ * picking it up.
+ */
+const PAGE_TOOLS = [
+  { tool: "element", label: "Pick an element", Icon: MousePointerClickIcon },
+  { tool: "region", label: "Select a region", Icon: SquareDashedMousePointerIcon },
+  { tool: "draw", label: "Draw on the page", Icon: PencilIcon },
+  { tool: "erase", label: "Erase a stroke", Icon: EraserIcon },
+] as const satisfies ReadonlyArray<{ tool: PageTool; label: string; Icon: typeof PencilIcon }>;
+
+type PageTool = DesktopPreviewPickMode | DesktopPreviewAnnotationMode;
+
+/** Ink is armed and cleared differently from a pick, and survives the swap. */
+function isInkTool(tool: PageTool | null): tool is DesktopPreviewAnnotationMode {
+  return tool === "draw" || tool === "erase";
+}
+
+function PageToolControl({
+  armed,
+  selected,
+  onArm,
+  onSelect,
+}: {
+  armed: PageTool | null;
+  selected: PageTool;
+  onArm: (tool: PageTool) => void;
+  onSelect: (tool: PageTool) => void;
+}) {
+  // The armed tool wins over the selected one: while something is live the
+  // control has to show what the pointer is actually doing.
+  const shown = PAGE_TOOLS.find((entry) => entry.tool === (armed ?? selected)) ?? PAGE_TOOLS[0];
+  const isArmed = armed !== null;
+  const label = isArmed ? (isInkTool(armed) ? "Clear drawing" : "Cancel") : shown.label;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-md border",
+        isArmed ? "border-transparent bg-accent text-foreground" : "border-border",
+      )}
+      data-testid="browser-page-tool"
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              aria-label={label}
+              data-testid="browser-page-tool-arm"
+              onClick={() => onArm(shown.tool)}
+              className={cn(
+                "inline-flex size-6 items-center justify-center rounded-l-md hover:bg-accent hover:text-foreground",
+                isArmed ? "text-foreground" : "text-muted-foreground/70",
+              )}
+            />
+          }
+        >
+          <shown.Icon className="size-3.5" />
+        </TooltipTrigger>
+        <TooltipPopup side="bottom">{label}</TooltipPopup>
+      </Tooltip>
+      <span className={cn("h-3.5 w-px", isArmed ? "bg-border/60" : "bg-border")} />
+      <Menu>
+        <MenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label="Choose a page tool"
+              data-testid="browser-page-tool-menu"
+              className={cn(
+                "inline-flex h-6 w-4 items-center justify-center rounded-r-md hover:bg-accent hover:text-foreground",
+                isArmed ? "text-foreground" : "text-muted-foreground/70",
+              )}
+            />
+          }
+        >
+          <ChevronDownIcon className="size-3" />
+        </MenuTrigger>
+        <MenuPopup align="end">
+          <MenuRadioGroup value={selected} onValueChange={(value) => onSelect(value as PageTool)}>
+            {PAGE_TOOLS.map((entry) => (
+              <MenuRadioItem
+                key={entry.tool}
+                value={entry.tool}
+                data-testid={`browser-page-tool-${entry.tool}`}
+              >
+                <entry.Icon className="size-3.5 text-muted-foreground/70" />
+                {entry.label}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </MenuPopup>
+      </Menu>
+    </span>
   );
 }
 

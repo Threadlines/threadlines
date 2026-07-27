@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { coveredBoxIndices, coveredBoxIndicesSource } from "./regionSelection";
+import { coveredBoxIndices, coveredBoxIndicesSource } from "./regionSelection.ts";
 
 const box = (left: number, top: number, right: number, bottom: number) => ({
   left,

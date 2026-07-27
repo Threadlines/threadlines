@@ -28,7 +28,7 @@
  * a graphic. The fill follows the app's theme and the outline is the highlight
  * blue, which is what keeps it legible either way.
  */
-import { coveredBoxIndicesSource } from "./regionSelection";
+import { coveredBoxIndicesSource } from "./regionSelection.ts";
 
 const ARROW_CURSOR_FILL = { dark: "#16181c", light: "#ffffff" } as const;
 

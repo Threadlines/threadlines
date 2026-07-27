@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { buildDrawOverlayScript, DRAW_OVERLAY_TEARDOWN_SCRIPT } from "./drawOverlayScript";
-import { buildPickOverlayScript, PICK_OVERLAY_TEARDOWN_SCRIPT } from "./pickOverlayScript";
+import { buildDrawOverlayScript, DRAW_OVERLAY_TEARDOWN_SCRIPT } from "./drawOverlayScript.ts";
+import { buildPickOverlayScript, PICK_OVERLAY_TEARDOWN_SCRIPT } from "./pickOverlayScript.ts";
 
 /**
  * The overlay is a string that only ever runs inside the guest page, where a
