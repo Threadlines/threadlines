@@ -86,6 +86,29 @@ const unauthorized = HttpServerResponse.jsonUnsafe(
   },
 );
 
+/**
+ * An empty 200 turned into a 202.
+ *
+ * A JSON-RPC notification has no reply, so the transport answers with an empty
+ * body -- but it answers 200 with `content-type: application/json`, which
+ * promises a JSON document that is not there. Codex takes that promise
+ * seriously, tries to parse nothing, fails with "EOF while parsing a value",
+ * and abandons the handshake: the server is registered with zero tools and the
+ * model is told the browser is unavailable.
+ *
+ * 202 Accepted is what the MCP spec asks for on a notification, and it says
+ * what is true -- received, nothing to return.
+ */
+export function normalizeMcpHttpResponse(
+  response: HttpServerResponse.HttpServerResponse,
+): HttpServerResponse.HttpServerResponse {
+  const body = response.body;
+  const empty =
+    body._tag === "Empty" ||
+    ((body._tag === "Uint8Array" || body._tag === "Raw") && body.contentLength === 0);
+  return response.status === 200 && empty ? HttpServerResponse.setStatus(response, 202) : response;
+}
+
 const authenticate = Effect.succeed(
   Effect.fn("McpHttpServer.authenticate")(function* (
     handler: Effect.Effect<
@@ -103,6 +126,7 @@ const authenticate = Effect.succeed(
     }
     return yield* handler.pipe(
       Effect.provideService(McpInvocationContext, { threadId: scope.threadId }),
+      Effect.map(normalizeMcpHttpResponse),
     );
   }),
 );
