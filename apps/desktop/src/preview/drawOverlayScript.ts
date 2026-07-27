@@ -24,6 +24,17 @@ export const DRAW_OVERLAY_BINDING = "__threadlinesAttachDrawing";
 export const DRAW_OVERLAY_STASH = "__threadlinesDrawnElements";
 /** How much of an element a stroke has to enclose to count as circled. */
 const DRAW_COVERAGE = 0.7;
+/**
+ * How nearly a stroke has to meet itself to count as going round something.
+ *
+ * Only a closed shape encloses anything. An arrow pointing at a button, an
+ * underline, a sketch of what the thing should look like -- all of those have
+ * elements inside their bounding box and mean nothing by them, and naming those
+ * elements would be a confident guess at something the user never said. The gap
+ * between where a stroke starts and ends, against how big it is, is what tells
+ * a circle from a line.
+ */
+const DRAW_CLOSED_GAP = 0.25;
 /** A scribble across a page should not attach forty chips. */
 const DRAW_MAX_ELEMENTS = 8;
 /** The highlight blue the picker uses, so the whole feature reads as one thing. */
@@ -56,6 +67,7 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
   const STASH = ${JSON.stringify("__threadlinesDrawnElements")};
   const COVERAGE = ${DRAW_COVERAGE};
   const MAX_ELEMENTS = ${DRAW_MAX_ELEMENTS};
+  const CLOSED_GAP = ${DRAW_CLOSED_GAP};
 
   // The same rule the region tool uses, inlined so the page runs exactly what
   // the tests cover.
@@ -170,6 +182,7 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
     ink.setAttribute("class", "ink");
     stroke.appendChild(hit);
     stroke.appendChild(ink);
+    stroke.dataset.from = points[0].x + "," + points[0].y;
     svg.appendChild(stroke);
     const data = pathData();
     hit.setAttribute("d", data);
@@ -192,6 +205,10 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
   };
 
   const onUp = () => {
+    if (stroke !== null && points.length > 0) {
+      const last = points[points.length - 1];
+      stroke.dataset.to = last.x + "," + last.y;
+    }
     stroke = null;
     points = [];
     showNote();
@@ -217,10 +234,20 @@ export function buildDrawOverlayScript(mode: "draw" | "erase"): string {
    * sweep up everything between them.
    */
   const enclosedElements = () => {
-    const strokes = [...svg.children].map((group) => {
+    const strokes = [];
+    for (const group of svg.children) {
+      const from = (group.dataset.from || "").split(",").map(Number);
+      const to = (group.dataset.to || "").split(",").map(Number);
+      if (from.length !== 2 || to.length !== 2) continue;
       const box = group.getBoundingClientRect();
-      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
-    });
+      const diagonal = Math.sqrt(box.width * box.width + box.height * box.height);
+      const gapX = from[0] - to[0];
+      const gapY = from[1] - to[1];
+      const gap = Math.sqrt(gapX * gapX + gapY * gapY);
+      // An open stroke went past something rather than round it.
+      if (diagonal === 0 || gap / diagonal > CLOSED_GAP) continue;
+      strokes.push({ left: box.left, top: box.top, right: box.right, bottom: box.bottom });
+    }
     if (strokes.length === 0) {
       return [];
     }

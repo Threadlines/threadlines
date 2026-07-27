@@ -1,4 +1,8 @@
-import type { PickedElementContextDraft } from "../../lib/pickedElementContext";
+import type { DrawingContext } from "../../lib/drawingContext";
+import {
+  pickedElementFromPreview,
+  type PickedElementContextDraft,
+} from "../../lib/pickedElementContext";
 import type {
   DesktopLocalServer,
   DesktopPreviewAnnotationMode,
@@ -118,6 +122,7 @@ export function BrowserPanel({
   onClose,
   onPickElement,
   onScreenshot,
+  onDrawing,
   pendingReveal,
   onRevealHandled,
 }: {
@@ -129,6 +134,8 @@ export function BrowserPanel({
   onPickElement?: ((element: DesktopPreviewPickedElement) => void) | undefined;
   /** Attaches a captured screenshot to the message being written. */
   onScreenshot?: ((input: { dataUrl: string; name: string }) => void) | undefined;
+  /** Attaches a drawing made on the page: one chip carrying its picture. */
+  onDrawing?: ((context: DrawingContext) => void) | undefined;
   /** An element to show again, requested from a composer chip. */
   pendingReveal?: PickedElementContextDraft | null | undefined;
   onRevealHandled?: (() => void) | undefined;
@@ -258,7 +265,7 @@ export function BrowserPanel({
   const [selectedTool, setSelectedTool] = useState<PageTool>("element");
 
   const armTool = useCallback(
-    async (requested: PageTool | null) => {
+    async (requested: PageTool | null, options?: { readonly toggle?: boolean }) => {
       const webview = webviewsRef.current.get(activeTabId);
       if (webview === null || webview === undefined || !isElectron) {
         return;
@@ -267,7 +274,10 @@ export function BrowserPanel({
       const previous = armedToolRef.current;
       // Pressing the lit control puts the tool away, which for ink is also how
       // you clear it: putting the pen down and being done are the same moment.
-      const next = previous === requested ? null : requested;
+      // Reaching into the menu does not toggle, though -- choosing a tool from
+      // a list means use this one, and having it turn the tool off because it
+      // happened to already be on reads as the menu being broken.
+      const next = options?.toggle !== false && previous === requested ? null : requested;
 
       if (isInkTool(previous) && !isInkTool(next)) {
         await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: null });
@@ -299,12 +309,15 @@ export function BrowserPanel({
         // what the drawing says.
         const shot = await window.desktopBridge?.previewScreenshot?.({ webContentsId });
         if (shot !== undefined && shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1) !== "") {
-          onScreenshot?.({ dataUrl: shot.dataUrl, name: `${screenshotName()}.png` });
-        }
-        // The elements the strokes went round, so the agent can find them in
-        // the source rather than only look at them in the picture.
-        for (const element of drawing.elements) {
-          onPickElement?.(element);
+          // One thing, because it was one act. The picture and whatever the
+          // closed strokes went round travel together behind a single chip
+          // rather than scattering across the composer.
+          onDrawing?.({
+            note: drawing.note,
+            imageDataUrl: shot.dataUrl,
+            url: activeUrl ?? "",
+            elements: drawing.elements.map(pickedElementFromPreview),
+          });
         }
         await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: null });
         armedToolRef.current = null;
@@ -330,7 +343,7 @@ export function BrowserPanel({
         }
       }
     },
-    [activeTabId, guestColorScheme, onPickElement, onScreenshot, screenshotName],
+    [activeTabId, activeUrl, guestColorScheme, onDrawing, onPickElement],
   );
 
   // Everything these tools act on lives in the guest document, which a new
@@ -541,7 +554,7 @@ export function BrowserPanel({
           onArm={(tool) => void armTool(tool)}
           onSelect={(tool) => {
             setSelectedTool(tool);
-            void armTool(tool);
+            void armTool(tool, { toggle: false });
           }}
         />
         <NavButton

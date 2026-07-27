@@ -195,6 +195,7 @@ import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { DesktopPreviewPickedElement } from "@threadlines/contracts";
+import { appendDrawingContextsToPrompt } from "../lib/drawingContext";
 import {
   appendPickedElementContextsToPrompt,
   pickedElementFromPreview,
@@ -4289,6 +4290,7 @@ export default function ChatView(props: ChatViewProps) {
       transcriptHighlightContexts: composerTranscriptHighlightContexts,
       fileSelectionContexts: composerFileSelectionContexts,
       pickedElementContexts: composerPickedElementContexts,
+      drawingContexts: composerDrawingContexts,
       selectedModel: ctxSelectedModel,
       selectedModelSelection: ctxSelectedModelSelection,
       skillReferences: composerSkillReferences,
@@ -4402,6 +4404,7 @@ export default function ChatView(props: ChatViewProps) {
     const composerTranscriptHighlightContextsSnapshot = [...sendableTranscriptHighlightContexts];
     const composerFileSelectionContextsSnapshot = [...composerFileSelectionContexts];
     const composerPickedElementContextsSnapshot = [...composerPickedElementContexts];
+    const composerDrawingContextsSnapshot = [...composerDrawingContexts];
     const messageTextWithTerminalContexts = appendTerminalContextsToPrompt(
       promptForSend,
       composerTerminalContextsSnapshot,
@@ -4414,15 +4417,30 @@ export default function ChatView(props: ChatViewProps) {
       messageTextWithHighlights,
       composerFileSelectionContextsSnapshot,
     );
-    const messageTextForSend = appendPickedElementContextsToPrompt(
+    const messageTextWithPickedElements = appendPickedElementContextsToPrompt(
       messageTextWithFileSelections,
       composerPickedElementContextsSnapshot,
+    );
+    const messageTextForSend = appendDrawingContextsToPrompt(
+      messageTextWithPickedElements,
+      composerDrawingContextsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt(
       messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     );
+    // A drawing's picture is not shown in the composer as its own thumbnail --
+    // it lives behind the chip -- but it still has to reach the model as an
+    // image, because the marks are the half of the message a sentence cannot
+    // carry.
+    const drawingAttachments = composerDrawingContextsSnapshot.map((context, index) => ({
+      type: "image" as const,
+      name: `drawing-${index + 1}.png`,
+      mimeType: "image/png",
+      sizeBytes: Math.round((context.imageDataUrl.length * 3) / 4),
+      dataUrl: context.imageDataUrl,
+    }));
     const turnAttachmentsPromise = Promise.all(
       composerAttachmentsSnapshot.map(async (attachment) => ({
         type: attachment.type,
@@ -4431,7 +4449,7 @@ export default function ChatView(props: ChatViewProps) {
         sizeBytes: attachment.sizeBytes,
         dataUrl: await readFileAsDataUrl(attachment.file),
       })),
-    );
+    ).then((attachments) => [...attachments, ...drawingAttachments]);
     const optimisticAttachments = composerAttachmentsSnapshot.map(
       (attachment): ChatAttachment =>
         attachment.type === "image"
@@ -6462,6 +6480,7 @@ export default function ChatView(props: ChatViewProps) {
               onClose={handleCloseBrowser}
               onPickElement={appendPickedElementToComposer}
               onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot)}
+              onDrawing={(drawing) => composerRef.current?.addDrawingContext(drawing)}
               pendingReveal={pendingElementReveal}
               onRevealHandled={() => setPendingElementReveal(null)}
             />

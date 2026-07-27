@@ -36,6 +36,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { serializeComposerMentionPath } from "~/composerMentionPath";
 import type { FileSelectionContextDraft } from "~/lib/fileSelectionContext";
+import type { DrawingContext, DrawingContextDraft } from "~/lib/drawingContext";
 import {
   pickedElementContextDedupKey,
   type PickedElementContext,
@@ -90,6 +91,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
 import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedElementContexts";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
 import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
@@ -420,6 +422,9 @@ export interface ChatComposerHandle {
   addPickedElementContext: (context: PickedElementContext) => void;
   /** Attach a screenshot captured from the browser preview. */
   addScreenshotAttachment: (input: { dataUrl: string; name: string }) => void;
+  /** Attach a drawing made on the page: one chip carrying the picture, the
+   *  note and whatever the closed strokes went round. */
+  addDrawingContext: (context: DrawingContext) => void;
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
@@ -428,6 +433,7 @@ export interface ChatComposerHandle {
     transcriptHighlightContexts: TranscriptHighlightContextDraft[];
     fileSelectionContexts: FileSelectionContextDraft[];
     pickedElementContexts: PickedElementContextDraft[];
+    drawingContexts: DrawingContextDraft[];
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
@@ -660,6 +666,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerTranscriptHighlightContexts = composerDraft.transcriptHighlightContexts;
   const composerFileSelectionContexts = composerDraft.fileSelectionContexts;
   const composerPickedElementContexts = composerDraft.pickedElementContexts;
+  const composerDrawingContexts = composerDraft.drawingContexts;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedAttachmentIds;
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -699,6 +706,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
     [composerDraftTarget, composerPickedElementContextsRef, setComposerDraftPickedElementContexts],
   );
+  const setComposerDraftDrawingContexts = useComposerDraftStore(
+    (store) => store.setDrawingContexts,
+  );
+  const drawingContextsRef = useRef(composerDrawingContexts);
+  drawingContextsRef.current = composerDrawingContexts;
+  const commitDrawingContexts = useCallback(
+    (next: DrawingContextDraft[]) => {
+      drawingContextsRef.current = next;
+      setComposerDraftDrawingContexts(composerDraftTarget, next);
+    },
+    [composerDraftTarget, setComposerDraftDrawingContexts],
+  );
+  const updateDrawingNote = useCallback(
+    (contextId: string, note: string) => {
+      commitDrawingContexts(
+        drawingContextsRef.current.map((context) =>
+          context.id === contextId ? { ...context, note: note === "" ? null : note } : context,
+        ),
+      );
+    },
+    [commitDrawingContexts],
+  );
+  const removeDrawingContext = useCallback(
+    (contextId: string) => {
+      commitDrawingContexts(
+        drawingContextsRef.current.filter((context) => context.id !== contextId),
+      );
+    },
+    [commitDrawingContexts],
+  );
+
   const updatePickedElementNote = useCallback(
     (contextId: string, note: string) => {
       commitPickedElementContexts(
@@ -2434,6 +2472,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           composerEditorRef.current?.focusAtEnd();
         });
       },
+      addDrawingContext: (context: DrawingContext) => {
+        if (!activeThread) return;
+        commitDrawingContexts([
+          ...drawingContextsRef.current,
+          {
+            ...context,
+            id: randomUUID(),
+            threadId: activeThread.id,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        focusComposer();
+      },
       addScreenshotAttachment: ({ dataUrl, name }) => {
         // The same two steps the desktop screen capture takes, for the same
         // reasons: the converter rejects anything that is not a PNG data URL,
@@ -2458,6 +2509,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         transcriptHighlightContexts: composerTranscriptHighlightContextsRef.current,
         fileSelectionContexts: composerFileSelectionContextsRef.current,
         pickedElementContexts: composerPickedElementContextsRef.current,
+        drawingContexts: drawingContextsRef.current,
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
@@ -2883,6 +2935,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onRemove={removePickedElementContext}
                   onUpdateNote={updatePickedElementNote}
                   onReveal={onRevealPickedElement}
+                  className="mb-2"
+                />
+              )}
+
+            {!isComposerCollapsedMobile &&
+              !isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
+              composerDrawingContexts.length > 0 && (
+                <ComposerPendingDrawingContexts
+                  contexts={composerDrawingContexts}
+                  onRemove={removeDrawingContext}
+                  onUpdateNote={updateDrawingNote}
                   className="mb-2"
                 />
               )}

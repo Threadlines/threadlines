@@ -52,6 +52,7 @@ import {
   fileSelectionContextDedupKey,
   normalizeFileSelectionContextDraft,
 } from "./lib/fileSelectionContext";
+import type { DrawingContextDraft } from "./lib/drawingContext";
 import {
   normalizePickedElementContextDraft,
   type PickedElementContextDraft,
@@ -306,6 +307,7 @@ export interface ComposerThreadDraftState {
   transcriptHighlightContexts: TranscriptHighlightContextDraft[];
   fileSelectionContexts: FileSelectionContextDraft[];
   pickedElementContexts: PickedElementContextDraft[];
+  drawingContexts: DrawingContextDraft[];
   /**
    * Per-instance model selection. Keyed by `ProviderInstanceId` (open
    * branded slug) so a default `codex` instance and a user-authored
@@ -453,6 +455,9 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     contexts: PickedElementContextDraft[],
   ) => void;
+  /** Drawings are never persisted: the image would fill the draft store, and a
+   *  drawing without its picture is not worth restoring. */
+  setDrawingContexts: (threadRef: ComposerThreadTarget, contexts: DrawingContextDraft[]) => void;
   setTranscriptHighlightContexts: (
     threadRef: ComposerThreadTarget,
     contexts: TranscriptHighlightContextDraft[],
@@ -598,6 +603,7 @@ const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
 const EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS: TranscriptHighlightContextDraft[] = [];
 const EMPTY_PICKED_ELEMENT_CONTEXTS: PickedElementContextDraft[] = [];
+const EMPTY_DRAWING_CONTEXTS: DrawingContextDraft[] = [];
 const EMPTY_FILE_SELECTION_CONTEXTS: FileSelectionContextDraft[] = [];
 Object.freeze(EMPTY_ATTACHMENTS);
 Object.freeze(EMPTY_IDS);
@@ -620,6 +626,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   transcriptHighlightContexts: EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS,
   fileSelectionContexts: EMPTY_FILE_SELECTION_CONTEXTS,
   pickedElementContexts: EMPTY_PICKED_ELEMENT_CONTEXTS,
+  drawingContexts: EMPTY_DRAWING_CONTEXTS,
   modelSelectionByProvider: EMPTY_MODEL_SELECTION_BY_PROVIDER,
   activeProvider: null,
   runtimeMode: null,
@@ -636,6 +643,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     transcriptHighlightContexts: [],
     fileSelectionContexts: [],
     pickedElementContexts: [],
+    drawingContexts: [],
     modelSelectionByProvider: {},
     activeProvider: null,
     runtimeMode: null,
@@ -793,6 +801,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.transcriptHighlightContexts.length === 0 &&
     draft.fileSelectionContexts.length === 0 &&
     draft.pickedElementContexts.length === 0 &&
+    draft.drawingContexts.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
@@ -2214,6 +2223,9 @@ function toHydratedThreadDraft(
   return {
     prompt: persistedDraft.prompt,
     attachments: hydrateAttachmentsFromPersisted(persistedDraft.attachments),
+    // Never restored, because never stored: a drawing is mostly its image, and
+    // one without a picture would be a chip that shows nothing.
+    drawingContexts: [],
     nonPersistedAttachmentIds: [],
     persistedAttachments: [...persistedDraft.attachments],
     terminalContexts:
@@ -2712,6 +2724,28 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...existing,
               pickedElementContexts: normalizedContexts,
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        setDrawingContexts: (threadRef, contexts) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          const threadId = resolveComposerThreadId(get(), threadRef);
+          if (!threadKey || !threadId) {
+            return;
+          }
+          const normalizedContexts = contexts.map((context) => ({ ...context, threadId }));
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const nextDraft: ComposerThreadDraftState = {
+              ...existing,
+              drawingContexts: normalizedContexts,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
