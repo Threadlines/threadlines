@@ -33,6 +33,14 @@ const POINTER_SETTLE_MS = 900;
  */
 const POINTER_PING_MS = 620;
 
+/**
+ * How long the mark takes to leave once the page it referred to has gone.
+ *
+ * Matches the opacity transition below, so the element is still mounted for
+ * the whole fade.
+ */
+export const POINTER_RETIRE_MS = 420;
+
 /** One frame at the start of a drag, so there is somewhere to travel from. */
 const HOLD_SETTLE_MS = 60;
 
@@ -77,11 +85,14 @@ export function travelDurationMs(
 export function AgentPointer({
   position,
   scale,
+  retiring = false,
   className,
 }: {
   position: AgentPointerPosition | null;
   /** Page pixels to panel pixels, so the mark lands where the user sees it. */
   scale: number;
+  /** The page it was pointing at has gone, so it is on its way out. */
+  retiring?: boolean;
   className?: string;
 }) {
   const [settled, setSettled] = useState(false);
@@ -119,12 +130,12 @@ export function AgentPointer({
         "transition-[transform,opacity] motion-reduce:transition-none",
         // Resting is dimmer, not gone. Enough to read as "the agent was here",
         // little enough to stop competing with the page underneath.
-        settled ? "opacity-55" : "opacity-100",
+        retiring ? "opacity-0" : settled ? "opacity-55" : "opacity-100",
         className,
       )}
       style={{
         transform: `translate3d(${point.x}px, ${point.y}px, 0)`,
-        transitionDuration: `${duration}ms, 400ms`,
+        transitionDuration: `${duration}ms, ${POINTER_RETIRE_MS}ms`,
       }}
     >
       {gesture.held ? <HeldRing /> : <ClickRing sequence={position.sequence} />}

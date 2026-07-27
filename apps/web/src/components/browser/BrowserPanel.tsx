@@ -59,7 +59,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
-import { AgentPointer, type AgentPointerPosition } from "./AgentPointer";
+import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
 import { usePreviewAutomationHost, type AgentActivity } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
 
@@ -237,11 +237,30 @@ export function BrowserPanel({
     }
   }, [agentTabId, browserState.tabs]);
 
+  /** Set while the mark is fading out, after the page it referred to has gone. */
+  const [agentPointRetiring, setAgentPointRetiring] = useState(false);
+  const agentPointRef = useRef<AgentPointerPosition | null>(null);
+  agentPointRef.current = agentPoint;
+
   useEffect(() => {
     // The mark is in viewport coordinates, so it stops meaning anything the
-    // moment the page under it changes. Resting somewhere stale would be worse
-    // than not resting at all: it would point confidently at the wrong thing.
-    setAgentPoint(null);
+    // moment the page under it changes: resting somewhere stale would point
+    // confidently at whatever now occupies that spot.
+    //
+    // It fades rather than blinking out, though. Clicking a link is the most
+    // common way to navigate, so cutting the mark on the same frame as the
+    // click means the one action you most want confirmed is the one that
+    // leaves nothing behind. Fading says "that happened, and then the page
+    // changed", which is what did happen.
+    if (agentPointRef.current === null) {
+      return;
+    }
+    setAgentPointRetiring(true);
+    const timer = window.setTimeout(() => {
+      setAgentPoint(null);
+      setAgentPointRetiring(false);
+    }, POINTER_RETIRE_MS);
+    return () => window.clearTimeout(timer);
   }, [activeUrl]);
 
   // Offers this panel as the page the agent acts on, for as long as it is here.
@@ -259,6 +278,7 @@ export function BrowserPanel({
       return {
         webContentsId: webview === null ? null : webview.getWebContentsId(),
         onAgentPoint: (point) => {
+          setAgentPointRetiring(false);
           setAgentPoint((previous) => ({
             ...point,
             sequence: (previous?.sequence ?? 0) + 1,
@@ -833,6 +853,7 @@ export function BrowserPanel({
                 }
                 onNavState={setNavState}
                 agentPoint={tab.id === agentTabId ? agentPoint : null}
+                agentPointRetiring={agentPointRetiring}
                 register={(element) => {
                   if (element === null) {
                     webviewsRef.current.delete(tab.id);
@@ -934,6 +955,7 @@ function PreviewTabFrame({
   onNavState,
   register,
   agentPoint,
+  agentPointRetiring,
 }: {
   tab: BrowserTab;
   threadRef: ScopedThreadRef;
@@ -946,6 +968,8 @@ function PreviewTabFrame({
   register: (element: PreviewWebview | null) => void;
   /** The agent's last touch, drawn over this tab when it is the visible one. */
   agentPoint: AgentPointerPosition | null;
+  /** Whether that touch is fading out, its page having been navigated away. */
+  agentPointRetiring: boolean;
 }) {
   const elementRef = useRef<PreviewWebview | null>(null);
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
@@ -1118,7 +1142,11 @@ function PreviewTabFrame({
             className="pointer-events-none absolute"
             style={{ left: `${layout.x}px`, top: `${layout.y}px` }}
           >
-            <AgentPointer position={agentPoint} scale={layout.scale} />
+            <AgentPointer
+              position={agentPoint}
+              scale={layout.scale}
+              retiring={agentPointRetiring}
+            />
           </div>
         ) : null}
         {!layout.fills && isActive && onResize !== undefined ? (
