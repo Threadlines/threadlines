@@ -14,21 +14,21 @@ describe("travelDurationMs", () => {
   });
 
   it("keeps a short hop long enough to read as movement", () => {
-    expect(travelDurationMs({ x: 100, y: 100 }, { x: 104, y: 100 })).toBe(140);
+    expect(travelDurationMs({ x: 100, y: 100 }, { x: 104, y: 100 })).toBe(220);
   });
 
   it("caps a long haul so the page does not change mid-flight", () => {
     // A click at the far corner would otherwise still be travelling while the
     // page it landed on has already navigated.
-    expect(travelDurationMs({ x: 0, y: 0 }, { x: 1600, y: 1200 })).toBe(320);
+    expect(travelDurationMs({ x: 0, y: 0 }, { x: 1600, y: 1200 })).toBe(560);
   });
 
   it("scales with distance between those bounds", () => {
     const near = travelDurationMs({ x: 0, y: 0 }, { x: 300, y: 0 });
     const far = travelDurationMs({ x: 0, y: 0 }, { x: 500, y: 0 });
 
-    expect(near).toBeGreaterThan(140);
+    expect(near).toBeGreaterThan(220);
     expect(far).toBeGreaterThan(near);
-    expect(far).toBeLessThanOrEqual(320);
+    expect(far).toBeLessThanOrEqual(560);
   });
 });

@@ -44,11 +44,29 @@ export const POINTER_RETIRE_MS = 420;
 /** One frame at the start of a drag, so there is somewhere to travel from. */
 const HOLD_SETTLE_MS = 60;
 
-/** Bounds on the glide. Below the floor it reads as a jump; above the ceiling
- *  the pointer is still travelling after the page has already changed. */
-const POINTER_TRAVEL_MIN_MS = 140;
-const POINTER_TRAVEL_MAX_MS = 320;
-const POINTER_TRAVEL_MS_PER_PX = 0.55;
+/**
+ * Bounds on the glide.
+ *
+ * Below the floor it reads as a jump. Above the ceiling the mark is still in
+ * flight well after the action it is reporting, which matters because the point
+ * arrives only once the click has already been dispatched -- a click that
+ * navigates has the page changing underneath a pointer still on its way there.
+ *
+ * Paced for watching rather than for speed. A hand does not cross a page in a
+ * sixth of a second, and the mark is there to be followed, not to keep up.
+ */
+const POINTER_TRAVEL_MIN_MS = 220;
+const POINTER_TRAVEL_MAX_MS = 560;
+const POINTER_TRAVEL_MS_PER_PX = 0.9;
+
+/**
+ * Eases in as well as out.
+ *
+ * A pointer that starts at full speed and merely slows down reads as something
+ * being dragged. Gathering pace and then settling is how a hand moves, and it
+ * is the difference between smooth and merely animated.
+ */
+const POINTER_TRAVEL_EASING = "cubic-bezier(0.32, 0.04, 0.22, 1)";
 
 export interface AgentPointerPosition {
   /** Viewport coordinates, as the agent's input was dispatched. */
@@ -126,7 +144,7 @@ export function AgentPointer({
       data-testid="agent-pointer"
       data-settled={settled ? "true" : "false"}
       className={cn(
-        "pointer-events-none absolute left-0 top-0 z-30 ease-out",
+        "pointer-events-none absolute left-0 top-0 z-30",
         "transition-[transform,opacity] motion-reduce:transition-none",
         // Resting is dimmer, not gone. Enough to read as "the agent was here",
         // little enough to stop competing with the page underneath.
@@ -136,6 +154,7 @@ export function AgentPointer({
       style={{
         transform: `translate3d(${point.x}px, ${point.y}px, 0)`,
         transitionDuration: `${duration}ms, ${POINTER_RETIRE_MS}ms`,
+        transitionTimingFunction: `${POINTER_TRAVEL_EASING}, ease-out`,
       }}
     >
       {gesture.held ? <HeldRing /> : <ClickRing sequence={position.sequence} />}
