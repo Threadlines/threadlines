@@ -886,9 +886,9 @@ export interface DesktopBridge {
   previewStatus?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
   previewEvaluate?: (input: DesktopPreviewEvaluateInput) => Promise<unknown>;
   previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
-  /** Resolves with the point the click landed on, so the UI can show it. */
+  /** Resolve with the point the input landed on, so the UI can show it. */
   previewClick?: (input: DesktopPreviewClickInput) => Promise<DesktopPreviewPoint>;
-  previewType?: (input: DesktopPreviewTypeInput) => Promise<void>;
+  previewType?: (input: DesktopPreviewTypeInput) => Promise<DesktopPreviewPoint>;
   previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
   previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
   previewWaitFor?: (input: DesktopPreviewWaitForInput) => Promise<void>;

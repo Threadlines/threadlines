@@ -216,9 +216,11 @@ async function dispatch(
       target.onAgentPoint(point);
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     }
-    case "type":
-      await call(bridge.previewType, input);
+    case "type": {
+      const point = await call(bridge.previewType, input);
+      target.onAgentPoint(point);
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    }
     case "press":
       await call(bridge.previewPress, input);
       return toStatus(await call(bridge.previewStatus, {}), target.viewport());

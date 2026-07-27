@@ -155,7 +155,9 @@ export class PreviewAutomation extends Context.Service<
     readonly click: (
       input: DesktopPreviewClickInput,
     ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
-    readonly type: (input: DesktopPreviewTypeInput) => Effect.Effect<void, PreviewAutomationError>;
+    readonly type: (
+      input: DesktopPreviewTypeInput,
+    ) => Effect.Effect<DesktopPreviewPoint, PreviewAutomationError>;
     readonly press: (
       input: DesktopPreviewPressInput,
     ) => Effect.Effect<void, PreviewAutomationError>;
@@ -1214,6 +1216,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         });
       }
       yield* sendCommand(contents, "Input.insertText", { text: input.text });
+      // The caret is where the agent is. Returned so the pointer travels to the
+      // field it is typing into rather than sitting on the last thing clicked.
+      return point;
     }),
     press: Effect.fn("PreviewAutomation.press")(function* (input: DesktopPreviewPressInput) {
       const contents = yield* resolveAttached(input.webContentsId);

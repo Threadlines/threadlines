@@ -91,10 +91,10 @@ export const previewClick = makeIpcMethod({
 export const previewType = makeIpcMethod({
   channel: IpcChannels.PREVIEW_TYPE_CHANNEL,
   payload: DesktopPreviewTypeInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewPointSchema,
   handler: Effect.fn("desktop.ipc.preview.type")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    yield* automation.type(input);
+    return yield* automation.type(input);
   }),
 });
 

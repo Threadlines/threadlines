@@ -214,8 +214,16 @@ export function BrowserPanel({
     if (agentTabId !== null && !browserState.tabs.some((tab) => tab.id === agentTabId)) {
       setAgentTabId(null);
       setAgentActivity(null);
+      setAgentPoint(null);
     }
   }, [agentTabId, browserState.tabs]);
+
+  useEffect(() => {
+    // The mark is in viewport coordinates, so it stops meaning anything the
+    // moment the page under it changes. Resting somewhere stale would be worse
+    // than not resting at all: it would point confidently at the wrong thing.
+    setAgentPoint(null);
+  }, [activeUrl]);
 
   // Offers this panel as the page the agent acts on, for as long as it is here.
   usePreviewAutomationHost({
@@ -787,7 +795,7 @@ export function BrowserPanel({
                     : undefined
                 }
                 onNavState={setNavState}
-                agentPoint={agentPoint}
+                agentPoint={tab.id === agentTabId ? agentPoint : null}
                 register={(element) => {
                   if (element === null) {
                     webviewsRef.current.delete(tab.id);
