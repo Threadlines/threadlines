@@ -1,13 +1,8 @@
-import {
-  EnvironmentId,
-  ProjectId,
-  ProviderDriverKind,
-  ThreadId,
-  TurnId,
-} from "@threadlines/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { Project, SidebarThreadSummary, ThreadSession } from "./types";
+import type { Project, SidebarThreadSummary } from "./types";
 import {
   groupAutoArchiveCandidatesByProject,
   resolveAutoArchivePreviewDays,
@@ -20,17 +15,6 @@ const PROJECT_ID = ProjectId.make("project-a");
 
 function daysAgo(days: number): string {
   return new Date(NOW_MS - days * 24 * 60 * 60 * 1_000).toISOString();
-}
-
-function runningSession(): ThreadSession {
-  return {
-    provider: ProviderDriverKind.make("codex"),
-    status: "running",
-    activeTurnId: TurnId.make("turn-running"),
-    createdAt: daysAgo(40),
-    updatedAt: daysAgo(40),
-    orchestrationStatus: "running",
-  };
 }
 
 function thread(id: string, overrides: Partial<SidebarThreadSummary> = {}): SidebarThreadSummary {
@@ -48,6 +32,7 @@ function thread(id: string, overrides: Partial<SidebarThreadSummary> = {}): Side
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    effectiveCwd: null,
     latestUserMessageAt: daysAgo(45),
     hasPendingApprovals: false,
     hasPendingUserInput: false,
@@ -62,39 +47,18 @@ describe("thread auto-archive candidates", () => {
     expect(resolveAutoArchivePreviewDays(60)).toBe(60);
   });
 
-  it("selects inactive unprotected threads", () => {
+  it("adapts scoped thread exclusions for the shared selector", () => {
+    const excluded = thread("excluded");
     const candidates = selectAutoArchiveCandidates({
       inactiveDays: 30,
       nowMs: NOW_MS,
-      threads: [
-        thread("eligible"),
-        thread("recent", { updatedAt: daysAgo(10), latestUserMessageAt: daysAgo(10) }),
-        thread("archived", { archivedAt: daysAgo(31) }),
-        thread("pinned", { pinnedAt: daysAgo(31) }),
-        thread("running", { session: runningSession() }),
-        thread("approval", { hasPendingApprovals: true }),
-        thread("input", { hasPendingUserInput: true }),
-        thread("plan", { hasActionableProposedPlan: true }),
-      ],
+      threads: [excluded, thread("included")],
+      excludeThreadKeys: new Set([
+        scopedThreadKey(scopeThreadRef(excluded.environmentId, excluded.id)),
+      ]),
     });
 
-    expect(candidates.map((candidate) => candidate.id)).toEqual([ThreadId.make("eligible")]);
-  });
-
-  it("uses updatedAt as the inactivity timestamp when available", () => {
-    const candidates = selectAutoArchiveCandidates({
-      inactiveDays: 30,
-      nowMs: NOW_MS,
-      threads: [
-        thread("old-created-recent-update", {
-          createdAt: daysAgo(90),
-          latestUserMessageAt: daysAgo(90),
-          updatedAt: daysAgo(2),
-        }),
-      ],
-    });
-
-    expect(candidates).toEqual([]);
+    expect(candidates.map((candidate) => candidate.id)).toEqual([ThreadId.make("included")]);
   });
 
   it("groups candidates by project", () => {

@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROJECT_KIND,
+  MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -7,6 +8,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
+import { findProviderAuthRetryUserMessageIndex } from "@threadlines/shared/providerAuth";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -716,13 +718,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' already has a turn in flight and cannot retry.`,
         });
       }
-      if (!session || session.lastError === null) {
+      const providerAuthRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(
+        targetThread.messages,
+      );
+      if (!session || (session.lastError === null && providerAuthRetryUserMessageIndex === null)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has no failed turn to retry.`,
         });
       }
-      const lastUserMessage = targetThread.messages.findLast((message) => message.role === "user");
+      const lastUserMessage =
+        providerAuthRetryUserMessageIndex === null
+          ? targetThread.messages.findLast((message) => message.role === "user")
+          : targetThread.messages[providerAuthRetryUserMessageIndex];
       if (!lastUserMessage) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -731,9 +739,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       // Mirrors thread.turn.start, but re-points at the persisted last user
       // message instead of appending a new one: the transcript keeps a single
-      // bubble and attachments are reused as stored. lastError is carried
-      // forward (as in turn.start) so the failure stays visible until the
-      // provider actually accepts the turn.
+      // bubble and attachments are reused as stored. A projected lastError is
+      // carried forward (as in turn.start); providers that encode auth failure
+      // as a completed assistant response can legitimately keep it null.
       const retrySessionEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -771,6 +779,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: lastUserMessage.id,
+          // Claude uses the provider-facing message id as a command UUID and
+          // ignores a repeated UUID after reporting it completed. Keep the
+          // persisted transcript message id stable while giving every retry
+          // attempt a fresh provider command identity.
+          providerMessageId: MessageId.make(crypto.randomUUID()),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(lastUserMessage.skills !== undefined ? { skills: lastUserMessage.skills } : {}),

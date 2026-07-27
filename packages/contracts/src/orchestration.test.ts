@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import {
   ChatAttachment,
   ChatAttachmentListLenient,
+  CodexInlineVisualizationReadInput,
   ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -59,6 +60,25 @@ const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationComma
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeThreadForkContextPayload = Schema.decodeUnknownEffect(ThreadForkContextPayload);
+const decodeCodexInlineVisualizationReadInput = Schema.decodeUnknownEffect(
+  CodexInlineVisualizationReadInput,
+);
+
+it.effect("accepts only path-free kebab-case Codex visualization filenames", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeCodexInlineVisualizationReadInput({
+      threadId: "thread-1",
+      file: "connection-map.html",
+    });
+    assert.strictEqual(parsed.file, "connection-map.html");
+
+    const traversal = yield* decodeCodexInlineVisualizationReadInput({
+      threadId: "thread-1",
+      file: "../connection-map.html",
+    }).pipe(Effect.result);
+    assert.strictEqual(traversal._tag, "Failure");
+  }),
+);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -726,6 +746,7 @@ it.effect(
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       assert.strictEqual(parsed.modelSelection, undefined);
+      assert.strictEqual(parsed.providerMessageId, undefined);
       assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
@@ -761,6 +782,19 @@ it.effect("decodes thread.turn-start-requested title seed when present", () =>
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.titleSeed, "Investigate reconnect failures");
+  }),
+);
+
+it.effect("decodes a distinct provider message id for a repeated turn attempt", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartRequestedPayload({
+      threadId: "thread-2",
+      messageId: "msg-2",
+      providerMessageId: "provider-attempt-2",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.messageId, "msg-2");
+    assert.strictEqual(parsed.providerMessageId, "provider-attempt-2");
   }),
 );
 

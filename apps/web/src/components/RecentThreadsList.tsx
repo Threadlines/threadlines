@@ -5,8 +5,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useSettings } from "../hooks/useSettings";
-import { sortThreads } from "../lib/threadSort";
+import { selectActiveAndRecentThreads } from "../lib/threadSort";
 import {
   selectGeneralChatsProjectAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -37,23 +36,25 @@ export function RecentThreadsList({
   const navigate = useNavigate();
   const { orderedProjects } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const recentThreads = useMemo(() => {
     const isGeneralChat = (thread: (typeof threads)[number]) =>
       generalChatsProject !== null &&
       thread.environmentId === generalChatsProject.environmentId &&
       thread.projectId === generalChatsProject.id;
-    return sortThreads(
+    // Scoped here, ordered there: which threads belong in this list is this
+    // component's business, and putting the ones still working at the top is a
+    // decision the shared selector owns. It drops archived and applies the
+    // limit too, so neither is repeated here.
+    return selectActiveAndRecentThreads(
       threads.filter((thread) => {
-        if (thread.archivedAt !== null) return false;
         if (scope === "chats") return isGeneralChat(thread);
         if (scope === "projects") return !isGeneralChat(thread);
         return true;
       }),
-      sidebarThreadSortOrder,
-    ).slice(0, limit);
-  }, [generalChatsProject, limit, scope, sidebarThreadSortOrder, threads]);
+      limit,
+    );
+  }, [generalChatsProject, limit, scope, threads]);
   const projectByScopedKey = useMemo(
     () =>
       new Map(
@@ -72,7 +73,7 @@ export function RecentThreadsList({
   return (
     <div className={className}>
       <div className="mb-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
-        {scope === "chats" ? "Recent chats" : "Recent threads"}
+        {scope === "chats" ? "Active and recent chats" : "Active and recent"}
       </div>
       <div className="flex flex-col divide-y divide-border/50">
         {recentThreads.map((thread) => {
@@ -85,7 +86,7 @@ export function RecentThreadsList({
             thread.projectId === generalChatsProject.id;
           return (
             <button
-              className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+              className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-muted focus-ring"
               data-testid={testId}
               key={`${thread.environmentId}:${thread.id}`}
               onClick={() => {

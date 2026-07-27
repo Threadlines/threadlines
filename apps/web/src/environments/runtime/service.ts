@@ -69,6 +69,7 @@ import {
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { useUiStateStore } from "~/uiStateStore";
 import type { WsProtocolCloseContext } from "../../rpc/protocol";
+import { applyServerConfigStreamEvent } from "../../rpc/serverConfigEvents";
 import { getServerConfig } from "../../rpc/serverState";
 import { WsTransport } from "../../rpc/wsTransport";
 import { createWsRpcClient, type WsRpcClient } from "../../rpc/wsRpcClient";
@@ -1547,12 +1548,25 @@ async function ensureSavedEnvironmentConnection(
             client,
           );
         },
-        onConfigSnapshot: (config) => {
-          initialConfigSnapshot.resolve(config);
-          useSavedEnvironmentRuntimeStore.getState().patch(activeRecord.environmentId, {
-            descriptor: config.environment,
-            serverConfig: config,
-          });
+        onConfigEvent: (event) => {
+          if (event.type === "snapshot") {
+            initialConfigSnapshot.resolve(event.config);
+            useSavedEnvironmentRuntimeStore.getState().patch(activeRecord.environmentId, {
+              descriptor: event.config.environment,
+              serverConfig: event.config,
+            });
+            return;
+          }
+          const currentConfig =
+            useSavedEnvironmentRuntimeStore.getState().byId[activeRecord.environmentId]
+              ?.serverConfig ?? null;
+          const nextConfig = applyServerConfigStreamEvent(currentConfig, event);
+          if (!nextConfig) {
+            return;
+          }
+          useSavedEnvironmentRuntimeStore
+            .getState()
+            .patch(activeRecord.environmentId, { serverConfig: nextConfig });
         },
         onWelcome: (payload) => {
           useSavedEnvironmentRuntimeStore.getState().patch(activeRecord.environmentId, {
@@ -1735,6 +1749,22 @@ export function requireEnvironmentConnection(environmentId: EnvironmentId): Envi
 
 export function getPrimaryEnvironmentConnection(): EnvironmentConnection {
   return createPrimaryEnvironmentConnection();
+}
+
+/**
+ * The connection that answers app-level ("this computer") backend calls.
+ *
+ * Desktop and self-hosted builds serve the app from their own backend, so that
+ * is the primary environment. The hosted app has no backend of its own — a
+ * phone opens it and pairs with a computer — so the environment the user is
+ * looking at stands in as the backend for settings, providers, and extensions.
+ */
+export function readBackendEnvironmentConnection(): EnvironmentConnection | null {
+  if (getPrimaryKnownEnvironment()?.environmentId) {
+    return createPrimaryEnvironmentConnection();
+  }
+  const activeEnvironmentId = useStore.getState().activeEnvironmentId;
+  return activeEnvironmentId ? readEnvironmentConnection(activeEnvironmentId) : null;
 }
 
 export async function disconnectSavedEnvironment(environmentId: EnvironmentId): Promise<void> {

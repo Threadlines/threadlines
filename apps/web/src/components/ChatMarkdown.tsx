@@ -1,5 +1,5 @@
 import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
-import type { EnvironmentId, ServerProviderSkill } from "@threadlines/contracts";
+import type { EnvironmentId, ServerProviderSkill, ThreadId } from "@threadlines/contracts";
 import React, {
   Children,
   Suspense,
@@ -48,6 +48,8 @@ import {
   useMarkdownFileLinkKinds,
 } from "../hooks/useMarkdownFileLinkKinds";
 import { cn } from "../lib/utils";
+import { parseCodexInlineVisualizations } from "../lib/codexInlineVisualization";
+import { CodexInlineVisualization } from "./chat/CodexInlineVisualization";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -74,6 +76,7 @@ interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
   environmentId?: EnvironmentId | undefined;
+  threadId?: ThreadId | undefined;
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
@@ -861,7 +864,7 @@ function StreamingTailBlock({
   );
 }
 
-function ChatMarkdown({
+function ChatMarkdownBody({
   text,
   cwd,
   environmentId,
@@ -913,9 +916,50 @@ function ChatMarkdown({
     );
   }
 
+  return body;
+}
+
+function ChatMarkdown({
+  text,
+  cwd,
+  environmentId,
+  threadId,
+  isStreaming = false,
+  skills = EMPTY_MARKDOWN_SKILLS,
+  searchHighlightQuery,
+}: ChatMarkdownProps) {
+  const { resolvedTheme } = useTheme();
+  const canRenderVisualizations = environmentId !== undefined && threadId !== undefined;
+  const segments = canRenderVisualizations
+    ? parseCodexInlineVisualizations(text, { isStreaming })
+    : [{ type: "markdown" as const, key: "markdown:0", text }];
+
   return (
     <div className="chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80">
-      {body}
+      {segments.map((segment, index) => {
+        if (segment.type === "visualization") {
+          return environmentId && threadId ? (
+            <CodexInlineVisualization
+              key={segment.key}
+              environmentId={environmentId}
+              threadId={threadId}
+              file={segment.file}
+              theme={resolvedTheme}
+            />
+          ) : null;
+        }
+        return (
+          <ChatMarkdownBody
+            key={segment.key}
+            text={segment.text}
+            cwd={cwd}
+            environmentId={environmentId}
+            isStreaming={isStreaming && index === segments.length - 1}
+            skills={skills}
+            searchHighlightQuery={searchHighlightQuery}
+          />
+        );
+      })}
     </div>
   );
 }

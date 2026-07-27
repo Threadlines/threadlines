@@ -4,6 +4,7 @@ import type {
   SidebarThreadSortOrder,
 } from "@threadlines/contracts/settings";
 import {
+  getThreadInFlightStatus,
   getThreadSortTimestamp,
   sortThreads,
   toSortableTimestamp,
@@ -316,7 +317,7 @@ export function resolveThreadRowClassName(input: {
   isSelected: boolean;
 }): string {
   const baseClassName =
-    "h-7 w-full translate-x-0 cursor-pointer justify-start px-2 text-left select-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
+    "h-7 w-full translate-x-0 cursor-pointer justify-start px-2 text-left select-none focus-ring focus-visible:ring-inset";
 
   if (input.isSelected && input.isActive) {
     return cn(
@@ -365,7 +366,9 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running" || thread.session?.orchestrationStatus === "running") {
+  const inFlightStatus = getThreadInFlightStatus(thread);
+
+  if (inFlightStatus === "working") {
     return {
       label: "Working",
       colorClass: "text-primary-readable",
@@ -374,10 +377,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (
-    thread.session?.status === "connecting" ||
-    thread.session?.orchestrationStatus === "starting"
-  ) {
+  if (inFlightStatus === "starting") {
     return {
       label: "Starting",
       colorClass: "text-primary-readable",
@@ -500,32 +500,6 @@ export function countThreadsNeedingUser(statuses: ReadonlyArray<ThreadStatusPill
     if (isNeedsUserStatus(status)) count += 1;
   }
   return count;
-}
-
-/**
- * A project's aggregate status, derived from its threads.
- *
- * Both the expanded project row and the collapsed rail's project glyph have to
- * answer the same question, so they share this derivation rather than each
- * rolling their own and drifting apart.
- */
-export function resolveProjectStatusForThreads(input: {
-  threads: readonly SidebarThreadSummary[];
-  getThreadKey: (thread: SidebarThreadSummary) => string;
-  /** Lookup rather than a record so callers can pass a Map or an object. */
-  getLastVisitedAt: (threadKey: string) => string | null | undefined;
-}): ThreadStatusPill | null {
-  return resolveProjectStatusIndicator(
-    input.threads.map((thread) => {
-      const lastVisitedAt = input.getLastVisitedAt(input.getThreadKey(thread));
-      return resolveThreadStatusPill({
-        thread: {
-          ...thread,
-          ...(lastVisitedAt !== undefined && lastVisitedAt !== null ? { lastVisitedAt } : {}),
-        },
-      });
-    }),
-  );
 }
 
 export function resolveProjectStatusIndicator(

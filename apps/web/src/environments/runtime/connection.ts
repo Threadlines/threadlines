@@ -2,7 +2,7 @@ import type {
   EnvironmentId,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
-  ServerConfig,
+  ServerConfigStreamEvent,
   ServerLifecycleWelcomePayload,
   TerminalEvent,
 } from "@threadlines/contracts";
@@ -37,7 +37,12 @@ interface EnvironmentConnectionInput extends OrchestrationHandlers {
   readonly knownEnvironment: KnownEnvironment;
   readonly client: WsRpcClient;
   readonly refreshMetadata?: () => Promise<void>;
-  readonly onConfigSnapshot?: (config: ServerConfig) => void;
+  /**
+   * Receives every server config event, not just the opening snapshot: live
+   * provider status, keybinding, and settings updates keep the environment's
+   * config current instead of freezing it at connect time.
+   */
+  readonly onConfigEvent?: (event: ServerConfigStreamEvent) => void;
   readonly onWelcome?: (payload: ServerLifecycleWelcomePayload) => void;
 }
 
@@ -84,7 +89,7 @@ export function createEnvironmentConnection(
   let disposed = false;
   const bootstrapGate = createBootstrapGate();
   const shouldObserveLifecycle = input.kind === "saved" || input.onWelcome !== undefined;
-  const shouldObserveConfig = input.kind === "saved" || input.onConfigSnapshot !== undefined;
+  const shouldObserveConfig = input.kind === "saved" || input.onConfigEvent !== undefined;
 
   const observeEnvironmentIdentity = (nextEnvironmentId: EnvironmentId, source: string) => {
     if (environmentId !== nextEnvironmentId) {
@@ -112,14 +117,13 @@ export function createEnvironmentConnection(
   const unsubConfig = shouldObserveConfig
     ? input.client.server.subscribeConfig(
         (event: Parameters<Parameters<WsRpcClient["server"]["subscribeConfig"]>[0]>[0]) => {
-          if (event.type !== "snapshot") {
-            return;
+          if (event.type === "snapshot") {
+            observeEnvironmentIdentity(
+              event.config.environment.environmentId,
+              "server config snapshot",
+            );
           }
-          observeEnvironmentIdentity(
-            event.config.environment.environmentId,
-            "server config snapshot",
-          );
-          input.onConfigSnapshot?.(event.config);
+          input.onConfigEvent?.(event);
         },
       )
     : () => undefined;

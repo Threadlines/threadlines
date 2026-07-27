@@ -3,6 +3,7 @@ import {
   LEGACY_RUNTIME_MODES,
   type ModelCapabilities,
   type ModelSelection,
+  type ProviderOptionDescriptor,
   ProviderDriverKind,
   RUNTIME_MODES,
   type ServerProviderAccountUsage,
@@ -22,9 +23,11 @@ import {
   createModelCapabilities,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
+  normalizeModelSlug,
 } from "@threadlines/shared/model";
 import { compareSemverVersions } from "@threadlines/shared/semver";
 import {
+  type ModelInfo as ClaudeModelInfo,
   query as claudeQuery,
   type SlashCommand as ClaudeSlashCommand,
   type SDKUserMessage,
@@ -71,10 +74,10 @@ export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | un
 }
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.170";
 const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
+const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.219";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
-const CLAUDE_FABLE_5_DESCRIPTION =
-  "Included on subscriptions through Jun 22; usage credits may be required Jun 23.";
+const CLAUDE_FABLE_5_DESCRIPTION = "Most capable for the hardest and longest-running tasks.";
 const CLAUDE_FAST_MODE_DESCRIPTION =
   "Faster responses, higher cost. Usage credits, not subscription usage.";
 
@@ -94,6 +97,13 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
     { value: "ultracode", label: "Ultracode" },
+  ],
+  opus5: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
   ],
   opus48: [
     { value: "low", label: "Low" },
@@ -156,6 +166,25 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.sonnet5,
+        }),
+      ],
+    }),
+  },
+  {
+    slug: "claude-opus-5",
+    name: "Claude Opus 5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: CLAUDE_EFFORT_OPTIONS.opus5,
+        }),
+        buildBooleanOptionDescriptor({
+          id: "fastMode",
+          label: "Fast Mode",
+          description: CLAUDE_FAST_MODE_DESCRIPTION,
         }),
       ],
     }),
@@ -303,6 +332,10 @@ function supportsClaudeOpus48(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_8_VERSION) >= 0 : false;
 }
 
+function supportsClaudeOpus5(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_5_VERSION) >= 0 : false;
+}
+
 function supportsClaudeFable5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_VERSION) >= 0 : false;
 }
@@ -324,6 +357,9 @@ function getBuiltInClaudeModelsForVersion(
     }
     if (model.slug === "claude-sonnet-5") {
       return supportsClaudeSonnet5(version);
+    }
+    if (model.slug === "claude-opus-5") {
+      return supportsClaudeOpus5(version);
     }
     if (model.slug === "claude-opus-4-8") {
       return supportsClaudeOpus48(version);
@@ -374,6 +410,13 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
       minimumVersion: MINIMUM_CLAUDE_SONNET_5_VERSION,
     });
   }
+  if (!supportsClaudeOpus5(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Opus 5",
+      minimumVersion: MINIMUM_CLAUDE_OPUS_5_VERSION,
+    });
+  }
   return undefined;
 }
 
@@ -419,9 +462,12 @@ export function isClaudeUltracodeEffort(effort: string | null | undefined): bool
   return effort === "ultracode";
 }
 
-export function resolveClaudeApiModelId(modelSelection: ModelSelection): string {
+export function resolveClaudeApiModelId(
+  modelSelection: ModelSelection,
+  capabilities: ModelCapabilities = getClaudeModelCapabilities(modelSelection.model),
+): string {
   const descriptors = getProviderOptionDescriptors({
-    caps: getClaudeModelCapabilities(modelSelection.model),
+    caps: capabilities,
     selections: modelSelection.options,
   });
   const contextWindowDescriptor = descriptors.find(
@@ -592,8 +638,122 @@ type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
+  readonly models: ReadonlyArray<ClaudeModelInfo>;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
 };
+
+const CLAUDE_NATIVE_1M_MODEL_SLUGS: ReadonlySet<string> = new Set([
+  "claude-fable-5",
+  "claude-opus-5",
+  "claude-sonnet-5",
+]);
+
+function canonicalClaudeDiscoveredModelSlug(model: ClaudeModelInfo): string | undefined {
+  const resolvedModel = model.resolvedModel ? nonEmptyProbeString(model.resolvedModel) : undefined;
+  const value = nonEmptyProbeString(model.value);
+  const candidate = resolvedModel ?? (value !== "default" ? value : undefined);
+  if (!candidate) {
+    return undefined;
+  }
+
+  const withoutContextSuffix = candidate.replace(/\[1m\]$/i, "");
+  const canonicalCandidate = CLAUDE_NATIVE_1M_MODEL_SLUGS.has(withoutContextSuffix)
+    ? withoutContextSuffix
+    : candidate;
+  return normalizeModelSlug(canonicalCandidate, PROVIDER) ?? undefined;
+}
+
+function claudeDiscoveredModelName(slug: string, displayName: string): string {
+  const canonicalMatch = slug.match(/^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/i);
+  if (canonicalMatch) {
+    const [, family, major, minor] = canonicalMatch;
+    const familyName = `${family![0]!.toUpperCase()}${family!.slice(1).toLowerCase()}`;
+    return `Claude ${familyName} ${major}${minor ? `.${minor}` : ""}`;
+  }
+  return nonEmptyProbeString(displayName) ?? slug;
+}
+
+function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabilities {
+  const optionDescriptors: Array<ProviderOptionDescriptor> = [];
+  const effortLevels = model.supportsEffort ? (model.supportedEffortLevels ?? []) : [];
+
+  if (effortLevels.length > 0) {
+    optionDescriptors.push(
+      buildSelectOptionDescriptor({
+        id: "effort",
+        label: "Reasoning",
+        options: effortLevels.map((value) => ({
+          value,
+          label: value === "xhigh" ? "Extra High" : toTitleCaseWords(value),
+        })),
+      }),
+    );
+  }
+  if (model.supportsFastMode === true) {
+    optionDescriptors.push(
+      buildBooleanOptionDescriptor({
+        id: "fastMode",
+        label: "Fast Mode",
+        description: CLAUDE_FAST_MODE_DESCRIPTION,
+      }),
+    );
+  }
+
+  return createModelCapabilities({ optionDescriptors });
+}
+
+function mergeClaudeDiscoveredModels(
+  discoveredModels: ReadonlyArray<ClaudeModelInfo>,
+  curatedModels: ReadonlyArray<ServerProviderModel>,
+): {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly hasLiveModels: boolean;
+} {
+  const curatedBySlug = new Map(curatedModels.map((model) => [model.slug, model] as const));
+  const knownBuiltInSlugs = new Set(BUILT_IN_MODELS.map((model) => model.slug));
+  const discoveredBySlug = new Map<string, ServerProviderModel>();
+
+  for (const discovered of discoveredModels) {
+    const slug = canonicalClaudeDiscoveredModelSlug(discovered);
+    if (!slug || (knownBuiltInSlugs.has(slug) && !curatedBySlug.has(slug))) {
+      continue;
+    }
+
+    const existing = discoveredBySlug.get(slug);
+    const curated = curatedBySlug.get(slug);
+    const liveDescription = nonEmptyProbeString(discovered.description);
+    const isDefault = existing?.isDefault === true || discovered.value.trim() === "default";
+    const capabilities =
+      curated?.capabilities ??
+      existing?.capabilities ??
+      claudeDiscoveredModelCapabilities(discovered);
+    const supportedRuntimeModes =
+      curated?.supportedRuntimeModes ??
+      existing?.supportedRuntimeModes ??
+      (discovered.supportsAutoMode === false ? LEGACY_RUNTIME_MODES : RUNTIME_MODES);
+
+    discoveredBySlug.set(slug, {
+      ...curated,
+      ...existing,
+      slug,
+      name:
+        curated?.name ?? existing?.name ?? claudeDiscoveredModelName(slug, discovered.displayName),
+      ...(liveDescription ? { description: liveDescription } : {}),
+      isCustom: false,
+      ...(isDefault ? { isDefault: true } : {}),
+      capabilities,
+      supportedRuntimeModes,
+    });
+  }
+
+  return {
+    models: [
+      ...discoveredBySlug.values(),
+      ...curatedModels.filter((model) => !discoveredBySlug.has(model.slug)),
+    ],
+    hasLiveModels: discoveredBySlug.size > 0,
+  };
+}
 
 function parseClaudeInitializationCommands(
   commands: ReadonlyArray<ClaudeSlashCommand> | undefined,
@@ -717,6 +877,7 @@ const probeClaudeCapabilities = (
         email: account?.email,
         subscriptionType: account?.subscriptionType,
         tokenSource: account?.tokenSource,
+        models: init.models ?? [],
         slashCommands: parseClaudeInitializationCommands(init.commands),
       } satisfies ClaudeCapabilitiesProbe;
     });
@@ -815,6 +976,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: false,
       checkedAt,
+      modelCatalogSource: "fallback",
       models: allModels,
       probe: {
         installed: false,
@@ -837,6 +999,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalogSource: "fallback",
       models: allModels,
       probe: {
         installed: !isCommandMissingCause(error),
@@ -855,6 +1018,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalogSource: "fallback",
       models: allModels,
       probe: {
         installed: true,
@@ -875,6 +1039,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalogSource: "fallback",
       models: allModels,
       probe: {
         installed: true,
@@ -888,17 +1053,22 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const models = providerModelsFromSettings(
-    getBuiltInClaudeModelsForVersion(parsedVersion),
-    PROVIDER,
-    claudeSettings.customModels,
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
-  );
+  const versionedBuiltInModels = getBuiltInClaudeModelsForVersion(parsedVersion);
   const upgradeMessage = formatClaudeUpgradeMessage(parsedVersion);
 
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
+  const discoveredCatalog = capabilities
+    ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels)
+    : { models: versionedBuiltInModels, hasLiveModels: false };
+  const models = providerModelsFromSettings(
+    discoveredCatalog.models,
+    PROVIDER,
+    claudeSettings.customModels,
+    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+  );
+  const modelCatalogSource = discoveredCatalog.hasLiveModels ? "live" : "fallback";
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
@@ -907,6 +1077,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
+      modelCatalogSource,
       models,
       slashCommands: dedupedSlashCommands,
       probe: {
@@ -946,6 +1117,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
     checkedAt,
+    modelCatalogSource,
     models,
     slashCommands: dedupedSlashCommands,
     probe: {
@@ -988,6 +1160,7 @@ export const makePendingClaudeProvider = (
         presentation: CLAUDE_PRESENTATION,
         enabled: false,
         checkedAt,
+        modelCatalogSource: "fallback",
         models,
         probe: {
           installed: false,
@@ -1003,6 +1176,7 @@ export const makePendingClaudeProvider = (
       presentation: CLAUDE_PRESENTATION,
       enabled: true,
       checkedAt,
+      modelCatalogSource: "fallback",
       models,
       probe: {
         installed: false,

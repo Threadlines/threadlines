@@ -33,6 +33,8 @@ import {
   browserApiCorsAllowedMethods,
   browserApiCorsHeaders,
 } from "./httpCors.ts";
+import { IMAGE_MIME_TYPE_BY_EXTENSION, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
+import { isCurrentProviderExtensionPluginIconPath } from "./provider/providerExtensions.ts";
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const PROJECT_FAVICON_FALLBACK_CACHE_CONTROL = "no-store";
@@ -238,6 +240,51 @@ export const projectFaviconRouteLayer = HttpRouter.add(
       Effect.catch(() =>
         Effect.succeed(HttpServerResponse.text("Internal Server Error", { status: 500 })),
       ),
+    );
+  }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
+);
+
+export const pluginIconRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/plugin-icon",
+  Effect.gen(function* () {
+    yield* requireAuthenticatedRequest;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const filePath = url.value.searchParams.get("path");
+    const path = yield* Path.Path;
+    if (
+      !filePath ||
+      !path.isAbsolute(filePath) ||
+      !isCurrentProviderExtensionPluginIconPath(filePath)
+    ) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const extension = path.extname(filePath).toLowerCase();
+    const contentType = IMAGE_MIME_TYPE_BY_EXTENSION[extension];
+    if (!SAFE_IMAGE_FILE_EXTENSIONS.has(extension) || !contentType) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const fileInfo = yield* fileSystem.stat(filePath).pipe(Effect.option);
+    if (Option.isNone(fileInfo) || fileInfo.value.type !== "File") {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    return yield* HttpServerResponse.file(filePath, {
+      status: 200,
+      headers: {
+        "Content-Type": contentType,
+        "X-Content-Type-Options": "nosniff",
+      },
+    }).pipe(
+      Effect.catch(() => Effect.succeed(HttpServerResponse.text("Not Found", { status: 404 }))),
     );
   }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
 );

@@ -97,6 +97,9 @@ export interface WsRpcClient {
   readonly attachments: {
     readonly read: RpcUnaryMethod<typeof WS_METHODS.attachmentsRead>;
   };
+  readonly visualizations: {
+    readonly read: RpcUnaryMethod<typeof WS_METHODS.visualizationsRead>;
+  };
   readonly filesystem: {
     readonly browse: RpcUnaryMethod<typeof WS_METHODS.filesystemBrowse>;
   };
@@ -114,6 +117,10 @@ export interface WsRpcClient {
   };
   readonly vcs: {
     readonly pull: RpcUnaryMethod<typeof WS_METHODS.vcsPull>;
+    readonly listStashes: RpcUnaryMethod<typeof WS_METHODS.vcsListStashes>;
+    readonly createStash: RpcUnaryMethod<typeof WS_METHODS.vcsCreateStash>;
+    readonly applyStash: RpcUnaryMethod<typeof WS_METHODS.vcsApplyStash>;
+    readonly dropStash: RpcUnaryMethod<typeof WS_METHODS.vcsDropStash>;
     readonly refreshLocalStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshLocalStatus>;
     readonly refreshStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshStatus>;
     readonly onStatus: (
@@ -215,6 +222,9 @@ export interface WsRpcClient {
     readonly setProviderExtensionSkillEnabled: RpcUnaryMethod<
       typeof WS_METHODS.serverSetProviderExtensionSkillEnabled
     >;
+    readonly readProviderExtensionSkill: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadProviderExtensionSkill
+    >;
     readonly readProviderExtensionPlugin: RpcUnaryMethod<
       typeof WS_METHODS.serverReadProviderExtensionPlugin
     >;
@@ -232,6 +242,12 @@ export interface WsRpcClient {
     >;
     readonly refreshProviderExtensionPluginMarketplaces: RpcUnaryMethod<
       typeof WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces
+    >;
+    readonly addProviderExtensionMarketplace: RpcUnaryMethod<
+      typeof WS_METHODS.serverAddProviderExtensionMarketplace
+    >;
+    readonly removeProviderExtensionMarketplace: RpcUnaryMethod<
+      typeof WS_METHODS.serverRemoveProviderExtensionMarketplace
     >;
     readonly callProviderExtensionMcpTool: RpcUnaryMethod<
       typeof WS_METHODS.serverCallProviderExtensionMcpTool
@@ -390,6 +406,13 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           label: WS_METHODS.attachmentsRead,
         }),
     },
+    visualizations: {
+      read: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.visualizationsRead](input),
+          { label: WS_METHODS.visualizationsRead },
+        ),
+    },
     filesystem: {
       browse: (input) => transport.request((client) => client[WS_METHODS.filesystemBrowse](input)),
     },
@@ -409,6 +432,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     },
     vcs: {
       pull: (input) => transport.request((client) => client[WS_METHODS.vcsPull](input)),
+      listStashes: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsListStashes](input)),
+      createStash: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsCreateStash](input)),
+      applyStash: (input) => transport.request((client) => client[WS_METHODS.vcsApplyStash](input)),
+      dropStash: (input) => transport.request((client) => client[WS_METHODS.vcsDropStash](input)),
       refreshLocalStatus: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRefreshLocalStatus](input)),
       refreshStatus: (input) =>
@@ -571,6 +600,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
             Effect.withTracerEnabled(false),
           ),
         ),
+      readProviderExtensionSkill: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReadProviderExtensionSkill](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
       readProviderExtensionPlugin: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverReadProviderExtensionPlugin](input).pipe(
@@ -604,6 +639,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       refreshProviderExtensionPluginMarketplaces: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      addProviderExtensionMarketplace: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverAddProviderExtensionMarketplace](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      removeProviderExtensionMarketplace: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverRemoveProviderExtensionMarketplace](input).pipe(
             Effect.withTracerEnabled(false),
           ),
         ),

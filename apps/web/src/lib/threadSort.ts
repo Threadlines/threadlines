@@ -11,6 +11,8 @@ export type ThreadSortInput = Pick<Thread, "createdAt" | "updatedAt"> & {
   pinnedAt?: string | null;
 };
 
+export type ThreadInFlightStatus = "working" | "starting";
+
 export function toSortableTimestamp(iso: string | undefined): number | null {
   if (!iso) return null;
   const ms = Date.parse(iso);
@@ -51,6 +53,19 @@ export function getThreadSortTimestamp(
   return getLatestUserMessageTimestamp(thread);
 }
 
+function compareThreadsByTimestamp<T extends Pick<Thread, "id"> & ThreadSortInput>(
+  left: T,
+  right: T,
+  sortOrder: SidebarThreadSortOrder,
+): number {
+  const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
+  const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
+  const byTimestamp =
+    rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
+  if (byTimestamp !== 0) return byTimestamp;
+  return right.id.localeCompare(left.id);
+}
+
 export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
   threads: readonly T[],
   sortOrder: SidebarThreadSortOrder,
@@ -62,13 +77,40 @@ export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
       return rightPinned ? 1 : -1;
     }
 
-    const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
-    const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
-    const byTimestamp =
-      rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
-    if (byTimestamp !== 0) return byTimestamp;
-    return right.id.localeCompare(left.id);
+    return compareThreadsByTimestamp(left, right, sortOrder);
   });
+}
+
+export function getThreadInFlightStatus(
+  thread: Pick<Thread, "session">,
+): ThreadInFlightStatus | null {
+  if (thread.session?.status === "running" || thread.session?.orchestrationStatus === "running") {
+    return "working";
+  }
+
+  if (
+    thread.session?.status === "connecting" ||
+    thread.session?.orchestrationStatus === "starting"
+  ) {
+    return "starting";
+  }
+
+  return null;
+}
+
+export function selectActiveAndRecentThreads<
+  T extends Pick<Thread, "id" | "archivedAt" | "session"> & ThreadSortInput,
+>(threads: readonly T[], limit: number): T[] {
+  if (limit <= 0) return [];
+
+  const byRecency = threads
+    .filter((thread) => thread.archivedAt === null)
+    .toSorted((left, right) => compareThreadsByTimestamp(left, right, "updated_at"));
+  const activeThreads = byRecency.filter((thread) => getThreadInFlightStatus(thread) !== null);
+  const recentThreads = byRecency.filter((thread) => getThreadInFlightStatus(thread) === null);
+  const remainingRecentThreadCount = Math.max(0, limit - activeThreads.length);
+
+  return [...activeThreads, ...recentThreads.slice(0, remainingRecentThreadCount)];
 }
 
 export function getLatestThreadForProject<

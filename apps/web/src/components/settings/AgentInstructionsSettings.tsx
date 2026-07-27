@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { ensureLocalApi } from "../../localApi";
+import { ProjectFavicon } from "../ProjectFavicon";
 import {
   selectSidebarThreadsAcrossEnvironments,
   selectWorkspaceProjectsAcrossEnvironments,
@@ -186,7 +187,7 @@ function InstructionFileEditor({
           <textarea
             value={draft.contents}
             onChange={(event) => onChange(event.currentTarget.value)}
-            className="h-full min-h-0 w-full resize-none rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-xs/5 outline-none ring-ring/24 transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] dark:bg-input/32"
+            className="h-full min-h-0 w-full resize-none rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-xs/5 outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-focus-ring focus-ring dark:bg-input/32"
             spellCheck={false}
             aria-label={`${provider} instruction file contents`}
           />
@@ -207,7 +208,12 @@ export function AgentInstructionsSettingsPanel() {
     () => deriveSettingsProjectOptions(projects, sidebarThreads),
     [projects, sidebarThreads],
   );
+  const environmentIdByCwd = useMemo(
+    () => new Map(projects.map((project) => [project.cwd, project.environmentId] as const)),
+    [projects],
+  );
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
+  const selectedProjectEnvironmentId = environmentIdByCwd.get(cwd);
   const [instructions, setInstructions] = useState<ProviderInstructionFilesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -454,15 +460,34 @@ export function AgentInstructionsSettingsPanel() {
               >
                 <SelectTrigger className="w-full sm:w-56" aria-label="Project">
                   <SelectValue>
-                    {projectOptions.find((project) => project.value === cwd)?.label ?? "Project"}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {selectedProjectEnvironmentId ? (
+                        <ProjectFavicon environmentId={selectedProjectEnvironmentId} cwd={cwd} />
+                      ) : null}
+                      <span className="truncate">
+                        {projectOptions.find((project) => project.value === cwd)?.label ??
+                          "Project"}
+                      </span>
+                    </span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {projectOptions.map((project) => (
-                    <SelectItem key={project.value} hideIndicator value={project.value}>
-                      {project.label}
-                    </SelectItem>
-                  ))}
+                  {projectOptions.map((project) => {
+                    const projectEnvironmentId = environmentIdByCwd.get(project.value);
+                    return (
+                      <SelectItem key={project.value} hideIndicator value={project.value}>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {projectEnvironmentId ? (
+                            <ProjectFavicon
+                              environmentId={projectEnvironmentId}
+                              cwd={project.value}
+                            />
+                          ) : null}
+                          <span className="truncate">{project.label}</span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectPopup>
               </Select>
             ) : null
@@ -484,9 +509,38 @@ export function AgentInstructionsSettingsPanel() {
         }
       >
         {instructionFiles.length > 0 ? (
-          <div className="grid h-[min(42rem,calc(100dvh-16rem))] min-h-120 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-1">
+          <div className="grid h-[58dvh] min-h-[22rem] max-h-[32rem] grid-rows-[auto_minmax(0,1fr)] sm:h-[min(42rem,calc(100dvh-16rem))] sm:min-h-120 sm:max-h-none lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-1">
             <div className="min-w-0 border-b border-border/60 bg-muted/10 lg:border-b-0 lg:border-r">
-              <div className="flex gap-1 overflow-x-auto p-2 lg:h-full lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto">
+              <div className="p-2 sm:hidden">
+                <Select
+                  value={activeFile ? instructionFileKey(activeFile) : ""}
+                  onValueChange={(value) => {
+                    if (value) setActiveFileKey(value);
+                  }}
+                >
+                  <SelectTrigger className="w-full" aria-label="Instruction file">
+                    <SelectValue>
+                      {activeFile
+                        ? `${instructionFileLabel(activeFile)}${
+                            dirtyFileKeys.has(instructionFileKey(activeFile)) ? " • Edited" : ""
+                          }`
+                        : "Select a file"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {instructionFiles.map((file) => {
+                      const key = instructionFileKey(file);
+                      return (
+                        <SelectItem key={key} hideIndicator value={key}>
+                          {instructionFileLabel(file)}
+                          {dirtyFileKeys.has(key) ? " • Edited" : ""}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectPopup>
+                </Select>
+              </div>
+              <div className="hidden gap-1 overflow-x-auto p-2 sm:flex lg:h-full lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto">
                 {instructionFiles.map((file) => {
                   const key = instructionFileKey(file);
                   return (

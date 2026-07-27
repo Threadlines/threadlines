@@ -519,6 +519,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
         command: "C:\\Windows\\explorer.exe",
         args: [`/select,${filePath}`],
         shell: false,
+        windowsHide: false,
       });
 
       const launch3 = yield* resolveEditorLaunch({ cwd: dir, editor: "file-manager" }, "win32", {
@@ -529,6 +530,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
         command: "C:\\Windows\\explorer.exe",
         args: [dir],
         shell: false,
+        windowsHide: false,
       });
 
       const launch4 = yield* resolveEditorLaunch(
@@ -610,6 +612,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
         command: "C:\\Windows\\explorer.exe",
         args: [`/select,${filePath}`],
         shell: false,
+        windowsHide: false,
       });
     }),
   );
@@ -631,6 +634,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
         command: "C:\\Windows\\explorer.exe",
         args: [dir],
         shell: false,
+        windowsHide: false,
       });
     }),
   );
@@ -776,7 +780,7 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
     }),
   );
 
-  it.effect("does not wrap args or use a shell when a launch opts out", () =>
+  it.effect("does not wrap args, use a shell, or hide the window when a launch opts out", () =>
     Effect.gen(function* () {
       let spawnedCommand: ChildProcess.StandardCommand | undefined;
       const expectedArgs = ["/select,C:\\workspace\\src\\file.ts"];
@@ -797,22 +801,20 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
         command: process.execPath,
         args: expectedArgs,
         shell: false,
+        windowsHide: false,
       }).pipe(Effect.provide(spawnerLayer), Effect.result);
 
       assertSuccess(result, undefined);
       assert.ok(spawnedCommand);
       assert.equal(spawnedCommand.command, process.execPath);
       assert.deepEqual(spawnedCommand.args, expectedArgs);
-      assert.deepEqual(
-        spawnedCommand.options,
-        expectedHiddenWindowsOptions({
-          detached: true,
-          shell: false,
-          stdin: "ignore",
-          stdout: "ignore",
-          stderr: "ignore",
-        }),
-      );
+      assert.deepEqual(spawnedCommand.options, {
+        detached: true,
+        shell: false,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
     }),
   );
 

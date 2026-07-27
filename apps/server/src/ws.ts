@@ -31,6 +31,9 @@ import {
   OrchestrationThreadSearchError,
   ORCHESTRATION_WS_METHODS,
   ChatAttachmentReadError,
+  CodexInlineVisualizationReadError,
+  CodexSettings,
+  ProviderDriverKind,
   ProjectFaviconError,
   ProjectListEntriesError,
   ProjectReadFileError,
@@ -73,10 +76,14 @@ import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
+import { readCodexInlineVisualization } from "./provider/CodexInlineVisualization.ts";
+import { resolveCodexHomeLayout } from "./provider/Drivers/CodexHomeLayout.ts";
+import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { startProviderReviewForThread } from "./provider/ProviderReviewCoordinator.ts";
 import { importExternalProviderThread } from "./provider/ExternalThreadImport.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
+  addProviderExtensionMarketplace,
   callProviderExtensionMcpTool,
   getProviderExtensionOperationStatus,
   installProviderExtensionPlugin,
@@ -84,7 +91,9 @@ import {
   readProviderExtensionsInventory,
   readProviderExtensionMcpResource,
   readProviderExtensionPlugin,
+  readProviderExtensionSkill,
   refreshProviderExtensionPluginMarketplaces,
+  removeProviderExtensionMarketplace,
   reloadProviderExtensionMcpServers,
   setProviderExtensionPluginEnabled,
   setProviderExtensionSkillEnabled,
@@ -132,6 +141,8 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+
+const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
@@ -1226,6 +1237,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverReadProviderExtensionSkill]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadProviderExtensionSkill,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* readProviderExtensionSkill({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverReadProviderExtensionPlugin]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadProviderExtensionPlugin,
@@ -1280,6 +1300,24 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 request: input,
                 settings,
               });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverAddProviderExtensionMarketplace]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAddProviderExtensionMarketplace,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* addProviderExtensionMarketplace({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverRemoveProviderExtensionMarketplace]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRemoveProviderExtensionMarketplace,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* removeProviderExtensionMarketplace({ request: input, settings });
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -1478,6 +1516,71 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.visualizationsRead]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.visualizationsRead,
+            Effect.gen(function* () {
+              const threadOption = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new CodexInlineVisualizationReadError({
+                        message: "The visualization thread could not be loaded.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(threadOption)) {
+                return yield* new CodexInlineVisualizationReadError({
+                  message: "The visualization thread was not found.",
+                });
+              }
+
+              const thread = threadOption.value;
+              const providerThreadId = thread.session?.providerThreadId;
+              if (!providerThreadId) {
+                return yield* new CodexInlineVisualizationReadError({
+                  message: "This thread does not have a native Codex session.",
+                });
+              }
+
+              const providerInstanceId =
+                thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CodexInlineVisualizationReadError({
+                      message: "The Codex provider settings could not be loaded.",
+                      cause,
+                    }),
+                ),
+              );
+              const providerConfig = deriveProviderInstanceConfigMap(settings)[providerInstanceId];
+              if (!providerConfig || providerConfig.driver !== ProviderDriverKind.make("codex")) {
+                return yield* new CodexInlineVisualizationReadError({
+                  message: "This thread is not backed by a configured Codex provider.",
+                });
+              }
+
+              const codexSettings = yield* decodeCodexSettings(providerConfig.config ?? {}).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CodexInlineVisualizationReadError({
+                      message: "The Codex provider settings are invalid.",
+                      cause,
+                    }),
+                ),
+              );
+              const homeLayout = yield* resolveCodexHomeLayout(codexSettings);
+              return yield* readCodexInlineVisualization({
+                codexHomePath: homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
+                providerThreadId,
+                file: input.file,
+              });
+            }),
+            { "rpc.aggregate": "workspace" },
+          ),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
             "rpc.aggregate": "workspace",
@@ -1541,6 +1644,58 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
             gitWorkflow.pullCurrentBranch(input).pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsListStashes]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsListStashes, gitWorkflow.listStashes(input), {
+            "rpc.aggregate": "git",
+          }),
+        [WS_METHODS.vcsCreateStash]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsCreateStash,
+            gitWorkflow.createStash(input).pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsApplyStash]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsApplyStash,
+            gitWorkflow.applyStash(input).pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsDropStash]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsDropStash,
+            gitWorkflow.dropStash(input).pipe(
               Effect.matchCauseEffect({
                 onFailure: (cause) =>
                   refreshGitStatus(input.cwd).pipe(

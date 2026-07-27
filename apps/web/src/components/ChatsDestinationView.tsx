@@ -75,7 +75,7 @@ export function ChatsDestinationView() {
         <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
         <button
           type="button"
-          className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+          className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground focus-ring"
           data-testid="chats-view-new-chat"
           disabled={generalChatsProjectRef === null}
           onClick={startChat}
@@ -109,7 +109,7 @@ export function ChatsDestinationView() {
               >
                 <button
                   type="button"
-                  className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-1 py-2.5 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                  className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 px-1 py-2.5 text-left transition-colors hover:bg-muted focus-ring"
                   data-testid="chats-view-row"
                   onClick={() => {
                     void navigate({

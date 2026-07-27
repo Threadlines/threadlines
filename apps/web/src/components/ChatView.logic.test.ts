@@ -25,6 +25,7 @@ import {
   backgroundRunCommandsMatch,
   deriveComposerSendState,
   deriveDetectedBackgroundRunLabel,
+  deriveFailedTurnRetryMessageId,
   deriveProviderBackgroundRuns,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
@@ -40,6 +41,7 @@ import {
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
   shouldConfirmTerminalKill,
+  shouldOfferFailedTurnRetry,
   shouldRefreshThreadDetailAfterEventLoopStall,
   shouldWriteThreadErrorToCurrentServerThread,
   THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
@@ -472,6 +474,79 @@ describe("deriveProviderAuthReconnectPrompt", () => {
         threadError: "Sandbox setup failed",
       }),
     ).toBeNull();
+  });
+});
+
+describe("deriveFailedTurnRetryMessageId", () => {
+  const userMessage = {
+    id: MessageId.make("message-user"),
+    role: "user" as const,
+    text: "retry me",
+  };
+
+  it("targets a session failure or a completed provider-auth response", () => {
+    expect(
+      deriveFailedTurnRetryMessageId({
+        messages: [userMessage],
+        sessionLastError: "Provider process exited",
+      }),
+    ).toBe(userMessage.id);
+    expect(
+      deriveFailedTurnRetryMessageId({
+        messages: [
+          userMessage,
+          {
+            id: MessageId.make("message-auth"),
+            role: "assistant",
+            text: "Not logged in · Please run /login",
+          },
+        ],
+        sessionLastError: null,
+      }),
+    ).toBe(userMessage.id);
+    expect(
+      deriveFailedTurnRetryMessageId({
+        messages: [
+          userMessage,
+          {
+            id: MessageId.make("message-success"),
+            role: "assistant",
+            text: "Request completed.",
+          },
+        ],
+        sessionLastError: null,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("shouldOfferFailedTurnRetry", () => {
+  it("uses the session lifecycle instead of a stale projected turn", () => {
+    const failedMessageId = MessageId.make("message-user");
+
+    expect(
+      shouldOfferFailedTurnRetry({
+        isServerThread: true,
+        failedMessageId,
+        orchestrationStatus: "stopped",
+      }),
+    ).toBe(true);
+    expect(
+      shouldOfferFailedTurnRetry({
+        isServerThread: true,
+        failedMessageId,
+        orchestrationStatus: "ready",
+      }),
+    ).toBe(true);
+    for (const orchestrationStatus of ["starting", "running"] as const) {
+      expect(
+        shouldOfferFailedTurnRetry({
+          isServerThread: true,
+          failedMessageId,
+          orchestrationStatus,
+        }),
+      ).toBe(false);
+    }
   });
 });
 

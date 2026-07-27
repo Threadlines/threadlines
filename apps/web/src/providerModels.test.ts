@@ -102,6 +102,21 @@ describe("getDefaultServerModel", () => {
     expect(getDefaultServerModel(providers, CLAUDE)).toBe("claude-sonnet-5");
   });
 
+  it("prefers Claude's provider-reported default over the offline Sonnet fallback", () => {
+    const providers = [
+      provider({
+        driver: CLAUDE,
+        instanceId: "claudeAgent",
+        models: [
+          model({ slug: "claude-opus-5", isDefault: true }),
+          model({ slug: "claude-sonnet-5" }),
+        ],
+      }),
+    ];
+
+    expect(getDefaultServerModel(providers, CLAUDE)).toBe("claude-opus-5");
+  });
+
   it("falls back to the first visible built-in when the configured default is unavailable", () => {
     const providers = [
       provider({

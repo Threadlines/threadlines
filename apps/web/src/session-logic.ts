@@ -27,6 +27,7 @@ import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
+import { isRootAgentPath } from "@threadlines/shared/subagentPath";
 import {
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
@@ -991,6 +992,9 @@ function collectSubagentActivityRecords(
     const data = asRecord(payload?.data);
     const item = asRecord(data?.item) ?? asClaudeSubagentActivityItem({ activity, payload, data });
     if (!item) {
+      continue;
+    }
+    if (isRootAgentPath(asTrimmedString(item.agentPath))) {
       continue;
     }
 

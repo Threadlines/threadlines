@@ -39,6 +39,10 @@
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"
     },
+    "./subagentPath": {
+      "types": "./src/subagentPath.ts",
+      "import": "./src/subagentPath.ts"
+    },
     "./logging": {
       "types": "./src/logging.ts",
       "import": "./src/logging.ts"
@@ -154,6 +158,10 @@
     "./threadCwd": {
       "types": "./src/threadCwd.ts",
       "import": "./src/threadCwd.ts"
+    },
+    "./threadAutoArchive": {
+      "types": "./src/threadAutoArchive.ts",
+      "import": "./src/threadAutoArchive.ts"
     },
     "./uuid": {
       "types": "./src/uuid.ts",

@@ -38,17 +38,20 @@ onlyBuiltDependencies:
   - sharp
 
 overrides:
-  "@hono/node-server": 2.0.11
   "@effect/atom-react": "catalog:"
   "@effect/platform-bun": "catalog:"
   "@effect/platform-node": "catalog:"
   "@effect/platform-node-shared": "catalog:"
   "@effect/sql-sqlite-bun": "catalog:"
   "@effect/vitest": "catalog:"
+  "@hono/node-server": 2.0.11
   "@types/node": "catalog:"
+  brace-expansion: 5.0.8
   effect: "catalog:"
   fast-uri: 3.1.4
+  postcss: 8.5.18
   sharp: 0.35.3
+  tar: 7.5.21
   vite: "catalog:"
   vitest: "catalog:"
   yaml: "catalog:"
@@ -60,6 +63,7 @@ packageExtensions:
 
 patchedDependencies:
   "@effect/platform-node-shared@4.0.0-beta.97": patches/@effect__platform-node-shared@4.0.0-beta.97.patch
+  brace-expansion@5.0.8: patches/brace-expansion@5.0.8.patch
   effect@4.0.0-beta.97: patches/effect@4.0.0-beta.97.patch
   lexical@0.47.0: patches/lexical@0.47.0.patch
 
@@ -68,6 +72,6 @@ peerDependencyRules:
     - vite
     - vitest
   allowedVersions:
+    "@voidzero-dev/vite-plus-core>typescript": "7"
     vite: "*"
     vitest: "*"
-    "@voidzero-dev/vite-plus-core>typescript": "7"

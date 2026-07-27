@@ -135,7 +135,7 @@ const OnDeckRow = memo(function OnDeckRow(props: OnDeckRowProps) {
                     data-thread-selection-safe
                     data-testid={`on-deck-dismiss-${thread.id}`}
                     aria-label={`Remove ${thread.title} from On Deck`}
-                    className="absolute top-1/2 right-1 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center text-muted-foreground/60 opacity-0 transition-opacity duration-150 group-hover/menu-item:opacity-100 group-focus-within/menu-item:opacity-100 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:opacity-100"
+                    className="absolute top-1/2 right-1 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center text-muted-foreground/60 opacity-0 transition-opacity duration-150 group-hover/menu-item:opacity-100 group-focus-within/menu-item:opacity-100 hover:text-foreground focus-ring pointer-coarse:opacity-100"
                     onPointerDown={stopPointerDown}
                     onClick={handleDismissClick}
                   >

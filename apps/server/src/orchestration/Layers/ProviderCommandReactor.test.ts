@@ -607,6 +607,71 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("uses a fresh provider message id when retrying a persisted user message", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("user-message-retry");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-before-retry"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "retry this request",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-mark-turn-failed"),
+        threadId,
+        session: {
+          threadId,
+          status: "error",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: "authentication expired",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.retry",
+        commandId: CommandId.make("cmd-turn-retry"),
+        threadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId });
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      threadId,
+      input: "retry this request",
+    });
+    const retryProviderMessageId = (
+      harness.sendTurn.mock.calls[1]?.[0] as { messageId?: MessageId } | undefined
+    )?.messageId;
+    expect(retryProviderMessageId).toBeDefined();
+    expect(retryProviderMessageId).not.toBe(messageId);
+    await harness.drain();
+  });
+
   it("reacts to thread.goal.set by ensuring a session and setting the provider goal", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

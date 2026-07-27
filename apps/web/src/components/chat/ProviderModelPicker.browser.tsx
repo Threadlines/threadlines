@@ -577,7 +577,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("marks the model advertised as the provider default", async () => {
+  it("does not badge the model advertised as the provider default", async () => {
     const providers: ReadonlyArray<ServerProvider> = [
       {
         ...TEST_PROVIDERS[0]!,
@@ -609,12 +609,8 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        const defaultRowText = Array.from(
-          document.querySelectorAll<HTMLElement>("[data-model-picker-model-name]"),
-        )
-          .map((row) => row.textContent ?? "")
-          .find((text) => text.includes("Default"));
-        expect(defaultRowText).toContain("Sol");
+        expect(getVisibleModelNames()).toEqual(["GPT-5.6 Sol", "GPT-5.6 Terra"]);
+        expect(document.body.textContent).not.toContain("Default");
       });
     } finally {
       await mounted.cleanup();

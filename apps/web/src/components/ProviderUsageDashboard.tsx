@@ -14,6 +14,7 @@ import { Button } from "./ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 type TokenActivityMode = "daily" | "weekly" | "cumulative";
+type TokenActivityRange = "13-weeks" | "1-year";
 
 const DAY_MS = 86_400_000;
 const ACTIVITY_MODE_LABELS: Record<TokenActivityMode, string> = {
@@ -21,6 +22,7 @@ const ACTIVITY_MODE_LABELS: Record<TokenActivityMode, string> = {
   weekly: "Weekly",
   cumulative: "Cumulative",
 };
+const TOKEN_ACTIVITY_LEGEND_LEVELS = [0, 20, 40, 65, 90] as const;
 
 interface TokenActivityCell {
   readonly dateKey: string;
@@ -109,13 +111,13 @@ function formatTokenActivityWeekTooltip(
 }
 
 function tokenActivityColorClass(intensityPercent: number): string {
-  if (intensityPercent <= 0) return "bg-muted/35";
-  if (intensityPercent < 15) return "bg-primary/10";
-  if (intensityPercent < 30) return "bg-primary/25";
-  if (intensityPercent < 45) return "bg-primary/45";
-  if (intensityPercent < 65) return "bg-primary/65";
-  if (intensityPercent < 85) return "bg-primary/85";
-  return "bg-primary";
+  if (intensityPercent <= 0) return "bg-muted/70";
+  if (intensityPercent < 15) return "bg-primary-graph/30";
+  if (intensityPercent < 30) return "bg-primary-graph/45";
+  if (intensityPercent < 45) return "bg-primary-graph/60";
+  if (intensityPercent < 65) return "bg-primary-graph/75";
+  if (intensityPercent < 85) return "bg-primary-graph/90";
+  return "bg-primary-graph";
 }
 
 function scaleTokenActivityIntensity(value: number, maxValue: number): number {
@@ -259,8 +261,8 @@ function TokenActivitySquare(props: { readonly cell: TokenActivityCell }) {
             role="img"
             aria-label={props.cell.tooltip}
             className={cn(
-              "block aspect-square w-full min-w-0 cursor-default rounded-[var(--app-radius-tiny)] transition-[transform,filter,box-shadow] duration-150 ease-out",
-              "hover:z-10 hover:-translate-y-px hover:scale-110 hover:brightness-125 hover:ring-1 hover:ring-primary/45",
+              "block aspect-square w-full min-w-0 cursor-default rounded-[var(--app-radius-tiny)] transition-[filter] duration-150 ease-out",
+              "hover:brightness-125",
               tokenActivityColorClass(props.cell.intensityPercent),
             )}
           />
@@ -283,7 +285,7 @@ function TokenActivityWeekColumn(props: {
 }) {
   if (props.mode === "daily") {
     return (
-      <div className="grid min-w-0 grid-rows-7 gap-1">
+      <div className="grid min-w-0 grid-rows-7 gap-0.5">
         {props.week.cells.map((cell) => (
           <TokenActivitySquare key={cell.dateKey} cell={cell} />
         ))}
@@ -300,15 +302,15 @@ function TokenActivityWeekColumn(props: {
           <div
             role="img"
             aria-label={props.week.tooltip}
-            className="group grid min-w-0 cursor-default grid-rows-7 gap-1"
+            className="group grid min-w-0 cursor-default grid-rows-7 gap-0.5"
           >
             {props.week.cells.map((cell) => (
               <span
                 key={cell.dateKey}
                 aria-hidden="true"
                 className={cn(
-                  "block aspect-square w-full min-w-0 rounded-[var(--app-radius-tiny)] transition-[transform,filter,box-shadow] duration-150 ease-out",
-                  "group-hover:z-10 group-hover:scale-105 group-hover:brightness-125 group-hover:ring-1 group-hover:ring-primary/40",
+                  "block aspect-square w-full min-w-0 rounded-[var(--app-radius-tiny)] transition-[filter] duration-150 ease-out",
+                  "group-hover:brightness-125",
                   tokenActivityColorClass(cell.intensityPercent),
                 )}
               />
@@ -324,6 +326,63 @@ function TokenActivityWeekColumn(props: {
         {props.week.tooltip}
       </TooltipPopup>
     </Tooltip>
+  );
+}
+
+function TokenActivityGrid(props: {
+  readonly weeks: ReadonlyArray<TokenActivityWeek>;
+  readonly mode: TokenActivityMode;
+  readonly usageLabel: string;
+  readonly className?: string | undefined;
+}) {
+  return (
+    <div className={cn("min-w-0 pb-1", props.className)}>
+      <div
+        className="grid min-w-0 gap-0.5 overflow-visible"
+        style={{
+          gridTemplateColumns: `repeat(${props.weeks.length}, minmax(0, 1fr))`,
+        }}
+        aria-label={`${props.usageLabel} ${ACTIVITY_MODE_LABELS[props.mode].toLowerCase()} token activity`}
+      >
+        {props.weeks.map((week) => (
+          <TokenActivityWeekColumn key={week.weekKey} week={week} mode={props.mode} />
+        ))}
+      </div>
+      <div
+        className="mt-2 grid min-w-0 gap-0.5"
+        style={{
+          gridTemplateColumns: `repeat(${props.weeks.length}, minmax(0, 1fr))`,
+        }}
+        aria-hidden
+      >
+        {props.weeks.map((week) => (
+          <span
+            key={week.weekKey}
+            className="h-3 overflow-visible text-[10px] leading-none text-muted-foreground"
+          >
+            {week.monthLabel}
+          </span>
+        ))}
+      </div>
+      <div
+        className="mt-1.5 flex items-center justify-end gap-1 text-[10px] leading-none text-muted-foreground"
+        aria-label="Token activity intensity from less to more"
+      >
+        <span>Less</span>
+        <span className="flex items-center gap-0.5" aria-hidden>
+          {TOKEN_ACTIVITY_LEGEND_LEVELS.map((level) => (
+            <span
+              key={level}
+              className={cn(
+                "size-2.5 rounded-[var(--app-radius-tiny)]",
+                tokenActivityColorClass(level),
+              )}
+            />
+          ))}
+        </span>
+        <span>More</span>
+      </div>
+    </div>
   );
 }
 
@@ -365,11 +424,14 @@ export function ProviderUsageDashboard(props: {
   readonly accountUsageResetInFlight?: boolean | undefined;
 }) {
   const [activityMode, setActivityMode] = useState<TokenActivityMode>("daily");
+  const [activityRange, setActivityRange] = useState<TokenActivityRange>("13-weeks");
   const tokenUsage = props.usage.tokenUsage ?? null;
   const activityWeeks = useMemo(
     () => buildTokenActivityWeeks(tokenUsage?.buckets ?? [], activityMode),
     [activityMode, tokenUsage?.buckets],
   );
+  const mobileActivityWeeks =
+    activityRange === "13-weeks" ? activityWeeks.slice(-13) : activityWeeks;
   const showLimits = props.showLimits ?? true;
   const hasLimits =
     showLimits &&
@@ -464,16 +526,31 @@ export function ProviderUsageDashboard(props: {
       {tokenUsage ? (
         <section className="grid gap-4" aria-label={`${tokenUsage.label} activity`}>
           {tokenUsage.summary.length > 0 ? (
-            <div className="grid overflow-hidden rounded-lg border border-border/70 sm:grid-cols-5">
-              {tokenUsage.summary.map((entry) => (
-                <div
-                  key={entry.key}
-                  className="min-w-0 border-border/60 border-t px-4 py-3 first:border-t-0 sm:border-t-0 sm:border-l sm:first:border-l-0"
-                >
-                  <div className="truncate text-sm font-medium text-foreground">{entry.value}</div>
-                  <div className="mt-0.5 truncate text-xs text-muted-foreground">{entry.label}</div>
-                </div>
-              ))}
+            <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border/70 sm:grid-cols-5">
+              {tokenUsage.summary.map((entry, index) => {
+                const isFirstMobileRow = index < 2;
+                const isRightMobileColumn = index % 2 === 1;
+                const isLastUnpairedEntry =
+                  tokenUsage.summary.length % 2 === 1 && index === tokenUsage.summary.length - 1;
+                return (
+                  <div
+                    key={entry.key}
+                    className={cn(
+                      "min-w-0 border-border/60 px-3 py-3 sm:col-span-1 sm:border-t-0 sm:border-l sm:px-4 sm:first:border-l-0",
+                      !isFirstMobileRow && "border-t",
+                      isRightMobileColumn && "border-l",
+                      isLastUnpairedEntry && "col-span-2",
+                    )}
+                  >
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {entry.value}
+                    </div>
+                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {entry.label}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : null}
 
@@ -499,36 +576,46 @@ export function ProviderUsageDashboard(props: {
                 ))}
               </div>
             </div>
+            <div
+              role="group"
+              className="inline-flex w-fit rounded-md border border-border/70 bg-muted/20 p-0.5 sm:hidden"
+              aria-label="Token activity range"
+            >
+              {(["13-weeks", "1-year"] as const).map((range) => (
+                <button
+                  key={range}
+                  type="button"
+                  className={cn(
+                    "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
+                    activityRange === range
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setActivityRange(range)}
+                  aria-pressed={activityRange === range}
+                >
+                  {range === "13-weeks" ? "13 weeks" : "1 year"}
+                </button>
+              ))}
+            </div>
             {activityWeeks.length > 0 ? (
-              <div className="min-w-0 pb-1">
-                <div
-                  className="grid min-w-0 gap-1 overflow-visible"
-                  style={{
-                    gridTemplateColumns: `repeat(${activityWeeks.length}, minmax(0, 1fr))`,
-                  }}
-                  aria-label={`${tokenUsage.label} ${ACTIVITY_MODE_LABELS[activityMode].toLowerCase()} token activity`}
-                >
-                  {activityWeeks.map((week) => (
-                    <TokenActivityWeekColumn key={week.weekKey} week={week} mode={activityMode} />
-                  ))}
+              <>
+                <div className="overflow-x-auto sm:hidden">
+                  <TokenActivityGrid
+                    weeks={mobileActivityWeeks}
+                    mode={activityMode}
+                    usageLabel={tokenUsage.label}
+                    className={activityRange === "1-year" ? "min-w-[40rem]" : undefined}
+                  />
                 </div>
-                <div
-                  className="mt-2 grid min-w-0 gap-1"
-                  style={{
-                    gridTemplateColumns: `repeat(${activityWeeks.length}, minmax(0, 1fr))`,
-                  }}
-                  aria-hidden
-                >
-                  {activityWeeks.map((week) => (
-                    <span
-                      key={week.weekKey}
-                      className="h-3 overflow-visible text-[10px] leading-none text-muted-foreground/75"
-                    >
-                      {week.monthLabel}
-                    </span>
-                  ))}
+                <div className="hidden sm:block">
+                  <TokenActivityGrid
+                    weeks={activityWeeks}
+                    mode={activityMode}
+                    usageLabel={tokenUsage.label}
+                  />
                 </div>
-              </div>
+              </>
             ) : (
               <p className="text-xs text-muted-foreground">No token activity has been reported.</p>
             )}

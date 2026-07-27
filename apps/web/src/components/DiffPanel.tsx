@@ -4,7 +4,6 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { type ContextMenuItem, TurnId } from "@threadlines/contracts";
 import type { DiffRenderMode } from "@threadlines/contracts/settings";
-import { projectScriptCwd } from "@threadlines/shared/projectScripts";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -52,6 +51,7 @@ import {
   type DiffFileStat,
   formatDiffFileCount,
   resolveActiveDiffFileIndex,
+  resolveDiffPanelCwd,
   resolveTurnDiffSummaryStats,
   stripPatchContextLines,
   sumDiffFileStats,
@@ -320,14 +320,11 @@ export default function DiffPanel({
   const activeProject = useStore(
     useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
   );
-  const activeCwd = activeThread
-    ? (activeThread.worktreePath ?? activeProject?.cwd)
-    : draftThread && activeProject
-      ? projectScriptCwd({
-          project: { cwd: activeProject.cwd },
-          worktreePath: draftThread.worktreePath ?? null,
-        })
-      : undefined;
+  const activeCwd = resolveDiffPanelCwd({
+    thread: activeThread ?? null,
+    draftThread,
+    projectCwd: activeProject?.cwd,
+  });
   const gitStatusQuery = useGitStatus({
     environmentId: activeEnvironmentId,
     cwd: activeCwd ?? null,
@@ -1209,7 +1206,7 @@ export default function DiffPanel({
           <button
             type="button"
             aria-label="Back to source control"
-            className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-ring"
             onClick={onBackToSourceControl}
           >
             <ChevronLeftIcon className="size-3.5 shrink-0 opacity-80" />

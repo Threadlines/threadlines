@@ -17,6 +17,7 @@ function thread(overrides: Partial<SidebarThreadSummary> = {}): SidebarThreadSum
     title: "Add smooth hover cards to the sidebar rows",
     interactionMode: "default",
     session: null,
+    effectiveCwd: null,
     createdAt: "2026-07-23T00:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,

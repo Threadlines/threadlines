@@ -1,5 +1,6 @@
 import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { VcsStatusResult } from "@threadlines/contracts";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { CloudIcon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
 import { useMemo } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";
@@ -245,7 +246,11 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
       [thread.environmentId, thread.projectId],
     ),
   );
-  const gitCwd = thread.worktreePath ?? threadProjectCwd;
+  const gitCwd = resolveThreadWorkingCwd({
+    projectCwd: threadProjectCwd,
+    worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
+  });
   const gitStatus = useGitStatus({
     environmentId: thread.environmentId,
     cwd: thread.branch != null ? gitCwd : null,

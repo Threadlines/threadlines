@@ -921,6 +921,25 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("commit graph", () => {
+    it.effect("filters stash implementation commits from graph results", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "README.md", "# stashed change\n");
+        yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
+        yield* git(cwd, ["stash", "push", "--include-untracked", "-m", "graph backup"]);
+
+        const graph = yield* driver.commitGraph({ cwd, limit: 5 });
+
+        assert.deepStrictEqual(
+          graph.commits.map((commit) => commit.subject),
+          ["initial commit"],
+        );
+      }),
+    );
+
     it.effect("filters T3 checkpoint commits from graph results", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -1319,6 +1338,192 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         });
         assert.equal(yield* git(cwd, ["log", "-1", "--pretty=%s"]), "Remote update");
         assert.equal(yield* fileSystem.readFileString(fetchHeadPath), fetchHeadBefore);
+      }),
+    );
+
+    it.effect("creates and applies an exact stash while preserving index state", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "README.md", "# staged\n");
+        yield* git(cwd, ["add", "README.md"]);
+        yield* writeTextFile(cwd, "README.md", "# staged\nunstaged\n");
+        yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
+
+        const created = yield* driver.createStash({
+          cwd,
+          includeUntracked: true,
+          message: "Explorer fix",
+        });
+
+        assert.match(created.stash.id, /^[0-9a-f]{40}$/u);
+        assert.equal(created.stash.recoveryBranch, null);
+        assert.equal(yield* git(cwd, ["status", "--porcelain"]), "");
+        assert.equal(yield* fileSystem.exists(pathService.join(cwd, "untracked.txt")), false);
+        assert.deepEqual((yield* driver.listStashes({ cwd })).stashes[0], created.stash);
+        yield* git(cwd, [
+          "update-ref",
+          "refs/threadlines/recovery/stash/feature/explorer/recovery-operation",
+          created.stash.id,
+        ]);
+        assert.equal(
+          (yield* driver.listStashes({ cwd })).stashes[0]?.recoveryBranch,
+          "feature/explorer",
+        );
+
+        const applied = yield* driver.applyStash({
+          cwd,
+          selector: created.stash.selector,
+          expectedStashId: created.stash.id,
+          dropAfterApply: false,
+        });
+
+        assert.deepEqual(applied, {
+          status: "applied",
+          stashId: created.stash.id,
+          dropped: false,
+          conflictedPaths: [],
+        });
+        assert.match(yield* git(cwd, ["diff", "--cached", "--", "README.md"]), /staged/u);
+        assert.match(yield* git(cwd, ["diff", "--", "README.md"]), /unstaged/u);
+        assert.equal(
+          (yield* fileSystem.readFileString(pathService.join(cwd, "untracked.txt"))).replace(
+            /\r\n/gu,
+            "\n",
+          ),
+          "untracked\n",
+        );
+
+        yield* driver.dropStash({
+          cwd,
+          selector: created.stash.selector,
+          expectedStashId: created.stash.id,
+        });
+        assert.deepEqual(yield* driver.listStashes({ cwd }), { stashes: [] });
+      }),
+    );
+
+    it.effect("rejects a stash selector that moved to a different object", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "first.txt", "first\n");
+        const first = yield* driver.createStash({
+          cwd,
+          includeUntracked: true,
+          message: "First",
+        });
+        yield* writeTextFile(cwd, "second.txt", "second\n");
+        yield* driver.createStash({
+          cwd,
+          includeUntracked: true,
+          message: "Second",
+        });
+
+        const error = yield* driver
+          .dropStash({
+            cwd,
+            selector: first.stash.selector,
+            expectedStashId: first.stash.id,
+          })
+          .pipe(Effect.flip);
+
+        assert.match(error.detail, /selected stash changed/u);
+        assert.equal((yield* driver.listStashes({ cwd })).stashes.length, 2);
+      }),
+    );
+
+    it.effect("stashes, fast-forwards, and restores mixed local changes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        const upstreamCwd = yield* makeTmpDir("git-upstream-");
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "main"]);
+        yield* git(cwd, ["clone", "--branch", "main", remote, upstreamCwd]);
+        yield* git(upstreamCwd, ["config", "user.email", "test@example.com"]);
+        yield* git(upstreamCwd, ["config", "user.name", "Test User"]);
+        yield* writeTextFile(upstreamCwd, "remote.txt", "remote\n");
+        yield* git(upstreamCwd, ["add", "."]);
+        yield* git(upstreamCwd, ["commit", "-m", "Remote update"]);
+        yield* git(upstreamCwd, ["push", "origin", "main"]);
+
+        yield* writeTextFile(cwd, "README.md", "# staged\n");
+        yield* git(cwd, ["add", "README.md"]);
+        yield* writeTextFile(cwd, "README.md", "# staged\nunstaged\n");
+        yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
+
+        const result = yield* driver.pullCurrentBranch({ cwd, stashLocalChanges: true });
+
+        assert.equal(result.status, "pulled_with_restored_changes");
+        if (result.status !== "pulled_with_restored_changes") {
+          return assert.fail("Expected protected pull to restore local changes.");
+        }
+        assert.equal(result.stashDropped, true);
+        assert.equal(yield* git(cwd, ["log", "-1", "--pretty=%s"]), "Remote update");
+        assert.match(yield* git(cwd, ["diff", "--cached", "--", "README.md"]), /staged/u);
+        assert.match(yield* git(cwd, ["diff", "--", "README.md"]), /unstaged/u);
+        assert.equal(
+          (yield* fileSystem.readFileString(pathService.join(cwd, "untracked.txt"))).replace(
+            /\r\n/gu,
+            "\n",
+          ),
+          "untracked\n",
+        );
+        assert.deepEqual(yield* driver.listStashes({ cwd }), { stashes: [] });
+        assert.equal(
+          yield* git(cwd, [
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/threadlines/recovery/stash",
+          ]),
+          "",
+        );
+      }),
+    );
+
+    it.effect("keeps the exact stash and recovery ref when restoration conflicts", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        const upstreamCwd = yield* makeTmpDir("git-upstream-");
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "main"]);
+        yield* git(cwd, ["clone", "--branch", "main", remote, upstreamCwd]);
+        yield* git(upstreamCwd, ["config", "user.email", "test@example.com"]);
+        yield* git(upstreamCwd, ["config", "user.name", "Test User"]);
+        yield* writeTextFile(upstreamCwd, "README.md", "remote\n");
+        yield* git(upstreamCwd, ["add", "README.md"]);
+        yield* git(upstreamCwd, ["commit", "-m", "Remote README"]);
+        yield* git(upstreamCwd, ["push", "origin", "main"]);
+        yield* writeTextFile(cwd, "README.md", "local\n");
+
+        const result = yield* driver.pullCurrentBranch({ cwd, stashLocalChanges: true });
+
+        assert.equal(result.status, "pulled_with_restore_conflicts");
+        if (result.status !== "pulled_with_restore_conflicts") {
+          return assert.fail("Expected protected pull restoration to conflict.");
+        }
+        assert.deepEqual(result.conflictedPaths, ["README.md"]);
+        assert.equal(yield* git(cwd, ["rev-parse", result.recoveryRef]), result.stashId);
+        assert.equal((yield* driver.listStashes({ cwd })).stashes[0]?.id, result.stashId);
+        assert.match(yield* git(cwd, ["status", "--porcelain"]), /^UU README\.md$/mu);
       }),
     );
 

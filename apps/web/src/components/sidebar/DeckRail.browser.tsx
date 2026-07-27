@@ -20,6 +20,7 @@ function thread(id: string, title: string): SidebarThreadSummary {
     title,
     interactionMode: "default",
     session: null,
+    effectiveCwd: null,
     createdAt: "2026-07-23T00:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,

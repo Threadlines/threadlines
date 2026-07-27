@@ -50,6 +50,42 @@ export function isProviderAuthErrorMessage(message: string | null | undefined): 
   );
 }
 
+export function findProviderAuthRetryUserMessageIndex(
+  messages: ReadonlyArray<{
+    readonly role: string;
+    readonly text: string;
+  }>,
+): number | null {
+  let lastUserMessageIndex = -1;
+  let lastAssistantMessageIndex = -1;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) {
+      continue;
+    }
+    if (lastUserMessageIndex < 0 && message.role === "user") {
+      lastUserMessageIndex = index;
+    }
+    if (lastAssistantMessageIndex < 0 && message.role === "assistant") {
+      lastAssistantMessageIndex = index;
+    }
+    if (lastUserMessageIndex >= 0 && lastAssistantMessageIndex >= 0) {
+      break;
+    }
+  }
+
+  if (
+    lastUserMessageIndex < 0 ||
+    lastAssistantMessageIndex <= lastUserMessageIndex ||
+    !isProviderAuthErrorMessage(messages[lastAssistantMessageIndex]?.text)
+  ) {
+    return null;
+  }
+
+  return lastUserMessageIndex;
+}
+
 export function addProviderAuthHint(provider: ProviderDriverKind, message: string): string {
   const trimmed = message.trim();
   if (!trimmed || !isProviderAuthErrorMessage(trimmed)) {

@@ -13,6 +13,23 @@ import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSetting
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
 
+// Viewport 100 / content 200 at offset 0 — a full viewport away from the end.
+const AWAY_FROM_END_SCROLL_METRICS = {
+  layoutMeasurement: { height: 100 },
+  contentSize: { height: 200 },
+  contentOffset: { y: 0 },
+  contentInset: { bottom: 0 },
+};
+// 10px from the end: past the touch intent threshold, still inside the 24px
+// at-end tolerance — the window a mobile drag has to cross.
+const NEAR_END_SCROLL_METRICS = {
+  layoutMeasurement: { height: 100 },
+  contentSize: { height: 210 },
+  contentOffset: { y: 100 },
+  contentInset: { bottom: 0 },
+};
+let timelineScrollMetrics: typeof AWAY_FROM_END_SCROLL_METRICS = AWAY_FROM_END_SCROLL_METRICS;
+
 vi.mock("@legendapp/list/react", async () => {
   const React = await import("react");
 
@@ -32,6 +49,9 @@ vi.mock("@legendapp/list/react", async () => {
       };
     }) => void;
     onWheelCapture?: React.WheelEventHandler<HTMLDivElement>;
+    onTouchStartCapture?: React.TouchEventHandler<HTMLDivElement>;
+    onTouchMoveCapture?: React.TouchEventHandler<HTMLDivElement>;
+    onTouchEndCapture?: React.TouchEventHandler<HTMLDivElement>;
     ref?: React.Ref<LegendListRef>;
   }) {
     React.useImperativeHandle(
@@ -48,16 +68,12 @@ vi.mock("@legendapp/list/react", async () => {
         data-testid="legend-list"
         data-maintain-scroll-at-end={props.maintainScrollAtEnd ? "true" : "false"}
         onScroll={() => {
-          props.onScroll?.({
-            nativeEvent: {
-              layoutMeasurement: { height: 100 },
-              contentSize: { height: 200 },
-              contentOffset: { y: 0 },
-              contentInset: { bottom: 0 },
-            },
-          });
+          props.onScroll?.({ nativeEvent: timelineScrollMetrics });
         }}
         onWheelCapture={props.onWheelCapture}
+        onTouchStartCapture={props.onTouchStartCapture}
+        onTouchMoveCapture={props.onTouchMoveCapture}
+        onTouchEndCapture={props.onTouchEndCapture}
       >
         {props.ListHeaderComponent}
         {props.data.map((item) => (
@@ -114,6 +130,30 @@ function buildProps() {
   };
 }
 
+function dispatchTouch(
+  target: HTMLElement,
+  type: "touchstart" | "touchmove" | "touchend",
+  clientY: number,
+) {
+  const touch = new Touch({ identifier: 1, target, clientY, clientX: 0 });
+  target.dispatchEvent(
+    new TouchEvent(type, {
+      bubbles: true,
+      touches: type === "touchend" ? [] : [touch],
+      changedTouches: [touch],
+    }),
+  );
+}
+
+// Native events dispatched outside React's act() flush their state updates on a
+// later task, so settle them before asserting a render *didn't* happen. Stays
+// well under USER_SCROLL_STICK_LOCK_MS so the lock is still held on the far side.
+function flushPendingRenders() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 100);
+  });
+}
+
 async function resetBrowserHoverState() {
   const resetTarget = document.createElement("button");
   resetTarget.type = "button";
@@ -134,13 +174,13 @@ function buildLongUserMessageText(tail = "deep hidden detail only after expand")
   ).join("\n");
 }
 
-function buildUserTimelineEntry(text: string) {
+function buildUserTimelineEntry(text: string, messageId = "message-1") {
   return {
-    id: "entry-1",
+    id: `entry-${messageId}`,
     kind: "message" as const,
     createdAt: MESSAGE_CREATED_AT,
     message: {
-      id: "message-1" as never,
+      id: messageId as never,
       role: "user" as const,
       text,
       createdAt: MESSAGE_CREATED_AT,
@@ -189,6 +229,7 @@ describe("MessagesTimeline", () => {
   afterEach(() => {
     scrollToEndSpy.mockReset();
     getStateSpy.mockClear();
+    timelineScrollMetrics = AWAY_FROM_END_SCROLL_METRICS;
     useUiStateStore.setState({ threadChangedFilesExpandedById: {} });
     __resetClientSettingsPersistenceForTests();
     vi.restoreAllMocks();
@@ -584,6 +625,50 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("re-sticks to the bottom when the viewport resizes under an armed timeline", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const props = buildProps();
+    const timelineEntries = [buildUserTimelineEntry("Message sent from a phone.")];
+    const screen = await renderTimeline(
+      <MessagesTimeline {...props} timelineEntries={timelineEntries} />,
+    );
+
+    try {
+      const legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+      expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+
+      scrollToEndSpy.mockClear();
+
+      // The on-screen keyboard closing after a send.
+      window.visualViewport?.dispatchEvent(new Event("resize"));
+
+      await vi.waitFor(() => {
+        expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+      });
+
+      // A user who scrolled away from the end stays where they are.
+      legendList?.dispatchEvent(new WheelEvent("wheel", { deltaY: -24, bubbles: true }));
+      await vi.waitFor(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(list?.getAttribute("data-maintain-scroll-at-end")).toBe("false");
+      });
+
+      scrollToEndSpy.mockClear();
+      window.visualViewport?.dispatchEvent(new Event("resize"));
+
+      expect(scrollToEndSpy).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps following new live output after a parent stick request", async () => {
     vi.spyOn(window, "requestAnimationFrame").mockImplementation(
       (callback: FrameRequestCallback) => {
@@ -664,6 +749,67 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("keeps a touch drag disarmed while it is still inside the at-end tolerance", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const props = buildProps();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...props}
+        activeTurnInProgress
+        isWorking
+        timelineEntries={[buildUserTimelineEntry("Streaming reply in progress.")]}
+      />,
+    );
+
+    try {
+      const legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+      expect(legendList).not.toBeNull();
+      expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+
+      dispatchTouch(legendList!, "touchstart", 400);
+      dispatchTouch(legendList!, "touchmove", 412);
+
+      await vi.waitFor(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(list?.getAttribute("data-maintain-scroll-at-end")).toBe("false");
+      });
+
+      // The drag has moved further than the intent threshold but is still
+      // within the at-end tolerance, so the list keeps reporting itself at the
+      // end. Re-arming on those scroll events is what snapped the timeline back
+      // under the finger.
+      timelineScrollMetrics = NEAR_END_SCROLL_METRICS;
+      scrollToEndSpy.mockClear();
+      legendList?.dispatchEvent(new Event("scroll", { bubbles: true }));
+      dispatchTouch(legendList!, "touchmove", 424);
+      legendList?.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await flushPendingRenders();
+
+      expect(
+        document
+          .querySelector<HTMLElement>('[data-testid="legend-list"]')
+          ?.getAttribute("data-maintain-scroll-at-end"),
+      ).toBe("false");
+      expect(scrollToEndSpy).not.toHaveBeenCalled();
+
+      // Lifting the finger at the bottom re-arms once the gesture settles.
+      dispatchTouch(legendList!, "touchend", 424);
+      await vi.waitFor(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(list?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("exposes an edit-and-branch action on user messages", async () => {
     const onContinueInNewThread = vi.fn();
     const screen = await renderTimeline(
@@ -685,6 +831,38 @@ describe("MessagesTimeline", () => {
       await page.getByRole("button", { name: "Edit and branch" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("retries only the failed user message from its compact inline action", async () => {
+    const onRetry = vi.fn();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        failedTurnRetry={{
+          messageId: MessageId.make("message-2"),
+          isRetrying: false,
+          onRetry,
+        }}
+        timelineEntries={[
+          buildUserTimelineEntry("Earlier request.", "message-1"),
+          buildUserTimelineEntry("Request that failed.", "message-2"),
+        ]}
+      />,
+    );
+
+    try {
+      const retryButtons = document.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Retry this message"]',
+      );
+      expect(retryButtons).toHaveLength(1);
+      expect(retryButtons[0]?.closest('[data-message-id="message-2"]')).not.toBeNull();
+
+      await page.getByRole("button", { name: "Retry this message" }).click();
+
+      expect(onRetry).toHaveBeenCalledOnce();
     } finally {
       await screen.unmount();
     }

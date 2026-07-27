@@ -53,6 +53,14 @@ import {
   GitAuthRemediationPlanInput,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
+  VcsApplyStashInput,
+  VcsApplyStashResult,
+  VcsCreateStashInput,
+  VcsCreateStashResult,
+  VcsDropStashInput,
+  VcsDropStashResult,
+  VcsListStashesInput,
+  VcsListStashesResult,
   VcsPullInput,
   GitPullRequestRefInput,
   VcsPullResult,
@@ -69,6 +77,9 @@ import {
   ChatAttachmentReadError,
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
+  CodexInlineVisualizationReadError,
+  CodexInlineVisualizationReadInput,
+  CodexInlineVisualizationReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -112,6 +123,10 @@ import {
   ProviderExtensionMcpResourceReadResult,
   ProviderExtensionMcpToolCallInput,
   ProviderExtensionMcpToolCallResult,
+  ProviderExtensionMarketplaceAddInput,
+  ProviderExtensionMarketplaceAddResult,
+  ProviderExtensionMarketplaceRemoveInput,
+  ProviderExtensionMarketplaceRemoveResult,
   ProviderExtensionOperationStatusInput,
   ProviderExtensionOperationStatusResult,
   ProviderExtensionPluginInstallInput,
@@ -126,6 +141,8 @@ import {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillReadInput,
+  ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
   ProviderExtensionSkillToggleResult,
   ProviderExtensionsError,
@@ -218,6 +235,9 @@ export const WS_METHODS = {
   // Chat attachment methods
   attachmentsRead: "attachments.read",
 
+  // Codex inline visualization methods
+  visualizationsRead: "visualizations.read",
+
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
 
@@ -226,6 +246,10 @@ export const WS_METHODS = {
 
   // VCS methods
   vcsPull: "vcs.pull",
+  vcsListStashes: "vcs.listStashes",
+  vcsCreateStash: "vcs.createStash",
+  vcsApplyStash: "vcs.applyStash",
+  vcsDropStash: "vcs.dropStash",
   vcsRefreshLocalStatus: "vcs.refreshLocalStatus",
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
@@ -290,6 +314,7 @@ export const WS_METHODS = {
   serverGetProviderExtensionOperationStatus: "server.getProviderExtensionOperationStatus",
   serverReloadProviderExtensionMcpServers: "server.reloadProviderExtensionMcpServers",
   serverSetProviderExtensionSkillEnabled: "server.setProviderExtensionSkillEnabled",
+  serverReadProviderExtensionSkill: "server.readProviderExtensionSkill",
   serverReadProviderExtensionPlugin: "server.readProviderExtensionPlugin",
   serverInstallProviderExtensionPlugin: "server.installProviderExtensionPlugin",
   serverUninstallProviderExtensionPlugin: "server.uninstallProviderExtensionPlugin",
@@ -297,6 +322,8 @@ export const WS_METHODS = {
   serverUpdateProviderExtensionPlugin: "server.updateProviderExtensionPlugin",
   serverRefreshProviderExtensionPluginMarketplaces:
     "server.refreshProviderExtensionPluginMarketplaces",
+  serverAddProviderExtensionMarketplace: "server.addProviderExtensionMarketplace",
+  serverRemoveProviderExtensionMarketplace: "server.removeProviderExtensionMarketplace",
   serverCallProviderExtensionMcpTool: "server.callProviderExtensionMcpTool",
   serverReadProviderExtensionMcpResource: "server.readProviderExtensionMcpResource",
   serverGetProviderInstructionFiles: "server.getProviderInstructionFiles",
@@ -495,6 +522,15 @@ export const WsServerSetProviderExtensionSkillEnabledRpc = Rpc.make(
   },
 );
 
+export const WsServerReadProviderExtensionSkillRpc = Rpc.make(
+  WS_METHODS.serverReadProviderExtensionSkill,
+  {
+    payload: ProviderExtensionSkillReadInput,
+    success: ProviderExtensionSkillReadResult,
+    error: ProviderExtensionsError,
+  },
+);
+
 export const WsServerReadProviderExtensionPluginRpc = Rpc.make(
   WS_METHODS.serverReadProviderExtensionPlugin,
   {
@@ -545,6 +581,24 @@ export const WsServerRefreshProviderExtensionPluginMarketplacesRpc = Rpc.make(
   {
     payload: ProviderExtensionPluginMarketplaceRefreshInput,
     success: ProviderExtensionPluginMarketplaceRefreshResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerAddProviderExtensionMarketplaceRpc = Rpc.make(
+  WS_METHODS.serverAddProviderExtensionMarketplace,
+  {
+    payload: ProviderExtensionMarketplaceAddInput,
+    success: ProviderExtensionMarketplaceAddResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerRemoveProviderExtensionMarketplaceRpc = Rpc.make(
+  WS_METHODS.serverRemoveProviderExtensionMarketplace,
+  {
+    payload: ProviderExtensionMarketplaceRemoveInput,
+    success: ProviderExtensionMarketplaceRemoveResult,
     error: ProviderExtensionsError,
   },
 );
@@ -654,6 +708,12 @@ export const WsAttachmentsReadRpc = Rpc.make(WS_METHODS.attachmentsRead, {
   error: ChatAttachmentReadError,
 });
 
+export const WsVisualizationsReadRpc = Rpc.make(WS_METHODS.visualizationsRead, {
+  payload: CodexInlineVisualizationReadInput,
+  success: CodexInlineVisualizationReadResult,
+  error: CodexInlineVisualizationReadError,
+});
+
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: ExternalLauncherError,
@@ -698,6 +758,30 @@ export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
 export const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
   payload: VcsPullInput,
   success: VcsPullResult,
+  error: GitCommandError,
+});
+
+export const WsVcsListStashesRpc = Rpc.make(WS_METHODS.vcsListStashes, {
+  payload: VcsListStashesInput,
+  success: VcsListStashesResult,
+  error: GitCommandError,
+});
+
+export const WsVcsCreateStashRpc = Rpc.make(WS_METHODS.vcsCreateStash, {
+  payload: VcsCreateStashInput,
+  success: VcsCreateStashResult,
+  error: GitCommandError,
+});
+
+export const WsVcsApplyStashRpc = Rpc.make(WS_METHODS.vcsApplyStash, {
+  payload: VcsApplyStashInput,
+  success: VcsApplyStashResult,
+  error: GitCommandError,
+});
+
+export const WsVcsDropStashRpc = Rpc.make(WS_METHODS.vcsDropStash, {
+  payload: VcsDropStashInput,
+  success: VcsDropStashResult,
   error: GitCommandError,
 });
 
@@ -1001,12 +1085,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProviderExtensionOperationStatusRpc,
   WsServerReloadProviderExtensionMcpServersRpc,
   WsServerSetProviderExtensionSkillEnabledRpc,
+  WsServerReadProviderExtensionSkillRpc,
   WsServerReadProviderExtensionPluginRpc,
   WsServerInstallProviderExtensionPluginRpc,
   WsServerUninstallProviderExtensionPluginRpc,
   WsServerSetProviderExtensionPluginEnabledRpc,
   WsServerUpdateProviderExtensionPluginRpc,
   WsServerRefreshProviderExtensionPluginMarketplacesRpc,
+  WsServerAddProviderExtensionMarketplaceRpc,
+  WsServerRemoveProviderExtensionMarketplaceRpc,
   WsServerCallProviderExtensionMcpToolRpc,
   WsServerReadProviderExtensionMcpResourceRpc,
   WsServerGetProviderInstructionFilesRpc,
@@ -1021,12 +1108,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsReadFileRpc,
   WsProjectsFaviconRpc,
   WsAttachmentsReadRpc,
+  WsVisualizationsReadRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
+  WsVcsListStashesRpc,
+  WsVcsCreateStashRpc,
+  WsVcsApplyStashRpc,
+  WsVcsDropStashRpc,
   WsVcsRefreshLocalStatusRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,

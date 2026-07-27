@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { splitMarkdownBlocks } from "./ChatMarkdown.tsx";
+import {
+  parseCodexInlineVisualizations,
+  stripCodexInlineVisualizationDirectives,
+} from "../lib/codexInlineVisualization";
 
 describe("splitMarkdownBlocks", () => {
   it("returns no blocks for empty text", () => {
@@ -47,5 +51,43 @@ describe("splitMarkdownBlocks", () => {
     const text = "# h\n\npara one\n\n```js\nlet x;\n\nlet y;\n```\n\n- item\n- item2";
     const blocks = splitMarkdownBlocks(text);
     expect(blocks.join("\n\n")).toBe(text);
+  });
+});
+
+describe("Codex inline visualization directives", () => {
+  it("extracts exact standalone directives between markdown sections", () => {
+    expect(
+      parseCodexInlineVisualizations(
+        'Before\n\n::codex-inline-vis{file="connection-map.html"}\n\nAfter',
+      ),
+    ).toEqual([
+      { type: "markdown", key: "markdown:0", text: "Before\n" },
+      { type: "visualization", key: "visualization:8", file: "connection-map.html" },
+      { type: "markdown", key: "markdown:55", text: "\nAfter" },
+    ]);
+  });
+
+  it("leaves directives inside code fences and malformed filenames as markdown", () => {
+    const text =
+      '```text\n::codex-inline-vis{file="inside-code.html"}\n```\n\n::codex-inline-vis{file="../escape.html"}';
+    expect(parseCodexInlineVisualizations(text)).toEqual([
+      { type: "markdown", key: "markdown:0", text },
+    ]);
+  });
+
+  it("hides an unfinished final directive while streaming", () => {
+    expect(
+      parseCodexInlineVisualizations("Done\n\n::codex-inline-vis{file=", {
+        isStreaming: true,
+      }),
+    ).toEqual([{ type: "markdown", key: "markdown:0", text: "Done\n" }]);
+  });
+
+  it("removes rendered directives from copied assistant text", () => {
+    expect(
+      stripCodexInlineVisualizationDirectives(
+        'Before\n\n::codex-inline-vis{file="connection-map.html"}\n\nAfter',
+      ),
+    ).toBe("Before\n\nAfter");
   });
 });

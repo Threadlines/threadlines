@@ -24,7 +24,7 @@ import {
   ThreadId,
   ProviderInstanceId,
 } from "@threadlines/contracts";
-import { createModelSelection } from "@threadlines/shared/model";
+import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -272,6 +272,7 @@ function makeHarness(config?: {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
   readonly onChatAuthStateChanged?: ClaudeAdapterLiveOptions["onChatAuthStateChanged"];
+  readonly resolveModelMetadata?: ClaudeAdapterLiveOptions["resolveModelMetadata"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -301,6 +302,7 @@ function makeHarness(config?: {
     ...(config?.onChatAuthStateChanged
       ? { onChatAuthStateChanged: config.onChatAuthStateChanged }
       : {}),
+    ...(config?.resolveModelMetadata ? { resolveModelMetadata: config.resolveModelMetadata } : {}),
   };
 
   return {
@@ -455,6 +457,34 @@ describe("mapClaudeSubagentTranscript", () => {
     const limited = mapClaudeSubagentTranscript(many, { limit: 3 });
     assert.equal(limited.entries.length, 3);
     assert.equal(limited.truncated, true);
+    assert.equal(limited.offset, 0);
+    assert.equal(limited.totalEntries, 5);
+
+    const latest = mapClaudeSubagentTranscript(many, { limit: 2, fromEnd: true });
+    assert.deepStrictEqual(latest, {
+      entries: [
+        { role: "assistant", text: "step", toolUses: [] },
+        { role: "assistant", text: "step", toolUses: [] },
+      ],
+      truncated: true,
+      offset: 3,
+      totalEntries: 5,
+    });
+
+    const earlier = mapClaudeSubagentTranscript(many, { limit: 2, offset: 1 });
+    assert.deepStrictEqual(earlier, {
+      entries: [
+        { role: "assistant", text: "step", toolUses: [] },
+        { role: "assistant", text: "step", toolUses: [] },
+      ],
+      truncated: true,
+      offset: 1,
+      totalEntries: 5,
+    });
+
+    const zeroLimit = mapClaudeSubagentTranscript(many, { limit: 0 });
+    assert.equal(zeroLimit.entries.length, 5);
+    assert.equal(zeroLimit.truncated, false);
   });
 });
 
@@ -801,6 +831,91 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.model, "claude-sonnet-5");
       assert.equal(createInput?.options.effort, "high");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards Claude Opus 5 effort and fast mode on the canonical model id", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+          [
+            { id: "effort", value: "max" },
+            { id: "fastMode", value: true },
+            { id: "thinking", value: false },
+          ],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-opus-5");
+      assert.equal(createInput?.options.effort, "max");
+      assert.deepEqual(createInput?.options.settings, {
+        fastMode: true,
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards live-discovered Claude model options through instance metadata", () => {
+    const harness = makeHarness({
+      resolveModelMetadata: () =>
+        Effect.succeed({
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              {
+                id: "effort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "low", label: "Low" },
+                  { id: "max", label: "Max" },
+                ],
+              },
+              {
+                id: "fastMode",
+                label: "Fast Mode",
+                type: "boolean",
+              },
+            ],
+          }),
+          supportedRuntimeModes: ["approval-required", "auto", "full-access"],
+        }),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-6",
+          [
+            { id: "effort", value: "max" },
+            { id: "fastMode", value: true },
+          ],
+        ),
+        runtimeMode: "auto",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-opus-6");
+      assert.equal(createInput?.options.effort, "max");
+      assert.equal(createInput?.options.permissionMode, "auto");
+      assert.deepEqual(createInput?.options.settings, {
+        fastMode: true,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

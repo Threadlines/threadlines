@@ -28,6 +28,14 @@ import type {
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
+  VcsApplyStashInput,
+  VcsApplyStashResult,
+  VcsCreateStashInput,
+  VcsCreateStashResult,
+  VcsDropStashInput,
+  VcsDropStashResult,
+  VcsListStashesInput,
+  VcsListStashesResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
@@ -75,6 +83,10 @@ import type {
   ProviderExtensionOperationStatusResult,
   ProviderExtensionPluginInstallInput,
   ProviderExtensionPluginInstallResult,
+  ProviderExtensionMarketplaceAddInput,
+  ProviderExtensionMarketplaceAddResult,
+  ProviderExtensionMarketplaceRemoveInput,
+  ProviderExtensionMarketplaceRemoveResult,
   ProviderExtensionPluginMarketplaceRefreshInput,
   ProviderExtensionPluginMarketplaceRefreshResult,
   ProviderExtensionPluginReadInput,
@@ -85,6 +97,8 @@ import type {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillReadInput,
+  ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
   ProviderExtensionSkillToggleResult,
   ProviderExtensionsInventoryInput,
@@ -134,6 +148,8 @@ import type {
 import type {
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
+  CodexInlineVisualizationReadInput,
+  CodexInlineVisualizationReadResult,
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -996,6 +1012,9 @@ export interface LocalApi {
     setProviderExtensionSkillEnabled: (
       input: ProviderExtensionSkillToggleInput,
     ) => Promise<ProviderExtensionSkillToggleResult>;
+    readProviderExtensionSkill: (
+      input: ProviderExtensionSkillReadInput,
+    ) => Promise<ProviderExtensionSkillReadResult>;
     readProviderExtensionPlugin: (
       input: ProviderExtensionPluginReadInput,
     ) => Promise<ProviderExtensionPluginReadResult>;
@@ -1014,6 +1033,12 @@ export interface LocalApi {
     refreshProviderExtensionPluginMarketplaces: (
       input: ProviderExtensionPluginMarketplaceRefreshInput,
     ) => Promise<ProviderExtensionPluginMarketplaceRefreshResult>;
+    addProviderExtensionMarketplace: (
+      input: ProviderExtensionMarketplaceAddInput,
+    ) => Promise<ProviderExtensionMarketplaceAddResult>;
+    removeProviderExtensionMarketplace: (
+      input: ProviderExtensionMarketplaceRemoveInput,
+    ) => Promise<ProviderExtensionMarketplaceRemoveResult>;
     callProviderExtensionMcpTool: (
       input: ProviderExtensionMcpToolCallInput,
     ) => Promise<ProviderExtensionMcpToolCallResult>;
@@ -1080,6 +1105,10 @@ export interface EnvironmentApi {
   attachments: {
     read: (input: ChatAttachmentReadInput) => Promise<ChatAttachmentReadResult>;
   };
+  /** Optional so newer clients can still connect to older Threadlines servers. */
+  visualizations?: {
+    read: (input: CodexInlineVisualizationReadInput) => Promise<CodexInlineVisualizationReadResult>;
+  };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
   };
@@ -1114,6 +1143,10 @@ export interface EnvironmentApi {
     mergeRef: (input: VcsMergeRefInput) => Promise<VcsMergeRefResult>;
     init: (input: VcsInitInput) => Promise<void>;
     pull: (input: VcsPullInput) => Promise<VcsPullResult>;
+    listStashes: (input: VcsListStashesInput) => Promise<VcsListStashesResult>;
+    createStash: (input: VcsCreateStashInput) => Promise<VcsCreateStashResult>;
+    applyStash: (input: VcsApplyStashInput) => Promise<VcsApplyStashResult>;
+    dropStash: (input: VcsDropStashInput) => Promise<VcsDropStashResult>;
     refreshLocalStatus: (input: VcsStatusInput) => Promise<VcsStatusLocalResult>;
     refreshStatus: (input: VcsStatusInput) => Promise<VcsStatusResult>;
     onStatus: (

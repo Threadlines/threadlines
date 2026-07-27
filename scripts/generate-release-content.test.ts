@@ -1,7 +1,8 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import { parse as parseYaml } from "yaml";
 
 import {
+  parseReleaseContentPolicy,
   parseReleaseEvidenceLog,
   renderChangelogEntry,
   renderDraftPrBody,
@@ -48,6 +49,15 @@ const draft: ReleaseSummaryDraft = {
   social:
     "Threadlines v0.2.5 is out 🧵\n\n• Codex Goals\n• Live subagent progress\n\nRelease notes: https://github.com/Threadlines/threadlines/releases/tag/v0.2.5",
 };
+
+const excludedTopics = parseReleaseContentPolicy(`
+excludedTopics:
+  - name: Realtime voice mode
+    reason: It is dormant and unavailable to users.
+    terms:
+      - realtime voice
+      - voice mode
+`);
 
 it("turns a grounded summary into editable changelog and PR review artifacts", () => {
   const validated = validateReleaseSummary(draft, {
@@ -96,6 +106,32 @@ it("rejects public claims that cite commits outside the release range", () => {
   );
 });
 
+it("rejects public copy for features excluded by release policy", () => {
+  assert.throws(
+    () =>
+      validateReleaseSummary(
+        {
+          ...draft,
+          highlights: [
+            {
+              ...draft.highlights[0],
+              title: "Realtime voice mode",
+              description: "Talk to Codex from the composer.",
+            },
+            draft.highlights[1],
+          ],
+        },
+        {
+          version: "0.2.5",
+          repository: "Threadlines/threadlines",
+          evidence,
+          excludedTopics,
+        },
+      ),
+    /mentions excluded topic 'Realtime voice mode'/,
+  );
+});
+
 it("requires the Threadlines thread marker in social drafts", () => {
   assert.throws(
     () =>
@@ -130,7 +166,7 @@ it("rejects release titles that repeat the product or version", () => {
   );
 });
 
-it("uses schema-constrained GitHub Models output", async () => {
+it("uses schema-constrained GitHub Models output and defaults a blank model", async () => {
   let requestUrl: string | undefined;
   let requestBody: Record<string, unknown> | undefined;
   const unnormalizedDraft = {
@@ -167,17 +203,40 @@ it("uses schema-constrained GitHub Models output", async () => {
       currentRef: "main",
       repository: "Threadlines/threadlines",
       evidence,
+      excludedTopics,
     },
-    { token: "test-token", fetch: fakeFetch },
+    { token: "test-token", model: "   ", fetch: fakeFetch },
   );
 
   assert.deepEqual(result, draft);
   assert.equal(requestUrl, "https://models.github.ai/inference/chat/completions");
   assert.equal(requestBody?.model, "openai/gpt-4.1");
+  assert.match(JSON.stringify(requestBody?.messages), /Realtime voice mode/);
   assert.equal(
     (requestBody?.response_format as { type?: unknown } | undefined)?.type,
     "json_schema",
   );
+});
+
+it("reports non-JSON GitHub Models API errors", async () => {
+  const fakeFetch: typeof fetch = async () =>
+    new Response("Model not found. Valid models can be found by calling /catalog/models.", {
+      status: 400,
+    });
+
+  await expect(
+    requestReleaseSummary(
+      {
+        version: "0.2.5",
+        releaseDate: "2026-07-22",
+        previousTag: "v0.2.4",
+        currentRef: "main",
+        repository: "Threadlines/threadlines",
+        evidence,
+      },
+      { token: "test-token", fetch: fakeFetch },
+    ),
+  ).rejects.toThrow("GitHub Models API 400 returned a non-JSON response: Model not found");
 });
 
 it("parses commit evidence records with optional path data", () => {

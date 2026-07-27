@@ -85,7 +85,9 @@ const AUTHORITATIVE_MODEL_LIST_DRIVERS: ReadonlySet<ProviderDriverKind> = new Se
 ]);
 
 const hasAuthoritativeModelList = (provider: ServerProvider): boolean =>
-  provider.models.length > 0 && AUTHORITATIVE_MODEL_LIST_DRIVERS.has(provider.driver);
+  provider.models.length > 0 &&
+  provider.modelCatalogSource !== "fallback" &&
+  AUTHORITATIVE_MODEL_LIST_DRIVERS.has(provider.driver);
 
 const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean =>
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
@@ -93,7 +95,7 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
 const mergeProviderModels = (
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
-  options?: { readonly preserveMissingPreviousModels?: boolean },
+  options?: { readonly preserveMissingPreviousModels?: boolean | "non-custom" },
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   if (nextModels.length === 0 && previousModels.length > 0) {
     return previousModels;
@@ -111,9 +113,23 @@ const mergeProviderModels = (
     };
   });
   const nextSlugs = new Set(nextModels.map((model) => model.slug));
-  return options?.preserveMissingPreviousModels === false
-    ? mergedModels
-    : [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))];
+  if (options?.preserveMissingPreviousModels === false) {
+    return mergedModels;
+  }
+  const missingPreviousModels = previousModels.filter((model) => !nextSlugs.has(model.slug));
+  return [
+    ...mergedModels,
+    ...(options?.preserveMissingPreviousModels === "non-custom"
+      ? missingPreviousModels.filter((model) => !model.isCustom)
+      : missingPreviousModels),
+  ];
+};
+
+const missingModelPreservation = (provider: ServerProvider): boolean | "non-custom" => {
+  if (provider.modelCatalogSource === "fallback") {
+    return "non-custom";
+  }
+  return !hasAuthoritativeModelList(provider);
 };
 
 const haveMatchingChatAuthIdentity = (
@@ -188,7 +204,7 @@ export const mergeProviderSnapshot = (
     ...nextProvider,
     auth,
     models: mergeProviderModels(previousProvider.models, nextProvider.models, {
-      preserveMissingPreviousModels: !hasAuthoritativeModelList(nextProvider),
+      preserveMissingPreviousModels: missingModelPreservation(nextProvider),
     }),
     ...(preserveAccountUsage ? { accountUsage: previousProvider.accountUsage } : {}),
     ...(preserveChatFailure
@@ -229,6 +245,14 @@ const sanitizeHydratedProviderModels = (
   fallbackProvider: ServerProvider,
 ): ServerProvider => {
   if (!hasAuthoritativeModelList(fallbackProvider)) {
+    if (fallbackProvider.modelCatalogSource === "fallback") {
+      return {
+        ...cachedProvider,
+        models: mergeProviderModels(cachedProvider.models, fallbackProvider.models, {
+          preserveMissingPreviousModels: "non-custom",
+        }),
+      };
+    }
     return cachedProvider;
   }
   return {

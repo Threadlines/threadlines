@@ -854,6 +854,7 @@ const make = Effect.gen(function* () {
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
+    readonly providerMessageId?: MessageId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly skills?: ReadonlyArray<ChatSkillReference>;
@@ -998,7 +999,7 @@ const make = Effect.gen(function* () {
 
     return {
       threadId: input.threadId,
-      messageId: input.messageId,
+      messageId: input.providerMessageId ?? input.messageId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(input.skills !== undefined && input.skills.length > 0 ? { skills: input.skills } : {}),
@@ -1282,6 +1283,9 @@ const make = Effect.gen(function* () {
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageId: event.payload.messageId,
+      ...(event.payload.providerMessageId !== undefined
+        ? { providerMessageId: event.payload.providerMessageId }
+        : {}),
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),

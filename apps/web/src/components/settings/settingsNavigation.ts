@@ -29,6 +29,10 @@ export type SettingsSectionPath = (typeof VISIBLE_SETTINGS_SECTION_PATHS)[number
 
 export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
   HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
+  "/settings/providers",
+  "/settings/plugins",
+  "/settings/instructions",
+  "/settings/source-control",
   "/settings/connections",
   "/settings/archived",
 ] as const satisfies ReadonlyArray<SettingsSectionPath>;

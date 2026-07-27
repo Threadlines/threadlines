@@ -383,6 +383,45 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("renders Codex inline visualization directives in a script-only sandbox", async () => {
+    const readVisualization = vi.fn(async () => ({
+      file: "connection-map.html",
+      contents: '<div id="connection-map"><button type="button">Explore</button></div>',
+      sizeBytes: 72,
+    }));
+    __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
+      visualizations: { read: readVisualization },
+    } as unknown as EnvironmentApi);
+    const screen = await render(
+      <ChatMarkdown
+        text={'Overview\n\n::codex-inline-vis{file="connection-map.html"}'}
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+        threadId={CHAT_MARKDOWN_THREAD_ID}
+      />,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(readVisualization).toHaveBeenCalledWith({
+          threadId: CHAT_MARKDOWN_THREAD_ID,
+          file: "connection-map.html",
+        });
+      });
+      const iframe = document.querySelector<HTMLIFrameElement>(
+        'iframe[title="Interactive visualization: connection map"]',
+      );
+      expect(iframe).not.toBeNull();
+      expect(iframe?.getAttribute("sandbox")).toBe("allow-scripts");
+      expect(iframe?.getAttribute("sandbox")).not.toContain("allow-same-origin");
+      expect(iframe?.srcdoc).toContain("Content-Security-Policy");
+      expect(iframe?.srcdoc).toContain('id="connection-map"');
+      expect(document.body.textContent).not.toContain("::codex-inline-vis");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("wraps long fenced text and shows copy feedback", async () => {
     const code = `Please run ${"a-very-long-unbroken-value".repeat(20)} when ready.`;
     const writeText = vi.fn(async () => undefined);

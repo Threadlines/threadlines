@@ -376,6 +376,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const adapter = yield* makeClaudeAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        resolveModelMetadata: (model) =>
+          snapshot.getSnapshot.pipe(
+            Effect.map((provider) => provider.models.find((candidate) => candidate.slug === model)),
+          ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         onAccountRateLimitsUpdated: (rateLimitInfo) =>
           Effect.gen(function* () {

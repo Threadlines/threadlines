@@ -47,7 +47,6 @@ import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
   closeRightPanelSearchParams,
-  isDraftSourceControlPanelOpen,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
@@ -222,6 +221,7 @@ import {
   createLocalDispatchSnapshot,
   deriveProviderBackgroundRuns,
   deriveDetectedBackgroundRunLabel,
+  deriveFailedTurnRetryMessageId,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
   filterUnresolvedProviderBackgroundRuns,
@@ -246,6 +246,7 @@ import {
   revokeUserMessagePreviewUrls,
   shouldRefreshThreadDetailAfterEventLoopStall,
   shouldConfirmTerminalKill,
+  shouldOfferFailedTurnRetry,
   shouldWriteThreadErrorToCurrentServerThread,
   THREAD_DETAIL_STALL_PROBE_INTERVAL_MS,
   waitForStartedServerThread,
@@ -1275,12 +1276,9 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  // Mirror the owning route's panel default: server threads open on wide
-  // viewports, drafts stay closed until explicitly opened.
-  const sourceControlOpen =
-    routeKind === "server"
-      ? isSourceControlPanelOpen(rawSearch, { defaultOpen: !shouldUseRightPanelSheet })
-      : isDraftSourceControlPanelOpen(rawSearch);
+  const sourceControlOpen = isSourceControlPanelOpen(rawSearch, {
+    defaultOpen: !shouldUseRightPanelSheet,
+  });
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.
@@ -1348,15 +1346,6 @@ export default function ChatView(props: ChatViewProps) {
     [composerRef],
   );
 
-  const insertDraftStarterPrompt = useCallback(
-    (text: string) => {
-      setComposerDraftPrompt(composerDraftTarget, text);
-      window.requestAnimationFrame(() => {
-        composerRef.current?.focusAtEnd();
-      });
-    },
-    [composerDraftTarget, composerRef, setComposerDraftPrompt],
-  );
   const draftTimelineEmptyState = useMemo(
     () =>
       isLocalDraftThread && draftThread ? (
@@ -1364,14 +1353,12 @@ export default function ChatView(props: ChatViewProps) {
           currentProjectRef={scopeProjectRef(draftThread.environmentId, draftThread.projectId)}
           currentProjectName={activeProject?.name ?? null}
           isGeneralChat={isGeneralChatThread}
-          onInsertPrompt={insertDraftStarterPrompt}
         />
       ) : undefined,
     [
       activeProject?.name,
       draftThread?.environmentId,
       draftThread?.projectId,
-      insertDraftStarterPrompt,
       isGeneralChatThread,
       isLocalDraftThread,
     ],
@@ -5013,6 +5000,39 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [activeThread, environmentId]);
 
+  const failedTurnRetryAction = useMemo(() => {
+    const failedMessageId = deriveFailedTurnRetryMessageId({
+      messages: activeThread?.messages ?? [],
+      sessionLastError: activeThread?.session?.lastError,
+    });
+    if (
+      !activeThread ||
+      failedMessageId === null ||
+      !shouldOfferFailedTurnRetry({
+        isServerThread,
+        failedMessageId,
+        orchestrationStatus: activeThread.session?.orchestrationStatus,
+      })
+    ) {
+      return null;
+    }
+    return {
+      messageId: failedMessageId,
+      isRetrying: turnRetryDispatchingThreadId === activeThread.id,
+      onRetry: () => {
+        void onRetryFailedTurn();
+      },
+    };
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    activeThread?.session?.lastError,
+    activeThread?.session?.orchestrationStatus,
+    isServerThread,
+    onRetryFailedTurn,
+    turnRetryDispatchingThreadId,
+  ]);
+
   const threadErrorRetryAction = useMemo(() => {
     if (
       !isServerThread ||
@@ -6228,6 +6248,7 @@ export default function ChatView(props: ChatViewProps) {
               workspaceRoot={activeWorkspaceRoot}
               skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
               providerAuthReconnect={providerAuthReconnectPrompt}
+              failedTurnRetry={failedTurnRetryAction}
               onRunProviderAuthReconnect={runProviderAuthReconnect}
               mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
               onRunMcpAuthReconnect={runMcpAuthReconnect}

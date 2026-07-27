@@ -1,3 +1,13 @@
+import type {
+  ProviderExtensionApp,
+  ProviderExtensionMcpServer,
+  ProviderExtensionPluginComponent,
+  ProviderExtensionPluginComponentKind,
+  ProviderExtensionPluginDetail,
+  ProviderExtensionProviderInventory,
+  ProviderExtensionSkill,
+} from "@threadlines/contracts";
+
 export type ExtensionItemKind = "plugin" | "skill" | "mcp" | "app";
 
 export {
@@ -25,6 +35,8 @@ export function formatExtensionGroupLabel(value: string): string {
 }
 
 export interface ExtensionPluginGroupLabelInput {
+  /** The provider's own category. Present on most catalog plugins for both providers. */
+  readonly category?: string | undefined;
   readonly scope?: string | undefined;
   readonly marketplaceName?: string | undefined;
   readonly remoteMarketplaceName?: string | undefined;
@@ -35,6 +47,7 @@ export interface ExtensionPluginGroupLabelInput {
 }
 
 export function deriveExtensionPluginGroupLabel({
+  category,
   scope,
   marketplaceName,
   remoteMarketplaceName,
@@ -43,6 +56,8 @@ export function deriveExtensionPluginGroupLabel({
   isOfficial,
   isLocal,
 }: ExtensionPluginGroupLabelInput): string {
+  // A real category beats a derived bucket: it is what makes 2,500 catalog entries navigable.
+  if (category) return formatExtensionGroupLabel(category);
   if (scope) return formatExtensionGroupLabel(scope);
   if (isOfficial) return "Official catalog";
   if (isLocal) return "Local";
@@ -51,6 +66,216 @@ export function deriveExtensionPluginGroupLabel({
   if (installPolicy) return formatExtensionGroupLabel(installPolicy);
   if (availability) return formatExtensionGroupLabel(availability);
   return "Plugins";
+}
+
+/** Display order for a plugin's component inventory. Skills first: they are what users look for. */
+const PLUGIN_COMPONENT_KIND_ORDER = [
+  "skill",
+  "agent",
+  "mcpServer",
+  "hook",
+  "app",
+  "appTemplate",
+  "scheduledTask",
+  "lspServer",
+] as const satisfies ReadonlyArray<ProviderExtensionPluginComponentKind>;
+
+const PLUGIN_COMPONENT_KIND_LABELS: Record<
+  ProviderExtensionPluginComponentKind,
+  { readonly one: string; readonly many: string }
+> = {
+  skill: { one: "Skill", many: "Skills" },
+  agent: { one: "Agent", many: "Agents" },
+  hook: { one: "Hook", many: "Hooks" },
+  mcpServer: { one: "MCP server", many: "MCP servers" },
+  app: { one: "App", many: "Apps" },
+  appTemplate: { one: "App template", many: "App templates" },
+  scheduledTask: { one: "Scheduled task", many: "Scheduled tasks" },
+  lspServer: { one: "LSP server", many: "LSP servers" },
+};
+
+/**
+ * Providers namespace a bundled skill as `<plugin>:<skill>`, which reads as duplication once the
+ * row already says which plugin it came from. Same treatment MCP server names get.
+ */
+export function formatSkillDisplayName(name: string, bundleName: string | undefined): string {
+  const trimmed = name.trim();
+  const bundle = bundleName?.trim();
+  if (!bundle || !trimmed.toLowerCase().startsWith(`${bundle.toLowerCase()}:`)) return trimmed;
+  const remainder = trimmed.slice(bundle.length + 1).trim();
+  return remainder.length > 0 ? remainder : trimmed;
+}
+
+export function pluginComponentKindLabel(
+  kind: ProviderExtensionPluginComponentKind,
+  count: number,
+): string {
+  const labels = PLUGIN_COMPONENT_KIND_LABELS[kind];
+  return count === 1 ? labels.one : labels.many;
+}
+
+export interface PluginComponentGroup {
+  readonly kind: ProviderExtensionPluginComponentKind;
+  readonly label: string;
+  readonly components: ReadonlyArray<ProviderExtensionPluginComponent>;
+}
+
+export function groupPluginComponents(
+  components: ReadonlyArray<ProviderExtensionPluginComponent>,
+): ReadonlyArray<PluginComponentGroup> {
+  return PLUGIN_COMPONENT_KIND_ORDER.flatMap((kind) => {
+    const matching = components.filter((component) => component.kind === kind);
+    if (matching.length === 0) return [];
+    return [
+      {
+        kind,
+        label: pluginComponentKindLabel(kind, matching.length),
+        components: matching,
+      },
+    ];
+  });
+}
+
+/** Compact token counts for dense UI: 298 -> "298", 4100 -> "4.1k", 1200000 -> "1.2m". */
+export function formatTokenCount(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) return "";
+  if (tokens < 1000) return String(Math.round(tokens));
+  const [value, suffix] = tokens < 1_000_000 ? [tokens / 1000, "k"] : [tokens / 1_000_000, "m"];
+  const rounded = value.toFixed(1);
+  return `${rounded.endsWith(".0") ? rounded.slice(0, -2) : rounded}${suffix}`;
+}
+
+/**
+ * A provider's plugin list is its entire catalog — Codex reports well over two thousand. Opening
+ * Browse onto all of them is unusable, so an unsearched catalog shows a curated slice instead:
+ * what you already have, what the provider promotes, then the most installed.
+ */
+const CURATED_PLUGIN_BROWSE_THRESHOLD = 60;
+const CURATED_PLUGIN_BROWSE_LIMIT = 50;
+
+export interface CuratedPluginCandidate {
+  /** Which provider published it. The ranking interleaves providers rather than concatenating. */
+  readonly providerId: string;
+  readonly featured?: boolean | undefined;
+  readonly installed?: boolean | undefined;
+  readonly installCount?: number | undefined;
+}
+
+export function shouldCuratePluginBrowse(totalItems: number, query: string): boolean {
+  return query.trim().length === 0 && totalItems > CURATED_PLUGIN_BROWSE_THRESHOLD;
+}
+
+/**
+ * The providers publish incomparable signals: Codex marks plugins as featured but reports no
+ * install counts, Claude reports counts but marks nothing as featured. Ranking them in one pile
+ * therefore sorts by provider, not by popularity. Rank within each provider on its own terms, then
+ * interleave, so the opening view is genuinely mixed.
+ */
+export function rankPluginsAcrossProviders<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => CuratedPluginCandidate,
+): ReadonlyArray<T> {
+  const byProvider = new Map<string, T[]>();
+  for (const item of items) {
+    const providerId = read(item).providerId;
+    const existing = byProvider.get(providerId);
+    if (existing) existing.push(item);
+    else byProvider.set(providerId, [item]);
+  }
+
+  const ranked = [...byProvider.values()].map((group) =>
+    group.toSorted((left, right) => {
+      const leftRead = read(left);
+      const rightRead = read(right);
+      const featuredRank = Number(rightRead.featured === true) - Number(leftRead.featured === true);
+      if (featuredRank !== 0) return featuredRank;
+      return (rightRead.installCount ?? 0) - (leftRead.installCount ?? 0);
+    }),
+  );
+
+  const interleaved: T[] = [];
+  for (let index = 0; ; index += 1) {
+    const before = interleaved.length;
+    for (const group of ranked) {
+      const next = group[index];
+      if (next !== undefined) interleaved.push(next);
+    }
+    if (interleaved.length === before) break;
+  }
+  return interleaved;
+}
+
+export function selectCuratedPlugins<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => CuratedPluginCandidate,
+): ReadonlyArray<T> {
+  return rankPluginsAcrossProviders(items, read).slice(0, CURATED_PLUGIN_BROWSE_LIMIT);
+}
+
+/** Plain-text rendering of a plugin's contents, for surfaces that only have a text output slot. */
+export function summarizePluginDetail(detail: ProviderExtensionPluginDetail): string {
+  const heading = [detail.displayName ?? detail.name, detail.version].filter(Boolean).join(" ");
+  const lines = [heading, ...(detail.description ? [detail.description] : [])];
+
+  for (const group of groupPluginComponents(detail.components)) {
+    const names = group.components.map((component) => component.name).join(", ");
+    lines.push(`${group.label} (${group.components.length}): ${names}`);
+  }
+
+  const alwaysOn = detail.tokenCost?.alwaysOnTokens;
+  if (alwaysOn !== undefined) {
+    lines.push(`Always-on cost: ~${formatTokenCount(alwaysOn)} tok per session`);
+  }
+
+  return lines.join("\n");
+}
+
+export type PluginComponentTarget =
+  | { readonly kind: "skill"; readonly skill: ProviderExtensionSkill }
+  | { readonly kind: "mcp"; readonly server: ProviderExtensionMcpServer }
+  | { readonly kind: "app"; readonly app: ProviderExtensionApp };
+
+function lastNameSegment(value: string): string {
+  const segments = value.split(":");
+  return segments[segments.length - 1]?.trim() ?? value;
+}
+
+/**
+ * Resolve a plugin component back to the inventory entry it refers to, so the detail dialog can
+ * navigate to it. Returns null when the provider does not expose a matching entry.
+ */
+export function resolvePluginComponentTarget(
+  component: ProviderExtensionPluginComponent,
+  provider: Pick<ProviderExtensionProviderInventory, "skills" | "mcpServers" | "apps">,
+): PluginComponentTarget | null {
+  const name = component.name.trim().toLowerCase();
+  if (name.length === 0) return null;
+
+  if (component.kind === "skill") {
+    const path = component.path?.trim();
+    const skill =
+      (path ? provider.skills.find((entry) => entry.path === path) : undefined) ??
+      provider.skills.find((entry) => entry.name.trim().toLowerCase() === name);
+    return skill ? { kind: "skill", skill } : null;
+  }
+
+  if (component.kind === "mcpServer") {
+    const server =
+      provider.mcpServers.find((entry) => entry.name.trim().toLowerCase() === name) ??
+      provider.mcpServers.find(
+        (entry) => lastNameSegment(entry.name).toLowerCase() === lastNameSegment(name),
+      );
+    return server ? { kind: "mcp", server } : null;
+  }
+
+  if (component.kind === "app") {
+    const app = provider.apps.find(
+      (entry) => entry.id.trim().toLowerCase() === name || entry.name.trim().toLowerCase() === name,
+    );
+    return app ? { kind: "app", app } : null;
+  }
+
+  return null;
 }
 
 export interface ExtensionSkillBundleLabelInput {
@@ -103,6 +328,7 @@ export function shouldRenderExtensionBrowserGroups(
   groups: ReadonlyArray<{ readonly items: ReadonlyArray<unknown> }>,
   sort: string,
 ): boolean {
+  // A ranked list is the point of this one; slicing it into groups would destroy the ranking.
   if (sort === "recommended" || groups.length <= 1) return false;
   const singletonGroupCount = groups.filter((group) => group.items.length === 1).length;
   const singletonGroupRatio = singletonGroupCount / groups.length;

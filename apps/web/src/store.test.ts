@@ -473,6 +473,28 @@ describe("incremental orchestration updates", () => {
     ).toBe(true);
   });
 
+  it("projects an observed cwd change into the sidebar thread summary", () => {
+    const state = makeState(makeThread());
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.effective-cwd-set", {
+        threadId: ThreadId.make("thread-1"),
+        effectiveCwd: "/tmp/project/.worktrees/feature",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    // Sidebar rows and status chips resolve their git cwd from the summary, so
+    // dropping this field points them at the configured checkout instead of the
+    // worktree the session actually moved into.
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.effectiveCwd,
+    ).toBe("/tmp/project/.worktrees/feature");
+  });
+
   it("does not mark bootstrap complete for incremental events", () => {
     const state = withActiveEnvironmentState(localEnvironmentStateOf(makeState(makeThread())), {
       bootstrapComplete: false,

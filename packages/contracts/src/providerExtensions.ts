@@ -40,13 +40,100 @@ export const ProviderExtensionPlugin = Schema.Struct({
   marketplacePath: Schema.optional(TrimmedNonEmptyString),
   remoteMarketplaceName: Schema.optional(TrimmedNonEmptyString),
   version: Schema.optional(TrimmedNonEmptyString),
+  availableVersion: Schema.optional(TrimmedNonEmptyString),
+  developerName: Schema.optional(TrimmedNonEmptyString),
+  category: Schema.optional(TrimmedNonEmptyString),
+  websiteUrl: Schema.optional(TrimmedNonEmptyString),
+  keywords: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   installPath: Schema.optional(TrimmedNonEmptyString),
   installedAt: Schema.optional(IsoDateTime),
   lastUpdated: Schema.optional(IsoDateTime),
   installCount: Schema.optional(NonNegativeInt),
   projectPath: Schema.optional(TrimmedNonEmptyString),
+  /** Remote logo URL the browser can load directly. */
+  iconUrl: Schema.optional(TrimmedNonEmptyString),
+  /** Absolute local logo path; the browser reaches it through the plugin icon route. */
+  iconPath: Schema.optional(TrimmedNonEmptyString),
+  /** Promoted by the provider's catalog, used to seed browsing before the user searches. */
+  featured: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionPlugin = typeof ProviderExtensionPlugin.Type;
+
+export const ProviderExtensionMarketplace = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  displayName: Schema.optional(TrimmedNonEmptyString),
+  /** Where the marketplace came from: a git URL, a GitHub repo, or a local path. */
+  source: Schema.optional(TrimmedNonEmptyString),
+  path: Schema.optional(TrimmedNonEmptyString),
+  pluginCount: Schema.optional(NonNegativeInt),
+  installedPluginCount: Schema.optional(NonNegativeInt),
+  /** Remote catalogs have no local manifest and cannot be removed locally. */
+  remote: Schema.optional(Schema.Boolean),
+  removable: Schema.optional(Schema.Boolean),
+  loadError: Schema.optional(TrimmedString),
+});
+export type ProviderExtensionMarketplace = typeof ProviderExtensionMarketplace.Type;
+
+/**
+ * A single thing a plugin contributes to a session. Both providers describe plugins as bundles of
+ * these, so the settings UI can render one shape regardless of where the data came from.
+ */
+export const ProviderExtensionPluginComponentKind = Schema.Literals([
+  "skill",
+  "agent",
+  "hook",
+  "mcpServer",
+  "app",
+  "appTemplate",
+  "scheduledTask",
+  "lspServer",
+]);
+export type ProviderExtensionPluginComponentKind = typeof ProviderExtensionPluginComponentKind.Type;
+
+export const ProviderExtensionPluginComponent = Schema.Struct({
+  kind: ProviderExtensionPluginComponentKind,
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedString),
+  /** Short qualifier shown beside the name, e.g. a hook event name or an MCP transport. */
+  detail: Schema.optional(TrimmedNonEmptyString),
+  /** Filesystem path, when the component maps to an inventory item keyed by path (skills). */
+  path: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.optional(Schema.Boolean),
+});
+export type ProviderExtensionPluginComponent = typeof ProviderExtensionPluginComponent.Type;
+
+export const ProviderExtensionPluginComponentTokenCost = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  alwaysOnTokens: Schema.optional(NonNegativeInt),
+  onInvokeTokens: Schema.optional(NonNegativeInt),
+});
+export type ProviderExtensionPluginComponentTokenCost =
+  typeof ProviderExtensionPluginComponentTokenCost.Type;
+
+/** Estimated context cost of installing a plugin. Only Claude reports this today. */
+export const ProviderExtensionPluginTokenCost = Schema.Struct({
+  alwaysOnTokens: Schema.optional(NonNegativeInt),
+  components: Schema.Array(ProviderExtensionPluginComponentTokenCost),
+});
+export type ProviderExtensionPluginTokenCost = typeof ProviderExtensionPluginTokenCost.Type;
+
+export const ProviderExtensionPluginDetail = Schema.Struct({
+  pluginId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  displayName: Schema.optional(TrimmedNonEmptyString),
+  description: Schema.optional(TrimmedString),
+  version: Schema.optional(TrimmedNonEmptyString),
+  developerName: Schema.optional(TrimmedNonEmptyString),
+  websiteUrl: Schema.optional(TrimmedNonEmptyString),
+  repositoryUrl: Schema.optional(TrimmedNonEmptyString),
+  license: Schema.optional(TrimmedNonEmptyString),
+  marketplaceName: Schema.optional(TrimmedNonEmptyString),
+  marketplacePath: Schema.optional(TrimmedNonEmptyString),
+  shareUrl: Schema.optional(TrimmedNonEmptyString),
+  components: Schema.Array(ProviderExtensionPluginComponent),
+  tokenCost: Schema.optional(ProviderExtensionPluginTokenCost),
+});
+export type ProviderExtensionPluginDetail = typeof ProviderExtensionPluginDetail.Type;
 
 export const ProviderExtensionSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -94,8 +181,34 @@ export const ProviderExtensionMcpResourceTemplate = Schema.Struct({
 });
 export type ProviderExtensionMcpResourceTemplate = typeof ProviderExtensionMcpResourceTemplate.Type;
 
+/**
+ * Why a connection exists. Users think in terms of "Cloudflare", not "an MCP server contributed by
+ * a plugin", so every connection has to be able to name where it came from.
+ */
+export const ProviderExtensionMcpOriginKind = Schema.Literals([
+  "plugin",
+  "user",
+  "project",
+  "builtin",
+]);
+export type ProviderExtensionMcpOriginKind = typeof ProviderExtensionMcpOriginKind.Type;
+
+export const ProviderExtensionMcpOrigin = Schema.Struct({
+  kind: ProviderExtensionMcpOriginKind,
+  pluginId: Schema.optional(TrimmedNonEmptyString),
+  pluginName: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionMcpOrigin = typeof ProviderExtensionMcpOrigin.Type;
+
 export const ProviderExtensionMcpServer = Schema.Struct({
+  /** Display name. Providers namespace plugin-owned servers, and that prefix is noise on screen. */
   name: TrimmedNonEmptyString,
+  /**
+   * The identifier the provider's CLI actually accepts, when it differs from the display name.
+   * Commands must use this: `claude mcp login supabase` fails for `plugin:supabase:supabase`.
+   */
+  configuredName: Schema.optional(TrimmedNonEmptyString),
+  origin: Schema.optional(ProviderExtensionMcpOrigin),
   authStatus: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(TrimmedNonEmptyString),
   transport: Schema.optional(TrimmedNonEmptyString),
@@ -129,11 +242,16 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   status: ProviderExtensionProviderStatus,
   message: Schema.optional(TrimmedString),
   plugins: Schema.Array(ProviderExtensionPlugin),
+  marketplaces: Schema.Array(ProviderExtensionMarketplace),
   skills: Schema.Array(ProviderExtensionSkill),
   mcpServers: Schema.Array(ProviderExtensionMcpServer),
   mcpServersStatus: Schema.optional(ProviderExtensionMcpInventoryStatus),
   mcpServersMessage: Schema.optional(TrimmedString),
+  /** The provider returned exactly as many servers as we asked for, so the count is a floor. */
+  mcpServersTruncated: Schema.optional(Schema.Boolean),
   apps: Schema.Array(ProviderExtensionApp),
+  /** As above: the apps count is a page size, not a total. */
+  appsTruncated: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionProviderInventory = typeof ProviderExtensionProviderInventory.Type;
 
@@ -265,6 +383,20 @@ export const ProviderExtensionSkillToggleResult = Schema.Struct({
 });
 export type ProviderExtensionSkillToggleResult = typeof ProviderExtensionSkillToggleResult.Type;
 
+export const ProviderExtensionSkillReadInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  /** Absolute path of the skill file, as reported by the inventory. */
+  path: TrimmedNonEmptyString,
+});
+export type ProviderExtensionSkillReadInput = typeof ProviderExtensionSkillReadInput.Type;
+
+export const ProviderExtensionSkillReadResult = Schema.Struct({
+  contents: Schema.String,
+  /** The file exceeded the read budget and the tail was dropped. */
+  truncated: Schema.optional(Schema.Boolean),
+});
+export type ProviderExtensionSkillReadResult = typeof ProviderExtensionSkillReadResult.Type;
+
 export const ProviderExtensionPluginReadInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,
   pluginName: TrimmedNonEmptyString,
@@ -274,7 +406,7 @@ export const ProviderExtensionPluginReadInput = Schema.Struct({
 export type ProviderExtensionPluginReadInput = typeof ProviderExtensionPluginReadInput.Type;
 
 export const ProviderExtensionPluginReadResult = Schema.Struct({
-  plugin: Schema.Unknown,
+  plugin: ProviderExtensionPluginDetail,
 });
 export type ProviderExtensionPluginReadResult = typeof ProviderExtensionPluginReadResult.Type;
 
@@ -342,9 +474,40 @@ export type ProviderExtensionPluginMarketplaceRefreshInput =
 export const ProviderExtensionPluginMarketplaceRefreshResult = Schema.Struct({
   refreshed: Schema.Boolean,
   output: Schema.optional(TrimmedString),
+  refreshedMarketplaces: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  errors: Schema.optional(Schema.Array(TrimmedString)),
 });
 export type ProviderExtensionPluginMarketplaceRefreshResult =
   typeof ProviderExtensionPluginMarketplaceRefreshResult.Type;
+
+export const ProviderExtensionMarketplaceAddInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  /** A git URL, a GitHub owner/repo, or a local path, depending on what the provider accepts. */
+  source: TrimmedNonEmptyString,
+  refName: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionMarketplaceAddInput = typeof ProviderExtensionMarketplaceAddInput.Type;
+
+export const ProviderExtensionMarketplaceAddResult = Schema.Struct({
+  added: Schema.Boolean,
+  name: Schema.optional(TrimmedNonEmptyString),
+  message: Schema.optional(TrimmedString),
+});
+export type ProviderExtensionMarketplaceAddResult =
+  typeof ProviderExtensionMarketplaceAddResult.Type;
+
+export const ProviderExtensionMarketplaceRemoveInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  name: TrimmedNonEmptyString,
+});
+export type ProviderExtensionMarketplaceRemoveInput =
+  typeof ProviderExtensionMarketplaceRemoveInput.Type;
+
+export const ProviderExtensionMarketplaceRemoveResult = Schema.Struct({
+  removed: Schema.Boolean,
+});
+export type ProviderExtensionMarketplaceRemoveResult =
+  typeof ProviderExtensionMarketplaceRemoveResult.Type;
 
 export const ProviderExtensionMcpToolCallInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,

@@ -19,11 +19,14 @@ import {
 
 import {
   gitBranchSearchInfiniteQueryOptions,
+  gitApplyStashMutationOptions,
   gitCommitGraphQueryOptions,
+  gitCreateStashMutationOptions,
   gitMutationKeys,
   gitPreparePullRequestThreadMutationOptions,
   gitPullMutationOptions,
   gitRunStackedActionMutationOptions,
+  gitStashesQueryOptions,
   invalidateGitQueries,
 } from "./gitReactQuery";
 import { ensureEnvironmentApi } from "../environmentApi";
@@ -106,10 +109,12 @@ describe("git mutation options", () => {
 
     await mutationFn?.(
       {
-        refName: "main",
-        upstreamRef: "origin/main",
-        expectedLocalSha: "1111111111111111111111111111111111111111",
-        expectedUpstreamSha: "2222222222222222222222222222222222222222",
+        historyReconciliation: {
+          refName: "main",
+          upstreamRef: "origin/main",
+          expectedLocalSha: "1111111111111111111111111111111111111111",
+          expectedUpstreamSha: "2222222222222222222222222222222222222222",
+        },
       },
       {} as never,
     );
@@ -125,6 +130,85 @@ describe("git mutation options", () => {
     });
   });
 
+  it("passes explicit stash protection to the pull API", async () => {
+    const pull = vi.fn(async () => ({
+      status: "pulled_with_restored_changes" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+      stashId: "0123456789abcdef0123456789abcdef01234567",
+      stashDropped: true,
+    }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({ vcs: { pull } } as never);
+    const options = gitPullMutationOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+      queryClient,
+    });
+
+    await options.mutationFn?.({ stashLocalChanges: true }, {} as never);
+
+    expect(pull).toHaveBeenCalledWith({
+      cwd: "/repo/a",
+      stashLocalChanges: true,
+    });
+  });
+
+  it("binds explicit stash creation and apply requests", async () => {
+    const createStash = vi.fn(async () => ({
+      stash: {
+        id: "0123456789abcdef0123456789abcdef01234567",
+        selector: "stash@{0}",
+        message: "Explorer fix",
+        createdAt: "2026-07-24T12:00:00.000Z",
+        recoveryBranch: null,
+      },
+    }));
+    const applyStash = vi.fn(async () => ({
+      status: "applied" as const,
+      stashId: "0123456789abcdef0123456789abcdef01234567",
+      dropped: true,
+      conflictedPaths: [],
+    }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({
+      vcs: { createStash, applyStash },
+    } as never);
+    const createOptions = gitCreateStashMutationOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+      queryClient,
+    });
+    const applyOptions = gitApplyStashMutationOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+      queryClient,
+    });
+
+    await createOptions.mutationFn?.(
+      { message: "Explorer fix", includeUntracked: true },
+      {} as never,
+    );
+    await applyOptions.mutationFn?.(
+      {
+        selector: "stash@{0}",
+        expectedStashId: "0123456789abcdef0123456789abcdef01234567",
+        dropAfterApply: true,
+      },
+      {} as never,
+    );
+
+    expect(createStash).toHaveBeenCalledWith({
+      cwd: "/repo/a",
+      message: "Explorer fix",
+      includeUntracked: true,
+    });
+    expect(applyStash).toHaveBeenCalledWith({
+      cwd: "/repo/a",
+      selector: "stash@{0}",
+      expectedStashId: "0123456789abcdef0123456789abcdef01234567",
+      dropAfterApply: true,
+    });
+  });
+
   it("attaches cwd-scoped mutation key for preparePullRequestThread", () => {
     const options = gitPreparePullRequestThreadMutationOptions({
       environmentId: ENVIRONMENT_A,
@@ -134,6 +218,21 @@ describe("git mutation options", () => {
     expect(options.mutationKey).toEqual(
       gitMutationKeys.preparePullRequestThread(ENVIRONMENT_A, "/repo/a"),
     );
+  });
+});
+
+describe("git stash query options", () => {
+  it("lists stashes for the selected checkout", async () => {
+    const listStashes = vi.fn(async () => ({ stashes: [] }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({ vcs: { listStashes } } as never);
+    const options = gitStashesQueryOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+    });
+
+    await options.queryFn?.({} as never);
+
+    expect(listStashes).toHaveBeenCalledWith({ cwd: "/repo/a" });
   });
 });
 

@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
+import type { ModelInfo as ClaudeModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -114,6 +115,7 @@ type TestClaudeCapabilities = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
+  readonly models: ReadonlyArray<ClaudeModelInfo>;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
 };
 
@@ -123,6 +125,7 @@ function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
       email: undefined,
       subscriptionType: undefined,
       tokenSource: undefined,
+      models: [],
       slashCommands: [],
       ...overrides,
     });
@@ -1224,6 +1227,64 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             (model) => model.slug,
           ),
           ["claude-opus-4-8", "claude-sonnet-4-6"],
+        );
+      });
+
+      it("preserves live Claude models but drops removed custom models on fallback refreshes", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-07-24T18:00:00.000Z",
+          version: "2.1.219",
+          modelCatalogSource: "live",
+          models: [
+            {
+              slug: "claude-opus-6",
+              name: "Claude Opus 6",
+              isCustom: false,
+              capabilities: createModelCapabilities({ optionDescriptors: [] }),
+            },
+            {
+              slug: "removed-custom",
+              name: "removed-custom",
+              isCustom: true,
+              capabilities: createModelCapabilities({ optionDescriptors: [] }),
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          status: "warning",
+          auth: { status: "unknown" },
+          checkedAt: "2026-07-24T18:01:00.000Z",
+          modelCatalogSource: "fallback",
+          models: [
+            {
+              slug: "claude-opus-5",
+              name: "Claude Opus 5",
+              isCustom: false,
+              capabilities: createModelCapabilities({ optionDescriptors: [] }),
+            },
+            {
+              slug: "current-custom",
+              name: "current-custom",
+              isCustom: true,
+              capabilities: createModelCapabilities({ optionDescriptors: [] }),
+            },
+          ],
+        } as const satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).models.map(
+            (model) => model.slug,
+          ),
+          ["claude-opus-5", "current-custom", "claude-opus-6"],
         );
       });
 
@@ -2597,7 +2658,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(fable.name, "Claude Fable 5");
           assert.strictEqual(
             fable.description,
-            "Included on subscriptions through Jun 22; usage credits may be required Jun 23.",
+            "Most capable for the hardest and longest-running tasks.",
           );
           const effortDescriptor = fable.capabilities.optionDescriptors?.find(
             (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
@@ -2634,6 +2695,158 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect(
+        "includes Claude Opus 5 with current launch capabilities on supported versions",
+        () =>
+          Effect.gen(function* () {
+            const status = yield* checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities(),
+            );
+            const opus5 = status.models.find((model) => model.slug === "claude-opus-5");
+            if (!opus5?.capabilities) {
+              assert.fail("Expected Claude Opus 5 capabilities for Claude Code v2.1.219.");
+            }
+
+            assert.strictEqual(opus5.name, "Claude Opus 5");
+            const effortDescriptor = opus5.capabilities.optionDescriptors?.find(
+              (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+            );
+            assert.deepStrictEqual(
+              effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+              [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium" },
+                { id: "high", label: "High", isDefault: true },
+                { id: "xhigh", label: "Extra High" },
+                { id: "max", label: "Max" },
+              ],
+            );
+            assert.deepStrictEqual(
+              opus5.capabilities.optionDescriptors?.find(
+                (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+              ),
+              {
+                id: "fastMode",
+                label: "Fast Mode",
+                description:
+                  "Faster responses, higher cost. Usage credits, not subscription usage.",
+                type: "boolean",
+              },
+            );
+            assert.strictEqual(
+              opus5.capabilities.optionDescriptors?.some(
+                (descriptor) => descriptor.id === "contextWindow" || descriptor.id === "thinking",
+              ),
+              false,
+            );
+          }).pipe(
+            Effect.provide(
+              mockSpawnerLayer((args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") return { stdout: "2.1.219\n", stderr: "", code: 0 };
+                throw new Error(`Unexpected args: ${joined}`);
+              }),
+            ),
+          ),
+      );
+
+      it.effect("merges Claude's live model catalog with curated historical models", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              models: [
+                {
+                  value: "default",
+                  resolvedModel: "claude-opus-5[1m]",
+                  displayName: "Default (recommended)",
+                  description: "Opus 5 with 1M context",
+                  supportsEffort: true,
+                  supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+                  supportsAdaptiveThinking: true,
+                  supportsFastMode: true,
+                  supportsAutoMode: true,
+                },
+                {
+                  value: "opus[1m]",
+                  resolvedModel: "claude-opus-5[1m]",
+                  displayName: "Opus (1M context)",
+                  description: "Opus 5 for complex work",
+                  supportsEffort: true,
+                  supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+                  supportsAdaptiveThinking: true,
+                  supportsFastMode: true,
+                  supportsAutoMode: true,
+                },
+                {
+                  value: "claude-opus-6",
+                  resolvedModel: "claude-opus-6",
+                  displayName: "Opus 6",
+                  description: "Future discovered model",
+                  supportsEffort: true,
+                  supportedEffortLevels: ["low", "high", "max"],
+                  supportsFastMode: true,
+                  supportsAutoMode: false,
+                },
+              ],
+            }),
+          );
+
+          assert.strictEqual(status.modelCatalogSource, "live");
+          assert.deepStrictEqual(
+            status.models.slice(0, 2).map((model) => model.slug),
+            ["claude-opus-5", "claude-opus-6"],
+          );
+          const opus5Rows = status.models.filter((model) => model.slug === "claude-opus-5");
+          assert.strictEqual(opus5Rows.length, 1);
+          assert.strictEqual(opus5Rows[0]?.isDefault, true);
+          assert.strictEqual(opus5Rows[0]?.name, "Claude Opus 5");
+          assert.strictEqual(opus5Rows[0]?.description, "Opus 5 for complex work");
+
+          const opus6 = status.models.find((model) => model.slug === "claude-opus-6");
+          if (!opus6?.capabilities) {
+            assert.fail("Expected discovered Claude model capabilities.");
+          }
+          assert.strictEqual(opus6.name, "Claude Opus 6");
+          assert.deepStrictEqual(opus6.supportedRuntimeModes, [
+            "approval-required",
+            "auto-accept-edits",
+            "full-access",
+          ]);
+          assert.deepStrictEqual(opus6.capabilities.optionDescriptors, [
+            {
+              id: "effort",
+              label: "Reasoning",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High" },
+                { id: "max", label: "Max" },
+              ],
+            },
+            {
+              id: "fastMode",
+              label: "Fast Mode",
+              description: "Faster responses, higher cost. Usage credits, not subscription usage.",
+              type: "boolean",
+            },
+          ]);
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-4-8"),
+            true,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.219\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),
@@ -2846,6 +3059,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Opus 5 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-5"),
+            false,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.218 is too old for Claude Opus 5. Upgrade to v2.1.219 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

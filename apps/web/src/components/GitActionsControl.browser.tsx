@@ -125,6 +125,9 @@ vi.mock("~/lib/gitReactQuery", () => ({
   gitAuthRemediationPlanQueryOptions: vi.fn(() => ({ __kind: "auth-remediation-plan" })),
   gitInitMutationOptions: vi.fn(() => ({ __kind: "init" })),
   gitMutationKeys: {
+    applyStash: vi.fn(() => ["apply-stash"]),
+    createStash: vi.fn(() => ["create-stash"]),
+    dropStash: vi.fn(() => ["drop-stash"]),
     publishRepository: vi.fn(() => ["publish-repository"]),
     pull: vi.fn(() => ["pull"]),
     runStackedAction: vi.fn(() => ["run-stacked-action"]),

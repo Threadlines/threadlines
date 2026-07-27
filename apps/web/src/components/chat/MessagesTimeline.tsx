@@ -55,6 +55,7 @@ import {
   KeyRoundIcon,
   LoaderIcon,
   LogInIcon,
+  RefreshCwIcon,
   SearchIcon,
   ShieldCheckIcon,
   SplitIcon,
@@ -142,6 +143,7 @@ interface TimelineRowSharedState {
   providerAuthReconnect: ProviderAuthReconnectAction | null;
   resolvedProviderAuthReconnectIds: ReadonlySet<string>;
   mcpAuthReconnectStatusByServerName: ReadonlyMap<string, McpAuthReconnectStatus>;
+  failedTurnRetry: FailedTurnRetryAction | null;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -166,6 +168,12 @@ export interface TimelineProposedPlanState {
   readonly onOpenThread: (threadId: ThreadId) => void;
 }
 
+interface FailedTurnRetryAction {
+  readonly messageId: MessageId;
+  readonly isRetrying: boolean;
+  readonly onRetry: () => void;
+}
+
 interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
@@ -180,6 +188,10 @@ type McpAuthReconnectStatus = "running" | "completed";
 const EMPTY_MCP_AUTH_RECONNECT_STATUS: ReadonlyMap<string, McpAuthReconnectStatus> = new Map();
 const LIVE_WORK_LOG_ENTRY_COUNT = 3;
 const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
+// The on-screen keyboard resizes the layout over an animation, so the observer
+// can fire while the container is still growing. Keep re-sticking a little
+// longer than the mount/request paths do.
+const VIEWPORT_RESIZE_STICK_TO_BOTTOM_FRAME_COUNT = 6;
 const THREAD_SEARCH_TARGET_HIGHLIGHT_MS = 2_200;
 const THREAD_SEARCH_TARGET_HIGHLIGHT_NAME = "threadlines-thread-search-match";
 const THREAD_SEARCH_TARGET_MAX_TEXT_RANGES = 128;
@@ -302,6 +314,32 @@ function isTimelineListAtEnd(list: LegendListRef | null): boolean {
     contentLength,
     tolerancePx: DEFAULT_SCROLL_END_TOLERANCE_PX,
   });
+}
+
+/**
+ * Run `stick` on each of the next `frameCount` frames and return a cancel
+ * function. LegendList settles item measurements across a couple of frames
+ * after content or layout changes, so a single scroll-to-end lands short.
+ */
+function scheduleStickToBottomFrames(frameCount: number, stick: () => void): () => void {
+  const frameIds: number[] = [];
+  const scheduleFrame = (remainingFrames: number) => {
+    const frameId = window.requestAnimationFrame(() => {
+      stick();
+      if (remainingFrames > 1) {
+        scheduleFrame(remainingFrames - 1);
+      }
+    });
+    frameIds.push(frameId);
+  };
+
+  scheduleFrame(frameCount);
+
+  return () => {
+    for (const frameId of frameIds) {
+      window.cancelAnimationFrame(frameId);
+    }
+  };
 }
 
 interface SearchHighlightRegistry {
@@ -515,6 +553,7 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerAuthReconnect?: ProviderAuthReconnectAction | null;
+  failedTurnRetry?: FailedTurnRetryAction | null;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
@@ -571,6 +610,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   providerAuthReconnect = null,
+  failedTurnRetry = null,
   onRunProviderAuthReconnect,
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
   onRunMcpAuthReconnect,
@@ -824,27 +864,42 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setAutoStickToBottomState,
   ]);
 
+  const stickToBottomNow = useCallback(() => {
+    clearUserScrollLockTimer();
+    setAutoStickToBottomState(true);
+    onIsAtEndChange(true);
+    void listRef.current?.scrollToEnd?.({ animated: false });
+  }, [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState]);
+
   const enableAutoStickIfAtEnd = useCallback(() => {
-    if (!isTimelineListAtEnd(listRef.current)) {
+    // A finger still on the glass is mid-gesture even when it pauses, and a
+    // paused drag that has only just left the bottom is still inside the at-end
+    // tolerance. Re-arming here would yank the list back under the touch.
+    // `handleTouchEndCapture` re-checks once the gesture lifts.
+    if (touchStartYRef.current !== null || !isTimelineListAtEnd(listRef.current)) {
       return;
     }
     setAutoStickToBottomState(true);
     onIsAtEndChange(true);
   }, [listRef, onIsAtEndChange, setAutoStickToBottomState]);
 
+  const scheduleStickReArmCheck = useCallback(() => {
+    clearUserScrollLockTimer();
+    userScrollLockTimerRef.current = window.setTimeout(() => {
+      userScrollLockTimerRef.current = null;
+      enableAutoStickIfAtEnd();
+    }, USER_SCROLL_STICK_LOCK_MS);
+  }, [clearUserScrollLockTimer, enableAutoStickIfAtEnd]);
+
   const markUserScrollIntent = useCallback(
     (options?: { notifyAwayFromEnd?: boolean }) => {
-      clearUserScrollLockTimer();
       setAutoStickToBottomState(false);
       if (options?.notifyAwayFromEnd) {
         onIsAtEndChange(false);
       }
-      userScrollLockTimerRef.current = window.setTimeout(() => {
-        userScrollLockTimerRef.current = null;
-        enableAutoStickIfAtEnd();
-      }, USER_SCROLL_STICK_LOCK_MS);
+      scheduleStickReArmCheck();
     },
-    [clearUserScrollLockTimer, enableAutoStickIfAtEnd, onIsAtEndChange, setAutoStickToBottomState],
+    [onIsAtEndChange, scheduleStickReArmCheck, setAutoStickToBottomState],
   );
 
   const stickToBottomRequestPending =
@@ -870,14 +925,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onIsAtEndChange(true);
         return;
       }
-      if (nextIsAtEnd) {
-        clearUserScrollLockTimer();
+      // Only re-arm from a scroll event once the user-scroll lock has expired.
+      // A touch drag clears the intent threshold (a few px) long before it
+      // clears the at-end tolerance (24px), so re-arming here would stick the
+      // list back to the bottom under the moving finger, report at-end on the
+      // next frame, and stick again — the list flickers instead of scrolling.
+      // Pointer devices never hit this because one wheel notch clears the
+      // tolerance outright. The lock timer re-checks once scrolling settles.
+      if (nextIsAtEnd && userScrollLockTimerRef.current === null) {
         setAutoStickToBottomState(true);
       }
       onIsAtEndChange(nextIsAtEnd);
     },
     [
-      clearUserScrollLockTimer,
       listRef,
       onIsAtEndChange,
       refreshTranscriptNoteHighlightRects,
@@ -995,7 +1055,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleTouchEndCapture = useCallback(() => {
     touchStartYRef.current = null;
-  }, []);
+    if (autoStickToBottomRef.current) {
+      return;
+    }
+    // The gesture may have ended at the bottom, or momentum may still be
+    // running. Re-check after it settles rather than mid-flick.
+    scheduleStickReArmCheck();
+  }, [scheduleStickReArmCheck]);
 
   const handleKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent) => {
@@ -1019,39 +1085,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return;
     }
 
-    const frameIds: number[] = [];
-    const stickToBottom = () => {
-      clearUserScrollLockTimer();
-      setAutoStickToBottomState(true);
-      onIsAtEndChange(true);
-      void listRef.current?.scrollToEnd?.({ animated: false });
-    };
-    const scheduleFrame = (remainingFrames: number) => {
-      const frameId = window.requestAnimationFrame(() => {
-        stickToBottom();
-        if (remainingFrames > 1) {
-          scheduleFrame(remainingFrames - 1);
-        }
-      });
-      frameIds.push(frameId);
-    };
-
-    scheduleFrame(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT);
-
-    return () => {
-      for (const frameId of frameIds) {
-        window.cancelAnimationFrame(frameId);
-      }
-    };
-  }, [
-    clearUserScrollLockTimer,
-    hasRows,
-    listRef,
-    onIsAtEndChange,
-    routeThreadKey,
-    searchTargetRowIndex,
-    setAutoStickToBottomState,
-  ]);
+    return scheduleStickToBottomFrames(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT, stickToBottomNow);
+  }, [hasRows, routeThreadKey, searchTargetRowIndex, stickToBottomNow]);
 
   useEffect(() => {
     if (!hasRows || stickToBottomRequestKey === lastHandledStickToBottomRequestKeyRef.current) {
@@ -1060,38 +1095,70 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
     lastHandledStickToBottomRequestKeyRef.current = stickToBottomRequestKey;
 
-    const frameIds: number[] = [];
-    const stickToBottom = () => {
-      clearUserScrollLockTimer();
-      setAutoStickToBottomState(true);
-      onIsAtEndChange(true);
-      void listRef.current?.scrollToEnd?.({ animated: false });
-    };
-    const scheduleFrame = (remainingFrames: number) => {
-      const frameId = window.requestAnimationFrame(() => {
-        stickToBottom();
-        if (remainingFrames > 1) {
-          scheduleFrame(remainingFrames - 1);
-        }
-      });
-      frameIds.push(frameId);
+    return scheduleStickToBottomFrames(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT, stickToBottomNow);
+  }, [hasRows, stickToBottomNow, stickToBottomRequestKey]);
+
+  // A mobile send blurs the composer, and the on-screen keyboard closing
+  // resizes the timeline long after the send-time stick frames have run.
+  // LegendList restores its anchored offset across that resize, which parks a
+  // pinned thread slightly above the message that was just sent. Re-stick on
+  // any viewport change while sticking is armed — this also covers rotation,
+  // drawer toggles and a growing composer.
+  useEffect(() => {
+    const container = timelineContainerRef.current;
+    if (!container || !legendListReady) {
+      return;
+    }
+
+    let cancelStickFrames: (() => void) | null = null;
+    const restickIfArmed = () => {
+      // Mobile browsers collapse and expand the URL bar as the user scrolls,
+      // which resizes the visual viewport mid-gesture. Never re-stick under a
+      // finger that is on the glass — the touch handlers own the scroll then.
+      if (!autoStickToBottomRef.current || touchStartYRef.current !== null) {
+        return;
+      }
+      cancelStickFrames?.();
+      cancelStickFrames = scheduleStickToBottomFrames(
+        VIEWPORT_RESIZE_STICK_TO_BOTTOM_FRAME_COUNT,
+        stickToBottomNow,
+      );
     };
 
-    scheduleFrame(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT);
+    // Browsers that resize the layout for the keyboard (Android Chrome, via
+    // `interactive-widget=resizes-content`) change the container's box…
+    let lastHeight = container.getBoundingClientRect().height;
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            const nextHeight = container.getBoundingClientRect().height;
+            if (Math.abs(nextHeight - lastHeight) < 1) {
+              return;
+            }
+            lastHeight = nextHeight;
+            restickIfArmed();
+          });
+    resizeObserver?.observe(container);
+
+    // …while browsers that overlay it (iOS Safari) leave the layout alone and
+    // only shrink the visual viewport. Pinch zoom resizes it too, so ignore
+    // anything that isn't at a 1:1 scale.
+    const viewport = window.visualViewport;
+    const handleVisualViewportResize = () => {
+      if (viewport && Math.abs(viewport.scale - 1) > 0.01) {
+        return;
+      }
+      restickIfArmed();
+    };
+    viewport?.addEventListener("resize", handleVisualViewportResize);
 
     return () => {
-      for (const frameId of frameIds) {
-        window.cancelAnimationFrame(frameId);
-      }
+      resizeObserver?.disconnect();
+      viewport?.removeEventListener("resize", handleVisualViewportResize);
+      cancelStickFrames?.();
     };
-  }, [
-    clearUserScrollLockTimer,
-    hasRows,
-    listRef,
-    onIsAtEndChange,
-    setAutoStickToBottomState,
-    stickToBottomRequestKey,
-  ]);
+  }, [legendListReady, stickToBottomNow]);
 
   useEffect(() => {
     if (!lastRow || (!activeTurnInProgress && !stickToBottomRequestPending)) {
@@ -1133,6 +1200,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
+      failedTurnRetry,
       onRevertUserMessage,
       ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
       onImageExpand,
@@ -1158,6 +1226,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
+      failedTurnRetry,
       onRevertUserMessage,
       onContinueInNewThread,
       onImageExpand,
@@ -1806,6 +1875,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
 
   return (
     <div className="flex justify-end">
@@ -1831,14 +1901,17 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           }
           footer={
             <>
-              <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                {displayedUserMessage.copyText && (
-                  <MessageCopyButton text={displayedUserMessage.copyText} />
-                )}
-                {displayedUserMessage.copyText && (
-                  <ContinueInNewThreadButton messageId={row.message.id} action="edit" />
-                )}
-                {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+              <div className="flex items-center gap-1.5">
+                {canRetryFailedTurn && <RetryUserMessageButton />}
+                <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                  {displayedUserMessage.copyText && (
+                    <MessageCopyButton text={displayedUserMessage.copyText} />
+                  )}
+                  {displayedUserMessage.copyText && (
+                    <ContinueInNewThreadButton messageId={row.message.id} action="edit" />
+                  )}
+                  {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+                </div>
               </div>
               <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
                 {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
@@ -1917,6 +1990,31 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
       tooltip="Revert to this message"
     >
       <Undo2Icon className="size-3" />
+    </Button>
+  );
+}
+
+function RetryUserMessageButton() {
+  const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  const retry = ctx.failedTurnRetry;
+  if (!retry) {
+    return null;
+  }
+
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      disabled={retry.isRetrying || activity.isWorking}
+      onClick={retry.onRetry}
+      aria-label="Retry this message"
+      tooltip="Retry this message"
+      className="gap-1 px-2 enabled:cursor-pointer"
+    >
+      <RefreshCwIcon className={cn("size-3", retry.isRetrying && "animate-spin")} />
+      {retry.isRetrying ? "Retrying" : "Retry"}
     </Button>
   );
 }
@@ -2063,6 +2161,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                   text={messageText}
                   cwd={ctx.markdownCwd}
                   environmentId={ctx.activeThreadEnvironmentId}
+                  threadId={ctx.activeThreadId ?? undefined}
                   isStreaming={Boolean(row.message.streaming)}
                   skills={ctx.skills}
                   searchHighlightQuery={
@@ -2426,7 +2525,7 @@ function ExpandableSubagentInstructionText({ text }: { text: string }) {
     "mt-0.5 w-full text-left text-[11px] leading-4 text-muted-foreground/70",
     !expanded && "line-clamp-2",
     (truncated || expanded) &&
-      "cursor-pointer rounded-sm transition-colors hover:text-muted-foreground/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45",
+      "cursor-pointer rounded-sm transition-colors hover:text-muted-foreground/90 focus-ring",
   );
 
   if (truncated || expanded) {
@@ -3798,7 +3897,7 @@ const UserMessageTranscriptHighlightInlineLabel = memo(
             <button
               type="button"
               aria-label={`View note on highlighted ${roleWord} text`}
-              className="inline-flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-border/70 bg-background/55 px-2 py-0.5 text-[11px] leading-5 text-muted-foreground/85 outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-border/70 bg-background/55 px-2 py-0.5 text-[11px] leading-5 text-muted-foreground/85 outline-none transition-colors hover:text-foreground focus-ring"
             >
               <SquarePenIcon className="size-3.5 shrink-0 opacity-70" />
               <span className="min-w-0 truncate">{`"${preview}"`}</span>
@@ -5294,7 +5393,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {hasExpandableOutput ? (
         <button
           type="button"
-          className="flex w-full cursor-pointer items-center gap-2 rounded-md text-left transition-[opacity,translate] duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          className="flex w-full cursor-pointer items-center gap-2 rounded-md text-left transition-[opacity,translate] duration-200 outline-none focus-ring"
           aria-expanded={isOutputExpanded}
           aria-label={isOutputExpanded ? "Hide command output" : "Show command output"}
           onClick={() => setIsOutputExpanded((value) => !value)}

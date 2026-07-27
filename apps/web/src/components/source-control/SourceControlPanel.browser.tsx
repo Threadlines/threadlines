@@ -263,6 +263,25 @@ function makeEnvironmentApi(
       unstageChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
         unstagedPaths: input.filePaths,
       })),
+      listStashes: vi.fn(async () => ({ stashes: [] })),
+      createStash: vi.fn(async () => ({
+        stash: {
+          id: "0123456789abcdef0123456789abcdef01234567",
+          selector: "stash@{0}",
+          message: "On main: Threadlines stash",
+          createdAt: "2026-07-24T12:00:00.000Z",
+          recoveryBranch: null,
+        },
+      })),
+      applyStash: vi.fn(async (input: { readonly expectedStashId: string }) => ({
+        status: "applied" as const,
+        stashId: input.expectedStashId,
+        dropped: false,
+        conflictedPaths: [],
+      })),
+      dropStash: vi.fn(async (input: { readonly expectedStashId: string }) => ({
+        stashId: input.expectedStashId,
+      })),
       createTag: vi.fn(async (input: { readonly tagName: string; readonly targetSha: string }) => ({
         tagName: input.tagName,
         targetSha: input.targetSha,
@@ -561,6 +580,205 @@ describe("SourceControlPanel changes", () => {
       expect(Math.abs(optionsRect.height - primaryRect.height)).toBeLessThanOrEqual(1);
       expect(Math.abs(optionsRect.height - newPrRect.height)).toBeLessThanOrEqual(1);
       expect(Math.abs(optionsRect.width - 24)).toBeLessThanOrEqual(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("confirms the visible stash, pull, and restore flow for a dirty branch", async () => {
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "pulled_with_restored_changes" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+      stashId: "0123456789abcdef0123456789abcdef01234567",
+      stashDropped: true,
+    }));
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      behindCount: 1,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({
+      status,
+      environmentApi: makeEnvironmentApi({ vcs: { pull } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Stash & pull" }).click();
+
+      await expect.element(page.getByText("Stash, pull, and restore?")).toBeInTheDocument();
+      await expect
+        .element(page.getByText(/Nothing will be committed or pushed/))
+        .toBeInTheDocument();
+      expect(pull).not.toHaveBeenCalled();
+
+      await page.getByRole("button", { name: "Stash, pull & restore" }).click();
+
+      await vi.waitFor(() =>
+        expect(pull).toHaveBeenCalledWith({
+          cwd: CWD,
+          stashLocalChanges: true,
+        }),
+      );
+      await expect.element(page.getByText("Stash, pull, and restore?")).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps recovery details visible when protected changes conflict", async () => {
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "pulled_with_restore_conflicts" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+      stashId: "0123456789abcdef0123456789abcdef01234567",
+      recoveryRef: "refs/threadlines/recovery/stash/main/example",
+      conflictedPaths: ["src/app.ts"],
+    }));
+    const mounted = await renderPanel({
+      status: makeStatus({
+        hasWorkingTreeChanges: true,
+        behindCount: 1,
+        workingTree: {
+          files: [
+            {
+              path: "src/app.ts",
+              indexStatus: null,
+              worktreeStatus: "modified",
+              insertions: 2,
+              deletions: 1,
+            },
+          ],
+          insertions: 2,
+          deletions: 1,
+        },
+      }),
+      environmentApi: makeEnvironmentApi({ vcs: { pull } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Stash & pull" }).click();
+      await page.getByRole("button", { name: "Stash, pull & restore" }).click();
+
+      await expect
+        .element(page.getByText("Branch updated; local changes need attention"))
+        .toBeInTheDocument();
+      await expect.element(page.getByText("src/app.ts")).toBeInTheDocument();
+      await expect
+        .element(page.getByText("refs/threadlines/recovery/stash/main/example"))
+        .toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists and applies an exact stash from the stash manager", async () => {
+    const listStashes: EnvironmentApi["vcs"]["listStashes"] = vi.fn(async () => ({
+      stashes: [
+        {
+          id: "0123456789abcdef0123456789abcdef01234567",
+          selector: "stash@{0}",
+          message: "On main: Explorer fix",
+          createdAt: "2026-07-24T12:00:00.000Z",
+          recoveryBranch: null,
+        },
+      ],
+    }));
+    const applyStash: EnvironmentApi["vcs"]["applyStash"] = vi.fn(async (input) => ({
+      status: "applied" as const,
+      stashId: input.expectedStashId,
+      dropped: false,
+      conflictedPaths: [],
+    }));
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { listStashes, applyStash } }),
+    });
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Stashes (1)" })).toBeInTheDocument();
+      await page.getByRole("button", { name: "Stashes (1)" }).click();
+      await expect.element(page.getByText("On main: Explorer fix")).toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Apply" }).click();
+
+      await vi.waitFor(() =>
+        expect(applyStash).toHaveBeenCalledWith({
+          cwd: CWD,
+          selector: "stash@{0}",
+          expectedStashId: "0123456789abcdef0123456789abcdef01234567",
+          dropAfterApply: false,
+        }),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("labels a pull recovery backup and explains disabled restore actions", async () => {
+    const listStashes: EnvironmentApi["vcs"]["listStashes"] = vi.fn(async () => ({
+      stashes: [
+        {
+          id: "0123456789abcdef0123456789abcdef01234567",
+          selector: "stash@{0}",
+          message: "On main: Threadlines pull main recovery-operation",
+          createdAt: "2026-07-24T12:00:00.000Z",
+          recoveryBranch: "main",
+        },
+      ],
+    }));
+    const mounted = await renderPanel({
+      status: makeStatus({ hasWorkingTreeChanges: true }),
+      environmentApi: makeEnvironmentApi({ vcs: { listStashes } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Stashes (1)" }).click();
+
+      await expect
+        .element(page.getByText("Before pulling main", { exact: true }))
+        .toBeInTheDocument();
+      await expect.element(page.getByText("Recovery backup", { exact: true })).toBeInTheDocument();
+      await expect
+        .element(page.getByText("Created automatically before pulling", { exact: false }))
+        .toBeInTheDocument();
+      await expect
+        .element(
+          page.getByText(
+            "Apply and Pop are unavailable while this checkout has uncommitted changes.",
+            { exact: false },
+          ),
+        )
+        .toBeInTheDocument();
+      await expect.element(page.getByRole("button", { name: "Apply" })).toBeDisabled();
+      await expect.element(page.getByRole("button", { name: "Pop" })).toBeDisabled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("aligns the empty stash state with the dialog content", async () => {
+    const mounted = await renderPanel();
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Stashes" })).not.toBeInTheDocument();
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByRole("menuitem", { name: "View stashes" }).click();
+
+      const emptyState = page.getByText("No stashes yet.").element();
+      expect(getComputedStyle(emptyState).paddingLeft).toBe("24px");
+      expect(getComputedStyle(emptyState).paddingRight).toBe("24px");
     } finally {
       await mounted.cleanup();
     }

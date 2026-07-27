@@ -1279,23 +1279,25 @@ function ProviderDetailsNav(props: {
   readonly onSectionChange: (section: ProviderDetailsSection) => void;
 }) {
   return (
-    <div className="inline-flex rounded-md border border-border/70 bg-muted/20 p-0.5">
-      {props.sections.map((section) => (
-        <button
-          key={section}
-          type="button"
-          className={cn(
-            "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
-            props.activeSection === section
-              ? "bg-background text-foreground shadow-xs"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-          onClick={() => props.onSectionChange(section)}
-          aria-pressed={props.activeSection === section}
-        >
-          {PROVIDER_DETAILS_SECTION_LABELS[section]}
-        </button>
-      ))}
+    <div className="w-full overflow-x-auto">
+      <div className="inline-flex min-w-max rounded-md border border-border/70 bg-muted/20 p-0.5">
+        {props.sections.map((section) => (
+          <button
+            key={section}
+            type="button"
+            className={cn(
+              "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
+              props.activeSection === section
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => props.onSectionChange(section)}
+            aria-pressed={props.activeSection === section}
+          >
+            {PROVIDER_DETAILS_SECTION_LABELS[section]}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

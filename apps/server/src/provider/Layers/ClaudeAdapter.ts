@@ -31,6 +31,7 @@ import {
   type ClaudeSettings,
   EventId,
   MessageId,
+  type ModelCapabilities,
   type ModelSelection,
   type ProviderApprovalDecision,
   ProviderDriverKind,
@@ -47,6 +48,7 @@ import {
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeSessionExitKind,
+  type ServerProviderModel,
   type RuntimeContentStreamKind,
   RuntimeItemId,
   RuntimeRequestId,
@@ -389,6 +391,11 @@ export interface ClaudeAdapterLiveOptions {
     readonly prompt: AsyncIterable<SDKUserMessage>;
     readonly options: ClaudeQueryOptions;
   }) => ClaudeQueryRuntime;
+  readonly resolveModelMetadata?: (
+    model: string,
+  ) => Effect.Effect<
+    Pick<ServerProviderModel, "capabilities" | "supportedRuntimeModes"> | undefined
+  >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   /**
@@ -497,11 +504,11 @@ interface ClaudeFlagSettingsSnapshot {
 
 function deriveClaudeFlagSettings(
   modelSelection: ModelSelection | undefined,
+  capabilities: ModelCapabilities,
 ): ClaudeFlagSettingsSnapshot {
-  const caps = getClaudeModelCapabilities(modelSelection?.model);
-  const descriptors = getProviderOptionDescriptors({ caps });
+  const descriptors = getProviderOptionDescriptors({ caps: capabilities });
   const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
-  const effort = resolveClaudeEffort(caps, rawEffort) ?? null;
+  const effort = resolveClaudeEffort(capabilities, rawEffort) ?? null;
   const fastModeSupported = descriptors.some(
     (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
   );
@@ -1937,28 +1944,35 @@ function capTranscriptText(value: string, maxChars: number): string {
  */
 export function mapClaudeSubagentTranscript(
   jsonl: string,
-  options?: { readonly limit?: number },
+  options?: {
+    readonly limit?: number;
+    readonly offset?: number;
+    readonly fromEnd?: boolean;
+  },
 ): ProviderSubagentTranscriptResult {
   const limit =
     options?.limit !== undefined && options.limit > 0
       ? options.limit
       : SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+  const requestedOffset = options?.offset ?? 0;
   const entries: Array<ProviderSubagentTranscriptEntry> = [];
-  let truncated = false;
-
-  const push = (entry: ProviderSubagentTranscriptEntry): boolean => {
-    if (entries.length >= limit) {
-      truncated = true;
-      return false;
+  let totalEntries = 0;
+  const push = (entry: ProviderSubagentTranscriptEntry): void => {
+    const entryIndex = totalEntries;
+    totalEntries += 1;
+    if (options?.fromEnd) {
+      entries.push(entry);
+      if (entries.length > limit) {
+        entries.shift();
+      }
+      return;
     }
-    entries.push(entry);
-    return true;
+    if (entryIndex >= requestedOffset && entries.length < limit) {
+      entries.push(entry);
+    }
   };
 
   for (const line of jsonl.split("\n")) {
-    if (truncated) {
-      break;
-    }
     const record = line.trim();
     if (record.length === 0) {
       continue;
@@ -2055,7 +2069,15 @@ export function mapClaudeSubagentTranscript(
     }
   }
 
-  return { entries, truncated };
+  const offset = options?.fromEnd
+    ? Math.max(0, totalEntries - limit)
+    : Math.min(requestedOffset, totalEntries);
+  return {
+    entries,
+    truncated: offset > 0 || offset + entries.length < totalEntries,
+    offset,
+    totalEntries,
+  };
 }
 
 /** Non-null `parent_tool_use_id` marks a message forwarded from inside a
@@ -2521,6 +2543,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         prompt: input.prompt,
         options: input.options,
       }) as ClaudeQueryRuntime);
+  const resolveModelMetadata =
+    options?.resolveModelMetadata ??
+    (() =>
+      Effect.succeed<
+        Pick<ServerProviderModel, "capabilities" | "supportedRuntimeModes"> | undefined
+      >(undefined));
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
@@ -5399,13 +5427,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const extraArgs = parseCliArgs(claudeSettings.launchArgs).flags;
       const modelSelection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-      const apiModelId = modelSelection ? resolveClaudeApiModelId(modelSelection) : undefined;
+      const modelMetadata = modelSelection
+        ? yield* resolveModelMetadata(modelSelection.model)
+        : undefined;
+      const modelCapabilities =
+        modelMetadata?.capabilities ?? getClaudeModelCapabilities(modelSelection?.model);
+      const apiModelId = modelSelection
+        ? resolveClaudeApiModelId(modelSelection, modelCapabilities)
+        : undefined;
       const fallbackModel = resolveClaudeFallbackModelOption(claudeSettings.fallbackModel, [
         modelSelection?.model,
         apiModelId,
       ]);
       const fallbackModelIds = splitClaudeFallbackModelOption(fallbackModel);
-      const flagSettings = deriveClaudeFlagSettings(modelSelection);
+      const flagSettings = deriveClaudeFlagSettings(modelSelection, modelCapabilities);
       const effectiveEffort = flagSettings.effortLevel;
       const runtimeModeToPermission: Record<string, PermissionMode> = {
         "auto-accept-edits": "acceptEdits",
@@ -5418,7 +5453,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // else falls back to in-app approval prompts instead of erroring.
       const autoModeClamped =
         requestedPermissionMode === "auto" &&
-        !claudeModelSupportsAutoRuntimeMode(modelSelection?.model);
+        !(modelMetadata
+          ? (modelMetadata.supportedRuntimeModes?.includes("auto") ?? true)
+          : claudeModelSupportsAutoRuntimeMode(modelSelection?.model));
       const permissionMode = autoModeClamped ? "acceptEdits" : requestedPermissionMode;
       const settings = {
         ...(flagSettings.alwaysThinkingEnabled !== null
@@ -5682,6 +5719,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
         : undefined;
+    const modelMetadata = modelSelection
+      ? yield* resolveModelMetadata(modelSelection.model)
+      : undefined;
+    const modelCapabilities =
+      modelMetadata?.capabilities ?? getClaudeModelCapabilities(modelSelection?.model);
 
     if (context.turnState) {
       // Auto-close a stale synthetic turn (from background agent responses
@@ -5690,7 +5732,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (modelSelection?.model) {
-      const apiModelId = resolveClaudeApiModelId(modelSelection);
+      const apiModelId = resolveClaudeApiModelId(modelSelection, modelCapabilities);
       if (context.currentApiModelId !== apiModelId) {
         yield* Effect.tryPromise({
           try: () => context.query.setModel(apiModelId),
@@ -5709,7 +5751,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // apply must not block the user's turn, and an un-updated snapshot means
     // the next turn retries.
     if (modelSelection !== undefined) {
-      const desiredFlagSettings = deriveClaudeFlagSettings(modelSelection);
+      const desiredFlagSettings = deriveClaudeFlagSettings(modelSelection, modelCapabilities);
       if (!claudeFlagSettingsEqual(desiredFlagSettings, context.currentFlagSettings)) {
         const applyFlagSettings = context.query.applyFlagSettings?.bind(context.query);
         if (applyFlagSettings === undefined) {
@@ -5966,10 +6008,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             requestError(`Failed to read the subagent transcript: ${cause.message}`),
           ),
         );
-      return mapClaudeSubagentTranscript(
-        transcript,
-        input.limit !== undefined ? { limit: input.limit } : {},
-      );
+      return mapClaudeSubagentTranscript(transcript, {
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.offset !== undefined ? { offset: input.offset } : {}),
+        ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+      });
     });
 
   const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (

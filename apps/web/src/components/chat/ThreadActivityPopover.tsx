@@ -41,9 +41,10 @@ import {
 } from "../../session-logic";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
-import { SubagentTranscript } from "./SubagentTranscript";
+import { SubagentInspector } from "./SubagentInspector";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
@@ -104,12 +105,12 @@ interface ActivityTriggerState {
   summary: string;
 }
 
-interface SubagentMetadataChip {
+export interface SubagentMetadataChip {
   title: string;
   label: string;
 }
 
-interface SubagentDisplayDetails {
+export interface SubagentDisplayDetails {
   goal: string | null;
   context: string | null;
   metadata: ReadonlyArray<SubagentMetadataChip>;
@@ -845,7 +846,7 @@ function TaskSection({
             className={cn(
               "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-left",
               onViewProposedPlan &&
-                "cursor-pointer rounded-sm transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50",
+                "cursor-pointer rounded-sm transition-colors hover:text-foreground focus-ring",
             )}
             disabled={!onViewProposedPlan}
             aria-label="View plan in conversation"
@@ -913,16 +914,13 @@ function subagentTreeIndentClass(treeDepth: number | undefined): string | undefi
 }
 
 function SubagentSection({
-  activeThreadEnvironmentId,
-  activeThreadId,
   state,
+  onInspect,
 }: {
-  activeThreadEnvironmentId: EnvironmentId;
-  activeThreadId: ThreadId;
   state: SubagentProgressState;
+  onInspect: (item: SubagentProgressItem) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
   const shouldCollapse = state.items.length > COLLAPSED_SUBAGENT_LIMIT;
   const visibleItems = useMemo(
     () =>
@@ -953,7 +951,6 @@ function SubagentSection({
           const displayName = formatSubagentDisplayName(item);
           const showSubagentChip = shouldShowSubagentDisplayChip(item);
           const transcriptAvailable = item.agentThreadId !== null;
-          const transcriptExpanded = item.agentThreadId === expandedAgentId;
           return (
             <div
               key={item.id}
@@ -977,17 +974,12 @@ function SubagentSection({
                   transcriptAvailable && "transition-colors hover:bg-foreground/5",
                 )}
                 disabled={!transcriptAvailable}
-                aria-expanded={transcriptAvailable ? transcriptExpanded : undefined}
+                aria-haspopup={transcriptAvailable ? "dialog" : undefined}
                 aria-label={transcriptAvailable ? `Inspect ${displayName} transcript` : undefined}
                 title={
                   item.agentPath ?? (transcriptAvailable ? "Open read-only transcript" : undefined)
                 }
-                onClick={() =>
-                  item.agentThreadId &&
-                  setExpandedAgentId((current) =>
-                    current === item.agentThreadId ? null : item.agentThreadId,
-                  )
-                }
+                onClick={() => onInspect(item)}
               >
                 <div className="mt-0.5">{subagentStatusIcon(item.status)}</div>
                 <div className="min-w-0">
@@ -1008,10 +1000,7 @@ function SubagentSection({
                       </span>
                       {transcriptAvailable ? (
                         <ChevronRightIcon
-                          className={cn(
-                            "size-3 text-muted-foreground/60 transition-transform",
-                            transcriptExpanded && "rotate-90",
-                          )}
+                          className="size-3 text-muted-foreground/60 transition-colors"
                           aria-hidden="true"
                         />
                       ) : null}
@@ -1052,7 +1041,7 @@ function SubagentSection({
 
                   {item.liveBody && isActiveSubagentStatus(item.status) ? (
                     <div
-                      className="mt-1 line-clamp-3 text-[11px] leading-4 text-muted-foreground/75"
+                      className="mt-1 line-clamp-1 text-[11px] leading-4 text-muted-foreground/75"
                       data-subagent-progress-live="true"
                     >
                       {normalizeSubagentInlineText(item.liveBody)}
@@ -1060,15 +1049,6 @@ function SubagentSection({
                   ) : null}
                 </div>
               </button>
-              {transcriptExpanded && item.agentThreadId ? (
-                <div className="mx-2 border-t border-border/45 px-5 py-2">
-                  <SubagentTranscript
-                    environmentId={activeThreadEnvironmentId}
-                    threadId={activeThreadId}
-                    agentIds={[item.agentThreadId]}
-                  />
-                </div>
-              ) : null}
             </div>
           );
         })}
@@ -1204,7 +1184,7 @@ function BackgroundRunsSection({
                           <button
                             type="button"
                             className={cn(
-                              "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50",
+                              "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-ring",
                               run.terminalVisible && "bg-background/70 text-foreground",
                             )}
                             aria-label={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
@@ -1223,7 +1203,7 @@ function BackgroundRunsSection({
                         <TooltipWrapper tooltip={`Stop ${run.label}`}>
                           <button
                             type="button"
-                            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
+                            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-ring"
                             aria-label={`Stop ${run.label}`}
                             onClick={() => {
                               onStopBackgroundRun(run);
@@ -1305,99 +1285,139 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   onDismissProposedPlan,
 }: ThreadActivityPopoverProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const popoverLayout = useActivityPopoverAnchorLayout(popoverOpen);
   const triggerState = deriveThreadActivityTriggerState({
     taskProgress,
     subagentProgress,
     backgroundRuns,
   });
+  const selectedSubagent =
+    subagentProgress?.items.find((item) => item.agentThreadId === selectedAgentId) ?? null;
+
+  const closeSubagentInspector = useCallback(() => {
+    setSelectedAgentId(null);
+  }, []);
+
+  const inspectSubagent = useCallback((item: SubagentProgressItem) => {
+    if (!item.agentThreadId) {
+      return;
+    }
+    setSelectedAgentId(item.agentThreadId);
+    setPopoverOpen(false);
+  }, []);
 
   if (!triggerState) {
     return null;
   }
 
   return (
-    <Tooltip>
-      <Popover open={popoverOpen} onOpenChange={(nextOpen) => setPopoverOpen(nextOpen)}>
-        <TooltipTrigger
-          render={
-            <PopoverTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  ref={popoverLayout.triggerRef}
-                  className={cn(
-                    "h-6 min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
-                    triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
-                    triggerState.mode === "mixed" && "max-w-44",
-                  )}
-                  aria-label={triggerState.ariaLabel}
+    <>
+      <Tooltip>
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <TooltipTrigger
+            render={
+              <PopoverTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    ref={popoverLayout.triggerRef}
+                    className={cn(
+                      "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
+                      triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
+                      triggerState.mode === "mixed" && "max-w-44",
+                    )}
+                    aria-label={triggerState.ariaLabel}
+                  />
+                }
+              />
+            }
+          >
+            <TriggerContent state={triggerState} />
+          </TooltipTrigger>
+          <TooltipPopup side="bottom" sideOffset={8} className="max-w-72">
+            {triggerState.tooltipText}
+          </TooltipPopup>
+          <PopoverPopup
+            key={popoverLayout.layoutKey}
+            align="end"
+            positionerClassName="transition-none"
+            side="bottom"
+            sideOffset={8}
+            className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(3)]"
+            style={popoverLayout.widthStyle}
+          >
+            <div className="min-w-0 space-y-2.5">
+              {taskProgress ? (
+                <TaskSection
+                  taskProgress={taskProgress}
+                  onViewProposedPlan={
+                    onViewProposedPlan
+                      ? () => {
+                          setPopoverOpen(false);
+                          onViewProposedPlan();
+                        }
+                      : undefined
+                  }
+                  onImplementProposedPlan={
+                    onImplementProposedPlan
+                      ? () => {
+                          setPopoverOpen(false);
+                          onImplementProposedPlan();
+                        }
+                      : undefined
+                  }
+                  onDismissProposedPlan={
+                    onDismissProposedPlan
+                      ? () => {
+                          setPopoverOpen(false);
+                          onDismissProposedPlan();
+                        }
+                      : undefined
+                  }
                 />
-              }
-            />
+              ) : null}
+              {subagentProgress ? (
+                <SubagentSection state={subagentProgress} onInspect={inspectSubagent} />
+              ) : null}
+              <BackgroundRunsSection
+                backgroundRuns={backgroundRuns}
+                onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
+                onStopBackgroundRun={onStopBackgroundRun}
+              />
+            </div>
+          </PopoverPopup>
+        </Popover>
+      </Tooltip>
+      <Dialog
+        open={selectedSubagent !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            closeSubagentInspector();
           }
-        >
-          <TriggerContent state={triggerState} />
-        </TooltipTrigger>
-        <TooltipPopup side="bottom" sideOffset={8} className="max-w-72">
-          {triggerState.tooltipText}
-        </TooltipPopup>
-        <PopoverPopup
-          key={popoverLayout.layoutKey}
-          align="end"
-          positionerClassName="transition-none"
-          side="bottom"
-          sideOffset={8}
-          className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(3)]"
-          style={popoverLayout.widthStyle}
-        >
-          <div className="min-w-0 space-y-2.5">
-            {taskProgress ? (
-              <TaskSection
-                taskProgress={taskProgress}
-                onViewProposedPlan={
-                  onViewProposedPlan
-                    ? () => {
-                        setPopoverOpen(false);
-                        onViewProposedPlan();
-                      }
-                    : undefined
-                }
-                onImplementProposedPlan={
-                  onImplementProposedPlan
-                    ? () => {
-                        setPopoverOpen(false);
-                        onImplementProposedPlan();
-                      }
-                    : undefined
-                }
-                onDismissProposedPlan={
-                  onDismissProposedPlan
-                    ? () => {
-                        setPopoverOpen(false);
-                        onDismissProposedPlan();
-                      }
-                    : undefined
-                }
-              />
-            ) : null}
-            {subagentProgress ? (
-              <SubagentSection
-                activeThreadEnvironmentId={activeThreadEnvironmentId}
-                activeThreadId={activeThreadId}
-                state={subagentProgress}
-              />
-            ) : null}
-            <BackgroundRunsSection
-              backgroundRuns={backgroundRuns}
-              onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
-              onStopBackgroundRun={onStopBackgroundRun}
+        }}
+      >
+        {selectedSubagent ? (
+          <DialogPopup
+            bottomStickOnMobile={false}
+            showCloseButton={false}
+            className="h-[min(82dvh,52rem)] max-h-[calc(100dvh-2rem)] max-w-3xl overflow-hidden rounded-lg"
+          >
+            <DialogTitle className="sr-only">
+              {formatSubagentDisplayName(selectedSubagent)} transcript
+            </DialogTitle>
+            <SubagentInspector
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+              item={selectedSubagent}
+              details={deriveSubagentDisplayDetails(selectedSubagent)}
+              onClose={closeSubagentInspector}
             />
-          </div>
-        </PopoverPopup>
-      </Popover>
-    </Tooltip>
+          </DialogPopup>
+        ) : null}
+      </Dialog>
+    </>
   );
 });

@@ -279,11 +279,22 @@ Anthropic documents Fable 5 on the Claude API as a 1M-context model where the 1M
 default. Threadlines does not expose a 200k Fable selector because the bare `claude-fable-5` model id
 still runs with the 1M window on the Claude API.
 
-Anthropic's launch note says Fable 5 is included on Pro, Max, Team, and seat-based Enterprise
-subscriptions through June 22, 2026. Starting June 23, 2026, using it on those subscription plans may
-require usage credits unless Anthropic extends the included window. API and consumption-based
-Enterprise access are billed by usage.
+Fable availability and usage-credit requirements depend on the active Claude account and plan. The
+live Claude model catalog is the authoritative signal for the current provider instance; the curated
+fallback catalog only describes models that the installed Claude Code version can understand.
 
 Fable has content-based fallback for some cybersecurity, biology, chemistry, and distillation-like
 requests. If a request is flagged, Claude Code may switch that session to Opus and show a transcript
 notice. This can happen from repository context alone in security-heavy or biology-heavy workspaces.
+
+## Claude Opus 5 And Live Model Discovery
+
+Threadlines shows Claude Opus 5 when the configured Claude Code binary is `2.1.219` or newer. The
+canonical model id is `claude-opus-5`; the `opus` shorthand resolves to that id. Opus 5 uses a native
+1M context window, supports `low` through `max` effort, and exposes Claude Code fast mode.
+
+Threadlines also reads the model catalog returned by Claude Agent SDK initialization. Models reported
+by the active Claude account appear before Threadlines' curated historical catalog, and the model
+behind Claude's `default` row becomes that provider instance's default in Threadlines. Curated entries
+still supply richer Threadlines-specific metadata and remain available as an offline fallback when
+Claude initialization cannot return a live catalog.
