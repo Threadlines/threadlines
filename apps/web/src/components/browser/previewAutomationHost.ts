@@ -54,6 +54,10 @@ export interface PreviewAutomationHostTarget {
    * Everything else is a CDP command and goes over the bridge.
    */
   readonly navigate: (url: string) => Promise<void>;
+  /** How big the page is right now. The panel is the only one that knows: the
+   *  main process cannot see the element and this module should not reach for
+   *  it. A question about layout is a question about this. */
+  readonly viewport: () => { width: number; height: number };
 }
 
 /**
@@ -113,31 +117,84 @@ async function dispatch(
 
   switch (request.operation) {
     case "status":
-      return await call(bridge.previewStatus, {});
-    case "snapshot":
-      return await call(bridge.previewSnapshot, {});
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    case "snapshot": {
+      const snapshot = await call(bridge.previewSnapshot, {});
+      return {
+        ...toStatus(snapshot, target.viewport()),
+        elements: snapshot.elements.map((element) => ({
+          ref: element.ref,
+          role: element.role,
+          name: element.name,
+          ...(element.value === null ? {} : { value: element.value }),
+          ...(element.disabled ? { disabled: true } : {}),
+        })),
+        console: snapshot.console.map((entry) => ({ level: entry.level, text: entry.text })),
+        networkFailures: snapshot.networkFailures.map((failure) => ({
+          url: failure.url,
+          detail: failure.errorText ?? `HTTP ${failure.status ?? "error"}`,
+        })),
+      };
+    }
     case "navigate":
       await target.navigate(String((input as { url?: unknown }).url ?? ""));
-      return await call(bridge.previewStatus, {});
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    // Every action answers with where the page ended up. An action that
+    // returned nothing failed MCP validation and was shown to the agent as an
+    // error, which invited a retry -- and a retried click clicks twice.
     case "click":
-      return await call(bridge.previewClick, input);
+      await call(bridge.previewClick, input);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     case "type":
-      return await call(bridge.previewType, input);
+      await call(bridge.previewType, input);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     case "press":
-      return await call(bridge.previewPress, input);
+      await call(bridge.previewPress, input);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     case "scroll":
-      return await call(bridge.previewScroll, input);
-    case "evaluate":
-      return await call(bridge.previewEvaluate, input);
+      await call(bridge.previewScroll, input);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     case "waitFor":
-      return await call(bridge.previewWaitFor, input);
-    case "screenshot":
-      return await call(bridge.previewScreenshot, {});
+      await call(bridge.previewWaitFor, input);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+    case "evaluate":
+      // Wrapped, because an expression that returns an array or a number is a
+      // perfectly good answer and used to fail validation *after* running.
+      return { result: await call(bridge.previewEvaluate, input) };
+    case "screenshot": {
+      const shot = await call(bridge.previewScreenshot, {});
+      // Base64 without the data-url header: the tool hands this to the model as
+      // an image block, which wants the bytes rather than a URL.
+      return {
+        data: shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1),
+        width: shot.width,
+        height: shot.height,
+      };
+    }
     case "resize":
-      return await call(bridge.previewSetViewport, input);
+      await call(bridge.previewSetViewport, input);
+      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
     case "setAppearance":
       return await call(bridge.previewSetColorScheme, input);
   }
+}
+
+/**
+ * The desktop's status, in the shape the agent was promised.
+ *
+ * These are two different vocabularies and the host is where they meet: the
+ * bridge speaks of webContents and attachment, the contract speaks of a page
+ * and its size. Passing one through as the other is what made every snapshot
+ * fail on a missing key.
+ */
+function toStatus(
+  status: { url: string; title: string; loading: boolean },
+  size: { width: number; height: number },
+): { url: string; title: string; loading: boolean; width: number; height: number } {
+  // The size comes from the panel rather than from here: it is the one part of
+  // a page's state that neither the main process nor this module can see, and
+  // a question about layout is a question about it.
+  return { url: status.url, title: status.title, loading: status.loading, ...size };
 }
 
 /**

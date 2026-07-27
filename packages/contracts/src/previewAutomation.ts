@@ -14,6 +14,15 @@
  */
 import * as Schema from "effect/Schema";
 
+/**
+ * Numbers, as a tool schema should describe them.
+ *
+ * `Schema.Number` round-trips NaN and the infinities as strings, so its JSON
+ * Schema is an anyOf of a number and three magic words. That is honest about
+ * the codec and useless as a description of "a ref" -- and a client reading it
+ * has to decide what to do with a field that might be the string "Infinity".
+ */
+
 import { ThreadId } from "./baseSchemas.ts";
 
 /**
@@ -63,7 +72,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
  * `text` is for the times the agent knows what the button says and nothing else.
  */
 export const PreviewAutomationTargetSchema = Schema.Union([
-  Schema.Struct({ ref: Schema.Number }),
+  Schema.Struct({ ref: Schema.Finite }),
   Schema.Struct({ selector: Schema.String }),
   Schema.Struct({ text: Schema.String }),
 ]);
@@ -99,7 +108,7 @@ export class PreviewAutomationUnsupportedError extends Schema.TaggedErrorClass<P
 
 export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<PreviewAutomationTimeoutError>()(
   "PreviewAutomationTimeoutError",
-  { operation: PreviewAutomationOperationSchema, timeoutMs: Schema.Number },
+  { operation: PreviewAutomationOperationSchema, timeoutMs: Schema.Finite },
 ) {
   override get message(): string {
     return `The browser preview did not answer ${this.operation} within ${this.timeoutMs}ms.`;
@@ -130,8 +139,8 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   "PreviewAutomationResultTooLargeError",
   {
     operation: PreviewAutomationOperationSchema,
-    bytes: Schema.Number,
-    limitBytes: Schema.Number,
+    bytes: Schema.Finite,
+    limitBytes: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -204,8 +213,8 @@ export const PreviewAutomationPressInputSchema = Schema.Struct({
 
 export const PreviewAutomationScrollInputSchema = Schema.Struct({
   /** Positive is down and right, matching a wheel. */
-  deltaX: Schema.optionalKey(Schema.Number),
-  deltaY: Schema.optionalKey(Schema.Number),
+  deltaX: Schema.optionalKey(Schema.Finite),
+  deltaY: Schema.optionalKey(Schema.Finite),
   /** Scrolls this into view instead, when the agent knows where it wants to be. */
   target: Schema.optionalKey(PreviewAutomationTargetSchema),
 });
@@ -220,13 +229,13 @@ export const PreviewAutomationWaitForInputSchema = Schema.Struct({
   target: Schema.optionalKey(PreviewAutomationTargetSchema),
   text: Schema.optionalKey(Schema.String),
   urlContains: Schema.optionalKey(Schema.String),
-  timeoutMs: Schema.optionalKey(Schema.Number),
+  timeoutMs: Schema.optionalKey(Schema.Finite),
 });
 
 export const PreviewAutomationResizeInputSchema = Schema.Struct({
   /** null for both means fill the panel and reflow with it. */
-  width: Schema.NullOr(Schema.Number),
-  height: Schema.NullOr(Schema.Number),
+  width: Schema.NullOr(Schema.Finite),
+  height: Schema.NullOr(Schema.Finite),
 });
 
 export const PreviewAutomationSetAppearanceInputSchema = Schema.Struct({
@@ -241,8 +250,8 @@ export const PreviewAutomationStatusSchema = Schema.Struct({
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
-  width: Schema.Number,
-  height: Schema.Number,
+  width: Schema.Finite,
+  height: Schema.Finite,
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatusSchema.Type;
 
@@ -255,7 +264,7 @@ export type PreviewAutomationStatus = typeof PreviewAutomationStatusSchema.Type;
  * a class name.
  */
 export const PreviewAutomationElementSchema = Schema.Struct({
-  ref: Schema.Number,
+  ref: Schema.Finite,
   role: Schema.String,
   name: Schema.String,
   /** Present when it is a field, so the agent knows what is already in it. */
@@ -276,7 +285,7 @@ export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshotSchema.T
 export const PreviewAutomationScreenshotSchema = Schema.Struct({
   /** Base64 PNG, so it can go back as an image block the model actually sees. */
   data: Schema.String,
-  width: Schema.Number,
-  height: Schema.Number,
+  width: Schema.Finite,
+  height: Schema.Finite,
 });
 export type PreviewAutomationScreenshot = typeof PreviewAutomationScreenshotSchema.Type;

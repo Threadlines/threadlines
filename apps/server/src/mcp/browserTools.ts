@@ -17,6 +17,7 @@ import {
   PreviewAutomationEvaluateInputSchema,
   PreviewAutomationNavigateInputSchema,
   PreviewAutomationPressInputSchema,
+  PreviewAutomationResizeInputSchema,
   PreviewAutomationScreenshotSchema,
   PreviewAutomationScrollInputSchema,
   PreviewAutomationSnapshotSchema,
@@ -45,7 +46,6 @@ export const BrowserSnapshotTool = readsOnly(
   Tool.make("browser_snapshot", {
     description:
       "Read the page the user has open: its URL and title, the elements you can act on, and anything the page has logged or failed to load. Call this before clicking or typing. Every element comes back with a `ref`, and a ref is the reliable way to name it in the other tools -- CSS selectors break on a redesign, refs do not. Console errors and failed requests are included because they are usually the answer.",
-    parameters: Schema.Struct({}),
     success: PreviewAutomationSnapshotSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -56,7 +56,6 @@ export const BrowserScreenshotTool = readsOnly(
   Tool.make("browser_screenshot", {
     description:
       "See what the page currently looks like. Use this for anything visual -- layout, spacing, colour, whether something is actually on screen -- and use browser_snapshot instead when you need to act on an element or read an error.",
-    parameters: Schema.Struct({}),
     success: PreviewAutomationScreenshotSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -67,7 +66,6 @@ export const BrowserStatusTool = readsOnly(
   Tool.make("browser_status", {
     description:
       "Where the browser is right now: its URL, title, size, and whether it is still loading. Cheap; use it to confirm a navigation landed rather than taking a whole snapshot.",
-    parameters: Schema.Struct({}),
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -88,9 +86,9 @@ export const BrowserNavigateTool = changesThePage(
 export const BrowserClickTool = changesThePage(
   Tool.make("browser_click", {
     description:
-      "Click one thing. Name it with a `ref` from browser_snapshot where you can; `selector` and `text` are for elements the snapshot did not describe. The page is real -- a button that deletes something will delete it.",
+      "Click one thing, and get back the page state afterwards so you can see what changed. Name it with a `ref` from browser_snapshot where you can; `selector` matches CSS, and `text` matches an element whose visible text equals what you give (falling back to a substring), preferring a clickable one. The page is real -- a button that deletes something will delete it, so do not retry a click that reported success.",
     parameters: PreviewAutomationClickInputSchema,
-    success: Schema.Null,
+    success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Click"),
@@ -101,7 +99,7 @@ export const BrowserTypeTool = changesThePage(
     description:
       "Type into a field. Set `clear` to replace what is already there rather than appending, and `submit` to press Enter afterwards, which is how most single-field forms are sent.",
     parameters: PreviewAutomationTypeInputSchema,
-    success: Schema.Null,
+    success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Type"),
@@ -112,7 +110,7 @@ export const BrowserPressTool = changesThePage(
     description:
       "Press a key on whatever has focus: Enter, Escape, Tab, an arrow, or a shortcut with modifiers. For entering text into a field, use browser_type.",
     parameters: PreviewAutomationPressInputSchema,
-    success: Schema.Null,
+    success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Press a key"),
@@ -121,9 +119,9 @@ export const BrowserPressTool = changesThePage(
 export const BrowserScrollTool = changesThePage(
   Tool.make("browser_scroll", {
     description:
-      "Scroll the page, either by an amount or until a given element is in view. Worth doing before a screenshot when the thing you care about is below the fold.",
+      "Scroll the page, either by an amount or until a given element is in view, and get back the page state afterwards. Worth doing before a screenshot when the thing you care about is below the fold. A page that has nothing to scroll succeeds and stays where it is.",
     parameters: PreviewAutomationScrollInputSchema,
-    success: Schema.Null,
+    success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   })
@@ -136,7 +134,7 @@ export const BrowserWaitForTool = readsOnly(
     description:
       "Wait until the page catches up: an element appears, some text shows, or the URL changes. Use this after an action that kicks off a request, instead of taking snapshots until one happens to look right.",
     parameters: PreviewAutomationWaitForInputSchema,
-    success: Schema.Null,
+    success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Wait for the page"),
@@ -145,12 +143,25 @@ export const BrowserWaitForTool = readsOnly(
 export const BrowserEvaluateTool = changesThePage(
   Tool.make("browser_evaluate", {
     description:
-      "Run JavaScript in the page and get the result back. The escape hatch for what the other tools cannot reach -- reading a computed style, inspecting app state, checking a global. The result has to survive JSON.",
+      "Run JavaScript in the page and get the result back, wrapped as {result}. The escape hatch for what the other tools cannot reach -- reading a computed style, inspecting app state, checking a global. Anything that survives JSON comes back, arrays and primitives included.",
     parameters: PreviewAutomationEvaluateInputSchema,
-    success: Schema.Unknown,
+    success: Schema.Struct({ result: Schema.Unknown }),
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Run JavaScript"),
+);
+
+export const BrowserResizeTool = changesThePage(
+  Tool.make("browser_resize", {
+    description:
+      "Resize the page the user is looking at, to check a layout at a given width. Pass null for both to let it fill the panel and reflow with it. Returns the page state at the new size.",
+    parameters: PreviewAutomationResizeInputSchema,
+    success: PreviewAutomationStatusSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Resize the page")
+    .annotate(Tool.Destructive, false),
 );
 
 export const BrowserToolkit = Toolkit.make(
@@ -164,4 +175,5 @@ export const BrowserToolkit = Toolkit.make(
   BrowserScrollTool,
   BrowserWaitForTool,
   BrowserEvaluateTool,
+  BrowserResizeTool,
 );

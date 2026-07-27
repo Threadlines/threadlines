@@ -195,6 +195,13 @@ export function BrowserPanel({
       const webview = activeWebview();
       return {
         webContentsId: webview === null ? null : webview.getWebContentsId(),
+        viewport: () => {
+          const rect = webview?.getBoundingClientRect();
+          return {
+            width: Math.round(rect?.width ?? 0),
+            height: Math.round(rect?.height ?? 0),
+          };
+        },
         // The address belongs to the element, so this is the one operation the
         // main process cannot do on the agent's behalf.
         navigate: async (url) => {

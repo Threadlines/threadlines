@@ -12,7 +12,12 @@ const handlerFor = (
   bridge: Partial<DesktopBridge>,
   webContentsId: number | null = 42,
   navigate: (url: string) => Promise<void> = () => Promise.resolve(),
-) => createPreviewAutomationHandler(bridge as DesktopBridge, () => ({ webContentsId, navigate }));
+) =>
+  createPreviewAutomationHandler(bridge as DesktopBridge, () => ({
+    webContentsId,
+    navigate,
+    viewport: () => ({ width: 800, height: 600 }),
+  }));
 
 describe("createPreviewAutomationHandler", () => {
   it("sends the operation's input to the bridge along with the tab it acts on", async () => {
@@ -22,13 +27,35 @@ describe("createPreviewAutomationHandler", () => {
         seen.push(input);
         return Promise.resolve();
       },
+      previewStatus: () =>
+        Promise.resolve({ url: "http://x/", title: "X", loading: false }) as never,
     });
 
     const response = await handle(request("click", { target: { ref: 7 } }));
 
     // The tab is the host's business, not the agent's: it never names one.
     expect(seen).toEqual([{ webContentsId: 42, target: { ref: 7 } }]);
-    expect(response).toEqual({ requestId: "r1", result: undefined });
+    // An action answers with where the page ended up. Returning nothing failed
+    // MCP validation, which showed a successful click to the agent as an error
+    // and invited a retry -- and a retried click clicks twice.
+    expect(response.error).toBeUndefined();
+    expect(response.result).toMatchObject({
+      url: "http://x/",
+      title: "X",
+      loading: false,
+      width: 800,
+      height: 600,
+    });
+  });
+
+  it("wraps an evaluate result so an array is not a validation failure", async () => {
+    // The expression has already run by the time the result is checked, so a
+    // bare array used to \"fail\" after mutating the page.
+    const handle = handlerFor({ previewEvaluate: () => Promise.resolve([1, 2, 3]) as never });
+
+    const response = await handle(request("evaluate", { expression: "[1,2,3]" }));
+
+    expect(response.result).toEqual({ result: [1, 2, 3] });
   });
 
   it("answers with the failure instead of rejecting", async () => {

@@ -34,4 +34,5 @@ export const BrowserToolkitHandlersLive = BrowserToolkit.toLayer({
   browser_scroll: forward("scroll"),
   browser_wait_for: forward("waitFor"),
   browser_evaluate: forward("evaluate"),
+  browser_resize: forward("resize"),
 });
