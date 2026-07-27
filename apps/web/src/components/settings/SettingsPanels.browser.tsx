@@ -190,6 +190,7 @@ vi.mock("../../environments/runtime", () => {
     disconnectSavedEnvironment: vi.fn(),
     ensureEnvironmentConnectionBootstrapped: async () => undefined,
     getPrimaryEnvironmentConnection: () => primaryConnection,
+    readBackendEnvironmentConnection: () => primaryConnection,
     readEnvironmentConnection: () => primaryConnection,
     reconnectSavedEnvironment: vi.fn(),
     removeSavedEnvironment: vi.fn(),

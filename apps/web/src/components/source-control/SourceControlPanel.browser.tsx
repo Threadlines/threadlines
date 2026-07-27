@@ -93,6 +93,7 @@ vi.mock("~/environments/runtime", () => {
     getSavedEnvironmentRuntimeState: vi.fn(() => null),
     hasSavedEnvironmentRegistryHydrated: vi.fn(() => true),
     listSavedEnvironmentRecords: vi.fn(() => []),
+    readBackendEnvironmentConnection: vi.fn(() => connection),
     readEnvironmentConnection: vi.fn(() => null),
     reconnectSavedEnvironment: vi.fn(async () => undefined),
     removeSavedEnvironment: vi.fn(async () => undefined),
