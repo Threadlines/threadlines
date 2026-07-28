@@ -1,9 +1,9 @@
-import { ChevronDownIcon, FolderPlusIcon } from "lucide-react";
+import { ChevronDownIcon, EllipsisIcon, FolderIcon, FolderPlusIcon } from "lucide-react";
 import React, { memo, useCallback, useState } from "react";
 import type { ContextMenuItem, SidebarProjectGroupingMode } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
 
-import { newCommandId } from "../../lib/utils";
+import { cn, newCommandId } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -31,15 +31,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import {
-  Menu,
-  MenuItem,
-  MenuPopup,
-  MenuRadioGroup,
-  MenuRadioItem,
-  MenuSeparator,
-  MenuTrigger,
-} from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -72,8 +64,13 @@ function formatProjectMemberActionLabel(
   return member.environmentLabel ? `${member.environmentLabel} — ${member.cwd}` : member.cwd;
 }
 
-/** The radio value standing in for "no project scope"; keys are never empty. */
-const ALL_PROJECTS_VALUE = "";
+const SCOPE_ITEM_CLASS_NAME = "gap-2 data-highlighted:bg-foreground/12";
+/**
+ * Selection is a resting fill; hover is a stronger one. Both are neutral
+ * alphas of the foreground, so "which is selected" and "which is under the
+ * cursor" never read as the same state.
+ */
+const SCOPE_ITEM_SELECTED = "bg-foreground/6 text-foreground";
 
 export interface ProjectScopeMenuProps {
   options: readonly ProjectScopeOption[];
@@ -435,14 +432,20 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     updateSettings,
   ]);
 
-  const handleProjectContextMenu = useCallback(
-    (event: React.MouseEvent, projectKey: string) => {
+  const showProjectContextMenuAt = useCallback(
+    (projectKey: string, position: { x: number; y: number }) => {
       const project = projectByKey.get(projectKey);
       if (!project) return;
-      event.preventDefault();
-      showProjectContextMenu(project, { x: event.clientX, y: event.clientY });
+      showProjectContextMenu(project, position);
     },
     [projectByKey, showProjectContextMenu],
+  );
+  const handleProjectContextMenu = useCallback(
+    (event: React.MouseEvent, projectKey: string) => {
+      event.preventDefault();
+      showProjectContextMenuAt(projectKey, { x: event.clientX, y: event.clientY });
+    },
+    [showProjectContextMenuAt],
   );
 
   const scopedProject =
@@ -454,7 +457,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         <Menu>
           <MenuTrigger
             data-testid="inbox-scope-trigger"
-            className="inline-flex h-6 min-w-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground/80 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+            className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-xs text-muted-foreground/80 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
             // Right-clicking the trigger addresses the project you are already
             // scoped to, so the menu is not the only way in.
             onContextMenu={(event: React.MouseEvent) => {
@@ -469,51 +472,82 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 environmentId={scopedProject.environmentId}
                 className="size-3.5 shrink-0"
               />
-            ) : null}
-            <span className="min-w-0 truncate">{scopedProject?.displayName ?? "All projects"}</span>
+            ) : (
+              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+            )}
+            <span className="min-w-0 flex-1 truncate text-left">
+              {scopedProject?.displayName ?? "All projects"}
+            </span>
             <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/50" />
           </MenuTrigger>
           <MenuPopup align="start" side="bottom" className="min-w-56">
-            <MenuRadioGroup
-              value={scopedProjectKey ?? ALL_PROJECTS_VALUE}
-              onValueChange={(value) => {
-                onScopeChange(value === ALL_PROJECTS_VALUE ? null : String(value));
+            <MenuItem
+              data-testid="inbox-scope-all"
+              className={cn(
+                SCOPE_ITEM_CLASS_NAME,
+                scopedProjectKey === null && SCOPE_ITEM_SELECTED,
+              )}
+              onClick={() => {
+                onScopeChange(null);
               }}
             >
-              <MenuRadioItem data-testid="inbox-scope-all" value={ALL_PROJECTS_VALUE}>
-                All projects
-              </MenuRadioItem>
-              {options.map((option) => (
-                <MenuRadioItem
+              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+              <span className="min-w-0 flex-1 truncate">All projects</span>
+            </MenuItem>
+            {options.map((option) => {
+              const project = projectByKey.get(option.key);
+              return (
+                <MenuItem
                   key={option.key}
                   data-testid={`inbox-scope-${option.key}`}
-                  value={option.key}
-                  // Same management actions the project header used to hold.
+                  className={cn(
+                    SCOPE_ITEM_CLASS_NAME,
+                    "group/scope-item",
+                    scopedProjectKey === option.key && SCOPE_ITEM_SELECTED,
+                  )}
+                  onClick={() => {
+                    onScopeChange(option.key);
+                  }}
+                  // Right-click keeps working; the button is the discoverable half.
                   onContextMenu={(event: React.MouseEvent) => {
                     handleProjectContextMenu(event, option.key);
                   }}
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    {(() => {
-                      const project = projectByKey.get(option.key);
-                      return project ? (
-                        <ProjectFavicon
-                          cwd={project.cwd}
-                          environmentId={project.environmentId}
-                          className="size-3.5 shrink-0"
-                        />
-                      ) : null;
-                    })()}
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                    {option.needsYouCount > 0 ? (
-                      <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">
-                        {option.needsYouCount}
-                      </span>
-                    ) : null}
-                  </span>
-                </MenuRadioItem>
-              ))}
-            </MenuRadioGroup>
+                  {project ? (
+                    <ProjectFavicon
+                      cwd={project.cwd}
+                      environmentId={project.environmentId}
+                      className="size-3.5 shrink-0"
+                    />
+                  ) : (
+                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  {option.needsYouCount > 0 ? (
+                    <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">
+                      {option.needsYouCount}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-testid={`inbox-scope-actions-${option.key}`}
+                    aria-label={`Manage ${option.label}`}
+                    className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/scope-item:opacity-100 group-focus-within/scope-item:opacity-100 pointer-coarse:opacity-100"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      showProjectContextMenuAt(option.key, {
+                        x: Math.round(rect.right),
+                        y: Math.round(rect.bottom),
+                      });
+                    }}
+                  >
+                    <EllipsisIcon className="size-3.5" />
+                  </button>
+                </MenuItem>
+              );
+            })}
             <MenuSeparator />
             <MenuItem onClick={onAddProject}>
               <FolderPlusIcon />

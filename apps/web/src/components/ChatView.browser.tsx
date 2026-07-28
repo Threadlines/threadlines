@@ -5240,6 +5240,55 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps the thread you are reading on the shelf when Done collapses", async () => {
+    const otherDoneThreadId = "thread-done-collapse" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-done-collapse" as MessageId,
+          targetText: "done collapse target",
+        }),
+        otherDoneThreadId,
+      ),
+    });
+
+    try {
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      const otherThreadKey = scopedThreadKey(
+        scopeThreadRef(LOCAL_ENVIRONMENT_ID, otherDoneThreadId),
+      );
+      const doneAt = new Date().toISOString();
+      useUiStateStore.getState().markThreadDone(THREAD_KEY, doneAt);
+      useUiStateStore.getState().markThreadDone(otherThreadKey, doneAt);
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+          expect(
+            document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`),
+          ).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await page.getByTestId("inbox-done-toggle").click();
+
+      await vi.waitFor(
+        () => {
+          // Collapsing a section must not close the thread open inside it.
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+          expect(
+            document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`),
+          ).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("moves a thread into the Done tail and back with Reopen", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -5279,7 +5328,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("exposes the full thread title on the sidebar row tooltip", async () => {
+  it("shows the full thread title in the row hover card, and nothing else", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5296,9 +5345,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         () => {
-          const tooltip = document.querySelector<HTMLElement>('[data-slot="tooltip-popup"]');
-          expect(tooltip).not.toBeNull();
-          expect(tooltip?.textContent).toContain(THREAD_TITLE);
+          const hoverCard = document.querySelector<HTMLElement>(
+            '[data-testid="thread-hover-card"]',
+          );
+          expect(hoverCard).not.toBeNull();
+          expect(hoverCard?.textContent).toContain(THREAD_TITLE);
+          // The hover card is the only popup: a truncated title must not raise
+          // a second one on top of it.
+          expect(document.querySelectorAll('[data-slot="tooltip-popup"]').length).toBe(1);
         },
         { timeout: 8_000, interval: 16 },
       );

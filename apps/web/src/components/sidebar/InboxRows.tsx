@@ -426,24 +426,17 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 onClick={handleRenameInputClick}
               />
             ) : (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-xs font-medium",
-                        isUnseen ? "text-foreground" : "text-foreground/90",
-                      )}
-                      data-testid={`thread-title-${thread.id}`}
-                    >
-                      {thread.title}
-                    </span>
-                  }
-                />
-                <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-                  {thread.title}
-                </TooltipPopup>
-              </Tooltip>
+              // No tooltip on the title: the hover card already carries the
+              // full one, and two popups racing the same hover is the bug.
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-xs font-medium",
+                  isUnseen ? "text-foreground" : "text-foreground/90",
+                )}
+                data-testid={`thread-title-${thread.id}`}
+              >
+                {thread.title}
+              </span>
             )}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               {terminalStatus ? (

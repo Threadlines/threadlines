@@ -1,6 +1,11 @@
-import { MessagesSquareIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  MessagesSquareIcon,
+  SearchIcon,
+  SettingsIcon,
+  SquarePenIcon,
+} from "lucide-react";
 import { ThreadlinesGlyph } from "./Icons";
-import { SectionLabel } from "./ui/threadline";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -173,19 +178,51 @@ function buildThreadJumpLabelMap(input: {
  * separated by spacing rather than borders, the hairline belongs to the
  * boundary between sections.
  */
-function InboxSectionHeader({ label, children }: { label: string; children?: React.ReactNode }) {
+/**
+ * A section's name, then a hairline running out to the edge.
+ *
+ * The rule doubles as the divider between sections, so the boundary and the
+ * label are one gesture rather than two stacked ones. Sentence case: these are
+ * names for parts of a list, not shouted headings.
+ */
+function InboxSectionHeader({
+  label,
+  count,
+  trailing,
+  collapsed,
+  onToggleCollapsed,
+  testId,
+}: {
+  label: string;
+  count: number;
+  trailing?: React.ReactNode;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  testId?: string;
+}) {
   return (
-    <>
-      <SidebarSeparator className="my-1.5" />
-      <div className="flex items-baseline gap-2 px-3 pb-1.5">
-        <SectionLabel tick={false} className="font-mono text-[11px] tracking-[0.06em]">
-          {label}
-        </SectionLabel>
-        <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/45">
-          {children}
-        </span>
-      </div>
-    </>
+    <div className="mt-1.5 flex items-center gap-2 px-3 pb-1.5">
+      <span className="shrink-0 text-[11px] font-medium text-muted-foreground/70">
+        {label} ({count})
+      </span>
+      {trailing}
+      <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-sidebar-border" />
+      {onToggleCollapsed ? (
+        <button
+          type="button"
+          data-thread-selection-safe
+          data-testid={testId}
+          aria-expanded={!collapsed}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
+          className="-my-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+          onClick={onToggleCollapsed}
+        >
+          <ChevronDownIcon
+            className={cn("size-3.5 transition-transform duration-150", collapsed && "-rotate-90")}
+          />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -342,6 +379,7 @@ export default function Sidebar() {
   const [renamingTitle, setRenamingTitle] = useState("");
   const [confirmingArchiveThreadKey, setConfirmingArchiveThreadKey] = useState<string | null>(null);
   const [liveListExpanded, setLiveListExpanded] = useState(false);
+  const [doneCollapsed, setDoneCollapsed] = useState(false);
   const [revealedDoneCount, setRevealedDoneCount] = useState(0);
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
@@ -589,6 +627,18 @@ export default function Sidebar() {
     DONE_REVEAL_STEP,
     doneEntries.length - visibleDoneEntries.length,
   );
+  // Collapsed, the shelf still holds the thread you are reading: closing a
+  // section should not close the thing you have open in it.
+  const renderedDoneEntries = useMemo(
+    () =>
+      doneCollapsed
+        ? doneEntries.filter((entry) => entry.threadKey === routeThreadKey)
+        : visibleDoneEntries,
+    [doneCollapsed, doneEntries, routeThreadKey, visibleDoneEntries],
+  );
+  const toggleDoneCollapsed = useCallback(() => {
+    setDoneCollapsed((collapsed) => !collapsed);
+  }, []);
 
   // A new scope is a new list; the reveals from the old one mean nothing here.
   useEffect(() => {
@@ -599,9 +649,9 @@ export default function Sidebar() {
   const orderedThreadKeys = useMemo(
     () => [
       ...visibleLiveEntries.map((entry) => entry.threadKey),
-      ...visibleDoneEntries.map((entry) => entry.threadKey),
+      ...renderedDoneEntries.map((entry) => entry.threadKey),
     ],
-    [visibleDoneEntries, visibleLiveEntries],
+    [renderedDoneEntries, visibleLiveEntries],
   );
 
   const navigateToThread = useCallback(
@@ -1278,7 +1328,7 @@ export default function Sidebar() {
                 </div>
               </SidebarGroup>
 
-              <div className="px-2 pb-1">
+              <div className="px-2 py-1">
                 <button
                   type="button"
                   data-testid="sidebar-general-chats"
@@ -1304,19 +1354,17 @@ export default function Sidebar() {
                 onAddProject={openAddProjectCommandPalette}
               />
 
-              <InboxSectionHeader label="Threads">
-                {liveEntries.length > 0 ? (
-                  <>
-                    {needsYouCount > 0 ? (
-                      <span className="text-amber-600 dark:text-amber-300/90">
-                        {needsYouCount} need{needsYouCount === 1 ? "s" : ""} you
-                      </span>
-                    ) : null}
-                    {needsYouCount > 0 ? " · " : null}
-                    {liveEntries.length}
-                  </>
-                ) : null}
-              </InboxSectionHeader>
+              <InboxSectionHeader
+                label="Threads"
+                count={liveEntries.length}
+                trailing={
+                  needsYouCount > 0 ? (
+                    <span className="shrink-0 text-[11px] text-amber-600 dark:text-amber-300/90">
+                      {needsYouCount} need{needsYouCount === 1 ? "s" : ""} you
+                    </span>
+                  ) : null
+                }
+              />
 
               {liveEntries.length === 0 ? (
                 <div className="px-3 py-2 text-[11px] text-muted-foreground/60">
@@ -1376,9 +1424,15 @@ export default function Sidebar() {
 
               {doneEntries.length > 0 ? (
                 <>
-                  <InboxSectionHeader label="Done">{doneEntries.length}</InboxSectionHeader>
+                  <InboxSectionHeader
+                    label="Done"
+                    count={doneEntries.length}
+                    collapsed={doneCollapsed}
+                    onToggleCollapsed={toggleDoneCollapsed}
+                    testId="inbox-done-toggle"
+                  />
                   <ul data-testid="inbox-done-list">
-                    {visibleDoneEntries.map((entry) => (
+                    {renderedDoneEntries.map((entry) => (
                       <InboxDoneRow
                         key={entry.threadKey}
                         thread={entry.thread}
@@ -1396,7 +1450,7 @@ export default function Sidebar() {
                       />
                     ))}
                   </ul>
-                  {nextDoneRevealCount > 0 ? (
+                  {!doneCollapsed && nextDoneRevealCount > 0 ? (
                     <button
                       type="button"
                       data-thread-selection-safe
