@@ -10,11 +10,7 @@ import {
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
-import type { EnvironmentId } from "@threadlines/contracts";
-import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { SidebarThreadSummary, Thread } from "../types";
-import type { OnDeckSyncInput } from "../uiStateStore";
-import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
@@ -46,17 +42,6 @@ export interface ThreadStatusPill {
   dotClass: string;
   pulse: boolean;
 }
-
-const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Working: 3,
-  Starting: 3,
-  "Plan Ready": 2,
-  Background: 2,
-  Completed: 1,
-  Failed: 4,
-};
 
 export const THREAD_STATUS_DOT_CLASSES = {
   amber: "bg-amber-500 dark:bg-amber-300/90",
@@ -261,17 +246,6 @@ export function orderItemsByPreferredIds<TItem, TId>(input: {
   return [...ordered, ...remaining];
 }
 
-export function getVisibleSidebarThreadIds<TThreadId>(
-  renderedProjects: readonly {
-    shouldShowThreadPanel?: boolean;
-    renderedThreadIds: readonly TThreadId[];
-  }[],
-): TThreadId[] {
-  return renderedProjects.flatMap((renderedProject) =>
-    renderedProject.shouldShowThreadPanel === false ? [] : renderedProject.renderedThreadIds,
-  );
-}
-
 export function getSidebarThreadIdsToPrewarm<TThreadId>(
   visibleThreadIds: readonly TThreadId[],
   limit = SIDEBAR_THREAD_PREWARM_LIMIT,
@@ -313,37 +287,6 @@ export function isContextMenuPointerDown(input: {
 }): boolean {
   if (input.button === 2) return true;
   return input.isMac && input.button === 0 && input.ctrlKey;
-}
-
-export function resolveThreadRowClassName(input: {
-  isActive: boolean;
-  isSelected: boolean;
-}): string {
-  const baseClassName =
-    "h-7 w-full translate-x-0 cursor-pointer justify-start px-2 text-left select-none focus-ring focus-visible:ring-inset";
-
-  if (input.isSelected && input.isActive) {
-    return cn(
-      baseClassName,
-      "bg-primary/22 text-foreground font-medium hover:bg-primary/26 hover:text-foreground dark:bg-primary/30 dark:hover:bg-primary/36",
-    );
-  }
-
-  if (input.isSelected) {
-    return cn(
-      baseClassName,
-      "bg-primary/15 text-foreground hover:bg-primary/19 hover:text-foreground dark:bg-primary/22 dark:hover:bg-primary/28",
-    );
-  }
-
-  if (input.isActive) {
-    return cn(
-      baseClassName,
-      "bg-accent/85 text-foreground font-medium hover:bg-accent hover:text-foreground dark:bg-accent/55 dark:hover:bg-accent/70",
-    );
-  }
-
-  return cn(baseClassName, "text-muted-foreground hover:bg-accent hover:text-foreground");
 }
 
 export function resolveThreadStatusPill(input: {
@@ -438,67 +381,16 @@ export function resolveThreadStatusPill(input: {
   return null;
 }
 
-/** Statuses that mean the provider is working or waiting on the user right now. */
-const ON_DECK_LIVE_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
-  "Pending Approval",
-  "Awaiting Input",
-  "Working",
-  "Starting",
-  "Plan Ready",
-  "Background",
-]);
-
-/** Maps a thread's status pill and pin state onto the deck's entry signals. */
-export function buildOnDeckSyncInput(input: {
-  threadKey: string;
-  pinnedAt: string | null;
-  status: ThreadStatusPill | null;
-}): OnDeckSyncInput {
-  return {
-    key: input.threadKey,
-    pinned: input.pinnedAt !== null,
-    live: input.status !== null && ON_DECK_LIVE_STATUSES.has(input.status.label),
-    unseen: input.status?.label === "Completed",
-  };
-}
-
-/** Only settled rows offer the dismiss affordance; live work can't be waved away. */
-export function isOnDeckDismissible(status: ThreadStatusPill | null): boolean {
-  return status === null || !ON_DECK_LIVE_STATUSES.has(status.label);
-}
-
-/**
- * Drops threads that already have a deck row, so a thread on deck appears once
- * in the sidebar rather than twice. Must be applied *before* the preview window
- * is computed: a deck thread should not consume a preview slot and then vanish,
- * which would leave "Show more" counts disagreeing with the rendered rows.
- */
-export function excludeOnDeckThreads<TThread>(input: {
-  threads: readonly TThread[];
-  onDeckThreadKeys: ReadonlySet<string>;
-  getThreadKey: (thread: TThread) => string;
-}): TThread[] {
-  if (input.onDeckThreadKeys.size === 0) {
-    return [...input.threads];
-  }
-  return input.threads.filter((thread) => !input.onDeckThreadKeys.has(input.getThreadKey(thread)));
-}
-
 /**
  * Statuses where the agent has stopped and cannot continue without the user.
- * Narrower than {@link ON_DECK_LIVE_STATUSES}: a working thread is live but
- * needs nothing, and a ready plan is an invitation rather than a block.
+ * Narrower than "busy": a working thread needs nothing, and a ready plan is an
+ * invitation rather than a block.
  */
 const NEEDS_USER_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Pending Approval",
   "Awaiting Input",
   "Failed",
 ]);
-
-/** True while the provider is working on the thread or waiting on the user. */
-export function isLiveThreadStatus(status: ThreadStatusPill | null): boolean {
-  return status !== null && ON_DECK_LIVE_STATUSES.has(status.label);
-}
 
 /** True when the thread is blocked waiting on the user. */
 export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
@@ -517,85 +409,19 @@ export function countThreadsNeedingUser(statuses: ReadonlyArray<ThreadStatusPill
   return count;
 }
 
-export function resolveProjectStatusIndicator(
-  statuses: ReadonlyArray<ThreadStatusPill | null>,
-): ThreadStatusPill | null {
-  let highestPriorityStatus: ThreadStatusPill | null = null;
+/**
+ * The single word a row spends on status. Only states that stop the agent and
+ * hand the thread back earn one; in-flight work reads as "working" with its
+ * elapsed time, and everything else rests with a timestamp instead.
+ */
+const INBOX_STATUS_WORDS: Partial<Record<ThreadStatusPill["label"], string>> = {
+  "Pending Approval": "approval",
+  "Awaiting Input": "input",
+  Failed: "failed",
+};
 
-  for (const status of statuses) {
-    if (status === null) continue;
-    if (
-      highestPriorityStatus === null ||
-      THREAD_STATUS_PRIORITY[status.label] > THREAD_STATUS_PRIORITY[highestPriorityStatus.label]
-    ) {
-      highestPriorityStatus = status;
-    }
-  }
-
-  return highestPriorityStatus;
-}
-
-export interface SidebarThreadWindow<T> {
-  visibleThreads: T[];
-  hiddenThreads: T[];
-  /** How many threads the next "Show more" click reveals (0 = no row). */
-  nextRevealCount: number;
-  /** Total thread count for the "Search all N threads" row (null = no row). */
-  searchHandoffThreadCount: number | null;
-  /** True once the user revealed beyond the preview (shows "Show less"). */
-  isRevealed: boolean;
-}
-
-export function getSidebarThreadWindow<T>(input: {
-  threads: readonly T[];
-  getThreadKey: (thread: T) => string;
-  activeThreadKey: string | null;
-  previewLimit: number;
-  revealedCount: number;
-}): SidebarThreadWindow<T> {
-  const { activeThreadKey, getThreadKey, previewLimit, revealedCount, threads } = input;
-  const isRevealed = revealedCount > 0;
-  const windowSize = previewLimit + Math.max(0, revealedCount);
-
-  if (threads.length <= windowSize) {
-    return {
-      visibleThreads: [...threads],
-      hiddenThreads: [],
-      nextRevealCount: 0,
-      searchHandoffThreadCount: null,
-      isRevealed,
-    };
-  }
-
-  const windowThreads = threads.slice(0, windowSize);
-  // The active thread always stays visible, even when it falls in the hidden
-  // tail, so the current-thread marker never disappears from the sidebar.
-  const visibleThreadKeys = new Set(windowThreads.map(getThreadKey));
-  const includeActiveThread =
-    activeThreadKey !== null &&
-    !visibleThreadKeys.has(activeThreadKey) &&
-    threads.some((thread) => getThreadKey(thread) === activeThreadKey);
-  if (includeActiveThread) {
-    visibleThreadKeys.add(activeThreadKey);
-  }
-
-  const visibleThreads = includeActiveThread
-    ? threads.filter((thread) => visibleThreadKeys.has(getThreadKey(thread)))
-    : windowThreads;
-  const hiddenThreads = threads.filter((thread) => !visibleThreadKeys.has(getThreadKey(thread)));
-
-  // Reveal in preview-sized chunks until the tail is exhausted. Search remains
-  // available after the first expansion as a fast path for huge projects.
-  const revealStepSize = Math.max(0, previewLimit);
-  const nextRevealCount = Math.min(hiddenThreads.length, revealStepSize);
-
-  return {
-    visibleThreads,
-    hiddenThreads,
-    nextRevealCount,
-    searchHandoffThreadCount: isRevealed && hiddenThreads.length > 0 ? threads.length : null,
-    isRevealed,
-  };
+export function inboxStatusWord(status: ThreadStatusPill | null): string | null {
+  return status === null ? null : (INBOX_STATUS_WORDS[status.label] ?? null);
 }
 
 export function getFallbackThreadIdAfterDelete<
@@ -712,54 +538,6 @@ export function sortScopedProjectsByActivity<
     const project = projectByScopedKey.get(sorted.id);
     return project ? [project] : [];
   });
-}
-
-export interface ProjectHoverSummary {
-  name: string;
-  cwd: string;
-  environmentId: EnvironmentId;
-  status: ThreadStatusPill | null;
-  threadCount: number;
-  activeCount: number;
-  lastActivityAt: string | null;
-}
-
-/**
- * Builds a project's hover summary from its threads. Shared so the expanded row
- * and the collapsed rail glyph describe a project identically.
- */
-export function buildProjectHoverSummary(input: {
-  name: string;
-  cwd: string;
-  environmentId: EnvironmentId;
-  threads: readonly SidebarThreadSummary[];
-  getLastVisitedAt: (threadKey: string) => string | null | undefined;
-}): ProjectHoverSummary {
-  const getThreadKey = (thread: SidebarThreadSummary) =>
-    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-  const statuses = input.threads.map((thread) => {
-    const lastVisitedAt = input.getLastVisitedAt(getThreadKey(thread));
-    return resolveThreadStatusPill({
-      thread: {
-        ...thread,
-        ...(lastVisitedAt !== undefined && lastVisitedAt !== null ? { lastVisitedAt } : {}),
-      },
-    });
-  });
-  const lastActivityAt = input.threads.reduce<string | null>((latest, thread) => {
-    const at = thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
-    return latest === null || at > latest ? at : latest;
-  }, null);
-
-  return {
-    name: input.name,
-    cwd: input.cwd,
-    environmentId: input.environmentId,
-    status: resolveProjectStatusIndicator(statuses),
-    threadCount: input.threads.length,
-    activeCount: statuses.filter(isLiveThreadStatus).length,
-    lastActivityAt,
-  };
 }
 
 // ── Inbox lifecycle ──────────────────────────────────────────────────

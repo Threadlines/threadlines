@@ -21,7 +21,6 @@
     "@effect/atom-react": "catalog:",
     "@fontsource-variable/cascadia-mono": "^5.2.2",
     "@fontsource-variable/schibsted-grotesk": "^5.2.8",
-    "@formkit/auto-animate": "^0.10.0",
     "@legendapp/list": "^3.3.3",
     "@lexical/react": "^0.47.0",
     "@pierre/diffs": "catalog:",

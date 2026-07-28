@@ -284,9 +284,6 @@ importers:
       '@fontsource-variable/schibsted-grotesk':
         specifier: ^5.2.8
         version: 5.2.8
-      '@formkit/auto-animate':
-        specifier: ^0.10.0
-        version: 0.10.0
       '@legendapp/list':
         specifier: ^3.3.3
         version: 3.3.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -1414,9 +1411,6 @@ packages:
 
   '@fontsource-variable/schibsted-grotesk@5.2.8':
     resolution: {integrity: sha512-nZAorDrFue4dXZbI613WdvAhu5DPH1UJYNn5fWl7Poa+nl/s9o3VUcQImIiVZpQnYG/jkPVzHsTE7WZbSDvvkw==}
-
-  '@formkit/auto-animate@0.10.0':
-    resolution: {integrity: sha512-KGomRttjUfORuPUaR/ZGQw+6xfMrTM+sxnILv7JAd9AmabU9rg9i6gF/iC0Ih+QpKCubJpCA/1DX9UHKE8cX+A==}
 
   '@hono/node-server@2.0.11':
     resolution: {integrity: sha512-bjD221KPLoJTWUwso1J6fGKiTXEUFedG/s0visavY4zakFPkeGURMRNly+FhBHs7T8Dz4qHaZIMX9ZoJHSJtKA==}
@@ -6827,8 +6821,6 @@ snapshots:
   '@fontsource-variable/cascadia-mono@5.2.2': {}
 
   '@fontsource-variable/schibsted-grotesk@5.2.8': {}
-
-  '@formkit/auto-animate@0.10.0': {}
 
   '@hono/node-server@2.0.11(hono@4.12.31)':
     dependencies:

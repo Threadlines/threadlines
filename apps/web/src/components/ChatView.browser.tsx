@@ -2097,6 +2097,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       projectExpandedById: {},
       projectOrder: [],
       threadLastVisitedAtById: {},
+      doneThreadOverrides: {},
+      inboxProjectScopeKey: null,
     });
     useTerminalStateStore.persist.clearStorage();
     useTerminalStateStore.setState({
@@ -2373,30 +2375,37 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides the active thread row when collapsing a one-thread project", async () => {
+  it("narrows the live list to the scoped project and hides the implied label", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-one-thread-collapse-target" as MessageId,
-        targetText: "one thread collapse target",
+        targetMessageId: "msg-user-scope-target" as MessageId,
+        targetText: "scope target",
       }),
     });
 
     try {
-      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      const threadRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find thread row.",
+      );
+      expect(threadRow.textContent).toContain("Project");
 
-      const projectButton = await waitForButtonByText("Project");
-      expect(projectButton.getAttribute("aria-expanded")).toBe("true");
-      projectButton.click();
+      await page.getByTestId(`inbox-scope-${PROJECT_LOGICAL_KEY}`).click();
 
       await vi.waitFor(
         () => {
-          expect(projectButton.getAttribute("aria-expanded")).toBe("false");
-          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+          expect(useUiStateStore.getState().inboxProjectScopeKey).toBe(PROJECT_LOGICAL_KEY);
+          const scopedRow = document.querySelector<HTMLElement>(
+            `[data-testid="thread-row-${THREAD_ID}"]`,
+          );
+          expect(scopedRow).not.toBeNull();
+          expect(scopedRow?.textContent).not.toContain("Project");
         },
         { timeout: 4_000, interval: 16 },
       );
     } finally {
+      useUiStateStore.getState().setInboxProjectScope(null);
       await mounted.cleanup();
     }
   });
@@ -5037,9 +5046,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("renders compact thread actions in the shared thread-row hover group", async () => {
-    // Deliberately unpinned. A pinned thread is on deck, and a thread on deck
-    // is not drawn again in the tree -- so the tree row this is about only
-    // exists for an ordinary thread.
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5068,9 +5074,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Thread actions should render inside a shared visibility wrapper.",
       ).not.toBeNull();
       const threadItem = archiveButton.closest("li");
-      expect(threadItem?.className).toContain("group/menu-sub-item");
-      expect(compactActions?.className).toContain("group-hover/menu-sub-item:opacity-100");
-      expect(compactActions?.className).toContain("group-focus-within/menu-sub-item:opacity-100");
+      expect(threadItem?.className).toContain("group/thread-row");
+      expect(compactActions?.className).toContain("group-hover/thread-row:opacity-100");
+      expect(compactActions?.className).toContain("group-focus-within/thread-row:opacity-100");
       expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
       expect(pinButton.getAttribute("aria-pressed")).toBe("false");
       expect(
@@ -5084,37 +5090,90 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("puts a pinned thread on the deck instead of in the tree, and holds live work there", async () => {
-    // This replaces two tests that asserted pin and archive on the tree row of a
-    // running thread. That row no longer exists: pinned and live threads are on
-    // deck, and a thread on deck is drawn once, there. What matters now is that
-    // it moved rather than vanished, and that a run in progress cannot be waved
-    // away with the dismiss button.
+  it("lists every open thread once, floats pins to the top, and refuses Done on running work", async () => {
+    const pinnedThreadId = "thread-pinned-inbox" as ThreadId;
+    const runningSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-running-pin-test" as MessageId,
+      targetText: "running pin target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-running-pin-test" as TurnId,
+    });
+    const withPinnedThread = addThreadToSnapshot(runningSnapshot, pinnedThreadId);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withPinnedThread,
+        threads: withPinnedThread.threads.map((thread) =>
+          thread.id === pinnedThreadId ? { ...thread, pinnedAt: NOW_ISO } : thread,
+        ),
+      },
+    });
+
+    try {
+      const runningRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find the running thread's row.",
+      );
+      const pinnedRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${pinnedThreadId}"]`),
+        "Unable to find the pinned thread's row.",
+      );
+
+      expect(
+        pinnedRow.compareDocumentPosition(runningRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "A pinned thread sorts above the rest of the live list.",
+      ).toBeTruthy();
+      expect(
+        document.querySelectorAll(`[data-testid="thread-row-${THREAD_ID}"]`).length,
+        "Each thread is drawn exactly once.",
+      ).toBe(1);
+      expect(
+        document.querySelector(`[data-testid="thread-done-${THREAD_ID}"]`),
+        "A running thread cannot be marked done.",
+      ).toBeNull();
+      expect(
+        document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
+        "A settled thread offers Done.",
+      ).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("moves a thread into the Done tail and back with Reopen", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-running-pin-test" as MessageId,
-        targetText: "running pin target",
-        threadPinnedAt: NOW_ISO,
-        sessionStatus: "running",
-        sessionActiveTurnId: "turn-running-pin-test" as TurnId,
+        targetMessageId: "msg-user-done-lifecycle" as MessageId,
+        targetText: "done lifecycle target",
       }),
     });
 
     try {
-      await waitForElement(
-        () => document.querySelector<HTMLElement>(`[data-testid="on-deck-row-${THREAD_ID}"]`),
-        "Unable to find the thread's deck row.",
+      const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
+      await expect.element(threadRow).toBeInTheDocument();
+      await threadRow.hover();
+      await page.getByTestId(`thread-done-${THREAD_ID}`).click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
       );
 
-      expect(
-        document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`),
-        "A thread on deck should not also be drawn in the project tree.",
-      ).toBeNull();
-      expect(
-        document.querySelector(`[data-testid="on-deck-dismiss-${THREAD_ID}"]`),
-        "A running thread should not offer dismiss.",
-      ).toBeNull();
+      const doneRow = page.getByTestId(`done-row-${THREAD_ID}`);
+      await doneRow.hover();
+      await page.getByTestId(`done-reopen-${THREAD_ID}`).click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).toBeNull();
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }
