@@ -27,20 +27,8 @@ __export(injectedScript_exports, {
 module.exports = __toCommonJS(injectedScript_exports);
 
 // packages/isomorphic/ariaSnapshot.ts
-function ariaNodesEqual(a, b) {
-  if (a.role !== b.role || a.name !== b.name)
-    return false;
-  if (!ariaPropsEqual(a, b) || hasPointerCursor(a) !== hasPointerCursor(b))
-    return false;
-  const aKeys = Object.keys(a.props);
-  const bKeys = Object.keys(b.props);
-  return aKeys.length === bKeys.length && aKeys.every((k) => a.props[k] === b.props[k]);
-}
 function hasPointerCursor(ariaNode) {
   return ariaNode.box.cursor === "pointer";
-}
-function ariaPropsEqual(a, b) {
-  return a.active === b.active && a.checked === b.checked && a.disabled === b.disabled && a.expanded === b.expanded && a.invalid === b.invalid && a.selected === b.selected && a.level === b.level && a.pressed === b.pressed;
 }
 function parseAriaSnapshot(yaml, text, options = {}) {
   var _a;
@@ -1650,7 +1638,7 @@ function stringifySelector(selector, forceEngineName) {
     if (!forceEngineName && i !== selector.capture) {
       if (p.name === "css")
         includeEngine = false;
-      else if (p.name === "xpath" && p.source.startsWith("//") || p.source.startsWith(".."))
+      else if (p.name === "xpath" && (p.source.startsWith("//") || p.source.startsWith("..")))
         includeEngine = false;
     }
     const prefix = includeEngine ? p.name + "=" : "";
@@ -1801,7 +1789,7 @@ function parseAttributeSelector(selector, allowUnquotedStrings) {
     if (eat1() !== "/")
       syntaxError("parsing regular expression");
     let flags = "";
-    while (!EOL && next().match(/[dgimsuy]/))
+    while (!EOL && next().match(/[dgimsuvy]/))
       flags += eat1();
     try {
       return new RegExp(source, flags);
@@ -1965,6 +1953,14 @@ function trimString(input, cap, suffix = "") {
 }
 function trimStringWithEllipsis(input, cap) {
   return trimString(input, cap, "\u2026");
+}
+function truncateDataUrl(url) {
+  if (!url.startsWith("data:"))
+    return url;
+  const comma = url.indexOf(",");
+  if (comma === -1)
+    return url;
+  return url.slice(0, comma + 1) + "\u2026";
 }
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2612,8 +2608,12 @@ var JsonlLocatorFactory = class {
   }
   chainLocators(locators) {
     const objects = locators.map((l) => JSON.parse(l));
-    for (let i = 0; i < objects.length - 1; ++i)
-      objects[i].next = objects[i + 1];
+    for (let i = 0; i < objects.length - 1; ++i) {
+      let tail = objects[i];
+      while (tail.next)
+        tail = tail.next;
+      tail.next = objects[i + 1];
+    }
     return JSON.stringify(objects[0]);
   }
 };
@@ -2736,6 +2736,166 @@ function yamlStringNeedsQuotes(str) {
   return false;
 }
 
+// packages/injected/src/ariaSnapshotDistiller.ts
+function distillAriaSnapshot(snapshot, options) {
+  runPlugins(snapshot, options.mode === "ai" ? aiPlugins : normalizePlugins, options);
+}
+function runPlugins(snapshot, plugins, options) {
+  var _a, _b;
+  const ctx = { snapshot, depth: -1, maxDepth: options.depth, ancestors: [], pendingContentRefs: /* @__PURE__ */ new Set() };
+  const traverse = (node, depth) => {
+    const children = [];
+    const visitChild = (child) => {
+      var _a2, _b2;
+      if (typeof child === "string") {
+        children.push(child);
+        return;
+      }
+      ctx.depth = depth + 1;
+      for (const plugin of plugins) {
+        const result = (_a2 = plugin.enter) == null ? void 0 : _a2.call(plugin, child, ctx);
+        if (result === "remove")
+          return;
+        if (result === "unwrap") {
+          child.children.forEach(visitChild);
+          return;
+        }
+      }
+      traverse(child, depth + 1);
+      ctx.depth = depth + 1;
+      for (const plugin of plugins) {
+        const result = (_b2 = plugin.exit) == null ? void 0 : _b2.call(plugin, child, ctx);
+        if (result === "remove")
+          return;
+        if (result === "unwrap") {
+          children.push(...child.children);
+          return;
+        }
+      }
+      children.push(child);
+    };
+    ctx.ancestors.push(node);
+    node.children.forEach(visitChild);
+    ctx.ancestors.pop();
+    node.children = children;
+  };
+  for (const plugin of plugins)
+    (_a = plugin.enter) == null ? void 0 : _a.call(plugin, snapshot.root, ctx);
+  traverse(snapshot.root, -1);
+  ctx.depth = -1;
+  for (const plugin of plugins)
+    (_b = plugin.exit) == null ? void 0 : _b.call(plugin, snapshot.root, ctx);
+}
+function isLeafGeneric(node) {
+  return node.role === "generic" && node.children.every((child) => typeof child === "string");
+}
+var mergeStringChildren = {
+  name: "mergeStringChildren",
+  exit(node) {
+    const children = [];
+    const buffer = [];
+    const flush = () => {
+      if (!buffer.length)
+        return;
+      const text = normalizeWhiteSpace(buffer.join(""));
+      if (text)
+        children.push(text);
+      buffer.length = 0;
+    };
+    for (const child of node.children) {
+      if (typeof child === "string") {
+        buffer.push(child);
+      } else {
+        flush();
+        children.push(child);
+      }
+    }
+    flush();
+    node.children = children;
+    if (node.children.length === 1 && node.children[0] === node.name)
+      node.children = [];
+  }
+};
+var unwrapSingleChildGenerics = {
+  name: "unwrapSingleChildGenerics",
+  exit(node) {
+    if (node.role === "generic" && !node.name && node.children.length <= 1 && node.children.every((child) => typeof child !== "string" && !!child.ref))
+      return "unwrap";
+  }
+};
+var removeNamelessImages = {
+  name: "removeNamelessImages",
+  exit(node) {
+    if (node.role === "img" && !node.name && !node.children.length)
+      return "remove";
+  }
+};
+var removeRedundantNames = {
+  name: "removeRedundantNames",
+  enter(node, ctx) {
+    var _a;
+    if (!node.ref)
+      return;
+    for (const ref of ((_a = ctx.snapshot.info.get(node.ref)) == null ? void 0 : _a.nameFromContentRefs) || [])
+      ctx.pendingContentRefs.add(ref);
+    const beyondDepth = !!ctx.maxDepth && ctx.depth > ctx.maxDepth;
+    if (!beyondDepth && !isLeafGeneric(node))
+      ctx.pendingContentRefs.delete(node.ref);
+  },
+  exit(node, ctx) {
+    var _a;
+    if (!node.ref)
+      return;
+    const nameFromContentRefs = (_a = ctx.snapshot.info.get(node.ref)) == null ? void 0 : _a.nameFromContentRefs;
+    if (!(nameFromContentRefs == null ? void 0 : nameFromContentRefs.length))
+      return;
+    if (nameFromContentRefs.every((ref) => !ctx.pendingContentRefs.has(ref))) {
+      node.name = "";
+    } else {
+      for (const ref of nameFromContentRefs)
+        ctx.pendingContentRefs.delete(ref);
+    }
+  }
+};
+var removeNameRepeatingChild = {
+  name: "removeNameRepeatingChild",
+  exit(node, ctx) {
+    const parent = ctx.ancestors[ctx.ancestors.length - 1];
+    if (!(parent == null ? void 0 : parent.name) || node.role !== "generic" || node.active || Object.keys(node.props).length)
+      return;
+    const singleTextChild = node.children.length === 1 && typeof node.children[0] === "string" ? node.children[0] : void 0;
+    const text = node.name ? node.children.length ? void 0 : node.name : singleTextChild;
+    if (text && text === parent.name)
+      return "remove";
+  }
+};
+var inlineTextIntoGeneric = {
+  name: "inlineTextIntoGeneric",
+  exit(node) {
+    if (node.role !== "generic" || Object.keys(node.props).length || node.children.length !== 1)
+      return;
+    const child = node.children[0];
+    if (typeof child === "string")
+      return;
+    if (child.role !== "generic" || child.name || child.active || Object.keys(child.props).length)
+      return;
+    if (child.children.length === 1 && typeof child.children[0] === "string")
+      node.children = [child.children[0]];
+  }
+};
+var normalizePlugins = [
+  mergeStringChildren,
+  unwrapSingleChildGenerics
+];
+var aiPlugins = [
+  mergeStringChildren,
+  removeNamelessImages,
+  removeRedundantNames,
+  inlineTextIntoGeneric,
+  removeNameRepeatingChild,
+  unwrapSingleChildGenerics
+];
+
 // packages/injected/src/domUtils.ts
 var globalOptions = {};
 function setGlobalOptions(options) {
@@ -2788,6 +2948,14 @@ function getElementComputedStyle(element, pseudo) {
   return style;
 }
 function isElementStyleVisibilityVisible(element, style) {
+  const cached = cacheStyleVisibility == null ? void 0 : cacheStyleVisibility.get(element);
+  if (cached !== void 0)
+    return cached;
+  const result = computeElementStyleVisibilityVisible(element, style);
+  cacheStyleVisibility == null ? void 0 : cacheStyleVisibility.set(element, result);
+  return result;
+}
+function computeElementStyleVisibilityVisible(element, style) {
   style = style != null ? style : getElementComputedStyle(element);
   if (!style)
     return true;
@@ -2833,8 +3001,12 @@ function isVisibleTextNode(node) {
 }
 function elementSafeTagName(element) {
   const tagName = element.tagName;
-  if (typeof tagName === "string")
-    return tagName.toUpperCase();
+  if (typeof tagName === "string") {
+    const firstCharCode = tagName.charCodeAt(0);
+    if (firstCharCode >= 97 && firstCharCode <= 122)
+      return tagName.toUpperCase();
+    return tagName;
+  }
   if (element instanceof HTMLFormElement)
     return "FORM";
   return element.tagName.toUpperCase();
@@ -2842,18 +3014,21 @@ function elementSafeTagName(element) {
 var cacheStyle;
 var cacheStyleBefore;
 var cacheStyleAfter;
+var cacheStyleVisibility;
 var cachesCounter = 0;
 function beginDOMCaches() {
   ++cachesCounter;
   cacheStyle != null ? cacheStyle : cacheStyle = /* @__PURE__ */ new Map();
   cacheStyleBefore != null ? cacheStyleBefore : cacheStyleBefore = /* @__PURE__ */ new Map();
   cacheStyleAfter != null ? cacheStyleAfter : cacheStyleAfter = /* @__PURE__ */ new Map();
+  cacheStyleVisibility != null ? cacheStyleVisibility : cacheStyleVisibility = /* @__PURE__ */ new Map();
 }
 function endDOMCaches() {
   if (!--cachesCounter) {
     cacheStyle = void 0;
     cacheStyleBefore = void 0;
     cacheStyleAfter = void 0;
+    cacheStyleVisibility = void 0;
   }
 }
 
@@ -2947,11 +3122,11 @@ var kImplicitRoleByTagName = {
   "IMG": (e) => e.getAttribute("alt") === "" && !e.getAttribute("title") && !hasGlobalAriaAttribute(e) && !hasTabIndex(e) ? "presentation" : "img",
   "INPUT": (e) => {
     const type = e.type.toLowerCase();
-    if (type === "search")
-      return e.hasAttribute("list") ? "combobox" : "searchbox";
-    if (["email", "tel", "text", "url", ""].includes(type)) {
+    if (["email", "search", "tel", "text", "url", ""].includes(type)) {
       const list = getIdRefs(e, e.getAttribute("list"))[0];
-      return list && elementSafeTagName(list) === "DATALIST" ? "combobox" : "textbox";
+      if (list && elementSafeTagName(list) === "DATALIST")
+        return "combobox";
+      return type === "search" ? "searchbox" : "textbox";
     }
     if (type === "hidden")
       return null;
@@ -3153,6 +3328,14 @@ function hasPresentationConflictResolution(element, role) {
   return hasGlobalAriaAttribute(element, role) || isFocusable(element);
 }
 function getAriaRole(element) {
+  const cached = cacheAriaRole == null ? void 0 : cacheAriaRole.get(element);
+  if (cached !== void 0)
+    return cached;
+  const role = computeAriaRole(element);
+  cacheAriaRole == null ? void 0 : cacheAriaRole.set(element, role);
+  return role;
+}
+function computeAriaRole(element) {
   const explicitRole = getExplicitAriaRole(element);
   if (!explicitRole)
     return getImplicitAriaRole(element);
@@ -3306,22 +3489,49 @@ function allowsNameFromContent(role, targetDescendant) {
   const descendantAllowsNameFromContent = targetDescendant && ["", "caption", "code", "contentinfo", "definition", "deletion", "emphasis", "insertion", "list", "listitem", "mark", "none", "paragraph", "presentation", "region", "row", "rowgroup", "section", "strong", "subscript", "superscript", "table", "term", "time"].includes(role);
   return alwaysAllowsNameFromContent || descendantAllowsNameFromContent;
 }
+function computeAccessibleNameComposite(element, includeHidden, collectElements) {
+  const elementProhibitsNaming = ["caption", "code", "definition", "deletion", "emphasis", "generic", "insertion", "mark", "paragraph", "presentation", "strong", "subscript", "suggestion", "superscript", "term", "time"].includes(getAriaRole(element) || "");
+  if (elementProhibitsNaming)
+    return emptyCompositeString();
+  const result = getTextAlternativeInternal(element, {
+    includeHidden,
+    collectElements,
+    visitedElements: /* @__PURE__ */ new Set(),
+    embeddedInTargetElement: "self"
+  });
+  return { text: asFlatString(result.text), elements: result.elements };
+}
 function getElementAccessibleName(element, includeHidden) {
   const cache = includeHidden ? cacheAccessibleNameHidden : cacheAccessibleName;
   let accessibleName = cache == null ? void 0 : cache.get(element);
   if (accessibleName === void 0) {
-    accessibleName = "";
-    const elementProhibitsNaming = ["caption", "code", "definition", "deletion", "emphasis", "generic", "insertion", "mark", "paragraph", "presentation", "strong", "subscript", "suggestion", "superscript", "term", "time"].includes(getAriaRole(element) || "");
-    if (!elementProhibitsNaming) {
-      accessibleName = asFlatString(getTextAlternativeInternal(element, {
-        includeHidden,
-        visitedElements: /* @__PURE__ */ new Set(),
-        embeddedInTargetElement: "self"
-      }));
-    }
+    accessibleName = computeAccessibleNameComposite(
+      element,
+      includeHidden,
+      true
+      /* collectElements */
+    );
     cache == null ? void 0 : cache.set(element, accessibleName);
   }
   return accessibleName;
+}
+function getElementAccessibleNameText(element, includeHidden) {
+  var _a;
+  const composite = (_a = includeHidden ? cacheAccessibleNameHidden : cacheAccessibleName) == null ? void 0 : _a.get(element);
+  if (composite !== void 0)
+    return composite.text;
+  const cache = includeHidden ? cacheAccessibleNameTextHidden : cacheAccessibleNameText;
+  let text = cache == null ? void 0 : cache.get(element);
+  if (text === void 0) {
+    text = computeAccessibleNameComposite(
+      element,
+      includeHidden,
+      false
+      /* collectElements */
+    ).text;
+    cache == null ? void 0 : cache.set(element, text);
+  }
+  return text;
 }
 function getElementAccessibleDescription(element, includeHidden) {
   const cache = includeHidden ? cacheAccessibleDescriptionHidden : cacheAccessibleDescription;
@@ -3334,7 +3544,7 @@ function getElementAccessibleDescription(element, includeHidden) {
         includeHidden,
         visitedElements: /* @__PURE__ */ new Set(),
         embeddedInDescribedBy: { element: ref, hidden: isElementHiddenForAria(ref) }
-      })).join(" "));
+      }).text).join(" "));
     } else if (element.hasAttribute("aria-description")) {
       accessibleDescription = asFlatString(element.getAttribute("aria-description") || "");
     } else {
@@ -3389,7 +3599,7 @@ function getElementAccessibleErrorMessage(element) {
         getTextAlternativeInternal(errorMessage, {
           visitedElements: /* @__PURE__ */ new Set(),
           embeddedInDescribedBy: { element: errorMessage, hidden: isElementHiddenForAria(errorMessage) }
-        })
+        }).text
       ));
       accessibleErrorMessage = parts.join(" ").trim();
     }
@@ -3398,9 +3608,9 @@ function getElementAccessibleErrorMessage(element) {
   return accessibleErrorMessage;
 }
 function getTextAlternativeInternal(element, options) {
-  var _a, _b, _c, _d;
+  var _a, _b, _c, _d, _e;
   if (options.visitedElements.has(element))
-    return "";
+    return emptyCompositeString();
   const childOptions = {
     ...options,
     embeddedInTargetElement: options.embeddedInTargetElement === "self" ? "descendant" : options.embeddedInTargetElement
@@ -3409,20 +3619,20 @@ function getTextAlternativeInternal(element, options) {
     const isEmbeddedInHiddenReferenceTraversal = !!((_a = options.embeddedInLabelledBy) == null ? void 0 : _a.hidden) || !!((_b = options.embeddedInDescribedBy) == null ? void 0 : _b.hidden) || !!((_c = options.embeddedInNativeTextAlternative) == null ? void 0 : _c.hidden) || !!((_d = options.embeddedInLabel) == null ? void 0 : _d.hidden);
     if (isElementIgnoredForAria(element) || !isEmbeddedInHiddenReferenceTraversal && isElementHiddenForAria(element)) {
       options.visitedElements.add(element);
-      return "";
+      return emptyCompositeString();
     }
   }
   const labelledBy = getAriaLabelledByElements(element);
   if (!options.embeddedInLabelledBy) {
-    const accessibleName = (labelledBy || []).map((ref) => getTextAlternativeInternal(ref, {
+    const accessibleName = joinCompositeString((labelledBy || []).map((ref) => getTextAlternativeInternal(ref, {
       ...options,
       embeddedInLabelledBy: { element: ref, hidden: isElementHiddenForAria(ref) },
       embeddedInDescribedBy: void 0,
       embeddedInTargetElement: void 0,
       embeddedInLabel: void 0,
       embeddedInNativeTextAlternative: void 0
-    })).join(" ");
-    if (accessibleName)
+    })), " ", options.collectElements);
+    if (accessibleName.text)
       return accessibleName;
   }
   const role = getAriaRole(element) || "";
@@ -3434,8 +3644,8 @@ function getTextAlternativeInternal(element, options) {
       if (role === "textbox") {
         options.visitedElements.add(element);
         if (tagName === "INPUT" || tagName === "TEXTAREA")
-          return element.value;
-        return element.textContent || "";
+          return compositeString(element.value, element, options.collectElements);
+        return compositeString(element.textContent, element, options.collectElements);
       }
       if (["combobox", "listbox"].includes(role)) {
         options.visitedElements.add(element);
@@ -3449,48 +3659,48 @@ function getTextAlternativeInternal(element, options) {
           selectedOptions = listbox ? queryInAriaOwned(listbox, '[aria-selected="true"]').filter((e) => getAriaRole(e) === "option") : [];
         }
         if (!selectedOptions.length && tagName === "INPUT") {
-          return element.value;
+          return compositeString(element.value, element, options.collectElements);
         }
-        return selectedOptions.map((option) => getTextAlternativeInternal(option, childOptions)).join(" ");
+        return joinCompositeString(selectedOptions.map((option) => getTextAlternativeInternal(option, childOptions)), " ", options.collectElements);
       }
       if (["progressbar", "scrollbar", "slider", "spinbutton", "meter"].includes(role)) {
         options.visitedElements.add(element);
         if (element.hasAttribute("aria-valuetext"))
-          return element.getAttribute("aria-valuetext") || "";
+          return compositeString(element.getAttribute("aria-valuetext"), element, options.collectElements);
         if (element.hasAttribute("aria-valuenow"))
-          return element.getAttribute("aria-valuenow") || "";
-        return element.getAttribute("value") || "";
+          return compositeString(element.getAttribute("aria-valuenow"), element, options.collectElements);
+        return compositeString(element.getAttribute("value"), element, options.collectElements);
       }
       if (["menu"].includes(role)) {
         options.visitedElements.add(element);
-        return "";
+        return emptyCompositeString();
       }
     }
   }
   const ariaLabel = element.getAttribute("aria-label") || "";
   if (trimFlatString(ariaLabel)) {
     options.visitedElements.add(element);
-    return ariaLabel;
+    return compositeString(ariaLabel, element, options.collectElements);
   }
   if (!["presentation", "none"].includes(role)) {
     if (tagName === "INPUT" && ["button", "submit", "reset"].includes(element.type)) {
       options.visitedElements.add(element);
       const value = element.value || "";
       if (trimFlatString(value))
-        return value;
+        return compositeString(value, element, options.collectElements);
       if (element.type === "submit")
-        return "Submit";
+        return compositeString("Submit", element, options.collectElements);
       if (element.type === "reset")
-        return "Reset";
+        return compositeString("Reset", element, options.collectElements);
       const title = element.getAttribute("title") || "";
-      return title;
+      return compositeString(title, element, options.collectElements);
     }
     if (tagName === "INPUT" && element.type === "file") {
       options.visitedElements.add(element);
       const labels = element.labels || [];
       if (labels.length && !options.embeddedInLabelledBy)
         return getAccessibleNameFromAssociatedLabels(labels, options);
-      return "Choose File";
+      return compositeString("Choose File", element, options.collectElements);
     }
     if (tagName === "INPUT" && element.type === "image") {
       options.visitedElements.add(element);
@@ -3499,11 +3709,11 @@ function getTextAlternativeInternal(element, options) {
         return getAccessibleNameFromAssociatedLabels(labels, options);
       const alt = element.getAttribute("alt") || "";
       if (trimFlatString(alt))
-        return alt;
+        return compositeString(alt, element, options.collectElements);
       const title = element.getAttribute("title") || "";
       if (trimFlatString(title))
-        return title;
-      return "Submit";
+        return compositeString(title, element, options.collectElements);
+      return compositeString("Submit", element, options.collectElements);
     }
     if (!labelledBy && tagName === "BUTTON") {
       options.visitedElements.add(element);
@@ -3516,19 +3726,19 @@ function getTextAlternativeInternal(element, options) {
       const labels = element.labels || [];
       if (labels.length)
         return getAccessibleNameFromAssociatedLabels(labels, options);
-      return element.getAttribute("title") || "";
+      return compositeString(element.getAttribute("title") || "", element, options.collectElements);
     }
-    if (!labelledBy && (tagName === "TEXTAREA" || tagName === "SELECT" || tagName === "INPUT")) {
+    if (!labelledBy && (tagName === "TEXTAREA" || tagName === "SELECT" || tagName === "INPUT" || tagName === "METER" || tagName === "PROGRESS")) {
       options.visitedElements.add(element);
       const labels = element.labels || [];
       if (labels.length)
         return getAccessibleNameFromAssociatedLabels(labels, options);
-      const usePlaceholder = tagName === "INPUT" && ["text", "password", "search", "tel", "email", "url"].includes(element.type) || tagName === "TEXTAREA";
+      const usePlaceholder = tagName === "INPUT" && ["text", "password", "number", "search", "tel", "email", "url"].includes(element.type) || tagName === "TEXTAREA";
       const placeholder = element.getAttribute("placeholder") || "";
       const title = element.getAttribute("title") || "";
       if (!usePlaceholder || title)
-        return title;
-      return placeholder;
+        return compositeString(title, element, options.collectElements);
+      return compositeString(placeholder, element, options.collectElements);
     }
     if (!labelledBy && tagName === "FIELDSET") {
       options.visitedElements.add(element);
@@ -3541,7 +3751,7 @@ function getTextAlternativeInternal(element, options) {
         }
       }
       const title = element.getAttribute("title") || "";
-      return title;
+      return compositeString(title, element, options.collectElements);
     }
     if (!labelledBy && tagName === "FIGURE") {
       options.visitedElements.add(element);
@@ -3554,15 +3764,15 @@ function getTextAlternativeInternal(element, options) {
         }
       }
       const title = element.getAttribute("title") || "";
-      return title;
+      return compositeString(title, element, options.collectElements);
     }
     if (tagName === "IMG") {
       options.visitedElements.add(element);
       const alt = element.getAttribute("alt") || "";
       if (trimFlatString(alt))
-        return alt;
+        return compositeString(alt, element, options.collectElements);
       const title = element.getAttribute("title") || "";
-      return title;
+      return compositeString(title, element, options.collectElements);
     }
     if (tagName === "TABLE") {
       options.visitedElements.add(element);
@@ -3576,15 +3786,15 @@ function getTextAlternativeInternal(element, options) {
       }
       const summary = element.getAttribute("summary") || "";
       if (summary)
-        return summary;
+        return compositeString(summary, element, options.collectElements);
     }
     if (tagName === "AREA") {
       options.visitedElements.add(element);
       const alt = element.getAttribute("alt") || "";
       if (trimFlatString(alt))
-        return alt;
+        return compositeString(alt, element, options.collectElements);
       const title = element.getAttribute("title") || "";
-      return title;
+      return compositeString(title, element, options.collectElements);
     }
     if (tagName === "SVG" || element.ownerSVGElement) {
       options.visitedElements.add(element);
@@ -3601,7 +3811,7 @@ function getTextAlternativeInternal(element, options) {
       const title = element.getAttribute("xlink:title") || "";
       if (trimFlatString(title)) {
         options.visitedElements.add(element);
-        return title;
+        return compositeString(title, element, options.collectElements);
       }
     }
   }
@@ -3609,28 +3819,34 @@ function getTextAlternativeInternal(element, options) {
   if (allowsNameFromContent(role, options.embeddedInTargetElement === "descendant") || shouldNameFromContentForSummary || !!options.embeddedInLabelledBy || !!options.embeddedInDescribedBy || !!options.embeddedInLabel || !!options.embeddedInNativeTextAlternative) {
     options.visitedElements.add(element);
     const accessibleName = innerAccumulatedElementText(element, childOptions);
-    const maybeTrimmedAccessibleName = options.embeddedInTargetElement === "self" ? trimFlatString(accessibleName) : accessibleName;
-    if (maybeTrimmedAccessibleName)
+    const maybeTrimmedAccessibleName = options.embeddedInTargetElement === "self" ? trimFlatString(accessibleName.text) : accessibleName.text;
+    if (maybeTrimmedAccessibleName) {
+      (_e = accessibleName.elements) == null ? void 0 : _e.add(element);
       return accessibleName;
+    }
   }
-  if (!["presentation", "none"].includes(role) || tagName === "IFRAME") {
+  if (!["presentation", "none"].includes(role) || tagName === "IFRAME" || tagName === "FRAME") {
     options.visitedElements.add(element);
     const title = element.getAttribute("title") || "";
     if (trimFlatString(title))
-      return title;
+      return compositeString(title, element, options.collectElements);
   }
   options.visitedElements.add(element);
-  return "";
+  return emptyCompositeString();
 }
 function innerAccumulatedElementText(element, options) {
   const tokens = [];
+  const elements = options.collectElements ? /* @__PURE__ */ new Set() : void 0;
   const visit = (node, skipSlotted) => {
     var _a;
     if (skipSlotted && node.assignedSlot)
       return;
     if (node.nodeType === 1) {
       const display = ((_a = getElementComputedStyle(node)) == null ? void 0 : _a.display) || "inline";
-      let token = getTextAlternativeInternal(node, options);
+      const childComposite = getTextAlternativeInternal(node, options);
+      let token = childComposite.text;
+      for (const contributor of childComposite.elements || [])
+        elements == null ? void 0 : elements.add(contributor);
       if (display !== "inline" || node.nodeName === "BR")
         token = " " + token + " ";
       tokens.push(token);
@@ -3659,7 +3875,7 @@ function innerAccumulatedElementText(element, options) {
     }
   }
   tokens.push(getCSSContent(element, "::after") || "");
-  return tokens.join("");
+  return { text: tokens.join(""), elements };
 }
 var kAriaSelectedRoles = ["gridcell", "option", "row", "tab", "rowheader", "columnheader", "treeitem"];
 function getAriaSelected(element) {
@@ -3764,28 +3980,36 @@ function belongsToDisabledFieldSet(element) {
   const legendElement = fieldSetElement.querySelector(":scope > LEGEND");
   return !legendElement || !legendElement.contains(element);
 }
-function hasExplicitAriaDisabled(element, isAncestor = false) {
-  if (!element)
+function hasExplicitAriaDisabled(element) {
+  if (!kAriaDisabledRoles.includes(getAriaRole(element) || ""))
     return false;
-  if (isAncestor || kAriaDisabledRoles.includes(getAriaRole(element) || "")) {
+  return hasAriaDisabledInChain(element);
+}
+function hasAriaDisabledInChain(element) {
+  let result = cacheAriaDisabled == null ? void 0 : cacheAriaDisabled.get(element);
+  if (result === void 0) {
     const attribute = (element.getAttribute("aria-disabled") || "").toLowerCase();
-    if (attribute === "true")
-      return true;
-    if (attribute === "false")
-      return false;
-    return hasExplicitAriaDisabled(parentElementOrShadowHost(element), true);
+    if (attribute === "true") {
+      result = true;
+    } else if (attribute === "false") {
+      result = false;
+    } else {
+      const parent = parentElementOrShadowHost(element);
+      result = parent ? hasAriaDisabledInChain(parent) : false;
+    }
+    cacheAriaDisabled == null ? void 0 : cacheAriaDisabled.set(element, result);
   }
-  return false;
+  return result;
 }
 function getAccessibleNameFromAssociatedLabels(labels, options) {
-  return [...labels].map((label) => getTextAlternativeInternal(label, {
+  return joinCompositeString([...labels].map((label) => getTextAlternativeInternal(label, {
     ...options,
     embeddedInLabel: { element: label, hidden: isElementHiddenForAria(label) },
     embeddedInNativeTextAlternative: void 0,
     embeddedInLabelledBy: void 0,
     embeddedInDescribedBy: void 0,
     embeddedInTargetElement: void 0
-  })).filter((accessibleName) => !!accessibleName).join(" ");
+  })).filter((accessibleName) => !!accessibleName.text), " ", options.collectElements);
 }
 function receivesPointerEvents(element) {
   const cache = cachePointerEvents;
@@ -3818,6 +4042,8 @@ function receivesPointerEvents(element) {
 }
 var cacheAccessibleName;
 var cacheAccessibleNameHidden;
+var cacheAccessibleNameText;
+var cacheAccessibleNameTextHidden;
 var cacheAccessibleDescription;
 var cacheAccessibleDescriptionHidden;
 var cacheAccessibleErrorMessage;
@@ -3826,12 +4052,18 @@ var cachePseudoContent;
 var cachePseudoContentBefore;
 var cachePseudoContentAfter;
 var cachePointerEvents;
+var cacheAriaRole;
+var cacheAriaDisabled;
 var cachesCounter2 = 0;
 function beginAriaCaches() {
   beginDOMCaches();
   ++cachesCounter2;
+  cacheAriaRole != null ? cacheAriaRole : cacheAriaRole = /* @__PURE__ */ new Map();
+  cacheAriaDisabled != null ? cacheAriaDisabled : cacheAriaDisabled = /* @__PURE__ */ new Map();
   cacheAccessibleName != null ? cacheAccessibleName : cacheAccessibleName = /* @__PURE__ */ new Map();
   cacheAccessibleNameHidden != null ? cacheAccessibleNameHidden : cacheAccessibleNameHidden = /* @__PURE__ */ new Map();
+  cacheAccessibleNameText != null ? cacheAccessibleNameText : cacheAccessibleNameText = /* @__PURE__ */ new Map();
+  cacheAccessibleNameTextHidden != null ? cacheAccessibleNameTextHidden : cacheAccessibleNameTextHidden = /* @__PURE__ */ new Map();
   cacheAccessibleDescription != null ? cacheAccessibleDescription : cacheAccessibleDescription = /* @__PURE__ */ new Map();
   cacheAccessibleDescriptionHidden != null ? cacheAccessibleDescriptionHidden : cacheAccessibleDescriptionHidden = /* @__PURE__ */ new Map();
   cacheAccessibleErrorMessage != null ? cacheAccessibleErrorMessage : cacheAccessibleErrorMessage = /* @__PURE__ */ new Map();
@@ -3845,6 +4077,8 @@ function endAriaCaches() {
   if (!--cachesCounter2) {
     cacheAccessibleName = void 0;
     cacheAccessibleNameHidden = void 0;
+    cacheAccessibleNameText = void 0;
+    cacheAccessibleNameTextHidden = void 0;
     cacheAccessibleDescription = void 0;
     cacheAccessibleDescriptionHidden = void 0;
     cacheAccessibleErrorMessage = void 0;
@@ -3853,6 +4087,8 @@ function endAriaCaches() {
     cachePseudoContentBefore = void 0;
     cachePseudoContentAfter = void 0;
     cachePointerEvents = void 0;
+    cacheAriaRole = void 0;
+    cacheAriaDisabled = void 0;
   }
   endDOMCaches();
 }
@@ -3866,6 +4102,24 @@ var inputTypeToRole = {
   "reset": "button",
   "submit": "button"
 };
+function emptyCompositeString() {
+  return { text: "" };
+}
+function compositeString(text, element, collectElements) {
+  const elements = text && collectElements ? /* @__PURE__ */ new Set([element]) : void 0;
+  return { text: text || "", elements };
+}
+function joinCompositeString(parts, separator, collectElements) {
+  let elements;
+  if (collectElements) {
+    elements = /* @__PURE__ */ new Set();
+    for (const part of parts) {
+      for (const element of part.elements || [])
+        elements.add(element);
+    }
+  }
+  return { text: parts.map((part) => part.text).join(separator), elements };
+}
 
 // packages/injected/src/ariaSnapshot.ts
 var lastRef = 0;
@@ -3893,9 +4147,10 @@ function toInternalOptions(options) {
 function generateAriaTree(rootElement, publicOptions) {
   const options = toInternalOptions(publicOptions);
   const visited = /* @__PURE__ */ new Set();
+  const nameSourceElements = /* @__PURE__ */ new Map();
   const snapshot = {
     root: { role: "fragment", name: "", children: [], props: {}, box: computeBox(rootElement), receivesPointerEvents: true },
-    elements: /* @__PURE__ */ new Map(),
+    info: /* @__PURE__ */ new Map(),
     refs: /* @__PURE__ */ new Map(),
     iframeRefs: []
   };
@@ -3932,10 +4187,12 @@ function generateAriaTree(rootElement, publicOptions) {
           ariaChildren.push(ownedElement);
       }
     }
-    const childAriaNode = visible ? toAriaNode(element, options) : null;
+    const childAriaNode = visible ? toAriaNode(element, options, nameSourceElements) : null;
+    let elementInfo;
     if (childAriaNode) {
       if (childAriaNode.ref) {
-        snapshot.elements.set(childAriaNode.ref, element);
+        elementInfo = { element, nameFromContentRefs: [] };
+        snapshot.info.set(childAriaNode.ref, elementInfo);
         snapshot.refs.set(element, childAriaNode.ref);
         if (childAriaNode.role === "iframe")
           snapshot.iframeRefs.push(childAriaNode.ref);
@@ -3943,6 +4200,13 @@ function generateAriaTree(rootElement, publicOptions) {
       ariaNode.children.push(childAriaNode);
     }
     processElement(childAriaNode || ariaNode, element, ariaChildren, visible);
+    if (elementInfo) {
+      for (const contributor of nameSourceElements.get(childAriaNode) || []) {
+        const ref = snapshot.refs.get(contributor);
+        if (ref && ref !== childAriaNode.ref)
+          elementInfo.nameFromContentRefs.push(ref);
+      }
+    }
   };
   function processElement(ariaNode, element, ariaChildren, parentElementVisible) {
     var _a;
@@ -3974,7 +4238,7 @@ function generateAriaTree(rootElement, publicOptions) {
       ariaNode.children = [];
     if (ariaNode.role === "link" && element.hasAttribute("href")) {
       const href = element.getAttribute("href");
-      ariaNode.props["url"] = href;
+      ariaNode.props["url"] = truncateDataUrl(href);
     }
     if (ariaNode.role === "textbox" && element.hasAttribute("placeholder") && element.getAttribute("placeholder") !== ariaNode.name) {
       const placeholder = element.getAttribute("placeholder");
@@ -3987,8 +4251,7 @@ function generateAriaTree(rootElement, publicOptions) {
   } finally {
     endAriaCaches();
   }
-  normalizeStringChildren(snapshot.root);
-  normalizeGenericRoles(snapshot.root);
+  distillAriaSnapshot(snapshot, publicOptions);
   return snapshot;
 }
 function computeAriaRef(ariaNode, options) {
@@ -4005,10 +4268,10 @@ function computeAriaRef(ariaNode, options) {
   }
   ariaNode.ref = ariaRef.ref;
 }
-function toAriaNode(element, options) {
+function toAriaNode(element, options, nameSourceElements) {
   var _a;
-  const active = element.ownerDocument.activeElement === element;
-  if (element.nodeName === "IFRAME") {
+  const active = element.ownerDocument.activeElement === element && element.ownerDocument.hasFocus();
+  if (element.nodeName === "IFRAME" || element.nodeName === "FRAME") {
     const ariaNode = {
       role: "iframe",
       name: "",
@@ -4026,14 +4289,14 @@ function toAriaNode(element, options) {
   const role = (_a = getAriaRole(element)) != null ? _a : defaultRole;
   if (!role || role === "presentation" || role === "none")
     return null;
-  const name = normalizeWhiteSpace(getElementAccessibleName(element, false) || "");
+  const name = getElementAccessibleName(element, false);
   const receivesPointerEvents2 = receivesPointerEvents(element);
   const box = computeBox(element);
   if (role === "generic" && box.inline && element.childNodes.length === 1 && element.childNodes[0].nodeType === Node.TEXT_NODE)
     return null;
   const result = {
     role,
-    name,
+    name: normalizeWhiteSpace(name.text),
     children: [],
     props: {},
     box,
@@ -4041,6 +4304,7 @@ function toAriaNode(element, options) {
     active
   };
   setAriaNodeElement(result, element);
+  nameSourceElements.set(result, name.elements);
   computeAriaRef(result, options);
   if (kAriaCheckedRoles.includes(role))
     result.checked = getAriaChecked(element);
@@ -4063,53 +4327,6 @@ function toAriaNode(element, options) {
       result.children = [element.value];
   }
   return result;
-}
-function normalizeGenericRoles(node) {
-  const normalizeChildren = (node2) => {
-    const result = [];
-    for (const child of node2.children || []) {
-      if (typeof child === "string") {
-        result.push(child);
-        continue;
-      }
-      const normalized = normalizeChildren(child);
-      result.push(...normalized);
-    }
-    const removeSelf = node2.role === "generic" && !node2.name && result.length <= 1 && result.every((c) => typeof c !== "string" && !!c.ref);
-    if (removeSelf)
-      return result;
-    node2.children = result;
-    return [node2];
-  };
-  normalizeChildren(node);
-}
-function normalizeStringChildren(rootA11yNode) {
-  const flushChildren = (buffer, normalizedChildren) => {
-    if (!buffer.length)
-      return;
-    const text = normalizeWhiteSpace(buffer.join(""));
-    if (text)
-      normalizedChildren.push(text);
-    buffer.length = 0;
-  };
-  const visit = (ariaNode) => {
-    const normalizedChildren = [];
-    const buffer = [];
-    for (const child of ariaNode.children || []) {
-      if (typeof child === "string") {
-        buffer.push(child);
-      } else {
-        flushChildren(buffer, normalizedChildren);
-        visit(child);
-        normalizedChildren.push(child);
-      }
-    }
-    flushChildren(buffer, normalizedChildren);
-    ariaNode.children = normalizedChildren.length ? normalizedChildren : [];
-    if (ariaNode.children.length === 1 && ariaNode.children[0] === ariaNode.name)
-      ariaNode.children = [];
-  };
-  visit(rootA11yNode);
 }
 function matchesStringOrRegex(text, template) {
   if (!template)
@@ -4134,7 +4351,7 @@ function matchesTextValue(text, template) {
     return !!text.match(regex);
   return false;
 }
-var cachedRegexSymbol = Symbol("cachedRegex");
+var cachedRegexSymbol = /* @__PURE__ */ Symbol("cachedRegex");
 function cachedRegex(template) {
   if (template[cachedRegexSymbol] !== void 0)
     return template[cachedRegexSymbol];
@@ -4245,79 +4462,16 @@ function matchesNodeDeep(root, template, collectAll, isDeepEqual) {
   visit(root, null);
   return results;
 }
-function buildByRefMap(root, map = /* @__PURE__ */ new Map()) {
-  if (root == null ? void 0 : root.ref)
-    map.set(root.ref, root);
-  for (const child of (root == null ? void 0 : root.children) || []) {
-    if (typeof child !== "string")
-      buildByRefMap(child, map);
-  }
-  return map;
-}
-function compareSnapshots(ariaSnapshot, previousSnapshot) {
-  var _a;
-  const previousByRef = buildByRefMap(previousSnapshot == null ? void 0 : previousSnapshot.root);
-  const result = /* @__PURE__ */ new Map();
-  const visit = (ariaNode, previousNode) => {
-    let same = ariaNode.children.length === (previousNode == null ? void 0 : previousNode.children.length) && ariaNodesEqual(ariaNode, previousNode);
-    let canBeSkipped = same;
-    for (let childIndex = 0; childIndex < ariaNode.children.length; childIndex++) {
-      const child = ariaNode.children[childIndex];
-      const previousChild = previousNode == null ? void 0 : previousNode.children[childIndex];
-      if (typeof child === "string") {
-        same && (same = child === previousChild);
-        canBeSkipped && (canBeSkipped = child === previousChild);
-      } else {
-        let previous = typeof previousChild !== "string" ? previousChild : void 0;
-        if (child.ref)
-          previous = previousByRef.get(child.ref);
-        const sameChild = visit(child, previous);
-        if (!previous || !sameChild && !child.ref || previous !== previousChild)
-          canBeSkipped = false;
-        same && (same = sameChild && previous === previousChild);
-      }
-    }
-    result.set(ariaNode, same ? "same" : canBeSkipped ? "skip" : "changed");
-    return same;
-  };
-  visit(ariaSnapshot.root, previousByRef.get((_a = previousSnapshot == null ? void 0 : previousSnapshot.root) == null ? void 0 : _a.ref));
-  return result;
-}
-function filterSnapshotDiff(nodes, statusMap) {
-  const result = [];
-  const visit = (ariaNode) => {
-    const status = statusMap.get(ariaNode);
-    if (status === "same") {
-    } else if (status === "skip") {
-      for (const child of ariaNode.children) {
-        if (typeof child !== "string")
-          visit(child);
-      }
-    } else {
-      result.push(ariaNode);
-    }
-  };
-  for (const node of nodes) {
-    if (typeof node === "string")
-      result.push(node);
-    else
-      visit(node);
-  }
-  return result;
-}
 function indent(depth) {
   return "  ".repeat(depth);
 }
-function renderAriaTree(ariaSnapshot, publicOptions, previousSnapshot) {
+function renderAriaTree(ariaSnapshot, publicOptions) {
   const options = toInternalOptions(publicOptions);
   const lines = [];
   const iframeDepths = {};
   const includeText = options.renderStringsAsRegex ? textContributesInfo : () => true;
   const renderString = options.renderStringsAsRegex ? convertToBestGuessRegex : (str) => str;
-  let nodesToRender = ariaSnapshot.root.role === "fragment" ? ariaSnapshot.root.children : [ariaSnapshot.root];
-  const statusMap = compareSnapshots(ariaSnapshot, previousSnapshot);
-  if (previousSnapshot)
-    nodesToRender = filterSnapshotDiff(nodesToRender, statusMap);
+  const nodesToRender = ariaSnapshot.root.role === "fragment" ? ariaSnapshot.root.children : [ariaSnapshot.root];
   const visitText = (text, depth) => {
     if (publicOptions.depth && depth > publicOptions.depth)
       return;
@@ -4370,29 +4524,24 @@ function renderAriaTree(ariaSnapshot, publicOptions, previousSnapshot) {
     }
     return key;
   };
-  const getSingleInlinedTextChild = (ariaNode) => {
-    return (ariaNode == null ? void 0 : ariaNode.children.length) === 1 && typeof ariaNode.children[0] === "string" && !Object.keys(ariaNode.props).length ? ariaNode.children[0] : void 0;
+  const getSingleTextChild = (ariaNode) => {
+    return ariaNode.children.length === 1 && typeof ariaNode.children[0] === "string" && !Object.keys(ariaNode.props).length ? ariaNode.children[0] : void 0;
   };
   const visit = (ariaNode, depth, renderCursorPointer) => {
     if (publicOptions.depth && depth > publicOptions.depth)
       return;
     if (ariaNode.role === "iframe" && ariaNode.ref)
       iframeDepths[ariaNode.ref] = depth;
-    if (statusMap.get(ariaNode) === "same" && ariaNode.ref) {
-      lines.push(indent(depth) + `- ref=${ariaNode.ref} [unchanged]`);
-      return;
-    }
-    const isDiffRoot = !!previousSnapshot && !depth;
-    const escapedKey = indent(depth) + "- " + (isDiffRoot ? "<changed> " : "") + yamlEscapeKeyIfNeeded(createKey(ariaNode, renderCursorPointer));
-    const singleInlinedTextChild = getSingleInlinedTextChild(ariaNode);
+    const escapedKey = indent(depth) + "- " + yamlEscapeKeyIfNeeded(createKey(ariaNode, renderCursorPointer));
+    const singleTextChild = getSingleTextChild(ariaNode);
     const isAtDepthLimit = !!publicOptions.depth && depth === publicOptions.depth;
-    const hasNoChildren = !singleInlinedTextChild && (!ariaNode.children.length || isAtDepthLimit);
+    const hasNoChildren = !singleTextChild && (!ariaNode.children.length || isAtDepthLimit);
     if (hasNoChildren && !Object.keys(ariaNode.props).length) {
       lines.push(escapedKey);
-    } else if (singleInlinedTextChild !== void 0) {
-      const shouldInclude = includeText(ariaNode, singleInlinedTextChild);
+    } else if (singleTextChild !== void 0) {
+      const shouldInclude = includeText(ariaNode, singleTextChild);
       if (shouldInclude)
-        lines.push(escapedKey + ": " + yamlEscapeValueIfNeeded(renderString(singleInlinedTextChild)));
+        lines.push(escapedKey + ": " + yamlEscapeValueIfNeeded(renderString(singleTextChild)));
       else
         lines.push(escapedKey);
     } else {
@@ -4465,7 +4614,7 @@ function textContributesInfo(node, text) {
     filtered = filtered.replace(substr, "");
   return filtered.trim().length / text.length > 0.1;
 }
-var elementSymbol = Symbol("element");
+var elementSymbol = /* @__PURE__ */ Symbol("element");
 function ariaNodeElement(ariaNode) {
   return ariaNode[elementSymbol];
 }
@@ -4712,8 +4861,10 @@ var Highlight = class {
     }
     this._renderedEntries = [];
   }
-  maskElements(elements, color) {
-    this.updateHighlight(elements.map((element) => ({ element, color })));
+  addMaskedElements(elements, color) {
+    const existingEntries = this._renderedEntries.map((e) => ({ element: e.targetElement, color: e.color }));
+    const newEntries = elements.map((element) => ({ element, color }));
+    this.updateHighlight([...existingEntries, ...newEntries]);
   }
   updateHighlight(entries) {
     if (this._highlightIsUpToDate(entries))
@@ -4939,7 +5090,7 @@ function elementText(cache, root) {
     value = { full: "", normalized: "", immediate: [] };
     if (!shouldSkipForTextMatching(root)) {
       let currentImmediate = "";
-      if (root instanceof HTMLInputElement && (root.type === "submit" || root.type === "button")) {
+      if (root instanceof HTMLInputElement && (root.type === "submit" || root.type === "button" || root.type === "reset")) {
         value = { full: root.value, normalized: normalizeWhiteSpace(root.value), immediate: [root.value] };
       } else {
         for (let child = root.firstChild; child; child = child.nextSibling) {
@@ -5115,7 +5266,7 @@ function queryRole(scope, options, internal) {
         return;
     }
     if (options.name !== void 0) {
-      const accessibleName = normalizeWhiteSpace(getElementAccessibleName(element, !!options.includeHidden));
+      const accessibleName = normalizeWhiteSpace(getElementAccessibleNameText(element, !!options.includeHidden));
       if (typeof options.name === "string")
         options.name = normalizeWhiteSpace(options.name);
       if (internal && !options.nameExact && options.nameOp === "=")
@@ -5831,7 +5982,7 @@ function buildNoTextCandidates(injectedScript, element, options) {
     }
     candidates.push({ engine: "css", selector: escapeNodeName(element), score: kCSSTagNameScore });
   }
-  if (element.nodeName === "IFRAME") {
+  if (element.nodeName === "IFRAME" || element.nodeName === "FRAME") {
     for (const attribute of ["name", "title"]) {
       if (element.getAttribute(attribute))
         candidates.push({ engine: "css", selector: `${escapeNodeName(element)}[${attribute}=${quoteCSSAttributeValue(element.getAttribute(attribute))}]`, score: kIframeByAttributeScore });
@@ -5911,7 +6062,7 @@ function buildTextCandidates(injectedScript, element, isTargetNode) {
   }
   const ariaRole = getAriaRole(element);
   if (ariaRole && !["none", "presentation"].includes(ariaRole)) {
-    const ariaName = getElementAccessibleName(element, false);
+    const ariaName = getElementAccessibleNameText(element, false);
     if (ariaName && !ariaName.match(/^\p{Co}+$/u)) {
       const roleToken = { engine: "internal:role", selector: `${ariaRole}[name=${escapeForAttributeSelector(ariaName, true)}]`, score: kRoleWithNameScoreExact };
       candidates.push([roleToken]);
@@ -6139,7 +6290,7 @@ var XPathEngine = {
 };
 
 // packages/injected/src/consoleApi.ts
-var selectorSymbol = Symbol("selector");
+var selectorSymbol = /* @__PURE__ */ Symbol("selector");
 selectorSymbol;
 var _Locator = class _Locator {
   constructor(injectedScript, selector, options) {
@@ -6243,6 +6394,8 @@ var ConsoleAPI = class {
 };
 
 // packages/isomorphic/utilityScriptSerializers.ts
+var kFunctionBindingPrefix = "__pw_fn_";
+var kBindingsControllerProperty = "__playwright__binding__controller__";
 function isRegExp2(obj) {
   try {
     return obj instanceof RegExp || Object.prototype.toString.call(obj) === "[object RegExp]";
@@ -6368,6 +6521,10 @@ function parseEvaluationResultValue(value, handles = [], refs = /* @__PURE__ */ 
     }
     if ("h" in value)
       return handles[value.h];
+    if ("fn" in value) {
+      const name = value.fn;
+      return (...args) => globalThis[kBindingsControllerProperty].callBinding(name, ...args);
+    }
     if ("ta" in value)
       return base64ToTypedArray(value.ta.b, typedArrayConstructors[value.ta.k]);
     if ("ab" in value)
@@ -6477,6 +6634,8 @@ ${value.stack}`;
       return innerSerialize(jsonWrapper.value, handleSerializer, visitorInfo);
     return { o, id: id2 };
   }
+  if (typeof value === "function" && value.name.startsWith(kFunctionBindingPrefix))
+    return { fn: value.name };
 }
 
 // packages/injected/src/utilityScript.ts
@@ -6550,7 +6709,6 @@ var UtilityScript = class {
 var InjectedScript = class {
   constructor(window, options) {
     this._testIdAttributeNameForStrictErrorAndConsoleCodegen = "data-testid";
-    this._lastAriaSnapshotForTrack = /* @__PURE__ */ new Map();
     // Recorder must use any external dependencies through InjectedScript.
     // Otherwise it will end up with a copy of all modules it uses, and any
     // module-level globals will be duplicated, which leads to subtle bugs.
@@ -6559,8 +6717,8 @@ var InjectedScript = class {
       cacheNormalizedWhitespaces,
       elementText,
       getAriaRole,
+      getElementAccessibleNameText,
       getElementAccessibleDescription,
-      getElementAccessibleName,
       isElementVisible,
       isInsideScope,
       normalizeWhiteSpace,
@@ -6575,6 +6733,7 @@ var InjectedScript = class {
     this.isUnderTest = options.isUnderTest;
     this.utils.builtins = new UtilityScript(window, options.isUnderTest).builtins;
     this._sdkLanguage = options.sdkLanguage;
+    this._frameSeq = options.frameSeq;
     this._testIdAttributeNameForStrictErrorAndConsoleCodegen = options.testIdAttributeName;
     this._evaluator = new SelectorEvaluatorImpl();
     this.consoleApi = new ConsoleAPI(this);
@@ -6723,27 +6882,24 @@ var InjectedScript = class {
     return new Set(result.map((r) => r.element));
   }
   ariaSnapshot(node, options) {
-    return this.incrementalAriaSnapshot(node, options).full;
+    return this.ariaSnapshotWithRefs(node, options).text;
   }
-  incrementalAriaSnapshot(node, options) {
+  ariaSnapshotWithRefs(node, options) {
     if (node.nodeType !== Node.ELEMENT_NODE)
       throw this.createStacklessError("Can only capture aria snapshot of Element nodes.");
+    options = { ...options, refPrefix: this._frameSeq && options.mode === "ai" ? "f" + this._frameSeq : "" };
     const ariaSnapshot = generateAriaTree(node, options);
     const rendered = renderAriaTree(ariaSnapshot, options);
-    let incremental;
-    if (options.track) {
-      const previousSnapshot = this._lastAriaSnapshotForTrack.get(options.track);
-      if (previousSnapshot)
-        incremental = renderAriaTree(ariaSnapshot, options, previousSnapshot).text;
-      this._lastAriaSnapshotForTrack.set(options.track, ariaSnapshot);
-    }
     this._lastAriaSnapshotForQuery = ariaSnapshot;
-    return { full: rendered.text, incremental, iframeRefs: ariaSnapshot.iframeRefs, iframeDepths: rendered.iframeDepths };
+    return { text: rendered.text, iframeRefs: ariaSnapshot.iframeRefs, iframeDepths: rendered.iframeDepths };
   }
   ariaSnapshotForRecorder() {
     const tree = generateAriaTree(this.document.body, { mode: "ai" });
     const { text: ariaSnapshot } = renderAriaTree(tree, { mode: "ai" });
     return { ariaSnapshot, refs: tree.refs };
+  }
+  ariaSnapshotForExpectFailure(element, options) {
+    return renderAriaTree(generateAriaTree(element, options), options).text;
   }
   getAllElementsMatchingExpectAriaTemplate(document, template) {
     return getAllElementsMatchingExpectAriaTemplate(document.documentElement, template);
@@ -7045,7 +7201,7 @@ var InjectedScript = class {
     }
   }
   async _checkElementIsStable(node) {
-    const continuePolling = Symbol("continuePolling");
+    const continuePolling = /* @__PURE__ */ Symbol("continuePolling");
     let lastRect;
     let stableRafCounter = 0;
     let lastTime = 0;
@@ -7092,8 +7248,8 @@ var InjectedScript = class {
   _createAriaRefEngine() {
     const queryAll = (root, selector) => {
       var _a, _b;
-      const result = (_b = (_a = this._lastAriaSnapshotForQuery) == null ? void 0 : _a.elements) == null ? void 0 : _b.get(selector);
-      return result && result.isConnected ? [result] : [];
+      const result = (_b = (_a = this._lastAriaSnapshotForQuery) == null ? void 0 : _a.info) == null ? void 0 : _b.get(selector);
+      return result && result.element.isConnected ? [result.element] : [];
     };
     return { queryAll };
   }
@@ -7419,7 +7575,7 @@ var InjectedScript = class {
       "mouse": this._mouseHitTargetInterceptorEvents
     }[action];
     let result;
-    const listener = (event) => {
+    let listener = (event) => {
       if (!events.has(event.type))
         return;
       if (!event.isTrusted && !event.__pwTrustedSynthetic)
@@ -7436,6 +7592,7 @@ var InjectedScript = class {
     const stop = () => {
       if (this._hitTargetInterceptor === listener)
         this._hitTargetInterceptor = void 0;
+      listener = void 0;
       return result || "done";
     };
     this._hitTargetInterceptor = listener;
@@ -7620,19 +7777,9 @@ var InjectedScript = class {
   createHighlight() {
     return new Highlight(this);
   }
-  maskSelectors(selectors, color) {
-    const highlight = this._createHighlight();
-    const elements = [];
-    for (const selector of selectors)
-      elements.push(this.querySelectorAll(selector, this.document.documentElement));
-    highlight.maskElements(elements.flat(), color);
-  }
-  _createHighlight() {
-    if (this._highlight)
-      this.hideHighlight();
-    this._highlight = new Highlight(this);
-    this._highlight.install();
-    return this._highlight;
+  addMaskedElements(elements, color) {
+    const highlight = this._ensureHighlight();
+    highlight.addMaskedElements(elements, color);
   }
   _ensureHighlight() {
     if (!this._highlight) {
@@ -7744,71 +7891,38 @@ var InjectedScript = class {
     this.onGlobalListenersRemoved.add(addHitTargetInterceptorListeners);
   }
   async expect(element, options, elements) {
-    const core = await this._expectCore(element, options, elements);
+    const isArray = options.expression === "to.have.count" || options.expression.endsWith(".array");
+    const core = isArray ? this.expectArray(elements, options) : await this.expectSingleElement(element, options);
     const ariaSnapshot = core.matches !== options.isNot ? void 0 : this._ariaSnapshotForExpect(element, options);
     if (core.received === void 0 && ariaSnapshot === void 0)
-      return { matches: core.matches, missingReceived: core.missingReceived };
-    return { matches: core.matches, received: { value: core.received, ariaSnapshot }, missingReceived: core.missingReceived };
+      return { matches: core.matches };
+    return { matches: core.matches, received: { value: core.received, ariaSnapshot } };
   }
   _ariaSnapshotForExpect(element, options) {
     const expression = options.expression;
-    if (expression === "to.have.count" || expression.endsWith(".array"))
+    if (expression === "to.have.count" || expression.endsWith(".array") || expression === "to.match.aria")
       return void 0;
-    if (expression === "to.match.aria")
-      return void 0;
-    if (element && isElementVisible(element)) {
+    if (isElementVisible(element) && expression !== "to.have.title" && expression !== "to.have.url") {
       const isContainment = expression === "to.have.text";
-      return this._renderAriaSnapshot(element, { mode: "default", depth: isContainment ? void 0 : 1 });
+      return this.ariaSnapshotForExpectFailure(element, { mode: "default", depth: isContainment ? void 0 : 1 });
     }
     if (!this.document.body)
       return void 0;
-    return this._renderAriaSnapshot(this.document.body, { mode: "default" });
-  }
-  _renderAriaSnapshot(element, options) {
-    return renderAriaTree(generateAriaTree(element, options), options).text;
-  }
-  async _expectCore(element, options, elements) {
-    var _a, _b;
-    const isArray = options.expression === "to.have.count" || options.expression.endsWith(".array");
-    if (isArray)
-      return this.expectArray(elements, options);
-    if (!element) {
-      if (!options.isNot && options.expression === "to.be.hidden")
-        return { matches: true };
-      if (options.isNot && options.expression === "to.be.visible")
-        return { matches: false };
-      if (!options.isNot && options.expression === "to.be.detached")
-        return { matches: true };
-      if (options.isNot && options.expression === "to.be.attached")
-        return { matches: false };
-      if (options.isNot && options.expression === "to.be.in.viewport")
-        return { matches: false };
-      if (options.expression === "to.have.title" && ((_a = options == null ? void 0 : options.expectedText) == null ? void 0 : _a[0])) {
-        const matcher = new ExpectedTextMatcher(options.expectedText[0]);
-        const received = this.document.title;
-        return { received, matches: matcher.matches(received) };
-      }
-      if (options.expression === "to.have.url" && ((_b = options == null ? void 0 : options.expectedText) == null ? void 0 : _b[0])) {
-        const matcher = new ExpectedTextMatcher(options.expectedText[0]);
-        const received = this.document.location.href;
-        return { received, matches: matcher.matches(received) };
-      }
-      if (options.expression === "to.match.aria" && !options.selector) {
-        if (!this.document.body)
-          return { matches: options.isNot, missingReceived: true };
-        const result = matchesExpectAriaTemplate(this.document.body, options.expectedValue);
-        return {
-          received: result.received,
-          matches: !!result.matches.length
-        };
-      }
-      return { matches: options.isNot, missingReceived: true };
-    }
-    return await this.expectSingleElement(element, options);
+    return this.ariaSnapshotForExpectFailure(this.document.body, { mode: "default" });
   }
   async expectSingleElement(element, options) {
     var _a, _b;
     const expression = options.expression;
+    {
+      if (expression === "to.have.title") {
+        const received = this.document.title;
+        return { received, matches: new ExpectedTextMatcher(options.expectedText[0]).matches(received) };
+      }
+      if (expression === "to.have.url") {
+        const received = this.document.location.href;
+        return { received, matches: new ExpectedTextMatcher(options.expectedText[0]).matches(received) };
+      }
+    }
     {
       let result;
       if (expression === "to.have.attribute") {
@@ -7936,7 +8050,7 @@ var InjectedScript = class {
       } else if (expression === "to.have.text") {
         received = options.useInnerText ? element.innerText : elementText(/* @__PURE__ */ new Map(), element).full;
       } else if (expression === "to.have.accessible.name") {
-        received = getElementAccessibleName(
+        received = getElementAccessibleNameText(
           element,
           false
           /* includeHidden */
