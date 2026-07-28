@@ -60,6 +60,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
+import { completeUrl } from "./urlCompletion";
 import { usePreviewAutomationHost, type AgentActivity } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
 
@@ -167,6 +168,7 @@ export function BrowserPanel({
   const webviewsRef = useRef(new Map<string, PreviewWebview>());
   const [navState, setNavState] = useState<NavState>(IDLE_NAV_STATE);
   const [addressDraft, setAddressDraft] = useState(activeTab?.url ?? "");
+  const visitedUrls = useBrowserPanelStore((store) => store.visitedUrls);
   const activeUrl = activeTab?.url ?? null;
 
   // The address bar is an input the user types in, so it is only reset when the
@@ -351,6 +353,31 @@ export function BrowserPanel({
       setTabViewport(threadRef, activeTab.id, measured);
     }
   }, [activeTab, deviceToolbarOpen, measurePanelViewport, setTabViewport, threadRef]);
+
+  const addressRef = useRef<HTMLInputElement | null>(null);
+  const deletingRef = useRef(false);
+
+  const completeAddress = useCallback(
+    (typed: string) => {
+      setAddressDraft(typed);
+      if (deletingRef.current) {
+        return;
+      }
+      const completion = completeUrl(typed, visitedUrls);
+      if (completion === null) {
+        return;
+      }
+      // The completion goes in the field with the part you did not type
+      // selected, so carrying on typing overwrites it and Enter accepts it.
+      // This is what every address bar does, and the reason it never feels
+      // like the field is arguing with you.
+      setAddressDraft(completion);
+      requestAnimationFrame(() => {
+        addressRef.current?.setSelectionRange(typed.length, completion.length);
+      });
+    },
+    [visitedUrls],
+  );
 
   const submitAddress = useCallback(
     (event: React.FormEvent) => {
@@ -648,8 +675,14 @@ export function BrowserPanel({
             data-testid="browser-panel-address"
             className="w-full truncate rounded-md border border-border bg-background py-1 ps-2 pe-7 font-mono text-[11px] text-muted-foreground outline-none focus:border-ring focus:text-foreground"
             placeholder="Search or enter URL"
+            ref={addressRef}
             value={addressDraft}
-            onChange={(event) => setAddressDraft(event.target.value)}
+            onChange={(event) => completeAddress(event.target.value)}
+            onKeyDown={(event) => {
+              // Deleting is a correction. Completing over it would put the
+              // guess straight back and make the key look broken.
+              deletingRef.current = event.key === "Backspace" || event.key === "Delete";
+            }}
           />
           {/* Inside the field, where it reads as "this address, elsewhere"
               rather than as another page control. */}

@@ -13,6 +13,8 @@ import { type ScopedThreadRef } from "@threadlines/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { rememberVisit, type VisitedUrl } from "./components/browser/urlCompletion";
+
 import { resolveStorage } from "./lib/storage";
 
 /**
@@ -173,6 +175,14 @@ interface BrowserPanelStoreState {
   closeTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   selectTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   setTabUrl: (threadRef: ScopedThreadRef, tabId: string, url: string) => void;
+  /**
+   * Every address this browser has been to, for finishing what you type.
+   *
+   * Deliberately not per thread. You visit the same handful of sites whatever
+   * you happen to be working on, and history that resets with the conversation
+   * would never learn anything.
+   */
+  visitedUrls: ReadonlyArray<VisitedUrl>;
   setTabTitle: (threadRef: ScopedThreadRef, tabId: string, title: string) => void;
   setTabViewport: (threadRef: ScopedThreadRef, tabId: string, viewport: BrowserViewport) => void;
   setTabZoom: (threadRef: ScopedThreadRef, tabId: string, zoomFactor: number) => void;
@@ -247,10 +257,14 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         set((state) =>
           updateThread(state, threadRef, (current) => ({ ...current, activeTabId: tabId })),
         ),
+      visitedUrls: [],
       setTabUrl: (threadRef, tabId, url) =>
-        set((state) =>
-          updateThread(state, threadRef, (current) => updateTab(current, tabId, { url })),
-        ),
+        set((state) => ({
+          ...updateThread(state, threadRef, (current) => updateTab(current, tabId, { url })),
+          // Recorded here rather than on submit, so a redirect lands the address
+          // you end up at instead of the one you typed on the way.
+          visitedUrls: rememberVisit(state.visitedUrls, url, Date.now()),
+        })),
       setTabTitle: (threadRef, tabId, title) =>
         set((state) =>
           updateThread(state, threadRef, (current) => updateTab(current, tabId, { title })),
@@ -281,6 +295,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         splitChatFraction: state.splitChatFraction,
         deviceToolbarOpen: state.deviceToolbarOpen,
         appearance: state.appearance,
+        visitedUrls: state.visitedUrls,
         // Expansion is deliberately not persisted: reopening the app to a
         // hidden chat would look like the thread had vanished.
       }),
