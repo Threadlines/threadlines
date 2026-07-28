@@ -202,12 +202,18 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
   });
+  // Every live row asks, not just the ones with a pinned branch: a thread
+  // created without one is still working in a checkout, and that checkout's
+  // ref is the branch the row should name.
   const gitStatus = useGitStatus({
     environmentId: thread.environmentId,
-    cwd: thread.branch != null ? gitCwd : null,
+    cwd: gitCwd,
   });
   const diffStat = resolveWorkingTreeDiffStat(gitStatus.data ?? null);
-  const pr = resolveThreadPr(thread.branch, gitStatus.data);
+  // A recorded branch wins; otherwise the checkout's current ref stands in,
+  // for the label and for the change request that belongs to it.
+  const branch = thread.branch ?? gitStatus.data?.refName ?? null;
+  const pr = resolveThreadPr(branch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
@@ -218,7 +224,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
-  const showBranch = thread.branch !== null;
+  const showBranch = branch !== null;
 
   const handleRowClick = useCallback(
     (event: React.MouseEvent) => {
@@ -371,7 +377,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
             {showBranch ? (
               <span className="flex min-w-0 items-center gap-1">
                 <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
-                <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
+                <span className="min-w-0 truncate font-mono text-[10px]">{branch}</span>
               </span>
             ) : null}
             <span className={ROW_META_SLOT_CLASS_NAME}>

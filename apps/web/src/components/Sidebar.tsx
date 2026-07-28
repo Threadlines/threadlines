@@ -187,44 +187,48 @@ function buildThreadJumpLabelMap(input: {
  * label are one gesture rather than two stacked ones. Sentence case: these are
  * names for parts of a list, not shouted headings.
  */
+/**
+ * A section's name, then a hairline running out to the edge, then the state
+ * chevron -- and the whole row is the control. A header that collapses only
+ * from its glyph makes the user aim at a 14px target for a row-sized idea.
+ *
+ * Sticky with an opaque surface so rows slide under it rather than through it
+ * while the list scrolls.
+ */
 function InboxSectionHeader({
   label,
   count,
-  trailing,
   collapsed,
   onToggleCollapsed,
   testId,
 }: {
   label: string;
   count: number;
-  trailing?: React.ReactNode;
-  collapsed?: boolean;
-  onToggleCollapsed?: () => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   testId?: string;
 }) {
   return (
-    <div className="mt-1.5 flex items-center gap-2 px-3 pb-1.5">
-      <span className="shrink-0 text-[11px] font-medium text-muted-foreground/70">
+    <button
+      type="button"
+      data-thread-selection-safe
+      data-testid={testId}
+      aria-expanded={!collapsed}
+      className="group/section-header sticky top-0 z-10 mt-1.5 flex w-full cursor-pointer items-center gap-2 bg-sidebar px-3 pb-1.5 text-left select-none focus-ring"
+      onClick={onToggleCollapsed}
+    >
+      <span className="shrink-0 text-[11px] font-medium text-muted-foreground/70 transition-colors group-hover/section-header:text-foreground">
         {label} ({count})
       </span>
-      {trailing}
       <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-sidebar-border" />
-      {onToggleCollapsed ? (
-        <button
-          type="button"
-          data-thread-selection-safe
-          data-testid={testId}
-          aria-expanded={!collapsed}
-          aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
-          className="-my-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-          onClick={onToggleCollapsed}
-        >
-          <ChevronDownIcon
-            className={cn("size-3.5 transition-transform duration-150", collapsed && "-rotate-90")}
-          />
-        </button>
-      ) : null}
-    </div>
+      <ChevronDownIcon
+        aria-hidden="true"
+        className={cn(
+          "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-150 group-hover/section-header:text-foreground",
+          collapsed && "-rotate-90",
+        )}
+      />
+    </button>
   );
 }
 

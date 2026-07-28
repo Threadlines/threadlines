@@ -1,6 +1,10 @@
+// The card's width and truncation are CSS, so the production stylesheet is
+// part of the behaviour under test.
+import "../../index.css";
+
 import { EnvironmentId, ProjectId, ProviderDriverKind, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import type { ThreadStatusPill } from "../Sidebar.logic";
@@ -36,7 +40,19 @@ function status(label: ThreadStatusPill["label"]): ThreadStatusPill {
   return { label, colorClass: "", dotClass: "bg-primary-graph", pulse: false };
 }
 
+async function waitForProductionStyles(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(
+        getComputedStyle(document.documentElement).getPropertyValue("--background").trim(),
+      ).not.toBe("");
+    },
+    { timeout: 4_000, interval: 16 },
+  );
+}
+
 async function openCard(summary: SidebarThreadSummary, pill: ThreadStatusPill | null) {
+  await waitForProductionStyles();
   render(
     <ThreadHoverCard thread={summary} status={pill}>
       <button type="button" data-testid="hover-trigger">
@@ -79,6 +95,29 @@ describe("ThreadHoverCard", () => {
     const card = await openCard(thread({ branch: "feature/deck-sidebar" }), null);
 
     await expect.element(card).toHaveTextContent("feature/deck-sidebar");
+  });
+
+  it("truncates an overlong title and branch instead of blowing the card open", async () => {
+    const longTitle =
+      "Investigate why the orchestration reactor occasionally replays a settled turn " +
+      "after a reconnect, and write up what the projection actually guarantees";
+    const longBranch = `feature/${"very-long-branch-name-segment-".repeat(5)}tail`;
+
+    const card = await openCard(thread({ title: longTitle, branch: longBranch }), null);
+    await expect.element(card).toBeInTheDocument();
+
+    const element = document.querySelector<HTMLElement>('[data-testid="thread-hover-card"]');
+    expect(element).not.toBeNull();
+    // The card keeps its own width whatever it is handed.
+    expect(element!.getBoundingClientRect().width).toBeLessThanOrEqual(280);
+
+    const branchLine = [...element!.querySelectorAll("span")].find((node) =>
+      node.textContent?.startsWith("feature/"),
+    );
+    expect(branchLine, "the branch row should render").not.toBeUndefined();
+    // Clipped on one line rather than wrapped into a wall of text.
+    expect(branchLine!.scrollWidth).toBeGreaterThan(branchLine!.clientWidth);
+    expect(branchLine!.getBoundingClientRect().height).toBeLessThan(24);
   });
 
   it("falls back to Idle when the thread has no status", async () => {

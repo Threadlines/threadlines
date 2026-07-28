@@ -74,3 +74,13 @@ instance without recording its genre.
   ("Threads" over a list of threads) is dropped.
 - Display language may diverge from internal names (Tie off / done), but one
   surface never mixes both.
+
+## Testing the pixels
+
+- A browser test that asserts layout (widths, truncation, position) must load
+  the production stylesheet (`index.css` + waitForProductionStyles); without it
+  every Tailwind class is inert and the test measures unstyled DOM. Found
+  live: ThreadHoverCard's four layout tests all passed while blind. Text and
+  behaviour assertions don't need styles — only layout ones do.
+- Screenshot review is part of acceptance for user-facing change: capture via
+  a temporary browser-suite test, read the image, check this list against it.
