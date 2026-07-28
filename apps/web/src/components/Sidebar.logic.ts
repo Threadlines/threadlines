@@ -40,7 +40,8 @@ export interface ThreadStatusPill {
     | "Pending Approval"
     | "Awaiting Input"
     | "Plan Ready"
-    | "Background";
+    | "Background"
+    | "Failed";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -54,6 +55,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Plan Ready": 2,
   Background: 2,
   Completed: 1,
+  Failed: 4,
 };
 
 export const THREAD_STATUS_DOT_CLASSES = {
@@ -62,6 +64,7 @@ export const THREAD_STATUS_DOT_CLASSES = {
   cyan: "bg-cyan-500 dark:bg-cyan-300/90",
   emerald: "bg-emerald-500 dark:bg-emerald-300/90",
   violet: "bg-violet-500 dark:bg-violet-300/90",
+  red: "bg-red-500 dark:bg-red-400/90",
 } as const;
 
 type ThreadStatusInput = Pick<
@@ -386,6 +389,17 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  if (thread.session?.status === "error") {
+    // Failed threads previously showed nothing -- indistinguishable from
+    // healthy idle ones, which is the worst place for a failure to hide.
+    return {
+      label: "Failed",
+      colorClass: "text-red-600 dark:text-red-400/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.red,
+      pulse: false,
+    };
+  }
+
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
     thread.interactionMode === "plan" &&
@@ -478,6 +492,7 @@ export function excludeOnDeckThreads<TThread>(input: {
 const NEEDS_USER_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Pending Approval",
   "Awaiting Input",
+  "Failed",
 ]);
 
 /** True while the provider is working on the thread or waiting on the user. */
@@ -745,4 +760,223 @@ export function buildProjectHoverSummary(input: {
     activeCount: statuses.filter(isLiveThreadStatus).length,
     lastActivityAt,
   };
+}
+
+// ── Inbox lifecycle ──────────────────────────────────────────────────
+//
+// The sidebar is an inbox: one live list, a Done tail. "Done" is a client-side
+// overlay in v1 -- an override the user sets, resolved against the thread's
+// actual state. The rules below owe their shape to studying how the settle
+// lifecycle goes wrong: the invariant that matters is that no override may
+// hide work that is moving or blocked on the user.
+
+/**
+ * A queued turn start counts as pending work for at most this long.
+ *
+ * Between sending a message and a session adopting it, the work is invisible
+ * to every status check: no turn, no running session. Without a bound, a
+ * thread whose start failed would be permanently un-doneable; without the
+ * guard, marking Done in that gap would hide a message that is about to run.
+ */
+export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+
+type InboxLifecycleInput = Pick<
+  SidebarThreadSummary,
+  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "latestUserMessageAt" | "latestTurn"
+>;
+
+/**
+ * A user message no turn has picked up yet: strictly newer than every
+ * timestamp on the latest turn, and within the adoption grace window. Bounded
+ * on both sides because message timestamps originate on whichever device sent
+ * them -- a clock ahead of this one would otherwise hold the queued state for
+ * the whole skew.
+ */
+export function hasQueuedTurnStart(
+  thread: InboxLifecycleInput,
+  options: { readonly now: string },
+): boolean {
+  if (thread.latestUserMessageAt == null) return false;
+  // A failed start is already visible as the Failed pill; holding the queued
+  // state too would make the thread un-doneable while it screams red.
+  if (thread.session?.status === "error") return false;
+  const messageAt = Date.parse(thread.latestUserMessageAt);
+  if (Number.isNaN(messageAt)) return false;
+  const nowMs = Date.parse(options.now);
+  if (Number.isNaN(nowMs)) return false;
+  if (Math.abs(nowMs - messageAt) > QUEUED_TURN_START_GRACE_MS) return false;
+  const turn = thread.latestTurn;
+  if (turn === null) return true;
+  return [turn.requestedAt, turn.startedAt, turn.completedAt].every(
+    (candidate) => candidate == null || Date.parse(candidate) < messageAt,
+  );
+}
+
+/**
+ * Whether Done is allowed right now. Work that is moving, blocked on the
+ * user, or queued cannot be waved away: hiding a pending approval defeats
+ * the approval, and hiding a running turn hides where its result will land.
+ * A failed thread CAN be marked done -- that is "I saw it, I'm done with it".
+ */
+export function canMarkThreadDone(
+  thread: InboxLifecycleInput,
+  options: { readonly now: string },
+): boolean {
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
+  // The same in-flight resolution the status pill uses, so "can't be marked
+  // done" and "shows as working" can never disagree about what running means.
+  if (getThreadInFlightStatus(thread) !== null) return false;
+  if (hasQueuedTurnStart(thread, options)) return false;
+  return true;
+}
+
+/**
+ * The user's explicit word on a thread's lifecycle, stamped when given.
+ * "active" exists so a reopened thread stays reopened once auto-done rules
+ * arrive; today it simply reads as not-done.
+ */
+export interface ThreadDoneOverride {
+  readonly state: "done" | "active";
+  readonly at: string;
+}
+
+/**
+ * Where a thread lives. The blockers outrank the override in both
+ * directions: new activity in a done thread pulls it back to the live list
+ * without anyone having to un-mark it, which is what makes Done safe to use
+ * freely.
+ */
+export function isThreadDone(
+  thread: InboxLifecycleInput,
+  override: ThreadDoneOverride | null | undefined,
+  options: { readonly now: string },
+): boolean {
+  if (!canMarkThreadDone(thread, options)) return false;
+  return override?.state === "done";
+}
+
+/**
+ * The live list holds still. Creation order, newest first; activity never
+ * reorders it, so a row keeps its place from open until it is marked done
+ * and the thing you were reaching for never jumps. Pins are the one
+ * exception, and they move only when you pin -- your action, your motion.
+ */
+export function sortInboxThreads<
+  T extends { readonly id: string; readonly createdAt: string; readonly pinnedAt: string | null },
+>(threads: readonly T[]): T[] {
+  return [...threads].toSorted((left, right) => {
+    if ((left.pinnedAt !== null) !== (right.pinnedAt !== null)) {
+      return left.pinnedAt !== null ? -1 : 1;
+    }
+    if (left.pinnedAt !== null && right.pinnedAt !== null) {
+      const byPin =
+        (toSortableTimestamp(right.pinnedAt) ?? 0) - (toSortableTimestamp(left.pinnedAt) ?? 0);
+      if (byPin !== 0) return byPin;
+    }
+    const byCreated =
+      (toSortableTimestamp(right.createdAt) ?? 0) - (toSortableTimestamp(left.createdAt) ?? 0);
+    return byCreated !== 0 ? byCreated : left.id.localeCompare(right.id);
+  });
+}
+
+type DoneSortInput = Pick<
+  SidebarThreadSummary,
+  "latestUserMessageAt" | "latestTurn" | "updatedAt" | "createdAt"
+>;
+
+/**
+ * Done rows are history, so they order by when the work ended: the explicit
+ * mark when there is one, else the thread's last activity. Label and order
+ * both come from here so they can never disagree.
+ */
+export function resolveDoneTimestamp(
+  thread: DoneSortInput,
+  override: ThreadDoneOverride | null | undefined,
+): string | null {
+  if (override?.state === "done" && !Number.isNaN(Date.parse(override.at))) {
+    return override.at;
+  }
+  let latest: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of [
+    thread.latestUserMessageAt,
+    thread.latestTurn?.requestedAt,
+    thread.latestTurn?.startedAt,
+    thread.latestTurn?.completedAt,
+  ]) {
+    if (candidate == null) continue;
+    const parsed = Date.parse(candidate);
+    if (!Number.isNaN(parsed) && parsed > latestMs) {
+      latest = candidate;
+      latestMs = parsed;
+    }
+  }
+  return latest ?? thread.updatedAt ?? thread.createdAt;
+}
+
+export function sortDoneThreads<T extends DoneSortInput & { readonly id: string }>(
+  threads: readonly T[],
+  overrideFor: (thread: T) => ThreadDoneOverride | null | undefined,
+): T[] {
+  const timestampMs = (thread: T) => {
+    const timestamp = resolveDoneTimestamp(thread, overrideFor(thread));
+    return timestamp === null ? 0 : (toSortableTimestamp(timestamp) ?? 0);
+  };
+  return [...threads].toSorted(
+    (left, right) => timestampMs(right) - timestampMs(left) || left.id.localeCompare(right.id),
+  );
+}
+
+// ── Project chips ────────────────────────────────────────────────────
+
+export interface ProjectChipModel {
+  readonly key: string;
+  readonly label: string;
+  /** Threads in this project blocked on the user, shown on the chip. */
+  readonly needsYouCount: number;
+}
+
+/**
+ * Which projects earn a chip, in most-recently-active order.
+ *
+ * The scoped project always gets a chip even when its activity would not
+ * earn one: filtering by a project and then watching its chip vanish into
+ * the overflow reads as the sidebar losing your place.
+ */
+export function buildProjectChips(input: {
+  readonly projects: ReadonlyArray<{ readonly key: string; readonly label: string }>;
+  readonly lastActivityMsByKey: ReadonlyMap<string, number>;
+  readonly needsYouCountByKey: ReadonlyMap<string, number>;
+  readonly scopedKey: string | null;
+  readonly maxChips: number;
+}): { readonly chips: ProjectChipModel[]; readonly overflow: ProjectChipModel[] } {
+  const toModel = (project: { key: string; label: string }): ProjectChipModel => ({
+    key: project.key,
+    label: project.label,
+    needsYouCount: input.needsYouCountByKey.get(project.key) ?? 0,
+  });
+  const ordered = [...input.projects]
+    .toSorted(
+      (left, right) =>
+        (input.lastActivityMsByKey.get(right.key) ?? 0) -
+          (input.lastActivityMsByKey.get(left.key) ?? 0) || left.label.localeCompare(right.label),
+    )
+    .map(toModel);
+  if (ordered.length <= input.maxChips) {
+    return { chips: ordered, overflow: [] };
+  }
+  const chips = ordered.slice(0, input.maxChips);
+  const overflow = ordered.slice(input.maxChips);
+  if (input.scopedKey !== null && !chips.some((chip) => chip.key === input.scopedKey)) {
+    const scoped = overflow.find((chip) => chip.key === input.scopedKey);
+    if (scoped !== undefined) {
+      // The scoped project takes the last visible slot; the displaced chip
+      // joins the overflow where the scoped one came from.
+      const displaced = chips[chips.length - 1]!;
+      chips[chips.length - 1] = scoped;
+      const index = overflow.indexOf(scoped);
+      overflow[index] = displaced;
+    }
+  }
+  return { chips, overflow };
 }

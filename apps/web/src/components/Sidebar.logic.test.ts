@@ -27,6 +27,7 @@ import {
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
+import { buildProjectChips, isThreadDone, sortInboxThreads } from "./Sidebar.logic";
 import {
   EnvironmentId,
   OrchestrationLatestTurn,
@@ -1378,5 +1379,125 @@ describe("buildProjectHoverSummary", () => {
     expect(summary.activeCount).toBe(0);
     expect(summary.status).toBeNull();
     expect(summary.lastActivityAt).toBeNull();
+  });
+});
+
+// ── Inbox lifecycle ──────────────────────────────────────────────────
+
+describe("inbox done lifecycle", () => {
+  const NOW = "2026-07-28T12:00:00.000Z";
+  const base = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    session: null,
+    latestUserMessageAt: null,
+    latestTurn: null,
+  };
+  const doneMark = { state: "done", at: NOW } as const;
+
+  it("refuses to hide work that is blocked on the user", () => {
+    // Hiding a pending approval defeats the approval: the agent waits forever
+    // on an answer the user can no longer see the question for.
+    expect(isThreadDone({ ...base, hasPendingApprovals: true }, doneMark, { now: NOW })).toBe(
+      false,
+    );
+    expect(isThreadDone({ ...base, hasPendingUserInput: true }, doneMark, { now: NOW })).toBe(
+      false,
+    );
+  });
+
+  it("refuses to hide a running thread, even explicitly marked", () => {
+    const running = {
+      ...base,
+      session: { status: "running" } as never,
+    };
+    expect(isThreadDone(running, doneMark, { now: NOW })).toBe(false);
+  });
+
+  it("treats a just-sent message as pending work until a turn adopts it", () => {
+    // Between send and adoption there is no turn and no running session --
+    // the gap where marking Done would hide a message about to run.
+    const queued = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:59:30.000Z",
+    };
+    expect(isThreadDone(queued, doneMark, { now: NOW })).toBe(false);
+    // Past the grace window the same shape is a failed start, not pending
+    // work; holding it undoneable forever would strand the thread.
+    expect(
+      isThreadDone({ ...base, latestUserMessageAt: "2026-07-28T11:00:00.000Z" }, doneMark, {
+        now: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it("lets a failed thread be marked done", () => {
+    // "I saw it, I'm done with it" must be expressible for failures, or the
+    // Done list can never hold anything that went wrong.
+    const failed = { ...base, session: { status: "error" } as never };
+    expect(isThreadDone(failed, doneMark, { now: NOW })).toBe(true);
+  });
+
+  it("keeps a thread live without an explicit done mark", () => {
+    expect(isThreadDone(base, null, { now: NOW })).toBe(false);
+    expect(isThreadDone(base, { state: "active", at: NOW }, { now: NOW })).toBe(false);
+  });
+});
+
+describe("sortInboxThreads", () => {
+  it("holds creation order and floats pins, nothing else", () => {
+    const rows = [
+      { id: "old", createdAt: "2026-07-20T00:00:00.000Z", pinnedAt: null },
+      { id: "pinned", createdAt: "2026-07-18T00:00:00.000Z", pinnedAt: "2026-07-27T00:00:00.000Z" },
+      { id: "new", createdAt: "2026-07-27T00:00:00.000Z", pinnedAt: null },
+    ];
+
+    // Activity timestamps are deliberately absent from the input type: the
+    // list must be un-reorderable by anything but creation and pinning.
+    expect(sortInboxThreads(rows).map((row) => row.id)).toEqual(["pinned", "new", "old"]);
+  });
+});
+
+describe("buildProjectChips", () => {
+  const projects = [
+    { key: "a", label: "alpha" },
+    { key: "b", label: "beta" },
+    { key: "c", label: "gamma" },
+    { key: "d", label: "delta" },
+  ];
+  const activity = new Map([
+    ["a", 400],
+    ["b", 300],
+    ["c", 200],
+    ["d", 100],
+  ]);
+
+  it("orders by recent activity and carries needs-you counts", () => {
+    const { chips, overflow } = buildProjectChips({
+      projects,
+      lastActivityMsByKey: activity,
+      needsYouCountByKey: new Map([["b", 2]]),
+      scopedKey: null,
+      maxChips: 3,
+    });
+
+    expect(chips.map((chip) => chip.key)).toEqual(["a", "b", "c"]);
+    expect(chips[1]?.needsYouCount).toBe(2);
+    expect(overflow.map((chip) => chip.key)).toEqual(["d"]);
+  });
+
+  it("pulls the scoped project out of the overflow", () => {
+    // Filtering by a project and watching its chip vanish into the ellipsis
+    // reads as the sidebar losing your place.
+    const { chips, overflow } = buildProjectChips({
+      projects,
+      lastActivityMsByKey: activity,
+      needsYouCountByKey: new Map(),
+      scopedKey: "d",
+      maxChips: 3,
+    });
+
+    expect(chips.map((chip) => chip.key)).toEqual(["a", "b", "d"]);
+    expect(overflow.map((chip) => chip.key)).toEqual(["c"]);
   });
 });

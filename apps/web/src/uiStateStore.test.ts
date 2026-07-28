@@ -30,6 +30,8 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     onDeckThreadKeys: [],
+    doneThreadOverrides: {},
+    inboxProjectScopeKey: null,
     onDeckDismissedThreadKeys: [],
     defaultAdvertisedEndpointKey: null,
     lastChatThreadRef: null,
