@@ -79,6 +79,9 @@
       .chip:hover { background: var(--hover); color: var(--fg); }
       .chip.on { background: var(--active-row); color: var(--fg); }
       .chip .n { color: var(--fg-dim); font-size: 10px; margin-left: 3px; font-family: var(--mono); }
+      .chip.add { margin-left: auto; padding: 3px 6px; color: var(--fg-dim); }
+      .chip.add:hover { color: var(--fg); background: var(--hover); }
+      .chip.add svg { display: block; }
 
       /* ── Section headers ────────────────────────── */
       .sect {
@@ -187,7 +190,8 @@
               <span class="chip on">All</span>
               <span class="chip">threadlines <span class="n">2</span></span>
               <span class="chip">badcode</span>
-              <span class="chip" title="Remaining projects, and Add project&hellip;">&hellip;</span>
+              <span class="chip" title="Remaining projects">&hellip;</span>
+              <span class="chip add" title="Add project"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1z"/><path d="M8 7.5v4M6 9.5h4"/></svg></span>
             </div>
           </div>
 
@@ -294,7 +298,7 @@
               <span class="chip">All</span>
               <span class="chip on">threadlines <span class="n">2</span></span>
               <span class="chip">badcode</span>
-              <span class="chip">&hellip;</span>
+              <span class="chip add" title="Add project"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1z"/><path d="M8 7.5v4M6 9.5h4"/></svg></span>
             </div>
           </div>
           <div class="sect">Threads</div>
@@ -371,11 +375,12 @@
           Collapsing the sidebar hides it completely, same toggle as today; no icon strip.
           Chips over the dropdown. The Done list stays at the bottom of the sidebar. Done rows
           are not flattened to uniform grey: the section header says done, each row keeps a
-          readable title and its project name. The trailing &ldquo;&hellip;&rdquo; chip is the
-          project menu &mdash; projects that didn't fit as chips, then Add project. The old
-          quick-links row folds away: compose covers new-chat, and the Chats page link moves
-          into the &ldquo;&hellip;&rdquo; menu's footer alongside Add project (easily moved if
-          that feels buried).
+          readable title and its project name. Add project is a primary action: a
+          folder-plus pinned to the right end of the chips row, always visible &mdash; the
+          &ldquo;&hellip;&rdquo; chip appears only when projects overflow, and holds only
+          those. The old quick-links row folds away: compose covers new-chat, and the Chats
+          page link moves into the &ldquo;&hellip;&rdquo; menu's footer (easily moved if that
+          feels buried).
 
           <h2>Switching projects: dropdown vs chips</h2>
           &ldquo;All projects&rdquo; is one combined list &mdash; every project&rsquo;s threads
