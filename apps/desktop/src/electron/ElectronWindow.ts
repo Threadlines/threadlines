@@ -16,6 +16,13 @@ export class ElectronWindowCreateError extends Data.TaggedError("ElectronWindowC
 }
 
 export interface ElectronWindowShape {
+  /**
+   * The usable area of the primary display, menu bar and dock excluded.
+   *
+   * Here rather than read from `Electron.screen` at the call site so window
+   * sizing stays testable without a display attached.
+   */
+  readonly workAreaSize: Effect.Effect<{ width: number; height: number }>;
   readonly create: (
     options: Electron.BrowserWindowConstructorOptions,
   ) => Effect.Effect<Electron.BrowserWindow, ElectronWindowCreateError>;
@@ -65,6 +72,7 @@ const make = Effect.gen(function* () {
   );
 
   return ElectronWindow.of({
+    workAreaSize: Effect.sync(() => Electron.screen.getPrimaryDisplay().workAreaSize),
     create: (options) =>
       Effect.try({
         try: () => new Electron.BrowserWindow(options),

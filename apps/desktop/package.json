@@ -6,15 +6,16 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
+    "build": "vp pack && node scripts/preview-vendor.mjs",
     "dev": "node scripts/dev.mjs",
-    "dev:server-bundle": "vp run --filter @threadlines/server dev:bundle",
     "dev:bundle": "vp pack --watch",
     "dev:electron": "node scripts/dev-electron.mjs",
-    "build": "vp pack",
+    "dev:server-bundle": "vp run --filter @threadlines/server dev:bundle",
+    "smoke-test": "node scripts/smoke-test.mjs",
     "start": "node scripts/start-electron.mjs",
-    "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests",
-    "smoke-test": "node scripts/smoke-test.mjs"
+    "typecheck": "tsc --noEmit",
+    "vendor:playwright": "node ../../scripts/extract-playwright-injected.ts"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
@@ -30,6 +31,7 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "electron-builder": "^26.15.3",
+    "playwright-core": "^1.61.1",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",

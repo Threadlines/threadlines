@@ -3785,8 +3785,11 @@ function AssistantChangedFilesSectionInner({
 
   return (
     <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
-      <div className="sticky top-2 z-10 mb-1.5 flex items-center justify-between gap-2 bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:content-['']">
-        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
+      {/* Wraps rather than overflowing. With the browser and source control
+          both open the chat column gets narrow, and a row that cannot wrap
+          pushes its buttons out of the card instead of under the label. */}
+      <div className="sticky top-2 z-10 mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:content-['']">
+        <p className="min-w-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
           <span>Turn changes ({changedFileCountLabel})</span>
           {hasNonZeroStat(summaryStat) && (
             <>
@@ -3800,7 +3803,7 @@ function AssistantChangedFilesSectionInner({
             </>
           )}
         </p>
-        <div className="flex items-center gap-1.5">
+        <div className="ms-auto flex shrink-0 items-center gap-1.5">
           <Button
             type="button"
             size="xs"

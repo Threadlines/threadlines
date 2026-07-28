@@ -1351,8 +1351,15 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * Takes the shape rather than the contract type: the browser preview captures
+ * screenshots too, and it has no business inventing a `source` for an enum that
+ * describes OS capture tools and that nothing here reads. `DesktopCapturedScreenshot`
+ * still satisfies this.
+ */
 export function desktopCapturedScreenshotToFile(
-  screenshot: DesktopCapturedScreenshot,
+  screenshot: Pick<DesktopCapturedScreenshot, "dataUrl" | "name" | "mimeType"> &
+    Partial<DesktopCapturedScreenshot>,
 ): File | null {
   const commaIndex = screenshot.dataUrl.indexOf(",");
   if (commaIndex < 0) {
@@ -1372,7 +1379,7 @@ export function desktopCapturedScreenshotToFile(
     }
     return new File([bytes], screenshot.name || "screenshot.png", {
       type: screenshot.mimeType,
-      lastModified: Date.parse(screenshot.capturedAt) || Date.now(),
+      lastModified: Date.parse(screenshot.capturedAt ?? "") || Date.now(),
     });
   } catch {
     return null;
@@ -1991,4 +1998,22 @@ export function buildRevertConfirmView(input: {
       UNDO_NOTE,
     ],
   };
+}
+
+/**
+ * The working-tree diffstat to show on a closed source control toggle, or null
+ * when there is nothing worth reporting. A clean tree stays visually quiet, and
+ * an unloaded or non-repo status must not read as "no changes".
+ */
+export function resolveWorkingTreeDiffStat(
+  status: {
+    readonly isRepo: boolean;
+    readonly workingTree: { readonly insertions: number; readonly deletions: number };
+  } | null,
+): { readonly insertions: number; readonly deletions: number } | null {
+  if (status === null || !status.isRepo) {
+    return null;
+  }
+  const { insertions, deletions } = status.workingTree;
+  return insertions === 0 && deletions === 0 ? null : { insertions, deletions };
 }

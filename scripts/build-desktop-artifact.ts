@@ -5,6 +5,10 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 import rootPackageJson from "../package.json" with { type: "json" };
 
+import {
+  VENDOR_DIRECTORY_NAME,
+  VENDORED_INJECTED_SCRIPT_FILENAME,
+} from "@threadlines/shared/previewInjectedScript";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
 import {
@@ -1085,6 +1089,21 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (!(yield* fs.exists(bundledClientEntry))) {
     return yield* new BuildScriptError({
       message: `Missing bundled server client at ${bundledClientEntry}. Run 'vp run build:desktop' first.`,
+    });
+  }
+
+  // The bundler copies no assets, so this one is placed by a build step that is
+  // easy to drop. Without it the app ships and runs, and only browser snapshots
+  // fail -- at which point the model falls back to screenshots and the loss
+  // looks like the agent being vague rather than a missing file.
+  const vendoredInjectedScript = path.join(
+    distDirs.desktopDist,
+    VENDOR_DIRECTORY_NAME,
+    VENDORED_INJECTED_SCRIPT_FILENAME,
+  );
+  if (!(yield* fs.exists(vendoredInjectedScript))) {
+    return yield* new BuildScriptError({
+      message: `Missing vendored preview automation script at ${vendoredInjectedScript}. Run 'vp run build:desktop' first.`,
     });
   }
 

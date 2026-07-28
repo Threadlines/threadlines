@@ -60,6 +60,35 @@ export const ThreadlinesGlyph: Icon = (props) => {
   );
 };
 
+/**
+ * Device rotation: an upright screen with arrows turning around it.
+ *
+ * Drawn rather than taken from the icon set, which offers a square with a
+ * refresh arrow (reads as "reload") and a pair of devices (reads as
+ * "responsive"). Neither says "turn this on its side".
+ */
+export const RotateDeviceIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    {/* The device, upright, so the arrows read as turning it. */}
+    <rect x="9" y="4" width="6" height="16" rx="1.6" />
+    {/* Turning down the left... */}
+    <path d="M6.2 8.6a7.4 7.4 0 0 0 0 6.8" />
+    <path d="m4.3 9.9 1.9-1.5 1.5 1.9" />
+    {/* ...and back up the right. */}
+    <path d="M17.8 15.4a7.4 7.4 0 0 0 0-6.8" />
+    <path d="m19.7 14.1-1.9 1.5-1.5-1.9" />
+  </svg>
+);
+
 export const SourceControlIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}

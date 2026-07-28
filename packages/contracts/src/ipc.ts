@@ -139,6 +139,12 @@ import type {
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
 import * as Schema from "effect/Schema";
+
+import type {
+  PreviewAutomationHost,
+  PreviewAutomationRequest,
+  PreviewAutomationResponse,
+} from "./previewAutomation.ts";
 import type {
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
@@ -163,6 +169,7 @@ import { AuthBearerBootstrapResult, AuthSessionState, AuthWebSocketTokenResult }
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { PreviewAutomationTargetSchema } from "./previewAutomation.ts";
 import type { ClientSettings, ServerSettings, ServerSettingsPatch } from "./settings.ts";
 import type {
   SourceControlCloneRepositoryInput,
@@ -369,6 +376,277 @@ export interface DesktopMenuActionPayload {
   environmentId?: string;
   threadId?: string;
 }
+
+/**
+ * Preview automation, the surface the agent will eventually drive.
+ *
+ * Keyed by the guest's webContents id rather than a thread: the renderer owns
+ * the <webview> and is the only side that knows which element belongs to which
+ * thread, so it registers the pairing and the main process stays a dumb
+ * executor that cannot act on a tab nobody claimed.
+ */
+export const DesktopPreviewTargetSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+});
+export type DesktopPreviewTarget = typeof DesktopPreviewTargetSchema.Type;
+
+export const DesktopPreviewEvaluateInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  expression: Schema.String,
+});
+export type DesktopPreviewEvaluateInput = typeof DesktopPreviewEvaluateInputSchema.Type;
+
+export const DesktopPreviewConsoleEntrySchema = Schema.Struct({
+  level: Schema.String,
+  text: Schema.String,
+  at: Schema.String,
+});
+export type DesktopPreviewConsoleEntry = typeof DesktopPreviewConsoleEntrySchema.Type;
+
+export const DesktopPreviewNetworkFailureSchema = Schema.Struct({
+  url: Schema.String,
+  status: Schema.NullOr(Schema.Number),
+  errorText: Schema.NullOr(Schema.String),
+  at: Schema.String,
+});
+export type DesktopPreviewNetworkFailure = typeof DesktopPreviewNetworkFailureSchema.Type;
+
+/**
+ * An element the agent can address, taken from the accessibility tree.
+ *
+ * `ref` is a backend node id: stable for the life of the document, and handed
+ * back verbatim to act on the element. Targeting by ref rather than by a
+ * selector string means there is nothing to parse and nothing ambiguous -- the
+ * agent acts on something it was actually shown.
+ */
+export const DesktopPreviewElementSchema = Schema.Struct({
+  ref: Schema.Number,
+  role: Schema.String,
+  name: Schema.String,
+  value: Schema.NullOr(Schema.String),
+  disabled: Schema.Boolean,
+});
+export type DesktopPreviewElement = typeof DesktopPreviewElementSchema.Type;
+
+/**
+ * How the user points at the page.
+ *
+ * "element" is one thing under the cursor. "region" is a dragged rectangle, for
+ * when the thing worth talking about is a row of cards or a whole section
+ * rather than any single node -- describing that one element at a time is the
+ * work the rectangle exists to avoid.
+ */
+export const DesktopPreviewPickModeSchema = Schema.Literals(["element", "region"]);
+export type DesktopPreviewPickMode = typeof DesktopPreviewPickModeSchema.Type;
+
+export const DesktopPreviewPickInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  /** The app's resolved theme; the pick cursor is drawn to match it. */
+  colorScheme: Schema.Literals(["light", "dark"]),
+  mode: DesktopPreviewPickModeSchema,
+});
+export type DesktopPreviewPickInput = typeof DesktopPreviewPickInputSchema.Type;
+
+/**
+ * Marking up the page rather than pointing at it.
+ *
+ * "draw" leaves ink, "erase" takes a stroke back off, "idle" leaves the marks
+ * alone but gives the pointer back to the page, and null clears the lot. The
+ * marks are never reported anywhere: they exist so a screenshot can carry them,
+ * which is why turning the mode off is also how you start over.
+ */
+export const DesktopPreviewAnnotationModeSchema = Schema.Literals(["draw", "erase", "idle"]);
+export type DesktopPreviewAnnotationMode = typeof DesktopPreviewAnnotationModeSchema.Type;
+
+export const DesktopPreviewAnnotateInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  mode: Schema.NullOr(DesktopPreviewAnnotationModeSchema),
+});
+export type DesktopPreviewAnnotateInput = typeof DesktopPreviewAnnotateInputSchema.Type;
+
+/**
+ * Where an agent's action landed on the page.
+ *
+ * Reported because an agent driving a browser the user is watching should be
+ * visible doing it. The coordinates are already computed to dispatch the event;
+ * throwing them away and then inventing a way to find them again would be the
+ * long road to the same place.
+ */
+export const DesktopPreviewPointSchema = Schema.Struct({
+  x: Schema.Finite,
+  y: Schema.Finite,
+});
+export type DesktopPreviewPoint = typeof DesktopPreviewPointSchema.Type;
+
+export const DesktopPreviewRevealInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  selector: Schema.String,
+});
+export type DesktopPreviewRevealInput = typeof DesktopPreviewRevealInputSchema.Type;
+
+export const DesktopPreviewClickInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  target: PreviewAutomationTargetSchema,
+});
+export type DesktopPreviewClickInput = typeof DesktopPreviewClickInputSchema.Type;
+
+export const DesktopPreviewMoveInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  target: PreviewAutomationTargetSchema,
+});
+export type DesktopPreviewMoveInput = typeof DesktopPreviewMoveInputSchema.Type;
+
+export const DesktopPreviewDragInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  from: PreviewAutomationTargetSchema,
+  to: PreviewAutomationTargetSchema,
+});
+export type DesktopPreviewDragInput = typeof DesktopPreviewDragInputSchema.Type;
+
+/** Both ends of a drag, so the UI can replay the gesture rather than the result. */
+export const DesktopPreviewDragResultSchema = Schema.Struct({
+  from: DesktopPreviewPointSchema,
+  to: DesktopPreviewPointSchema,
+});
+export type DesktopPreviewDragResult = typeof DesktopPreviewDragResultSchema.Type;
+
+export const DesktopPreviewTypeInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  target: PreviewAutomationTargetSchema,
+  text: Schema.String,
+  /** Replace what is already in the field rather than appending to it. */
+  clear: Schema.optional(Schema.Boolean),
+});
+export type DesktopPreviewTypeInput = typeof DesktopPreviewTypeInputSchema.Type;
+
+export const DesktopPreviewPressInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  key: Schema.String,
+  modifiers: Schema.optionalKey(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
+});
+export type DesktopPreviewPressInput = typeof DesktopPreviewPressInputSchema.Type;
+
+export const DesktopPreviewScrollInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  deltaX: Schema.optionalKey(Schema.Number),
+  deltaY: Schema.optionalKey(Schema.Number),
+  target: Schema.optionalKey(PreviewAutomationTargetSchema),
+});
+export type DesktopPreviewScrollInput = typeof DesktopPreviewScrollInputSchema.Type;
+
+export const DesktopPreviewWaitForInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  target: Schema.optionalKey(PreviewAutomationTargetSchema),
+  text: Schema.optionalKey(Schema.String),
+  urlContains: Schema.optionalKey(Schema.String),
+  timeoutMs: Schema.optionalKey(Schema.Number),
+});
+export type DesktopPreviewWaitForInput = typeof DesktopPreviewWaitForInputSchema.Type;
+
+export const DesktopPreviewStatusSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  attached: Schema.Boolean,
+  /** Console output since the page last navigated, oldest first. */
+  console: Schema.Array(DesktopPreviewConsoleEntrySchema),
+  /** Requests that failed or returned >= 400 since the page last navigated. */
+  networkFailures: Schema.Array(DesktopPreviewNetworkFailureSchema),
+});
+export type DesktopPreviewStatus = typeof DesktopPreviewStatusSchema.Type;
+
+export const DesktopPreviewViewportInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  /** null clears the override and lets the page size itself to the element. */
+  width: Schema.NullOr(Schema.Number),
+  height: Schema.NullOr(Schema.Number),
+});
+export type DesktopPreviewViewportInput = typeof DesktopPreviewViewportInputSchema.Type;
+
+export const DesktopPreviewColorSchemeInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  colorScheme: Schema.Literals(["light", "dark"]),
+});
+export type DesktopPreviewColorSchemeInput = typeof DesktopPreviewColorSchemeInputSchema.Type;
+
+export const DesktopPreviewScreenshotSchema = Schema.Struct({
+  dataUrl: Schema.String,
+  width: Schema.Number,
+  height: Schema.Number,
+});
+export type DesktopPreviewScreenshot = typeof DesktopPreviewScreenshotSchema.Type;
+
+/** A server listening on this machine, offered as a destination for the preview. */
+export const DesktopLocalServerSchema = Schema.Struct({
+  port: Schema.Number,
+  processName: Schema.String,
+  pid: Schema.Number,
+  /** The served page's title, which identifies a server better than "node". */
+  title: Schema.NullOr(Schema.String),
+});
+export type DesktopLocalServer = typeof DesktopLocalServerSchema.Type;
+
+/**
+ * An element the user pointed at in the preview.
+ *
+ * Described rather than referenced: a backend node id is only valid for the
+ * document that produced it, so handing one to an agent that will act minutes
+ * later, possibly after a reload, would be a dangling pointer. Role and name
+ * are what the agent looks elements up by anyway.
+ */
+export const DesktopPreviewPickedElementSchema = Schema.Struct({
+  tagName: Schema.String,
+  /** Accessible role and name, matching how snapshot elements are identified. */
+  role: Schema.NullOr(Schema.String),
+  name: Schema.NullOr(Schema.String),
+  /** A CSS path good enough to find the element again by hand. */
+  selector: Schema.String,
+  text: Schema.NullOr(Schema.String),
+  /** What the user said about it while picking; the reason the element matters. */
+  note: Schema.NullOr(Schema.String),
+  /**
+   * Style tweaks made on the page while annotating, as before-and-after pairs.
+   * A proposal, not an edit: the page is a scratch pad and nothing here has
+   * touched the source.
+   */
+  styleChanges: Schema.Array(
+    Schema.Struct({
+      property: Schema.String,
+      from: Schema.String,
+      to: Schema.String,
+    }),
+  ),
+  rect: Schema.Struct({
+    x: Schema.Number,
+    y: Schema.Number,
+    width: Schema.Number,
+    height: Schema.Number,
+  }),
+  url: Schema.String,
+});
+export type DesktopPreviewPickedElement = typeof DesktopPreviewPickedElementSchema.Type;
+
+/**
+ * A drawing, once the user has said what it is about.
+ *
+ * Two kinds of evidence from one gesture, because circling something says both
+ * how it looks and which thing it is: the caller photographs the page with the
+ * ink still on it, and these are the elements the strokes went round, so the
+ * agent can find them in the source rather than only look at them.
+ */
+export const DesktopPreviewDrawingSchema = Schema.Struct({
+  note: Schema.NullOr(Schema.String),
+  elements: Schema.Array(DesktopPreviewPickedElementSchema),
+});
+export type DesktopPreviewDrawing = typeof DesktopPreviewDrawingSchema.Type;
+
+export const DesktopPreviewSnapshotSchema = Schema.Struct({
+  ...DesktopPreviewStatusSchema.fields,
+  /** The page as an aria tree: roles, names, text and a ref on everything. */
+  page: Schema.String,
+});
+export type DesktopPreviewSnapshot = typeof DesktopPreviewSnapshotSchema.Type;
 
 export const DesktopCaptureScreenshotInputSchema = Schema.Struct({
   mode: DesktopCaptureScreenshotModeSchema,
@@ -623,6 +901,38 @@ export interface DesktopBridge {
   captureScreenshot?: (
     input: DesktopCaptureScreenshotInput,
   ) => Promise<DesktopCaptureScreenshotResult>;
+  previewAttach?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
+  previewDetach?: (input: DesktopPreviewTarget) => Promise<void>;
+  previewStatus?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewStatus>;
+  previewEvaluate?: (input: DesktopPreviewEvaluateInput) => Promise<unknown>;
+  previewSnapshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewSnapshot>;
+  /** Resolve with the point the input landed on, so the UI can show it. */
+  previewClick?: (input: DesktopPreviewClickInput) => Promise<DesktopPreviewPoint>;
+  previewMove?: (input: DesktopPreviewMoveInput) => Promise<DesktopPreviewPoint>;
+  previewDrag?: (input: DesktopPreviewDragInput) => Promise<DesktopPreviewDragResult>;
+  previewType?: (input: DesktopPreviewTypeInput) => Promise<DesktopPreviewPoint>;
+  previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
+  previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
+  previewWaitFor?: (input: DesktopPreviewWaitForInput) => Promise<void>;
+  previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
+  previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
+  previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
+  previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
+  /** Resolves empty when picking is cancelled or times out. Region picks
+   *  resolve many elements at once; element picks resolve at most one. */
+  previewPickElement?: (
+    input: DesktopPreviewPickInput,
+  ) => Promise<readonly DesktopPreviewPickedElement[]>;
+  previewCancelPick?: (input: DesktopPreviewTarget) => Promise<void>;
+  /** Arms drawing or erasing on the page, or clears the marks when null. */
+  previewSetAnnotationMode?: (input: DesktopPreviewAnnotateInput) => Promise<void>;
+  /** Resolves when a drawing is attached, or null if it is discarded. */
+  previewAwaitDrawing?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewDrawing | null>;
+  /** Resolves false when the element is no longer on the page. */
+  previewRevealElement?: (input: DesktopPreviewRevealInput) => Promise<boolean>;
+  previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;
+  previewClearBrowsingData?: () => Promise<void>;
+  previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],
@@ -776,6 +1086,14 @@ export interface LocalApi {
  * `environmentId` rather than reaching through the local desktop bridge.
  */
 export interface EnvironmentApi {
+  /** Offers this client's browser panel as the page the agent acts on. */
+  previewAutomation: {
+    connect: (
+      input: PreviewAutomationHost,
+      listener: (request: PreviewAutomationRequest) => void,
+    ) => () => void;
+    respond: (response: PreviewAutomationResponse) => Promise<void>;
+  };
   terminal: {
     open: (input: typeof TerminalOpenInput.Encoded) => Promise<TerminalSessionSnapshot>;
     write: (input: typeof TerminalWriteInput.Encoded) => Promise<void>;

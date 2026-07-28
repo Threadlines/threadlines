@@ -1,3 +1,5 @@
+import { BROWSER_MCP_SERVER_NAME, mcpEndpointUrl } from "../../mcp/McpHttpServer.ts";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -50,8 +52,9 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
-import { CODEX_APP_SERVER_ARGS } from "../codexAppServerArgs.ts";
+import { CODEX_BROWSER_TOKEN_ENV_VAR, codexAppServerArgs } from "../codexAppServerArgs.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
@@ -173,6 +176,9 @@ type CodexThreadItem =
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
+  /** Where this server is listening, so the thread can be told how to reach
+   *  the browser tools. */
+  readonly serverPort: number;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly binaryPath: string;
   readonly homePath?: string;
@@ -525,10 +531,14 @@ function buildCodexCollaborationMode(input: {
     settings: {
       model,
       ...(input.effort ? { reasoning_effort: input.effort } : {}),
-      developer_instructions:
+      // Appended rather than replacing the mode block: which browser the user
+      // means is orthogonal to how the model is collaborating.
+      developer_instructions: [
         input.interactionMode === "plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+        CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
+      ].join("\n\n"),
     },
   };
 }
@@ -1336,11 +1346,22 @@ export const makeCodexSessionRuntime = (
     // `child_process.spawn`; `expandHomePath` lets a configured
     // `CODEX_HOME=~/.codex_work` reach codex as an absolute path.
     const resolvedHomePath = options.homePath ? expandHomePath(options.homePath) : undefined;
+    // The browser tools are named at spawn, and the credential travels in the
+    // environment so it never appears in argv.
+    const browserCredential = yield* mcpSessionRegistry.credentialFor(options.threadId);
     const env = {
       ...(options.environment ?? process.env),
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
+      [CODEX_BROWSER_TOKEN_ENV_VAR]: browserCredential,
     };
-    const spawnPlan = planCliSpawn(options.binaryPath, CODEX_APP_SERVER_ARGS, env);
+    const spawnPlan = planCliSpawn(
+      options.binaryPath,
+      codexAppServerArgs({
+        url: mcpEndpointUrl(options.serverPort),
+        serverName: BROWSER_MCP_SERVER_NAME,
+      }),
+      env,
+    );
     const child = yield* spawner
       .spawn(
         ChildProcess.make(
@@ -1359,7 +1380,7 @@ export const makeCodexSessionRuntime = (
         Effect.mapError(
           (cause) =>
             new CodexErrors.CodexAppServerSpawnError({
-              command: [options.binaryPath, ...CODEX_APP_SERVER_ARGS].join(" "),
+              command: [spawnPlan.command, ...spawnPlan.args].join(" "),
               cause,
             }),
         ),

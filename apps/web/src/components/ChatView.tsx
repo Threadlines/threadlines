@@ -112,6 +112,8 @@ import {
   type TurnDiffSummary,
   type ChatAttachment,
 } from "../types";
+import { useAutoCollapseSidebar } from "../hooks/useAutoCollapseSidebar";
+import { useSidebar } from "./ui/sidebar";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -193,6 +195,13 @@ import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/Message
 import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
+import type { DesktopPreviewPickedElement } from "@threadlines/contracts";
+import { appendDrawingContextsToPrompt } from "../lib/drawingContext";
+import {
+  appendPickedElementContextsToPrompt,
+  pickedElementFromPreview,
+  type PickedElementContextDraft,
+} from "../lib/pickedElementContext";
 import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
@@ -245,9 +254,13 @@ import {
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
   buildRevertConfirmView,
+  resolveWorkingTreeDiffStat,
   type RevertConfirmView,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
+import { BrowserPanel } from "./browser/BrowserPanel";
+import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
   useServerAvailableEditors,
@@ -1109,6 +1122,7 @@ export default function ChatView(props: ChatViewProps) {
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerTranscriptHighlightContextsRef = useRef<TranscriptHighlightContextDraft[]>([]);
   const composerFileSelectionContextsRef = useRef<FileSelectionContextDraft[]>([]);
+  const composerPickedElementContextsRef = useRef<PickedElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -1321,6 +1335,19 @@ export default function ChatView(props: ChatViewProps) {
   // General Chat threads run in a hidden scratch workspace: source-control,
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
+  /**
+   * A picked element becomes a context attached to the message, not text in it.
+   * It is the same shape as a terminal excerpt or a highlighted quote: evidence
+   * carried alongside what you are asking, removable before you send, and left
+   * out of the prompt you are still writing.
+   */
+  const appendPickedElementToComposer = useCallback(
+    (element: DesktopPreviewPickedElement) => {
+      composerRef.current?.addPickedElementContext(pickedElementFromPreview(element));
+    },
+    [composerRef],
+  );
+
   const draftTimelineEmptyState = useMemo(
     () =>
       isLocalDraftThread && draftThread ? (
@@ -2490,6 +2517,57 @@ export default function ChatView(props: ChatViewProps) {
       : (storeServerTerminalLaunchContext ?? null);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const browserPanelState = useBrowserPanelStore((store) =>
+    selectThreadBrowserState(store.browserStateByThreadKey, routeThreadRef),
+  );
+  const toggleBrowserOpen = useBrowserPanelStore((store) => store.toggleBrowserOpen);
+  const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
+
+  /**
+   * Showing a picked element again is a request, not a call: the panel may be
+   * closed, in which case it has to open and mount a webview before anything
+   * can be highlighted. Handing it a pending request lets it act when it is
+   * ready rather than making the caller guess at the timing.
+   */
+  const [pendingElementReveal, setPendingElementReveal] =
+    useState<PickedElementContextDraft | null>(null);
+  const revealPickedElement = useCallback(
+    (context: PickedElementContextDraft) => {
+      setBrowserOpen(routeThreadRef, true);
+      setPendingElementReveal(context);
+    },
+    [routeThreadRef, setBrowserOpen],
+  );
+  const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
+  const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
+  const browserExpanded = useBrowserPanelStore((store) => store.expanded);
+  // General chats have no project and therefore no dev server to look at.
+  const browserAvailable = !isGeneralChatThread;
+  const browserOpen = browserAvailable && browserPanelState.open;
+
+  // With source control and the browser both open the chat column is what pays
+  // for it, so the sidebar folds down to its rail -- once, and never again if
+  // you expand it back.
+  const { setOpen: setSidebarOpen, state: sidebarState } = useSidebar();
+  useAutoCollapseSidebar({
+    squeezed: browserOpen && rightPanelEngaged,
+    expanded: sidebarState === "expanded",
+    setExpanded: setSidebarOpen,
+  });
+  const handleToggleBrowser = useCallback(() => {
+    if (routeThreadRef !== null) {
+      toggleBrowserOpen(routeThreadRef);
+    }
+  }, [routeThreadRef, toggleBrowserOpen]);
+  const handleCloseBrowser = useCallback(() => {
+    if (routeThreadRef !== null) {
+      setBrowserOpen(routeThreadRef, false);
+    }
+  }, [routeThreadRef, setBrowserOpen]);
+  const workingTreeDiffStat = useMemo(
+    () => resolveWorkingTreeDiffStat(gitStatusQuery.data ?? null),
+    [gitStatusQuery.data],
+  );
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -4210,6 +4288,8 @@ export default function ChatView(props: ChatViewProps) {
       terminalContexts: composerTerminalContexts,
       transcriptHighlightContexts: composerTranscriptHighlightContexts,
       fileSelectionContexts: composerFileSelectionContexts,
+      pickedElementContexts: composerPickedElementContexts,
+      drawingContexts: composerDrawingContexts,
       selectedModel: ctxSelectedModel,
       selectedModelSelection: ctxSelectedModelSelection,
       skillReferences: composerSkillReferences,
@@ -4322,6 +4402,8 @@ export default function ChatView(props: ChatViewProps) {
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
     const composerTranscriptHighlightContextsSnapshot = [...sendableTranscriptHighlightContexts];
     const composerFileSelectionContextsSnapshot = [...composerFileSelectionContexts];
+    const composerPickedElementContextsSnapshot = [...composerPickedElementContexts];
+    const composerDrawingContextsSnapshot = [...composerDrawingContexts];
     const messageTextWithTerminalContexts = appendTerminalContextsToPrompt(
       promptForSend,
       composerTerminalContextsSnapshot,
@@ -4330,15 +4412,34 @@ export default function ChatView(props: ChatViewProps) {
       messageTextWithTerminalContexts,
       composerTranscriptHighlightContextsSnapshot,
     );
-    const messageTextForSend = appendFileSelectionContextsToPrompt(
+    const messageTextWithFileSelections = appendFileSelectionContextsToPrompt(
       messageTextWithHighlights,
       composerFileSelectionContextsSnapshot,
+    );
+    const messageTextWithPickedElements = appendPickedElementContextsToPrompt(
+      messageTextWithFileSelections,
+      composerPickedElementContextsSnapshot,
+    );
+    const messageTextForSend = appendDrawingContextsToPrompt(
+      messageTextWithPickedElements,
+      composerDrawingContextsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt(
       messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     );
+    // A drawing's picture is not shown in the composer as its own thumbnail --
+    // it lives behind the chip -- but it still has to reach the model as an
+    // image, because the marks are the half of the message a sentence cannot
+    // carry.
+    const drawingAttachments = composerDrawingContextsSnapshot.map((context, index) => ({
+      type: "image" as const,
+      name: `drawing-${index + 1}.png`,
+      mimeType: "image/png",
+      sizeBytes: Math.round((context.imageDataUrl.length * 3) / 4),
+      dataUrl: context.imageDataUrl,
+    }));
     const turnAttachmentsPromise = Promise.all(
       composerAttachmentsSnapshot.map(async (attachment) => ({
         type: attachment.type,
@@ -4347,7 +4448,7 @@ export default function ChatView(props: ChatViewProps) {
         sizeBytes: attachment.sizeBytes,
         dataUrl: await readFileAsDataUrl(attachment.file),
       })),
-    );
+    ).then((attachments) => [...attachments, ...drawingAttachments]);
     const optimisticAttachments = composerAttachmentsSnapshot.map(
       (attachment): ChatAttachment =>
         attachment.type === "image"
@@ -6007,8 +6108,12 @@ export default function ChatView(props: ChatViewProps) {
         <ChatHeader
           activeThreadEnvironmentId={activeThread.environmentId}
           activeThreadId={activeThread.id}
-          activeThreadTitle={activeThread.title}
-          activeProjectName={activeProject?.name}
+          activeThreadTitle={
+            isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
+          }
+          // "General Chats" is the backing project, not a place the user chose
+          // to be. Chats present as their own mode, so the crumb says so.
+          activeProjectName={isGeneralChatThread ? "General chats" : activeProject?.name}
           isGitRepo={isGitRepo}
           openInCwd={isGeneralChatThread ? null : gitCwd}
           activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
@@ -6023,6 +6128,10 @@ export default function ChatView(props: ChatViewProps) {
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
           sourceControlOpen={rightPanelEngaged && !isGeneralChatThread}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
+          browserAvailable={browserAvailable}
+          browserOpen={browserOpen}
+          onToggleBrowser={handleToggleBrowser}
+          workingTreeDiffStat={workingTreeDiffStat}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
@@ -6106,10 +6215,17 @@ export default function ChatView(props: ChatViewProps) {
           void confirmRevertThread();
         }}
       />
-      {/* Main content area */}
+      {/* Main content area. The browser splits the centre beside the chat; the
+          bottom edge belongs to the terminal. Expanding hides the chat. */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          className={cn(
+            "flex min-h-0 min-w-0 flex-col",
+            browserOpen && browserExpanded && "hidden",
+          )}
+          style={browserOpen ? { flex: `${splitChatFraction} 1 0%` } : { flex: "1 1 0%" }}
+        >
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
@@ -6241,6 +6357,8 @@ export default function ChatView(props: ChatViewProps) {
                   composerTerminalContextsRef={composerTerminalContextsRef}
                   composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
                   composerFileSelectionContextsRef={composerFileSelectionContextsRef}
+                  composerPickedElementContextsRef={composerPickedElementContextsRef}
+                  onRevealPickedElement={isElectron ? revealPickedElement : undefined}
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
@@ -6381,6 +6499,26 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
+        {browserOpen && routeThreadRef !== null ? (
+          <>
+            {browserExpanded ? null : (
+              <BrowserSplitHandle
+                chatFraction={splitChatFraction}
+                onChange={setSplitChatFraction}
+              />
+            )}
+            <BrowserPanel
+              threadRef={routeThreadRef}
+              flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
+              onClose={handleCloseBrowser}
+              onPickElement={appendPickedElementToComposer}
+              onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot)}
+              onDrawing={(drawing) => composerRef.current?.addDrawingContext(drawing)}
+              pendingReveal={pendingElementReveal}
+              onRevealHandled={() => setPendingElementReveal(null)}
+            />
+          </>
+        ) : null}
       </div>
       {/* end horizontal flex container */}
 

@@ -48,6 +48,32 @@ import {
   setTheme,
   showContextMenu,
 } from "./methods/window.ts";
+import {
+  previewAttach,
+  previewClick,
+  previewDrag,
+  previewDetach,
+  previewEvaluate,
+  previewLocalServers,
+  previewMove,
+  previewClearBrowsingData,
+  previewClearCache,
+  previewOpenDevTools,
+  previewScreenshot,
+  previewCancelPick,
+  previewPickElement,
+  previewPress,
+  previewAwaitDrawing,
+  previewSetAnnotationMode,
+  previewRevealElement,
+  previewScroll,
+  previewSetColorScheme,
+  previewSetViewport,
+  previewSnapshot,
+  previewStatus,
+  previewType,
+  previewWaitFor,
+} from "./methods/preview.ts";
 
 export const installDesktopIpcHandlers = Effect.gen(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -71,6 +97,31 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(fetchSshSessionState);
   yield* ipc.handle(issueSshWebSocketToken);
   yield* ipc.handle(resolveSshPasswordPrompt);
+
+  yield* ipc.handle(previewAttach);
+  yield* ipc.handle(previewDetach);
+  yield* ipc.handle(previewStatus);
+  yield* ipc.handle(previewEvaluate);
+  yield* ipc.handle(previewSnapshot);
+  yield* ipc.handle(previewClick);
+  yield* ipc.handle(previewMove);
+  yield* ipc.handle(previewDrag);
+  yield* ipc.handle(previewType);
+  yield* ipc.handle(previewPress);
+  yield* ipc.handle(previewScroll);
+  yield* ipc.handle(previewWaitFor);
+  yield* ipc.handle(previewLocalServers);
+  yield* ipc.handle(previewScreenshot);
+  yield* ipc.handle(previewOpenDevTools);
+  yield* ipc.handle(previewSetColorScheme);
+  yield* ipc.handle(previewPickElement);
+  yield* ipc.handle(previewSetAnnotationMode);
+  yield* ipc.handle(previewAwaitDrawing);
+  yield* ipc.handle(previewCancelPick);
+  yield* ipc.handle(previewRevealElement);
+  yield* ipc.handle(previewSetViewport);
+  yield* ipc.handle(previewClearBrowsingData);
+  yield* ipc.handle(previewClearCache);
 
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);

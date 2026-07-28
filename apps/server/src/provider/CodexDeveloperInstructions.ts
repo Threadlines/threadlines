@@ -132,3 +132,33 @@ Use the \`request_user_input\` tool only when it is listed in the available tool
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
 </collaboration_mode>`;
+
+/**
+ * Which browser the user means.
+ *
+ * Codex ships a bundled browser plugin whose skill claims the phrase "in-app
+ * browser" as one of its own aliases, and instructs the model outright: do not
+ * use external MCP browser-control tools for this surface. Asked to click
+ * something "in our browser", the model followed that skill, found no ChatGPT
+ * in-app browser available, silently fell back to the user's real Chrome, and
+ * reported on a signed-in personal session -- while telling the user it was
+ * using the in-app browser. It was not being careless; it was obeying a skill
+ * that had claimed the words.
+ *
+ * A tool description cannot answer that: the model commits to the skill before
+ * it reads our tool list. Developer instructions can, because developer-role
+ * text outranks a skill file, which reaches the model as tool output.
+ *
+ * Deliberately narrow. It says which surface the user is looking at and how to
+ * reach it, and leaves Codex's plugins alone for what they are for -- asked for
+ * Chrome, the model should still drive Chrome.
+ */
+export const CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS = `<threadlines_preview_panel>
+This session runs inside Threadlines. The user is looking at a live page in Threadlines' embedded preview panel.
+
+When the user says "our browser", "the browser", "the in-app browser", or "the page", they mean that panel. They do not mean Chrome, and they do not mean Codex's own in-app browser; those are different surfaces and neither can see what the user is looking at.
+
+The panel is reachable only through the MCP tools \`mcp__threadlines_browser__*\` (browser_snapshot, browser_click, browser_navigate, browser_type, and the rest). Start with \`mcp__threadlines_browser__browser_snapshot\`.
+
+Do not use the Browser plugin, the Chrome plugin, or any other browser automation for the user's panel. Use those only when the user explicitly asks for Chrome or for a browser outside Threadlines.
+</threadlines_preview_panel>`;

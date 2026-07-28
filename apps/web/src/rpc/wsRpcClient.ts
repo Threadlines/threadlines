@@ -82,6 +82,11 @@ export interface WsRpcClient {
     readonly appendAudio: RpcUnaryMethod<typeof WS_METHODS.realtimeAppendAudio>;
     readonly subscribeAudio: RpcInputStreamMethod<typeof WS_METHODS.realtimeSubscribeAudio>;
   };
+  /** Offering this client's browser panel as the page the agent acts on. */
+  readonly previewAutomation: {
+    readonly connect: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnect>;
+    readonly respond: RpcUnaryMethod<typeof WS_METHODS.previewAutomationRespond>;
+  };
   readonly projects: {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
     readonly writeFile: RpcUnaryMethod<typeof WS_METHODS.projectsWriteFile>;
@@ -368,6 +373,19 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
             ...(options?.onComplete ? { onComplete: options.onComplete } : {}),
           },
         ),
+    },
+    previewAutomation: {
+      connect: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.previewAutomationConnect](input),
+          listener,
+          {
+            tag: WS_METHODS.previewAutomationConnect,
+            ...options,
+          },
+        ),
+      respond: (input) =>
+        transport.request((client) => client[WS_METHODS.previewAutomationRespond](input)),
     },
     projects: {
       searchEntries: (input) =>

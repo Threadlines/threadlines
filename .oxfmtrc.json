@@ -12,6 +12,7 @@
     "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
     "apps/web/public/mockServiceWorker.js",
     "apps/web/src/lib/vendor/qrcodegen.ts",
+    "apps/desktop/src/preview/vendor/**",
     "*.icon/**"
   ],
   "sortPackageJson": {},

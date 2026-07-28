@@ -2,8 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
+  buildOnDeckSyncInput,
+  buildProjectHoverSummary,
+  countThreadsNeedingUser,
   createThreadJumpHintVisibilityController,
+  excludeOnDeckThreads,
   getSidebarThreadIdsToPrewarm,
+  isOnDeckDismissible,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
@@ -33,6 +38,7 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -1236,5 +1242,141 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
+  });
+});
+
+describe("on deck classification", () => {
+  const pill = (label: import("./Sidebar.logic").ThreadStatusPill["label"]) => ({
+    label,
+    colorClass: "",
+    dotClass: "",
+    pulse: false,
+  });
+
+  it("buildOnDeckSyncInput separates live work from unseen completions", () => {
+    expect(
+      buildOnDeckSyncInput({ threadKey: "t-1", pinnedAt: null, status: pill("Working") }),
+    ).toEqual({ key: "t-1", pinned: false, live: true, unseen: false });
+    expect(
+      buildOnDeckSyncInput({ threadKey: "t-2", pinnedAt: null, status: pill("Completed") }),
+    ).toEqual({ key: "t-2", pinned: false, live: false, unseen: true });
+    expect(
+      buildOnDeckSyncInput({
+        threadKey: "t-3",
+        pinnedAt: "2026-03-09T10:00:00.000Z",
+        status: null,
+      }),
+    ).toEqual({ key: "t-3", pinned: true, live: false, unseen: false });
+  });
+
+  it("isOnDeckDismissible allows dismissing settled rows only", () => {
+    expect(isOnDeckDismissible(null)).toBe(true);
+    expect(isOnDeckDismissible(pill("Completed"))).toBe(true);
+    expect(isOnDeckDismissible(pill("Working"))).toBe(false);
+    expect(isOnDeckDismissible(pill("Pending Approval"))).toBe(false);
+  });
+
+  it("excludeOnDeckThreads drops deck rows from the tree and keeps the rest in order", () => {
+    const threads = [{ key: "t-1" }, { key: "t-2" }, { key: "t-3" }];
+    const getThreadKey = (thread: { key: string }) => thread.key;
+
+    expect(
+      excludeOnDeckThreads({
+        threads,
+        onDeckThreadKeys: new Set(["t-2"]),
+        getThreadKey,
+      }),
+    ).toEqual([{ key: "t-1" }, { key: "t-3" }]);
+
+    expect(excludeOnDeckThreads({ threads, onDeckThreadKeys: new Set(), getThreadKey })).toEqual(
+      threads,
+    );
+
+    expect(
+      excludeOnDeckThreads({
+        threads,
+        onDeckThreadKeys: new Set(["t-1", "t-2", "t-3"]),
+        getThreadKey,
+      }),
+    ).toEqual([]);
+  });
+
+  it("countThreadsNeedingUser counts only threads blocked on the user", () => {
+    expect(
+      countThreadsNeedingUser([
+        pill("Pending Approval"),
+        pill("Awaiting Input"),
+        // Live but unblocked, so the rail badge must ignore these.
+        pill("Working"),
+        pill("Starting"),
+        pill("Plan Ready"),
+        pill("Completed"),
+        null,
+      ]),
+    ).toBe(2);
+    expect(countThreadsNeedingUser([])).toBe(0);
+  });
+});
+
+describe("buildProjectHoverSummary", () => {
+  const thread = (id: string, overrides: Partial<SidebarThreadSummary> = {}) =>
+    ({
+      id: ThreadId.make(id),
+      environmentId: localEnvironmentId,
+      projectId: ProjectId.make("project-badcode"),
+      title: id,
+      interactionMode: DEFAULT_INTERACTION_MODE,
+      session: null,
+      createdAt: "2026-07-20T00:00:00.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      latestTurn: null,
+      branch: null,
+      worktreePath: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      ...overrides,
+    }) as SidebarThreadSummary;
+
+  const summaryFor = (threads: readonly SidebarThreadSummary[]) =>
+    buildProjectHoverSummary({
+      name: "badcode",
+      cwd: "/repo/badcode",
+      environmentId: localEnvironmentId,
+      threads,
+      getLastVisitedAt: () => undefined,
+    });
+
+  it("counts only threads the provider is still live on", () => {
+    const summary = summaryFor([
+      thread("waiting", { hasPendingApprovals: true }),
+      thread("idle"),
+      thread("also-idle"),
+    ]);
+
+    expect(summary.threadCount).toBe(3);
+    expect(summary.activeCount).toBe(1);
+    expect(summary.status?.label).toBe("Pending Approval");
+  });
+
+  it("reports the most recent activity across the project", () => {
+    const summary = summaryFor([
+      thread("older", { latestUserMessageAt: "2026-07-21T00:00:00.000Z" }),
+      thread("newest", { latestUserMessageAt: "2026-07-24T00:00:00.000Z" }),
+      thread("middle", { latestUserMessageAt: "2026-07-22T00:00:00.000Z" }),
+    ]);
+
+    expect(summary.lastActivityAt).toBe("2026-07-24T00:00:00.000Z");
+  });
+
+  it("describes an empty project without inventing activity", () => {
+    const summary = summaryFor([]);
+
+    expect(summary.threadCount).toBe(0);
+    expect(summary.activeCount).toBe(0);
+    expect(summary.status).toBeNull();
+    expect(summary.lastActivityAt).toBeNull();
   });
 });

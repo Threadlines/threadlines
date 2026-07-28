@@ -45,6 +45,9 @@ export default defineConfig({
       "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
       "apps/web/public/mockServiceWorker.js",
       "apps/web/src/lib/vendor/qrcodegen.ts",
+      // Playwright's own generated code, vendored verbatim. Reformatting it
+      // would change 311KB of it and break the hash that proves it is theirs.
+      "apps/desktop/src/preview/vendor/**",
       "*.icon/**",
     ],
     sortPackageJson: {},
@@ -60,6 +63,9 @@ export default defineConfig({
       "**/worker-configuration.d.ts",
       "apps/web/public/mockServiceWorker.js",
       "apps/web/src/lib/vendor/qrcodegen.ts",
+      // Playwright's own generated code, vendored verbatim. Reformatting it
+      // would change 311KB of it and break the hash that proves it is theirs.
+      "apps/desktop/src/preview/vendor/**",
     ],
     plugins: ["eslint", "oxc", "react", "unicorn", "typescript"],
     jsPlugins: ["./oxlint-plugin-threadlines/index.ts"],

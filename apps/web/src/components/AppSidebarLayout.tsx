@@ -25,6 +25,9 @@ const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
 const THREAD_SIDEBAR_DEFAULT_WIDTH = `${THREAD_SIDEBAR_MIN_WIDTH}px`;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "88px";
+// Collapsed width of the deck rail. Wide enough for a 32px hit target plus the
+// breathing room that keeps status dots off the window edge.
+const THREAD_SIDEBAR_RAIL_WIDTH = "2.75rem";
 
 function SidebarControl() {
   return (
@@ -47,6 +50,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const appSettings = useSettings();
   const sidebarStyle = {
     "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
+    "--sidebar-width-icon": THREAD_SIDEBAR_RAIL_WIDTH,
     ...(isElectron && typeof navigator !== "undefined" && isMacPlatform(navigator.platform)
       ? { "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET }
       : {}),
@@ -135,7 +139,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarStyle}>
       <Sidebar
         side="left"
-        collapsible="offcanvas"
+        collapsible="icon"
         className="border-r border-border bg-rail text-foreground"
         resizable={{
           minWidth: THREAD_SIDEBAR_MIN_WIDTH,
@@ -145,7 +149,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         }}
       >
         <ThreadSidebar />
-        <SidebarRail />
+        {/* Only the expanded pane resizes; a handle on the fixed-width rail
+            would advertise a drag that does nothing. */}
+        <SidebarRail className="group-data-[collapsible=icon]:hidden" />
       </Sidebar>
       {children}
       <SidebarControl />

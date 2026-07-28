@@ -1,4 +1,5 @@
 import type { DesktopMenuActionPayload } from "@threadlines/contracts";
+import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -30,8 +31,21 @@ const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
 const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
 const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
-const DEFAULT_MAIN_WINDOW_WIDTH = 1100;
-const DEFAULT_MAIN_WINDOW_HEIGHT = 780;
+/**
+ * The first window, on a machine that has never opened one.
+ *
+ * A fraction of the screen rather than a fixed size, because 1100x780 was set
+ * when this was a chat with a sidebar, and it now opens onto four columns --
+ * sidebar, chat, browser, source control. At that size they arrive already
+ * fighting for width, and the first thing anyone does is drag the window
+ * bigger. Better to open at the size people end up at.
+ *
+ * Capped so a 6K display does not get a window the size of a wall, and floored
+ * by the minimums so a small laptop still gets something usable.
+ */
+const DEFAULT_MAIN_WINDOW_SCREEN_FRACTION = 0.9;
+const MAX_DEFAULT_MAIN_WINDOW_WIDTH = 2200;
+const MAX_DEFAULT_MAIN_WINDOW_HEIGHT = 1400;
 const MIN_MAIN_WINDOW_WIDTH = 840;
 const MIN_MAIN_WINDOW_HEIGHT = 620;
 const MAX_RESTORED_MAIN_WINDOW_DIMENSION = 10_000;
@@ -148,6 +162,39 @@ function getWindowTitleBarOptions(shouldUseDarkColors: boolean): WindowTitleBarO
       height: TITLEBAR_HEIGHT,
       symbolColor: shouldUseDarkColors ? TITLEBAR_DARK_SYMBOL_COLOR : TITLEBAR_LIGHT_SYMBOL_COLOR,
     },
+  };
+}
+
+/**
+ * The opening size for a given screen.
+ *
+ * Pure, and exported, because "does this land somewhere sensible on a laptop
+ * and on a big monitor" is the whole question and it should not need a running
+ * Electron to answer.
+ */
+export function defaultMainWindowSize(workArea: { width: number; height: number }): {
+  width: number;
+  height: number;
+} {
+  const fit = (available: number, fraction: number, minimum: number, maximum: number): number => {
+    const scaled = Math.round(available * fraction);
+    // The minimum wins over the cap and over the screen: a window smaller than
+    // its own minimum size is one Electron will silently enlarge anyway.
+    return Math.max(minimum, Math.min(maximum, scaled));
+  };
+  return {
+    width: fit(
+      workArea.width,
+      DEFAULT_MAIN_WINDOW_SCREEN_FRACTION,
+      MIN_MAIN_WINDOW_WIDTH,
+      MAX_DEFAULT_MAIN_WINDOW_WIDTH,
+    ),
+    height: fit(
+      workArea.height,
+      DEFAULT_MAIN_WINDOW_SCREEN_FRACTION,
+      MIN_MAIN_WINDOW_HEIGHT,
+      MAX_DEFAULT_MAIN_WINDOW_HEIGHT,
+    ),
   };
 }
 
@@ -304,10 +351,7 @@ const make = Effect.gen(function* () {
           width: persistedWindowState.value.width,
           height: persistedWindowState.value.height,
         }
-      : {
-          width: DEFAULT_MAIN_WINDOW_WIDTH,
-          height: DEFAULT_MAIN_WINDOW_HEIGHT,
-        };
+      : defaultMainWindowSize(yield* electronWindow.workAreaSize);
     const window = yield* electronWindow.create({
       ...persistedWindowOptions,
       minWidth: MIN_MAIN_WINDOW_WIDTH,
@@ -323,7 +367,31 @@ const make = Effect.gen(function* () {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // The in-app browser preview is a <webview> in the renderer, which
+        // keeps it inside normal CSS layout instead of a native view floating
+        // over the window. `will-attach-webview` below is what makes enabling
+        // this safe.
+        webviewTag: true,
       },
+    });
+
+    // Preview content is untrusted: no Node, no custom preload, and it must run
+    // in the preview partition rather than the app's own session.
+    //
+    // The partition is enforced, not assigned. Electron resolves the guest's
+    // session from the element's `partition` attribute before this fires, so
+    // assigning `params.partition` here silently does nothing and the guest
+    // would inherit the default session -- sharing cookies with Threadlines.
+    // Refusing the attach is the only way to make the renderer's attribute
+    // load-bearing.
+    window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+      delete webPreferences.preload;
+      webPreferences.nodeIntegration = false;
+      webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+      if (params.partition !== PREVIEW_PARTITION) {
+        event.preventDefault();
+      }
     });
 
     if (Option.isSome(persistedWindowState) && persistedWindowState.value.isMaximized) {

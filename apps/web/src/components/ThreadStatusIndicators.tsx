@@ -9,6 +9,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { useGitStatus } from "../lib/gitStatusState";
+import { cn } from "../lib/utils";
 import { type AppState, selectProjectByRef, useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -93,6 +94,32 @@ export function terminalStatusFromRunningIds(
     colorClass: "text-teal-600 dark:text-teal-300/90",
     pulse: true,
   };
+}
+
+/**
+ * The bare status dot, without a tooltip or label. Callers that supply their
+ * own tooltip (the collapsed sidebar rail names the thread rather than the
+ * status) use this instead of {@link ThreadStatusLabel}.
+ */
+export function ThreadStatusDot({
+  status,
+  className,
+}: {
+  status: ThreadStatusPill | null;
+  className?: string;
+}) {
+  if (status === null) {
+    return <span className={cn("size-[9px] rounded-full bg-muted-foreground/40", className)} />;
+  }
+  return status.pulse ? (
+    <LiveNode
+      className={cn("size-[9px]", className)}
+      dotClassName={status.dotClass}
+      haloClassName={status.dotClass}
+    />
+  ) : (
+    <span className={cn("size-[9px] rounded-full", status.dotClass, className)} />
+  );
 }
 
 export function ThreadStatusLabel({

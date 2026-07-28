@@ -7,6 +7,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./preview": {
+      "types": "./src/preview.ts",
+      "import": "./src/preview.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
@@ -138,6 +142,10 @@
     "./path": {
       "types": "./src/path.ts",
       "import": "./src/path.ts"
+    },
+    "./previewInjectedScript": {
+      "types": "./src/previewInjectedScript.ts",
+      "import": "./src/previewInjectedScript.ts"
     },
     "./pendingRequests": {
       "types": "./src/pendingRequests.ts",

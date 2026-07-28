@@ -6,7 +6,13 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
 import { memo } from "react";
-import { FolderInputIcon, FolderOpenIcon, GitForkIcon, TerminalSquareIcon } from "lucide-react";
+import {
+  FolderInputIcon,
+  FolderOpenIcon,
+  GitForkIcon,
+  GlobeIcon,
+  TerminalSquareIcon,
+} from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Group } from "../ui/group";
@@ -49,6 +55,15 @@ interface ChatHeaderProps {
   sourceControlOpen: boolean;
   /** False for capability-gated threads (General Chats) even when a project name exists. */
   sourceControlAvailable: boolean;
+  /** False where there is no project to preview, e.g. a general chat. */
+  browserAvailable: boolean;
+  browserOpen: boolean;
+  /**
+   * Working-tree diffstat, surfaced on the closed source control toggle so the
+   * size of the pending change is legible without opening the panel. Null when
+   * the tree is clean or the status has not loaded.
+   */
+  workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
@@ -67,6 +82,7 @@ interface ChatHeaderProps {
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
   onToggleSourceControl: () => void;
+  onToggleBrowser: () => void;
   /** Present only for General Chat threads that can continue into a project. */
   onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
   continueInProjectDisabledReason?: string | null;
@@ -112,6 +128,10 @@ export const ChatHeader = memo(function ChatHeader({
   sourceControlToggleShortcutLabel,
   sourceControlOpen,
   sourceControlAvailable,
+  browserAvailable,
+  browserOpen,
+  onToggleBrowser,
+  workingTreeDiffStat,
   fileBrowserAvailable,
   taskProgress,
   subagentProgress,
@@ -301,12 +321,38 @@ export const ChatHeader = memo(function ChatHeader({
                     : "Toggle terminal drawer"}
               </TooltipPopup>
             </Tooltip>
-            {sourceControlAvailable || sourceControlOpen ? (
+            {browserAvailable ? (
               <Tooltip>
                 <TooltipTrigger
                   render={
                     <Toggle
                       className="shrink-0"
+                      pressed={browserOpen}
+                      onPressedChange={onToggleBrowser}
+                      aria-label="Toggle browser preview"
+                      variant="outline"
+                      size="xs"
+                    >
+                      <GlobeIcon className="size-3" />
+                    </Toggle>
+                  }
+                />
+                <TooltipPopup side="bottom">Toggle browser preview</TooltipPopup>
+              </Tooltip>
+            ) : null}
+            {sourceControlAvailable || sourceControlOpen ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Toggle
+                      className={cn(
+                        "shrink-0",
+                        // With the counts alongside it, the control needs room
+                        // on both sides -- the icon otherwise sits against the
+                        // hover fill -- and less between them: the base gap is
+                        // sized for icons, not for a label that belongs to one.
+                        workingTreeDiffStat !== null && !sourceControlOpen && "gap-1 px-1.5",
+                      )}
                       pressed={sourceControlOpen}
                       onPressedChange={onToggleSourceControl}
                       aria-label="Toggle source control panel"
@@ -315,6 +361,16 @@ export const ChatHeader = memo(function ChatHeader({
                       disabled={!sourceControlAvailable && !sourceControlOpen}
                     >
                       <SourceControlIcon className="size-[11px]" />
+                      {/* Only while closed: once the panel is open it shows the
+                          per-file counts, and repeating the total is noise. */}
+                      {!sourceControlOpen && workingTreeDiffStat ? (
+                        <span className="font-mono text-[10px] leading-none">
+                          <span className="text-success">+{workingTreeDiffStat.insertions}</span>
+                          <span className="ps-1 text-destructive">
+                            −{workingTreeDiffStat.deletions}
+                          </span>
+                        </span>
+                      ) : null}
                     </Toggle>
                   }
                 />

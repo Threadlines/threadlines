@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sidebar brainstorm — destination band</title>
+    <style>
+      :root {
+        --bg: #101112;
+        --surface: #17181a;
+        --border: #26282b;
+        --fg: #e8e6e1;
+        --fg-muted: #9a978f;
+        --fg-faint: #66645e;
+        --blue: #7aa2f7;
+        --amber: #e0af68;
+        --green: #9ece6a;
+        --font: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+        --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        font-size: 14px;
+        padding: 40px 48px 64px;
+        line-height: 1.4;
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .lede {
+        color: var(--fg-muted);
+        max-width: 760px;
+        margin-bottom: 32px;
+      }
+      .row {
+        display: flex;
+        gap: 40px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .col h2 {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+      .col .note {
+        font-size: 12px;
+        color: var(--fg-muted);
+        min-height: 52px;
+        max-width: 218px;
+        margin-bottom: 10px;
+      }
+      .col.rail .note {
+        max-width: 150px;
+      }
+
+      /* real widths so the vertical proportions read true */
+      .pane {
+        width: 218px;
+        height: 580px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        font-size: 13px;
+      }
+      .rail-pane {
+        width: 44px;
+        height: 580px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 6px 0;
+        gap: 2px;
+      }
+      .spacer {
+        flex: 1;
+      }
+      .hair {
+        border-top: 1px solid var(--border);
+        margin: 7px 0;
+      }
+      .rail-hair {
+        width: 22px;
+        border-top: 1px solid var(--border);
+        margin: 6px 0;
+      }
+
+      .search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 9px;
+        color: var(--fg-faint);
+        font-size: 12.5px;
+      }
+      .kbd {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10px;
+        border: 1px solid var(--border);
+        padding: 1px 4px;
+      }
+      .label {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--fg-faint);
+        padding: 10px 12px 4px;
+      }
+
+      /* destination rows: strictly chrome — one line, no counts */
+      .dest {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 5px 12px;
+        color: var(--fg-muted);
+        white-space: nowrap;
+        cursor: default;
+      }
+      .dest:hover {
+        color: var(--fg);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .dest.on {
+        color: var(--fg);
+        background: rgba(122, 162, 247, 0.13);
+      }
+      .dest.future {
+        color: var(--fg-faint);
+      }
+      .dest .ghost {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 9px;
+        color: var(--fg-faint);
+        opacity: 0.7;
+      }
+
+      .thread,
+      .project {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 12px;
+        color: var(--fg-muted);
+        white-space: nowrap;
+        cursor: default;
+      }
+      .thread:hover,
+      .project:hover {
+        color: var(--fg);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .thread.current {
+        color: var(--fg);
+        background: rgba(122, 162, 247, 0.13);
+      }
+      .thread .title,
+      .project .name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .thread .meta,
+      .project .count {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-faint);
+      }
+      .indent {
+        padding-left: 26px;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: none;
+        background: var(--fg-faint);
+        opacity: 0.5;
+      }
+      .dot.run {
+        background: var(--blue);
+        opacity: 1;
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      .dot.wait {
+        background: var(--amber);
+        opacity: 1;
+      }
+      .dot.done {
+        background: var(--green);
+        opacity: 1;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.35;
+        }
+      }
+      .footer {
+        border-top: 1px solid var(--border);
+        padding: 8px 12px;
+        font-size: 12px;
+        color: var(--fg-faint);
+        display: flex;
+      }
+      .footer .ver {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+      }
+
+      .icon {
+        width: 14px;
+        height: 14px;
+        flex: none;
+      }
+      .rb {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 6px;
+        color: var(--fg-faint);
+        position: relative;
+      }
+      .rb:hover {
+        color: var(--fg);
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .rb.on {
+        color: var(--blue);
+        background: rgba(122, 162, 247, 0.13);
+      }
+      .rb .badge {
+        position: absolute;
+        top: 2px;
+        right: 4px;
+        min-width: 13px;
+        height: 13px;
+        border-radius: 7px;
+        background: var(--amber);
+        color: #101112;
+        font-family: var(--mono);
+        font-size: 9px;
+        line-height: 13px;
+        text-align: center;
+        padding: 0 3px;
+      }
+      .rb .ring {
+        box-shadow: 0 0 0 3px rgba(122, 162, 247, 0.25);
+      }
+
+      .measure {
+        margin-top: 10px;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-faint);
+        max-width: 218px;
+      }
+      .measure b {
+        color: var(--fg-muted);
+        font-weight: 400;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Sidebar: a fixed destination band above On Deck</h1>
+    <p class="lede">
+      On Deck changes height as threads come and go, so anything below it moves. Fixed navigation
+      has to sit above it. Real widths (218px pane, 44px rail) and real row heights, so the vertical
+      proportions below are honest.
+    </p>
+
+    <div class="row">
+      <!-- Today -->
+      <div class="col">
+        <h2>Today</h2>
+        <p class="note">
+          General Chats sits directly under On Deck, the one slot that moves every time a thread
+          joins or leaves the deck.
+        </p>
+        <div class="pane">
+          <div class="search">Search<span class="kbd">⌘K</span></div>
+          <div class="label">On deck</div>
+          <div class="thread">
+            <span class="dot done"></span><span class="title">Preview multi-queue</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="thread">
+            <span class="dot wait"></span><span class="title">Preview 3-option…</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="thread current">
+            <span class="dot run"></span><span class="title">Deck sidebar</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="hair"></div>
+          <div class="project">
+            <span class="dot"></span><span class="name">General Chats</span
+            ><span class="count">3</span>
+          </div>
+          <div class="thread indent">
+            <span class="dot"></span><span class="title">Remember the codeword</span>
+          </div>
+          <div class="thread indent">
+            <span class="dot"></span><span class="title">Reply with the single…</span>
+          </div>
+          <div class="hair"></div>
+          <div class="label">Projects</div>
+          <div class="project">
+            <span class="dot run"></span><span class="name">badcode</span
+            ><span class="count">12</span>
+          </div>
+          <div class="project">
+            <span class="dot"></span><span class="name">onetradebot</span
+            ><span class="count">4</span>
+          </div>
+          <div class="project">
+            <span class="dot"></span><span class="name">facpmanuals-next</span
+            ><span class="count">2</span>
+          </div>
+          <div class="spacer"></div>
+          <div class="footer">Settings<span class="ver">v0.2.6</span></div>
+        </div>
+        <div class="measure">no band · deck rows start at <b>38px</b></div>
+      </div>
+
+      <!-- Option 2: interim -->
+      <div class="col">
+        <h2>Now · option 2</h2>
+        <p class="note">
+          Only "New chat" is promoted. The General Chats group keeps its threads inline until a list
+          view exists. Band costs one row.
+        </p>
+        <div class="pane">
+          <div class="search">Search<span class="kbd">⌘K</span></div>
+          <div class="hair"></div>
+          <div class="dest">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <path d="M11.6 2.6a1.7 1.7 0 0 1 2.4 2.4L6.6 12.4l-3.1.7.7-3.1z" />
+            </svg>
+            New chat
+          </div>
+          <div class="hair"></div>
+          <div class="label">On deck</div>
+          <div class="thread">
+            <span class="dot done"></span><span class="title">Preview multi-queue</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="thread">
+            <span class="dot wait"></span><span class="title">Preview 3-option…</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="thread current">
+            <span class="dot run"></span><span class="title">Deck sidebar</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="hair"></div>
+          <div class="project">
+            <span class="dot"></span><span class="name">General Chats</span
+            ><span class="count">3</span>
+          </div>
+          <div class="thread indent">
+            <span class="dot"></span><span class="title">Remember the codeword</span>
+          </div>
+          <div class="hair"></div>
+          <div class="label">Projects</div>
+          <div class="project">
+            <span class="dot run"></span><span class="name">badcode</span
+            ><span class="count">12</span>
+          </div>
+          <div class="project">
+            <span class="dot"></span><span class="name">onetradebot</span
+            ><span class="count">4</span>
+          </div>
+          <div class="project">
+            <span class="dot"></span><span class="name">facpmanuals-next</span
+            ><span class="count">2</span>
+          </div>
+          <div class="spacer"></div>
+          <div class="footer">Settings<span class="ver">v0.2.6</span></div>
+        </div>
+        <div class="measure">band costs <b>58px</b> · deck rows start at <b>96px</b></div>
+      </div>
+
+      <!-- Option 1: full band -->
+      <div class="col">
+        <h2>Later · option 1</h2>
+        <p class="note">
+          Chats becomes a destination alongside Pull requests, Scheduled and Plugins, each opening
+          its own list view. Four rows of chrome.
+        </p>
+        <div class="pane">
+          <div class="search">Search<span class="kbd">⌘K</span></div>
+          <div class="hair"></div>
+          <div class="dest">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <path d="M11.6 2.6a1.7 1.7 0 0 1 2.4 2.4L6.6 12.4l-3.1.7.7-3.1z" />
+            </svg>
+            New chat
+          </div>
+          <div class="dest on">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <path d="M3.5 13V6.2M3.5 3.4v.1" />
+              <circle cx="3.5" cy="3" r="1.5" />
+              <circle cx="3.5" cy="13" r="1.5" />
+              <circle cx="11.5" cy="5" r="1.5" />
+              <path d="M11.5 6.5c0 4-4 2.5-5.5 5" />
+            </svg>
+            Pull requests
+          </div>
+          <div class="dest">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="8" cy="8" r="5.8" />
+              <path d="M8 4.8V8l2.2 1.6" />
+            </svg>
+            Scheduled
+          </div>
+          <div class="dest">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="8" cy="8" r="5.8" />
+              <path d="M10.6 6.4a2.6 2.6 0 1 0 0 3.4" />
+            </svg>
+            Plugins
+          </div>
+          <div class="dest">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <path d="M2.6 3.4h10.8v7.2H6.2l-3.6 2.6z" />
+            </svg>
+            Chats
+          </div>
+          <div class="hair"></div>
+          <div class="label">On deck</div>
+          <div class="thread">
+            <span class="dot done"></span><span class="title">Preview multi-queue</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="thread">
+            <span class="dot wait"></span><span class="title">Preview 3-option…</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="thread current">
+            <span class="dot run"></span><span class="title">Deck sidebar</span
+            ><span class="meta">badcode</span>
+          </div>
+          <div class="hair"></div>
+          <div class="label">Projects</div>
+          <div class="project">
+            <span class="dot run"></span><span class="name">badcode</span
+            ><span class="count">12</span>
+          </div>
+          <div class="project">
+            <span class="dot"></span><span class="name">onetradebot</span
+            ><span class="count">4</span>
+          </div>
+          <div class="project">
+            <span class="dot"></span><span class="name">facpmanuals-next</span
+            ><span class="count">2</span>
+          </div>
+          <div class="spacer"></div>
+          <div class="footer">Settings<span class="ver">v0.2.6</span></div>
+        </div>
+        <div class="measure">band costs <b>171px</b> · deck rows start at <b>209px</b></div>
+      </div>
+
+      <!-- Rail -->
+      <div class="col rail">
+        <h2>Rail · later</h2>
+        <p class="note">
+          The band is what the rail was missing: destination icons, hairline, deck dots, settings.
+          Both densities say the same thing.
+        </p>
+        <div class="rail-pane">
+          <div class="rb">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="7" cy="7" r="4.4" />
+              <path d="m10.4 10.4 3.4 3.4" />
+            </svg>
+          </div>
+          <div class="rail-hair"></div>
+          <div class="rb">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <path d="M11.6 2.6a1.7 1.7 0 0 1 2.4 2.4L6.6 12.4l-3.1.7.7-3.1z" />
+            </svg>
+          </div>
+          <div class="rb on">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="3.5" cy="3" r="1.5" />
+              <circle cx="3.5" cy="13" r="1.5" />
+              <path d="M3.5 4.5v7" />
+              <circle cx="11.5" cy="5" r="1.5" />
+              <path d="M11.5 6.5c0 4-4 2.5-5.5 5" />
+            </svg>
+          </div>
+          <div class="rb">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="8" cy="8" r="5.8" />
+              <path d="M8 4.8V8l2.2 1.6" />
+            </svg>
+          </div>
+          <div class="rb">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="8" cy="8" r="5.8" />
+              <path d="M10.6 6.4a2.6 2.6 0 1 0 0 3.4" />
+            </svg>
+          </div>
+          <div class="rb">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <path d="M2.6 3.4h10.8v7.2H6.2l-3.6 2.6z" />
+            </svg>
+          </div>
+          <div class="rail-hair"></div>
+          <div class="rb">
+            <span class="dot done"></span>
+          </div>
+          <div class="rb">
+            <span class="dot wait"></span>
+          </div>
+          <div class="rb">
+            <span class="dot run ring"></span>
+          </div>
+          <div class="spacer"></div>
+          <div class="rb">
+            <svg
+              class="icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+            >
+              <circle cx="8" cy="8" r="2.2" />
+              <path
+                d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6"
+              />
+            </svg>
+          </div>
+        </div>
+        <div class="measure"><b>44px</b> wide · deck dots start at <b>254px</b></div>
+      </div>
+    </div>
+  </body>
+</html>

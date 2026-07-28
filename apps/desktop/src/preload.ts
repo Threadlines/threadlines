@@ -109,6 +109,38 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   confirm: (message) => ipcRenderer.invoke(IpcChannels.CONFIRM_CHANNEL, message),
   captureScreenshot: (input) => ipcRenderer.invoke(IpcChannels.CAPTURE_SCREENSHOT_CHANNEL, input),
+  previewAttach: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_ATTACH_CHANNEL, input),
+  previewDetach: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_DETACH_CHANNEL, input),
+  previewStatus: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_STATUS_CHANNEL, input),
+  previewEvaluate: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_EVALUATE_CHANNEL, input),
+  previewSnapshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SNAPSHOT_CHANNEL, input),
+  previewClick: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLICK_CHANNEL, input),
+  previewMove: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_MOVE_CHANNEL, input),
+  previewDrag: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_DRAG_CHANNEL, input),
+  previewType: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_TYPE_CHANNEL, input),
+  previewPress: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_PRESS_CHANNEL, input),
+  previewScroll: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCROLL_CHANNEL, input),
+  previewWaitFor: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_WAIT_FOR_CHANNEL, input),
+  previewLocalServers: () => ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SERVERS_CHANNEL),
+  previewScreenshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCREENSHOT_CHANNEL, input),
+  previewOpenDevTools: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL, input),
+  previewSetColorScheme: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL, input),
+  previewSetViewport: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_VIEWPORT_CHANNEL, input),
+  previewPickElement: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, input),
+  previewCancelPick: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CANCEL_PICK_CHANNEL, input),
+  previewSetAnnotationMode: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_ANNOTATION_MODE_CHANNEL, input),
+  previewAwaitDrawing: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_AWAIT_DRAWING_CHANNEL, input),
+  previewRevealElement: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_REVEAL_ELEMENT_CHANNEL, input),
+  previewClearBrowsingData: () =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_BROWSING_DATA_CHANNEL),
+  previewClearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   showContextMenu: (items, position) =>

@@ -43,6 +43,9 @@ import * as DesktopServerExposure from "./backend/DesktopServerExposure.ts";
 import * as DesktopClientSettings from "./settings/DesktopClientSettings.ts";
 import * as DesktopSavedEnvironments from "./settings/DesktopSavedEnvironments.ts";
 import * as DesktopScreenCapture from "./screenCapture/DesktopScreenCapture.ts";
+import * as LocalServers from "./preview/LocalServers.ts";
+import * as PreviewAutomation from "./preview/PreviewAutomation.ts";
+import * as PreviewSession from "./preview/PreviewSession.ts";
 import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
@@ -173,6 +176,9 @@ const desktopApplicationLayer = Layer.mergeAll(
   DesktopApplicationMenu.layer,
   DesktopStatusIndicator.layer,
   DesktopScreenCapture.layer,
+  PreviewAutomation.layer,
+  LocalServers.layer,
+  PreviewSession.layer,
   DesktopShellEnvironment.layer,
   DesktopRelay.layer,
   desktopSshLayer,

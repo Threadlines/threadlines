@@ -5,7 +5,6 @@ import {
   ChevronUpIcon,
   CloudIcon,
   FolderPlusIcon,
-  MessageCirclePlusIcon,
   MessagesSquareIcon,
   PinIcon,
   PinOffIcon,
@@ -46,7 +45,6 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
   ProjectId,
-  type ScopedProjectRef,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
   type ThreadEnvMode,
@@ -69,14 +67,14 @@ import {
 } from "@threadlines/contracts/settings";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { usePrimaryEnvironmentId } from "../environments/primary";
+import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
-import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import {
-  selectGeneralChatsProjectAcrossEnvironments,
   selectProjectByRef,
+  selectGeneralChatsProjectAcrossEnvironments,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsForProjectRefs,
   selectSidebarThreadsAcrossEnvironments,
@@ -98,7 +96,7 @@ import { useShortcutModifierState } from "../shortcutModifierState";
 import { useGitStatus } from "../lib/gitStatusState";
 import { readLocalApi } from "../localApi";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { useNewThreadHandler } from "../hooks/useHandleNewThread";
+import { useHandleNewThread, useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 
 import { useThreadActions } from "../hooks/useThreadActions";
@@ -158,8 +156,12 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
+  buildOnDeckSyncInput,
+  buildProjectHoverSummary,
+  excludeOnDeckThreads,
   getSidebarThreadIdsToPrewarm,
   getSidebarThreadWindow,
+  isOnDeckDismissible,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   resolveProjectStatusIndicator,
@@ -173,7 +175,16 @@ import {
   useThreadJumpHintVisibility,
   ThreadStatusPill,
 } from "./Sidebar.logic";
-import { startNewGeneralChatThread } from "../lib/chatThreadActions";
+import { OnDeckSection, type OnDeckEntry } from "./sidebar/OnDeckSection";
+import { DeckRail, type DeckRailProject } from "./sidebar/DeckRail";
+import { ProjectHoverCard } from "./sidebar/ProjectHoverCard";
+import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
+import {
+  DESTINATION_ICONS,
+  DestinationBand,
+  type SidebarDestination,
+} from "./sidebar/DestinationBand";
+import { startNewGeneralChatThread, startNewThreadFromContext } from "../lib/chatThreadActions";
 import { sortThreads } from "../lib/threadSort";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
@@ -1203,6 +1214,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
   const projectThreads = sidebarThreads;
+  // Threads with a deck row are rendered there instead of here, so the same
+  // thread never appears twice in the sidebar.
+  const onDeckThreadKeys = useUiStateStore(useShallow((state) => state.onDeckThreadKeys));
+  const onDeckThreadKeySet = useMemo(() => new Set(onDeckThreadKeys), [onDeckThreadKeys]);
   const projectExpanded = useUiStateStore(
     (state) => state.projectExpandedById[project.projectKey] ?? true,
   );
@@ -1257,39 +1272,35 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     return counts;
   }, [memberProjectByScopedKey, project.memberProjects, projectThreads]);
 
-  const { projectStatus, visibleProjectThreads, orderedProjectThreadKeys } = useMemo(() => {
-    const lastVisitedAtByThreadKey = new Map(
-      projectThreads.map((thread, index) => [
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        threadLastVisitedAts[index] ?? null,
-      ]),
-    );
-    const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
-      const lastVisitedAt = lastVisitedAtByThreadKey.get(
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+  const { hoverSummary, projectStatus, visibleProjectThreads, orderedProjectThreadKeys } =
+    useMemo(() => {
+      const lastVisitedAtByThreadKey = new Map(
+        projectThreads.map((thread, index) => [
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          threadLastVisitedAts[index] ?? null,
+        ]),
       );
-      return resolveThreadStatusPill({
-        thread: {
-          ...thread,
-          ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
-        },
+      const visibleProjectThreads = sortThreads(
+        projectThreads.filter((thread) => thread.archivedAt === null),
+        threadSortOrder,
+      );
+      const hoverSummary = buildProjectHoverSummary({
+        name: project.displayName,
+        cwd: project.cwd,
+        environmentId: project.environmentId,
+        threads: visibleProjectThreads,
+        getLastVisitedAt: (threadKey) => lastVisitedAtByThreadKey.get(threadKey),
       });
-    };
-    const visibleProjectThreads = sortThreads(
-      projectThreads.filter((thread) => thread.archivedAt === null),
-      threadSortOrder,
-    );
-    const projectStatus = resolveProjectStatusIndicator(
-      visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
-    );
-    return {
-      orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      ),
-      projectStatus,
-      visibleProjectThreads,
-    };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+      const projectStatus = hoverSummary.status;
+      return {
+        orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        ),
+        hoverSummary,
+        projectStatus,
+        visibleProjectThreads,
+      };
+    }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
 
   const {
     hiddenThreadStatus,
@@ -1317,8 +1328,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         },
       });
     };
-    const threadWindow = getSidebarThreadWindow({
+    const treeThreads = excludeOnDeckThreads({
       threads: visibleProjectThreads,
+      onDeckThreadKeys: onDeckThreadKeySet,
+      getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    });
+    const threadWindow = getSidebarThreadWindow({
+      threads: treeThreads,
       getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       activeThreadKey: activeRouteThreadKey,
       previewLimit: sidebarThreadPreviewCount,
@@ -1332,11 +1348,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       nextRevealCount: threadWindow.nextRevealCount,
       searchHandoffThreadCount: threadWindow.searchHandoffThreadCount,
       isThreadListRevealed: threadWindow.isRevealed,
+      // Deliberately the unfiltered list: a project whose only threads are on
+      // deck still has threads, so "no threads yet" would be a lie. It simply
+      // renders no rows of its own.
       showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
       shouldShowThreadPanel: projectExpanded,
     };
   }, [
     activeRouteThreadKey,
+    onDeckThreadKeySet,
     projectExpanded,
     projectThreads,
     revealedThreadCount,
@@ -2189,121 +2209,123 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       {/* Sticky: stays pinned to the sidebar viewport top while this
           project's threads scroll, so context and the collapse toggle are
           always in reach. The next project header pushes it off naturally. */}
-      <div className="group/project-header sticky top-0 z-10 bg-sidebar">
-        <SidebarMenuButton
-          ref={isManualProjectSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
-          size="sm"
-          className={`gap-2 px-2 py-1.5 pr-8 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground max-sm:pr-14 ${
-            isManualProjectSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
-          }`}
-          {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.attributes : {})}
-          {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.listeners : {})}
-          aria-expanded={projectExpanded}
-          onPointerDownCapture={handleProjectButtonPointerDownCapture}
-          onClick={handleProjectButtonClick}
-          onKeyDown={handleProjectButtonKeyDown}
-          onContextMenu={handleProjectButtonContextMenu}
-        >
-          {!projectExpanded && projectStatus ? (
-            <span
-              aria-hidden="true"
-              title={projectStatus.label}
-              className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
-            >
-              <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                {projectStatus.pulse ? (
-                  <LiveNode
-                    className="size-[9px]"
-                    dotClassName={projectStatus.dotClass}
-                    haloClassName={projectStatus.dotClass}
-                  />
-                ) : (
-                  <span className={`size-[9px] rounded-full ${projectStatus.dotClass}`} />
-                )}
+      <ProjectHoverCard project={hoverSummary} side="right">
+        <div className="group/project-header sticky top-0 z-10 bg-sidebar">
+          <SidebarMenuButton
+            ref={isManualProjectSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
+            size="sm"
+            className={`gap-2 px-2 py-1.5 pr-8 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground max-sm:pr-14 ${
+              isManualProjectSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+            }`}
+            {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.attributes : {})}
+            {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.listeners : {})}
+            aria-expanded={projectExpanded}
+            onPointerDownCapture={handleProjectButtonPointerDownCapture}
+            onClick={handleProjectButtonClick}
+            onKeyDown={handleProjectButtonKeyDown}
+            onContextMenu={handleProjectButtonContextMenu}
+          >
+            {!projectExpanded && projectStatus ? (
+              <span
+                aria-hidden="true"
+                title={projectStatus.label}
+                className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
+              >
+                <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
+                  {projectStatus.pulse ? (
+                    <LiveNode
+                      className="size-[9px]"
+                      dotClassName={projectStatus.dotClass}
+                      haloClassName={projectStatus.dotClass}
+                    />
+                  ) : (
+                    <span className={`size-[9px] rounded-full ${projectStatus.dotClass}`} />
+                  )}
+                </span>
+                <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
               </span>
-              <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
+            ) : (
+              <ChevronRightIcon
+                className={`-ml-0.5 size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150 ${
+                  projectExpanded ? "rotate-90" : ""
+                }`}
+              />
+            )}
+            {project.kind === "general-chat" ? (
+              <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+            ) : (
+              <ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />
+            )}
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="truncate text-xs font-medium text-foreground/90">
+                {project.displayName}
+              </span>
+              {project.groupedProjectCount > 1 ? (
+                <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                  {project.groupedProjectCount} projects
+                </span>
+              ) : null}
+              {!projectExpanded && visibleProjectThreads.length > 0 ? (
+                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
+                  {visibleProjectThreads.length}
+                </span>
+              ) : null}
             </span>
-          ) : (
-            <ChevronRightIcon
-              className={`-ml-0.5 size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150 ${
-                projectExpanded ? "rotate-90" : ""
-              }`}
-            />
-          )}
-          {project.kind === "general-chat" ? (
-            <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-          ) : (
-            <ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />
-          )}
-          <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="truncate text-xs font-medium text-foreground/90">
-              {project.displayName}
-            </span>
-            {project.groupedProjectCount > 1 ? (
-              <span className="shrink-0 text-[10px] text-muted-foreground/60">
-                {project.groupedProjectCount} projects
-              </span>
-            ) : null}
-            {!projectExpanded && visibleProjectThreads.length > 0 ? (
-              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
-                {visibleProjectThreads.length}
-              </span>
-            ) : null}
-          </span>
-        </SidebarMenuButton>
-        {/* Environment badge – visible by default, crossfades with the
+          </SidebarMenuButton>
+          {/* Environment badge – visible by default, crossfades with the
             "new thread" button on hover using the same pointer-events +
             opacity pattern as the thread row archive/timestamp swap. */}
-        {project.environmentPresence === "remote-only" && (
+          {project.environmentPresence === "remote-only" && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label={
+                      project.environmentPresence === "remote-only"
+                        ? "Remote project"
+                        : "Available in multiple environments"
+                    }
+                    className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-opacity duration-150 max-sm:right-7 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
+                  />
+                }
+              >
+                <CloudIcon className="size-3" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                Remote environment: {project.remoteEnvironmentLabels.join(", ")}
+              </TooltipPopup>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger
               render={
-                <span
-                  aria-label={
-                    project.environmentPresence === "remote-only"
-                      ? "Remote project"
-                      : "Available in multiple environments"
-                  }
-                  className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-opacity duration-150 max-sm:right-7 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
-                />
+                <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+                  <button
+                    type="button"
+                    aria-label={
+                      project.kind === "general-chat"
+                        ? "Start a new general chat"
+                        : `Create new thread in ${project.displayName}`
+                    }
+                    data-testid="new-thread-button"
+                    className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-ring"
+                    onClick={handleCreateThreadClick}
+                  >
+                    <SquarePenIcon className="size-3.5" />
+                  </button>
+                </div>
               }
-            >
-              <CloudIcon className="size-3" />
-            </TooltipTrigger>
+            />
             <TooltipPopup side="top">
-              Remote environment: {project.remoteEnvironmentLabels.join(", ")}
+              {project.kind === "general-chat"
+                ? "New general chat"
+                : newThreadShortcutLabel
+                  ? `New thread (${newThreadShortcutLabel})`
+                  : "New thread"}
             </TooltipPopup>
           </Tooltip>
-        )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
-                <button
-                  type="button"
-                  aria-label={
-                    project.kind === "general-chat"
-                      ? "Start a new general chat"
-                      : `Create new thread in ${project.displayName}`
-                  }
-                  data-testid="new-thread-button"
-                  className="inline-flex size-5 pointer-coarse:size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-ring"
-                  onClick={handleCreateThreadClick}
-                >
-                  <SquarePenIcon className="size-3.5" />
-                </button>
-              </div>
-            }
-          />
-          <TooltipPopup side="top">
-            {project.kind === "general-chat"
-              ? "New general chat"
-              : newThreadShortcutLabel
-                ? `New thread (${newThreadShortcutLabel})`
-                : "New thread"}
-          </TooltipPopup>
-        </Tooltip>
-      </div>
+        </div>
+      </ProjectHoverCard>
 
       <SidebarProjectThreadList
         projectKey={project.projectKey}
@@ -2665,8 +2687,10 @@ function SortableProjectItem({
 
 const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
+  collapsed = false,
 }: {
   isElectron: boolean;
+  collapsed?: boolean;
 }) {
   const electronWordmarkLayout = resolveElectronSidebarWordmarkLayout(
     typeof navigator === "undefined" ? "" : navigator.platform,
@@ -2701,6 +2725,20 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
       </Tooltip>
     </div>
   );
+
+  // The rail is too narrow for the wordmark, and its top-left is already the
+  // collapse trigger's fixed home — so the collapsed header is a bare spacer
+  // that keeps the titlebar height (and, on Electron, the drag region).
+  if (collapsed) {
+    return (
+      <SidebarHeader
+        className={cn(
+          "h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 gap-0 px-0 py-0",
+          isElectron && "drag-region",
+        )}
+      />
+    );
+  }
 
   return isElectron ? (
     <SidebarHeader className="drag-region shrink-0 gap-0 px-0 py-0">
@@ -2758,9 +2796,10 @@ interface SidebarProjectsContentProps {
   threadPreviewCount: SidebarThreadPreviewCount;
   updateSettings: ReturnType<typeof useUpdateSettings>["updateSettings"];
   openAddProject: () => void;
-  generalChatsProjectRef: ScopedProjectRef | null;
+  /** The On Deck working-set group, rendered between search and the tree. */
+  onDeckSection: React.ReactNode;
+  destinationBand: React.ReactNode;
   /** Pinned above the Projects section; null while there are no general chats. */
-  generalChatsProject: SidebarProjectSnapshot | null;
   isManualProjectSorting: boolean;
   projectDnDSensors: ReturnType<typeof useSensors>;
   projectCollisionDetection: CollisionDetection;
@@ -2799,8 +2838,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     threadPreviewCount,
     updateSettings,
     openAddProject,
-    generalChatsProjectRef,
-    generalChatsProject,
+    onDeckSection,
+    destinationBand,
     isManualProjectSorting,
     projectDnDSensors,
     projectCollisionDetection,
@@ -2880,58 +2919,9 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroup>
-      {/* The slot below search is always the General Chats home: a quiet
-          new-chat action row until the first chat exists, then the group
-          itself (whose hover button takes over starting new chats). */}
-      {!generalChatsProject && generalChatsProjectRef ? (
-        <SidebarGroup className="px-2 pt-3 pb-1">
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="sm"
-                className="justify-center gap-2 rounded-md border border-dashed border-border/70 px-2 py-1.5 text-muted-foreground/75 transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
-                data-testid="sidebar-new-general-chat-trigger"
-                onClick={() => {
-                  void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
-                }}
-              >
-                <MessageCirclePlusIcon className="size-3.5" />
-                <span className="truncate text-xs">New general chat</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-      ) : null}
-      {generalChatsProject ? (
-        <SidebarGroup className="px-2 pt-3 pb-4">
-          <SidebarMenu>
-            <SidebarProjectItem
-              project={generalChatsProject}
-              revealedThreadCount={
-                revealedThreadCountsByProject.get(generalChatsProject.projectKey) ?? 0
-              }
-              activeRouteThreadKey={
-                activeRouteProjectKey === generalChatsProject.projectKey ? routeThreadKey : null
-              }
-              newThreadShortcutLabel={newThreadShortcutLabel}
-              handleNewThread={handleNewThread}
-              archiveThread={archiveThread}
-              pinThread={pinThread}
-              unpinThread={unpinThread}
-              deleteThread={deleteThread}
-              threadJumpLabelByKey={threadJumpLabelByKey}
-              attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
-              expandThreadListForProject={expandThreadListForProject}
-              collapseThreadListForProject={collapseThreadListForProject}
-              dragInProgressRef={dragInProgressRef}
-              suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
-              suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
-              isManualProjectSorting={false}
-              dragHandleProps={null}
-            />
-          </SidebarMenu>
-        </SidebarGroup>
-      ) : null}
+      {destinationBand}
+      <SidebarSeparator className="mx-2 my-1 w-auto" />
+      {onDeckSection}
       <SidebarGroup className="px-2 py-2">
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
           <SectionLabel>Projects</SectionLabel>
@@ -3056,9 +3046,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 
 export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  // Needed for the destination row's new-chat action: the helper falls back to
+  // the active environment when no general-chat project exists yet.
   const generalChatsProjectRef = useMemo(
     () =>
       resolveGeneralChatsProjectRef({
@@ -3075,6 +3067,10 @@ export default function Sidebar() {
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
+  const threadLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
+  const onDeckThreadKeys = useUiStateStore((store) => store.onDeckThreadKeys);
+  const syncOnDeck = useUiStateStore((store) => store.syncOnDeck);
+  const dismissFromOnDeck = useUiStateStore((store) => store.dismissFromOnDeck);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
@@ -3084,9 +3080,16 @@ export default function Sidebar() {
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const sidebarThreadPreviewCount = useSettings((s) => s.sidebarThreadPreviewCount);
   const { updateSettings } = useUpdateSettings();
-  const { handleNewThread } = useNewThreadHandler();
+  // The full hook (rather than `useNewThreadHandler`) because the deck rail's
+  // new-thread button has to resolve the same default project and draft context
+  // the app menu's "New thread" action uses.
+  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
+    useHandleNewThread();
+  const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
+    (settings) => settings.defaultThreadEnvMode,
+  );
   const { archiveThread, deleteThread, pinThread, unpinThread } = useThreadActions();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpen, setOpenMobile, state: sidebarState } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
@@ -3094,6 +3097,7 @@ export default function Sidebar() {
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
   const keybindings = useServerKeybindings();
   const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
+  const toggleCommandPalette = useCommandPaletteStore((store) => store.toggleOpen);
   // Extra thread rows revealed beyond the preview, per project ("Show more").
   const [revealedThreadCountsByProject, setRevealedThreadCountsByProject] = useState<
     ReadonlyMap<string, number>
@@ -3248,6 +3252,34 @@ export default function Sidebar() {
     [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
   );
 
+  const expandSidebar = useCallback(() => {
+    void setOpen(true);
+  }, [setOpen]);
+  const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
+  // The rail has nowhere to show a thread list, so a glyph opens the pane with
+  // that project already unfolded rather than navigating somewhere unasked.
+  const revealProject = useCallback(
+    (projectKey: string) => {
+      setProjectExpanded(projectKey, true);
+      void setOpen(true);
+    },
+    [setOpen, setProjectExpanded],
+  );
+  const openSettings = useCallback(() => {
+    void navigate({ to: "/settings" });
+  }, [navigate]);
+  const startNewThreadFromRail = useCallback(() => {
+    void startNewThreadFromContext({
+      activeDraftThread,
+      activeThread,
+      defaultProjectRef,
+      defaultThreadEnvMode: resolveSidebarNewThreadEnvMode({
+        defaultEnvMode: defaultThreadEnvMode,
+      }),
+      handleNewThread,
+    });
+  }, [activeDraftThread, activeThread, defaultProjectRef, defaultThreadEnvMode, handleNewThread]);
+
   const projectDnDSensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
@@ -3320,6 +3352,28 @@ export default function Sidebar() {
     () => sidebarThreads.filter((thread) => thread.archivedAt === null),
     [sidebarThreads],
   );
+  const generalChatProjectKeys = useMemo(
+    () =>
+      new Set(
+        projects
+          .filter((project) => project.kind === "general-chat")
+          .map((project) => scopedProjectKey(scopeProjectRef(project.environmentId, project.id))),
+      ),
+    [projects],
+  );
+  // On Deck is the working set for project work. General chats are
+  // conversations that belong to no project, so they never join the deck --
+  // they live behind the Chats destination and nowhere else.
+  const deckEligibleThreads = useMemo(
+    () =>
+      visibleThreads.filter(
+        (thread) =>
+          !generalChatProjectKeys.has(
+            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+          ),
+      ),
+    [generalChatProjectKeys, visibleThreads],
+  );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
       ...project,
@@ -3358,58 +3412,145 @@ export default function Sidebar() {
   ]);
   // Pinned above the Projects section, hidden until it has chats; discovery
   // happens through the header's new-general-chat button.
-  const generalChatsSnapshot = useMemo(() => {
-    const snapshot = sidebarProjects.find((project) => project.kind === "general-chat");
-    if (!snapshot) {
-      return null;
-    }
-    const hasVisibleThreads = (threadsByProjectKey.get(snapshot.projectKey) ?? []).some(
-      (thread) => thread.archivedAt === null,
-    );
-    return hasVisibleThreads ? snapshot : null;
-  }, [sidebarProjects, threadsByProjectKey]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
-  const visibleSidebarThreadKeys = useMemo(
-    () =>
-      [...(generalChatsSnapshot ? [generalChatsSnapshot] : []), ...sortedProjects].flatMap(
-        (project) => {
-          const projectExpanded = projectExpandedById[project.projectKey] ?? true;
-          if (!projectExpanded) {
-            return [];
-          }
-          const projectThreads = sortThreads(
-            (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-              (thread) => thread.archivedAt === null,
-            ),
-            sidebarThreadSortOrder,
-          );
-          // Mirrors SidebarProjectItem's rendering window so jump labels and
-          // thread traversal line up with the rows that are actually visible.
-          const { visibleThreads } = getSidebarThreadWindow({
-            threads: projectThreads,
-            getThreadKey: (thread) =>
-              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-            activeThreadKey: project.projectKey === activeRouteProjectKey ? routeThreadKey : null,
-            previewLimit: sidebarThreadPreviewCount,
-            revealedCount: revealedThreadCountsByProject.get(project.projectKey) ?? 0,
-          });
-          return visibleThreads.map((thread) =>
-            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-          );
-        },
-      ),
-    [
-      activeRouteProjectKey,
-      generalChatsSnapshot,
+
+  // On Deck: the cross-project working set pinned above the project browser.
+  // Status pills are computed once per visible thread and shared between the
+  // deck reconcile (store) and the rendered deck rows.
+  const onDeckStatusByThreadKey = useMemo(() => {
+    const statuses = new Map<string, ThreadStatusPill | null>();
+    for (const thread of visibleThreads) {
+      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      const lastVisitedAt = threadLastVisitedAtById[threadKey];
+      statuses.set(
+        threadKey,
+        resolveThreadStatusPill({
+          thread: {
+            ...thread,
+            ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+          },
+        }),
+      );
+    }
+    return statuses;
+  }, [threadLastVisitedAtById, visibleThreads]);
+
+  useEffect(() => {
+    syncOnDeck(
+      deckEligibleThreads.map((thread) => {
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        return buildOnDeckSyncInput({
+          threadKey,
+          pinnedAt: thread.pinnedAt,
+          status: onDeckStatusByThreadKey.get(threadKey) ?? null,
+        });
+      }),
       routeThreadKey,
-      sidebarThreadSortOrder,
-      sidebarThreadPreviewCount,
-      revealedThreadCountsByProject,
-      projectExpandedById,
-      sortedProjects,
-      threadsByProjectKey,
-    ],
+    );
+  }, [deckEligibleThreads, onDeckStatusByThreadKey, routeThreadKey, syncOnDeck]);
+
+  // The rail drops the project tree, so each project keeps a glyph carrying the
+  // same aggregate status its expanded row shows.
+  const railProjects = useMemo<DeckRailProject[]>(
+    () =>
+      sortedProjects.map((project) => ({
+        projectKey: project.projectKey,
+        summary: buildProjectHoverSummary({
+          name: project.displayName,
+          cwd: project.cwd,
+          environmentId: project.environmentId,
+          threads: (threadsByProjectKey.get(project.projectKey) ?? []).filter(
+            (thread) => thread.archivedAt === null,
+          ),
+          getLastVisitedAt: (threadKey) => threadLastVisitedAtById[threadKey],
+        }),
+      })),
+    [sortedProjects, threadLastVisitedAtById, threadsByProjectKey],
   );
+
+  const onDeckEntries = useMemo<OnDeckEntry[]>(() => {
+    return onDeckThreadKeys.flatMap((threadKey) => {
+      const thread = sidebarThreadByKey.get(threadKey);
+      if (!thread || thread.archivedAt !== null) {
+        return [];
+      }
+      const status = onDeckStatusByThreadKey.get(threadKey) ?? null;
+      const physicalKey =
+        projectPhysicalKeyByScopedRef.get(
+          scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+        ) ?? scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId));
+      const project = sidebarProjectByKey.get(physicalToLogicalKey.get(physicalKey) ?? physicalKey);
+      return [
+        {
+          thread,
+          status,
+          projectLabel: project?.kind === "general-chat" ? "chats" : (project?.displayName ?? null),
+          projectCwd: project?.kind === "general-chat" ? null : (project?.cwd ?? null),
+          dismissible: isOnDeckDismissible(status),
+        },
+      ];
+    });
+  }, [
+    onDeckStatusByThreadKey,
+    onDeckThreadKeys,
+    physicalToLogicalKey,
+    projectPhysicalKeyByScopedRef,
+    sidebarProjectByKey,
+    sidebarThreadByKey,
+  ]);
+  const onDeckVisibleThreadKeys = useMemo(
+    () =>
+      onDeckEntries.map((entry) =>
+        scopedThreadKey(scopeThreadRef(entry.thread.environmentId, entry.thread.id)),
+      ),
+    [onDeckEntries],
+  );
+
+  const visibleSidebarThreadKeys = useMemo(() => {
+    const onDeckKeySet = new Set(onDeckVisibleThreadKeys);
+    const projectThreadKeys = sortedProjects.flatMap((project) => {
+      const projectExpanded = projectExpandedById[project.projectKey] ?? true;
+      if (!projectExpanded) {
+        return [];
+      }
+      const projectThreads = excludeOnDeckThreads({
+        threads: sortThreads(
+          (threadsByProjectKey.get(project.projectKey) ?? []).filter(
+            (thread) => thread.archivedAt === null,
+          ),
+          sidebarThreadSortOrder,
+        ),
+        onDeckThreadKeys: onDeckKeySet,
+        getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      });
+      // Mirrors SidebarProjectItem's rendering window so jump labels and
+      // thread traversal line up with the rows that are actually visible.
+      const { visibleThreads } = getSidebarThreadWindow({
+        threads: projectThreads,
+        getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        activeThreadKey: project.projectKey === activeRouteProjectKey ? routeThreadKey : null,
+        previewLimit: sidebarThreadPreviewCount,
+        revealedCount: revealedThreadCountsByProject.get(project.projectKey) ?? 0,
+      });
+      return visibleThreads.map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
+    });
+    // Deck rows render above the tree, so they lead the visual order that jump
+    // keys and thread traversal follow. The tree lists were already filtered
+    // above, so a deck thread has exactly one row and one jump index.
+    return [...onDeckVisibleThreadKeys, ...projectThreadKeys];
+  }, [
+    activeRouteProjectKey,
+    onDeckVisibleThreadKeys,
+    routeThreadKey,
+    sidebarThreadSortOrder,
+    sidebarThreadPreviewCount,
+    revealedThreadCountsByProject,
+    projectExpandedById,
+    sortedProjects,
+    threadsByProjectKey,
+  ]);
   const threadJumpCommandByKey = useMemo(() => {
     const mapping = new Map<string, NonNullable<ReturnType<typeof threadJumpCommandForIndex>>>();
     for (const [visibleThreadIndex, threadKey] of visibleSidebarThreadKeys.entries()) {
@@ -3460,6 +3601,77 @@ export default function Sidebar() {
   const visibleThreadJumpLabelByKey = showThreadJumpHints
     ? threadJumpLabelByKey
     : EMPTY_THREAD_JUMP_LABELS;
+  // One list, rendered as rows in the pane and as icons in the rail, so both
+  // densities offer the same destinations in the same order.
+  const chatsStatus = useMemo(() => {
+    const chatThreads = visibleThreads.filter((thread) =>
+      generalChatProjectKeys.has(
+        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+      ),
+    );
+    if (chatThreads.length === 0) {
+      return null;
+    }
+    return resolveProjectStatusIndicator(
+      chatThreads.map((thread) => {
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        const lastVisitedAt = threadLastVisitedAtById[threadKey];
+        return resolveThreadStatusPill({
+          thread: {
+            ...thread,
+            ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+          },
+        });
+      }),
+    );
+  }, [generalChatProjectKeys, threadLastVisitedAtById, visibleThreads]);
+  const destinations = useMemo<SidebarDestination[]>(
+    () => [
+      {
+        id: "chats",
+        label: "General chats",
+        icon: DESTINATION_ICONS.chats,
+        active: pathname.startsWith("/chats"),
+        status: chatsStatus,
+        action: {
+          label: "New chat",
+          icon: DESTINATION_ICONS.newChat,
+          onSelect: () => {
+            if (generalChatsProjectRef) {
+              void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
+            }
+          },
+        },
+        onSelect: () => {
+          void navigate({ to: "/chats" });
+        },
+      },
+    ],
+    [chatsStatus, generalChatsProjectRef, handleNewThread, navigate, pathname],
+  );
+  const destinationBand = useMemo(
+    () => <DestinationBand destinations={destinations} />,
+    [destinations],
+  );
+  const onDeckSection = useMemo(
+    () =>
+      onDeckEntries.length > 0 ? (
+        <OnDeckSection
+          entries={onDeckEntries}
+          routeThreadKey={routeThreadKey}
+          threadJumpLabelByKey={visibleThreadJumpLabelByKey}
+          navigateToThread={navigateToThread}
+          dismissFromOnDeck={dismissFromOnDeck}
+        />
+      ) : null,
+    [
+      dismissFromOnDeck,
+      navigateToThread,
+      onDeckEntries,
+      routeThreadKey,
+      visibleThreadJumpLabelByKey,
+    ],
+  );
   const orderedSidebarThreadKeys = visibleSidebarThreadKeys;
   const prewarmedSidebarThreadKeys = useMemo(
     () => getSidebarThreadIdsToPrewarm(visibleSidebarThreadKeys),
@@ -3611,6 +3823,29 @@ export default function Sidebar() {
     });
   }, [activeRouteProjectKey]);
 
+  // Collapsed desktop density: the deck rail replaces the pane entirely rather
+  // than sitting beside it, so nothing is shown twice. Mobile keeps using the
+  // off-canvas sheet, which has no collapsed state to render.
+  if (!isMobile && sidebarState === "collapsed") {
+    return (
+      <>
+        <SidebarChromeHeader isElectron={isElectron} collapsed />
+        <DeckRail
+          entries={onDeckEntries}
+          projects={railProjects}
+          onRevealProject={revealProject}
+          destinations={destinations}
+          routeThreadKey={routeThreadKey}
+          navigateToThread={navigateToThread}
+          openSearch={toggleCommandPalette}
+          openSettings={openSettings}
+          startNewThread={startNewThreadFromRail}
+          expandSidebar={expandSidebar}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />
@@ -3621,42 +3856,44 @@ export default function Sidebar() {
         <SettingsSidebarNav pathname={pathname} />
       ) : (
         <>
-          <SidebarProjectsContent
-            projectSortOrder={sidebarProjectSortOrder}
-            threadSortOrder={sidebarThreadSortOrder}
-            projectGroupingMode={sidebarProjectGroupingMode}
-            threadPreviewCount={sidebarThreadPreviewCount}
-            updateSettings={updateSettings}
-            openAddProject={openAddProjectCommandPalette}
-            generalChatsProjectRef={generalChatsProjectRef}
-            generalChatsProject={generalChatsSnapshot}
-            isManualProjectSorting={isManualProjectSorting}
-            projectDnDSensors={projectDnDSensors}
-            projectCollisionDetection={projectCollisionDetection}
-            handleProjectDragStart={handleProjectDragStart}
-            handleProjectDragEnd={handleProjectDragEnd}
-            handleProjectDragCancel={handleProjectDragCancel}
-            handleNewThread={handleNewThread}
-            archiveThread={archiveThread}
-            pinThread={pinThread}
-            unpinThread={unpinThread}
-            deleteThread={deleteThread}
-            sortedProjects={sortedProjects}
-            revealedThreadCountsByProject={revealedThreadCountsByProject}
-            activeRouteProjectKey={activeRouteProjectKey}
-            routeThreadKey={routeThreadKey}
-            newThreadShortcutLabel={newThreadShortcutLabel}
-            commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-            threadJumpLabelByKey={visibleThreadJumpLabelByKey}
-            attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
-            expandThreadListForProject={expandThreadListForProject}
-            collapseThreadListForProject={collapseThreadListForProject}
-            dragInProgressRef={dragInProgressRef}
-            suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
-            suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
-            attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
-            projectsLength={workspaceProjectsLength}
-          />
+          <SidebarHoverCardGroup>
+            <SidebarProjectsContent
+              projectSortOrder={sidebarProjectSortOrder}
+              threadSortOrder={sidebarThreadSortOrder}
+              projectGroupingMode={sidebarProjectGroupingMode}
+              threadPreviewCount={sidebarThreadPreviewCount}
+              updateSettings={updateSettings}
+              openAddProject={openAddProjectCommandPalette}
+              onDeckSection={onDeckSection}
+              destinationBand={destinationBand}
+              isManualProjectSorting={isManualProjectSorting}
+              projectDnDSensors={projectDnDSensors}
+              projectCollisionDetection={projectCollisionDetection}
+              handleProjectDragStart={handleProjectDragStart}
+              handleProjectDragEnd={handleProjectDragEnd}
+              handleProjectDragCancel={handleProjectDragCancel}
+              handleNewThread={handleNewThread}
+              archiveThread={archiveThread}
+              pinThread={pinThread}
+              unpinThread={unpinThread}
+              deleteThread={deleteThread}
+              sortedProjects={sortedProjects}
+              revealedThreadCountsByProject={revealedThreadCountsByProject}
+              activeRouteProjectKey={activeRouteProjectKey}
+              routeThreadKey={routeThreadKey}
+              newThreadShortcutLabel={newThreadShortcutLabel}
+              commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+              threadJumpLabelByKey={visibleThreadJumpLabelByKey}
+              attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
+              expandThreadListForProject={expandThreadListForProject}
+              collapseThreadListForProject={collapseThreadListForProject}
+              dragInProgressRef={dragInProgressRef}
+              suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
+              suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
+              attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
+              projectsLength={workspaceProjectsLength}
+            />
+          </SidebarHoverCardGroup>
 
           <SidebarSeparator />
           <SidebarChromeFooter />

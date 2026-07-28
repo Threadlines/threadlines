@@ -226,6 +226,7 @@ function createMockEnvironmentApi(input: {
     terminal: {} as EnvironmentApi["terminal"],
     projects: {} as EnvironmentApi["projects"],
     attachments: {} as EnvironmentApi["attachments"],
+    previewAutomation: {} as EnvironmentApi["previewAutomation"],
     filesystem: {
       browse: input.browse,
     },
@@ -5036,12 +5037,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("renders compact thread actions in the shared thread-row hover group", async () => {
+    // Deliberately unpinned. A pinned thread is on deck, and a thread on deck
+    // is not drawn again in the tree -- so the tree row this is about only
+    // exists for an ordinary thread.
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
         targetMessageId: "msg-user-archive-hover-test" as MessageId,
         targetText: "archive hover target",
-        threadPinnedAt: NOW_ISO,
       }),
     });
 
@@ -5068,25 +5071,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(threadItem?.className).toContain("group/menu-sub-item");
       expect(compactActions?.className).toContain("group-hover/menu-sub-item:opacity-100");
       expect(compactActions?.className).toContain("group-focus-within/menu-sub-item:opacity-100");
-      const pinnedMarker = await waitForElement(
-        () => document.querySelector<HTMLElement>('[aria-label="Pinned thread"]'),
-        "Unable to find pinned status marker.",
-      );
-      expect(pinnedMarker.className).not.toContain("group-hover/menu-sub-item:opacity-0");
-      expect(pinnedMarker.className).not.toContain("group-focus-within/menu-sub-item:opacity-0");
-      expect(pinButton.getAttribute("aria-label")).toBe(`Unpin ${THREAD_TITLE}`);
-      expect(pinButton.getAttribute("aria-pressed")).toBe("true");
-      expect(pinButton.querySelector("svg")?.classList.contains("lucide-pin-off")).toBe(true);
+      expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
+      expect(pinButton.getAttribute("aria-pressed")).toBe("false");
       expect(
         pinButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
+      // Hidden until the row is hovered or focused, which is the whole point of
+      // the shared wrapper.
       expect(getComputedStyle(compactActions!).opacity).toBe("0");
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("keeps pin actions available while a thread is running without showing archive", async () => {
+  it("puts a pinned thread on the deck instead of in the tree, and holds live work there", async () => {
+    // This replaces two tests that asserted pin and archive on the tree row of a
+    // running thread. That row no longer exists: pinned and live threads are on
+    // deck, and a thread on deck is drawn once, there. What matters now is that
+    // it moved rather than vanished, and that a run in progress cannot be waved
+    // away with the dismiss button.
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5100,70 +5103,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForElement(
-        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
-        "Unable to find running thread row.",
+        () => document.querySelector<HTMLElement>(`[data-testid="on-deck-row-${THREAD_ID}"]`),
+        "Unable to find the thread's deck row.",
       );
-      const pinButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
-        "Unable to find running thread pin button.",
-      );
-      const archiveButton = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find disabled running thread archive button.",
-      );
-      const compactActions = pinButton.parentElement;
 
-      expect(compactActions?.className).toContain("group-hover/menu-sub-item:opacity-100");
-      expect(pinButton.getAttribute("aria-label")).toBe(`Unpin ${THREAD_TITLE}`);
-      expect(pinButton.getAttribute("aria-pressed")).toBe("true");
-      expect(pinButton.querySelector("svg")?.classList.contains("lucide-pin-off")).toBe(true);
       expect(
-        pinButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-      expect(archiveButton.disabled).toBe(true);
-      expect(archiveButton.getAttribute("aria-label")).toBe(
-        `Archive ${THREAD_TITLE} unavailable while thread is running`,
-      );
-      expect(getComputedStyle(archiveButton).width).toBe("20px");
-      expect(getComputedStyle(archiveButton).cursor).toBe("default");
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("keeps archive disabled while a thread is connecting", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-connecting-pin-test" as MessageId,
-        targetText: "connecting pin target",
-        threadPinnedAt: NOW_ISO,
-        sessionStatus: "starting",
-      }),
-    });
-
-    try {
-      await waitForElement(
-        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
-        "Unable to find connecting thread row.",
-      );
-      const pinButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
-        "Unable to find connecting thread pin button.",
-      );
-      const archiveButton = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find disabled connecting thread archive button.",
-      );
-
-      expect(pinButton.getAttribute("aria-label")).toBe(`Unpin ${THREAD_TITLE}`);
-      expect(archiveButton.disabled).toBe(true);
-      expect(archiveButton.getAttribute("aria-label")).toBe(
-        `Archive ${THREAD_TITLE} unavailable while thread is connecting`,
-      );
-      expect(getComputedStyle(archiveButton).cursor).toBe("default");
+        document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "A thread on deck should not also be drawn in the project tree.",
+      ).toBeNull();
+      expect(
+        document.querySelector(`[data-testid="on-deck-dismiss-${THREAD_ID}"]`),
+        "A running thread should not offer dismiss.",
+      ).toBeNull();
     } finally {
       await mounted.cleanup();
     }

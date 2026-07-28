@@ -49,6 +49,9 @@ jobs:
       - name: Lint
         run: vp exec vp lint --report-unused-disable-directives
 
+      - name: Vendored Playwright injected script is current
+        run: node scripts/extract-playwright-injected.ts --check
+
       - name: Typecheck
         run: vp exec vp run -r --concurrency-limit 2 typecheck
 

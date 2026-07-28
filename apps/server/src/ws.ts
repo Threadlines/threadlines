@@ -72,6 +72,7 @@ import {
   observeRpcStream,
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
+import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
@@ -234,6 +235,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const gitWorkflow = yield* GitWorkflowService;
       const gitAuthRemediation = yield* GitAuthRemediationService;
       const vcsProvisioning = yield* VcsProvisioningService;
+      const previewAutomationBroker = yield* PreviewAutomationBroker;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerRegistry = yield* ProviderRegistry;
@@ -1596,6 +1598,21 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               ),
             ),
             { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.previewAutomationConnect]: (input) =>
+          // Scoped to the subscription: when the client goes -- panel closed,
+          // tab gone, socket dropped -- the scope closes, the broker forgets
+          // the host, and anything still waiting on it stops waiting.
+          observeRpcStreamEffect(
+            WS_METHODS.previewAutomationConnect,
+            previewAutomationBroker.connect(input),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewAutomationRespond]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAutomationRespond,
+            previewAutomationBroker.respond(input),
+            { "rpc.aggregate": "preview" },
           ),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(

@@ -36,6 +36,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { serializeComposerMentionPath } from "~/composerMentionPath";
 import type { FileSelectionContextDraft } from "~/lib/fileSelectionContext";
+import type { DrawingContext, DrawingContextDraft } from "~/lib/drawingContext";
+import {
+  pickedElementContextDedupKey,
+  type PickedElementContext,
+  type PickedElementContextDraft,
+} from "~/lib/pickedElementContext";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerSkillsQueryOptions } from "~/lib/providerSkillsReactQuery";
 import { ComposerPendingFileSelectionContexts } from "./ComposerPendingFileSelectionContexts";
@@ -85,6 +91,8 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
+import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedElementContexts";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
 import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
@@ -410,6 +418,13 @@ export interface ChatComposerHandle {
   addTerminalContext: (selection: TerminalContextSelection) => void;
   /** Add a note attached to selected transcript text. */
   addTranscriptHighlightContext: (selection: TranscriptHighlightContextSelection) => void;
+  /** Attach an element picked in the browser preview. */
+  addPickedElementContext: (context: PickedElementContext) => void;
+  /** Attach a screenshot captured from the browser preview. */
+  addScreenshotAttachment: (input: { dataUrl: string; name: string }) => void;
+  /** Attach a drawing made on the page: one chip carrying the picture, the
+   *  note and whatever the closed strokes went round. */
+  addDrawingContext: (context: DrawingContext) => void;
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
@@ -417,6 +432,8 @@ export interface ChatComposerHandle {
     terminalContexts: TerminalContextDraft[];
     transcriptHighlightContexts: TranscriptHighlightContextDraft[];
     fileSelectionContexts: FileSelectionContextDraft[];
+    pickedElementContexts: PickedElementContextDraft[];
+    drawingContexts: DrawingContextDraft[];
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
@@ -505,6 +522,9 @@ export interface ChatComposerProps {
   composerTerminalContextsRef: React.RefObject<TerminalContextDraft[]>;
   composerTranscriptHighlightContextsRef: React.RefObject<TranscriptHighlightContextDraft[]>;
   composerFileSelectionContextsRef: React.RefObject<FileSelectionContextDraft[]>;
+  composerPickedElementContextsRef: React.RefObject<PickedElementContextDraft[]>;
+  /** Shows a picked element again in the preview; absent outside the desktop app. */
+  onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
   // Scroll
@@ -605,6 +625,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerTerminalContextsRef,
     composerTranscriptHighlightContextsRef,
     composerFileSelectionContextsRef,
+    composerPickedElementContextsRef,
+    onRevealPickedElement,
     shouldAutoScrollRef,
     scheduleStickToBottom,
     onSend,
@@ -643,6 +665,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerTranscriptHighlightContexts = composerDraft.transcriptHighlightContexts;
   const composerFileSelectionContexts = composerDraft.fileSelectionContexts;
+  const composerPickedElementContexts = composerDraft.pickedElementContexts;
+  const composerDrawingContexts = composerDraft.drawingContexts;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedAttachmentIds;
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -663,6 +687,73 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const addComposerDraftTranscriptHighlightContext = useComposerDraftStore(
     (store) => store.addTranscriptHighlightContext,
+  );
+  const setComposerDraftPickedElementContexts = useComposerDraftStore(
+    (store) => store.setPickedElementContexts,
+  );
+  /**
+   * Writes the list to the store and through to the ref that reads it back.
+   *
+   * The ref is refreshed by an effect, so it still holds the pre-call value
+   * until the next render. Two of these in one tick would each build on that
+   * same stale list and the second would overwrite the first -- which is
+   * exactly what a region pick does, arriving as several elements at once.
+   */
+  const commitPickedElementContexts = useCallback(
+    (next: PickedElementContextDraft[]) => {
+      composerPickedElementContextsRef.current = next;
+      setComposerDraftPickedElementContexts(composerDraftTarget, next);
+    },
+    [composerDraftTarget, composerPickedElementContextsRef, setComposerDraftPickedElementContexts],
+  );
+  const setComposerDraftDrawingContexts = useComposerDraftStore(
+    (store) => store.setDrawingContexts,
+  );
+  const drawingContextsRef = useRef(composerDrawingContexts);
+  drawingContextsRef.current = composerDrawingContexts;
+  const commitDrawingContexts = useCallback(
+    (next: DrawingContextDraft[]) => {
+      drawingContextsRef.current = next;
+      setComposerDraftDrawingContexts(composerDraftTarget, next);
+    },
+    [composerDraftTarget, setComposerDraftDrawingContexts],
+  );
+  const updateDrawingNote = useCallback(
+    (contextId: string, note: string) => {
+      commitDrawingContexts(
+        drawingContextsRef.current.map((context) =>
+          context.id === contextId ? { ...context, note: note === "" ? null : note } : context,
+        ),
+      );
+    },
+    [commitDrawingContexts],
+  );
+  const removeDrawingContext = useCallback(
+    (contextId: string) => {
+      commitDrawingContexts(
+        drawingContextsRef.current.filter((context) => context.id !== contextId),
+      );
+    },
+    [commitDrawingContexts],
+  );
+
+  const updatePickedElementNote = useCallback(
+    (contextId: string, note: string) => {
+      commitPickedElementContexts(
+        composerPickedElementContextsRef.current.map((context) =>
+          context.id === contextId ? { ...context, note: note === "" ? null : note } : context,
+        ),
+      );
+    },
+    [commitPickedElementContexts, composerPickedElementContextsRef],
+  );
+  const removePickedElementContext = useCallback(
+    (contextId: string) => {
+      commitPickedElementContexts(
+        composerPickedElementContextsRef.current.filter((context) => context.id !== contextId),
+      );
+    },
+    [commitPickedElementContexts, composerPickedElementContextsRef],
   );
   const removeComposerDraftTranscriptHighlightContext = useComposerDraftStore(
     (store) => store.removeTranscriptHighlightContext,
@@ -1441,6 +1532,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     composerFileSelectionContextsRef.current = composerFileSelectionContexts;
   }, [composerFileSelectionContexts, composerFileSelectionContextsRef]);
+
+  useEffect(() => {
+    composerPickedElementContextsRef.current = composerPickedElementContexts;
+  }, [composerPickedElementContexts, composerPickedElementContextsRef]);
 
   // ------------------------------------------------------------------
   // Composer menu highlight sync
@@ -2354,12 +2449,67 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           composerEditorRef.current?.focusAtEnd();
         });
       },
+      addPickedElementContext: (context: PickedElementContext) => {
+        if (!activeThread) return;
+        const existing = composerPickedElementContextsRef.current;
+        // Picking the same element twice is one context, not two: the second
+        // pick is usually a miss-click or a re-check, and duplicate chips would
+        // send the same block twice.
+        const key = pickedElementContextDedupKey(context);
+        if (existing.some((entry) => pickedElementContextDedupKey(entry) === key)) {
+          return;
+        }
+        commitPickedElementContexts([
+          ...existing,
+          {
+            ...context,
+            id: randomUUID(),
+            threadId: activeThread.id,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAtEnd();
+        });
+      },
+      addDrawingContext: (context: DrawingContext) => {
+        if (!activeThread) return;
+        commitDrawingContexts([
+          ...drawingContextsRef.current,
+          {
+            ...context,
+            id: randomUUID(),
+            threadId: activeThread.id,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        focusComposer();
+      },
+      addScreenshotAttachment: ({ dataUrl, name }) => {
+        // The same two steps the desktop screen capture takes, for the same
+        // reasons: the converter rejects anything that is not a PNG data URL,
+        // and addComposerFiles applies the model-accepts-images check, the size
+        // limits and the dedupe that this would otherwise have to restate.
+        const file = desktopCapturedScreenshotToFile({ dataUrl, name, mimeType: "image/png" });
+        if (file === null) {
+          toastManager.add({
+            type: "error",
+            title: "Screenshot capture failed.",
+            description: "The captured image could not be read.",
+          });
+          return;
+        }
+        addComposerFiles([file]);
+        focusComposer();
+      },
       getSendContext: () => ({
         prompt: promptRef.current,
         images: composerAttachmentsRef.current,
         terminalContexts: composerTerminalContextsRef.current,
         transcriptHighlightContexts: composerTranscriptHighlightContextsRef.current,
         fileSelectionContexts: composerFileSelectionContextsRef.current,
+        pickedElementContexts: composerPickedElementContextsRef.current,
+        drawingContexts: drawingContextsRef.current,
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
@@ -2772,6 +2922,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingTerminalContexts
                   contexts={composerTerminalContexts}
                   onRemove={removeComposerTerminalContextFromDraft}
+                  className="mb-2"
+                />
+              )}
+
+            {!isComposerCollapsedMobile &&
+              !isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
+              composerPickedElementContexts.length > 0 && (
+                <ComposerPendingPickedElementContexts
+                  contexts={composerPickedElementContexts}
+                  onRemove={removePickedElementContext}
+                  onUpdateNote={updatePickedElementNote}
+                  onReveal={onRevealPickedElement}
+                  className="mb-2"
+                />
+              )}
+
+            {!isComposerCollapsedMobile &&
+              !isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
+              composerDrawingContexts.length > 0 && (
+                <ComposerPendingDrawingContexts
+                  contexts={composerDrawingContexts}
+                  onRemove={removeDrawingContext}
+                  onUpdateNote={updateDrawingNote}
                   className="mb-2"
                 />
               )}
