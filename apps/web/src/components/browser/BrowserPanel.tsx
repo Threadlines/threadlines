@@ -1524,8 +1524,9 @@ export function AgentApprovalLine({
       data-testid="browser-approval-bar"
     >
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
-      <span className="min-w-0 shrink truncate text-foreground">{subject}</span>
-      <span className="min-w-0 truncate">wants to visit {host}</span>
+      <span className="min-w-0 truncate">
+        <span className="text-foreground">{subject}</span> wants to visit {host}
+      </span>
       <button
         type="button"
         data-testid="browser-approval-allow"
