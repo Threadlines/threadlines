@@ -6,6 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -37,6 +38,7 @@ import {
   parseClaudePluginDetails,
   parseClaudePluginList,
   getProviderExtensionOperationStatus,
+  invalidateCodexAppsCache,
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
   readProviderExtensionSkill,
@@ -46,6 +48,7 @@ import {
 } from "./providerExtensions.ts";
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /**
  * Claude's `mcp login` needs a terminal, so the action spawns through the PTY adapter. This stub
@@ -171,6 +174,91 @@ function makeProcessResult(stdout: string, stderr = "", code = 0) {
     unref: Effect.succeed(Effect.void),
   });
 }
+
+/**
+ * In-memory `codex app-server` peer speaking newline-delimited JSON-RPC over the fake process's
+ * stdio. Each request is answered synchronously from `handlers`; mapping a method to "never"
+ * leaves that request pending, which is how a hung backend call is reproduced. Received method
+ * names are recorded so tests can assert which requests the inventory actually issued.
+ */
+function makeCodexAppServerPeer(
+  handlers: Record<string, ((params: unknown) => unknown) | "never">,
+) {
+  const calls: Array<string> = [];
+  const spawn = Effect.gen(function* () {
+    const stdout = yield* Queue.unbounded<Uint8Array>();
+    let pendingInput = "";
+    let finish: ((exitCode: ChildProcessSpawner.ExitCode) => void) | null = null;
+    const handleLine = (line: string): ReadonlyArray<unknown> => {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) return [];
+      const message = JSON.parse(trimmed) as {
+        readonly id?: number | string;
+        readonly method?: string;
+        readonly params?: unknown;
+      };
+      if (typeof message.method !== "string") return [];
+      calls.push(message.method);
+      if (message.id === undefined) return [];
+      const handler = handlers[message.method];
+      if (handler === "never") return [];
+      if (handler === undefined) {
+        return [
+          {
+            id: message.id,
+            error: { code: -32601, message: `Unhandled request: ${message.method}` },
+          },
+        ];
+      }
+      return [{ id: message.id, result: handler(message.params) }];
+    };
+    return ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(789),
+      stdout: Stream.fromQueue(stdout),
+      stderr: Stream.empty,
+      all: Stream.empty,
+      exitCode: Effect.callback<ChildProcessSpawner.ExitCode>((resume) => {
+        finish = (exitCode) => resume(Effect.succeed(exitCode));
+        return Effect.sync(() => {
+          finish = null;
+        });
+      }),
+      isRunning: Effect.succeed(true),
+      kill: () =>
+        Effect.sync(() => {
+          finish?.(ChildProcessSpawner.ExitCode(143));
+        }),
+      stdin: Sink.forEach((chunk: Uint8Array | string) =>
+        Effect.suspend(() => {
+          pendingInput += typeof chunk === "string" ? chunk : decoder.decode(chunk);
+          const lines = pendingInput.split("\n");
+          pendingInput = lines.pop() ?? "";
+          const responses = lines.flatMap(handleLine);
+          return Effect.forEach(responses, (response) =>
+            Queue.offer(stdout, encoder.encode(`${JSON.stringify(response)}\n`)),
+          );
+        }),
+      ),
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+      unref: Effect.succeed(Effect.void),
+    });
+  });
+  return { calls, spawner: ChildProcessSpawner.make(() => spawn) };
+}
+
+const codexInventoryPeerHandlers: Record<string, ((params: unknown) => unknown) | "never"> = {
+  initialize: () => ({
+    userAgent: "mock-codex-app-server",
+    codexHome: process.cwd(),
+    platformFamily: process.platform === "win32" ? "windows" : "unix",
+    platformOs: process.platform === "darwin" ? "macos" : process.platform,
+  }),
+  "plugin/list": () => ({ marketplaces: [] }),
+  "skills/list": () => ({ data: [] }),
+  "mcpServerStatus/list": () => ({ data: [] }),
+  "app/list": () => ({ data: [] }),
+};
 
 function makeSettings(overrides: Record<string, unknown> = {}): ServerSettingsContract {
   return decodeServerSettings({
@@ -1045,6 +1133,7 @@ Per-component (rounded)
       const layer = Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer());
 
       return Effect.gen(function* () {
+        invalidateCodexAppsCache();
         const fiber = yield* Effect.forkChild(
           readProviderExtensionsInventory({
             request: { cwd: process.cwd() },
@@ -1053,7 +1142,8 @@ Per-component (rounded)
           }),
         );
         yield* Effect.yieldNow;
-        yield* TestClock.adjust(Duration.seconds(20));
+        // The default request includes apps, which stretches the overall inventory budget.
+        yield* TestClock.adjust(Duration.seconds(45));
 
         const result = yield* Fiber.join(fiber);
         const codex = result.providers.find(
@@ -1066,6 +1156,172 @@ Per-component (rounded)
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("defers Codex MCP servers and apps without issuing their requests", () => {
+    const peer = makeCodexAppServerPeer(codexInventoryPeerHandlers);
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const result = yield* readProviderExtensionsInventory({
+        request: { cwd: process.cwd(), includeMcpServers: false, includeApps: false },
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      assert.equal(codex?.status, "ready");
+      assert.equal(codex?.mcpServersStatus, "deferred");
+      assert.equal(codex?.appsStatus, "deferred");
+      assert.equal(peer.calls.includes("plugin/list"), true);
+      assert.equal(peer.calls.includes("skills/list"), true);
+      assert.equal(peer.calls.includes("mcpServerStatus/list"), false);
+      assert.equal(peer.calls.includes("app/list"), false);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect(
+    "reports a hung Codex app/list in the apps section without failing the provider",
+    () => {
+      const peer = makeCodexAppServerPeer({ ...codexInventoryPeerHandlers, "app/list": "never" });
+      const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+      const layer = Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer());
+
+      return Effect.gen(function* () {
+        invalidateCodexAppsCache();
+        const fiber = yield* Effect.forkChild(
+          readProviderExtensionsInventory({
+            request: { cwd: process.cwd(), includeMcpServers: false },
+            settings: makeSettings(),
+            providers: [],
+          }),
+        );
+        for (let attempt = 0; attempt < 100 && !peer.calls.includes("app/list"); attempt += 1) {
+          yield* Effect.yieldNow;
+        }
+        assert.equal(peer.calls.includes("app/list"), true);
+        yield* TestClock.adjust(Duration.seconds(30));
+
+        const result = yield* Fiber.join(fiber);
+        const codex = result.providers.find(
+          (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+        );
+
+        assert.equal(codex?.status, "ready");
+        assert.equal(codex?.appsStatus, "error");
+        assert.equal(codex?.appsMessage, "Timed out reading Codex apps.");
+        assert.deepEqual(codex?.apps, []);
+        assert.equal(codex?.mcpServersStatus, "deferred");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("serves Codex apps from cache without re-issuing the slow app/list request", () => {
+    const appListHandlers = {
+      ...codexInventoryPeerHandlers,
+      "app/list": () => ({ data: [{ id: "connector-1", name: "Alpaca", isAccessible: true }] }),
+    };
+    const primingPeer = makeCodexAppServerPeer(appListHandlers);
+    const cachedPeer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "app/list": "never",
+    });
+    let activePeer = primingPeer;
+    const spawner = ChildProcessSpawner.make((command) => activePeer.spawner.spawn(command));
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const request = { cwd: process.cwd(), includeMcpServers: false, includeApps: true };
+      yield* readProviderExtensionsInventory({
+        request,
+        settings: makeSettings(),
+        providers: [],
+      });
+      assert.equal(primingPeer.calls.includes("app/list"), true);
+
+      activePeer = cachedPeer;
+      const cached = yield* readProviderExtensionsInventory({
+        request,
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = cached.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      assert.equal(cachedPeer.calls.includes("app/list"), false);
+      assert.equal(codex?.appsStatus, "ready");
+      assert.deepEqual(
+        codex?.apps.map((app) => app.name),
+        ["Alpaca"],
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("falls back to the last loaded apps when a refresh times out", () => {
+    const appListHandlers = {
+      ...codexInventoryPeerHandlers,
+      "app/list": () => ({ data: [{ id: "connector-1", name: "Alpaca", isAccessible: true }] }),
+    };
+    const primingPeer = makeCodexAppServerPeer(appListHandlers);
+    const hangingPeer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "app/list": "never",
+    });
+    let activePeer = primingPeer;
+    const spawner = ChildProcessSpawner.make((command) => activePeer.spawner.spawn(command));
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+    const layer = Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer());
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const request = { cwd: process.cwd(), includeMcpServers: false, includeApps: true };
+      yield* readProviderExtensionsInventory({
+        request,
+        settings: makeSettings(),
+        providers: [],
+      });
+
+      // Age the cache past its TTL so the second read fetches again instead of serving it.
+      yield* TestClock.adjust(Duration.minutes(16));
+      activePeer = hangingPeer;
+      const fiber = yield* Effect.forkChild(
+        readProviderExtensionsInventory({
+          request,
+          settings: makeSettings(),
+          providers: [],
+        }),
+      );
+      for (
+        let attempt = 0;
+        attempt < 100 && !hangingPeer.calls.includes("app/list");
+        attempt += 1
+      ) {
+        yield* Effect.yieldNow;
+      }
+      assert.equal(hangingPeer.calls.includes("app/list"), true);
+      yield* TestClock.adjust(Duration.seconds(30));
+
+      const result = yield* Fiber.join(fiber);
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      assert.equal(codex?.status, "ready");
+      assert.equal(codex?.appsStatus, "ready");
+      assert.deepEqual(
+        codex?.apps.map((app) => app.name),
+        ["Alpaca"],
+      );
+      assert.equal(
+        codex?.appsMessage,
+        "Timed out reading Codex apps. Showing the last loaded apps.",
+      );
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("keeps disabled provider inventory local without spawning provider commands", () => {
     const spawner = ChildProcessSpawner.make(() =>

@@ -182,6 +182,8 @@ interface ExtensionSectionConfig {
   readonly browseItems?: ReadonlyArray<ExtensionItem> | undefined;
   /** The provider returned exactly our page size, so `totalCount` is a floor. */
   readonly isTruncated?: boolean | undefined;
+  /** The section is skipped on the initial inventory read and fetched on demand. */
+  readonly isDeferred?: boolean | undefined;
   readonly previewLimit?: number | undefined;
   readonly totalCount: number;
   readonly emptyLabel: string;
@@ -315,6 +317,12 @@ function inventoryHasLoadedMcpServers(inventory: ProviderExtensionsInventoryResu
   );
 }
 
+function inventoryHasLoadedApps(inventory: ProviderExtensionsInventoryResult): boolean {
+  return inventory.providers.some(
+    (provider) => provider.appsStatus === "ready" || provider.apps.length > 0,
+  );
+}
+
 function extensionKindLabel(kind: ExtensionItemKind): string {
   switch (kind) {
     case "plugin":
@@ -355,6 +363,7 @@ function SectionTabButton({
   value,
   totalValue,
   isTruncated,
+  isDeferred,
   active,
   icon,
   panelId,
@@ -364,13 +373,15 @@ function SectionTabButton({
   value: number;
   totalValue: number;
   isTruncated?: boolean | undefined;
+  /** The section has not been fetched yet, so 0 would be a lie; show a placeholder instead. */
+  isDeferred?: boolean | undefined;
   active: boolean;
   icon: ReactNode;
   panelId: string;
   onClick: () => void;
 }) {
   const total = formatSectionTotal(totalValue, isTruncated);
-  const countLabel = value === totalValue ? total : `${value}/${total}`;
+  const countLabel = isDeferred ? "–" : value === totalValue ? total : `${value}/${total}`;
 
   return (
     <Button
@@ -513,7 +524,9 @@ function appExtensionItem(
     id: app.id,
     title,
     detail: app.description,
-    enabled: app.enabled,
+    // Codex reports every directory app as enabled unless it is banned in config.toml, so an
+    // On badge only means something for apps that are actually connected to the account.
+    ...(app.accessible === true ? { enabled: app.enabled } : {}),
     searchValues: [app.id, app.name, app.displayName, app.description],
     app,
   };
@@ -2546,6 +2559,7 @@ function ExtensionPreviewSection({
   onSelect,
   panelId,
   browseLabel,
+  browseAvailable,
   onBrowse,
 }: {
   title: string;
@@ -2563,6 +2577,8 @@ function ExtensionPreviewSection({
   onSelect: (item: ExtensionItem) => void;
   panelId: string;
   browseLabel: string;
+  /** The Browse dialog has content beyond the visible items (e.g. an uninstalled catalog). */
+  browseAvailable?: boolean | undefined;
   onBrowse: () => void;
 }) {
   const isFiltering = filterText.trim().length > 0;
@@ -2659,7 +2675,7 @@ function ExtensionPreviewSection({
               {loadLabel}
             </Button>
           ) : null}
-          {totalCount > 0 ? (
+          {totalCount > 0 || browseAvailable ? (
             <Button size="xs" variant="outline" className="mt-2" onClick={onBrowse}>
               {browseLabel}
             </Button>
@@ -3691,6 +3707,8 @@ function ProviderInventoryRow({
   onInventoryMutated,
   onLoadMcpServers,
   isLoadingMcpServers,
+  onLoadApps,
+  isLoadingApps,
 }: {
   provider: ProviderExtensionProviderInventory;
   cwd: string;
@@ -3700,6 +3718,8 @@ function ProviderInventoryRow({
   onInventoryMutated: () => Promise<void>;
   onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
   isLoadingMcpServers: boolean;
+  onLoadApps: (provider: ProviderExtensionProviderInventory) => Promise<void>;
+  isLoadingApps: boolean;
 }) {
   const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("skills");
   const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
@@ -3725,20 +3745,24 @@ function ProviderInventoryRow({
     () => allItems.plugins.filter(extensionItemInstalled),
     [allItems],
   );
+  // Codex answers app/list with the whole ChatGPT app directory; only accessible apps are
+  // actually connected to the account. The section shows those, the catalog lives behind Browse.
+  const connectedAppItems = useMemo(() => allItems.apps.filter(extensionItemInstalled), [allItems]);
   const filteredItems = useMemo(
     () => ({
       plugins: sortExtensionItems(filterProviderItems(installedPluginItems), "recommended"),
       skills: sortExtensionItems(filterProviderItems(allItems.skills), "recommended"),
       mcpServers: sortExtensionItems(filterProviderItems(allItems.mcpServers), "recommended"),
-      apps: sortExtensionItems(filterProviderItems(allItems.apps), "recommended"),
+      apps: sortExtensionItems(filterProviderItems(connectedAppItems), "recommended"),
     }),
-    [allItems, filterProviderItems, installedPluginItems],
+    [allItems, filterProviderItems, installedPluginItems, connectedAppItems],
   );
   const panelIdBase = useMemo(
     () => `extensions-${String(provider.instanceId).replace(/[^a-zA-Z0-9_-]/g, "-")}`,
     [provider.instanceId],
   );
   const catalogPluginCount = allItems.plugins.length - installedPluginItems.length;
+  const catalogAppCount = allItems.apps.length - connectedAppItems.length;
   const initialSection = provider.skills.length > 0 ? "skills" : "apps";
   const allSections: ReadonlyArray<ExtensionSectionConfig> = [
     {
@@ -3793,12 +3817,30 @@ function ProviderInventoryRow({
       key: "apps" as const,
       title: "Apps",
       label: "Apps",
-      browseLabel: "Browse apps",
+      browseLabel:
+        catalogAppCount > 0
+          ? `Browse ${catalogAppCount}${provider.appsTruncated ? "+" : ""} more`
+          : "Browse all apps",
       icon: <BotIcon className="size-3.5" />,
       items: filteredItems.apps,
-      totalCount: provider.apps.length,
-      isTruncated: provider.appsTruncated,
-      emptyLabel: "No apps reported.",
+      browseItems: sortExtensionItems(filterProviderItems(allItems.apps), "recommended"),
+      totalCount: connectedAppItems.length,
+      isDeferred: provider.appsStatus === "deferred",
+      emptyLabel:
+        provider.appsStatus === "deferred"
+          ? "Apps not loaded."
+          : provider.appsStatus === "error"
+            ? "Apps failed to load."
+            : "No connected apps.",
+      statusMessage: provider.appsMessage,
+      loadLabel:
+        provider.appsStatus === "deferred"
+          ? "Load apps"
+          : provider.appsStatus === "error"
+            ? "Retry apps"
+            : undefined,
+      isLoading: isLoadingApps,
+      onLoad: () => void onLoadApps(provider),
     },
   ];
   // Installed plugins and MCP connections are rendered above the fold by the page itself, so this
@@ -3821,7 +3863,9 @@ function ProviderInventoryRow({
   }, [initialSection, provider.instanceId]);
 
   useEffect(() => {
-    if (activeSection === "mcpServers") return;
+    // Apps and MCP sections are empty for reasons other than content (deferred load, catalog
+    // behind Browse), so bouncing off them would fight deliberate tab clicks.
+    if (activeSection === "mcpServers" || activeSection === "apps") return;
     if (activeSectionItemCount === 0 && firstFilteredSection !== activeSection) {
       setActiveSection(firstFilteredSection);
     }
@@ -3836,6 +3880,12 @@ function ProviderInventoryRow({
       void onLoadMcpServers(provider);
     }
   }, [activeSection, isLoadingMcpServers, onLoadMcpServers, provider]);
+
+  useEffect(() => {
+    if (activeSection === "apps" && provider.appsStatus === "deferred" && !isLoadingApps) {
+      void onLoadApps(provider);
+    }
+  }, [activeSection, isLoadingApps, onLoadApps, provider]);
 
   const toggleSkillBundle = useCallback(
     async (bundle: ExtensionSkillBundleControl) => {
@@ -3884,6 +3934,7 @@ function ProviderInventoryRow({
               value={section.items.length}
               totalValue={section.totalCount}
               isTruncated={section.isTruncated}
+              isDeferred={section.isDeferred}
               active={activeSection === section.key}
               icon={section.icon}
               panelId={`${panelIdBase}-${section.key}`}
@@ -3908,6 +3959,9 @@ function ProviderInventoryRow({
             onSelect={onSelectItem}
             panelId={`${panelIdBase}-${activeSectionConfig.key}`}
             browseLabel={activeSectionConfig.browseLabel}
+            browseAvailable={
+              (activeSectionConfig.browseItems ?? activeSectionConfig.items).length > 0
+            }
             onBrowse={() => setBrowseSection(activeSectionConfig.key)}
           />
         ) : null}
@@ -4053,6 +4107,9 @@ export function ExtensionsSettingsPanel() {
   const initialMcpInventoryRequested = initialCachedInventory
     ? inventoryHasLoadedMcpServers(initialCachedInventory.value)
     : false;
+  const initialAppsInventoryRequested = initialCachedInventory
+    ? inventoryHasLoadedApps(initialCachedInventory.value)
+    : false;
   const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(
     () => initialCachedInventory?.value ?? null,
   );
@@ -4063,21 +4120,25 @@ export function ExtensionsSettingsPanel() {
   >({});
   const [isLoading, setIsLoading] = useState(false);
   const [mcpLoadingProviderId, setMcpLoadingProviderId] = useState<string | null>(null);
+  const [appsLoadingProviderId, setAppsLoadingProviderId] = useState<string | null>(null);
   const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(
     () => initialCachedInventory?.loadDurationMs ?? null,
   );
   const [error, setError] = useState<string | null>(null);
   const projectProviderRef = useRef({ cwd, providerInstanceId });
   const mcpInventoryRequestedRef = useRef(initialMcpInventoryRequested);
+  const appsInventoryRequestedRef = useRef(initialAppsInventoryRequested);
 
   const clearInventory = useCallback((options?: { readonly loading?: boolean }) => {
     refreshRequestRef.current += 1;
     mcpInventoryRequestedRef.current = false;
+    appsInventoryRequestedRef.current = false;
     setInventory(null);
     setLastInventoryLoadMs(null);
     setError(null);
     setSelectedItem(null);
     setMcpLoadingProviderId(null);
+    setAppsLoadingProviderId(null);
     setIsLoading(options?.loading ?? false);
   }, []);
 
@@ -4086,6 +4147,7 @@ export function ExtensionsSettingsPanel() {
     setError(null);
     setSelectedItem(null);
     setMcpLoadingProviderId(null);
+    setAppsLoadingProviderId(null);
   }, []);
 
   useEffect(() => {
@@ -4144,7 +4206,9 @@ export function ExtensionsSettingsPanel() {
 
   useEffect(() => {
     mcpInventoryRequestedRef.current = false;
+    appsInventoryRequestedRef.current = false;
     setMcpLoadingProviderId(null);
+    setAppsLoadingProviderId(null);
     invalidateInventoryRefresh();
   }, [effectiveProviderThreadId, invalidateInventoryRefresh]);
 
@@ -4159,6 +4223,7 @@ export function ExtensionsSettingsPanel() {
 
     setInventory(cachedInventory.value);
     mcpInventoryRequestedRef.current = inventoryHasLoadedMcpServers(cachedInventory.value);
+    appsInventoryRequestedRef.current = inventoryHasLoadedApps(cachedInventory.value);
     setLastInventoryLoadMs(cachedInventory.loadDurationMs);
     setError(null);
   }, [clearInventory, inventoryRequestKey]);
@@ -4167,12 +4232,14 @@ export function ExtensionsSettingsPanel() {
     async (options?: {
       readonly invalidateCache?: boolean;
       readonly includeMcpServers?: boolean;
+      readonly includeApps?: boolean;
     }) => {
       const requestId = refreshRequestRef.current + 1;
       refreshRequestRef.current = requestId;
       const requestKey = inventoryRequestKey;
       const requestCwd = cwd.trim();
       const includeMcpServers = options?.includeMcpServers ?? mcpInventoryRequestedRef.current;
+      const includeApps = options?.includeApps ?? appsInventoryRequestedRef.current;
       if (!requestCwd) {
         setInventory(null);
         setLastInventoryLoadMs(null);
@@ -4185,6 +4252,9 @@ export function ExtensionsSettingsPanel() {
       setError(null);
       if (includeMcpServers) {
         mcpInventoryRequestedRef.current = true;
+      }
+      if (includeApps) {
+        appsInventoryRequestedRef.current = true;
       }
       if (options?.invalidateCache && requestKey) {
         extensionInventoryCache.delete(requestKey);
@@ -4200,6 +4270,7 @@ export function ExtensionsSettingsPanel() {
             : {}),
           ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
           includeMcpServers,
+          includeApps,
         });
         if (
           refreshRequestRef.current === requestId &&
@@ -4268,6 +4339,20 @@ export function ExtensionsSettingsPanel() {
       }
     },
     [mcpLoadingProviderId, refresh],
+  );
+  const loadApps = useCallback(
+    async (provider: ProviderExtensionProviderInventory) => {
+      const providerId = String(provider.instanceId);
+      if (appsLoadingProviderId === providerId) return;
+      setAppsLoadingProviderId(providerId);
+      appsInventoryRequestedRef.current = true;
+      try {
+        await refresh({ includeApps: true, invalidateCache: true });
+      } finally {
+        setAppsLoadingProviderId((current) => (current === providerId ? null : current));
+      }
+    },
+    [appsLoadingProviderId, refresh],
   );
 
   const providerScopedInventory = useMemo(
@@ -4499,6 +4584,8 @@ export function ExtensionsSettingsPanel() {
               onInventoryMutated={refreshAfterMutation}
               onLoadMcpServers={loadMcpServers}
               isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
+              onLoadApps={loadApps}
+              isLoadingApps={appsLoadingProviderId === String(provider.instanceId)}
             />
           ))
         ) : (

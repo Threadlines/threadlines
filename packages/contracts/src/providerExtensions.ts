@@ -12,6 +12,7 @@ export const ProviderExtensionsInventoryInput = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   providerThreadId: Schema.optional(TrimmedNonEmptyString),
   includeMcpServers: Schema.optional(Schema.Boolean),
+  includeApps: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionsInventoryInput = typeof ProviderExtensionsInventoryInput.Type;
 
@@ -222,8 +223,18 @@ export const ProviderExtensionMcpServer = Schema.Struct({
 });
 export type ProviderExtensionMcpServer = typeof ProviderExtensionMcpServer.Type;
 
-export const ProviderExtensionMcpInventoryStatus = Schema.Literals(["deferred", "ready", "error"]);
-export type ProviderExtensionMcpInventoryStatus = typeof ProviderExtensionMcpInventoryStatus.Type;
+/**
+ * Load state for an inventory section the initial request may skip. "deferred" means the caller
+ * asked to omit it (MCP servers and Codex apps both reach remote backends, so the settings page
+ * fetches them after first paint instead of on the critical path).
+ */
+export const ProviderExtensionInventorySectionStatus = Schema.Literals([
+  "deferred",
+  "ready",
+  "error",
+]);
+export type ProviderExtensionInventorySectionStatus =
+  typeof ProviderExtensionInventorySectionStatus.Type;
 
 export const ProviderExtensionApp = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -245,11 +256,13 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   marketplaces: Schema.Array(ProviderExtensionMarketplace),
   skills: Schema.Array(ProviderExtensionSkill),
   mcpServers: Schema.Array(ProviderExtensionMcpServer),
-  mcpServersStatus: Schema.optional(ProviderExtensionMcpInventoryStatus),
+  mcpServersStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
   mcpServersMessage: Schema.optional(TrimmedString),
   /** The provider returned exactly as many servers as we asked for, so the count is a floor. */
   mcpServersTruncated: Schema.optional(Schema.Boolean),
   apps: Schema.Array(ProviderExtensionApp),
+  appsStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
+  appsMessage: Schema.optional(TrimmedString),
   /** As above: the apps count is a page size, not a total. */
   appsTruncated: Schema.optional(Schema.Boolean),
 });
