@@ -144,10 +144,14 @@
       .act-btn:hover { background: var(--hover); color: var(--fg); }
 
       /* ── Done tail ──────────────────────────────── */
+      /* Done rows keep their identity. Flattening them all to one grey (T3's
+         treatment) turns the section into a texture; here the section header
+         carries "done" and each row keeps a readable name and its project. */
       .done .row { padding: 6px 12px; }
       .done .l1 { gap: 8px; }
-      .done .title { font-weight: 400; color: var(--fg-mid); }
+      .done .title { font-weight: 400; color: rgb(232 231 227 / 0.78); }
       .done .row:hover .title { color: var(--fg); }
+      .done .proj { flex: none; font-size: 11px; color: rgb(232 231 227 / 0.42); }
       .more {
         padding: 7px 12px 12px; font-size: 11px; color: var(--fg-dim);
         border-top: 1px solid var(--border);
@@ -172,14 +176,19 @@
 
     <div class="stage">
       <div>
-        <div class="frame-label">Proposed &mdash; resting state</div>
+        <div class="frame-label">Final direction &mdash; resting state</div>
         <div class="sidebar">
           <div class="chrome">
             <div class="searchrow">
               <div class="search">&#8981; Search <span class="kbd">&#8984;K</span></div>
               <div class="iconbtn" title="New thread">&#9998;</div>
             </div>
-            <div class="scope">&#9636; All projects <span class="chev">&#9660;</span></div>
+            <div class="chips">
+              <span class="chip on">All</span>
+              <span class="chip">threadlines <span class="n">2</span></span>
+              <span class="chip">badcode</span>
+              <span class="chip" title="Remaining projects, and Add project&hellip;">&hellip;</span>
+            </div>
           </div>
 
           <div class="sect">Threads <span class="count"><span class="needs">2 need you</span> &middot; 6</span></div>
@@ -260,13 +269,13 @@
           <div class="sect">Done <span class="count">31</span></div>
           <ul class="done">
             <li class="row">
-              <div class="l1"><span class="title">Answer a notification with 202</span><span class="stat">1d</span></div>
+              <div class="l1"><span class="title">Answer a notification with 202</span><span class="proj">badcode</span><span class="stat">1d</span></div>
             </li>
             <li class="row">
-              <div class="l1"><span class="title">Spellcheck via native Chromium</span><span class="stat">6d</span></div>
+              <div class="l1"><span class="title">Spellcheck via native Chromium</span><span class="proj">threadlines</span><span class="stat">6d</span></div>
             </li>
             <li class="row">
-              <div class="l1"><span class="title">Phone link relay chunking</span><span class="stat">12d</span></div>
+              <div class="l1"><span class="title">Phone link relay chunking</span><span class="proj">threadlines</span><span class="stat">12d</span></div>
             </li>
           </ul>
           <div class="more">Show 28 more&hellip;</div>
@@ -274,7 +283,7 @@
       </div>
 
       <div>
-        <div class="frame-label">Option B &mdash; project chips instead of the dropdown</div>
+        <div class="frame-label">Chips, scoped to one project</div>
         <div class="sidebar" style="min-height: 0; margin-bottom: 28px;">
           <div class="chrome">
             <div class="searchrow">
@@ -282,10 +291,9 @@
               <div class="iconbtn" title="New thread">&#9998;</div>
             </div>
             <div class="chips">
-              <span class="chip on">All</span>
-              <span class="chip">threadlines <span class="n">4</span></span>
-              <span class="chip">badcode <span class="n">2</span></span>
-              <span class="chip">dotfiles</span>
+              <span class="chip">All</span>
+              <span class="chip on">threadlines <span class="n">2</span></span>
+              <span class="chip">badcode</span>
               <span class="chip">&hellip;</span>
             </div>
           </div>
@@ -360,8 +368,14 @@
           Multi-select.
 
           <h2>Decided</h2>
-          Collapsing the sidebar hides it completely, with the same toggle button as today.
-          No icon strip.
+          Collapsing the sidebar hides it completely, same toggle as today; no icon strip.
+          Chips over the dropdown. The Done list stays at the bottom of the sidebar. Done rows
+          are not flattened to uniform grey: the section header says done, each row keeps a
+          readable title and its project name. The trailing &ldquo;&hellip;&rdquo; chip is the
+          project menu &mdash; projects that didn't fit as chips, then Add project. The old
+          quick-links row folds away: compose covers new-chat, and the Chats page link moves
+          into the &ldquo;&hellip;&rdquo; menu's footer alongside Add project (easily moved if
+          that feels buried).
 
           <h2>Switching projects: dropdown vs chips</h2>
           &ldquo;All projects&rdquo; is one combined list &mdash; every project&rsquo;s threads
@@ -374,14 +388,7 @@
           switch at all &mdash; whatever you touched last is already near the top of the
           combined list. The filter is for focus, not for finding things.
 
-          <h2 class="q">Still open for Will</h2>
-          1. Where finished threads live: the dimmed &ldquo;Done&rdquo; list at the bottom of
-          the sidebar (as shown), or on its own page you open from a link, keeping the sidebar
-          for live work only.<br />
-          2. Today's sidebar has a small row of quick links at the top (Chats, and the new-chat
-          shortcut) that jump to pages rather than to a specific thread. Keep that row above
-          the new list, or fold what it does into the search and compose buttons?<br />
-          3. Dropdown or chips, per the section above.
+
         </div>
       </div>
     </div>
