@@ -400,18 +400,6 @@ export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
 }
 
 /**
- * How many threads are blocked on the user. The collapsed sidebar rail drops
- * per-thread titles, so this aggregate is the only attention signal left.
- */
-export function countThreadsNeedingUser(statuses: ReadonlyArray<ThreadStatusPill | null>): number {
-  let count = 0;
-  for (const status of statuses) {
-    if (isNeedsUserStatus(status)) count += 1;
-  }
-  return count;
-}
-
-/**
  * The single word a row spends on status. Only states that stop the agent and
  * hand the thread back earn one; in-flight work reads as "working" with its
  * elapsed time, and everything else rests with a timestamp instead.

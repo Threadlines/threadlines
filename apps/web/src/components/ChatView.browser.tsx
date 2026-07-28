@@ -5106,7 +5106,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(compactActions?.className).toContain("group-focus-within/thread-row:opacity-100");
       expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
       expect(pinButton.getAttribute("aria-pressed")).toBe("false");
-      expect(doneButton.getAttribute("aria-label")).toBe(`Mark ${THREAD_TITLE} done`);
+      expect(doneButton.getAttribute("aria-label")).toBe(`Tie off ${THREAD_TITLE}`);
       // Icons only: the words for these two live in their tooltips.
       expect(doneButton.textContent).toBe("");
       expect(pinButton.textContent).toBe("");
@@ -5195,9 +5195,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("folds the quiet tail of the live list behind a reveal", async () => {
+  it("reveals the folded tail in increments and folds it back", async () => {
     const extraThreadIds = Array.from(
-      { length: 7 },
+      { length: 13 },
       (_, index) => `thread-quiet-${index}` as ThreadId,
     );
     const snapshot = extraThreadIds.reduce(
@@ -5209,32 +5209,33 @@ describe("ChatView timeline estimator parity (full app)", () => {
     );
     const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
 
+    const expectRows = async (count: number, revealLabel: string | null) => {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll('[data-testid^="thread-row-"]').length).toBe(count);
+          const reveal = document.querySelector('[data-testid="inbox-live-show-more"]');
+          if (revealLabel === null) {
+            expect(reveal).toBeNull();
+          } else {
+            expect(reveal?.textContent).toContain(revealLabel);
+          }
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    };
+
     try {
-      const reveal = page.getByTestId("inbox-live-show-more");
-      await expect.element(reveal).toBeInTheDocument();
+      // Fourteen quiet threads, six unfolded, revealed five at a time.
+      await expectRows(6, "Show 5 more");
+      await page.getByTestId("inbox-live-show-more").click();
+      await expectRows(11, "Show 3 more");
+      await page.getByTestId("inbox-live-show-more").click();
+      // Nothing left to reveal, so only the fold-back and search icons remain.
+      await expectRows(14, null);
+      await expect.element(page.getByTestId("inbox-live-search")).toBeInTheDocument();
 
-      // Eight quiet threads, six unfolded.
-      await vi.waitFor(
-        () => {
-          expect(document.querySelectorAll('[data-testid^="thread-row-"]').length).toBe(6);
-          expect(
-            document.querySelector('[data-testid="inbox-live-show-more"]')?.textContent,
-          ).toContain("Show 2 more");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-
-      await reveal.click();
-
-      await vi.waitFor(
-        () => {
-          expect(document.querySelectorAll('[data-testid^="thread-row-"]').length).toBe(8);
-          expect(
-            document.querySelector('[data-testid="inbox-live-show-more"]')?.textContent,
-          ).toContain("Show fewer");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+      await page.getByTestId("inbox-live-show-fewer").click();
+      await expectRows(6, "Show 5 more");
     } finally {
       await mounted.cleanup();
     }

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
-  countThreadsNeedingUser,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
@@ -988,31 +987,6 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
-  });
-});
-
-describe("countThreadsNeedingUser", () => {
-  const pill = (label: import("./Sidebar.logic").ThreadStatusPill["label"]) => ({
-    label,
-    colorClass: "",
-    dotClass: "",
-    pulse: false,
-  });
-
-  it("counts only threads blocked on the user", () => {
-    expect(
-      countThreadsNeedingUser([
-        pill("Pending Approval"),
-        pill("Awaiting Input"),
-        // Live but unblocked, so the section header must ignore these.
-        pill("Working"),
-        pill("Starting"),
-        pill("Plan Ready"),
-        pill("Completed"),
-        null,
-      ]),
-    ).toBe(2);
-    expect(countThreadsNeedingUser([])).toBe(0);
   });
 });
 

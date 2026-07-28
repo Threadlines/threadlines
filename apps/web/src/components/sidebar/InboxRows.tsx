@@ -55,18 +55,18 @@ function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }
 }
 
 /**
- * The hover cluster sits on top of the row's own text, so it carries the
- * sidebar surface with it: without an opaque backing "Done" prints over the
- * title it is meant to act on. Fades in with the cluster, so nothing shows
- * while the row rests.
+ * Actions take the timestamp's place rather than covering it: same line, same
+ * right edge, so nothing shifts and no surface has to be painted over the row.
+ * Touch has no hover, so there they simply sit beside the time.
  */
-// Opaque over exactly its own footprint and nothing more. bg-sidebar squares
-// the translucent hover tint away underneath, then the same tint is applied
-// on top, so the patch matches the hovered row instead of punching a darker
-// hole in it -- and no lead-in padding, which read as a slab overhanging the
-// title.
 const ROW_ACTIONS_CLASS_NAME =
-  "pointer-events-none absolute flex items-center gap-0.5 rounded-md bg-sidebar opacity-0 transition-opacity duration-150 group-hover/thread-row:pointer-events-auto group-hover/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto group-focus-within/thread-row:opacity-100 before:absolute before:inset-0 before:rounded-md before:bg-sidebar-row-hover before:content-[''] *:relative";
+  "flex shrink-0 items-center gap-0.5 sm:pointer-events-none sm:absolute sm:top-1/2 sm:right-0 sm:-translate-y-1/2 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:group-hover/thread-row:pointer-events-auto sm:group-hover/thread-row:opacity-100 sm:group-focus-within/thread-row:pointer-events-auto sm:group-focus-within/thread-row:opacity-100";
+
+/** The slot a row's first line gives to the time, and to the actions. */
+const ROW_META_SLOT_CLASS_NAME = "relative ml-auto flex shrink-0 items-center gap-1.5";
+
+const ROW_ACTION_BUTTON_CLASS_NAME =
+  "inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
 
 /**
  * The thread's own project cwd. Grouped projects put threads from several
@@ -374,43 +374,91 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
               </span>
             ) : null}
-            <span
-              data-testid={`thread-meta-${thread.id}`}
-              className={cn(
-                "ml-auto shrink-0 font-mono text-[11px] leading-none",
-                // Touch has no hover, so the actions sit permanently at the
-                // row's right edge and the meta reserves room beside them
-                // instead of fading out under them.
-                "transition-opacity duration-150 max-sm:mr-16 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0",
-                statusWord !== null || isInFlight
-                  ? (status?.colorClass ?? "text-muted-foreground/50")
-                  : "text-muted-foreground/50",
-              )}
-            >
-              {jumpLabel ? (
-                <span
-                  className="inline-flex h-4 items-center rounded-full border border-border/80 bg-background/90 px-1.5 text-[10px] font-medium tracking-tight text-foreground"
-                  title={jumpLabel}
-                >
-                  {jumpLabel}
-                </span>
-              ) : statusWord !== null ? (
-                statusWord
-              ) : isInFlight ? (
-                <>
-                  {status?.label === "Starting" ? "starting" : "working"}
-                  {inFlightStartedAt ? (
-                    <>
-                      {" · "}
-                      <ThreadElapsedLabel startedAt={inFlightStartedAt} />
-                    </>
-                  ) : null}
-                </>
-              ) : (
-                formatRelativeTimeLabel(
-                  thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-                )
-              )}
+            <span className={ROW_META_SLOT_CLASS_NAME}>
+              <span
+                data-testid={`thread-meta-${thread.id}`}
+                className={cn(
+                  "shrink-0 font-mono text-[11px] leading-none",
+                  "transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0",
+                  statusWord !== null || isInFlight
+                    ? (status?.colorClass ?? "text-muted-foreground/50")
+                    : "text-muted-foreground/50",
+                )}
+              >
+                {jumpLabel ? (
+                  <span
+                    className="inline-flex h-4 items-center rounded-full border border-border/80 bg-background/90 px-1.5 text-[10px] font-medium tracking-tight text-foreground"
+                    title={jumpLabel}
+                  >
+                    {jumpLabel}
+                  </span>
+                ) : statusWord !== null ? (
+                  statusWord
+                ) : isInFlight ? (
+                  <>
+                    {status?.label === "Starting" ? "starting" : "working"}
+                    {inFlightStartedAt ? (
+                      <>
+                        {" · "}
+                        <ThreadElapsedLabel startedAt={inFlightStartedAt} />
+                      </>
+                    ) : null}
+                  </>
+                ) : (
+                  formatRelativeTimeLabel(
+                    thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                  )
+                )}
+              </span>
+              {/* Two actions, both icons: the words live in their tooltips. */}
+              <div className={ROW_ACTIONS_CLASS_NAME}>
+                {canMarkDone ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          data-thread-selection-safe
+                          data-testid={`thread-done-${thread.id}`}
+                          aria-label={`Tie off ${thread.title}`}
+                          className={ROW_ACTION_BUTTON_CLASS_NAME}
+                          onPointerDown={stopPropagationOnPointerDown}
+                          onClick={handleMarkDoneClick}
+                        >
+                          <CheckIcon className="size-3.5" />
+                        </button>
+                      }
+                    />
+                    <TooltipPopup side="top">Tie off</TooltipPopup>
+                  </Tooltip>
+                ) : null}
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        data-thread-selection-safe
+                        data-testid={`thread-pin-${thread.id}`}
+                        aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
+                        aria-pressed={isPinned}
+                        className={cn(
+                          ROW_ACTION_BUTTON_CLASS_NAME,
+                          isPinned && "text-primary-readable hover:text-primary",
+                        )}
+                        onPointerDown={stopPropagationOnPointerDown}
+                        onClick={handleTogglePinClick}
+                      >
+                        {isPinned ? (
+                          <PinOffIcon className="size-3.5" />
+                        ) : (
+                          <PinIcon className="size-3.5" />
+                        )}
+                      </button>
+                    }
+                  />
+                  <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
+                </Tooltip>
+              </div>
             </span>
           </div>
           {/* Line two: which thread, and what it has produced. */}
@@ -501,63 +549,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
               ) : null}
               <ThreadProviderGlyph thread={thread} />
             </span>
-          </div>
-
-          {/* Two actions, both icons: the words live in their tooltips. */}
-          <div
-            className={cn(
-              ROW_ACTIONS_CLASS_NAME,
-              "top-1 right-1.5 max-sm:pointer-events-auto max-sm:opacity-100",
-            )}
-          >
-            {canMarkDone ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      data-thread-selection-safe
-                      data-testid={`thread-done-${thread.id}`}
-                      aria-label={`Mark ${thread.title} done`}
-                      className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
-                      onPointerDown={stopPropagationOnPointerDown}
-                      onClick={handleMarkDoneClick}
-                    >
-                      <CheckIcon className="size-3.5" />
-                    </button>
-                  }
-                />
-                <TooltipPopup side="top">Done</TooltipPopup>
-              </Tooltip>
-            ) : null}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    data-thread-selection-safe
-                    data-testid={`thread-pin-${thread.id}`}
-                    aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
-                    aria-pressed={isPinned}
-                    className={cn(
-                      "inline-flex size-5 cursor-pointer items-center justify-center transition-colors pointer-coarse:size-7 focus-ring",
-                      isPinned
-                        ? "text-primary-readable hover:text-primary"
-                        : "text-muted-foreground/60 hover:text-foreground",
-                    )}
-                    onPointerDown={stopPropagationOnPointerDown}
-                    onClick={handleTogglePinClick}
-                  >
-                    {isPinned ? (
-                      <PinOffIcon className="size-3.5" />
-                    ) : (
-                      <PinIcon className="size-3.5" />
-                    )}
-                  </button>
-                }
-              />
-              <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
-            </Tooltip>
           </div>
         </div>
       </ThreadHoverCard>
@@ -735,86 +726,83 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
             <span className="truncate">{projectLabel}</span>
           </span>
         ) : null}
-        <span className="shrink-0 font-mono text-[11px] text-muted-foreground/45 transition-opacity duration-150 group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0">
-          {doneAt ? formatRelativeTimeLabel(doneAt) : null}
-        </span>
-        {isConfirmingArchive ? (
-          <div
-            className={cn(
-              ROW_ACTIONS_CLASS_NAME,
-              "top-1/2 right-1.5 pointer-events-auto -translate-y-1/2 opacity-100",
-            )}
-          >
-            <button
-              ref={handleConfirmArchiveRef}
-              type="button"
-              data-thread-selection-safe
-              data-testid={`thread-archive-confirm-${thread.id}`}
-              aria-label={`Confirm archive ${thread.title}`}
-              className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
-              onPointerDown={stopPropagationOnPointerDown}
-              onClick={handleConfirmArchiveClick}
-            >
-              Confirm
-            </button>
-          </div>
-        ) : (
-          // A done thread is settled by definition, so archive is always
-          // available here -- the "running" guard the live rows needed is
-          // exactly the state that keeps a thread out of this list.
-          <div className={cn(ROW_ACTIONS_CLASS_NAME, "top-1/2 right-1.5 -translate-y-1/2")}>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    data-thread-selection-safe
-                    data-testid={`done-reopen-${thread.id}`}
-                    aria-label={`Reopen ${thread.title}`}
-                    className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
-                    onPointerDown={stopPropagationOnPointerDown}
-                    onClick={handleReopenClick}
-                  >
-                    <Undo2Icon className="size-3.5" />
-                  </button>
-                }
-              />
-              <TooltipPopup side="top">Reopen</TooltipPopup>
-            </Tooltip>
-            {appSettingsConfirmThreadArchive ? (
+        <span className={ROW_META_SLOT_CLASS_NAME}>
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground/45 transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0">
+            {doneAt ? formatRelativeTimeLabel(doneAt) : null}
+          </span>
+          {isConfirmingArchive ? (
+            <div className={cn(ROW_ACTIONS_CLASS_NAME, "sm:pointer-events-auto sm:opacity-100")}>
               <button
+                ref={handleConfirmArchiveRef}
                 type="button"
                 data-thread-selection-safe
-                data-testid={`thread-archive-${thread.id}`}
-                aria-label={`Archive ${thread.title}`}
-                className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
+                data-testid={`thread-archive-confirm-${thread.id}`}
+                aria-label={`Confirm archive ${thread.title}`}
+                className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
                 onPointerDown={stopPropagationOnPointerDown}
-                onClick={handleStartArchiveConfirmation}
+                onClick={handleConfirmArchiveClick}
               >
-                <ArchiveIcon className="size-3.5" />
+                Confirm
               </button>
-            ) : (
+            </div>
+          ) : (
+            // A done thread is settled by definition, so archive is always
+            // available here -- the "running" guard the live rows needed is
+            // exactly the state that keeps a thread out of this list.
+            <div className={ROW_ACTIONS_CLASS_NAME}>
               <Tooltip>
                 <TooltipTrigger
                   render={
                     <button
                       type="button"
                       data-thread-selection-safe
-                      data-testid={`thread-archive-${thread.id}`}
-                      aria-label={`Archive ${thread.title}`}
-                      className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
+                      data-testid={`done-reopen-${thread.id}`}
+                      aria-label={`Reopen ${thread.title}`}
+                      className={ROW_ACTION_BUTTON_CLASS_NAME}
                       onPointerDown={stopPropagationOnPointerDown}
-                      onClick={handleArchiveImmediateClick}
+                      onClick={handleReopenClick}
                     >
-                      <ArchiveIcon className="size-3.5" />
+                      <Undo2Icon className="size-3.5" />
                     </button>
                   }
                 />
-                <TooltipPopup side="top">Archive</TooltipPopup>
+                <TooltipPopup side="top">Reopen</TooltipPopup>
               </Tooltip>
-            )}
-          </div>
-        )}
+              {appSettingsConfirmThreadArchive ? (
+                <button
+                  type="button"
+                  data-thread-selection-safe
+                  data-testid={`thread-archive-${thread.id}`}
+                  aria-label={`Archive ${thread.title}`}
+                  className={ROW_ACTION_BUTTON_CLASS_NAME}
+                  onPointerDown={stopPropagationOnPointerDown}
+                  onClick={handleStartArchiveConfirmation}
+                >
+                  <ArchiveIcon className="size-3.5" />
+                </button>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        data-thread-selection-safe
+                        data-testid={`thread-archive-${thread.id}`}
+                        aria-label={`Archive ${thread.title}`}
+                        className={ROW_ACTION_BUTTON_CLASS_NAME}
+                        onPointerDown={stopPropagationOnPointerDown}
+                        onClick={handleArchiveImmediateClick}
+                      >
+                        <ArchiveIcon className="size-3.5" />
+                      </button>
+                    }
+                  />
+                  <TooltipPopup side="top">Archive</TooltipPopup>
+                </Tooltip>
+              )}
+            </div>
+          )}
+        </span>
       </div>
     </li>
   );

@@ -1,5 +1,6 @@
 import {
   ChevronDownIcon,
+  ChevronsUpIcon,
   MessagesSquareIcon,
   SearchIcon,
   SettingsIcon,
@@ -79,7 +80,6 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   buildProjectScopeOptions,
   canMarkThreadDone,
-  countThreadsNeedingUser,
   getSidebarThreadIdsToPrewarm,
   isNeedsUserStatus,
   INBOX_AUTO_DONE_AFTER_DAYS,
@@ -124,6 +124,8 @@ import { CommandDialogTrigger } from "./ui/command";
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 /** How many quiet live rows rest unfolded; rows needing you are never folded. */
 const LIVE_PREVIEW_COUNT = 6;
+/** Each click on the reveal row uncovers this many more. */
+const LIVE_REVEAL_STEP = 5;
 /** The Done tail opens short and reveals in bigger steps: it is history. */
 const DONE_PREVIEW_COUNT = 10;
 const DONE_REVEAL_STEP = 20;
@@ -378,7 +380,7 @@ export default function Sidebar() {
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
   const [confirmingArchiveThreadKey, setConfirmingArchiveThreadKey] = useState<string | null>(null);
-  const [liveListExpanded, setLiveListExpanded] = useState(false);
+  const [revealedLiveCount, setRevealedLiveCount] = useState(0);
   const [doneCollapsed, setDoneCollapsed] = useState(false);
   const [revealedDoneCount, setRevealedDoneCount] = useState(0);
   const renamingCommittedRef = useRef(false);
@@ -603,10 +605,6 @@ export default function Sidebar() {
     return { liveEntries, doneEntries };
   }, [doneThreadOverrides, entries, scopedProjectKeyValue]);
 
-  const needsYouCount = useMemo(
-    () => countThreadsNeedingUser(liveEntries.map((entry) => entry.status)),
-    [liveEntries],
-  );
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and anything with a status stays put.
   const { visible: visibleLiveEntries, hiddenCount: hiddenLiveCount } = useMemo(
@@ -614,11 +612,12 @@ export default function Sidebar() {
       windowInboxThreads({
         rows: liveEntries,
         hasAttention: (entry) => entry.status !== null,
-        limit: LIVE_PREVIEW_COUNT,
-        expanded: liveListExpanded,
+        limit: LIVE_PREVIEW_COUNT + revealedLiveCount,
+        expanded: false,
       }),
-    [liveEntries, liveListExpanded],
+    [liveEntries, revealedLiveCount],
   );
+  const nextLiveRevealCount = Math.min(LIVE_REVEAL_STEP, hiddenLiveCount);
   const visibleDoneEntries = useMemo(
     () => doneEntries.slice(0, DONE_PREVIEW_COUNT + revealedDoneCount),
     [doneEntries, revealedDoneCount],
@@ -642,7 +641,7 @@ export default function Sidebar() {
 
   // A new scope is a new list; the reveals from the old one mean nothing here.
   useEffect(() => {
-    setLiveListExpanded(false);
+    setRevealedLiveCount(0);
     setRevealedDoneCount(0);
   }, [scopedProjectKeyValue]);
 
@@ -1354,18 +1353,6 @@ export default function Sidebar() {
                 onAddProject={openAddProjectCommandPalette}
               />
 
-              <InboxSectionHeader
-                label="Threads"
-                count={liveEntries.length}
-                trailing={
-                  needsYouCount > 0 ? (
-                    <span className="shrink-0 text-[11px] text-amber-600 dark:text-amber-300/90">
-                      {needsYouCount} need{needsYouCount === 1 ? "s" : ""} you
-                    </span>
-                  ) : null
-                }
-              />
-
               {liveEntries.length === 0 ? (
                 <div className="px-3 py-2 text-[11px] text-muted-foreground/60">
                   {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
@@ -1402,30 +1389,65 @@ export default function Sidebar() {
                 </ul>
               )}
 
-              {hiddenLiveCount > 0 || liveListExpanded ? (
-                <>
-                  <SidebarSeparator className="my-1.5" />
-                  <button
-                    type="button"
-                    data-thread-selection-safe
-                    data-testid="inbox-live-show-more"
-                    className={cn(
-                      "w-full cursor-pointer px-3 pb-1.5 text-left text-[11px]",
-                      "text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring",
-                    )}
-                    onClick={() => {
-                      setLiveListExpanded((expanded) => !expanded);
-                    }}
-                  >
-                    {liveListExpanded ? "Show fewer" : `Show ${hiddenLiveCount} more…`}
-                  </button>
-                </>
+              {hiddenLiveCount > 0 || revealedLiveCount > 0 ? (
+                <div className="flex items-center gap-1 px-3 pt-1 pb-1.5">
+                  {nextLiveRevealCount > 0 ? (
+                    <button
+                      type="button"
+                      data-thread-selection-safe
+                      data-testid="inbox-live-show-more"
+                      className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
+                      onClick={() => {
+                        setRevealedLiveCount((count) => count + nextLiveRevealCount);
+                      }}
+                    >
+                      Show {nextLiveRevealCount} more…
+                    </button>
+                  ) : (
+                    <span className="min-w-0 flex-1" aria-hidden="true" />
+                  )}
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <CommandDialogTrigger
+                          data-testid="inbox-live-search"
+                          aria-label="Search threads"
+                          className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                        />
+                      }
+                    >
+                      <SearchIcon className="size-3.5" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">Search threads</TooltipPopup>
+                  </Tooltip>
+                  {revealedLiveCount > 0 ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            data-thread-selection-safe
+                            data-testid="inbox-live-show-fewer"
+                            aria-label="Show fewer threads"
+                            className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                            onClick={() => {
+                              setRevealedLiveCount(0);
+                            }}
+                          />
+                        }
+                      >
+                        <ChevronsUpIcon className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">Show fewer</TooltipPopup>
+                    </Tooltip>
+                  ) : null}
+                </div>
               ) : null}
 
               {doneEntries.length > 0 ? (
                 <>
                   <InboxSectionHeader
-                    label="Done"
+                    label="Tied off"
                     count={doneEntries.length}
                     collapsed={doneCollapsed}
                     onToggleCollapsed={toggleDoneCollapsed}
