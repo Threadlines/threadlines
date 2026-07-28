@@ -24,6 +24,26 @@ updates:
       # (43.1.1 produced stale-tile strips at the sidebar boundary on
       # Windows). Bump manually and soak on real hardware first.
       - dependency-name: "electron"
+      # effect core is patched (patches/effect@4.0.0-beta.97.patch and
+      # patches/@effect__platform-node-shared@4.0.0-beta.97.patch), and the
+      # effect beta packages must move in lockstep — bumping satellites alone
+      # (PRs #78/#79) splits the ecosystem across two betas. Bumped manually
+      # as one coordinated upgrade.
+      - dependency-name: "effect"
+      - dependency-name: "@effect/*"
+      # lexical is patched for spellcheck (patches/lexical@0.47.0.patch);
+      # bumping @lexical/react alone breaks typecheck against the pinned
+      # core (PR #85). Bump manually, re-cutting the patch, until the
+      # upstream lexical spellcheck PR lands.
+      - dependency-name: "lexical"
+      - dependency-name: "@lexical/*"
+      # TypeScript majors (7.x) and @types/node majors are coordinated
+      # migrations: TS 7 needs its own investigation pass, and @types/node
+      # must track the Node 22 engines floor, not the newest release.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       production-dependencies:
         dependency-type: production
