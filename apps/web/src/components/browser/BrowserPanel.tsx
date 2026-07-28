@@ -209,25 +209,24 @@ export function BrowserPanel({
 
   /** What the agent last did, shown while it is working. */
   const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
-  const agentActivityRef = useRef<AgentActivity | null>(null);
-  agentActivityRef.current = agentActivity;
 
-  useEffect(() => {
-    // The agent pins itself to a tab so a turn in flight cannot lose its page
-    // when you glance somewhere else. Holding that pin after the turn is over
-    // is what made it answer questions about a tab you had left: you open a
-    // new one, ask about what is in front of you, and it reports the old page
-    // and tells you no other page exists. So an idle agent lets go, and its
-    // next action picks up whatever you are looking at now.
-    const activity = agentActivityRef.current;
-    if (activity === null || activity.phase === "done") {
-      agentTabIdRef.current = null;
-      setAgentTabId(null);
-    }
-    // Only when the visible tab changes: reacting to the activity itself would
-    // hand the tab over in the middle of a turn.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabId]);
+  /*
+   * The agent keeps its tab. Opening a tab, or switching to one, is yours to do
+   * and does not move it.
+   *
+   * This was briefly the opposite -- an idle agent handed its tab over to
+   * whichever one you were looking at -- and that was wrong twice over. "Idle"
+   * was measured per operation rather than per turn, so opening a tab in the
+   * gap between two of the agent's own actions stole the page mid-task. And it
+   * was solving a problem that no longer exists: the agent could not see other
+   * tabs when I wrote it, so following you was the only way it could ever end
+   * up somewhere useful. It can see them now, and move itself, and say so when
+   * it does.
+   *
+   * Which leaves the arrangement people expect from tabs. Yours are yours to
+   * browse; its tab is marked in the strip and one click away from the activity
+   * line, and it goes only where it decides to go.
+   */
 
   useEffect(() => {
     // The agent's tab has been closed. Letting go here is what makes its next

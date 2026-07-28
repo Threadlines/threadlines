@@ -118,6 +118,7 @@ const makeElectronTrayLayer = (calls: TrayCalls) =>
 
 const makeElectronWindowLayer = (window: Electron.BrowserWindow) =>
   Layer.succeed(ElectronWindow.ElectronWindow, {
+    workAreaSize: Effect.succeed({ width: 1920, height: 1080 }),
     create: () => Effect.die("unexpected create"),
     main: Effect.succeed(Option.some(window)),
     currentMainOrFirst: Effect.succeed(Option.some(window)),

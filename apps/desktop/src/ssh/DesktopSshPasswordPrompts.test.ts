@@ -69,6 +69,7 @@ function makeElectronWindowLayer(window: ReturnType<typeof makeTestWindow>["wind
   return Layer.succeed(
     ElectronWindow.ElectronWindow,
     ElectronWindow.ElectronWindow.of({
+      workAreaSize: Effect.succeed({ width: 1920, height: 1080 }),
       create: () => Effect.die("unexpected BrowserWindow creation"),
       main: Effect.succeed(Option.some(window as Electron.BrowserWindow)),
       currentMainOrFirst: Effect.succeed(Option.some(window as Electron.BrowserWindow)),

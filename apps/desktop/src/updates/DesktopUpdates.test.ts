@@ -139,6 +139,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   } satisfies ElectronUpdater.ElectronUpdaterShape);
 
   const windowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
+    workAreaSize: Effect.succeed({ width: 1920, height: 1080 }),
     create: () => Effect.die("unexpected BrowserWindow creation"),
     main: Effect.succeed(Option.none()),
     currentMainOrFirst: Effect.succeed(Option.none()),

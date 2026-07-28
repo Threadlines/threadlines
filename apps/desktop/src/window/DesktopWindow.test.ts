@@ -185,6 +185,7 @@ function makeTestLayer(input: {
   readonly electronSpelling?: ElectronSpelling.ElectronSpellingShape;
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
+    workAreaSize: Effect.succeed({ width: 1920, height: 1080 }),
     create: (options) =>
       Effect.gen(function* () {
         yield* Ref.update(input.createCount, (count) => count + 1);
@@ -241,6 +242,31 @@ const waitForMockCalls = (mock: { readonly mock: { readonly calls: ReadonlyArray
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   });
+
+describe("defaultMainWindowSize", () => {
+  it("opens at most of the screen, which is where people drag it anyway", () => {
+    assert.deepStrictEqual(DesktopWindow.defaultMainWindowSize({ width: 1920, height: 1080 }), {
+      width: 1728,
+      height: 972,
+    });
+  });
+
+  it("does not give a very large display a window the size of a wall", () => {
+    const onSixK = DesktopWindow.defaultMainWindowSize({ width: 6016, height: 3384 });
+
+    assert.strictEqual(onSixK.width, 2200);
+    assert.strictEqual(onSixK.height, 1400);
+  });
+
+  it("never opens smaller than the window's own minimum", () => {
+    // A cramped external display would otherwise produce a size Electron
+    // silently enlarges, which is a default that never applies.
+    const onSmall = DesktopWindow.defaultMainWindowSize({ width: 800, height: 600 });
+
+    assert.isAtLeast(onSmall.width, 840);
+    assert.isAtLeast(onSmall.height, 620);
+  });
+});
 
 describe("DesktopWindow", () => {
   it.effect("does not open a development window until the backend is ready", () =>
