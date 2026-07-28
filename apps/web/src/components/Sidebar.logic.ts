@@ -10,11 +10,7 @@ import {
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
-import type { EnvironmentId } from "@threadlines/contracts";
-import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { SidebarThreadSummary, Thread } from "../types";
-import type { OnDeckSyncInput } from "../uiStateStore";
-import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
@@ -40,21 +36,12 @@ export interface ThreadStatusPill {
     | "Pending Approval"
     | "Awaiting Input"
     | "Plan Ready"
-    | "Background";
+    | "Background"
+    | "Failed";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
 }
-
-const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Working: 3,
-  Starting: 3,
-  "Plan Ready": 2,
-  Background: 2,
-  Completed: 1,
-};
 
 export const THREAD_STATUS_DOT_CLASSES = {
   amber: "bg-amber-500 dark:bg-amber-300/90",
@@ -62,6 +49,7 @@ export const THREAD_STATUS_DOT_CLASSES = {
   cyan: "bg-cyan-500 dark:bg-cyan-300/90",
   emerald: "bg-emerald-500 dark:bg-emerald-300/90",
   violet: "bg-violet-500 dark:bg-violet-300/90",
+  red: "bg-red-500 dark:bg-red-400/90",
 } as const;
 
 type ThreadStatusInput = Pick<
@@ -161,7 +149,9 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
+export function hasUnseenCompletion(
+  thread: Pick<SidebarThreadSummary, "latestTurn"> & { lastVisitedAt?: string | undefined },
+): boolean {
   if (!thread.latestTurn?.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
@@ -258,17 +248,6 @@ export function orderItemsByPreferredIds<TItem, TId>(input: {
   return [...ordered, ...remaining];
 }
 
-export function getVisibleSidebarThreadIds<TThreadId>(
-  renderedProjects: readonly {
-    shouldShowThreadPanel?: boolean;
-    renderedThreadIds: readonly TThreadId[];
-  }[],
-): TThreadId[] {
-  return renderedProjects.flatMap((renderedProject) =>
-    renderedProject.shouldShowThreadPanel === false ? [] : renderedProject.renderedThreadIds,
-  );
-}
-
 export function getSidebarThreadIdsToPrewarm<TThreadId>(
   visibleThreadIds: readonly TThreadId[],
   limit = SIDEBAR_THREAD_PREWARM_LIMIT,
@@ -310,37 +289,6 @@ export function isContextMenuPointerDown(input: {
 }): boolean {
   if (input.button === 2) return true;
   return input.isMac && input.button === 0 && input.ctrlKey;
-}
-
-export function resolveThreadRowClassName(input: {
-  isActive: boolean;
-  isSelected: boolean;
-}): string {
-  const baseClassName =
-    "h-7 w-full translate-x-0 cursor-pointer justify-start px-2 text-left select-none focus-ring focus-visible:ring-inset";
-
-  if (input.isSelected && input.isActive) {
-    return cn(
-      baseClassName,
-      "bg-primary/22 text-foreground font-medium hover:bg-primary/26 hover:text-foreground dark:bg-primary/30 dark:hover:bg-primary/36",
-    );
-  }
-
-  if (input.isSelected) {
-    return cn(
-      baseClassName,
-      "bg-primary/15 text-foreground hover:bg-primary/19 hover:text-foreground dark:bg-primary/22 dark:hover:bg-primary/28",
-    );
-  }
-
-  if (input.isActive) {
-    return cn(
-      baseClassName,
-      "bg-accent/85 text-foreground font-medium hover:bg-accent hover:text-foreground dark:bg-accent/55 dark:hover:bg-accent/70",
-    );
-  }
-
-  return cn(baseClassName, "text-muted-foreground hover:bg-accent hover:text-foreground");
 }
 
 export function resolveThreadStatusPill(input: {
@@ -386,6 +334,17 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  if (thread.session?.status === "error") {
+    // Failed threads previously showed nothing -- indistinguishable from
+    // healthy idle ones, which is the worst place for a failure to hide.
+    return {
+      label: "Failed",
+      colorClass: "text-red-600 dark:text-red-400/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.red,
+      pulse: false,
+    };
+  }
+
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
     thread.interactionMode === "plan" &&
@@ -424,66 +383,16 @@ export function resolveThreadStatusPill(input: {
   return null;
 }
 
-/** Statuses that mean the provider is working or waiting on the user right now. */
-const ON_DECK_LIVE_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
-  "Pending Approval",
-  "Awaiting Input",
-  "Working",
-  "Starting",
-  "Plan Ready",
-  "Background",
-]);
-
-/** Maps a thread's status pill and pin state onto the deck's entry signals. */
-export function buildOnDeckSyncInput(input: {
-  threadKey: string;
-  pinnedAt: string | null;
-  status: ThreadStatusPill | null;
-}): OnDeckSyncInput {
-  return {
-    key: input.threadKey,
-    pinned: input.pinnedAt !== null,
-    live: input.status !== null && ON_DECK_LIVE_STATUSES.has(input.status.label),
-    unseen: input.status?.label === "Completed",
-  };
-}
-
-/** Only settled rows offer the dismiss affordance; live work can't be waved away. */
-export function isOnDeckDismissible(status: ThreadStatusPill | null): boolean {
-  return status === null || !ON_DECK_LIVE_STATUSES.has(status.label);
-}
-
-/**
- * Drops threads that already have a deck row, so a thread on deck appears once
- * in the sidebar rather than twice. Must be applied *before* the preview window
- * is computed: a deck thread should not consume a preview slot and then vanish,
- * which would leave "Show more" counts disagreeing with the rendered rows.
- */
-export function excludeOnDeckThreads<TThread>(input: {
-  threads: readonly TThread[];
-  onDeckThreadKeys: ReadonlySet<string>;
-  getThreadKey: (thread: TThread) => string;
-}): TThread[] {
-  if (input.onDeckThreadKeys.size === 0) {
-    return [...input.threads];
-  }
-  return input.threads.filter((thread) => !input.onDeckThreadKeys.has(input.getThreadKey(thread)));
-}
-
 /**
  * Statuses where the agent has stopped and cannot continue without the user.
- * Narrower than {@link ON_DECK_LIVE_STATUSES}: a working thread is live but
- * needs nothing, and a ready plan is an invitation rather than a block.
+ * Narrower than "busy": a working thread needs nothing, and a ready plan is an
+ * invitation rather than a block.
  */
 const NEEDS_USER_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Pending Approval",
   "Awaiting Input",
+  "Failed",
 ]);
-
-/** True while the provider is working on the thread or waiting on the user. */
-export function isLiveThreadStatus(status: ThreadStatusPill | null): boolean {
-  return status !== null && ON_DECK_LIVE_STATUSES.has(status.label);
-}
 
 /** True when the thread is blocked waiting on the user. */
 export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
@@ -491,96 +400,18 @@ export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
 }
 
 /**
- * How many threads are blocked on the user. The collapsed sidebar rail drops
- * per-thread titles, so this aggregate is the only attention signal left.
+ * The single word a row spends on status. Only states that stop the agent and
+ * hand the thread back earn one; in-flight work reads as "working" with its
+ * elapsed time, and everything else rests with a timestamp instead.
  */
-export function countThreadsNeedingUser(statuses: ReadonlyArray<ThreadStatusPill | null>): number {
-  let count = 0;
-  for (const status of statuses) {
-    if (isNeedsUserStatus(status)) count += 1;
-  }
-  return count;
-}
+const INBOX_STATUS_WORDS: Partial<Record<ThreadStatusPill["label"], string>> = {
+  "Pending Approval": "approval",
+  "Awaiting Input": "input",
+  Failed: "failed",
+};
 
-export function resolveProjectStatusIndicator(
-  statuses: ReadonlyArray<ThreadStatusPill | null>,
-): ThreadStatusPill | null {
-  let highestPriorityStatus: ThreadStatusPill | null = null;
-
-  for (const status of statuses) {
-    if (status === null) continue;
-    if (
-      highestPriorityStatus === null ||
-      THREAD_STATUS_PRIORITY[status.label] > THREAD_STATUS_PRIORITY[highestPriorityStatus.label]
-    ) {
-      highestPriorityStatus = status;
-    }
-  }
-
-  return highestPriorityStatus;
-}
-
-export interface SidebarThreadWindow<T> {
-  visibleThreads: T[];
-  hiddenThreads: T[];
-  /** How many threads the next "Show more" click reveals (0 = no row). */
-  nextRevealCount: number;
-  /** Total thread count for the "Search all N threads" row (null = no row). */
-  searchHandoffThreadCount: number | null;
-  /** True once the user revealed beyond the preview (shows "Show less"). */
-  isRevealed: boolean;
-}
-
-export function getSidebarThreadWindow<T>(input: {
-  threads: readonly T[];
-  getThreadKey: (thread: T) => string;
-  activeThreadKey: string | null;
-  previewLimit: number;
-  revealedCount: number;
-}): SidebarThreadWindow<T> {
-  const { activeThreadKey, getThreadKey, previewLimit, revealedCount, threads } = input;
-  const isRevealed = revealedCount > 0;
-  const windowSize = previewLimit + Math.max(0, revealedCount);
-
-  if (threads.length <= windowSize) {
-    return {
-      visibleThreads: [...threads],
-      hiddenThreads: [],
-      nextRevealCount: 0,
-      searchHandoffThreadCount: null,
-      isRevealed,
-    };
-  }
-
-  const windowThreads = threads.slice(0, windowSize);
-  // The active thread always stays visible, even when it falls in the hidden
-  // tail, so the current-thread marker never disappears from the sidebar.
-  const visibleThreadKeys = new Set(windowThreads.map(getThreadKey));
-  const includeActiveThread =
-    activeThreadKey !== null &&
-    !visibleThreadKeys.has(activeThreadKey) &&
-    threads.some((thread) => getThreadKey(thread) === activeThreadKey);
-  if (includeActiveThread) {
-    visibleThreadKeys.add(activeThreadKey);
-  }
-
-  const visibleThreads = includeActiveThread
-    ? threads.filter((thread) => visibleThreadKeys.has(getThreadKey(thread)))
-    : windowThreads;
-  const hiddenThreads = threads.filter((thread) => !visibleThreadKeys.has(getThreadKey(thread)));
-
-  // Reveal in preview-sized chunks until the tail is exhausted. Search remains
-  // available after the first expansion as a fast path for huge projects.
-  const revealStepSize = Math.max(0, previewLimit);
-  const nextRevealCount = Math.min(hiddenThreads.length, revealStepSize);
-
-  return {
-    visibleThreads,
-    hiddenThreads,
-    nextRevealCount,
-    searchHandoffThreadCount: isRevealed && hiddenThreads.length > 0 ? threads.length : null,
-    isRevealed,
-  };
+export function inboxStatusWord(status: ThreadStatusPill | null): string | null {
+  return status === null ? null : (INBOX_STATUS_WORDS[status.label] ?? null);
 }
 
 export function getFallbackThreadIdAfterDelete<
@@ -699,50 +530,252 @@ export function sortScopedProjectsByActivity<
   });
 }
 
-export interface ProjectHoverSummary {
-  name: string;
-  cwd: string;
-  environmentId: EnvironmentId;
-  status: ThreadStatusPill | null;
-  threadCount: number;
-  activeCount: number;
-  lastActivityAt: string | null;
+// ── Inbox lifecycle ──────────────────────────────────────────────────
+//
+// The sidebar is an inbox: one live list, a Done tail. "Done" is a client-side
+// overlay in v1 -- an override the user sets, resolved against the thread's
+// actual state. The rules below owe their shape to studying how the settle
+// lifecycle goes wrong: the invariant that matters is that no override may
+// hide work that is moving or blocked on the user.
+
+/**
+ * A queued turn start counts as pending work for at most this long.
+ *
+ * Between sending a message and a session adopting it, the work is invisible
+ * to every status check: no turn, no running session. Without a bound, a
+ * thread whose start failed would be permanently un-doneable; without the
+ * guard, marking Done in that gap would hide a message that is about to run.
+ */
+export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+
+type InboxLifecycleInput = Pick<
+  SidebarThreadSummary,
+  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "latestUserMessageAt" | "latestTurn"
+>;
+
+/**
+ * A user message no turn has picked up yet: strictly newer than every
+ * timestamp on the latest turn, and within the adoption grace window. Bounded
+ * on both sides because message timestamps originate on whichever device sent
+ * them -- a clock ahead of this one would otherwise hold the queued state for
+ * the whole skew.
+ */
+export function hasQueuedTurnStart(
+  thread: InboxLifecycleInput,
+  options: { readonly now: string },
+): boolean {
+  if (thread.latestUserMessageAt == null) return false;
+  // A failed start is already visible as the Failed pill; holding the queued
+  // state too would make the thread un-doneable while it screams red.
+  if (thread.session?.status === "error") return false;
+  const messageAt = Date.parse(thread.latestUserMessageAt);
+  if (Number.isNaN(messageAt)) return false;
+  const nowMs = Date.parse(options.now);
+  if (Number.isNaN(nowMs)) return false;
+  if (Math.abs(nowMs - messageAt) > QUEUED_TURN_START_GRACE_MS) return false;
+  const turn = thread.latestTurn;
+  if (turn === null) return true;
+  return [turn.requestedAt, turn.startedAt, turn.completedAt].every(
+    (candidate) => candidate == null || Date.parse(candidate) < messageAt,
+  );
 }
 
 /**
- * Builds a project's hover summary from its threads. Shared so the expanded row
- * and the collapsed rail glyph describe a project identically.
+ * Whether Done is allowed right now. Work that is moving, blocked on the
+ * user, or queued cannot be waved away: hiding a pending approval defeats
+ * the approval, and hiding a running turn hides where its result will land.
+ * A failed thread CAN be marked done -- that is "I saw it, I'm done with it".
  */
-export function buildProjectHoverSummary(input: {
-  name: string;
-  cwd: string;
-  environmentId: EnvironmentId;
-  threads: readonly SidebarThreadSummary[];
-  getLastVisitedAt: (threadKey: string) => string | null | undefined;
-}): ProjectHoverSummary {
-  const getThreadKey = (thread: SidebarThreadSummary) =>
-    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-  const statuses = input.threads.map((thread) => {
-    const lastVisitedAt = input.getLastVisitedAt(getThreadKey(thread));
-    return resolveThreadStatusPill({
-      thread: {
-        ...thread,
-        ...(lastVisitedAt !== undefined && lastVisitedAt !== null ? { lastVisitedAt } : {}),
-      },
-    });
-  });
-  const lastActivityAt = input.threads.reduce<string | null>((latest, thread) => {
-    const at = thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
-    return latest === null || at > latest ? at : latest;
-  }, null);
+export function canMarkThreadDone(
+  thread: InboxLifecycleInput,
+  options: { readonly now: string },
+): boolean {
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
+  // The same in-flight resolution the status pill uses, so "can't be marked
+  // done" and "shows as working" can never disagree about what running means.
+  if (getThreadInFlightStatus(thread) !== null) return false;
+  if (hasQueuedTurnStart(thread, options)) return false;
+  return true;
+}
 
-  return {
-    name: input.name,
-    cwd: input.cwd,
-    environmentId: input.environmentId,
-    status: resolveProjectStatusIndicator(statuses),
-    threadCount: input.threads.length,
-    activeCount: statuses.filter(isLiveThreadStatus).length,
-    lastActivityAt,
+/**
+ * The user's explicit word on a thread's lifecycle, stamped when given.
+ * "active" exists so a reopened thread stays reopened once auto-done rules
+ * arrive; today it simply reads as not-done.
+ */
+export interface ThreadDoneOverride {
+  readonly state: "done" | "active";
+  readonly at: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * How long a thread sits idle before it files itself under Done.
+ *
+ * Without this the live list is every thread ever opened: one-off questions
+ * from three weeks ago standing shoulder to shoulder with this morning's
+ * work, which is the sidebar this design exists to replace. Two days keeps
+ * yesterday's threads at hand and lets the weekend clear the desk.
+ */
+export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
+
+/**
+ * Where a thread lives. Resolution order, each layer outranking the next:
+ *
+ * 1. Blockers. Moving or blocked-on-you work is live, whatever anyone said.
+ * 2. The user's override -- but only while it is FRESHER than the thread's
+ *    last activity. New work outranks an old word in both directions: a done
+ *    thread that starts again pulls itself back without being un-marked, and
+ *    a reopened thread that goes quiet again is allowed to re-file itself.
+ * 3. Auto-done on idle, unless the thread holds a completion the user has
+ *    not seen -- unread work is the inbox's reason to exist, and filing it
+ *    unread would be the sidebar reading your mail for you.
+ */
+export function isThreadDone(
+  thread: InboxLifecycleInput & DoneSortInput & { readonly lastVisitedAt?: string | undefined },
+  override: ThreadDoneOverride | null | undefined,
+  options: { readonly now: string; readonly autoDoneAfterDays?: number | null },
+): boolean {
+  if (!canMarkThreadDone(thread, options)) return false;
+  const lastActivityAt = resolveDoneTimestamp(thread, null);
+  const overrideIsStale =
+    override != null &&
+    lastActivityAt !== null &&
+    Date.parse(lastActivityAt) > Date.parse(override.at);
+  if (override != null && !overrideIsStale) {
+    return override.state === "done";
+  }
+  if (options.autoDoneAfterDays == null) return false;
+  if (hasUnseenCompletion(thread)) return false;
+  if (lastActivityAt === null) return false;
+  return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;
+}
+
+/**
+ * The live list holds still. Creation order, newest first; activity never
+ * reorders it, so a row keeps its place from open until it is marked done
+ * and the thing you were reaching for never jumps. Pins are the one
+ * exception, and they move only when you pin -- your action, your motion.
+ */
+export function sortInboxThreads<
+  T extends { readonly id: string; readonly createdAt: string; readonly pinnedAt: string | null },
+>(threads: readonly T[]): T[] {
+  return [...threads].toSorted((left, right) => {
+    if ((left.pinnedAt !== null) !== (right.pinnedAt !== null)) {
+      return left.pinnedAt !== null ? -1 : 1;
+    }
+    if (left.pinnedAt !== null && right.pinnedAt !== null) {
+      const byPin =
+        (toSortableTimestamp(right.pinnedAt) ?? 0) - (toSortableTimestamp(left.pinnedAt) ?? 0);
+      if (byPin !== 0) return byPin;
+    }
+    const byCreated =
+      (toSortableTimestamp(right.createdAt) ?? 0) - (toSortableTimestamp(left.createdAt) ?? 0);
+    return byCreated !== 0 ? byCreated : left.id.localeCompare(right.id);
+  });
+}
+
+type DoneSortInput = Pick<
+  SidebarThreadSummary,
+  "latestUserMessageAt" | "latestTurn" | "updatedAt" | "createdAt"
+>;
+
+/**
+ * Done rows are history, so they order by when the work ended: the explicit
+ * mark when there is one, else the thread's last activity. Label and order
+ * both come from here so they can never disagree.
+ */
+export function resolveDoneTimestamp(
+  thread: DoneSortInput,
+  override: ThreadDoneOverride | null | undefined,
+): string | null {
+  if (override?.state === "done" && !Number.isNaN(Date.parse(override.at))) {
+    return override.at;
+  }
+  let latest: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of [
+    thread.latestUserMessageAt,
+    thread.latestTurn?.requestedAt,
+    thread.latestTurn?.startedAt,
+    thread.latestTurn?.completedAt,
+  ]) {
+    if (candidate == null) continue;
+    const parsed = Date.parse(candidate);
+    if (!Number.isNaN(parsed) && parsed > latestMs) {
+      latest = candidate;
+      latestMs = parsed;
+    }
+  }
+  return latest ?? thread.updatedAt ?? thread.createdAt;
+}
+
+export function sortDoneThreads<T extends DoneSortInput & { readonly id: string }>(
+  threads: readonly T[],
+  overrideFor: (thread: T) => ThreadDoneOverride | null | undefined,
+): T[] {
+  const timestampMs = (thread: T) => {
+    const timestamp = resolveDoneTimestamp(thread, overrideFor(thread));
+    return timestamp === null ? 0 : (toSortableTimestamp(timestamp) ?? 0);
   };
+  return [...threads].toSorted(
+    (left, right) => timestampMs(right) - timestampMs(left) || left.id.localeCompare(right.id),
+  );
+}
+
+// ── Project scope ────────────────────────────────────────────────────
+
+export interface ProjectScopeOption {
+  readonly key: string;
+  readonly label: string;
+  /** Threads in this project blocked on the user, shown beside its name. */
+  readonly needsYouCount: number;
+}
+
+/**
+ * The scope menu's projects, most-recently-active first.
+ *
+ * A menu has room for all of them, so ordering is the whole job: whatever you
+ * touched last sits under the cursor when the menu opens.
+ */
+export function buildProjectScopeOptions(input: {
+  readonly projects: ReadonlyArray<{ readonly key: string; readonly label: string }>;
+  readonly lastActivityMsByKey: ReadonlyMap<string, number>;
+  readonly needsYouCountByKey: ReadonlyMap<string, number>;
+}): ProjectScopeOption[] {
+  return [...input.projects]
+    .toSorted(
+      (left, right) =>
+        (input.lastActivityMsByKey.get(right.key) ?? 0) -
+          (input.lastActivityMsByKey.get(left.key) ?? 0) || left.label.localeCompare(right.label),
+    )
+    .map((project) => ({
+      key: project.key,
+      label: project.label,
+      needsYouCount: input.needsYouCountByKey.get(project.key) ?? 0,
+    }));
+}
+
+/**
+ * Which live rows show while the list is folded.
+ *
+ * The live list keeps every thread, but only the first few quiet ones are
+ * worth screen space at rest -- a dev session mints a dozen threads a day and
+ * a wall of two-line rows buries the ones that matter. Rows with a status are
+ * exempt from the fold entirely: hiding a pending approval behind "show more"
+ * defeats the approval, and hiding running work hides where its result will
+ * land. Order is never changed, only membership.
+ */
+export function windowInboxThreads<T>(input: {
+  readonly rows: readonly T[];
+  readonly hasAttention: (row: T) => boolean;
+  readonly limit: number;
+  readonly expanded: boolean;
+}): { readonly visible: T[]; readonly hiddenCount: number } {
+  if (input.expanded || input.rows.length <= input.limit) {
+    return { visible: [...input.rows], hiddenCount: 0 };
+  }
+  const visible = input.rows.filter((row, index) => index < input.limit || input.hasAttention(row));
+  return { visible, hiddenCount: input.rows.length - visible.length };
 }

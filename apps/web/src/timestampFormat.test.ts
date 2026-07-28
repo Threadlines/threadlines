@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   formatElapsedDurationLabel,
+  formatWorkingDurationLabel,
   formatExpiresInLabel,
   formatRelativeTimeUntilLabel,
   getTimestampFormatOptions,
@@ -87,6 +88,20 @@ describe("formatExpiresInLabel", () => {
   it("uses hours with minute and second remainder", () => {
     expect(formatExpiresInLabel("2026-04-07T14:02:03.000Z")).toBe("Expires in 2h 2m 3s");
     expect(formatExpiresInLabel("2026-04-07T18:00:00.000Z")).toBe("Expires in 6h");
+  });
+});
+
+describe("formatWorkingDurationLabel", () => {
+  it("always reads as a duration, including the first seconds of a run", () => {
+    const now = Date.parse("2026-04-07T12:00:00.000Z");
+    const at = (iso: string) => formatWorkingDurationLabel(iso, now);
+
+    // The relative formatter would say "just now" here, which is not a length.
+    expect(at("2026-04-07T12:00:00.000Z")).toBe("0s");
+    expect(at("2026-04-07T11:59:57.000Z")).toBe("3s");
+    expect(at("2026-04-07T11:58:55.000Z")).toBe("1m 5s");
+    expect(at("2026-04-07T11:55:00.000Z")).toBe("5m");
+    expect(at("2026-04-07T10:30:00.000Z")).toBe("1h 30m");
   });
 });
 

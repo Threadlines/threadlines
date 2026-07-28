@@ -112,8 +112,6 @@ import {
   type TurnDiffSummary,
   type ChatAttachment,
 } from "../types";
-import { useAutoCollapseSidebar } from "../hooks/useAutoCollapseSidebar";
-import { useSidebar } from "./ui/sidebar";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -260,6 +258,7 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
 import { BrowserPanel } from "./browser/BrowserPanel";
+import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
 import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
@@ -2545,15 +2544,6 @@ export default function ChatView(props: ChatViewProps) {
   const browserAvailable = !isGeneralChatThread;
   const browserOpen = browserAvailable && browserPanelState.open;
 
-  // With source control and the browser both open the chat column is what pays
-  // for it, so the sidebar folds down to its rail -- once, and never again if
-  // you expand it back.
-  const { setOpen: setSidebarOpen, state: sidebarState } = useSidebar();
-  useAutoCollapseSidebar({
-    squeezed: browserOpen && rightPanelEngaged,
-    expanded: sidebarState === "expanded",
-    setExpanded: setSidebarOpen,
-  });
   const handleToggleBrowser = useCallback(() => {
     if (routeThreadRef !== null) {
       toggleBrowserOpen(routeThreadRef);
@@ -6499,6 +6489,12 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
+        {/* The agent's end of the browser is mounted with the thread, not with
+            the panel: a closed panel is a closed panel, not the absence of a
+            browser, and a request for the browser opens it. */}
+        {browserAvailable && routeThreadRef !== null ? (
+          <PreviewAutomationMount threadRef={routeThreadRef} />
+        ) : null}
         {browserOpen && routeThreadRef !== null ? (
           <>
             {browserExpanded ? null : (

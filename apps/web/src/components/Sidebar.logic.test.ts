@@ -2,30 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
-  buildOnDeckSyncInput,
-  buildProjectHoverSummary,
-  countThreadsNeedingUser,
   createThreadJumpHintVisibilityController,
-  excludeOnDeckThreads,
   getSidebarThreadIdsToPrewarm,
-  isOnDeckDismissible,
-  getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
-  getSidebarThreadWindow,
   getProjectSortTimestamp,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
-  resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   THREAD_STATUS_DOT_CLASSES,
-  resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
+} from "./Sidebar.logic";
+import {
+  buildProjectScopeOptions,
+  isThreadDone,
+  sortInboxThreads,
+  windowInboxThreads,
 } from "./Sidebar.logic";
 import {
   EnvironmentId,
@@ -38,7 +35,6 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
-  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -62,13 +58,8 @@ describe("hasUnseenCompletion", () => {
   it("returns true when a thread completed after its last visit", () => {
     expect(
       hasUnseenCompletion({
-        hasActionableProposedPlan: false,
-        hasPendingApprovals: false,
-        hasPendingUserInput: false,
-        interactionMode: "default",
         latestTurn: makeLatestTurn(),
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
-        session: null,
       }),
     ).toBe(true);
   });
@@ -407,46 +398,6 @@ describe("resolveAdjacentThreadId", () => {
   });
 });
 
-describe("getVisibleSidebarThreadIds", () => {
-  it("returns only the rendered visible thread order across projects", () => {
-    expect(
-      getVisibleSidebarThreadIds([
-        {
-          renderedThreadIds: [
-            ThreadId.make("thread-12"),
-            ThreadId.make("thread-11"),
-            ThreadId.make("thread-10"),
-          ],
-        },
-        {
-          renderedThreadIds: [ThreadId.make("thread-8"), ThreadId.make("thread-6")],
-        },
-      ]),
-    ).toEqual([
-      ThreadId.make("thread-12"),
-      ThreadId.make("thread-11"),
-      ThreadId.make("thread-10"),
-      ThreadId.make("thread-8"),
-      ThreadId.make("thread-6"),
-    ]);
-  });
-
-  it("skips threads from collapsed projects whose thread panels are not shown", () => {
-    expect(
-      getVisibleSidebarThreadIds([
-        {
-          shouldShowThreadPanel: false,
-          renderedThreadIds: [ThreadId.make("thread-hidden-2"), ThreadId.make("thread-hidden-1")],
-        },
-        {
-          shouldShowThreadPanel: true,
-          renderedThreadIds: [ThreadId.make("thread-12"), ThreadId.make("thread-11")],
-        },
-      ]),
-    ).toEqual([ThreadId.make("thread-12"), ThreadId.make("thread-11")]);
-  });
-});
-
 describe("isContextMenuPointerDown", () => {
   it("treats secondary-button presses as context menu gestures on all platforms", () => {
     expect(
@@ -762,212 +713,6 @@ describe("resolveThreadStatusPill", () => {
   });
 });
 
-describe("resolveThreadRowClassName", () => {
-  it("uses the darker selected palette when a thread is both selected and active", () => {
-    const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
-    expect(className).toContain("bg-primary/22");
-    expect(className).toContain("hover:bg-primary/26");
-    expect(className).toContain("dark:bg-primary/30");
-    expect(className).not.toContain("bg-accent/85");
-  });
-
-  it("uses selected hover colors for selected threads", () => {
-    const className = resolveThreadRowClassName({ isActive: false, isSelected: true });
-    expect(className).toContain("bg-primary/15");
-    expect(className).toContain("hover:bg-primary/19");
-    expect(className).toContain("dark:bg-primary/22");
-    expect(className).not.toContain("hover:bg-accent");
-  });
-
-  it("keeps the accent palette for active-only threads", () => {
-    const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
-    expect(className).toContain("bg-accent/85");
-    expect(className).toContain("hover:bg-accent");
-  });
-});
-
-describe("resolveProjectStatusIndicator", () => {
-  it("returns null when no threads have a notable status", () => {
-    expect(resolveProjectStatusIndicator([null, null])).toBeNull();
-  });
-
-  it("surfaces the highest-priority actionable state across project threads", () => {
-    expect(
-      resolveProjectStatusIndicator([
-        {
-          label: "Completed",
-          colorClass: "text-emerald-600",
-          dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
-          pulse: false,
-        },
-        {
-          label: "Pending Approval",
-          colorClass: "text-amber-600",
-          dotClass: THREAD_STATUS_DOT_CLASSES.amber,
-          pulse: false,
-        },
-        {
-          label: "Working",
-          colorClass: "text-primary-readable",
-          dotClass: THREAD_STATUS_DOT_CLASSES.blue,
-          pulse: true,
-        },
-      ]),
-    ).toMatchObject({ label: "Pending Approval", dotClass: THREAD_STATUS_DOT_CLASSES.amber });
-  });
-
-  it("prefers plan-ready over completed when no stronger action is needed", () => {
-    expect(
-      resolveProjectStatusIndicator([
-        {
-          label: "Completed",
-          colorClass: "text-emerald-600",
-          dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
-          pulse: false,
-        },
-        {
-          label: "Plan Ready",
-          colorClass: "text-violet-600",
-          dotClass: THREAD_STATUS_DOT_CLASSES.violet,
-          pulse: false,
-        },
-      ]),
-    ).toMatchObject({ label: "Plan Ready", dotClass: THREAD_STATUS_DOT_CLASSES.violet });
-  });
-});
-
-const makeKeys = (count: number) => Array.from({ length: count }, (_, index) => `t-${index + 1}`);
-const getThreadKey = (key: string) => key;
-
-describe("getSidebarThreadWindow", () => {
-  const previewLimit = 6;
-
-  it("includes the active thread even when it falls below the folded preview", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(8),
-      getThreadKey,
-      activeThreadKey: "t-8",
-      previewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.visibleThreads).toEqual(["t-1", "t-2", "t-3", "t-4", "t-5", "t-6", "t-8"]);
-    expect(window.hiddenThreads).toEqual(["t-7"]);
-    expect(window.isRevealed).toBe(false);
-  });
-
-  it("caps the next reveal to the configured preview count", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(previewLimit + previewLimit + 2),
-      getThreadKey,
-      activeThreadKey: null,
-      previewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.nextRevealCount).toBe(previewLimit);
-    expect(window.searchHandoffThreadCount).toBeNull();
-  });
-
-  it("offers a single preview-sized step when the tail is larger than the preview", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(40),
-      getThreadKey,
-      activeThreadKey: null,
-      previewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.visibleThreads).toHaveLength(previewLimit);
-    expect(window.nextRevealCount).toBe(previewLimit);
-    expect(window.searchHandoffThreadCount).toBeNull();
-  });
-
-  it("offers only the remaining tail when it is smaller than the preview count", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(previewLimit + 2),
-      getThreadKey,
-      activeThreadKey: null,
-      previewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.nextRevealCount).toBe(2);
-    expect(window.searchHandoffThreadCount).toBeNull();
-  });
-
-  it("uses the configured preview count for the reveal step", () => {
-    const configuredPreviewLimit = 5;
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(40),
-      getThreadKey,
-      activeThreadKey: null,
-      previewLimit: configuredPreviewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.visibleThreads).toHaveLength(configuredPreviewLimit);
-    expect(window.nextRevealCount).toBe(configuredPreviewLimit);
-  });
-
-  it("keeps revealing in chunks once expanded while also offering search", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(40),
-      getThreadKey,
-      activeThreadKey: null,
-      previewLimit,
-      revealedCount: previewLimit,
-    });
-
-    expect(window.visibleThreads).toHaveLength(previewLimit + previewLimit);
-    expect(window.nextRevealCount).toBe(previewLimit);
-    expect(window.searchHandoffThreadCount).toBe(40);
-    expect(window.isRevealed).toBe(true);
-  });
-
-  it("keeps Show less without further rows when everything is revealed", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(10),
-      getThreadKey,
-      activeThreadKey: null,
-      previewLimit,
-      revealedCount: 4,
-    });
-
-    expect(window.visibleThreads).toHaveLength(10);
-    expect(window.hiddenThreads).toEqual([]);
-    expect(window.nextRevealCount).toBe(0);
-    expect(window.searchHandoffThreadCount).toBeNull();
-    expect(window.isRevealed).toBe(true);
-  });
-
-  it("does not duplicate an active thread already inside the window", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(8),
-      getThreadKey,
-      activeThreadKey: "t-2",
-      previewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.visibleThreads).toEqual(["t-1", "t-2", "t-3", "t-4", "t-5", "t-6"]);
-    expect(window.hiddenThreads).toEqual(["t-7", "t-8"]);
-  });
-
-  it("ignores an active thread that belongs to another project", () => {
-    const window = getSidebarThreadWindow({
-      threads: makeKeys(8),
-      getThreadKey,
-      activeThreadKey: "other-project-thread",
-      previewLimit,
-      revealedCount: 0,
-    });
-
-    expect(window.visibleThreads).toEqual(["t-1", "t-2", "t-3", "t-4", "t-5", "t-6"]);
-    expect(window.hiddenThreads).toEqual(["t-7", "t-8"]);
-  });
-});
-
 function makeProject(overrides: Partial<Project> = {}): Project {
   const { defaultModelSelection, ...rest } = overrides;
   return {
@@ -1245,138 +990,177 @@ describe("sortProjectsForSidebar", () => {
   });
 });
 
-describe("on deck classification", () => {
-  const pill = (label: import("./Sidebar.logic").ThreadStatusPill["label"]) => ({
-    label,
-    colorClass: "",
-    dotClass: "",
-    pulse: false,
-  });
+describe("inbox done lifecycle", () => {
+  const NOW = "2026-07-28T12:00:00.000Z";
+  const base = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    session: null,
+    latestUserMessageAt: null,
+    latestTurn: null,
+    createdAt: "2026-07-27T12:00:00.000Z",
+    updatedAt: undefined,
+  };
+  const doneMark = { state: "done", at: NOW } as const;
 
-  it("buildOnDeckSyncInput separates live work from unseen completions", () => {
-    expect(
-      buildOnDeckSyncInput({ threadKey: "t-1", pinnedAt: null, status: pill("Working") }),
-    ).toEqual({ key: "t-1", pinned: false, live: true, unseen: false });
-    expect(
-      buildOnDeckSyncInput({ threadKey: "t-2", pinnedAt: null, status: pill("Completed") }),
-    ).toEqual({ key: "t-2", pinned: false, live: false, unseen: true });
-    expect(
-      buildOnDeckSyncInput({
-        threadKey: "t-3",
-        pinnedAt: "2026-03-09T10:00:00.000Z",
-        status: null,
-      }),
-    ).toEqual({ key: "t-3", pinned: true, live: false, unseen: false });
-  });
-
-  it("isOnDeckDismissible allows dismissing settled rows only", () => {
-    expect(isOnDeckDismissible(null)).toBe(true);
-    expect(isOnDeckDismissible(pill("Completed"))).toBe(true);
-    expect(isOnDeckDismissible(pill("Working"))).toBe(false);
-    expect(isOnDeckDismissible(pill("Pending Approval"))).toBe(false);
-  });
-
-  it("excludeOnDeckThreads drops deck rows from the tree and keeps the rest in order", () => {
-    const threads = [{ key: "t-1" }, { key: "t-2" }, { key: "t-3" }];
-    const getThreadKey = (thread: { key: string }) => thread.key;
-
-    expect(
-      excludeOnDeckThreads({
-        threads,
-        onDeckThreadKeys: new Set(["t-2"]),
-        getThreadKey,
-      }),
-    ).toEqual([{ key: "t-1" }, { key: "t-3" }]);
-
-    expect(excludeOnDeckThreads({ threads, onDeckThreadKeys: new Set(), getThreadKey })).toEqual(
-      threads,
+  it("refuses to hide work that is blocked on the user", () => {
+    // Hiding a pending approval defeats the approval: the agent waits forever
+    // on an answer the user can no longer see the question for.
+    expect(isThreadDone({ ...base, hasPendingApprovals: true }, doneMark, { now: NOW })).toBe(
+      false,
     );
-
-    expect(
-      excludeOnDeckThreads({
-        threads,
-        onDeckThreadKeys: new Set(["t-1", "t-2", "t-3"]),
-        getThreadKey,
-      }),
-    ).toEqual([]);
+    expect(isThreadDone({ ...base, hasPendingUserInput: true }, doneMark, { now: NOW })).toBe(
+      false,
+    );
   });
 
-  it("countThreadsNeedingUser counts only threads blocked on the user", () => {
+  it("refuses to hide a running thread, even explicitly marked", () => {
+    const running = {
+      ...base,
+      session: { status: "running" } as never,
+    };
+    expect(isThreadDone(running, doneMark, { now: NOW })).toBe(false);
+  });
+
+  it("treats a just-sent message as pending work until a turn adopts it", () => {
+    // Between send and adoption there is no turn and no running session --
+    // the gap where marking Done would hide a message about to run.
+    const queued = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:59:30.000Z",
+    };
+    expect(isThreadDone(queued, doneMark, { now: NOW })).toBe(false);
+    // Past the grace window the same shape is a failed start, not pending
+    // work; holding it undoneable forever would strand the thread.
     expect(
-      countThreadsNeedingUser([
-        pill("Pending Approval"),
-        pill("Awaiting Input"),
-        // Live but unblocked, so the rail badge must ignore these.
-        pill("Working"),
-        pill("Starting"),
-        pill("Plan Ready"),
-        pill("Completed"),
-        null,
-      ]),
-    ).toBe(2);
-    expect(countThreadsNeedingUser([])).toBe(0);
+      isThreadDone({ ...base, latestUserMessageAt: "2026-07-28T11:00:00.000Z" }, doneMark, {
+        now: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it("lets a failed thread be marked done", () => {
+    // "I saw it, I'm done with it" must be expressible for failures, or the
+    // Done list can never hold anything that went wrong.
+    const failed = { ...base, session: { status: "error" } as never };
+    expect(isThreadDone(failed, doneMark, { now: NOW })).toBe(true);
+  });
+
+  it("keeps a thread live without an explicit done mark", () => {
+    expect(isThreadDone(base, null, { now: NOW })).toBe(false);
+    expect(isThreadDone(base, { state: "active", at: NOW }, { now: NOW })).toBe(false);
+  });
+
+  it("ignores an override older than the thread's last activity", () => {
+    // New work outranks an old word, in both directions: the done thread that
+    // starts again returns by itself, the reopened one may re-file itself.
+    const activeAgain = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+    };
+    expect(
+      isThreadDone(activeAgain, { state: "done", at: "2026-07-28T10:00:00.000Z" }, { now: NOW }),
+    ).toBe(false);
+  });
+
+  it("files an idle thread under Done on its own", () => {
+    const staleThread = {
+      ...base,
+      latestUserMessageAt: "2026-07-24T12:00:00.000Z",
+    };
+    expect(isThreadDone(staleThread, null, { now: NOW, autoDoneAfterDays: 2 })).toBe(true);
+    // Fresh activity holds it live under the same rule.
+    expect(
+      isThreadDone({ ...base, latestUserMessageAt: "2026-07-28T09:00:00.000Z" }, null, {
+        now: NOW,
+        autoDoneAfterDays: 2,
+      }),
+    ).toBe(false);
+  });
+
+  it("never auto-files a completion the user has not seen", () => {
+    // Filing unread work is the sidebar reading your mail for you. Only an
+    // explicit Done may put an unseen completion in the tail.
+    const unseen = {
+      ...base,
+      latestTurn: { completedAt: "2026-07-24T12:00:00.000Z" } as never,
+      lastVisitedAt: undefined,
+    };
+    expect(isThreadDone(unseen, null, { now: NOW, autoDoneAfterDays: 2 })).toBe(false);
+    expect(
+      isThreadDone(unseen, { state: "done", at: NOW }, { now: NOW, autoDoneAfterDays: 2 }),
+    ).toBe(true);
   });
 });
 
-describe("buildProjectHoverSummary", () => {
-  const thread = (id: string, overrides: Partial<SidebarThreadSummary> = {}) =>
-    ({
-      id: ThreadId.make(id),
-      environmentId: localEnvironmentId,
-      projectId: ProjectId.make("project-badcode"),
-      title: id,
-      interactionMode: DEFAULT_INTERACTION_MODE,
-      session: null,
-      createdAt: "2026-07-20T00:00:00.000Z",
-      archivedAt: null,
-      pinnedAt: null,
-      latestTurn: null,
-      branch: null,
-      worktreePath: null,
-      latestUserMessageAt: null,
-      hasPendingApprovals: false,
-      hasPendingUserInput: false,
-      hasActionableProposedPlan: false,
-      ...overrides,
-    }) as SidebarThreadSummary;
+describe("sortInboxThreads", () => {
+  it("holds creation order and floats pins, nothing else", () => {
+    const rows = [
+      { id: "old", createdAt: "2026-07-20T00:00:00.000Z", pinnedAt: null },
+      { id: "pinned", createdAt: "2026-07-18T00:00:00.000Z", pinnedAt: "2026-07-27T00:00:00.000Z" },
+      { id: "new", createdAt: "2026-07-27T00:00:00.000Z", pinnedAt: null },
+    ];
 
-  const summaryFor = (threads: readonly SidebarThreadSummary[]) =>
-    buildProjectHoverSummary({
-      name: "badcode",
-      cwd: "/repo/badcode",
-      environmentId: localEnvironmentId,
-      threads,
-      getLastVisitedAt: () => undefined,
+    // Activity timestamps are deliberately absent from the input type: the
+    // list must be un-reorderable by anything but creation and pinning.
+    expect(sortInboxThreads(rows).map((row) => row.id)).toEqual(["pinned", "new", "old"]);
+  });
+});
+
+describe("buildProjectScopeOptions", () => {
+  it("orders by recent activity and carries needs-you counts", () => {
+    const options = buildProjectScopeOptions({
+      projects: [
+        { key: "a", label: "alpha" },
+        { key: "b", label: "beta" },
+        { key: "c", label: "gamma" },
+        { key: "d", label: "delta" },
+      ],
+      lastActivityMsByKey: new Map([
+        ["a", 400],
+        ["b", 300],
+        ["c", 200],
+      ]),
+      needsYouCountByKey: new Map([["b", 2]]),
     });
 
-  it("counts only threads the provider is still live on", () => {
-    const summary = summaryFor([
-      thread("waiting", { hasPendingApprovals: true }),
-      thread("idle"),
-      thread("also-idle"),
-    ]);
+    // "d" has never been touched, so it sorts last rather than dropping out.
+    expect(options.map((option) => option.key)).toEqual(["a", "b", "c", "d"]);
+    expect(options[1]?.needsYouCount).toBe(2);
+    expect(options[0]?.needsYouCount).toBe(0);
+  });
+});
 
-    expect(summary.threadCount).toBe(3);
-    expect(summary.activeCount).toBe(1);
-    expect(summary.status?.label).toBe("Pending Approval");
+describe("windowInboxThreads", () => {
+  const rows = [
+    { id: "a", attention: false },
+    { id: "b", attention: false },
+    { id: "c", attention: false },
+    { id: "d", attention: true },
+    { id: "e", attention: false },
+  ];
+  const hasAttention = (row: { attention: boolean }) => row.attention;
+
+  it("folds quiet rows past the limit but never one that needs you", () => {
+    // Hiding a pending approval behind "show more" defeats the approval.
+    const { visible, hiddenCount } = windowInboxThreads({
+      rows,
+      hasAttention,
+      limit: 2,
+      expanded: false,
+    });
+
+    expect(visible.map((row) => row.id)).toEqual(["a", "b", "d"]);
+    expect(hiddenCount).toBe(2);
   });
 
-  it("reports the most recent activity across the project", () => {
-    const summary = summaryFor([
-      thread("older", { latestUserMessageAt: "2026-07-21T00:00:00.000Z" }),
-      thread("newest", { latestUserMessageAt: "2026-07-24T00:00:00.000Z" }),
-      thread("middle", { latestUserMessageAt: "2026-07-22T00:00:00.000Z" }),
-    ]);
-
-    expect(summary.lastActivityAt).toBe("2026-07-24T00:00:00.000Z");
-  });
-
-  it("describes an empty project without inventing activity", () => {
-    const summary = summaryFor([]);
-
-    expect(summary.threadCount).toBe(0);
-    expect(summary.activeCount).toBe(0);
-    expect(summary.status).toBeNull();
-    expect(summary.lastActivityAt).toBeNull();
+  it("shows everything when expanded or when the list fits", () => {
+    expect(windowInboxThreads({ rows, hasAttention, limit: 2, expanded: true }).hiddenCount).toBe(
+      0,
+    );
+    expect(
+      windowInboxThreads({ rows: rows.slice(0, 2), hasAttention, limit: 2, expanded: false })
+        .visible.length,
+    ).toBe(2);
   });
 });

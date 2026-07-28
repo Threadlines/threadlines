@@ -124,9 +124,10 @@ function ChatThreadRouteView() {
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
-  const rawSourceControlOpen = isSourceControlPanelOpen(search, {
-    defaultOpen: !shouldUseDiffSheet,
-  });
+  // Closed until asked for. It used to default open on desktop widths, which
+  // spent a third of the window on a panel most turns never touch; the toggle
+  // and the explicit ?sourceControl=1 both still open it.
+  const rawSourceControlOpen = isSourceControlPanelOpen(search, { defaultOpen: false });
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
     ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)

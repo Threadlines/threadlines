@@ -10,11 +10,17 @@ import { TooltipProvider } from "../ui/tooltip";
  * card read as the same object with different contents.
  */
 export const HOVER_CARD_POPUP_CLASS_NAME =
-  "w-64 rounded-lg p-3 text-left text-popover-foreground text-sm shadow-none elevate-popover";
+  // w-56, not w-64: every row inside truncates, so width is a choice about
+  // density, and 224px holds the longest real label (a machine name) while
+  // matching the competitor's snugness. rounded-md per the one-radius rule --
+  // this card was the last rounded-lg in the sidebar's orbit.
+  "w-56 rounded-md p-2.5 text-left text-popover-foreground text-sm shadow-none elevate-popover";
 
 export function HoverCardTitle({ children }: { children: ReactNode }) {
   return (
-    <p className="mb-2 line-clamp-2 text-xs font-medium leading-snug text-foreground">{children}</p>
+    <p className="mb-1.5 line-clamp-2 text-xs font-medium leading-tight text-foreground">
+      {children}
+    </p>
   );
 }
 
@@ -29,7 +35,7 @@ export function HoverCardStatusLine({
   timestamp: string | null;
 }) {
   return (
-    <div className="mb-2 flex items-center gap-2 border-b border-border/60 pb-2 text-xs">
+    <div className="mb-1.5 flex items-center gap-2 border-b border-border/60 pb-1.5 text-xs leading-tight">
       <ThreadStatusDot status={status} />
       <span className="min-w-0 flex-1 truncate text-foreground/80">
         {status ? status.label : idleLabel}
@@ -51,7 +57,7 @@ export function HoverCardDetailRow({
   className?: string;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-2 text-xs leading-tight text-muted-foreground">
       <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70">
         {icon}
       </span>
@@ -61,7 +67,7 @@ export function HoverCardDetailRow({
 }
 
 export function HoverCardDetails({ children }: { children: ReactNode }) {
-  return <div className="flex flex-col gap-1.5">{children}</div>;
+  return <div className="flex flex-col gap-1">{children}</div>;
 }
 
 /**

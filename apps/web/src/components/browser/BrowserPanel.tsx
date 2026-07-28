@@ -35,7 +35,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BROWSER_VIEWPORT_PRESETS,
   RESPONSIVE_VIEWPORT,
+  getPreviewWebview,
+  registerPreviewWebview,
   selectActiveTab,
+  selectThreadAgentState,
   selectThreadBrowserState,
   steppedZoom,
   useBrowserPanelStore,
@@ -61,7 +64,7 @@ import { RotateDeviceIcon } from "../Icons";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
 import { completeUrl } from "./urlCompletion";
-import { usePreviewAutomationHost, type AgentActivity } from "./previewAutomationHost";
+import { type AgentActivity } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
 
 /**
@@ -164,8 +167,13 @@ export function BrowserPanel({
   const activeTabId = activeTab?.id ?? "";
 
   // One element per tab, so switching tabs keeps every page alive -- along with
-  // the CDP attachment collecting its console and network diagnostics.
-  const webviewsRef = useRef(new Map<string, PreviewWebview>());
+  // the CDP attachment collecting its console and network diagnostics. The
+  // elements live in the store: the automation host outlives this panel and
+  // needs to reach them when it is closed.
+  const webviewFor = useCallback(
+    (tabId: string) => getPreviewWebview(threadRef, tabId) as PreviewWebview | null,
+    [threadRef],
+  );
   const [navState, setNavState] = useState<NavState>(IDLE_NAV_STATE);
   const [addressDraft, setAddressDraft] = useState(activeTab?.url ?? "");
   const visitedUrls = useBrowserPanelStore((store) => store.visitedUrls);
@@ -179,10 +187,19 @@ export function BrowserPanel({
   }, [activeUrl, activeTabId]);
 
   // The agent's last touch on the page, shown over the webview so it is
-  // visible working rather than silently changing things.
-  const [agentPoint, setAgentPoint] = useState<AgentPointerPosition | null>(null);
+  // visible working rather than silently changing things. Produced by the
+  // automation mount, which runs whether or not this panel is here.
+  const agentState = useBrowserPanelStore((store) =>
+    selectThreadAgentState(store.agentStateByThreadKey, threadRef),
+  );
+  const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
+  const setAgentTab = useBrowserPanelStore((store) => store.setAgentTab);
+  const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
+  const agentPoint = agentState.point as AgentPointerPosition | null;
+  const agentTabId = agentState.tabId;
+  const agentActivity = agentState.activity as AgentActivity | null;
 
-  const activeWebview = () => webviewsRef.current.get(activeTabId) ?? null;
+  const activeWebview = () => webviewFor(activeTabId) ?? null;
 
   // Host rather than hostname: on a dev box every page is localhost and the
   // port is the only thing telling two captures apart.
@@ -193,22 +210,6 @@ export function BrowserPanel({
       return "page";
     }
   }, [activeUrl]);
-
-  /**
-   * The tab the agent works in.
-   *
-   * Pinned on its first action and kept, rather than resolved fresh each time.
-   * Resolving each time meant two things went wrong at once: the agent's next
-   * click landed on whatever tab the user had just switched to, and a
-   * navigation moved the page out from under someone reading it. The pin only
-   * lets go when the tab does.
-   */
-  const [agentTabId, setAgentTabId] = useState<string | null>(null);
-  const agentTabIdRef = useRef<string | null>(null);
-  agentTabIdRef.current = agentTabId;
-
-  /** What the agent last did, shown while it is working. */
-  const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
 
   /*
    * The agent keeps its tab. Opening a tab, or switching to one, is yours to do
@@ -232,11 +233,11 @@ export function BrowserPanel({
     // The agent's tab has been closed. Letting go here is what makes its next
     // action pick up the tab the user is actually looking at.
     if (agentTabId !== null && !browserState.tabs.some((tab) => tab.id === agentTabId)) {
-      setAgentTabId(null);
-      setAgentActivity(null);
-      setAgentPoint(null);
+      setAgentTab(threadRef, null);
+      setAgentActivity(threadRef, null);
+      setAgentPoint(threadRef, null);
     }
-  }, [agentTabId, browserState.tabs]);
+  }, [agentTabId, browserState.tabs, setAgentActivity, setAgentPoint, setAgentTab, threadRef]);
 
   /** Set while the mark is fading out, after the page it referred to has gone. */
   const [agentPointRetiring, setAgentPointRetiring] = useState(false);
@@ -258,75 +259,11 @@ export function BrowserPanel({
     }
     setAgentPointRetiring(true);
     const timer = window.setTimeout(() => {
-      setAgentPoint(null);
+      setAgentPoint(threadRef, null);
       setAgentPointRetiring(false);
     }, POINTER_RETIRE_MS);
     return () => window.clearTimeout(timer);
-  }, [activeUrl]);
-
-  // Offers this panel as the page the agent acts on, for as long as it is here.
-  usePreviewAutomationHost({
-    threadRef,
-    enabled: isElectron,
-    resolveTarget: () => {
-      const pinned = agentTabIdRef.current;
-      const tabId = pinned !== null && webviewsRef.current.has(pinned) ? pinned : activeTabId;
-      if (tabId !== pinned) {
-        agentTabIdRef.current = tabId;
-        setAgentTabId(tabId);
-      }
-      const webview = webviewsRef.current.get(tabId) ?? null;
-      return {
-        webContentsId: webview === null ? null : webview.getWebContentsId(),
-        onAgentPoint: (point) => {
-          setAgentPointRetiring(false);
-          setAgentPoint((previous) => ({
-            ...point,
-            sequence: (previous?.sequence ?? 0) + 1,
-          }));
-        },
-        onAgentActivity: (activity) => setAgentActivity(activity),
-        selectTab: (index) => {
-          const chosen = browserState.tabs[index];
-          if (chosen === undefined) {
-            return;
-          }
-          // Move the pin with the view. Without this the agent would keep
-          // acting on the tab it was pinned to while showing you another.
-          agentTabIdRef.current = chosen.id;
-          setAgentTabId(chosen.id);
-          selectTab(threadRef, chosen.id);
-        },
-        tabs: () =>
-          browserState.tabs.map((entry) => ({
-            title: entry.title ?? "",
-            url: entry.url ?? "",
-            active: entry.id === activeTabId,
-            agent: entry.id === tabId,
-          })),
-        viewport: () => {
-          const rect = webview?.getBoundingClientRect();
-          return {
-            width: Math.round(rect?.width ?? 0),
-            height: Math.round(rect?.height ?? 0),
-          };
-        },
-        // The address belongs to the element, so this is the one operation the
-        // main process cannot do on the agent's behalf. Note that it never
-        // touches which tab is selected: the agent moves its page, not the view.
-        navigate: async (url) => {
-          const normalized = normalizePreviewUrl(url);
-          // Refused rather than silently doing nothing: the agent gave an
-          // address, and it needs to know if that address was not one.
-          if (normalized === null) {
-            throw new Error(`${JSON.stringify(url)} is not a URL this browser can open.`);
-          }
-          setTabUrl(threadRef, tabId, normalized);
-          await webview?.loadURL(normalized);
-        },
-      };
-    },
-  });
+  }, [activeUrl, setAgentPoint, threadRef]);
 
   // Opening the device row on a responsive tab seeds concrete dimensions from
   // whatever the page currently occupies. Without them there is nothing to drag
@@ -386,7 +323,7 @@ export function BrowserPanel({
         return;
       }
       setTabUrl(threadRef, activeTabId, normalized);
-      const webview = webviewsRef.current.get(activeTabId);
+      const webview = webviewFor(activeTabId);
       callWhenReady(() => void webview?.loadURL(normalized));
     },
     [activeTabId, addressDraft, setTabUrl, threadRef],
@@ -408,7 +345,7 @@ export function BrowserPanel({
 
   const armTool = useCallback(
     async (requested: PageTool | null, options?: { readonly toggle?: boolean }) => {
-      const webview = webviewsRef.current.get(activeTabId);
+      const webview = webviewFor(activeTabId);
       if (webview === null || webview === undefined || !isElectron) {
         return;
       }
@@ -523,7 +460,7 @@ export function BrowserPanel({
       }
       if (cancelled) return;
       const targetId = onSameUrl?.id ?? activeTabId;
-      const webview = webviewsRef.current.get(targetId);
+      const webview = webviewFor(targetId);
       if (webview === null || webview === undefined) {
         onRevealHandled?.();
         return;
@@ -578,8 +515,8 @@ export function BrowserPanel({
    * odd one out.
    */
   const captureScreenshot = useCallback(() => {
-    const webview = webviewsRef.current.get(activeTabId);
-    if (webview === undefined || !isElectron) {
+    const webview = webviewFor(activeTabId);
+    if (webview === null || !isElectron) {
       return;
     }
     void window.desktopBridge
@@ -742,7 +679,7 @@ export function BrowserPanel({
           <MenuPopup align="end">
             <MenuItem
               onClick={() => {
-                const webview = webviewsRef.current.get(activeTabId);
+                const webview = webviewFor(activeTabId);
                 callWhenReady(() => webview?.reloadIgnoringCache());
               }}
             >
@@ -789,9 +726,9 @@ export function BrowserPanel({
             <MenuItem
               data-testid="browser-open-devtools"
               onClick={() => {
-                const webview = webviewsRef.current.get(activeTabId);
+                const webview = webviewFor(activeTabId);
                 const id =
-                  webview === undefined ? null : callWhenReady(() => webview.getWebContentsId());
+                  webview === null ? null : callWhenReady(() => webview.getWebContentsId());
                 if (id !== null) {
                   void window.desktopBridge?.previewOpenDevTools?.({ webContentsId: id });
                 }
@@ -804,7 +741,7 @@ export function BrowserPanel({
               data-testid="browser-clear-cache"
               onClick={() => {
                 void window.desktopBridge?.previewClearCache?.().then(() => {
-                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reloadIgnoringCache());
+                  callWhenReady(() => webviewFor(activeTabId)?.reloadIgnoringCache());
                 });
               }}
             >
@@ -816,7 +753,7 @@ export function BrowserPanel({
                 // Signing out of the preview is the point, so reload after: the
                 // page on screen would otherwise still look signed in.
                 void window.desktopBridge?.previewClearBrowsingData?.().then(() => {
-                  callWhenReady(() => webviewsRef.current.get(activeTabId)?.reload());
+                  callWhenReady(() => webviewFor(activeTabId)?.reload());
                 });
               }}
             >
@@ -863,7 +800,7 @@ export function BrowserPanel({
                   onSelect={(port) => {
                     const url = `http://localhost:${port}`;
                     setTabUrl(threadRef, activeTab.id, url);
-                    const webview = webviewsRef.current.get(activeTab.id);
+                    const webview = webviewFor(activeTab.id);
                     callWhenReady(() => void webview?.loadURL(url));
                   }}
                 />
@@ -887,11 +824,7 @@ export function BrowserPanel({
                 agentPoint={tab.id === agentTabId ? agentPoint : null}
                 agentPointRetiring={agentPointRetiring}
                 register={(element) => {
-                  if (element === null) {
-                    webviewsRef.current.delete(tab.id);
-                  } else {
-                    webviewsRef.current.set(tab.id, element);
-                  }
+                  registerPreviewWebview(threadRef, tab.id, element);
                 }}
               />
             ))}

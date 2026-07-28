@@ -169,66 +169,6 @@ export function ThreadStatusLabel({
 }
 
 /**
- * A thread row's live node: a status-coloured dot that sits centered on the
- * project rail so the vertical line reads as one continuous threadline running
- * through every thread's node. Colour alone encodes the status; a soft halo
- * pings while work is in flight. Hovering the dot reveals the status label, so
- * dropping the inline text label loses no information.
- *
- * Presentation only — the caller positions it (absolutely, over the rail).
- */
-export function ThreadStatusRailDot({ status }: { status: ThreadStatusPill }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            aria-label={status.label}
-            className={`pointer-events-auto flex items-center justify-center ${status.colorClass}`}
-          />
-        }
-      >
-        {status.pulse ? (
-          <LiveNode
-            className="size-2"
-            dotClassName={status.dotClass}
-            haloClassName={status.dotClass}
-          />
-        ) : (
-          <span className={`size-2 rounded-full ${status.dotClass}`} />
-        )}
-      </TooltipTrigger>
-      <TooltipPopup side="right">{status.label}</TooltipPopup>
-    </Tooltip>
-  );
-}
-
-/**
- * The node a thread row contributes to its project's rail. Every thread gets one
- * so the rail reads as a continuous threadline studded with nodes: idle threads
- * show a small muted dot, active threads a status-coloured dot that pulses while
- * work is in flight. Hovering an active node reveals the status label.
- *
- * Must be rendered as a sibling of the row button (not inside it) and centered
- * on the rail in the row's left gutter, so the button's own clipping never
- * shaves the dot or its halo off the line.
- */
-export function ThreadRailNode({ status }: { status: ThreadStatusPill | null }) {
-  return (
-    <span className="pointer-events-none absolute top-1/2 left-[-4px] z-20 flex size-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center">
-      {status ? (
-        <ThreadStatusRailDot status={status} />
-      ) : (
-        <span
-          aria-hidden="true"
-          className="relative z-10 block size-1.5 rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--rail))]"
-        />
-      )}
-    </span>
-  );
-}
-
-/**
  * Non-interactive leading status icons for a thread row in compact contexts
  * like the command palette. Shows the change request state icon (if present) and the
  * thread status dot, matching the sidebar's leading indicators.

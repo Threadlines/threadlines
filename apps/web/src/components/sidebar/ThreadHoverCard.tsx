@@ -1,6 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
-import { GitBranchIcon, ServerIcon } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { GitBranchIcon, LaptopIcon, ServerIcon } from "lucide-react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import { PROVIDER_OPTIONS } from "../../session-logic";
@@ -10,12 +10,34 @@ import {
 } from "../../environments/runtime";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { selectProjectByRef, useStore } from "../../store";
+import { useGitStatus } from "../../lib/gitStatusState";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { createThreadSelectorByRef } from "../../storeSelectors";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import type { ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  PreviewCard,
+  PreviewCardPopup,
+  PreviewCardTrigger,
+  createPreviewCardHandle,
+} from "../ui/previewCard";
+
+export interface ThreadHoverCardPayload {
+  thread: SidebarThreadSummary;
+  status: ThreadStatusPill | null;
+}
+
+/**
+ * One handle per surface, not per app. The sidebar and the chats page can be
+ * mounted at once, and two roots sharing one handle is undefined behaviour --
+ * so each surface creates its own through context, and every trigger inside
+ * points at its surface's card. Within a surface the card never closes between
+ * rows: the initial delay is paid once, then payload swaps are instant.
+ */
+type ThreadCardHandle = ReturnType<typeof createPreviewCardHandle<ThreadHoverCardPayload>>;
+const ThreadCardHandleContext = createContext<ThreadCardHandle | null>(null);
 import {
   HOVER_CARD_POPUP_CLASS_NAME,
   HoverCardDetailRow,
@@ -33,17 +55,36 @@ import {
  * sidebar already holds, except the model, which is only known once the
  * thread's shell has loaded and is otherwise reported as the provider.
  */
+/**
+ * A row's half of the card: a trigger carrying its thread as payload.
+ *
+ * One shared root lives in ThreadHoverCardProvider; while the card is open,
+ * moving between rows swaps the payload without closing, so the initial delay
+ * is paid once and neighbours change instantly -- the group warmth the old
+ * tooltip provider gave, restored architecturally.
+ */
 export function ThreadHoverCard({
   thread,
   status,
-  side = "right",
   children,
-}: {
-  thread: SidebarThreadSummary;
-  status: ThreadStatusPill | null;
-  side?: "right" | "left" | "top" | "bottom";
-  children: ReactNode;
-}) {
+}: ThreadHoverCardPayload & { children: ReactNode }) {
+  const handle = useContext(ThreadCardHandleContext);
+  // Outside a provider there is no card to point at; the row renders bare
+  // rather than crashing a surface that only wanted rows.
+  if (handle === null) {
+    return <>{children}</>;
+  }
+  return (
+    <PreviewCardTrigger
+      handle={handle}
+      closeDelay={120}
+      payload={{ thread, status } satisfies ThreadHoverCardPayload}
+      render={children as never}
+    />
+  );
+}
+
+function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
   const projectRef = useMemo(
     () => scopeProjectRef(thread.environmentId, thread.projectId),
     [thread.environmentId, thread.projectId],
@@ -66,7 +107,9 @@ export function ThreadHoverCard({
   const savedLabel = useSavedEnvironmentRegistryStore(
     (state) => state.byId[thread.environmentId]?.label ?? null,
   );
-  const environmentLabel = isRemote ? (runtimeLabel ?? savedLabel ?? "Remote") : null;
+  // The machine the work runs on, named whenever we know its name -- local
+  // included. "Which box is this on" is the question a hover card exists for.
+  const environmentLabel = runtimeLabel ?? savedLabel ?? (isRemote ? "Remote" : null);
 
   const provider = thread.session?.provider ?? null;
   const ProviderIcon = provider ? (PROVIDER_ICON_BY_PROVIDER[provider] ?? null) : null;
@@ -81,47 +124,95 @@ export function ThreadHoverCard({
   // A worktree is the more specific fact when present: it implies the branch
   // and tells you the checkout is isolated.
   const worktreeName = thread.worktreePath ? thread.worktreePath.split("/").pop() : null;
+  // The row prints only a pinned branch; here there is room to answer the
+  // question a branchless thread leaves open -- which ref its checkout is on.
+  const gitStatus = useGitStatus({
+    environmentId: thread.environmentId,
+    cwd: resolveThreadWorkingCwd({
+      projectCwd: backingProject?.cwd ?? null,
+      worktreePath: thread.worktreePath,
+      effectiveCwd: thread.effectiveCwd,
+    }),
+  });
+  const checkoutRef = gitStatus.data?.refName ?? null;
+  const branch = thread.branch ?? checkoutRef;
+  // Two different facts share one row, so the row says which one it is: a
+  // pinned branch belongs to the thread, a checkout ref just happens to be
+  // where its working copy sits right now.
+  const isCheckoutRef = thread.branch === null && checkoutRef !== null;
 
   return (
-    <Tooltip>
-      <TooltipTrigger render={children as never} />
-      <TooltipPopup
-        side={side}
-        sideOffset={8}
-        align="start"
-        className={HOVER_CARD_POPUP_CLASS_NAME}
-        data-testid="thread-hover-card"
-      >
-        <HoverCardTitle>{thread.title}</HoverCardTitle>
-        <HoverCardStatusLine status={status} timestamp={formatRelativeTimeLabel(activityAt)} />
-        <HoverCardDetails>
-          {project ? (
-            <HoverCardDetailRow
-              icon={<ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />}
-            >
-              {project.name}
-            </HoverCardDetailRow>
-          ) : null}
-          {environmentLabel ? (
-            <HoverCardDetailRow icon={<ServerIcon className="size-3.5" />}>
-              {environmentLabel}
-            </HoverCardDetailRow>
-          ) : null}
-          {thread.branch || worktreeName ? (
-            <HoverCardDetailRow icon={<GitBranchIcon className="size-3.5" />}>
-              {thread.branch ?? worktreeName}
-              {worktreeName && thread.branch ? (
-                <span className="ml-1.5 text-muted-foreground/50">worktree</span>
-              ) : null}
-            </HoverCardDetailRow>
-          ) : null}
-          {ProviderIcon || modelLabel || providerLabel ? (
-            <HoverCardDetailRow icon={ProviderIcon ? <ProviderIcon className="size-3.5" /> : null}>
-              {modelLabel ?? providerLabel}
-            </HoverCardDetailRow>
-          ) : null}
-        </HoverCardDetails>
-      </TooltipPopup>
-    </Tooltip>
+    <>
+      <HoverCardTitle>{thread.title}</HoverCardTitle>
+      <HoverCardStatusLine status={status} timestamp={formatRelativeTimeLabel(activityAt)} />
+      <HoverCardDetails>
+        {project ? (
+          <HoverCardDetailRow
+            icon={<ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />}
+          >
+            {project.name}
+          </HoverCardDetailRow>
+        ) : null}
+        {environmentLabel ? (
+          <HoverCardDetailRow
+            icon={
+              isRemote ? <ServerIcon className="size-3.5" /> : <LaptopIcon className="size-3.5" />
+            }
+          >
+            {environmentLabel}
+          </HoverCardDetailRow>
+        ) : null}
+        {branch || worktreeName ? (
+          <HoverCardDetailRow
+            className="font-mono text-[11px]"
+            icon={<GitBranchIcon className="size-3.5" />}
+          >
+            {branch ?? worktreeName}
+            {/* A real space, not a margin: the annotation has to read as
+                  part of the sentence to a screen reader too. */}
+            {isCheckoutRef ? (
+              <span className="font-sans text-muted-foreground/50">{" · checkout"}</span>
+            ) : null}
+            {worktreeName && branch ? (
+              <span className="font-sans text-muted-foreground/50">{" · worktree"}</span>
+            ) : null}
+          </HoverCardDetailRow>
+        ) : null}
+        {ProviderIcon || modelLabel || providerLabel ? (
+          <HoverCardDetailRow icon={ProviderIcon ? <ProviderIcon className="size-3.5" /> : null}>
+            {modelLabel ?? providerLabel}
+          </HoverCardDetailRow>
+        ) : null}
+      </HoverCardDetails>
+    </>
+  );
+}
+
+/** A surface's card: wraps its rows, owns their one shared popup. */
+export function ThreadHoverCardProvider({
+  side = "right",
+  children,
+}: {
+  side?: "right" | "bottom";
+  children: ReactNode;
+}) {
+  const [handle] = useState(() => createPreviewCardHandle<ThreadHoverCardPayload>());
+  return (
+    <ThreadCardHandleContext.Provider value={handle}>
+      {children}
+      <PreviewCard handle={handle}>
+        {({ payload }: { payload: ThreadHoverCardPayload | undefined }) => (
+          <PreviewCardPopup
+            side={side}
+            sideOffset={8}
+            align="start"
+            className={HOVER_CARD_POPUP_CLASS_NAME}
+            data-testid="thread-hover-card"
+          >
+            {payload ? <ThreadHoverCardContent {...payload} /> : null}
+          </PreviewCardPopup>
+        )}
+      </PreviewCard>
+    </ThreadCardHandleContext.Provider>
   );
 }

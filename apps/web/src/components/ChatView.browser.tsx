@@ -8,6 +8,8 @@ import {
   type EnvironmentApi,
   type MessageId,
   type OrchestrationEvent,
+  type PreviewAutomationRequest,
+  type PreviewAutomationResponse,
   type OrchestrationReadModel,
   type ProjectId,
   ProviderDriverKind,
@@ -45,6 +47,13 @@ import { render } from "vitest-browser-react";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import {
+  makeBrowserTab,
+  registerPreviewWebview,
+  resetPreviewWebviewsForTests,
+  useBrowserPanelStore,
+} from "../browserPanelStore";
+import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
@@ -102,7 +111,10 @@ const PROJECT_LOGICAL_KEY = deriveLogicalProjectKeyFromSettings(
     sidebarProjectGroupingOverrides: DEFAULT_CLIENT_SETTINGS.sidebarProjectGroupingOverrides,
   },
 );
-const NOW_ISO = "2026-03-04T12:00:00.000Z";
+// The fixture clock is "a few minutes ago", not a fixed date: the sidebar's
+// lifecycle is relative (threads file themselves under Done once idle), so a
+// pinned calendar date would age into the Done tail as real time moved on.
+const NOW_ISO = new Date(Date.now() - 10 * 60_000).toISOString();
 const BASE_TIME_MS = Date.parse(NOW_ISO);
 const ATTACHMENT_SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'></svg>";
 const ADD_PROJECT_SUBMENU_PLACEHOLDER = "Enter path (e.g. ~/projects/my-app)";
@@ -221,12 +233,13 @@ function createMockEnvironmentApi(input: {
   browse: EnvironmentApi["filesystem"]["browse"];
   dispatchCommand: EnvironmentApi["orchestration"]["dispatchCommand"];
   getRevertPlan?: EnvironmentApi["orchestration"]["getRevertPlan"];
+  previewAutomation?: EnvironmentApi["previewAutomation"];
 }): EnvironmentApi {
   return {
     terminal: {} as EnvironmentApi["terminal"],
     projects: {} as EnvironmentApi["projects"],
     attachments: {} as EnvironmentApi["attachments"],
-    previewAutomation: {} as EnvironmentApi["previewAutomation"],
+    previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),
     filesystem: {
       browse: input.browse,
     },
@@ -2097,6 +2110,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       projectExpandedById: {},
       projectOrder: [],
       threadLastVisitedAtById: {},
+      doneThreadOverrides: {},
+      inboxProjectScopeKey: null,
     });
     useTerminalStateStore.persist.clearStorage();
     useTerminalStateStore.setState({
@@ -2192,12 +2207,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find phone thread row.",
       );
-      const archiveButton = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find archive button.",
+      const pinButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
+        "Unable to find pin button.",
       );
-      const compactActions = archiveButton.parentElement;
+      // Archive belongs to the Done tail now; a live row offers pin and done.
+      expect(document.querySelector(`[data-testid="thread-archive-${THREAD_ID}"]`)).toBeNull();
+      const compactActions = pinButton.parentElement;
       const timestampWrapper = await waitForElement(
         () => threadRow.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
         "Unable to find thread timestamp.",
@@ -2373,30 +2389,59 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides the active thread row when collapsing a one-thread project", async () => {
+  function withThreadBranch(
+    snapshot: ReturnType<typeof createSnapshotForTargetUser>,
+    branch: string,
+  ): ReturnType<typeof createSnapshotForTargetUser> {
+    return {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID ? { ...thread, branch } : thread,
+      ),
+    };
+  }
+
+  it("narrows the live list from the scope menu and drops the implied project label", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-one-thread-collapse-target" as MessageId,
-        targetText: "one thread collapse target",
-      }),
+      snapshot: withThreadBranch(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-scope-target" as MessageId,
+          targetText: "scope target",
+        }),
+        "feature/scope-test",
+      ),
     });
 
     try {
-      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      const threadRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find thread row.",
+      );
+      // Unscoped: the row names its project and the branch the thread pinned.
+      expect(threadRow.textContent).toContain("Project");
+      expect(threadRow.textContent).toContain("feature/scope-test");
 
-      const projectButton = await waitForButtonByText("Project");
-      expect(projectButton.getAttribute("aria-expanded")).toBe("true");
-      projectButton.click();
+      await page.getByTestId("inbox-scope-trigger").click();
+      await page.getByTestId(`inbox-scope-${PROJECT_LOGICAL_KEY}`).click();
 
       await vi.waitFor(
         () => {
-          expect(projectButton.getAttribute("aria-expanded")).toBe("false");
-          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+          expect(useUiStateStore.getState().inboxProjectScopeKey).toBe(PROJECT_LOGICAL_KEY);
+          const scopedRow = document.querySelector<HTMLElement>(
+            `[data-testid="thread-row-${THREAD_ID}"]`,
+          );
+          expect(scopedRow).not.toBeNull();
+          // Scoped: the project is implied, but the row keeps its second line.
+          expect(scopedRow?.textContent).not.toContain("Project");
+          expect(
+            scopedRow?.querySelector(`[data-testid="thread-detail-${THREAD_ID}"]`),
+          ).not.toBeNull();
         },
         { timeout: 4_000, interval: 16 },
       );
     } finally {
+      useUiStateStore.getState().setInboxProjectScope(null);
       await mounted.cleanup();
     }
   });
@@ -5037,9 +5082,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("renders compact thread actions in the shared thread-row hover group", async () => {
-    // Deliberately unpinned. A pinned thread is on deck, and a thread on deck
-    // is not drawn again in the tree -- so the tree row this is about only
-    // exists for an ordinary thread.
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5053,28 +5095,31 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find thread row.",
       );
-      const archiveButton = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find archive button.",
+      const doneButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-done-${THREAD_ID}"]`),
+        "Unable to find done button.",
       );
       const pinButton = await waitForElement(
         () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
         "Unable to find pin button.",
       );
-      const compactActions = archiveButton.parentElement;
+      const compactActions = pinButton.parentElement;
       expect(
         compactActions,
         "Thread actions should render inside a shared visibility wrapper.",
       ).not.toBeNull();
-      const threadItem = archiveButton.closest("li");
-      expect(threadItem?.className).toContain("group/menu-sub-item");
-      expect(compactActions?.className).toContain("group-hover/menu-sub-item:opacity-100");
-      expect(compactActions?.className).toContain("group-focus-within/menu-sub-item:opacity-100");
+      const threadItem = pinButton.closest("li");
+      expect(threadItem?.className).toContain("group/thread-row");
+      expect(compactActions?.className).toContain("group-hover/thread-row:opacity-100");
+      expect(compactActions?.className).toContain("group-focus-within/thread-row:opacity-100");
       expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
       expect(pinButton.getAttribute("aria-pressed")).toBe("false");
+      expect(doneButton.getAttribute("aria-label")).toBe(`Wrap up ${THREAD_TITLE}`);
+      // Icons only: the words for these two live in their tooltips.
+      expect(doneButton.textContent).toBe("");
+      expect(pinButton.textContent).toBe("");
       expect(
-        pinButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+        doneButton.compareDocumentPosition(pinButton) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       // Hidden until the row is hovered or focused, which is the whole point of
       // the shared wrapper.
@@ -5084,43 +5129,408 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("puts a pinned thread on the deck instead of in the tree, and holds live work there", async () => {
-    // This replaces two tests that asserted pin and archive on the tree row of a
-    // running thread. That row no longer exists: pinned and live threads are on
-    // deck, and a thread on deck is drawn once, there. What matters now is that
-    // it moved rather than vanished, and that a run in progress cannot be waved
-    // away with the dismiss button.
+  it("lists every open thread once, floats pins to the top, and refuses Done on running work", async () => {
+    const pinnedThreadId = "thread-pinned-inbox" as ThreadId;
+    const runningSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-running-pin-test" as MessageId,
+      targetText: "running pin target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-running-pin-test" as TurnId,
+    });
+    const withPinnedThread = addThreadToSnapshot(runningSnapshot, pinnedThreadId);
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-running-pin-test" as MessageId,
-        targetText: "running pin target",
-        threadPinnedAt: NOW_ISO,
-        sessionStatus: "running",
-        sessionActiveTurnId: "turn-running-pin-test" as TurnId,
-      }),
+      snapshot: {
+        ...withPinnedThread,
+        threads: withPinnedThread.threads.map((thread) =>
+          thread.id === pinnedThreadId ? { ...thread, pinnedAt: NOW_ISO } : thread,
+        ),
+      },
     });
 
     try {
-      await waitForElement(
-        () => document.querySelector<HTMLElement>(`[data-testid="on-deck-row-${THREAD_ID}"]`),
-        "Unable to find the thread's deck row.",
+      const runningRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find the running thread's row.",
+      );
+      const pinnedRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${pinnedThreadId}"]`),
+        "Unable to find the pinned thread's row.",
       );
 
       expect(
-        document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`),
-        "A thread on deck should not also be drawn in the project tree.",
+        pinnedRow.compareDocumentPosition(runningRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "A pinned thread sorts above the rest of the live list.",
+      ).toBeTruthy();
+      expect(
+        document.querySelectorAll(`[data-testid="thread-row-${THREAD_ID}"]`).length,
+        "Each thread is drawn exactly once.",
+      ).toBe(1);
+      expect(
+        document.querySelector(`[data-testid="thread-done-${THREAD_ID}"]`),
+        "A running thread cannot be marked done.",
       ).toBeNull();
       expect(
-        document.querySelector(`[data-testid="on-deck-dismiss-${THREAD_ID}"]`),
-        "A running thread should not offer dismiss.",
-      ).toBeNull();
+        document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
+        "A settled thread offers Done.",
+      ).not.toBeNull();
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("exposes the full thread title on the sidebar row tooltip", async () => {
+  it("keeps General Chats as its own destination above the scope row", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-general-chats-nav" as MessageId,
+        targetText: "general chats nav target",
+      }),
+    });
+
+    try {
+      const chatsRow = page.getByTestId("sidebar-general-chats");
+      await expect.element(chatsRow).toBeInTheDocument();
+      await chatsRow.click();
+
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/chats",
+        "General Chats should open the chats page.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a closed browser panel for an arriving automation request", async () => {
+    // The agent asks for the page while the panel is shut. It used to be told
+    // there was no browser; now the request is what opens one.
+    const tab = makeBrowserTab();
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: false, tabs: [tab], activeTabId: tab.id },
+      },
+      agentStateByThreadKey: {},
+    });
+
+    let deliver: ((request: PreviewAutomationRequest) => void) | null = null;
+    const responses: PreviewAutomationResponse[] = [];
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: (() =>
+          Promise.reject(new Error("not used"))) as EnvironmentApi["filesystem"]["browse"],
+        dispatchCommand: (() =>
+          Promise.reject(
+            new Error("not used"),
+          )) as EnvironmentApi["orchestration"]["dispatchCommand"],
+        previewAutomation: {
+          connect: (_input: unknown, listener: (request: PreviewAutomationRequest) => void) => {
+            deliver = listener;
+            return () => {
+              deliver = null;
+            };
+          },
+          respond: (response: PreviewAutomationResponse) => {
+            responses.push(response);
+            return Promise.resolve();
+          },
+        } as unknown as EnvironmentApi["previewAutomation"],
+      }),
+    );
+    window.desktopBridge = {
+      previewStatus: () =>
+        Promise.resolve({ url: "http://localhost:5173/", title: "Preview", loading: false }),
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+
+    const screen = await render(<PreviewAutomationMount threadRef={THREAD_REF} />);
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(deliver, "the host should register with the broker").not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      deliver!({
+        requestId: "req-auto-open",
+        operation: "status",
+        input: {},
+      } as unknown as PreviewAutomationRequest);
+
+      // The panel opens on its own...
+      await vi.waitFor(
+        () => {
+          expect(useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.open).toBe(
+            true,
+          );
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // ...and once its page is up, the operation the agent asked for lands.
+      registerPreviewWebview(THREAD_REF, tab.id, {
+        getWebContentsId: () => 42,
+        loadURL: () => Promise.resolve(),
+        getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.error, "the request should not report a missing browser").toBe(
+            undefined,
+          );
+          expect(responses[0]?.result).toMatchObject({ url: "http://localhost:5173/" });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      screen.unmount();
+      resetPreviewWebviewsForTests();
+      useBrowserPanelStore.setState({ browserStateByThreadKey: {}, agentStateByThreadKey: {} });
+      Reflect.deleteProperty(window, "desktopBridge");
+      __resetEnvironmentApiOverridesForTests();
+    }
+  });
+
+  it("pins the search chrome above the scrolling list", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-sticky-search" as MessageId,
+        targetText: "sticky search target",
+      }),
+    });
+
+    try {
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="command-palette-trigger"]'),
+        "Unable to find the search trigger.",
+      );
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find a thread row.",
+      );
+      const viewport = document.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+
+      expect(viewport, "the sidebar list should scroll in its own viewport").not.toBeNull();
+      // The list scrolls inside the viewport; the search row is not in it, so
+      // it cannot scroll away.
+      expect(viewport!.contains(row)).toBe(true);
+      expect(viewport!.contains(trigger)).toBe(false);
+      expect(trigger.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        viewport!.getBoundingClientRect().top + 1,
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a working row's status whole and drops the branch to make room", async () => {
+    const longBranch = "feature/a-very-long-branch-name-that-would-never-fit-in-the-sidebar";
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-working-collision" as MessageId,
+      targetText: "working collision target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-working-collision" as TurnId,
+    });
+    const branched = withThreadBranch(base, longBranch);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...branched,
+        projects: base.projects.map((project) => ({
+          ...project,
+          title: "A project with a deliberately long display name",
+        })),
+        // A running session has a turn under way; that turn is what the
+        // elapsed counter counts from.
+        threads: branched.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId: "turn-working-collision" as TurnId,
+                  state: "running" as const,
+                  requestedAt: NOW_ISO,
+                  startedAt: NOW_ISO,
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find the working thread's row.",
+      );
+      const meta = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
+        "Unable to find the row's status slot.",
+      );
+
+      await vi.waitFor(
+        () => {
+          // A duration, never the relative formatter's "just now".
+          expect(meta.textContent).toMatch(/^working · \d+[smh]/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // The status slot is never the thing that gets cut.
+      expect(meta.scrollWidth).toBeLessThanOrEqual(meta.clientWidth + 1);
+      expect(meta.getBoundingClientRect().right).toBeLessThanOrEqual(
+        row.getBoundingClientRect().right,
+      );
+      // The branch yields first, and yields completely.
+      expect(row.textContent).not.toContain("feature/");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reveals the folded tail in increments and folds it back", async () => {
+    const extraThreadIds = Array.from(
+      { length: 13 },
+      (_, index) => `thread-quiet-${index}` as ThreadId,
+    );
+    const snapshot = extraThreadIds.reduce(
+      (current, threadId) => addThreadToSnapshot(current, threadId),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-live-fold" as MessageId,
+        targetText: "live fold target",
+      }),
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    const expectRows = async (count: number, revealLabel: string | null) => {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll('[data-testid^="thread-row-"]').length).toBe(count);
+          const reveal = document.querySelector('[data-testid="inbox-live-show-more"]');
+          if (revealLabel === null) {
+            expect(reveal).toBeNull();
+          } else {
+            expect(reveal?.textContent).toContain(revealLabel);
+          }
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    };
+
+    try {
+      // Fourteen quiet threads, six unfolded, revealed five at a time.
+      await expectRows(6, "Show 5 more");
+      await page.getByTestId("inbox-live-show-more").click();
+      await expectRows(11, "Show 3 more");
+      await page.getByTestId("inbox-live-show-more").click();
+      // Nothing left to reveal, so only the fold-back and search icons remain.
+      await expectRows(14, null);
+      await expect.element(page.getByTestId("inbox-live-search")).toBeInTheDocument();
+
+      await page.getByTestId("inbox-live-show-fewer").click();
+      await expectRows(6, "Show 5 more");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the thread you are reading on the shelf when Done collapses", async () => {
+    const otherDoneThreadId = "thread-done-collapse" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-done-collapse" as MessageId,
+          targetText: "done collapse target",
+        }),
+        otherDoneThreadId,
+      ),
+    });
+
+    try {
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      const otherThreadKey = scopedThreadKey(
+        scopeThreadRef(LOCAL_ENVIRONMENT_ID, otherDoneThreadId),
+      );
+      const doneAt = new Date().toISOString();
+      useUiStateStore.getState().markThreadDone(THREAD_KEY, doneAt);
+      useUiStateStore.getState().markThreadDone(otherThreadKey, doneAt);
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+          expect(
+            document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`),
+          ).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await page.getByTestId("inbox-done-toggle").click();
+
+      await vi.waitFor(
+        () => {
+          // Collapsing a section must not close the thread open inside it.
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+          expect(
+            document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`),
+          ).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("moves a thread into the Done tail and back with Reopen", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-done-lifecycle" as MessageId,
+        targetText: "done lifecycle target",
+      }),
+    });
+
+    try {
+      const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
+      await expect.element(threadRow).toBeInTheDocument();
+      await threadRow.hover();
+      await page.getByTestId(`thread-done-${THREAD_ID}`).click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      const doneRow = page.getByTestId(`done-row-${THREAD_ID}`);
+      await doneRow.hover();
+      await page.getByTestId(`done-reopen-${THREAD_ID}`).click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).toBeNull();
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the full thread title in the row hover card, and nothing else", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5137,9 +5547,17 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         () => {
-          const tooltip = document.querySelector<HTMLElement>('[data-slot="tooltip-popup"]');
-          expect(tooltip).not.toBeNull();
-          expect(tooltip?.textContent).toContain(THREAD_TITLE);
+          const hoverCard = document.querySelector<HTMLElement>(
+            '[data-testid="thread-hover-card"]',
+          );
+          expect(hoverCard).not.toBeNull();
+          expect(hoverCard?.textContent).toContain(THREAD_TITLE);
+          // The hover card is the only popup: a truncated title must not raise
+          // a second one on top of it.
+          expect(document.querySelectorAll('[data-testid="thread-hover-card"]').length).toBe(1);
+          // And no tooltip stacked on top: the card moved off the tooltip
+          // primitive precisely so the two can never compete.
+          expect(document.querySelectorAll('[data-slot="tooltip-popup"]').length).toBe(0);
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -5166,10 +5584,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
+      // live -> done -> archived: archive is only offered once a thread has
+      // been filed away.
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      useUiStateStore.getState().markThreadDone(THREAD_KEY, new Date().toISOString());
 
-      await expect.element(threadRow).toBeInTheDocument();
-      await threadRow.hover();
+      const doneRow = page.getByTestId(`done-row-${THREAD_ID}`);
+      await expect.element(doneRow).toBeInTheDocument();
+      await doneRow.hover();
 
       const archiveButton = page.getByTestId(`thread-archive-${THREAD_ID}`);
       await expect.element(archiveButton).toBeInTheDocument();

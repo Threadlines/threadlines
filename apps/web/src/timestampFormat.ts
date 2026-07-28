@@ -94,6 +94,28 @@ export function formatElapsedDurationLabel(isoDate: string, nowMs: number = Date
 }
 
 /**
+ * Elapsed time for a run that is happening right now: always a duration, never
+ * a phrase. {@link formatElapsedDurationLabel} answers "how long ago" and says
+ * "just now" for the first few seconds, which reads as nonsense next to a live
+ * status ("working · just now") and is a different width every tick.
+ */
+export function formatWorkingDurationLabel(isoDate: string, nowMs: number = Date.now()): string {
+  const diffMs = nowMs - new Date(isoDate).getTime();
+  const totalSeconds = Math.max(0, Math.floor(diffMs / 1_000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const seconds = totalSeconds % 60;
+    return seconds === 0 ? `${totalMinutes}m` : `${totalMinutes}m ${seconds}s`;
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+/**
  * Relative time until an ISO instant (e.g. expiry). Mirrors {@link formatRelativeTime} but for future times.
  */
 export function formatRelativeTimeUntil(isoDate: string): { value: string; suffix: string | null } {

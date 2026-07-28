@@ -284,9 +284,6 @@ importers:
       '@fontsource-variable/schibsted-grotesk':
         specifier: ^5.3.0
         version: 5.3.0
-      '@formkit/auto-animate':
-        specifier: ^0.10.0
-        version: 0.10.0
       '@legendapp/list':
         specifier: ^3.3.3
         version: 3.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -420,7 +417,7 @@ importers:
         version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       oxlint:
         specifier: ^1.76.0
-        version: 1.76.0(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.0)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0))
+        version: 1.76.0(oxlint-tsgolint@0.24.0)(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.0)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1414,9 +1411,6 @@ packages:
 
   '@fontsource-variable/schibsted-grotesk@5.3.0':
     resolution: {integrity: sha512-ndS6H/KICWANchlHF3q4UdZD+xrZ3Ji0rUobIuXlgvDUzDfqZDsVuXPXZb636nJZMHE9zZ9Fmwgqazm8hMB50Q==}
-
-  '@formkit/auto-animate@0.10.0':
-    resolution: {integrity: sha512-KGomRttjUfORuPUaR/ZGQw+6xfMrTM+sxnILv7JAd9AmabU9rg9i6gF/iC0Ih+QpKCubJpCA/1DX9UHKE8cX+A==}
 
   '@hono/node-server@2.0.11':
     resolution: {integrity: sha512-bjD221KPLoJTWUwso1J6fGKiTXEUFedG/s0visavY4zakFPkeGURMRNly+FhBHs7T8Dz4qHaZIMX9ZoJHSJtKA==}
@@ -6887,8 +6881,6 @@ snapshots:
 
   '@fontsource-variable/schibsted-grotesk@5.3.0': {}
 
-  '@formkit/auto-animate@0.10.0': {}
-
   '@hono/node-server@2.0.11(hono@4.12.32)':
     dependencies:
       hono: 4.12.32
@@ -10649,7 +10641,7 @@ snapshots:
       oxlint-tsgolint: 0.24.0
       vite-plus: 0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.0)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)
 
-  oxlint@1.76.0(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.0)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)):
+  oxlint@1.76.0(oxlint-tsgolint@0.24.0)(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.0)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)):
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.76.0
       '@oxlint/binding-android-arm64': 1.76.0
@@ -10670,6 +10662,7 @@ snapshots:
       '@oxlint/binding-win32-arm64-msvc': 1.76.0
       '@oxlint/binding-win32-ia32-msvc': 1.76.0
       '@oxlint/binding-win32-x64-msvc': 1.76.0
+      oxlint-tsgolint: 0.24.0
       vite-plus: 0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.0)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)
 
   p-cancelable@2.1.1: {}

@@ -23,8 +23,8 @@ export interface PersistedUiState {
   projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
-  onDeckThreadKeys?: string[];
-  onDeckDismissedThreadKeys?: string[];
+  doneThreadOverrides?: Record<string, { state: "done" | "active"; at: string }>;
+  inboxProjectScopeKey?: string | null;
 }
 
 export interface UiProjectState {
@@ -37,11 +37,15 @@ export interface UiThreadState {
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
 }
 
-export interface UiOnDeckState {
-  /** Scoped thread keys in deck insertion order — never resorted by activity. */
-  onDeckThreadKeys: string[];
-  /** Threads the user removed from the deck; suppressed until they go live again. */
-  onDeckDismissedThreadKeys: string[];
+export interface UiInboxState {
+  /**
+   * The user's explicit word on each thread's lifecycle, by scoped thread
+   * key. An override never decides on its own -- isThreadDone resolves it
+   * against the thread's live state, so activity blockers always win.
+   */
+  doneThreadOverrides: Record<string, { state: "done" | "active"; at: string }>;
+  /** Which project chip is selected; null is All. */
+  inboxProjectScopeKey: string | null;
 }
 
 export interface UiEndpointState {
@@ -53,7 +57,7 @@ export interface UiNavigationState {
 }
 
 export interface UiState
-  extends UiProjectState, UiThreadState, UiOnDeckState, UiEndpointState, UiNavigationState {}
+  extends UiProjectState, UiThreadState, UiInboxState, UiEndpointState, UiNavigationState {}
 
 export interface SyncProjectInput {
   /** Physical project key (env + cwd). Used for manual sort order. */
@@ -73,8 +77,8 @@ const initialState: UiState = {
   projectOrder: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
-  onDeckThreadKeys: [],
-  onDeckDismissedThreadKeys: [],
+  doneThreadOverrides: {},
+  inboxProjectScopeKey: null,
   defaultAdvertisedEndpointKey: null,
   lastChatThreadRef: null,
 };
@@ -121,25 +125,37 @@ function readPersistedState(): UiState {
       threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
         parsed.threadChangedFilesExpandedById,
       ),
-      onDeckThreadKeys: sanitizePersistedKeyList(parsed.onDeckThreadKeys),
-      onDeckDismissedThreadKeys: sanitizePersistedKeyList(parsed.onDeckDismissedThreadKeys),
+      doneThreadOverrides: sanitizePersistedDoneOverrides(parsed.doneThreadOverrides),
+      inboxProjectScopeKey:
+        typeof parsed.inboxProjectScopeKey === "string" && parsed.inboxProjectScopeKey.length > 0
+          ? parsed.inboxProjectScopeKey
+          : null,
     };
   } catch {
     return initialState;
   }
 }
 
-function sanitizePersistedKeyList(value: string[] | undefined): string[] {
-  if (!Array.isArray(value)) {
-    return [];
+function sanitizePersistedDoneOverrides(
+  value: PersistedUiState["doneThreadOverrides"],
+): Record<string, { state: "done" | "active"; at: string }> {
+  if (value === undefined || value === null || typeof value !== "object") {
+    return {};
   }
-  const keys: string[] = [];
-  for (const key of value) {
-    if (typeof key === "string" && key.length > 0 && !keys.includes(key)) {
-      keys.push(key);
+  const sanitized: Record<string, { state: "done" | "active"; at: string }> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      typeof key === "string" &&
+      key.length > 0 &&
+      entry !== null &&
+      typeof entry === "object" &&
+      (entry.state === "done" || entry.state === "active") &&
+      typeof entry.at === "string"
+    ) {
+      sanitized[key] = { state: entry.state, at: entry.at };
     }
   }
-  return keys;
+  return sanitized;
 }
 
 function sanitizePersistedThreadChangedFilesExpanded(
@@ -226,8 +242,8 @@ export function persistState(state: UiState): void {
         projectOrderCwds,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
-        onDeckThreadKeys: state.onDeckThreadKeys,
-        onDeckDismissedThreadKeys: state.onDeckDismissedThreadKeys,
+        doneThreadOverrides: state.doneThreadOverrides,
+        inboxProjectScopeKey: state.inboxProjectScopeKey,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -466,89 +482,23 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
   };
 }
 
-export interface OnDeckSyncInput {
-  /** Scoped thread key. */
-  key: string;
-  pinned: boolean;
-  /** The provider is working or waiting on the user right now. */
-  live: boolean;
-  /** Settled with a completion the user hasn't seen yet. */
-  unseen: boolean;
-}
-
-/** Deck size the auto-trim steers toward; only quiet rows are evicted for it. */
-export const ON_DECK_MAX_THREADS = 7;
-
 /**
- * Reconciles the deck against the current thread snapshots. Membership is
- * sticky: rows keep their insertion position while agent activity only changes
- * their status, so the working set never reshuffles under the user. Threads
- * enter when they become live, unseen, or pinned; they leave when dismissed,
- * archived, or auto-trimmed (settled, seen, unpinned rows beyond the cap,
- * oldest first — never the active route thread).
+ * Stamp the user's word on a thread's lifecycle. Pure and idempotent: marking
+ * a done thread done again refreshes nothing, so a double-click cannot move a
+ * row twice.
  */
-export function syncOnDeck(
+export function setDoneOverride(
   state: UiState,
-  threads: readonly OnDeckSyncInput[],
-  activeThreadKey: string | null,
+  threadKey: string,
+  override: { state: "done" | "active"; at: string },
 ): UiState {
-  const inputByKey = new Map(threads.map((thread) => [thread.key, thread] as const));
-  // Dismissal only holds while a thread stays settled: going live again always
-  // brings it back to the deck.
-  const nextDismissed = state.onDeckDismissedThreadKeys.filter((key) => {
-    const input = inputByKey.get(key);
-    return input !== undefined && !input.live;
-  });
-  const dismissedSet = new Set(nextDismissed);
-  const retained = state.onDeckThreadKeys.filter(
-    (key) => inputByKey.has(key) && !dismissedSet.has(key),
-  );
-  const retainedSet = new Set(retained);
-  const appended = threads
-    .filter(
-      (thread) =>
-        (thread.pinned || thread.live || thread.unseen) &&
-        !retainedSet.has(thread.key) &&
-        !dismissedSet.has(thread.key),
-    )
-    .map((thread) => thread.key);
-  let nextOrder = [...retained, ...appended];
-  if (nextOrder.length > ON_DECK_MAX_THREADS) {
-    const evictableKeys = nextOrder.filter((key) => {
-      if (key === activeThreadKey) {
-        return false;
-      }
-      const input = inputByKey.get(key);
-      return input !== undefined && !input.pinned && !input.live && !input.unseen;
-    });
-    const evicted = new Set(evictableKeys.slice(0, nextOrder.length - ON_DECK_MAX_THREADS));
-    if (evicted.size > 0) {
-      nextOrder = nextOrder.filter((key) => !evicted.has(key));
-    }
-  }
-  if (
-    orderedListsEqual(state.onDeckThreadKeys, nextOrder) &&
-    orderedListsEqual(state.onDeckDismissedThreadKeys, nextDismissed)
-  ) {
+  const current = state.doneThreadOverrides[threadKey];
+  if (current !== undefined && current.state === override.state) {
     return state;
   }
   return {
     ...state,
-    onDeckThreadKeys: nextOrder,
-    onDeckDismissedThreadKeys: nextDismissed,
-  };
-}
-
-export function dismissFromOnDeck(state: UiState, threadKey: string): UiState {
-  if (!state.onDeckThreadKeys.includes(threadKey)) {
-    return state;
-  }
-  return {
-    ...state,
-    onDeckThreadKeys: state.onDeckThreadKeys.filter((key) => key !== threadKey),
-    onDeckDismissedThreadKeys: state.onDeckDismissedThreadKeys.includes(threadKey)
-      ? state.onDeckDismissedThreadKeys
-      : [...state.onDeckDismissedThreadKeys, threadKey],
+    doneThreadOverrides: { ...state.doneThreadOverrides, [threadKey]: override },
   };
 }
 
@@ -760,8 +710,9 @@ export function reorderProjects(
 interface UiStateStore extends UiState {
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
   syncThreads: (threads: readonly SyncThreadInput[]) => void;
-  syncOnDeck: (threads: readonly OnDeckSyncInput[], activeThreadKey: string | null) => void;
-  dismissFromOnDeck: (threadKey: string) => void;
+  markThreadDone: (threadKey: string, at: string) => void;
+  reopenThread: (threadKey: string, at: string) => void;
+  setInboxProjectScope: (projectKey: string | null) => void;
   markThreadVisited: (threadId: string, visitedAt?: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   clearThreadUi: (threadId: string) => void;
@@ -785,9 +736,16 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   ...readPersistedState(),
   syncProjects: (projects) => set((state) => syncProjects(state, projects)),
   syncThreads: (threads) => set((state) => syncThreads(state, threads)),
-  syncOnDeck: (threads, activeThreadKey) =>
-    set((state) => syncOnDeck(state, threads, activeThreadKey)),
-  dismissFromOnDeck: (threadKey) => set((state) => dismissFromOnDeck(state, threadKey)),
+  markThreadDone: (threadKey, at) =>
+    set((state) => setDoneOverride(state, threadKey, { state: "done", at })),
+  reopenThread: (threadKey, at) =>
+    set((state) => setDoneOverride(state, threadKey, { state: "active", at })),
+  setInboxProjectScope: (projectKey) =>
+    set((state) =>
+      state.inboxProjectScopeKey === projectKey
+        ? state
+        : { ...state, inboxProjectScopeKey: projectKey },
+    ),
   markThreadVisited: (threadId, visitedAt) =>
     set((state) => markThreadVisited(state, threadId, visitedAt)),
   markThreadUnread: (threadId, latestTurnCompletedAt) =>
