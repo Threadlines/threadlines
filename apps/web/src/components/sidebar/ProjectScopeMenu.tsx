@@ -1,4 +1,4 @@
-import { ChevronDownIcon, FolderPlusIcon, MessagesSquareIcon } from "lucide-react";
+import { ChevronDownIcon, FolderPlusIcon } from "lucide-react";
 import React, { memo, useCallback, useState } from "react";
 import type { ContextMenuItem, SidebarProjectGroupingMode } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
@@ -81,8 +81,6 @@ export interface ProjectScopeMenuProps {
   scopedProjectKey: string | null;
   onScopeChange: (projectKey: string | null) => void;
   onAddProject: () => void;
-  /** Null while there are no general chats: the link has nothing to open. */
-  onOpenChats: (() => void) | null;
 }
 
 /**
@@ -95,8 +93,7 @@ export interface ProjectScopeMenuProps {
  * not, so only "Add project" stays out here as a visible button.
  */
 export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectScopeMenuProps) {
-  const { options, projectByKey, scopedProjectKey, onScopeChange, onAddProject, onOpenChats } =
-    props;
+  const { options, projectByKey, scopedProjectKey, onScopeChange, onAddProject } = props;
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const { updateSettings } = useUpdateSettings();
   const [projectRenameTarget, setProjectRenameTarget] = useState<SidebarProjectGroupMember | null>(
@@ -453,7 +450,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
   return (
     <>
-      <div className="flex items-center gap-1 px-2 pb-1.5">
+      <div className="flex items-center gap-1 px-2 py-1">
         <Menu>
           <MenuTrigger
             data-testid="inbox-scope-trigger"
@@ -518,12 +515,6 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
               ))}
             </MenuRadioGroup>
             <MenuSeparator />
-            {onOpenChats ? (
-              <MenuItem data-testid="inbox-chats-link" onClick={onOpenChats}>
-                <MessagesSquareIcon />
-                <span className="min-w-0 flex-1 truncate">Chats</span>
-              </MenuItem>
-            ) : null}
             <MenuItem onClick={onAddProject}>
               <FolderPlusIcon />
               <span className="min-w-0 flex-1 truncate">Add project…</span>

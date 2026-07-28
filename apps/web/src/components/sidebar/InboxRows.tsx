@@ -116,15 +116,11 @@ export interface InboxThreadRowProps {
   /** False while the thread is moving or blocked: live work can't be waved away. */
   canMarkDone: boolean;
   orderedThreadKeys: readonly string[];
-  appSettingsConfirmThreadArchive: boolean;
   renamingThreadKey: string | null;
   renamingTitle: string;
   setRenamingTitle: (title: string) => void;
   renamingInputRef: React.RefObject<HTMLInputElement | null>;
   renamingCommittedRef: React.RefObject<boolean>;
-  confirmingArchiveThreadKey: string | null;
-  setConfirmingArchiveThreadKey: React.Dispatch<React.SetStateAction<string | null>>;
-  confirmArchiveButtonRefs: React.RefObject<Map<string, HTMLButtonElement>>;
   handleThreadClick: (
     event: React.MouseEvent,
     threadRef: ScopedThreadRef,
@@ -144,7 +140,6 @@ export interface InboxThreadRowProps {
   ) => Promise<void>;
   cancelRename: () => void;
   attemptTogglePinThread: (threadRef: ScopedThreadRef, shouldPin: boolean) => Promise<void>;
-  attemptArchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
   markThreadDone: (threadKey: string) => void;
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
 }
@@ -166,15 +161,11 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     jumpLabel,
     canMarkDone,
     orderedThreadKeys,
-    appSettingsConfirmThreadArchive,
     renamingThreadKey,
     renamingTitle,
     setRenamingTitle,
     renamingInputRef,
     renamingCommittedRef,
-    confirmingArchiveThreadKey,
-    setConfirmingArchiveThreadKey,
-    confirmArchiveButtonRefs,
     handleThreadClick,
     navigateToThread,
     handleMultiSelectContextMenu,
@@ -183,7 +174,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     commitRename,
     cancelRename,
     attemptTogglePinThread,
-    attemptArchiveThread,
     markThreadDone,
     openPrLink,
   } = props;
@@ -220,16 +210,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const pr = resolveThreadPr(thread.branch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
-  const isThreadRunning =
-    thread.session?.status === "running" && thread.session.activeTurnId != null;
-  const archiveUnavailableReason =
-    thread.session?.status === "connecting" || thread.session?.orchestrationStatus === "starting"
-      ? "connecting"
-      : isThreadRunning
-        ? "running"
-        : null;
-  const isThreadArchiveDisabled = archiveUnavailableReason !== null;
-  const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadArchiveDisabled;
   const isPinned = thread.pinnedAt !== null;
   const isRenaming = renamingThreadKey === threadKey;
   const statusWord = inboxStatusWord(status);
@@ -240,24 +220,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const isUnseen = status?.label === "Completed";
   const showBranch = thread.branch !== null;
 
-  const clearConfirmingArchive = useCallback(() => {
-    setConfirmingArchiveThreadKey((current) => (current === threadKey ? null : current));
-  }, [setConfirmingArchiveThreadKey, threadKey]);
-  const handleMouseLeave = useCallback(() => {
-    clearConfirmingArchive();
-  }, [clearConfirmingArchive]);
-  const handleBlurCapture = useCallback(
-    (event: React.FocusEvent<HTMLLIElement>) => {
-      const currentTarget = event.currentTarget;
-      requestAnimationFrame(() => {
-        if (currentTarget.contains(document.activeElement)) {
-          return;
-        }
-        clearConfirmingArchive();
-      });
-    },
-    [clearConfirmingArchive],
-  );
   const handleRowClick = useCallback(
     (event: React.MouseEvent) => {
       handleThreadClick(event, threadRef, orderedThreadKeys);
@@ -334,49 +296,11 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const handleRenameInputClick = useCallback((event: React.MouseEvent<HTMLInputElement>) => {
     event.stopPropagation();
   }, []);
-  const handleConfirmArchiveRef = useCallback(
-    (element: HTMLButtonElement | null) => {
-      if (element) {
-        confirmArchiveButtonRefs.current.set(threadKey, element);
-      } else {
-        confirmArchiveButtonRefs.current.delete(threadKey);
-      }
-    },
-    [confirmArchiveButtonRefs, threadKey],
-  );
   const stopPropagationOnPointerDown = useCallback(
     (event: React.PointerEvent<HTMLButtonElement>) => {
       event.stopPropagation();
     },
     [],
-  );
-  const handleConfirmArchiveClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      clearConfirmingArchive();
-      void attemptArchiveThread(threadRef);
-    },
-    [attemptArchiveThread, clearConfirmingArchive, threadRef],
-  );
-  const handleStartArchiveConfirmation = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setConfirmingArchiveThreadKey(threadKey);
-      requestAnimationFrame(() => {
-        confirmArchiveButtonRefs.current.get(threadKey)?.focus();
-      });
-    },
-    [confirmArchiveButtonRefs, setConfirmingArchiveThreadKey, threadKey],
-  );
-  const handleArchiveImmediateClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      void attemptArchiveThread(threadRef);
-    },
-    [attemptArchiveThread, threadRef],
   );
   const handleTogglePinClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -399,12 +323,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   );
 
   return (
-    <li
-      className={ROW_ITEM_CLASS_NAME}
-      data-thread-item
-      onMouseLeave={handleMouseLeave}
-      onBlurCapture={handleBlurCapture}
-    >
+    <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
       <ThreadHoverCard thread={thread} status={status} side="right">
         <div
           role="button"
@@ -420,7 +339,11 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
           onKeyDown={handleRowKeyDown}
           onContextMenu={handleRowContextMenu}
         >
-          <div className="flex min-w-0 items-center gap-[7px]">
+          {/* Line one: where the work lives, and what it is doing. */}
+          <div
+            data-testid={`thread-detail-${thread.id}`}
+            className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground/45"
+          >
             {status ? (
               <span
                 aria-label={status.label}
@@ -435,46 +358,30 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 <PinIcon className="size-2.5" />
               </span>
             ) : null}
-            {isRenaming ? (
-              <input
-                ref={handleRenameInputRef}
-                className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none sm:text-xs"
-                value={renamingTitle}
-                onChange={handleRenameInputChange}
-                onKeyDown={handleRenameInputKeyDown}
-                onBlur={handleRenameInputBlur}
-                onClick={handleRenameInputClick}
+            {threadProjectCwd ? (
+              <ProjectFavicon
+                cwd={threadProjectCwd}
+                environmentId={thread.environmentId}
+                className="size-3 shrink-0"
               />
-            ) : (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-xs font-medium",
-                        isUnseen ? "text-foreground" : "text-foreground/90",
-                      )}
-                      data-testid={`thread-title-${thread.id}`}
-                    >
-                      {thread.title}
-                    </span>
-                  }
-                />
-                <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-                  {thread.title}
-                </TooltipPopup>
-              </Tooltip>
-            )}
+            ) : null}
+            {projectLabel ? (
+              <span className="shrink-0 truncate text-muted-foreground/60">{projectLabel}</span>
+            ) : null}
+            {showBranch ? (
+              <span className="flex min-w-0 items-center gap-1">
+                <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
+                <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
+              </span>
+            ) : null}
             <span
               data-testid={`thread-meta-${thread.id}`}
               className={cn(
-                "shrink-0 font-mono text-[11px] leading-none",
-                isConfirmingArchive
-                  ? "opacity-0"
-                  : // Touch has no hover, so the actions sit permanently at the
-                    // row's right edge and the meta reserves room beside them
-                    // instead of fading out under them.
-                    "transition-opacity duration-150 max-sm:mr-28 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0",
+                "ml-auto shrink-0 font-mono text-[11px] leading-none",
+                // Touch has no hover, so the actions sit permanently at the
+                // row's right edge and the meta reserves room beside them
+                // instead of fading out under them.
+                "transition-opacity duration-150 max-sm:mr-16 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0",
                 statusWord !== null || isInFlight
                   ? (status?.colorClass ?? "text-muted-foreground/50")
                   : "text-muted-foreground/50",
@@ -506,29 +413,38 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
               )}
             </span>
           </div>
-          <div
-            data-testid={`thread-detail-${thread.id}`}
-            className="mt-0.5 flex min-w-0 items-center gap-1.5 pl-3.5 text-[11px] text-muted-foreground/45"
-          >
-            {projectLabel ? (
-              <>
-                {threadProjectCwd ? (
-                  <ProjectFavicon
-                    cwd={threadProjectCwd}
-                    environmentId={thread.environmentId}
-                    className="size-3 shrink-0"
-                  />
-                ) : null}
-                <span className="shrink-0 truncate text-muted-foreground/60">{projectLabel}</span>
-                {showBranch ? <span className="shrink-0">·</span> : null}
-              </>
-            ) : null}
-            {showBranch ? (
-              <span className="flex min-w-0 items-center gap-1">
-                <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
-                <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
-              </span>
-            ) : null}
+          {/* Line two: which thread, and what it has produced. */}
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+            {isRenaming ? (
+              <input
+                ref={handleRenameInputRef}
+                className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none sm:text-xs"
+                value={renamingTitle}
+                onChange={handleRenameInputChange}
+                onKeyDown={handleRenameInputKeyDown}
+                onBlur={handleRenameInputBlur}
+                onClick={handleRenameInputClick}
+              />
+            ) : (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-xs font-medium",
+                        isUnseen ? "text-foreground" : "text-foreground/90",
+                      )}
+                      data-testid={`thread-title-${thread.id}`}
+                    >
+                      {thread.title}
+                    </span>
+                  }
+                />
+                <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
+                  {thread.title}
+                </TooltipPopup>
+              </Tooltip>
+            )}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               {terminalStatus ? (
                 <span
@@ -593,121 +509,63 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
               <ThreadProviderGlyph thread={thread} />
             </span>
           </div>
-          {isConfirmingArchive ? (
-            <div
-              className={cn(
-                ROW_ACTIONS_CLASS_NAME,
-                "top-1 right-1.5 pointer-events-auto opacity-100",
-              )}
-            >
-              <button
-                ref={handleConfirmArchiveRef}
-                type="button"
-                data-thread-selection-safe
-                data-testid={`thread-archive-confirm-${thread.id}`}
-                aria-label={`Confirm archive ${thread.title}`}
-                className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
-                onPointerDown={stopPropagationOnPointerDown}
-                onClick={handleConfirmArchiveClick}
-              >
-                Confirm
-              </button>
-            </div>
-          ) : (
-            <div
-              className={cn(
-                ROW_ACTIONS_CLASS_NAME,
-                "top-1 right-1.5 max-sm:pointer-events-auto max-sm:opacity-100",
-              )}
-            >
-              {canMarkDone ? (
-                <button
-                  type="button"
-                  data-thread-selection-safe
-                  data-testid={`thread-done-${thread.id}`}
-                  aria-label={`Mark ${thread.title} done`}
-                  className="inline-flex h-5 cursor-pointer items-center gap-1 rounded-sm px-1.5 text-[11px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-ring"
-                  onPointerDown={stopPropagationOnPointerDown}
-                  onClick={handleMarkDoneClick}
-                >
-                  <CheckIcon className="size-3" />
-                  Done
-                </button>
-              ) : null}
+
+          {/* Two actions, both icons: the words live in their tooltips. */}
+          <div
+            className={cn(
+              ROW_ACTIONS_CLASS_NAME,
+              "top-1 right-1.5 max-sm:pointer-events-auto max-sm:opacity-100",
+            )}
+          >
+            {canMarkDone ? (
               <Tooltip>
                 <TooltipTrigger
                   render={
                     <button
                       type="button"
                       data-thread-selection-safe
-                      data-testid={`thread-pin-${thread.id}`}
-                      aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
-                      aria-pressed={isPinned}
-                      className={cn(
-                        "inline-flex size-5 cursor-pointer items-center justify-center transition-colors pointer-coarse:size-7 focus-ring",
-                        isPinned
-                          ? "text-primary-readable hover:text-primary"
-                          : "text-muted-foreground/60 hover:text-foreground",
-                      )}
+                      data-testid={`thread-done-${thread.id}`}
+                      aria-label={`Mark ${thread.title} done`}
+                      className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
                       onPointerDown={stopPropagationOnPointerDown}
-                      onClick={handleTogglePinClick}
+                      onClick={handleMarkDoneClick}
                     >
-                      {isPinned ? (
-                        <PinOffIcon className="size-3.5" />
-                      ) : (
-                        <PinIcon className="size-3.5" />
-                      )}
+                      <CheckIcon className="size-3.5" />
                     </button>
                   }
                 />
-                <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
+                <TooltipPopup side="top">Done</TooltipPopup>
               </Tooltip>
-              {!isThreadArchiveDisabled && appSettingsConfirmThreadArchive ? (
-                <button
-                  type="button"
-                  data-thread-selection-safe
-                  data-testid={`thread-archive-${thread.id}`}
-                  aria-label={`Archive ${thread.title}`}
-                  className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
-                  onPointerDown={stopPropagationOnPointerDown}
-                  onClick={handleStartArchiveConfirmation}
-                >
-                  <ArchiveIcon className="size-3.5" />
-                </button>
-              ) : !isThreadArchiveDisabled ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        data-testid={`thread-archive-${thread.id}`}
-                        aria-label={`Archive ${thread.title}`}
-                        className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
-                        onPointerDown={stopPropagationOnPointerDown}
-                        onClick={handleArchiveImmediateClick}
-                      >
-                        <ArchiveIcon className="size-3.5" />
-                      </button>
-                    }
-                  />
-                  <TooltipPopup side="top">Archive</TooltipPopup>
-                </Tooltip>
-              ) : (
-                <button
-                  type="button"
-                  data-thread-selection-safe
-                  data-testid={`thread-archive-${thread.id}`}
-                  aria-label={`Archive ${thread.title} unavailable while thread is ${archiveUnavailableReason}`}
-                  title={`Archive unavailable while thread is ${archiveUnavailableReason}`}
-                  disabled
-                  className="inline-flex size-5 cursor-default items-center justify-center text-muted-foreground/25"
-                >
-                  <ArchiveIcon className="size-3.5" />
-                </button>
-              )}
-            </div>
-          )}
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    data-testid={`thread-pin-${thread.id}`}
+                    aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
+                    aria-pressed={isPinned}
+                    className={cn(
+                      "inline-flex size-5 cursor-pointer items-center justify-center transition-colors pointer-coarse:size-7 focus-ring",
+                      isPinned
+                        ? "text-primary-readable hover:text-primary"
+                        : "text-muted-foreground/60 hover:text-foreground",
+                    )}
+                    onPointerDown={stopPropagationOnPointerDown}
+                    onClick={handleTogglePinClick}
+                  >
+                    {isPinned ? (
+                      <PinOffIcon className="size-3.5" />
+                    ) : (
+                      <PinIcon className="size-3.5" />
+                    )}
+                  </button>
+                }
+              />
+              <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
+            </Tooltip>
+          </div>
         </div>
       </ThreadHoverCard>
     </li>
@@ -719,12 +577,17 @@ export interface InboxDoneRowProps {
   projectLabel: string | null;
   doneAt: string | null;
   isActive: boolean;
+  appSettingsConfirmThreadArchive: boolean;
+  confirmingArchiveThreadKey: string | null;
+  setConfirmingArchiveThreadKey: React.Dispatch<React.SetStateAction<string | null>>;
+  confirmArchiveButtonRefs: React.RefObject<Map<string, HTMLButtonElement>>;
   navigateToThread: (threadRef: ScopedThreadRef) => void;
   handleThreadContextMenu: (
     threadRef: ScopedThreadRef,
     position: { x: number; y: number },
   ) => Promise<void>;
   reopenThread: (threadKey: string) => void;
+  attemptArchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
 }
 
 /**
@@ -738,9 +601,14 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     projectLabel,
     doneAt,
     isActive,
+    appSettingsConfirmThreadArchive,
+    confirmingArchiveThreadKey,
+    setConfirmingArchiveThreadKey,
+    confirmArchiveButtonRefs,
     navigateToThread,
     handleThreadContextMenu,
     reopenThread,
+    attemptArchiveThread,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
@@ -778,9 +646,71 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     },
     [],
   );
+  const clearConfirmingArchive = useCallback(() => {
+    setConfirmingArchiveThreadKey((current) => (current === threadKey ? null : current));
+  }, [setConfirmingArchiveThreadKey, threadKey]);
+  const handleMouseLeave = useCallback(() => {
+    clearConfirmingArchive();
+  }, [clearConfirmingArchive]);
+  const handleBlurCapture = useCallback(
+    (event: React.FocusEvent<HTMLLIElement>) => {
+      const currentTarget = event.currentTarget;
+      requestAnimationFrame(() => {
+        if (currentTarget.contains(document.activeElement)) {
+          return;
+        }
+        clearConfirmingArchive();
+      });
+    },
+    [clearConfirmingArchive],
+  );
+  const handleConfirmArchiveRef = useCallback(
+    (element: HTMLButtonElement | null) => {
+      if (element) {
+        confirmArchiveButtonRefs.current.set(threadKey, element);
+      } else {
+        confirmArchiveButtonRefs.current.delete(threadKey);
+      }
+    },
+    [confirmArchiveButtonRefs, threadKey],
+  );
+  const handleConfirmArchiveClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      clearConfirmingArchive();
+      void attemptArchiveThread(threadRef);
+    },
+    [attemptArchiveThread, clearConfirmingArchive, threadRef],
+  );
+  const handleStartArchiveConfirmation = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setConfirmingArchiveThreadKey(threadKey);
+      requestAnimationFrame(() => {
+        confirmArchiveButtonRefs.current.get(threadKey)?.focus();
+      });
+    },
+    [confirmArchiveButtonRefs, setConfirmingArchiveThreadKey, threadKey],
+  );
+  const handleArchiveImmediateClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void attemptArchiveThread(threadRef);
+    },
+    [attemptArchiveThread, threadRef],
+  );
+  const isConfirmingArchive = confirmingArchiveThreadKey === threadKey;
 
   return (
-    <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
+    <li
+      className={ROW_ITEM_CLASS_NAME}
+      data-thread-item
+      onMouseLeave={handleMouseLeave}
+      onBlurCapture={handleBlurCapture}
+    >
       <div
         role="button"
         tabIndex={0}
@@ -815,20 +745,83 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
         <span className="shrink-0 font-mono text-[11px] text-muted-foreground/45 transition-opacity duration-150 group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0">
           {doneAt ? formatRelativeTimeLabel(doneAt) : null}
         </span>
-        <div className={cn(ROW_ACTIONS_CLASS_NAME, "top-1/2 right-1.5 -translate-y-1/2")}>
-          <button
-            type="button"
-            data-thread-selection-safe
-            data-testid={`done-reopen-${thread.id}`}
-            aria-label={`Reopen ${thread.title}`}
-            className="inline-flex h-5 cursor-pointer items-center gap-1 rounded-sm px-1.5 text-[11px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-ring"
-            onPointerDown={stopPropagationOnPointerDown}
-            onClick={handleReopenClick}
+        {isConfirmingArchive ? (
+          <div
+            className={cn(
+              ROW_ACTIONS_CLASS_NAME,
+              "top-1/2 right-1.5 pointer-events-auto -translate-y-1/2 opacity-100",
+            )}
           >
-            <Undo2Icon className="size-3" />
-            Reopen
-          </button>
-        </div>
+            <button
+              ref={handleConfirmArchiveRef}
+              type="button"
+              data-thread-selection-safe
+              data-testid={`thread-archive-confirm-${thread.id}`}
+              aria-label={`Confirm archive ${thread.title}`}
+              className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
+              onPointerDown={stopPropagationOnPointerDown}
+              onClick={handleConfirmArchiveClick}
+            >
+              Confirm
+            </button>
+          </div>
+        ) : (
+          // A done thread is settled by definition, so archive is always
+          // available here -- the "running" guard the live rows needed is
+          // exactly the state that keeps a thread out of this list.
+          <div className={cn(ROW_ACTIONS_CLASS_NAME, "top-1/2 right-1.5 -translate-y-1/2")}>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    data-testid={`done-reopen-${thread.id}`}
+                    aria-label={`Reopen ${thread.title}`}
+                    className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
+                    onPointerDown={stopPropagationOnPointerDown}
+                    onClick={handleReopenClick}
+                  >
+                    <Undo2Icon className="size-3.5" />
+                  </button>
+                }
+              />
+              <TooltipPopup side="top">Reopen</TooltipPopup>
+            </Tooltip>
+            {appSettingsConfirmThreadArchive ? (
+              <button
+                type="button"
+                data-thread-selection-safe
+                data-testid={`thread-archive-${thread.id}`}
+                aria-label={`Archive ${thread.title}`}
+                className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
+                onPointerDown={stopPropagationOnPointerDown}
+                onClick={handleStartArchiveConfirmation}
+              >
+                <ArchiveIcon className="size-3.5" />
+              </button>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      data-thread-selection-safe
+                      data-testid={`thread-archive-${thread.id}`}
+                      aria-label={`Archive ${thread.title}`}
+                      className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground/60 transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring"
+                      onPointerDown={stopPropagationOnPointerDown}
+                      onClick={handleArchiveImmediateClick}
+                    >
+                      <ArchiveIcon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">Archive</TooltipPopup>
+              </Tooltip>
+            )}
+          </div>
+        )}
       </div>
     </li>
   );

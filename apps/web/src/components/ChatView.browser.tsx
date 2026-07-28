@@ -2197,12 +2197,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find phone thread row.",
       );
-      const archiveButton = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find archive button.",
+      const pinButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
+        "Unable to find pin button.",
       );
-      const compactActions = archiveButton.parentElement;
+      // Archive belongs to the Done tail now; a live row offers pin and done.
+      expect(document.querySelector(`[data-testid="thread-archive-${THREAD_ID}"]`)).toBeNull();
+      const compactActions = pinButton.parentElement;
       const timestampWrapper = await waitForElement(
         () => threadRow.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
         "Unable to find thread timestamp.",
@@ -5086,28 +5087,31 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find thread row.",
       );
-      const archiveButton = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find archive button.",
+      const doneButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-done-${THREAD_ID}"]`),
+        "Unable to find done button.",
       );
       const pinButton = await waitForElement(
         () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
         "Unable to find pin button.",
       );
-      const compactActions = archiveButton.parentElement;
+      const compactActions = pinButton.parentElement;
       expect(
         compactActions,
         "Thread actions should render inside a shared visibility wrapper.",
       ).not.toBeNull();
-      const threadItem = archiveButton.closest("li");
+      const threadItem = pinButton.closest("li");
       expect(threadItem?.className).toContain("group/thread-row");
       expect(compactActions?.className).toContain("group-hover/thread-row:opacity-100");
       expect(compactActions?.className).toContain("group-focus-within/thread-row:opacity-100");
       expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
       expect(pinButton.getAttribute("aria-pressed")).toBe("false");
+      expect(doneButton.getAttribute("aria-label")).toBe(`Mark ${THREAD_TITLE} done`);
+      // Icons only: the words for these two live in their tooltips.
+      expect(doneButton.textContent).toBe("");
+      expect(pinButton.textContent).toBe("");
       expect(
-        pinButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+        doneButton.compareDocumentPosition(pinButton) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       // Hidden until the row is hovered or focused, which is the whole point of
       // the shared wrapper.
@@ -5162,6 +5166,30 @@ describe("ChatView timeline estimator parity (full app)", () => {
         document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
         "A settled thread offers Done.",
       ).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps General Chats as its own destination above the scope row", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-general-chats-nav" as MessageId,
+        targetText: "general chats nav target",
+      }),
+    });
+
+    try {
+      const chatsRow = page.getByTestId("sidebar-general-chats");
+      await expect.element(chatsRow).toBeInTheDocument();
+      await chatsRow.click();
+
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/chats",
+        "General Chats should open the chats page.",
+      );
     } finally {
       await mounted.cleanup();
     }
@@ -5297,10 +5325,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
+      // live -> done -> archived: archive is only offered once a thread has
+      // been filed away.
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      useUiStateStore.getState().markThreadDone(THREAD_KEY, new Date().toISOString());
 
-      await expect.element(threadRow).toBeInTheDocument();
-      await threadRow.hover();
+      const doneRow = page.getByTestId(`done-row-${THREAD_ID}`);
+      await expect.element(doneRow).toBeInTheDocument();
+      await doneRow.hover();
 
       const archiveButton = page.getByTestId(`thread-archive-${THREAD_ID}`);
       await expect.element(archiveButton).toBeInTheDocument();

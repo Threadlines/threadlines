@@ -1,4 +1,4 @@
-import { SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
+import { MessagesSquareIcon, SearchIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { ThreadlinesGlyph } from "./Icons";
 import { SectionLabel } from "./ui/threadline";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -175,14 +175,17 @@ function buildThreadJumpLabelMap(input: {
  */
 function InboxSectionHeader({ label, children }: { label: string; children?: React.ReactNode }) {
   return (
-    <div className="mt-1 flex items-baseline gap-2 border-t border-border px-3 pt-2.5 pb-1.5">
-      <SectionLabel tick={false} className="font-mono text-[11px] tracking-[0.06em]">
-        {label}
-      </SectionLabel>
-      <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/45">
-        {children}
-      </span>
-    </div>
+    <>
+      <SidebarSeparator className="my-1.5" />
+      <div className="flex items-baseline gap-2 px-3 pb-1.5">
+        <SectionLabel tick={false} className="font-mono text-[11px] tracking-[0.06em]">
+          {label}
+        </SectionLabel>
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/45">
+          {children}
+        </span>
+      </div>
+    </>
   );
 }
 
@@ -299,6 +302,7 @@ export default function Sidebar() {
   const router = useRouter();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
+  const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
@@ -470,14 +474,6 @@ export default function Sidebar() {
     [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
   );
   const hasWorkspaceProjects = sidebarProjects.some((project) => project.kind !== "general-chat");
-  const hasGeneralChats = useMemo(
-    () =>
-      sidebarThreads.some(
-        (thread) =>
-          thread.archivedAt === null && generalChatProjectKeys.has(resolveThreadProjectKey(thread)),
-      ),
-    [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
-  );
 
   const entries = useMemo<InboxEntry[]>(
     () =>
@@ -1282,13 +1278,30 @@ export default function Sidebar() {
                 </div>
               </SidebarGroup>
 
+              <div className="px-2 pb-1">
+                <button
+                  type="button"
+                  data-testid="sidebar-general-chats"
+                  aria-current={isOnChats ? "page" : undefined}
+                  className={cn(
+                    "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1.5 text-xs transition-colors focus-ring",
+                    isOnChats
+                      ? "bg-sidebar-accent text-foreground"
+                      : "text-muted-foreground/80 hover:bg-sidebar-accent/60 hover:text-foreground",
+                  )}
+                  onClick={handleOpenChats}
+                >
+                  <MessagesSquareIcon className="size-3.5 shrink-0" />
+                  <span className="min-w-0 truncate">General Chats</span>
+                </button>
+              </div>
+
               <ProjectScopeMenu
                 options={scopeOptions}
                 projectByKey={sidebarProjectByKey}
                 scopedProjectKey={scopedProjectKeyValue}
                 onScopeChange={handleScopeChange}
                 onAddProject={openAddProjectCommandPalette}
-                onOpenChats={hasGeneralChats ? handleOpenChats : null}
               />
 
               <InboxSectionHeader label="Threads">
@@ -1321,15 +1334,11 @@ export default function Sidebar() {
                       jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
                       canMarkDone={entry.canMarkDone}
                       orderedThreadKeys={orderedThreadKeys}
-                      appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
                       renamingThreadKey={renamingThreadKey}
                       renamingTitle={renamingTitle}
                       setRenamingTitle={setRenamingTitle}
                       renamingInputRef={renamingInputRef}
                       renamingCommittedRef={renamingCommittedRef}
-                      confirmingArchiveThreadKey={confirmingArchiveThreadKey}
-                      setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
-                      confirmArchiveButtonRefs={confirmArchiveButtonRefs}
                       handleThreadClick={handleThreadClick}
                       navigateToThread={navigateToThread}
                       handleMultiSelectContextMenu={handleMultiSelectContextMenu}
@@ -1338,7 +1347,6 @@ export default function Sidebar() {
                       commitRename={commitRename}
                       cancelRename={cancelRename}
                       attemptTogglePinThread={attemptTogglePinThread}
-                      attemptArchiveThread={attemptArchiveThread}
                       markThreadDone={markThreadDone}
                       openPrLink={openPrLink}
                     />
@@ -1347,20 +1355,23 @@ export default function Sidebar() {
               )}
 
               {hiddenLiveCount > 0 || liveListExpanded ? (
-                <button
-                  type="button"
-                  data-thread-selection-safe
-                  data-testid="inbox-live-show-more"
-                  className={cn(
-                    "w-full cursor-pointer px-3 pt-2 pb-2.5 text-left text-[11px]",
-                    "text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring",
-                  )}
-                  onClick={() => {
-                    setLiveListExpanded((expanded) => !expanded);
-                  }}
-                >
-                  {liveListExpanded ? "Show fewer" : `Show ${hiddenLiveCount} more…`}
-                </button>
+                <>
+                  <SidebarSeparator className="my-1.5" />
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    data-testid="inbox-live-show-more"
+                    className={cn(
+                      "w-full cursor-pointer px-3 pb-1.5 text-left text-[11px]",
+                      "text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring",
+                    )}
+                    onClick={() => {
+                      setLiveListExpanded((expanded) => !expanded);
+                    }}
+                  >
+                    {liveListExpanded ? "Show fewer" : `Show ${hiddenLiveCount} more…`}
+                  </button>
+                </>
               ) : null}
 
               {doneEntries.length > 0 ? (
@@ -1374,9 +1385,14 @@ export default function Sidebar() {
                         projectLabel={scopedProjectKeyValue === null ? entry.projectLabel : null}
                         doneAt={entry.doneAt}
                         isActive={routeThreadKey === entry.threadKey}
+                        appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
+                        confirmingArchiveThreadKey={confirmingArchiveThreadKey}
+                        setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
+                        confirmArchiveButtonRefs={confirmArchiveButtonRefs}
                         navigateToThread={navigateToThread}
                         handleThreadContextMenu={handleThreadContextMenu}
                         reopenThread={reopenThread}
+                        attemptArchiveThread={attemptArchiveThread}
                       />
                     ))}
                   </ul>
