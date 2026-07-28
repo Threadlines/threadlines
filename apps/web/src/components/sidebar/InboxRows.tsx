@@ -705,115 +705,119 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >
-      <div
-        role="button"
-        tabIndex={0}
-        data-testid={`done-row-${thread.id}`}
-        className={cn(
-          ROW_SURFACE_CLASS_NAME,
-          "flex items-center gap-2 px-3 py-1.5",
-          resolveRowSurfaceTone({ isActive, isSelected: false }),
-        )}
-        onClick={handleClick}
-        onKeyDown={handleKeyDown}
-        onContextMenu={handleContextMenu}
-      >
-        <span
-          className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
-          data-testid={`done-title-${thread.id}`}
+      {/* Same card the live rows carry: a wrapped thread's detail is no less
+          worth a hover, and status={null} reads as its idle state. */}
+      <ThreadHoverCard thread={thread} status={null} side="right">
+        <div
+          role="button"
+          tabIndex={0}
+          data-testid={`done-row-${thread.id}`}
+          className={cn(
+            ROW_SURFACE_CLASS_NAME,
+            "flex items-center gap-2 px-3 py-1.5",
+            resolveRowSurfaceTone({ isActive, isSelected: false }),
+          )}
+          onClick={handleClick}
+          onKeyDown={handleKeyDown}
+          onContextMenu={handleContextMenu}
         >
-          {thread.title}
-        </span>
-        {projectLabel ? (
-          <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground/45">
-            {threadProjectCwd ? (
-              <ProjectFavicon
-                cwd={threadProjectCwd}
-                environmentId={thread.environmentId}
-                className="size-3 shrink-0 opacity-70"
-              />
-            ) : null}
-            <span className="truncate">{projectLabel}</span>
+          <span
+            className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+            data-testid={`done-title-${thread.id}`}
+          >
+            {thread.title}
           </span>
-        ) : null}
-        <span className={ROW_META_SLOT_CLASS_NAME}>
-          <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45 transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0">
-            {doneAt ? formatRelativeTimeLabel(doneAt) : null}
-          </span>
-          {isConfirmingArchive ? (
-            <div className={cn(ROW_ACTIONS_CLASS_NAME, "sm:pointer-events-auto sm:opacity-100")}>
-              <button
-                ref={handleConfirmArchiveRef}
-                type="button"
-                data-thread-selection-safe
-                data-testid={`thread-archive-confirm-${thread.id}`}
-                aria-label={`Confirm archive ${thread.title}`}
-                className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
-                onPointerDown={stopPropagationOnPointerDown}
-                onClick={handleConfirmArchiveClick}
-              >
-                Confirm
-              </button>
-            </div>
-          ) : (
-            // A done thread is settled by definition, so archive is always
-            // available here -- the "running" guard the live rows needed is
-            // exactly the state that keeps a thread out of this list.
-            <div className={ROW_ACTIONS_CLASS_NAME}>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      data-thread-selection-safe
-                      data-testid={`done-reopen-${thread.id}`}
-                      aria-label={`Reopen ${thread.title}`}
-                      className={ROW_ACTION_BUTTON_CLASS_NAME}
-                      onPointerDown={stopPropagationOnPointerDown}
-                      onClick={handleReopenClick}
-                    >
-                      <Undo2Icon className="size-3.5" />
-                    </button>
-                  }
+          {projectLabel ? (
+            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground/45">
+              {threadProjectCwd ? (
+                <ProjectFavicon
+                  cwd={threadProjectCwd}
+                  environmentId={thread.environmentId}
+                  className="size-3 shrink-0 opacity-70"
                 />
-                <TooltipPopup side="top">Reopen</TooltipPopup>
-              </Tooltip>
-              {appSettingsConfirmThreadArchive ? (
+              ) : null}
+              <span className="truncate">{projectLabel}</span>
+            </span>
+          ) : null}
+          <span className={ROW_META_SLOT_CLASS_NAME}>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45 transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0">
+              {doneAt ? formatRelativeTimeLabel(doneAt) : null}
+            </span>
+            {isConfirmingArchive ? (
+              <div className={cn(ROW_ACTIONS_CLASS_NAME, "sm:pointer-events-auto sm:opacity-100")}>
                 <button
+                  ref={handleConfirmArchiveRef}
                   type="button"
                   data-thread-selection-safe
-                  data-testid={`thread-archive-${thread.id}`}
-                  aria-label={`Archive ${thread.title}`}
-                  className={ROW_ACTION_BUTTON_CLASS_NAME}
+                  data-testid={`thread-archive-confirm-${thread.id}`}
+                  aria-label={`Confirm archive ${thread.title}`}
+                  className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
                   onPointerDown={stopPropagationOnPointerDown}
-                  onClick={handleStartArchiveConfirmation}
+                  onClick={handleConfirmArchiveClick}
                 >
-                  <ArchiveIcon className="size-3.5" />
+                  Confirm
                 </button>
-              ) : (
+              </div>
+            ) : (
+              // A done thread is settled by definition, so archive is always
+              // available here -- the "running" guard the live rows needed is
+              // exactly the state that keeps a thread out of this list.
+              <div className={ROW_ACTIONS_CLASS_NAME}>
                 <Tooltip>
                   <TooltipTrigger
                     render={
                       <button
                         type="button"
                         data-thread-selection-safe
-                        data-testid={`thread-archive-${thread.id}`}
-                        aria-label={`Archive ${thread.title}`}
+                        data-testid={`done-reopen-${thread.id}`}
+                        aria-label={`Reopen ${thread.title}`}
                         className={ROW_ACTION_BUTTON_CLASS_NAME}
                         onPointerDown={stopPropagationOnPointerDown}
-                        onClick={handleArchiveImmediateClick}
+                        onClick={handleReopenClick}
                       >
-                        <ArchiveIcon className="size-3.5" />
+                        <Undo2Icon className="size-3.5" />
                       </button>
                     }
                   />
-                  <TooltipPopup side="top">Archive</TooltipPopup>
+                  <TooltipPopup side="top">Reopen</TooltipPopup>
                 </Tooltip>
-              )}
-            </div>
-          )}
-        </span>
-      </div>
+                {appSettingsConfirmThreadArchive ? (
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    data-testid={`thread-archive-${thread.id}`}
+                    aria-label={`Archive ${thread.title}`}
+                    className={ROW_ACTION_BUTTON_CLASS_NAME}
+                    onPointerDown={stopPropagationOnPointerDown}
+                    onClick={handleStartArchiveConfirmation}
+                  >
+                    <ArchiveIcon className="size-3.5" />
+                  </button>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          data-thread-selection-safe
+                          data-testid={`thread-archive-${thread.id}`}
+                          aria-label={`Archive ${thread.title}`}
+                          className={ROW_ACTION_BUTTON_CLASS_NAME}
+                          onPointerDown={stopPropagationOnPointerDown}
+                          onClick={handleArchiveImmediateClick}
+                        >
+                          <ArchiveIcon className="size-3.5" />
+                        </button>
+                      }
+                    />
+                    <TooltipPopup side="top">Archive</TooltipPopup>
+                  </Tooltip>
+                )}
+              </div>
+            )}
+          </span>
+        </div>
+      </ThreadHoverCard>
     </li>
   );
 });
