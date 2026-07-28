@@ -92,6 +92,17 @@ const INVENTORY_COMMAND_TIMEOUT = Duration.seconds(20);
 const CODEX_APP_SERVER_INVENTORY_TIMEOUT = Duration.seconds(20);
 const decodeCodexJson = Schema.decodeUnknownSync(Schema.Json);
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
+/**
+ * A cold `app/list` resolves the whole apps/connectors directory through the ChatGPT backend and
+ * reliably takes 11-16s (measured against codex 0.145.0); the app-server only caches it in memory,
+ * and every inventory read spawns a fresh process. Callers keep apps off the initial-paint path
+ * (`includeApps: false`), so the deferred fetch can afford a generous timeout, and successful
+ * reads are cached below so the cost is paid once per server run, not per settings visit.
+ */
+const CODEX_APP_SERVER_APPS_REQUEST_TIMEOUT = Duration.seconds(30);
+/** The overall inventory budget must outlast the apps request when apps are included. */
+const CODEX_APP_SERVER_INVENTORY_WITH_APPS_TIMEOUT = Duration.seconds(45);
+const CODEX_APPS_CACHE_TTL = Duration.minutes(15);
 const CODEX_MCP_ORIGIN_TIMEOUT = Duration.seconds(3);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
@@ -886,18 +897,47 @@ function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensi
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+/**
+ * Last-good `app/list` results, keyed by the identity that determines what the backend returns
+ * (binary, home/account, and optional thread gating). Entries within the TTL satisfy inventory
+ * reads without a request; entries past it still serve as a fallback when a refresh fails.
+ */
+type CodexAppsCacheEntry = {
+  readonly apps: ProviderExtensionApp[];
+  readonly fetchedAtMillis: number;
+};
+
+const codexAppsCache = new Map<string, CodexAppsCacheEntry>();
+
+export function invalidateCodexAppsCache(): void {
+  codexAppsCache.clear();
+}
+
+function codexAppsCacheKey(input: {
+  readonly binaryPath: string | undefined;
+  readonly effectiveHomePath: string | undefined;
+  readonly providerThreadId: string | undefined;
+}): string {
+  return [
+    input.binaryPath ?? "codex",
+    input.effectiveHomePath ?? "default-home",
+    input.providerThreadId ?? "no-thread",
+  ].join("|");
+}
+
 function codexInventoryTimeoutMessage(label: string): string {
   return `Timed out reading Codex ${label}.`;
 }
 
 function collectCodexRequest<A, E, R>(
   label: string,
+  timeout: Duration.Duration = CODEX_APP_SERVER_REQUEST_TIMEOUT,
 ): (
   effect: Effect.Effect<A, E, R>,
 ) => Effect.Effect<Result.Result<A, E | ProviderExtensionsError>, never, R> {
   return (effect) =>
     effect.pipe(
-      Effect.timeoutOption(CODEX_APP_SERVER_REQUEST_TIMEOUT),
+      Effect.timeoutOption(timeout),
       Effect.flatMap((result) =>
         Option.isSome(result)
           ? Effect.succeed(result.value)
@@ -1200,6 +1240,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     readonly environment: NodeJS.ProcessEnv;
     readonly providerThreadId?: string | undefined;
     readonly includeMcpServers?: boolean | undefined;
+    readonly includeApps?: boolean | undefined;
   }): Effect.fn.Return<
     Pick<
       ProviderExtensionProviderInventory,
@@ -1211,6 +1252,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       | "mcpServersMessage"
       | "mcpServersTruncated"
       | "apps"
+      | "appsStatus"
+      | "appsMessage"
       | "appsTruncated"
       | "status"
       | "message"
@@ -1236,6 +1279,20 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       ...input.environment,
       ...(layout.effectiveHomePath ? { CODEX_HOME: layout.effectiveHomePath } : {}),
     };
+    const includeApps = input.includeApps ?? true;
+    const appsCacheKey = codexAppsCacheKey({
+      binaryPath: input.config.binaryPath,
+      effectiveHomePath: layout.effectiveHomePath,
+      providerThreadId: input.providerThreadId,
+    });
+    const cachedApps = codexAppsCache.get(appsCacheKey);
+    const nowMillis = DateTime.toEpochMillis(yield* DateTime.now);
+    const freshCachedApps =
+      cachedApps !== undefined &&
+      nowMillis - cachedApps.fetchedAtMillis <= Duration.toMillis(CODEX_APPS_CACHE_TTL)
+        ? cachedApps
+        : undefined;
+    const fetchApps = includeApps && freshCachedApps === undefined;
     const clientResult = yield* Effect.scoped(
       Effect.gen(function* () {
         const clientContext = yield* Layer.build(
@@ -1283,6 +1340,31 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             )
           : Effect.succeed(Result.succeed(emptyMcpServerResponse));
 
+        const appsEffect = fetchApps
+          ? client.request("app/list", appListParams).pipe(
+              Effect.catch((cause) =>
+                input.providerThreadId !== undefined && isThreadNotFoundError(cause)
+                  ? client.request("app/list", appListWithoutThreadParams)
+                  : Effect.fail(cause),
+              ),
+              Effect.catch((cause) =>
+                isCodexAppsDirectoryAccessDeniedError(cause)
+                  ? Effect.succeed({ data: [] })
+                  : Effect.fail(cause),
+              ),
+              Effect.map(mapCodexApps),
+              Effect.tap((apps) =>
+                Effect.map(DateTime.now, (now) => {
+                  codexAppsCache.set(appsCacheKey, {
+                    apps,
+                    fetchedAtMillis: DateTime.toEpochMillis(now),
+                  });
+                }),
+              ),
+              collectCodexRequest("apps", CODEX_APP_SERVER_APPS_REQUEST_TIMEOUT),
+            )
+          : Effect.succeed(Result.succeed<ProviderExtensionApp[]>(freshCachedApps?.apps ?? []));
+
         const pluginsEffect = yield* Effect.cached(
           client.request("plugin/list", { cwds: [input.cwd] }).pipe(
             Effect.map((response) => ({
@@ -1304,6 +1386,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             : Effect.succeed(undefined)
         ).pipe(Effect.forkScoped);
 
+        // The requests are independent JSON-RPC calls; serializing them just delays whichever
+        // runs last and starts its timeout window late, so let all four go at once.
         const [plugins, skills, mcpServerResponse, apps] = yield* Effect.all(
           [
             pluginsEffect,
@@ -1312,22 +1396,9 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
               collectCodexRequest("skills"),
             ),
             mcpServersEffect,
-            client.request("app/list", appListParams).pipe(
-              Effect.catch((cause) =>
-                input.providerThreadId !== undefined && isThreadNotFoundError(cause)
-                  ? client.request("app/list", appListWithoutThreadParams)
-                  : Effect.fail(cause),
-              ),
-              Effect.catch((cause) =>
-                isCodexAppsDirectoryAccessDeniedError(cause)
-                  ? Effect.succeed({ data: [] })
-                  : Effect.fail(cause),
-              ),
-              Effect.map(mapCodexApps),
-              collectCodexRequest("apps"),
-            ),
+            appsEffect,
           ],
-          { concurrency: 2 },
+          { concurrency: 4 },
         );
         const mcpPluginOwnersExit = mcpPluginOwnersFiber.pollUnsafe();
         const mcpPluginOwners =
@@ -1339,7 +1410,14 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           : Result.succeed(mapCodexMcpServers(mcpServerResponse.success, mcpPluginOwners));
         return { includeMcpServers, plugins, skills, mcpServers, apps };
       }),
-    ).pipe(Effect.result, Effect.timeoutOption(CODEX_APP_SERVER_INVENTORY_TIMEOUT));
+    ).pipe(
+      Effect.result,
+      Effect.timeoutOption(
+        fetchApps
+          ? CODEX_APP_SERVER_INVENTORY_WITH_APPS_TIMEOUT
+          : CODEX_APP_SERVER_INVENTORY_TIMEOUT,
+      ),
+    );
 
     if (Option.isNone(clientResult)) {
       return {
@@ -1370,11 +1448,24 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       resultMessage(data.plugins),
       Result.isSuccess(data.plugins) ? data.plugins.success.loadErrorMessage : undefined,
       resultMessage(data.skills),
-      resultMessage(data.apps),
     ].filter((message): message is string => Boolean(message));
     const mcpServersMessage = Result.isFailure(data.mcpServers)
       ? resultMessage(data.mcpServers)
       : undefined;
+    // Apps failures report through their own section like MCP servers do: the Apps tab shows the
+    // error and a retry, without flagging the whole provider as "loaded with issues". When a
+    // refresh fails but an earlier read succeeded, the stale list beats an empty error state.
+    const appsFailureMessage = Result.isFailure(data.apps) ? resultMessage(data.apps) : undefined;
+    const staleAppsFallback =
+      Result.isFailure(data.apps) && cachedApps !== undefined ? cachedApps.apps : undefined;
+    const apps = Result.isSuccess(data.apps) ? data.apps.success : (staleAppsFallback ?? []);
+    const appsLoaded = Result.isSuccess(data.apps) || staleAppsFallback !== undefined;
+    const appsStatus =
+      includeApps || freshCachedApps !== undefined ? (appsLoaded ? "ready" : "error") : "deferred";
+    const appsMessage =
+      appsFailureMessage !== undefined && staleAppsFallback !== undefined
+        ? `${appsFailureMessage} Showing the last loaded apps.`
+        : appsFailureMessage;
 
     const plugins = Result.isSuccess(data.plugins) ? data.plugins.success.plugins : [];
     const marketplaces = Result.isSuccess(data.plugins) ? data.plugins.success.marketplaces : [];
@@ -1400,11 +1491,10 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       data.mcpServers.success.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
         ? { mcpServersTruncated: true }
         : {}),
-      apps: Result.isSuccess(data.apps) ? data.apps.success : [],
-      ...(Result.isSuccess(data.apps) &&
-      data.apps.success.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
-        ? { appsTruncated: true }
-        : {}),
+      apps,
+      appsStatus,
+      ...(appsMessage ? { appsMessage } : {}),
+      ...(apps.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT ? { appsTruncated: true } : {}),
     };
   },
 );
@@ -3030,6 +3120,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
     readonly cwd: string;
     readonly providerThreadId?: string | undefined;
     readonly includeMcpServers?: boolean | undefined;
+    readonly includeApps?: boolean | undefined;
   }) {
     const processEnv = mergeProviderInstanceEnvironment(input.config.environment ?? []);
     const base = {
@@ -3071,6 +3162,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
         ...(input.includeMcpServers !== undefined
           ? { includeMcpServers: input.includeMcpServers }
           : {}),
+        ...(input.includeApps !== undefined ? { includeApps: input.includeApps } : {}),
       });
       return {
         ...base,
@@ -4092,6 +4184,7 @@ export const readProviderExtensionsInventory = Effect.fn(
             cwd,
             providerThreadId: scopedProviderThreadId,
             includeMcpServers: input.request.includeMcpServers,
+            includeApps: input.request.includeApps,
           }).pipe(
             Effect.catch((error: ProviderExtensionsError) =>
               Effect.succeed({

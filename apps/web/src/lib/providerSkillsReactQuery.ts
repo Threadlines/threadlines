@@ -42,6 +42,7 @@ export function providerSkillsQueryOptions(input: {
         cwd: input.cwd,
         providerInstanceId: input.providerInstanceId,
         includeMcpServers: false,
+        includeApps: false,
       });
       const provider = inventory.providers.find(
         (candidate) => candidate.instanceId === input.providerInstanceId,
