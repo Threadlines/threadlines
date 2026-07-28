@@ -105,6 +105,33 @@ describe("createPreviewAutomationHandler", () => {
     expect(activity.at(-1)).toBe('"Sign in" \u2192 "fixture"');
   });
 
+  it("names a coordinate target by its coordinates", async () => {
+    // A drag between two points has no element to name, and an activity line
+    // reading "dragged" with nothing after it is the same as no line at all.
+    const seen: AgentActivity[] = [];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewDrag: () => Promise.resolve({ x: 300, y: 120 }),
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: () => {},
+        onAgentActivity: (activity) => seen.push(activity),
+        tabs: () => [],
+        selectTab: () => {},
+      }),
+    );
+
+    await handle(
+      request("drag", { from: { point: { x: 120.4, y: 60 } }, to: { point: { x: 300, y: 60 } } }),
+    );
+
+    expect(seen[0]?.detail).toBe("120, 60 \u2192 300, 60");
+  });
+
   it("reports every tab, marking the user's and its own", async () => {
     // The agent pins itself to a tab. Without a way to see the others it
     // reports on the one it is pinned to and states that nothing else is open,

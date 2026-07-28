@@ -122,7 +122,7 @@ export const BrowserClickTool = changesThePage(
 export const BrowserMoveTool = changesThePage(
   Tool.make("browser_move", {
     description:
-      "Move the pointer onto something without clicking it. Use it for menus, tooltips and controls that only appear on hover, and to show where you are about to work. Name the target the same way as browser_click.",
+      'Move the pointer onto something without clicking it. Use it for menus, tooltips and controls that only appear on hover, and to show where you are about to work. Name the target the same way as browser_click, or give `{"point": {"x": 0, "y": 0}}` to move to a place rather than an element.',
     parameters: PreviewAutomationMoveInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
@@ -133,7 +133,7 @@ export const BrowserMoveTool = changesThePage(
 export const BrowserDragTool = changesThePage(
   Tool.make("browser_drag", {
     description:
-      "Press on one thing, drag to another, release. This is how you select a range of text, reorder an item in a list, or work a slider. Name both ends the same way as browser_click.",
+      'Press on one thing, drag to another, release. This is how you select a range of text, reorder an item in a list, or work a slider. Name both ends the same way as browser_click, or give `{"point": {"x": 0, "y": 0}}` for a place rather than an element -- a selection that starts and ends mid-word needs coordinates, which browser_evaluate can measure for you with a Range and getBoundingClientRect.',
     parameters: PreviewAutomationDragInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,

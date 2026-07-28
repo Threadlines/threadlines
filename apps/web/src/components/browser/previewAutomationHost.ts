@@ -156,6 +156,12 @@ function nameTarget(candidate: unknown): string | null {
   if (typeof target.ref === "string") return target.ref;
   if (typeof target.selector === "string") return target.selector;
   if (typeof target.locator === "string") return target.locator;
+  // A place rather than a thing, so there is no name to give: the coordinates
+  // are all there is, and they are what the pointer is about to do.
+  const point = target.point as { x?: unknown; y?: unknown } | undefined;
+  if (typeof point?.x === "number" && typeof point.y === "number") {
+    return `${Math.round(point.x)}, ${Math.round(point.y)}`;
+  }
   return null;
 }
 

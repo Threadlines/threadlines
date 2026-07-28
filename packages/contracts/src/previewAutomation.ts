@@ -80,12 +80,24 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
  * a thing that is ordinary to want and impossible to express as a role and a
  * name. `selector` is plain CSS, and `text` is for when the agent knows what
  * the button says and nothing else.
+ *
+ * `point` is none of those: it is a place rather than a thing. A mouse works in
+ * coordinates, and an element-only vocabulary quietly rules out everything that
+ * happens between elements -- selecting two words out of a heading, drawing on
+ * a canvas, dropping onto empty space. Asked to drag across part of a heading,
+ * an agent declined the drag tool and scripted a DOM Range instead, which was
+ * the right call given what it had been offered.
+ *
+ * Only the pointer operations take it. There is no node behind a point, so
+ * anything that needs an element says so rather than guessing at whatever
+ * happens to be under the cursor.
  */
 export const PreviewAutomationTargetSchema = Schema.Union([
   Schema.Struct({ ref: Schema.String }),
   Schema.Struct({ locator: Schema.String }),
   Schema.Struct({ selector: Schema.String }),
   Schema.Struct({ text: Schema.String }),
+  Schema.Struct({ point: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }) }),
 ]);
 export type PreviewAutomationTarget = typeof PreviewAutomationTargetSchema.Type;
 

@@ -228,7 +228,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         ? `locator ${JSON.stringify(target.locator)}`
         : "selector" in target
           ? `selector ${JSON.stringify(target.selector)}`
-          : `text ${JSON.stringify(target.text)}`;
+          : "text" in target
+            ? `text ${JSON.stringify(target.text)}`
+            : `${target.point.x},${target.point.y}`;
 
   /**
    * The isolated world our element engine lives in, created if it is not there.
@@ -304,6 +306,16 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     contents: WebContents,
     target: PreviewAutomationTarget,
   ) {
+    if ("point" in target) {
+      // Deliberately not "whatever is at those coordinates". This operation
+      // needs a specific node, and hit-testing a point would hand it a parent,
+      // an overlay or the body -- wrong in a way that looks like it worked.
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        "a point names a place, not an element; this needs a ref, locator, selector or text",
+      );
+    }
     if ("locator" in target) {
       const handle = yield* evaluateInjected(contents, buildLocatorQueryScript(target.locator));
       const objectId = handle.objectId;
@@ -866,6 +878,11 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     contents: WebContents,
     target: PreviewAutomationTarget,
   ) {
+    // A point is already the answer. Everything else has to be found first and
+    // then reduced to its centre.
+    if ("point" in target) {
+      return target.point;
+    }
     const backendNodeId = yield* resolveTarget(contents, target);
     return yield* centerOf(contents, backendNodeId);
   });
