@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
-import { GitBranchIcon, ServerIcon } from "lucide-react";
+import { GitBranchIcon, LaptopIcon, ServerIcon } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
@@ -68,7 +68,9 @@ export function ThreadHoverCard({
   const savedLabel = useSavedEnvironmentRegistryStore(
     (state) => state.byId[thread.environmentId]?.label ?? null,
   );
-  const environmentLabel = isRemote ? (runtimeLabel ?? savedLabel ?? "Remote") : null;
+  // The machine the work runs on, named whenever we know its name -- local
+  // included. "Which box is this on" is the question a hover card exists for.
+  const environmentLabel = runtimeLabel ?? savedLabel ?? (isRemote ? "Remote" : null);
 
   const provider = thread.session?.provider ?? null;
   const ProviderIcon = provider ? (PROVIDER_ICON_BY_PROVIDER[provider] ?? null) : null;
@@ -93,7 +95,12 @@ export function ThreadHoverCard({
       effectiveCwd: thread.effectiveCwd,
     }),
   });
-  const branch = thread.branch ?? gitStatus.data?.refName ?? null;
+  const checkoutRef = gitStatus.data?.refName ?? null;
+  const branch = thread.branch ?? checkoutRef;
+  // Two different facts share one row, so the row says which one it is: a
+  // pinned branch belongs to the thread, a checkout ref just happens to be
+  // where its working copy sits right now.
+  const isCheckoutRef = thread.branch === null && checkoutRef !== null;
 
   return (
     <Tooltip>
@@ -116,7 +123,11 @@ export function ThreadHoverCard({
             </HoverCardDetailRow>
           ) : null}
           {environmentLabel ? (
-            <HoverCardDetailRow icon={<ServerIcon className="size-3.5" />}>
+            <HoverCardDetailRow
+              icon={
+                isRemote ? <ServerIcon className="size-3.5" /> : <LaptopIcon className="size-3.5" />
+              }
+            >
               {environmentLabel}
             </HoverCardDetailRow>
           ) : null}
@@ -126,8 +137,13 @@ export function ThreadHoverCard({
               icon={<GitBranchIcon className="size-3.5" />}
             >
               {branch ?? worktreeName}
+              {/* A real space, not a margin: the annotation has to read as
+                  part of the sentence to a screen reader too. */}
+              {isCheckoutRef ? (
+                <span className="font-sans text-muted-foreground/50">{" · checkout"}</span>
+              ) : null}
               {worktreeName && branch ? (
-                <span className="ml-1.5 text-muted-foreground/50">worktree</span>
+                <span className="font-sans text-muted-foreground/50">{" · worktree"}</span>
               ) : null}
             </HoverCardDetailRow>
           ) : null}

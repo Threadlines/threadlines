@@ -24,7 +24,7 @@ import {
 import { selectThreadTerminalState, useTerminalStateStore } from "../../terminalStateStore";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
-import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
+import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
 import { resolveWorkingTreeDiffStat } from "../ChatView.logic";
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import {
@@ -63,7 +63,8 @@ const ROW_ACTIONS_CLASS_NAME =
   "flex shrink-0 items-center gap-0.5 sm:pointer-events-none sm:absolute sm:top-1/2 sm:right-0 sm:-translate-y-1/2 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:group-hover/thread-row:pointer-events-auto sm:group-hover/thread-row:opacity-100 sm:group-focus-within/thread-row:pointer-events-auto sm:group-focus-within/thread-row:opacity-100";
 
 /** The slot a row's first line gives to the time, and to the actions. */
-const ROW_META_SLOT_CLASS_NAME = "relative ml-auto flex shrink-0 items-center gap-1.5";
+const ROW_META_SLOT_CLASS_NAME =
+  "relative ml-auto flex flex-none items-center gap-1.5 whitespace-nowrap";
 
 const ROW_ACTION_BUTTON_CLASS_NAME =
   "inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
@@ -94,7 +95,7 @@ function formatDiffCount(count: number): string {
  */
 function ThreadElapsedLabel({ startedAt }: { startedAt: string }) {
   const nowMs = useRelativeTimeTick(1_000);
-  return <>{formatElapsedDurationLabel(startedAt, nowMs)}</>;
+  return <>{formatWorkingDurationLabel(startedAt, nowMs)}</>;
 }
 
 function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }) {
@@ -227,7 +228,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
-  const showBranch = thread.branch !== null;
+  // Line one has one hard rule: the status slot on the right always fits
+  // whole, and the left cluster yields to it in a fixed order. The branch goes
+  // first and goes completely -- half a branch name is worse than none, and a
+  // row that is *doing* something has more to say than which ref it is on.
+  const hasStatusLabel = statusWord !== null || isInFlight;
+  const showBranch = thread.branch !== null && !hasStatusLabel;
 
   const handleRowClick = useCallback(
     (event: React.MouseEvent) => {
@@ -374,7 +380,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
               />
             ) : null}
             {projectLabel ? (
-              <span className="shrink-0 truncate text-muted-foreground/60">{projectLabel}</span>
+              <span className="min-w-0 truncate text-muted-foreground/60">{projectLabel}</span>
             ) : null}
             {showBranch ? (
               <span className="flex min-w-0 items-center gap-1">

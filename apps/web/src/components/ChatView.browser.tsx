@@ -5193,6 +5193,106 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("pins the search chrome above the scrolling list", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-sticky-search" as MessageId,
+        targetText: "sticky search target",
+      }),
+    });
+
+    try {
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="command-palette-trigger"]'),
+        "Unable to find the search trigger.",
+      );
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find a thread row.",
+      );
+      const viewport = document.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+
+      expect(viewport, "the sidebar list should scroll in its own viewport").not.toBeNull();
+      // The list scrolls inside the viewport; the search row is not in it, so
+      // it cannot scroll away.
+      expect(viewport!.contains(row)).toBe(true);
+      expect(viewport!.contains(trigger)).toBe(false);
+      expect(trigger.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        viewport!.getBoundingClientRect().top + 1,
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a working row's status whole and drops the branch to make room", async () => {
+    const longBranch = "feature/a-very-long-branch-name-that-would-never-fit-in-the-sidebar";
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-working-collision" as MessageId,
+      targetText: "working collision target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-working-collision" as TurnId,
+    });
+    const branched = withThreadBranch(base, longBranch);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...branched,
+        projects: base.projects.map((project) => ({
+          ...project,
+          title: "A project with a deliberately long display name",
+        })),
+        // A running session has a turn under way; that turn is what the
+        // elapsed counter counts from.
+        threads: branched.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId: "turn-working-collision" as TurnId,
+                  state: "running" as const,
+                  requestedAt: NOW_ISO,
+                  startedAt: NOW_ISO,
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find the working thread's row.",
+      );
+      const meta = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
+        "Unable to find the row's status slot.",
+      );
+
+      await vi.waitFor(
+        () => {
+          // A duration, never the relative formatter's "just now".
+          expect(meta.textContent).toMatch(/^working · \d+[smh]/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // The status slot is never the thing that gets cut.
+      expect(meta.scrollWidth).toBeLessThanOrEqual(meta.clientWidth + 1);
+      expect(meta.getBoundingClientRect().right).toBeLessThanOrEqual(
+        row.getBoundingClientRect().right,
+      );
+      // The branch yields first, and yields completely.
+      expect(row.textContent).not.toContain("feature/");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("reveals the folded tail in increments and folds it back", async () => {
     const extraThreadIds = Array.from(
       { length: 13 },

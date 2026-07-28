@@ -125,7 +125,9 @@ describe("ThreadHoverCard", () => {
     try {
       const card = await openCard(thread({ branch: null }), null);
 
-      await expect.element(card).toHaveTextContent("main");
+      // Named as what it is: where the checkout sits, not a branch the thread
+      // pinned.
+      await expect.element(card).toHaveTextContent("main · checkout");
     } finally {
       setGitStatusRefName(null);
     }
