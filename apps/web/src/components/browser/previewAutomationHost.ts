@@ -176,9 +176,16 @@ function nameTarget(candidate: unknown): string | null {
 export function createPreviewAutomationHandler(
   bridge: DesktopBridge,
   resolveTarget: () => PreviewAutomationHostTarget,
+  /** Makes a page exist before the target is read; see `prepare` on the hook. */
+  prepare?: () => Promise<void>,
 ): (request: PreviewAutomationRequest) => Promise<PreviewAutomationResponse> {
   let sequence = 0;
   return async (request: PreviewAutomationRequest): Promise<PreviewAutomationResponse> => {
+    if (prepare !== undefined) {
+      // Never fatal: whatever state preparing leaves behind, the target below
+      // describes it, and a target with no page has its own answer.
+      await prepare().catch(() => undefined);
+    }
     const target = resolveTarget();
     sequence += 1;
     const verb = ACTIVITY_VERBS[request.operation];
@@ -189,10 +196,10 @@ export function createPreviewAutomationHandler(
       return response;
     };
     if (target.webContentsId === null) {
-      return {
+      return settle({
         requestId: request.requestId,
         error: "The browser panel is open but has no page loaded yet.",
-      };
+      });
     }
     try {
       const result = await dispatch(bridge, target, target.webContentsId, request);
@@ -367,19 +374,32 @@ export function usePreviewAutomationHost(input: {
   readonly threadRef: ScopedThreadRef;
   readonly enabled: boolean;
   readonly resolveTarget: () => PreviewAutomationHostTarget;
+  /**
+   * Run before the target is resolved, to make one exist. This is where a
+   * closed panel is opened and waited for; it must settle within the broker's
+   * timeout, and it may settle without succeeding -- a target with no page is
+   * an answer the host already knows how to give.
+   */
+  readonly prepare?: () => Promise<void>;
 }): void {
   const { threadRef, enabled } = input;
   // Read through a ref so a re-render that changes which tab is active does not
   // tear the subscription down and put it back up.
   const target = useRef(input.resolveTarget);
   target.current = input.resolveTarget;
+  const prepare = useRef(input.prepare);
+  prepare.current = input.prepare;
 
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (!enabled || bridge === undefined) {
       return;
     }
-    const handle = createPreviewAutomationHandler(bridge, () => target.current());
+    const handle = createPreviewAutomationHandler(
+      bridge,
+      () => target.current(),
+      () => (prepare.current === undefined ? Promise.resolve() : prepare.current()),
+    );
 
     const api = ensureEnvironmentApi(threadRef.environmentId);
     return api.previewAutomation.connect(

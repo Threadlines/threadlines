@@ -258,6 +258,7 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
 import { BrowserPanel } from "./browser/BrowserPanel";
+import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
 import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
@@ -6488,6 +6489,12 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
+        {/* The agent's end of the browser is mounted with the thread, not with
+            the panel: a closed panel is a closed panel, not the absence of a
+            browser, and a request for the browser opens it. */}
+        {browserAvailable && routeThreadRef !== null ? (
+          <PreviewAutomationMount threadRef={routeThreadRef} />
+        ) : null}
         {browserOpen && routeThreadRef !== null ? (
           <>
             {browserExpanded ? null : (

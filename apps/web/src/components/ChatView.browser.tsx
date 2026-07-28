@@ -8,6 +8,8 @@ import {
   type EnvironmentApi,
   type MessageId,
   type OrchestrationEvent,
+  type PreviewAutomationRequest,
+  type PreviewAutomationResponse,
   type OrchestrationReadModel,
   type ProjectId,
   ProviderDriverKind,
@@ -45,6 +47,13 @@ import { render } from "vitest-browser-react";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import {
+  makeBrowserTab,
+  registerPreviewWebview,
+  resetPreviewWebviewsForTests,
+  useBrowserPanelStore,
+} from "../browserPanelStore";
+import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
@@ -224,12 +233,13 @@ function createMockEnvironmentApi(input: {
   browse: EnvironmentApi["filesystem"]["browse"];
   dispatchCommand: EnvironmentApi["orchestration"]["dispatchCommand"];
   getRevertPlan?: EnvironmentApi["orchestration"]["getRevertPlan"];
+  previewAutomation?: EnvironmentApi["previewAutomation"];
 }): EnvironmentApi {
   return {
     terminal: {} as EnvironmentApi["terminal"],
     projects: {} as EnvironmentApi["projects"],
     attachments: {} as EnvironmentApi["attachments"],
-    previewAutomation: {} as EnvironmentApi["previewAutomation"],
+    previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),
     filesystem: {
       browse: input.browse,
     },
@@ -5190,6 +5200,99 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("opens a closed browser panel for an arriving automation request", async () => {
+    // The agent asks for the page while the panel is shut. It used to be told
+    // there was no browser; now the request is what opens one.
+    const tab = makeBrowserTab();
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: false, tabs: [tab], activeTabId: tab.id },
+      },
+      agentStateByThreadKey: {},
+    });
+
+    let deliver: ((request: PreviewAutomationRequest) => void) | null = null;
+    const responses: PreviewAutomationResponse[] = [];
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: (() =>
+          Promise.reject(new Error("not used"))) as EnvironmentApi["filesystem"]["browse"],
+        dispatchCommand: (() =>
+          Promise.reject(
+            new Error("not used"),
+          )) as EnvironmentApi["orchestration"]["dispatchCommand"],
+        previewAutomation: {
+          connect: (_input: unknown, listener: (request: PreviewAutomationRequest) => void) => {
+            deliver = listener;
+            return () => {
+              deliver = null;
+            };
+          },
+          respond: (response: PreviewAutomationResponse) => {
+            responses.push(response);
+            return Promise.resolve();
+          },
+        } as unknown as EnvironmentApi["previewAutomation"],
+      }),
+    );
+    window.desktopBridge = {
+      previewStatus: () =>
+        Promise.resolve({ url: "http://localhost:5173/", title: "Preview", loading: false }),
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+
+    const screen = await render(<PreviewAutomationMount threadRef={THREAD_REF} />);
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(deliver, "the host should register with the broker").not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      deliver!({
+        requestId: "req-auto-open",
+        operation: "status",
+        input: {},
+      } as unknown as PreviewAutomationRequest);
+
+      // The panel opens on its own...
+      await vi.waitFor(
+        () => {
+          expect(useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.open).toBe(
+            true,
+          );
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // ...and once its page is up, the operation the agent asked for lands.
+      registerPreviewWebview(THREAD_REF, tab.id, {
+        getWebContentsId: () => 42,
+        loadURL: () => Promise.resolve(),
+        getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.error, "the request should not report a missing browser").toBe(
+            undefined,
+          );
+          expect(responses[0]?.result).toMatchObject({ url: "http://localhost:5173/" });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      screen.unmount();
+      resetPreviewWebviewsForTests();
+      useBrowserPanelStore.setState({ browserStateByThreadKey: {}, agentStateByThreadKey: {} });
+      Reflect.deleteProperty(window, "desktopBridge");
+      __resetEnvironmentApiOverridesForTests();
     }
   });
 

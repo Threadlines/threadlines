@@ -157,8 +157,143 @@ export function nextActiveTabId(
   return (remaining[closedIndex] ?? remaining[remaining.length - 1])!.id;
 }
 
+/**
+ * The live `<webview>` elements, by thread and tab.
+ *
+ * Deliberately not in the store's state: these are DOM nodes, they change on
+ * every tab mount, and nothing renders from them -- the automation host is the
+ * only caller, and it wants the current element rather than a re-render. Kept
+ * here rather than in the panel because the host now outlives the panel.
+ */
+export interface PreviewWebviewHandle {
+  getWebContentsId: () => number;
+  loadURL: (url: string) => Promise<void>;
+  getBoundingClientRect: () => DOMRect;
+}
+
+const webviewRegistry = new Map<string, PreviewWebviewHandle>();
+const webviewListeners = new Set<() => void>();
+
+function webviewKey(threadRef: ScopedThreadRef, tabId: string): string {
+  return `${scopedThreadKey(threadRef)}::${tabId}`;
+}
+
+export function registerPreviewWebview(
+  threadRef: ScopedThreadRef,
+  tabId: string,
+  element: PreviewWebviewHandle | null,
+): void {
+  const key = webviewKey(threadRef, tabId);
+  if (element === null) {
+    webviewRegistry.delete(key);
+  } else {
+    webviewRegistry.set(key, element);
+  }
+  for (const listener of webviewListeners) {
+    listener();
+  }
+}
+
+export function getPreviewWebview(
+  threadRef: ScopedThreadRef,
+  tabId: string,
+): PreviewWebviewHandle | null {
+  return webviewRegistry.get(webviewKey(threadRef, tabId)) ?? null;
+}
+
+export function subscribePreviewWebviews(listener: () => void): () => void {
+  webviewListeners.add(listener);
+  return () => {
+    webviewListeners.delete(listener);
+  };
+}
+
+/** Test seam: the registry outlives any one component, so tests clear it. */
+export function resetPreviewWebviewsForTests(): void {
+  webviewRegistry.clear();
+  webviewListeners.clear();
+}
+
+/**
+ * Waits for a page to exist, for as long as it is worth waiting.
+ *
+ * Opening the panel is not instant: the element mounts, attaches, and only then
+ * has a webContents to drive. The agent's call arrives before all of that, so
+ * it waits here rather than being told there is no browser -- but it waits
+ * against a cap well under the broker's own timeout, so a panel that never
+ * comes up answers the agent instead of hanging it.
+ */
+export async function waitForPreviewWebview<T>(input: {
+  readonly resolve: () => T | null;
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly timeoutMs: number;
+  readonly setTimeoutFn?: typeof globalThis.setTimeout;
+  readonly clearTimeoutFn?: typeof globalThis.clearTimeout;
+}): Promise<T | null> {
+  const immediate = input.resolve();
+  if (immediate !== null) {
+    return immediate;
+  }
+  const setTimeoutFn = input.setTimeoutFn ?? globalThis.setTimeout;
+  const clearTimeoutFn = input.clearTimeoutFn ?? globalThis.clearTimeout;
+
+  return await new Promise<T | null>((resolvePromise) => {
+    let settled = false;
+    const finish = (value: T | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeoutFn(timer);
+      unsubscribe();
+      resolvePromise(value);
+    };
+    const unsubscribe = input.subscribe(() => {
+      const candidate = input.resolve();
+      if (candidate !== null) {
+        finish(candidate);
+      }
+    });
+    const timer = setTimeoutFn(() => finish(null), input.timeoutMs);
+    // Racing the subscription: registration may have landed between the first
+    // check and the listener going on.
+    const late = input.resolve();
+    if (late !== null) {
+      finish(late);
+    }
+  });
+}
+
+/** How long an agent's call waits for the panel it just opened to have a page. */
+export const PREVIEW_WEBVIEW_WAIT_MS = 5_000;
+
+/**
+ * What the agent is doing in a thread's browser.
+ *
+ * In the store rather than in the panel because the host that produces it now
+ * outlives the panel that draws it: an agent can act on a page while the panel
+ * is closed, and when it opens the panel has to already know where the pointer
+ * went and which tab is the agent's.
+ */
+export interface ThreadBrowserAgentState {
+  /** The tab the agent pinned itself to; null until it acts. */
+  tabId: string | null;
+  point: { x: number; y: number; from?: { x: number; y: number }; sequence: number } | null;
+  activity: {
+    phase: "running" | "done";
+    verb: string;
+    detail: string | null;
+    sequence: number;
+  } | null;
+}
+
+export const EMPTY_AGENT_STATE: ThreadBrowserAgentState = Object.freeze({
+  tabId: null,
+  point: null,
+  activity: null,
+});
+
 interface BrowserPanelStoreState {
   browserStateByThreadKey: Record<string, ThreadBrowserState>;
+  agentStateByThreadKey: Record<string, ThreadBrowserAgentState>;
   splitChatFraction: number;
   /** Hides the chat so the page gets the whole centre; the split is remembered. */
   expanded: boolean;
@@ -188,6 +323,15 @@ interface BrowserPanelStoreState {
   setTabZoom: (threadRef: ScopedThreadRef, tabId: string, zoomFactor: number) => void;
   toggleDeviceToolbar: () => void;
   setAppearance: (appearance: BrowserAppearance) => void;
+  setAgentTab: (threadRef: ScopedThreadRef, tabId: string | null) => void;
+  setAgentPoint: (
+    threadRef: ScopedThreadRef,
+    point: { x: number; y: number; from?: { x: number; y: number } } | null,
+  ) => void;
+  setAgentActivity: (
+    threadRef: ScopedThreadRef,
+    activity: ThreadBrowserAgentState["activity"],
+  ) => void;
   setSplitChatFraction: (fraction: number) => void;
   toggleExpanded: () => void;
 }
@@ -202,6 +346,16 @@ function updateThread(
   return {
     browserStateByThreadKey: { ...state.browserStateByThreadKey, [key]: update(current) },
   };
+}
+
+function updateAgentState(
+  state: BrowserPanelStoreState,
+  threadRef: ScopedThreadRef,
+  update: (current: ThreadBrowserAgentState) => ThreadBrowserAgentState,
+): Pick<BrowserPanelStoreState, "agentStateByThreadKey"> {
+  const key = scopedThreadKey(threadRef);
+  const current = state.agentStateByThreadKey[key] ?? EMPTY_AGENT_STATE;
+  return { agentStateByThreadKey: { ...state.agentStateByThreadKey, [key]: update(current) } };
 }
 
 function updateTab(
@@ -219,6 +373,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
   persist(
     (set) => ({
       browserStateByThreadKey: {},
+      agentStateByThreadKey: {},
       splitChatFraction: DEFAULT_BROWSER_SPLIT_CHAT_FRACTION,
       expanded: false,
       deviceToolbarOpen: false,
@@ -281,6 +436,18 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         ),
       toggleDeviceToolbar: () => set((state) => ({ deviceToolbarOpen: !state.deviceToolbarOpen })),
       setAppearance: (appearance) => set(() => ({ appearance })),
+      setAgentTab: (threadRef, tabId) =>
+        set((state) => updateAgentState(state, threadRef, (current) => ({ ...current, tabId }))),
+      setAgentPoint: (threadRef, point) =>
+        set((state) =>
+          updateAgentState(state, threadRef, (current) => ({
+            ...current,
+            point:
+              point === null ? null : { ...point, sequence: (current.point?.sequence ?? 0) + 1 },
+          })),
+        ),
+      setAgentActivity: (threadRef, activity) =>
+        set((state) => updateAgentState(state, threadRef, (current) => ({ ...current, activity }))),
       setSplitChatFraction: (fraction) =>
         set(() => ({ splitChatFraction: clampBrowserSplitFraction(fraction) })),
       toggleExpanded: () => set((state) => ({ expanded: !state.expanded })),
@@ -314,6 +481,16 @@ export function selectThreadBrowserState(
   // A thread with no stored entry has one blank tab, so callers never have to
   // reason about a panel with nothing in it.
   return stored === undefined || stored.tabs.length === 0 ? DEFAULT_THREAD_STATE : stored;
+}
+
+export function selectThreadAgentState(
+  agentStateByThreadKey: Record<string, ThreadBrowserAgentState>,
+  threadRef: ScopedThreadRef | null,
+): ThreadBrowserAgentState {
+  if (threadRef === null) {
+    return EMPTY_AGENT_STATE;
+  }
+  return agentStateByThreadKey[scopedThreadKey(threadRef)] ?? EMPTY_AGENT_STATE;
 }
 
 export function selectActiveTab(state: ThreadBrowserState): BrowserTab | null {
