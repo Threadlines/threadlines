@@ -1,0 +1,334 @@
+<!-- Inbox sidebar proposal, 2026-07-28. Studied from T3's Sidebar v2
+     (settle/snooze lifecycle, static sort, status-in-content) and translated
+     into our flat, dense system: rows and dividers instead of cards, two-line
+     rows at ~46px instead of three-line cards at 78px. The rail is gone.
+     Companion to sidebar-variations-codex.html and sidebar-working-set.html. -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"
+    />
+    <title>Inbox Sidebar</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: rgb(19 20 22);
+        --panel: rgb(24 25 28);
+        --border: rgb(255 255 255 / 0.09);
+        --fg: rgb(232 231 227);
+        --fg-mid: rgb(232 231 227 / 0.64);
+        --fg-dim: rgb(232 231 227 / 0.38);
+        --hover: rgb(255 255 255 / 0.045);
+        --active-row: rgb(255 255 255 / 0.08);
+        --act: rgb(245 179 66);
+        --motion: rgb(94 156 255);
+        --broken: rgb(236 100 92);
+        --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        font-size: 13px;
+        padding: 40px;
+      }
+      h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+      .sub { color: var(--fg-mid); margin-bottom: 28px; max-width: 640px; line-height: 1.5; }
+      .stage { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+      .frame-label { font-size: 11px; color: var(--fg-dim); margin-bottom: 8px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em; }
+
+      .sidebar {
+        width: 288px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-height: 640px;
+      }
+
+      /* ── Top chrome ─────────────────────────────── */
+      .chrome { padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 6px; }
+      .searchrow { display: flex; align-items: center; gap: 8px; }
+      .search {
+        flex: 1; display: flex; align-items: center; gap: 7px;
+        padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+        color: var(--fg-dim); font-size: 12px;
+      }
+      .search .kbd { margin-left: auto; font-family: var(--mono); font-size: 10px; border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; }
+      .iconbtn { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: var(--fg-mid); }
+      .iconbtn:hover { background: var(--hover); color: var(--fg); }
+      .scope {
+        display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+        color: var(--fg-mid); font-size: 12px; border-radius: 6px; width: fit-content;
+      }
+      .scope:hover { background: var(--hover); color: var(--fg); }
+      .scope .chev { color: var(--fg-dim); font-size: 9px; }
+
+      /* ── Section headers ────────────────────────── */
+      .sect {
+        display: flex; align-items: baseline; gap: 8px;
+        padding: 12px 12px 5px; font-size: 11px; color: var(--fg-dim);
+        font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em;
+      }
+      .sect .count { margin-left: auto; text-transform: none; letter-spacing: 0; }
+      .sect .needs { color: var(--act); }
+
+      /* ── Thread rows ────────────────────────────── */
+      ul { list-style: none; }
+      .row {
+        position: relative;
+        padding: 7px 12px 8px;
+        border-top: 1px solid var(--border);
+        cursor: default;
+      }
+      .row:hover { background: var(--hover); }
+      .row.current { background: var(--active-row); }
+      .l1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+      .dot.act { background: var(--act); }
+      .dot.motion { background: var(--motion); }
+      .dot.broken { background: var(--broken); }
+      .dot.unread { background: var(--fg); }
+      .pin { color: var(--fg-dim); font-size: 10px; flex: none; }
+      .title {
+        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-weight: 500; color: rgb(232 231 227 / 0.9); font-size: 13px;
+      }
+      .title.bright { color: var(--fg); }
+      .title.dim { font-weight: 400; color: var(--fg-mid); }
+      .stat { flex: none; font-size: 11px; font-family: var(--mono); color: var(--fg-dim); }
+      .stat.act { color: var(--act); }
+      .stat.motion { color: var(--motion); }
+      .stat.broken { color: var(--broken); }
+      .l2 {
+        display: flex; align-items: center; gap: 6px; min-width: 0;
+        margin-top: 2px; padding-left: 14px;
+        font-size: 11px; color: var(--fg-dim);
+      }
+      .l2 .proj { color: rgb(232 231 227 / 0.5); }
+      .l2 .sep { color: rgb(232 231 227 / 0.22); }
+      .l2 .branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; }
+      .l2 .right { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+      .l2 .diff { font-family: var(--mono); font-size: 10px; }
+      .l2 .plus { color: rgb(120 200 130); }
+      .l2 .minus { color: rgb(230 120 110); }
+      .glyph { width: 12px; height: 12px; opacity: 0.55; flex: none; }
+
+      /* Hover actions replace the right meta (shown forced on one row) */
+      .acts {
+        position: absolute; right: 8px; top: 6px; display: none; gap: 2px;
+        background: var(--panel); padding-left: 8px;
+      }
+      .row.show-acts .acts { display: flex; }
+      .row.show-acts .stat { visibility: hidden; }
+      .act-btn {
+        font-size: 11px; color: var(--fg-mid); padding: 2px 7px; border-radius: 4px;
+        display: flex; align-items: center; gap: 4px;
+      }
+      .act-btn:hover { background: var(--hover); color: var(--fg); }
+
+      /* ── Done tail ──────────────────────────────── */
+      .done .row { padding: 6px 12px; }
+      .done .l1 { gap: 8px; }
+      .done .title { font-weight: 400; color: var(--fg-mid); }
+      .done .row:hover .title { color: var(--fg); }
+      .more {
+        padding: 7px 12px 12px; font-size: 11px; color: var(--fg-dim);
+        border-top: 1px solid var(--border);
+      }
+      .more:hover { color: var(--fg-mid); }
+
+      /* ── Notes column ───────────────────────────── */
+      .notes { max-width: 420px; font-size: 13px; line-height: 1.55; color: var(--fg-mid); }
+      .notes h2 { font-size: 13px; color: var(--fg); margin: 18px 0 4px; font-weight: 600; }
+      .notes h2:first-child { margin-top: 0; }
+      .notes code { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+      .notes .q { color: var(--act); }
+    </style>
+  </head>
+  <body>
+    <h1>Inbox sidebar</h1>
+    <p class="sub">
+      Threads are the inbox. One live list ordered by when work began, a Done tail ordered by
+      when work ended, and the rail retired. Rows and hairline dividers, not cards: two lines,
+      ~46px, where T3 spends 78px on three.
+    </p>
+
+    <div class="stage">
+      <div>
+        <div class="frame-label">Proposed &mdash; resting state</div>
+        <div class="sidebar">
+          <div class="chrome">
+            <div class="searchrow">
+              <div class="search">&#8981; Search <span class="kbd">&#8984;K</span></div>
+              <div class="iconbtn" title="New thread">&#9998;</div>
+            </div>
+            <div class="scope">&#9636; All projects <span class="chev">&#9660;</span></div>
+          </div>
+
+          <div class="sect">Threads <span class="count"><span class="needs">2 need you</span> &middot; 6</span></div>
+          <ul>
+            <li class="row">
+              <div class="l1">
+                <span class="dot act"></span>
+                <span class="title bright">Give revert a preview dialog</span>
+                <span class="stat act">approval</span>
+              </div>
+              <div class="l2">
+                <span class="proj">threadlines</span><span class="sep">&middot;</span>
+                <span class="branch">feature/revert-preview</span>
+                <div class="right"><span class="diff"><span class="plus">+214</span> <span class="minus">&minus;38</span></span><svg class="glyph" viewBox="0 0 12 12"><path fill="currentColor" d="M6 0l1.7 4.3L12 6 7.7 7.7 6 12 4.3 7.7 0 6l4.3-1.7z"/></svg></div>
+              </div>
+            </li>
+            <li class="row">
+              <div class="l1">
+                <span class="dot motion"></span>
+                <span class="title">Polish the inbox sidebar</span>
+                <span class="stat motion">working &middot; 4m</span>
+              </div>
+              <div class="l2">
+                <span class="proj">threadlines</span><span class="sep">&middot;</span>
+                <span class="branch">feature/sidebar-polish</span>
+                <div class="right"><svg class="glyph" viewBox="0 0 12 12"><path fill="currentColor" d="M6 0l1.7 4.3L12 6 7.7 7.7 6 12 4.3 7.7 0 6l4.3-1.7z"/></svg></div>
+              </div>
+            </li>
+            <li class="row current">
+              <div class="l1">
+                <span class="pin">&#9733;</span>
+                <span class="title">In-app browser panel with agent control</span>
+                <span class="stat">2h</span>
+              </div>
+              <div class="l2">
+                <span class="proj">badcode</span><span class="sep">&middot;</span>
+                <span class="branch">feature/deck-sidebar</span>
+                <div class="right"><span class="diff"><span class="plus">+26k</span> <span class="minus">&minus;329</span></span><svg class="glyph" viewBox="0 0 12 12"><circle fill="currentColor" cx="6" cy="6" r="5"/></svg></div>
+              </div>
+            </li>
+            <li class="row">
+              <div class="l1">
+                <span class="dot broken"></span>
+                <span class="title bright">Wire the relay reconnect backoff</span>
+                <span class="stat broken">failed</span>
+              </div>
+              <div class="l2">
+                <span class="proj">threadlines</span><span class="sep">&middot;</span>
+                <span class="branch">fix/relay-backoff</span>
+                <div class="right"><svg class="glyph" viewBox="0 0 12 12"><circle fill="currentColor" cx="6" cy="6" r="5"/></svg></div>
+              </div>
+            </li>
+            <li class="row">
+              <div class="l1">
+                <span class="dot unread"></span>
+                <span class="title bright">Compare model picker density options</span>
+                <span class="stat">18m</span>
+              </div>
+              <div class="l2">
+                <span class="proj">badcode</span><span class="sep">&middot;</span>
+                <span class="branch">main</span>
+                <div class="right"><svg class="glyph" viewBox="0 0 12 12"><path fill="currentColor" d="M6 0l1.7 4.3L12 6 7.7 7.7 6 12 4.3 7.7 0 6l4.3-1.7z"/></svg></div>
+              </div>
+            </li>
+            <li class="row">
+              <div class="l1">
+                <span class="title dim">Draft the changelog for 0.2.6</span>
+                <span class="stat">3d</span>
+              </div>
+              <div class="l2">
+                <span class="proj">threadlines</span><span class="sep">&middot;</span>
+                <span class="branch">main</span>
+                <div class="right"><svg class="glyph" viewBox="0 0 12 12"><circle fill="currentColor" cx="6" cy="6" r="5"/></svg></div>
+              </div>
+            </li>
+          </ul>
+
+          <div class="sect">Done <span class="count">31</span></div>
+          <ul class="done">
+            <li class="row">
+              <div class="l1"><span class="title">Answer a notification with 202</span><span class="stat">1d</span></div>
+            </li>
+            <li class="row">
+              <div class="l1"><span class="title">Spellcheck via native Chromium</span><span class="stat">6d</span></div>
+            </li>
+            <li class="row">
+              <div class="l1"><span class="title">Phone link relay chunking</span><span class="stat">12d</span></div>
+            </li>
+          </ul>
+          <div class="more">Show 28 more&hellip;</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="frame-label">Same rows &mdash; hover affordances forced</div>
+        <div class="sidebar" style="min-height: 0;">
+          <div class="sect">Threads</div>
+          <ul>
+            <li class="row show-acts">
+              <div class="l1">
+                <span class="title">Compare model picker density options</span>
+                <span class="stat">18m</span>
+              </div>
+              <div class="l2">
+                <span class="proj">badcode</span><span class="sep">&middot;</span>
+                <span class="branch">main</span>
+              </div>
+              <div class="acts">
+                <div class="act-btn" title="Mark done">&#10003; Done</div>
+                <div class="act-btn" title="Pin">&#9734;</div>
+              </div>
+            </li>
+          </ul>
+          <div class="sect">Done</div>
+          <ul class="done">
+            <li class="row show-acts">
+              <div class="l1"><span class="title">Phone link relay chunking</span><span class="stat">12d</span></div>
+              <div class="acts"><div class="act-btn">&#8617; Reopen</div></div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="notes" style="margin-top: 28px;">
+          <h2>What we take from T3</h2>
+          The attention partition (live above, done below), and their sort discipline: the live
+          list holds <em>creation order, newest first</em>, and activity never reorders it. A row
+          keeps its place from open until you mark it done, so the thing you were about to click
+          never jumps. Status lives in the row, not in position. Color is spent on exactly three
+          things: <code>approval</code> (act now), <code>working</code> (in motion, with elapsed),
+          <code>failed</code> (broken). Everything else rests unlabeled with a timestamp.
+          Unread is its own axis: a completed run you haven&rsquo;t seen keeps a bright title and
+          a white dot until you visit.
+
+          <h2>Our flavor</h2>
+          Rows with dividers, never cards &mdash; two lines instead of their three by folding
+          status into line one. Projects stop being a tree: the scope filter narrows the list, and
+          every row names its project, which is what killed the rail &mdash; project context
+          travels with the thread now, so nothing needs to be traced back to a group header.
+          Pinned threads float to the top of the live list (an explicit act, so the move is
+          yours). &ldquo;Done&rdquo; instead of T3&rsquo;s &ldquo;Settle&rdquo;: plainer, and it
+          reads correctly for agent work. Blocked or running work refuses Done &mdash; same rule
+          the deck already had: live work can&rsquo;t be waved away.
+
+          <h2>Deliberately deferred</h2>
+          Snooze (T3&rsquo;s wake/woke machinery is a whole feature; worth doing later, properly).
+          Auto-done on merged PRs and after idle weeks (needs settled server semantics first).
+          Multi-select.
+
+          <h2 class="q">Open questions for Will</h2>
+          1. Collapsed state: with the rail gone, does the sidebar still icon-collapse to
+          something (project favicons only), or does it just hide? The auto-fold-when-squeezed
+          behavior needs a target.<br />
+          2. Done placement: tail at the bottom (shown), or behind a destinations-band entry so
+          the sidebar is only live work?<br />
+          3. Do the destinations (Chats etc.) survive above the thread list as-is?
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
