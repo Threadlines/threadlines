@@ -3,7 +3,6 @@ import {
   CheckIcon,
   CloudIcon,
   PinIcon,
-  PinOffIcon,
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
@@ -188,7 +187,6 @@ export interface InboxThreadRowProps {
     originalTitle: string,
   ) => Promise<void>;
   cancelRename: () => void;
-  attemptTogglePinThread: (threadRef: ScopedThreadRef, shouldPin: boolean) => Promise<void>;
   markThreadDone: (threadKey: string) => void;
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
 }
@@ -223,7 +221,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     clearSelection,
     commitRename,
     cancelRename,
-    attemptTogglePinThread,
     markThreadDone,
     openPrLink,
   } = props;
@@ -384,17 +381,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     },
     [],
   );
-  const handleTogglePinClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.detail > 0) {
-        event.currentTarget.blur();
-      }
-      void attemptTogglePinThread(threadRef, !isPinned);
-    },
-    [attemptTogglePinThread, isPinned, threadRef],
-  );
   const handleMarkDoneClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -490,9 +476,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   )
                 )}
               </span>
-              {/* Two actions, both icons: the words live in their tooltips. */}
-              <RowFloatingActions isActive={isActive} isSelected={isSelected}>
-                {canMarkDone ? (
+              {/* Wrap up is the only hover action; pin lives in the row's
+                  context menu so a cursor sweeping the row can't hit it. The
+                  wrapper only mounts alongside the button -- empty, it would
+                  still paint its backdrop smear over the timestamp. */}
+              {canMarkDone ? (
+                <RowFloatingActions isActive={isActive} isSelected={isSelected}>
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -511,39 +500,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     />
                     <TooltipPopup side="top">Wrap up</TooltipPopup>
                   </Tooltip>
-                ) : null}
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        data-testid={`thread-pin-${thread.id}`}
-                        aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
-                        aria-pressed={isPinned}
-                        className={cn(
-                          ROW_ACTION_BUTTON_CLASS_NAME,
-                          // Unpin keeps its blue on hover -- flipping to the
-                          // foreground colour read as a different button. It
-                          // brightens instead, the blue analogue of the grey
-                          // icons' grey-to-white.
-                          isPinned &&
-                            "text-primary-readable hover:text-primary-readable hover:brightness-125",
-                        )}
-                        onPointerDown={stopPropagationOnPointerDown}
-                        onClick={handleTogglePinClick}
-                      >
-                        {isPinned ? (
-                          <PinOffIcon className="size-3.5" />
-                        ) : (
-                          <PinIcon className="size-3.5" />
-                        )}
-                      </button>
-                    }
-                  />
-                  <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
-                </Tooltip>
-              </RowFloatingActions>
+                </RowFloatingActions>
+              ) : null}
             </span>
           </div>
           {/* Line two: which thread, and what it has produced. */}

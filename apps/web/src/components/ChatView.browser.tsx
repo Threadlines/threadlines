@@ -2198,13 +2198,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find phone thread row.",
       );
-      const pinButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
-        "Unable to find pin button.",
+      const doneButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-done-${THREAD_ID}"]`),
+        "Unable to find done button.",
       );
-      // Archive belongs to the Done tail now; a live row offers pin and done.
+      // Archive belongs to the Done tail and pin to the context menu; a live
+      // row's only inline action is done.
       expect(document.querySelector(`[data-testid="thread-archive-${THREAD_ID}"]`)).toBeNull();
-      const compactActions = pinButton.parentElement;
+      expect(document.querySelector(`[data-testid="thread-pin-${THREAD_ID}"]`)).toBeNull();
+      const compactActions = doneButton.parentElement;
       const timestampWrapper = await waitForElement(
         () => threadRow.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
         "Unable to find thread timestamp.",
@@ -5096,28 +5098,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-done-${THREAD_ID}"]`),
         "Unable to find done button.",
       );
-      const pinButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
-        "Unable to find pin button.",
-      );
-      const compactActions = pinButton.parentElement;
+      // Pin moved to the context menu: the hover group must not offer it.
+      expect(document.querySelector(`[data-testid="thread-pin-${THREAD_ID}"]`)).toBeNull();
+      const compactActions = doneButton.parentElement;
       expect(
         compactActions,
         "Thread actions should render inside a shared visibility wrapper.",
       ).not.toBeNull();
-      const threadItem = pinButton.closest("li");
+      const threadItem = doneButton.closest("li");
       expect(threadItem?.className).toContain("group/thread-row");
       expect(compactActions?.className).toContain("group-hover/thread-row:opacity-100");
       expect(compactActions?.className).toContain("group-focus-within/thread-row:opacity-100");
-      expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
-      expect(pinButton.getAttribute("aria-pressed")).toBe("false");
       expect(doneButton.getAttribute("aria-label")).toBe(`Wrap up ${THREAD_TITLE}`);
-      // Icons only: the words for these two live in their tooltips.
+      // Icon only: the word lives in its tooltip.
       expect(doneButton.textContent).toBe("");
-      expect(pinButton.textContent).toBe("");
-      expect(
-        doneButton.compareDocumentPosition(pinButton) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
       // Hidden until the row is hovered or focused, which is the whole point of
       // the shared wrapper.
       expect(getComputedStyle(compactActions!).opacity).toBe("0");

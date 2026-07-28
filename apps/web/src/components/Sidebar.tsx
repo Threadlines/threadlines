@@ -1423,7 +1423,6 @@ export default function Sidebar() {
                           clearSelection={clearSelection}
                           commitRename={commitRename}
                           cancelRename={cancelRename}
-                          attemptTogglePinThread={attemptTogglePinThread}
                           markThreadDone={markThreadDone}
                           openPrLink={openPrLink}
                         />
