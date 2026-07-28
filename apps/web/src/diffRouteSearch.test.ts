@@ -139,14 +139,9 @@ describe("parseDiffRouteSearch", () => {
 });
 
 describe("isSourceControlPanelOpen", () => {
-  it("defaults source control to open when no right-panel mode is specified", () => {
-    expect(isSourceControlPanelOpen({})).toBe(true);
+  it("stays closed unless explicitly opened", () => {
+    expect(isSourceControlPanelOpen({})).toBe(false);
     expect(isSourceControlPanelOpen({ sourceControl: "1" })).toBe(true);
-  });
-
-  it("lets narrow layouts disable only the implicit source control default", () => {
-    expect(isSourceControlPanelOpen({}, { defaultOpen: false })).toBe(false);
-    expect(isSourceControlPanelOpen({ sourceControl: "1" }, { defaultOpen: false })).toBe(true);
   });
 
   it("treats explicit close and diff routes as closed", () => {

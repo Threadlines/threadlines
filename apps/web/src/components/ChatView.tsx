@@ -1277,9 +1277,7 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = isSourceControlPanelOpen(rawSearch, {
-    defaultOpen: !shouldUseRightPanelSheet,
-  });
+  const sourceControlOpen = isSourceControlPanelOpen(rawSearch);
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.

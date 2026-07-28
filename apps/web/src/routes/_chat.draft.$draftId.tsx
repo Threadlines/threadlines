@@ -83,9 +83,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const rawSourceControlOpen = isSourceControlPanelOpen(search, {
-    defaultOpen: !shouldUseSourceControlSheet,
-  });
+  const rawSourceControlOpen = isSourceControlPanelOpen(search);
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;

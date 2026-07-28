@@ -1931,21 +1931,12 @@ async function dispatchInputKey(
   await waitForLayout();
 }
 
-function withClosedSourceControlSearch(path: string): string {
-  const url = new URL(path, "https://threadlines.test");
-  if (!url.searchParams.has("sourceControl") && !url.searchParams.has("diff")) {
-    url.searchParams.set("sourceControl", "0");
-  }
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
 async function mountChatView(options: {
   viewport: ViewportSpec;
   snapshot: OrchestrationReadModel;
   configureFixture?: (fixture: TestFixture) => void;
   resolveRpc?: (body: NormalizedWsRpcRequestBody) => unknown | undefined;
   initialPath?: string;
-  sourceControlDefault?: "closed" | "open";
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -1963,11 +1954,7 @@ async function mountChatView(options: {
   host.style.overflow = "hidden";
   document.body.append(host);
 
-  const baseInitialPath = options.initialPath ?? `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}`;
-  const initialPath =
-    options.sourceControlDefault === "open"
-      ? baseInitialPath
-      : withClosedSourceControlSearch(baseInitialPath);
+  const initialPath = options.initialPath ?? `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}`;
 
   const router = getRouter(
     createMemoryHistory({
@@ -2502,7 +2489,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("defaults source control open on wide draft thread routes before first send", async () => {
+  it("keeps source control closed by default on wide draft thread routes and opens it from the toggle", async () => {
     const draftId = DraftId.make("draft-source-control-before-start");
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2528,7 +2515,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${draftId}`,
-      sourceControlDefault: "open",
     });
 
     try {
@@ -2540,10 +2526,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find source control toggle.",
       );
       expect(sourceControlToggle.disabled).toBe(false);
-      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(true);
-      expect(document.body.textContent).not.toContain("Explain this codebase");
-      expect(document.body.textContent).not.toContain("Review my uncommitted changes");
-      expect(document.body.textContent).not.toContain("Fix a bug");
+      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
+      expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+
+      sourceControlToggle.click();
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
 
       sourceControlToggle.click();
@@ -2587,7 +2581,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       viewport: COMPACT_FOOTER_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${draftId}`,
-      sourceControlDefault: "open",
     });
 
     try {
@@ -2635,7 +2628,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       viewport: COMPACT_FOOTER_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${draftId}?sourceControl=1`,
-      sourceControlDefault: "open",
     });
 
     try {
