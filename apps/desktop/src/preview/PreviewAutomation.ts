@@ -25,6 +25,7 @@ import type {
   DesktopPreviewEvaluateInput,
   DesktopPreviewNetworkFailure,
   DesktopPreviewMoveInput,
+  DesktopPreviewNavigationBlocked,
   DesktopPreviewPressInput,
   DesktopPreviewScrollInput,
   DesktopPreviewSnapshot,
@@ -34,8 +35,10 @@ import type {
   DesktopPreviewWaitForInput,
   PreviewAutomationTarget,
 } from "@threadlines/contracts";
-import { webContents, type WebContents } from "electron";
+import { isBrowserHostApproved } from "@threadlines/shared/preview";
+import { BrowserWindow, webContents, type WebContents } from "electron";
 
+import * as IpcChannels from "../ipc/channels.ts";
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
 import {
   buildAriaSnapshotScript,
@@ -110,6 +113,18 @@ interface AttachedTab {
   dispose: () => void;
 }
 
+/**
+ * The sites one guest's own pages may navigate to.
+ *
+ * Deliberately not part of `AttachedTab`: that record comes and goes with the
+ * CDP attachment -- opening DevTools on the page is enough to drop it -- and a
+ * navigation guard that lapsed whenever the debugger did would be no guard at
+ * all. This one lives as long as the guest does.
+ */
+interface NavigationGuard {
+  approvedDomains: ReadonlyArray<string>;
+}
+
 export class PreviewAutomation extends Context.Service<
   PreviewAutomation,
   {
@@ -117,6 +132,15 @@ export class PreviewAutomation extends Context.Service<
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewStatus, PreviewAutomationError>;
     readonly detach: (webContentsId: number) => Effect.Effect<void>;
+    /**
+     * Replaces the sites this guest's own pages may navigate to. Until it is
+     * called the guest is private-network-only, so an unpushed policy refuses
+     * rather than allows.
+     */
+    readonly setNavigationPolicy: (
+      webContentsId: number,
+      approvedDomains: ReadonlyArray<string>,
+    ) => Effect.Effect<void, PreviewAutomationError>;
     readonly status: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewStatus, PreviewAutomationError>;
@@ -203,6 +227,96 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   /** Whoever is waiting for a drawing to be attached, so turning the mode off
    *  can release them. */
   const drawWaiters = new Map<number, () => void>();
+  const navigationGuards = new Map<number, NavigationGuard>();
+
+  /**
+   * The site a navigation is aimed at, or null when it is not aimed at one.
+   *
+   * Only http(s) has a host to approve. `about:`, `blob:` and `data:` name no
+   * site, and Chromium already refuses the top-level navigations among them
+   * that would matter -- refusing them here as "unapproved host" would instead
+   * break `about:blank`, which is how every empty tab starts.
+   */
+  const navigationHost = (url: string): string | null => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return null;
+      }
+      return parsed.hostname === "" ? null : parsed.hostname;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Tells the renderer a page tried to go somewhere it may not.
+   *
+   * Sent to the window embedding the guest, because that is the renderer that
+   * owns the tab and can put the question in front of the user. Every window
+   * is the fallback rather than silence: the notice is addressed by
+   * webContents id, so a window that does not own this tab ignores it.
+   */
+  const reportBlockedNavigation = (contents: WebContents, url: string, blockedHost: string) => {
+    const payload: DesktopPreviewNavigationBlocked = {
+      webContentsId: contents.id,
+      host: blockedHost,
+      url,
+    };
+    const embedder = contents.hostWebContents;
+    if (embedder !== null && !embedder.isDestroyed()) {
+      embedder.send(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, payload);
+      return;
+    }
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, payload);
+      }
+    }
+  };
+
+  /**
+   * Arms the guest's own navigations against the guest's allowlist.
+   *
+   * Registered at attach as well as when a policy arrives, so a tab whose
+   * policy has not been pushed yet is still held to private-network-only rather
+   * than being left open until the renderer gets round to it.
+   */
+  const ensureNavigationGuard = (contents: WebContents): NavigationGuard => {
+    const existing = navigationGuards.get(contents.id);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const guard: NavigationGuard = { approvedDomains: [] };
+    const refuse = (details: {
+      readonly url: string;
+      readonly isMainFrame: boolean;
+      readonly preventDefault: () => void;
+    }) => {
+      // Only the top-level document. An iframe is the page's own composition,
+      // not somewhere the browser went.
+      if (!details.isMainFrame) {
+        return;
+      }
+      const blockedHost = navigationHost(details.url);
+      if (blockedHost === null || isBrowserHostApproved(blockedHost, guard.approvedDomains)) {
+        return;
+      }
+      details.preventDefault();
+      reportBlockedNavigation(contents, details.url, blockedHost);
+    };
+    // Both, because a link click and a 302 arriving mid-load are the same
+    // event to the user: the page ended up somewhere nobody approved.
+    contents.on("will-navigate", refuse);
+    contents.on("will-redirect", refuse);
+    contents.once("destroyed", () => {
+      contents.off("will-navigate", refuse);
+      contents.off("will-redirect", refuse);
+      navigationGuards.delete(contents.id);
+    });
+    navigationGuards.set(contents.id, guard);
+    return guard;
+  };
 
   const resolve = (webContentsId: number) =>
     Effect.suspend(() => {
@@ -687,6 +801,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    */
   const attach = Effect.fn("PreviewAutomation.attach")(function* (webContentsId: number) {
     const contents = yield* resolve(webContentsId);
+    // Before anything else, and outside the debugger's lifecycle: a guest that
+    // exists is a guest that can be sent somewhere by its own page.
+    ensureNavigationGuard(contents);
     if (attached.has(webContentsId) && contents.debugger.isAttached()) {
       return buildStatus(webContentsId, contents);
     }
@@ -899,6 +1016,13 @@ export const make = Effect.sync(function PreviewAutomationMake() {
           tab.contents.debugger.detach();
         }
       }),
+    setNavigationPolicy: Effect.fn("PreviewAutomation.setNavigationPolicy")(function* (
+      webContentsId: number,
+      approvedDomains: ReadonlyArray<string>,
+    ) {
+      const contents = yield* resolve(webContentsId);
+      ensureNavigationGuard(contents).approvedDomains = approvedDomains;
+    }),
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {
       const contents = yield* resolveAttached(webContentsId);
       return buildStatus(webContentsId, contents);

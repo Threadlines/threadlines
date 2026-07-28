@@ -22,7 +22,17 @@ import {
  *   const bag = useCommitOnBlur(instance.displayName ?? "", (next) => {...});
  *   <Input {...bag} placeholder="e.g. Work" />
  */
-export function useCommitOnBlur(value: string, onCommit: (next: string) => void) {
+export function useCommitOnBlur<
+  Element extends HTMLInputElement | HTMLTextAreaElement = HTMLInputElement,
+>(
+  value: string,
+  onCommit: (next: string) => void,
+  options?: {
+    /** Multiline fields need Enter for newlines, so they opt out. */
+    readonly commitOnEnter?: boolean;
+  },
+) {
+  const commitOnEnter = options?.commitOnEnter ?? true;
   const [draft, setDraft] = useState(value);
   const focusedRef = useRef(false);
   const draftRef = useRef(draft);
@@ -67,7 +77,7 @@ export function useCommitOnBlur(value: string, onCommit: (next: string) => void)
 
   return {
     value: draft,
-    onChange: (event: ChangeEvent<HTMLInputElement>) => {
+    onChange: (event: ChangeEvent<Element>) => {
       const nextDraft = event.target.value;
       draftRef.current = nextDraft;
       setDraft(nextDraft);
@@ -79,10 +89,10 @@ export function useCommitOnBlur(value: string, onCommit: (next: string) => void)
       focusedRef.current = false;
       commitDraft();
     },
-    onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
-      if (event.key === "Enter") {
+    onKeyDown: (event: KeyboardEvent<Element>) => {
+      if (commitOnEnter && event.key === "Enter") {
         event.preventDefault();
-        (event.target as HTMLInputElement).blur();
+        (event.target as Element).blur();
       }
     },
   };

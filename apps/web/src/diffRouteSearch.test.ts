@@ -144,6 +144,12 @@ describe("isSourceControlPanelOpen", () => {
     expect(isSourceControlPanelOpen({ sourceControl: "1" })).toBe(true);
   });
 
+  it("lets the settings default open the panel without URL state", () => {
+    expect(isSourceControlPanelOpen({}, { defaultOpen: true })).toBe(true);
+    expect(isSourceControlPanelOpen({ sourceControl: "0" }, { defaultOpen: true })).toBe(false);
+    expect(isSourceControlPanelOpen({ diff: "1" }, { defaultOpen: true })).toBe(false);
+  });
+
   it("treats explicit close and diff routes as closed", () => {
     expect(isSourceControlPanelOpen({ sourceControl: "0" })).toBe(false);
     expect(isSourceControlPanelOpen({ diff: "1", sourceControlReturn: "1" })).toBe(false);

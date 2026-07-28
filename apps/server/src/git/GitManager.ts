@@ -31,6 +31,7 @@ import {
   type VcsStatusRemoteResult,
   VcsStatusResult,
   ModelSelection,
+  type SourceControlWritingStyleSettings,
 } from "@threadlines/contracts";
 import {
   detectSourceControlProviderFromGitRemoteUrl,
@@ -47,9 +48,19 @@ import {
 
 import { GitManagerError } from "@threadlines/contracts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
+import type { TextGenerationPolicy } from "../textGeneration/TextGenerationPolicy.ts";
+import {
+  conventionalCommitsTextGenerationPolicy,
+  customTextGenerationPolicy,
+  repositoryConventionsTextGenerationPolicy,
+} from "../textGeneration/TextGenerationPresets.ts";
+import { detectPrTemplate } from "../sourceControl/PrTemplateDetection.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  resolveSourceControlWriterModelSelection,
+  ServerSettingsService,
+} from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@threadlines/contracts";
 import {
   GitVcsDriver,
@@ -445,6 +456,17 @@ interface CommitAndBranchSuggestion {
 interface TextGenerationSelections {
   readonly modelSelection: ModelSelection;
   readonly backupModelSelection: ModelSelection | null;
+  readonly writingStyle: SourceControlWritingStyleSettings;
+}
+
+const RECENT_COMMIT_SUBJECT_SAMPLE_SIZE = 20;
+
+function withRecentCommitSubjects(
+  instructions: string | undefined,
+  subjects: ReadonlyArray<string>,
+): string {
+  const suffix = `\n\nRecent commit subjects from this repository:\n${subjects.join("\n")}`;
+  return `${instructions ?? ""}${suffix}`;
 }
 
 function isCommitAction(
@@ -559,6 +581,23 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettingsService;
+
+  /**
+   * Source control text (commit messages, PR titles and bodies, branch names)
+   * uses the dedicated writer model when one is configured, and the primary
+   * text generation model otherwise. The backup model is unchanged either way:
+   * it only ever runs after the chosen model fails.
+   */
+  const readTextGenerationSelections = serverSettingsService.getSettings.pipe(
+    Effect.map(
+      (settings) =>
+        ({
+          modelSelection: resolveSourceControlWriterModelSelection(settings),
+          backupModelSelection: settings.textGenerationBackupModelSelection,
+          writingStyle: settings.sourceControlWritingStyle,
+        }) satisfies TextGenerationSelections,
+    ),
+  );
 
   const createProgressEmitter = (
     input: { cwd: string; action: GitStackedAction },
@@ -907,6 +946,74 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
 
   const readConfigValueNullable = (cwd: string, key: string) =>
     gitCore.readConfigValue(cwd, key).pipe(Effect.catch(() => Effect.succeed(null)));
+
+  /** Recent commit subjects, used as style samples. Empty on any git failure. */
+  const readRecentCommitSubjects = (cwd: string): Effect.Effect<ReadonlyArray<string>, never> =>
+    gitCore
+      .execute({
+        operation: "GitManager.readRecentCommitSubjects",
+        cwd,
+        args: [
+          "log",
+          "-n",
+          String(RECENT_COMMIT_SUBJECT_SAMPLE_SIZE),
+          "--no-merges",
+          "--pretty=format:%s",
+        ],
+        timeoutMs: 5_000,
+      })
+      .pipe(
+        Effect.map((result) =>
+          result.stdout
+            .split(/\r?\n/g)
+            .map((subject) => subject.trim())
+            .filter((subject) => subject.length > 0),
+        ),
+        Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+      );
+
+  /**
+   * Turn the user's writing style setting into a text generation policy. The
+   * `repo_conventions` mode is per-repository: it samples the recent commit
+   * subjects of the working tree the text is being generated for.
+   */
+  const resolveStylePolicy = Effect.fn("resolveStylePolicy")(function* (
+    cwd: string,
+    style: SourceControlWritingStyleSettings,
+  ): Effect.fn.Return<TextGenerationPolicy, never> {
+    if (style.mode === "conventional_commits") {
+      return conventionalCommitsTextGenerationPolicy;
+    }
+
+    if (style.mode === "custom") {
+      const customInstructions = style.customInstructions.trim();
+      return customTextGenerationPolicy(
+        customInstructions.length > 0
+          ? {
+              commitInstructions: customInstructions,
+              changeRequestInstructions: customInstructions,
+            }
+          : {},
+      );
+    }
+
+    const subjects = yield* readRecentCommitSubjects(cwd);
+    if (subjects.length === 0) {
+      return repositoryConventionsTextGenerationPolicy;
+    }
+
+    return {
+      ...repositoryConventionsTextGenerationPolicy,
+      commitInstructions: withRecentCommitSubjects(
+        repositoryConventionsTextGenerationPolicy.commitInstructions,
+        subjects,
+      ),
+      changeRequestInstructions: withRecentCommitSubjects(
+        repositoryConventionsTextGenerationPolicy.changeRequestInstructions,
+        subjects,
+      ),
+    } satisfies TextGenerationPolicy;
+  });
 
   const resolveCanonicalGitHubRepositoryName = Effect.fn("resolveCanonicalGitHubRepositoryName")(
     function* (cwd: string, remoteName: string, repositoryNameWithOwner: string) {
@@ -1268,9 +1375,14 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         };
       }
 
+      const policy = yield* resolveStylePolicy(
+        input.cwd,
+        input.textGenerationSelections.writingStyle,
+      );
       const generated = yield* textGeneration
         .generateCommitMessage({
           cwd: input.cwd,
+          policy,
           branch: input.branch,
           stagedSummary: limitContext(
             context.stagedSummary,
@@ -1296,11 +1408,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     "generateCommitMessage",
   )(function* (input) {
     const status = yield* readBranchOnlyStatus(input.cwd);
-    const textGenerationSelections = yield* serverSettingsService.getSettings.pipe(
-      Effect.map((settings) => ({
-        modelSelection: settings.textGenerationModelSelection,
-        backupModelSelection: settings.textGenerationBackupModelSelection,
-      })),
+    const textGenerationSelections = yield* readTextGenerationSelections.pipe(
       Effect.mapError((cause) =>
         gitManagerError("generateCommitMessage", "Failed to get server settings.", cause),
       ),
@@ -1503,9 +1611,18 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       label: `Generating ${terms.shortLabel} content...`,
     });
     const rangeContext = yield* gitCore.readRangeContext(cwd, baseBranch);
+    const policy = yield* resolveStylePolicy(cwd, textGenerationSelections.writingStyle);
+    // Only GitHub PR bodies are template-shaped; the other providers have no
+    // equivalent convention, so asking the model to follow one invents structure.
+    const prTemplate =
+      textGenerationSelections.writingStyle.followPrTemplates && provider.kind === "github"
+        ? yield* detectPrTemplate({ cwd, treeish: baseBranch, executeGit: gitCore.execute })
+        : null;
 
     const generated = yield* textGeneration.generatePrContent({
       cwd,
+      policy,
+      ...(prTemplate !== null ? { prTemplate } : {}),
       baseBranch,
       headBranch: headContext.headBranch,
       commitSummary: limitContext(rangeContext.commitSummary, 20_000),
@@ -1873,11 +1990,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         let commitMessageForStep = input.commitMessage;
         let preResolvedCommitSuggestion: CommitAndBranchSuggestion | undefined = undefined;
 
-        const textGenerationSelections = yield* serverSettingsService.getSettings.pipe(
-          Effect.map((settings) => ({
-            modelSelection: settings.textGenerationModelSelection,
-            backupModelSelection: settings.textGenerationBackupModelSelection,
-          })),
+        const textGenerationSelections = yield* readTextGenerationSelections.pipe(
           Effect.mapError((cause) =>
             gitManagerError("runStackedAction", "Failed to get server settings.", cause),
           ),

@@ -2274,6 +2274,7 @@ function ProposedPlanTimelineRow({
       <ProposedPlanCard
         planMarkdown={proposedPlan.planMarkdown}
         environmentId={ctx.activeThreadEnvironmentId}
+        threadId={ctx.activeThreadId ?? undefined}
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
         status={status}
@@ -2345,6 +2346,7 @@ function SubagentLiveTimelineRow({
             text={row.live.body}
             cwd={ctx.markdownCwd}
             environmentId={ctx.activeThreadEnvironmentId}
+            threadId={ctx.activeThreadId ?? undefined}
             isStreaming
             skills={ctx.skills}
           />
@@ -2420,6 +2422,7 @@ function SubagentResultTimelineRow({
             text={row.result.body}
             cwd={ctx.markdownCwd}
             environmentId={ctx.activeThreadEnvironmentId}
+            threadId={ctx.activeThreadId ?? undefined}
             isStreaming={false}
             skills={ctx.skills}
           />

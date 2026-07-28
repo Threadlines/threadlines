@@ -47,7 +47,6 @@ import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
   closeRightPanelSearchParams,
-  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
   stripRightPanelSearchParams,
@@ -121,6 +120,7 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   useChatHeaderBottomVarRef,
+  useSourceControlPanelOpen,
 } from "../rightPanelLayout";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
@@ -1277,7 +1277,7 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = isSourceControlPanelOpen(rawSearch);
+  const sourceControlOpen = useSourceControlPanelOpen(rawSearch);
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.

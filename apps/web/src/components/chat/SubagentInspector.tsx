@@ -17,7 +17,11 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { LiveNode } from "../ui/threadline";
 import type { SubagentDisplayDetails } from "./ThreadActivityPopover";
-import { formatSubagentMetaParts, resolveSubagentModelLabel } from "./subagentMeta";
+import {
+  formatSubagentMetaParts,
+  resolveSubagentModelLabel,
+  SubagentModelMeta,
+} from "./subagentMeta";
 import { SubagentTranscript } from "./SubagentTranscript";
 
 interface SubagentInspectorProps {
@@ -59,16 +63,14 @@ export function SubagentInspector({
   // The spawning tool call rarely names the model a Claude agent runs on; the
   // provider's own record of the agent does.
   const model = item.model ?? providerAgent?.model ?? null;
-  const metaParts = formatSubagentMetaParts(
-    { ...item, model },
-    {
-      context: details.context,
-      modelLabel: resolveSubagentModelLabel(providers, model),
-      elapsed: active
-        ? formatElapsedDurationLabel(item.createdAt)
-        : `Updated ${formatRelativeTimeLabel(item.updatedAt)}`,
-    },
-  );
+  const modelLabel = resolveSubagentModelLabel(providers, model);
+  const hasModelMeta = Boolean(modelLabel ?? item.reasoningEffort);
+  const metaParts = formatSubagentMetaParts(item, {
+    context: details.context,
+    elapsed: active
+      ? formatElapsedDurationLabel(item.createdAt)
+      : `Updated ${formatRelativeTimeLabel(item.updatedAt)}`,
+  });
 
   return (
     <section
@@ -112,9 +114,12 @@ export function SubagentInspector({
               className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] text-muted-foreground/60"
               data-subagent-inspector-meta="true"
             >
+              <SubagentModelMeta modelLabel={modelLabel} reasoningEffort={item.reasoningEffort} />
               {metaParts.map((part, index) => (
                 <span key={part} className="inline-flex items-center gap-1.5">
-                  {index > 0 ? <span className="text-muted-foreground/30">·</span> : null}
+                  {index > 0 || hasModelMeta ? (
+                    <span className="text-muted-foreground/30">·</span>
+                  ) : null}
                   <span className="max-w-full truncate">{part}</span>
                 </span>
               ))}

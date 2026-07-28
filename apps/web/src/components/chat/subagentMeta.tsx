@@ -1,6 +1,7 @@
 /**
  * One dense meta line describing a spawned agent, shared by the activity
- * popover row and the inspector header so both stay in step. Everything here
+ * popover row and the inspector header so both stay in step: an emphasized
+ * model + reasoning lead-in, then the muted telemetry parts. Everything here
  * comes from data the thread subscription already streams; nothing in this
  * module triggers a provider read.
  */
@@ -73,13 +74,39 @@ export function formatSubagentModelSlug(slug: string): string {
     .join(" ");
 }
 
+/**
+ * Which model an agent runs on (and how hard it thinks) is the headline fact
+ * about it, so both surfaces render this ahead of the muted telemetry parts
+ * instead of burying it among them. Same 10px mono line, brighter ink.
+ */
+export function SubagentModelMeta({
+  modelLabel,
+  reasoningEffort,
+}: {
+  modelLabel: string | null;
+  reasoningEffort: string | null | undefined;
+}) {
+  if (!modelLabel && !reasoningEffort) {
+    return null;
+  }
+  return (
+    <span className="inline-flex min-w-0 items-baseline gap-1.5" data-subagent-model-meta="true">
+      {modelLabel ? (
+        <span className="truncate font-medium text-foreground/90">{modelLabel}</span>
+      ) : null}
+      {modelLabel && reasoningEffort ? <span className="text-muted-foreground/30">·</span> : null}
+      {reasoningEffort ? (
+        <span className="shrink-0 font-medium text-foreground/65">{reasoningEffort}</span>
+      ) : null}
+    </span>
+  );
+}
+
 export function formatSubagentMetaParts(
-  item: Pick<SubagentProgressItem, "model" | "reasoningEffort" | "telemetry">,
+  item: Pick<SubagentProgressItem, "telemetry">,
   options?: {
     /** Where the agent is working, from the parsed objective. */
     readonly context?: string | null;
-    /** Display name for the model, resolved against the provider catalog. */
-    readonly modelLabel?: string | null;
     /** Wall-clock fallback used when the provider reports no duration. */
     readonly elapsed?: string | null;
     /** The current step reads as prose, so the popover row keeps it out of the
@@ -92,14 +119,6 @@ export function formatSubagentMetaParts(
 
   if (options?.context) {
     parts.push(options.context);
-  }
-  const modelLabel =
-    options?.modelLabel ?? (item.model ? formatSubagentModelSlug(item.model) : null);
-  if (modelLabel) {
-    parts.push(modelLabel);
-  }
-  if (item.reasoningEffort) {
-    parts.push(item.reasoningEffort);
   }
   const duration =
     telemetry?.durationMs != null ? formatSubagentDuration(telemetry.durationMs) : options?.elapsed;

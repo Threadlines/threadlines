@@ -69,6 +69,7 @@ function thread(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    cumulativeDiffStat: null,
     ...overrides,
   };
 }

@@ -20,7 +20,6 @@ import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import {
   closeRightPanelSearchParams,
   type DiffRouteSearch,
-  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
@@ -31,6 +30,7 @@ import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   useAutoHideSourceControlSheet,
+  useSourceControlPanelOpen,
 } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
@@ -124,7 +124,7 @@ function ChatThreadRouteView() {
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
-  const rawSourceControlOpen = isSourceControlPanelOpen(search);
+  const rawSourceControlOpen = useSourceControlPanelOpen(search);
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
     ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)

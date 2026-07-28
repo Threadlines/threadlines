@@ -237,6 +237,17 @@ function resolveTextGenerationProviders(settings: ServerSettings): ServerSetting
     }
   }
 
+  // A writer selection pointing at a provider that is gone (uninstalled,
+  // disabled, instance deleted) resolves to null so source control text falls
+  // back to the primary selection instead of failing every generation.
+  const writerSelection = resolved.sourceControlWriterModelSelection;
+  if (writerSelection !== null && !textGenerationSelectionIsEnabled(resolved, writerSelection)) {
+    resolved = {
+      ...resolved,
+      sourceControlWriterModelSelection: null,
+    };
+  }
+
   const backupSelection = resolved.textGenerationBackupModelSelection;
   if (backupSelection === null) {
     return resolved;
@@ -258,11 +269,21 @@ function resolveTextGenerationProviders(settings: ServerSettings): ServerSetting
   };
 }
 
+/**
+ * The model selection used for source control text (commit messages, PR
+ * titles and bodies, branch names). Thread titles always use the primary
+ * text generation selection.
+ */
+export function resolveSourceControlWriterModelSelection(settings: ServerSettings): ModelSelection {
+  return settings.sourceControlWriterModelSelection ?? settings.textGenerationModelSelection;
+}
+
 // Values under these keys are compared as a whole — never stripped field-by-field.
 const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "automaticGitFetchInterval",
   "textGenerationModelSelection",
   "textGenerationBackupModelSelection",
+  "sourceControlWriterModelSelection",
 ]);
 
 function stripDefaultServerSettings(current: unknown, defaults: unknown): unknown | undefined {

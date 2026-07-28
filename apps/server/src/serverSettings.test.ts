@@ -250,6 +250,40 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("keeps a source control writer selection on an enabled provider", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+
+      const next = yield* serverSettings.updateSettings({
+        sourceControlWriterModelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-haiku-4-5",
+        },
+      });
+
+      assert.deepEqual(next.sourceControlWriterModelSelection, {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-haiku-4-5",
+      });
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("clears the source control writer selection when its provider is disabled", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+
+      const next = yield* serverSettings.updateSettings({
+        providers: { claudeAgent: { enabled: false } },
+        sourceControlWriterModelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-haiku-4-5",
+        },
+      });
+
+      assert.equal(next.sourceControlWriterModelSelection, null);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect(
     "uses explicit provider instance enabled state over legacy provider enabled state",
     () =>

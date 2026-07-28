@@ -425,6 +425,25 @@ export function resolveTextGenerationBackupModelSelectionState(
   });
 }
 
+/**
+ * The dedicated source control writer selection, resolved against the
+ * available providers exactly like the primary text generation selection.
+ * `null` means source control text uses the primary selection.
+ */
+export function resolveSourceControlWriterModelSelectionState(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+): ModelSelection | null {
+  const selection = settings.sourceControlWriterModelSelection ?? null;
+  if (selection === null) {
+    return null;
+  }
+  return resolveAppModelSelectionState(
+    { ...settings, textGenerationModelSelection: selection },
+    providers,
+  );
+}
+
 export function resolveDefaultTextGenerationBackupModelSelectionState(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,

@@ -81,6 +81,7 @@ export function applyServerSettingsPatch(
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
   const backupSelectionPatch = patch.textGenerationBackupModelSelection;
+  const writerSelectionPatch = patch.sourceControlWriterModelSelection;
   const { automaticGitFetchInterval, ...patchForMerge } = patch;
   const next = deepMerge(current, patchForMerge);
   let nextWithReplacements = {
@@ -141,6 +142,17 @@ export function applyServerSettingsPatch(
     nextWithReplacements = {
       ...nextWithReplacements,
       textGenerationBackupModelSelection: backupSelection,
+    };
+  }
+
+  const writerSelection = applyNullableModelSelectionPatch(
+    current.sourceControlWriterModelSelection,
+    writerSelectionPatch,
+  );
+  if (writerSelection !== undefined) {
+    nextWithReplacements = {
+      ...nextWithReplacements,
+      sourceControlWriterModelSelection: writerSelection,
     };
   }
 

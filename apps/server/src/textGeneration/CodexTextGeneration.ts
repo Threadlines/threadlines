@@ -37,7 +37,7 @@ import {
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { resolveCodexCliServiceTier } from "../codexServiceTier.ts";
 
-const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "low";
+const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "medium";
 const CODEX_DEFAULT_TIMEOUT_MS = 180_000;
 // Identical commit prompts have been observed taking 11s-42s wall time
 // (server-side queue variance), so 60s left too little tail headroom.
@@ -391,6 +391,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       stagedSummary: input.stagedSummary,
       stagedPatch: input.stagedPatch,
       includeBranch: input.includeBranch === true,
+      policy: input.policy,
     });
 
     const generated = yield* runCodexJsonWithCapacityFallback({
@@ -419,6 +420,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       commitSummary: input.commitSummary,
       diffSummary: input.diffSummary,
       diffPatch: input.diffPatch,
+      policy: input.policy,
+      prTemplate: input.prTemplate,
     });
 
     const generated = yield* runCodexJsonWithCapacityFallback({
@@ -445,6 +448,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     const { prompt, outputSchema } = buildBranchNamePrompt({
       message: input.message,
       attachments: input.attachments,
+      policy: input.policy,
     });
 
     const generated = yield* runCodexJsonWithCapacityFallback({

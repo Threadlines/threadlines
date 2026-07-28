@@ -257,6 +257,20 @@ describe("createPreviewAutomationHandler", () => {
     expect(response.error).toBe("target is not editable");
   });
 
+  it("answers instead of rejecting when the target itself cannot be read", async () => {
+    // `getWebContentsId` throws until the webview attaches, and a throw out of
+    // the handler was the one failure the broker could not see: it waited out
+    // its whole timeout on a request the host already knew was unanswerable.
+    const handle = createPreviewAutomationHandler({} as DesktopBridge, () => {
+      throw new Error("The WebView must be attached to the DOM");
+    });
+
+    const response = await handle(request("status"));
+
+    expect(response.error).toContain("attached to the DOM");
+    expect(response.requestId).toBe("r1");
+  });
+
   it("says so when the panel is open but has no page", async () => {
     const handle = handlerFor(
       { previewSnapshot: () => Promise.reject(new Error("unreachable")) },

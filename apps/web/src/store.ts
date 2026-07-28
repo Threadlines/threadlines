@@ -50,6 +50,7 @@ import {
   derivePendingUserInputs,
   findLatestProposedPlan,
   hasActionableProposedPlan,
+  sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
@@ -353,6 +354,7 @@ function mapThreadShell(
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    cumulativeDiffStat: thread.cumulativeDiffStat,
   };
   return {
     shell,
@@ -422,6 +424,9 @@ function toSidebarThreadSummary(
   );
   const hasActivityEvidence = thread.activities.length > 0;
   const hasProposedPlanEvidence = thread.proposedPlans.length > 0;
+  // The detail stream carries per-turn summaries, not the server's rollup, so
+  // the open thread recomputes it rather than going stale behind the sidebar.
+  const hasTurnDiffEvidence = thread.turnDiffSummaries.length > 0;
 
   return {
     id: thread.id,
@@ -448,6 +453,9 @@ function toSidebarThreadSummary(
     hasActionableProposedPlan: hasProposedPlanEvidence
       ? hasActionableProposedPlan(latestProposedPlan)
       : (previous?.hasActionableProposedPlan ?? false),
+    cumulativeDiffStat: hasTurnDiffEvidence
+      ? sumTurnDiffStats(thread.turnDiffSummaries)
+      : (previous?.cumulativeDiffStat ?? null),
   };
 }
 
@@ -494,6 +502,15 @@ function threadSessionsEqual(
   );
 }
 
+function threadDiffStatsEqual(
+  left: SidebarThreadSummary["cumulativeDiffStat"],
+  right: SidebarThreadSummary["cumulativeDiffStat"],
+): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  return left.additions === right.additions && left.deletions === right.deletions;
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -516,7 +533,8 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
-    left.hasActionableProposedPlan === right.hasActionableProposedPlan
+    left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
+    threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat)
   );
 }
 

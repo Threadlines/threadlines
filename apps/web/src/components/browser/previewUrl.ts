@@ -6,6 +6,15 @@
  * URL until it has a scheme, while a genuinely malformed entry should fail
  * quietly rather than navigate somewhere surprising.
  */
+/** The site an address belongs to, or "" for anything that names no host. */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
 export function normalizePreviewUrl(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === "") {

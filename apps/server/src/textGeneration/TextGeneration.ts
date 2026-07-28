@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { ChatAttachment, ModelSelection, ProviderInstanceId } from "@threadlines/contracts";
 import { TextGenerationError } from "@threadlines/contracts";
+import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
 import {
   ProviderInstanceRegistry,
@@ -23,6 +24,8 @@ export interface CommitMessageGenerationInput {
   modelSelection: ModelSelection;
   /** Optional backup model on a different provider. Used only after the primary fails. */
   backupModelSelection?: ModelSelection | null;
+  /** Writing style policy resolved from settings and the repository. */
+  policy?: TextGenerationPolicy | undefined;
 }
 
 export interface CommitMessageGenerationResult {
@@ -43,6 +46,10 @@ export interface PrContentGenerationInput {
   modelSelection: ModelSelection;
   /** Optional backup model on a different provider. Used only after the primary fails. */
   backupModelSelection?: ModelSelection | null;
+  /** Writing style policy resolved from settings and the repository. */
+  policy?: TextGenerationPolicy | undefined;
+  /** Repository pull request template, when one was detected and templates are on. */
+  prTemplate?: string | undefined;
 }
 
 export interface PrContentGenerationResult {
@@ -58,6 +65,8 @@ export interface BranchNameGenerationInput {
   modelSelection: ModelSelection;
   /** Optional backup model on a different provider. Used only after the primary fails. */
   backupModelSelection?: ModelSelection | null;
+  /** Writing style policy resolved from settings and the repository. */
+  policy?: TextGenerationPolicy | undefined;
 }
 
 export interface BranchNameGenerationResult {

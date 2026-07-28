@@ -35,9 +35,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BROWSER_VIEWPORT_PRESETS,
   RESPONSIVE_VIEWPORT,
+  callWhenReady,
   getPreviewWebview,
   registerPreviewWebview,
   selectActiveTab,
+  selectPendingBrowserApproval,
   selectThreadAgentState,
   selectThreadBrowserState,
   steppedZoom,
@@ -61,11 +63,12 @@ import {
 } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
+import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
 import { completeUrl } from "./urlCompletion";
 import { type AgentActivity } from "./previewAutomationHost";
-import { normalizePreviewUrl } from "./previewUrl";
+import { hostOf, normalizePreviewUrl } from "./previewUrl";
 
 /**
  * Electron's <webview> is a custom element, so React needs to be told it exists.
@@ -82,20 +85,6 @@ declare global {
         partition?: string;
       };
     }
-  }
-}
-
-/**
- * A <webview> rejects imperative calls until its guest has attached and fired
- * dom-ready. Navigation still happens: `src` is bound to the tab's url, so a
- * tab created and immediately pointed somewhere loads from the attribute once
- * it is ready. These helpers keep that race from surfacing as an error.
- */
-function callWhenReady<T>(action: () => T): T | null {
-  try {
-    return action();
-  } catch {
-    return null;
   }
 }
 
@@ -160,6 +149,13 @@ export function BrowserPanel({
   const appearance = useBrowserPanelStore((store) => store.appearance);
   const setAppearance = useBrowserPanelStore((store) => store.setAppearance);
   const setTabZoom = useBrowserPanelStore((store) => store.setTabZoom);
+  const pendingApproval = useBrowserPanelStore((store) =>
+    selectPendingBrowserApproval(store.pendingApprovalByThreadKey, threadRef),
+  );
+  const setPendingBrowserApproval = useBrowserPanelStore(
+    (store) => store.setPendingBrowserApproval,
+  );
+  const { approveHost } = useBrowserApprovals(threadRef);
   const { resolvedTheme } = useTheme();
   const guestColorScheme = appearance === "system" ? resolvedTheme : appearance;
 
@@ -315,6 +311,32 @@ export function BrowserPanel({
     [visitedUrls],
   );
 
+  /**
+   * Going somewhere yourself is approval.
+   *
+   * Typing an address, or picking a local server, is the user saying where the
+   * browser should be -- so the site is recorded for the project without a
+   * prompt. Being asked to approve the page you just asked for would read as
+   * the app not listening.
+   */
+  const openAddress = useCallback(
+    (tabId: string, url: string) => {
+      const approved = approveHost(hostOf(url));
+      setTabUrl(threadRef, tabId, url);
+      const webview = webviewFor(tabId);
+      // Armed before the page loads rather than on the next render: a site that
+      // redirects on arrival would otherwise be judged against the allowlist as
+      // it stood a moment before the user approved it.
+      const webContentsId =
+        webview === null ? null : callWhenReady(() => webview.getWebContentsId());
+      if (webContentsId !== null) {
+        pushNavigationPolicy(webContentsId, approved);
+      }
+      callWhenReady(() => void webview?.loadURL(url));
+    },
+    [approveHost, setTabUrl, threadRef, webviewFor],
+  );
+
   const submitAddress = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
@@ -322,12 +344,42 @@ export function BrowserPanel({
       if (normalized === null || activeTabId === "") {
         return;
       }
-      setTabUrl(threadRef, activeTabId, normalized);
-      const webview = webviewFor(activeTabId);
-      callWhenReady(() => void webview?.loadURL(normalized));
+      openAddress(activeTabId, normalized);
     },
-    [activeTabId, addressDraft, setTabUrl, threadRef],
+    [activeTabId, addressDraft, openAddress],
   );
+
+  /**
+   * Allowing the site and going there are one act.
+   *
+   * The page loads into the agent's own tab rather than whichever one is in
+   * front, so the next thing the agent looks at is the page it asked for
+   * instead of an approval it has no way to notice.
+   */
+  const allowPendingApproval = useCallback(() => {
+    if (pendingApproval === null) {
+      return;
+    }
+    setPendingBrowserApproval(threadRef, null);
+    const targetTabId =
+      agentTabId !== null && browserState.tabs.some((tab) => tab.id === agentTabId)
+        ? agentTabId
+        : activeTabId;
+    if (targetTabId === "") {
+      approveHost(pendingApproval.host);
+      return;
+    }
+    openAddress(targetTabId, pendingApproval.url);
+  }, [
+    activeTabId,
+    agentTabId,
+    approveHost,
+    browserState.tabs,
+    openAddress,
+    pendingApproval,
+    setPendingBrowserApproval,
+    threadRef,
+  ]);
 
   /**
    * Which page tool is armed, or null when the pointer belongs to the page.
@@ -763,7 +815,16 @@ export function BrowserPanel({
         </Menu>
       </div>
 
-      {agentTabId !== null && agentActivity !== null ? (
+      {/* One agent line, whichever it has to say: a pending question replaces
+          the activity that raised it, since "went to X" describes the very
+          navigation that was just refused. */}
+      {pendingApproval !== null ? (
+        <AgentApprovalLine
+          host={pendingApproval.host}
+          onAllow={allowPendingApproval}
+          onDismiss={() => setPendingBrowserApproval(threadRef, null)}
+        />
+      ) : agentTabId !== null && agentActivity !== null ? (
         <AgentActivityLine
           activity={agentActivity}
           isOnAgentTab={agentTabId === activeTabId}
@@ -797,12 +858,7 @@ export function BrowserPanel({
             {activeTab !== null && activeTab.url === null ? (
               <div className="absolute inset-0 z-10 overflow-auto bg-background px-3">
                 <LocalServerPicker
-                  onSelect={(port) => {
-                    const url = `http://localhost:${port}`;
-                    setTabUrl(threadRef, activeTab.id, url);
-                    const webview = webviewFor(activeTab.id);
-                    callWhenReady(() => void webview?.loadURL(url));
-                  }}
+                  onSelect={(port) => openAddress(activeTab.id, `http://localhost:${port}`)}
                 />
               </div>
             ) : null}
@@ -937,6 +993,12 @@ function PreviewTabFrame({
   agentPointRetiring: boolean;
 }) {
   const elementRef = useRef<PreviewWebview | null>(null);
+  // Fixed at mount and never rewritten: navigation goes through `loadURL`, and
+  // a `src` that tracked the tab's URL would re-load pages React re-rendered.
+  // `about:blank` rather than no `src` because a webview with no `src` never
+  // attaches a guest at all, leaving a tab the agent can see but nothing --
+  // not even `navigate` -- can act on.
+  const [initialSrc] = useState(() => tab.url ?? "about:blank");
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
   const setTabTitle = useBrowserPanelStore((store) => store.setTabTitle);
   const isActiveRef = useRef(isActive);
@@ -988,6 +1050,10 @@ function PreviewTabFrame({
     let attachedId: number | null = null;
     const onAttached = () => {
       attachedId = webview.getWebContentsId();
+      // Re-announced now that the guest exists: registration happened at
+      // mount, before attach, and an agent waiting on this webview is waiting
+      // for the moment it can actually be driven.
+      registerPreviewWebview(threadRef, tab.id, webview);
       callWhenReady(() => webview.setZoomFactor(zoomFactorRef.current));
       void window.desktopBridge?.previewAttach?.({ webContentsId: attachedId }).then(() => {
         // A page that respects prefers-color-scheme should follow the app
@@ -1016,7 +1082,9 @@ function PreviewTabFrame({
       // 100%. Reasserting on every navigation keeps the two from drifting.
       callWhenReady(() => webview.setZoomFactor(zoomFactorRef.current));
       const url = callWhenReady(() => webview.getURL());
-      if (url !== null && url !== "") {
+      // `about:blank` is the seed of an empty tab, not somewhere the user went:
+      // written back it would dismiss the new-tab view under a fake address.
+      if (url !== null && url !== "" && url !== "about:blank") {
         setTabUrl(threadRef, tab.id, url);
       }
       publishNav(false);
@@ -1098,7 +1166,7 @@ function PreviewTabFrame({
               : {}),
           }}
           partition={PREVIEW_PARTITION}
-          {...(tab.url ? { src: tab.url } : {})}
+          src={initialSrc}
         />
         {isActive ? (
           // Positioned in the same frame as the guest, so a page pixel and a
@@ -1347,6 +1415,56 @@ function PageToolControl({
         </MenuPopup>
       </Menu>
     </span>
+  );
+}
+
+/**
+ * The one question the browser ever asks you, in the agent's own line.
+ *
+ * An agent may reach any private address it likes -- your dev server is the
+ * whole point of the panel -- but the open internet is somewhere you decide it
+ * goes. The question wears the activity line's grammar ("Agent wants to visit"
+ * beside "Agent went to") because it is the same narration, paused: an amber
+ * dot instead of a second bar, and the two answers where "show" would sit.
+ *
+ * "for this project" is load-bearing: it says the click is remembered and says
+ * how far it reaches, so allowing a docs site once does not quietly allow it
+ * everywhere you work.
+ */
+export function AgentApprovalLine({
+  host,
+  onAllow,
+  onDismiss,
+}: {
+  host: string;
+  onAllow: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="flex h-[22px] w-full shrink-0 items-center gap-1.5 border-b border-border px-2 font-mono text-[11px] text-muted-foreground"
+      data-testid="browser-approval-bar"
+    >
+      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
+      <span className="shrink-0 text-foreground">Agent</span>
+      <span className="min-w-0 truncate">wants to visit {host}</span>
+      <button
+        type="button"
+        data-testid="browser-approval-allow"
+        className="ms-auto shrink-0 text-amber-600/70 hover:text-amber-600 dark:text-amber-400/70 dark:hover:text-amber-400"
+        onClick={onAllow}
+      >
+        Allow for this project
+      </button>
+      <button
+        type="button"
+        data-testid="browser-approval-dismiss"
+        className="shrink-0 text-muted-foreground/60 hover:text-foreground"
+        onClick={onDismiss}
+      >
+        Not now
+      </button>
+    </div>
   );
 }
 

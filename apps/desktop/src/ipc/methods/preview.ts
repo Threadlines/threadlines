@@ -7,6 +7,7 @@ import {
   DesktopPreviewViewportInputSchema,
   DesktopPreviewEvaluateInputSchema,
   DesktopPreviewMoveInputSchema,
+  DesktopPreviewNavigationPolicyInputSchema,
   DesktopPreviewScreenshotSchema,
   DesktopPreviewSnapshotSchema,
   DesktopPreviewTypeInputSchema,
@@ -258,6 +259,16 @@ export const previewClearCache = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.clearCache")(function* () {
     const session = yield* PreviewSession.PreviewSession;
     yield* session.clearCache();
+  }),
+});
+
+export const previewSetNavigationPolicy = makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_NAVIGATION_POLICY_CHANNEL,
+  payload: DesktopPreviewNavigationPolicyInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setNavigationPolicy")(function* (input) {
+    const automation = yield* PreviewAutomation.PreviewAutomation;
+    yield* automation.setNavigationPolicy(input.webContentsId, input.approvedDomains);
   }),
 });
 

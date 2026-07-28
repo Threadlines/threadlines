@@ -1,4 +1,10 @@
-import { ChevronDownIcon, EllipsisIcon, FolderIcon, FolderPlusIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  EllipsisIcon,
+  FolderIcon,
+  FolderPlusIcon,
+  SquarePenIcon,
+} from "lucide-react";
 import React, { memo, useCallback, useState } from "react";
 import type { ContextMenuItem, SidebarProjectGroupingMode } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
@@ -78,6 +84,8 @@ export interface ProjectScopeMenuProps {
   scopedProjectKey: string | null;
   onScopeChange: (projectKey: string | null) => void;
   onAddProject: () => void;
+  onNewThread: () => void;
+  newThreadShortcutLabel: string | null;
 }
 
 /**
@@ -90,7 +98,15 @@ export interface ProjectScopeMenuProps {
  * not, so only "Add project" stays out here as a visible button.
  */
 export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectScopeMenuProps) {
-  const { options, projectByKey, scopedProjectKey, onScopeChange, onAddProject } = props;
+  const {
+    options,
+    projectByKey,
+    scopedProjectKey,
+    onScopeChange,
+    onAddProject,
+    onNewThread,
+    newThreadShortcutLabel,
+  } = props;
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const { updateSettings } = useUpdateSettings();
   const [projectRenameTarget, setProjectRenameTarget] = useState<SidebarProjectGroupMember | null>(
@@ -570,6 +586,24 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             <FolderPlusIcon className="size-3.5" />
           </TooltipTrigger>
           <TooltipPopup side="bottom">Add project</TooltipPopup>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="New thread"
+                data-testid="new-thread-button"
+                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+                onClick={onNewThread}
+              />
+            }
+          >
+            <SquarePenIcon className="size-3.5" />
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">
+            {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+          </TooltipPopup>
         </Tooltip>
       </div>
 

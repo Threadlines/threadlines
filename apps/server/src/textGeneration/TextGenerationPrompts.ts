@@ -96,21 +96,40 @@ export interface PrContentPromptInput {
   diffSummary: string;
   diffPatch: string;
   policy?: TextGenerationPolicy | undefined;
+  /** Repository pull request template, when one was detected and templates are on. */
+  prTemplate?: string | undefined;
 }
 
+const PR_DEFAULT_BODY_RULES: ReadonlyArray<string> = [
+  "- body must be markdown and include headings '## Summary' and '## Testing'",
+  "- under Summary, provide short bullet points",
+  "- under Testing, include bullet points with concrete checks or 'Not run' where appropriate",
+];
+
+const PR_TEMPLATE_BODY_RULES: ReadonlyArray<string> = [
+  "- body must be markdown and follow the repository pull request template structure",
+  "- fill in the template sections appropriately for this change",
+  "- drop HTML comments from the template in the generated body",
+  "- keep the template's markdown structure",
+];
+
 export function buildPrContentPrompt(input: PrContentPromptInput) {
+  const prTemplate = input.prTemplate?.trim() ?? "";
+  const hasPrTemplate = prTemplate.length > 0;
+
   const prompt = [
     "You write GitHub pull request content.",
     "Return a JSON object with keys: title, body.",
     "Rules:",
     "- title should be concise and specific",
-    "- body must be markdown and include headings '## Summary' and '## Testing'",
-    "- under Summary, provide short bullet points",
-    "- under Testing, include bullet points with concrete checks or 'Not run' where appropriate",
+    ...(hasPrTemplate ? PR_TEMPLATE_BODY_RULES : PR_DEFAULT_BODY_RULES),
     ...policyInstruction(input.policy?.changeRequestInstructions),
     "",
     `Base branch: ${input.baseBranch}`,
     `Head branch: ${input.headBranch}`,
+    ...(hasPrTemplate
+      ? ["", "Repository pull request template:", limitSection(prTemplate, 8_000)]
+      : []),
     "",
     "Commits:",
     limitSection(input.commitSummary, 12_000),

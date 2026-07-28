@@ -71,6 +71,7 @@ function makeReadModel(
       readonly providerName: "codex" | "claudeAgent";
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
       readonly activeTurnId: TurnId | null;
+      readonly pendingBackgroundTaskCount?: number;
       readonly lastError: string | null;
       readonly updatedAt: string;
     } | null;
@@ -180,6 +181,7 @@ describe("ProviderSessionReaper", () => {
   async function createHarness(input: {
     readonly readModel: ReturnType<typeof makeReadModel>;
     readonly activeProviderSessions?: ReadonlyArray<ProviderSession>;
+    readonly backgroundTaskGraceMs?: number;
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
@@ -242,6 +244,9 @@ describe("ProviderSessionReaper", () => {
     const layer = makeProviderSessionReaperLive({
       inactivityThresholdMs: 1_000,
       sweepIntervalMs: 60_000,
+      ...(input.backgroundTaskGraceMs !== undefined
+        ? { backgroundTaskGraceMs: input.backgroundTaskGraceMs }
+        : {}),
     }).pipe(
       Layer.provideMerge(providerSessionDirectoryLayer),
       Layer.provideMerge(runtimeRepositoryLayer),
@@ -260,12 +265,14 @@ describe("ProviderSessionReaper", () => {
           getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
-          getThreadShellById: (threadId) =>
-            Effect.succeed(
-              input.readModel.threads.find((thread) => thread.id === threadId)
-                ? Option.some(input.readModel.threads.find((thread) => thread.id === threadId)!)
-                : Option.none(),
-            ),
+          getThreadShellById: (threadId) => {
+            const thread = input.readModel.threads.find((entry) => entry.id === threadId);
+            return Effect.succeed(
+              thread === undefined
+                ? Option.none()
+                : Option.some({ ...thread, cumulativeDiffStat: null }),
+            );
+          },
           getThreadDetailById: () => Effect.die("unused"),
         }),
       ),
@@ -478,6 +485,128 @@ describe("ProviderSessionReaper", () => {
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
           opaque: "resume-idle-ready",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
+    expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
+  });
+
+  it("skips idle sessions with pending background tasks while reaping the rest", async () => {
+    const backgroundThreadId = ThreadId.make("thread-reaper-pending-background");
+    const idleThreadId = ThreadId.make("thread-reaper-plain-idle");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      // Way past the inactivity threshold but inside the background grace: a
+      // settled turn with a subagent still running must survive the sweep.
+      backgroundTaskGraceMs: 1_000_000_000_000,
+      readModel: makeReadModel([
+        {
+          id: backgroundThreadId,
+          session: {
+            threadId: backgroundThreadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            pendingBackgroundTaskCount: 1,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+        {
+          id: idleThreadId,
+          session: {
+            threadId: idleThreadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    for (const threadId of [backgroundThreadId, idleThreadId]) {
+      await runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName: "claudeAgent",
+          providerInstanceId: null,
+          adapterKey: "claudeAgent",
+          runtimeMode: "full-access",
+          status: "running",
+          lastSeenAt: "2026-04-14T00:00:00.000Z",
+          resumeCursor: {
+            opaque: `resume-${threadId}`,
+          },
+          runtimePayload: null,
+        }),
+      );
+    }
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    await Effect.runPromise(drainFibers);
+
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      idleThreadId,
+    ]);
+    expect(harness.stoppedThreadIds.has(backgroundThreadId)).toBe(false);
+    const remaining = await runtime!.runPromise(
+      repository.getByThreadId({ threadId: backgroundThreadId }),
+    );
+    expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("reaps sessions with pending background tasks once the grace cap elapses", async () => {
+    const threadId = ThreadId.make("thread-reaper-background-grace-elapsed");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      backgroundTaskGraceMs: 1_000,
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            pendingBackgroundTaskCount: 2,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: {
+          opaque: "resume-background-grace-elapsed",
         },
         runtimePayload: null,
       }),

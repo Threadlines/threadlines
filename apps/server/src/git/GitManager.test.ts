@@ -28,6 +28,7 @@ import {
   GitHubCli,
 } from "../sourceControl/GitHubCli.ts";
 import { type TextGenerationShape, TextGeneration } from "../textGeneration/TextGeneration.ts";
+import type { TextGenerationPolicy } from "../textGeneration/TextGenerationPolicy.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubSourceControlProvider from "../sourceControl/GitHubSourceControlProvider.ts";
@@ -81,6 +82,7 @@ interface FakeGitTextGeneration {
     stagedPatch: string;
     includeBranch?: boolean;
     modelSelection: ModelSelection;
+    policy?: TextGenerationPolicy | undefined;
   }) => Effect.Effect<
     { subject: string; body: string; branch?: string | undefined },
     TextGenerationError
@@ -93,6 +95,8 @@ interface FakeGitTextGeneration {
     diffSummary: string;
     diffPatch: string;
     modelSelection: ModelSelection;
+    policy?: TextGenerationPolicy | undefined;
+    prTemplate?: string | undefined;
   }) => Effect.Effect<{ title: string; body: string }, TextGenerationError>;
   generateBranchName: (input: {
     cwd: string;
@@ -652,6 +656,7 @@ function makeManager(input?: {
   ghScenario?: FakeGhScenario;
   textGeneration?: Partial<FakeGitTextGeneration>;
   setupScriptRunner?: ProjectSetupScriptRunnerShape;
+  settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -659,7 +664,7 @@ function makeManager(input?: {
     prefix: "t3-git-manager-test-",
   });
 
-  const serverSettingsLayer = ServerSettingsService.layerTest();
+  const serverSettingsLayer = ServerSettingsService.layerTest(input?.settings ?? {});
 
   const vcsDriverLayer = GitVcsDriver.layer.pipe(
     Layer.provideMerge(VcsProcess.layer),
@@ -1496,6 +1501,66 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("samples recent commit subjects into the repository conventions policy", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("threadlines-git-manager-");
+      yield* initRepo(repoDir);
+      fs.writeFileSync(path.join(repoDir, "sampled.txt"), "sampled\n");
+      yield* runGit(repoDir, ["add", "sampled.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "chore(deps): bump the linter"]);
+      fs.writeFileSync(path.join(repoDir, "pending.txt"), "pending\n");
+
+      let policy: TextGenerationPolicy | undefined;
+      const { manager } = yield* makeManager({
+        textGeneration: {
+          generateCommitMessage: (input) =>
+            Effect.sync(() => {
+              policy = input.policy;
+              return { subject: "Add pending file", body: "" };
+            }),
+        },
+      });
+
+      yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
+
+      expect(policy?.kind).toBe("repo_conventions");
+      expect(policy?.commitInstructions).toContain("Recent commit subjects from this repository:");
+      expect(policy?.commitInstructions).toContain("chore(deps): bump the linter");
+      expect(policy?.changeRequestInstructions).toContain("chore(deps): bump the linter");
+    }),
+  );
+
+  it.effect("passes custom writing instructions through as the policy", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("threadlines-git-manager-");
+      yield* initRepo(repoDir);
+      fs.writeFileSync(path.join(repoDir, "custom.txt"), "custom\n");
+
+      let policy: TextGenerationPolicy | undefined;
+      const { manager } = yield* makeManager({
+        settings: {
+          sourceControlWritingStyle: {
+            mode: "custom",
+            customInstructions: "Always mention the affected package.",
+          },
+        },
+        textGeneration: {
+          generateCommitMessage: (input) =>
+            Effect.sync(() => {
+              policy = input.policy;
+              return { subject: "Add custom file", body: "" };
+            }),
+        },
+      });
+
+      yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
+
+      expect(policy?.kind).toBe("custom");
+      expect(policy?.commitInstructions).toBe("Always mention the affected package.");
+      expect(policy?.changeRequestInstructions).toBe("Always mention the affected package.");
+    }),
+  );
+
   it.effect("commits only selected files when filePaths is provided", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("threadlines-git-manager-");
@@ -1949,6 +2014,93 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           call.includes("pr create --base main --head feature/create-pr-only"),
         ),
       ).toBe(true);
+    }),
+  );
+
+  it.effect("passes the committed PR template to generation only while the toggle is on", () =>
+    Effect.gen(function* () {
+      const prepareRepo = Effect.fn("prepareTemplateRepo")(function* (branch: string) {
+        const repoDir = yield* makeTempDir("threadlines-git-manager-");
+        yield* initRepo(repoDir);
+        fs.mkdirSync(path.join(repoDir, ".github"), { recursive: true });
+        fs.writeFileSync(
+          path.join(repoDir, ".github", "pull_request_template.md"),
+          "## What changed\n\n## Rollback plan\n",
+        );
+        yield* runGit(repoDir, ["add", ".github/pull_request_template.md"]);
+        yield* runGit(repoDir, ["commit", "-m", "Add PR template"]);
+        yield* runGit(repoDir, ["checkout", "-b", branch]);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        fs.writeFileSync(path.join(repoDir, `${branch.split("/")[1]}.txt`), "change\n");
+        yield* runGit(repoDir, ["add", "."]);
+        yield* runGit(repoDir, ["commit", "-m", "Make a change"]);
+        return repoDir;
+      });
+
+      const ghScenario: FakeGhScenario = {
+        prListSequence: [
+          "[]",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          JSON.stringify([
+            {
+              number: 505,
+              title: "Make a change",
+              url: "https://github.com/pingdotgg/codething-mvp/pull/505",
+              baseRefName: "main",
+              headRefName: "feature/with-template",
+            },
+          ]),
+        ],
+      };
+
+      let templateWhenEnabled: string | undefined;
+      const enabledRepoDir = yield* prepareRepo("feature/with-template");
+      const enabled = yield* makeManager({
+        ghScenario,
+        textGeneration: {
+          generatePrContent: (input) =>
+            Effect.sync(() => {
+              templateWhenEnabled = input.prTemplate;
+              return { title: "Make a change", body: "## What changed\n- change" };
+            }),
+        },
+      });
+      yield* runStackedAction(enabled.manager, { cwd: enabledRepoDir, action: "create_pr" });
+
+      expect(templateWhenEnabled).toContain("## What changed");
+      expect(templateWhenEnabled).toContain("## Rollback plan");
+
+      let templateWhenDisabled: string | undefined = "unset";
+      const disabledRepoDir = yield* prepareRepo("feature/no-template");
+      const disabled = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            "[]",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 506,
+                title: "Make a change",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/506",
+                baseRefName: "main",
+                headRefName: "feature/no-template",
+              },
+            ]),
+          ],
+        },
+        settings: { sourceControlWritingStyle: { followPrTemplates: false } },
+        textGeneration: {
+          generatePrContent: (input) =>
+            Effect.sync(() => {
+              templateWhenDisabled = input.prTemplate;
+              return { title: "Make a change", body: "## Summary\n- change" };
+            }),
+        },
+      });
+      yield* runStackedAction(disabled.manager, { cwd: disabledRepoDir, action: "create_pr" });
+
+      expect(templateWhenDisabled).toBeUndefined();
     }),
   );
 

@@ -52,6 +52,7 @@ function makeThreadShell(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    cumulativeDiffStat: null,
     ...overrides,
   };
 }

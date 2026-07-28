@@ -24,6 +24,7 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_BACKGROUND_TASK_GRACE_MS = 4 * 60 * 60 * 1000;
 
 type ThreadShellWithSession = {
   readonly session?: OrchestrationSession | null;
@@ -65,6 +66,7 @@ const buildStoppedProjectionSession = (input: {
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
+  readonly backgroundTaskGraceMs?: number;
 }
 
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
@@ -79,6 +81,12 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    // Below the inactivity threshold the grace would never apply; clamp so a
+    // misconfigured cap degrades to "no extra grace" instead of surprising.
+    const backgroundTaskGraceMs = Math.max(
+      inactivityThresholdMs,
+      options?.backgroundTaskGraceMs ?? DEFAULT_BACKGROUND_TASK_GRACE_MS,
+    );
 
     const listProviderSessions = providerService
       .listSessions()
@@ -253,6 +261,37 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             reason: "provider_session_list_unavailable",
           });
           continue;
+        }
+
+        // A settled turn can leave provider background tasks (e.g. subagents)
+        // running inside the session process, and stopping the session kills
+        // them. Neither lastSeenAt nor the busy set advances on background
+        // task activity, so the idle clock alone cannot see this work. Skip
+        // while tasks are pending, up to a hard grace cap so a leaked pending
+        // count cannot pin a provider subprocess forever.
+        const pendingBackgroundTaskCount =
+          thread?.session != null && thread.session.status !== "stopped"
+            ? (thread.session.pendingBackgroundTaskCount ?? 0)
+            : 0;
+        if (pendingBackgroundTaskCount > 0) {
+          if (idleDurationMs < backgroundTaskGraceMs) {
+            yield* Effect.logDebug("provider.session.reaper.skipped-pending-background-tasks", {
+              threadId: binding.threadId,
+              pendingBackgroundTaskCount,
+              idleDurationMs,
+            });
+            continue;
+          }
+          yield* Effect.logWarning(
+            "provider.session.reaper.reaping-despite-pending-background-tasks",
+            {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              pendingBackgroundTaskCount,
+              idleDurationMs,
+              backgroundTaskGraceMs,
+            },
+          );
         }
 
         const reaped = yield* pauseActiveThreadGoalForStop({

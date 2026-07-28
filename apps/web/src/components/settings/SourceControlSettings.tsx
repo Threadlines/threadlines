@@ -10,9 +10,17 @@ import type {
   VcsDriverKind,
   VcsDiscoveryItem,
 } from "@threadlines/contracts";
-import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
+import {
+  DEFAULT_UNIFIED_SETTINGS,
+  type SourceControlWritingStyleMode,
+} from "@threadlines/contracts/settings";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import {
+  resolveAppModelSelectionState,
+  resolveSourceControlWriterModelSelectionState,
+} from "../../modelSelection";
+import { useServerProviders } from "../../rpc/serverState";
 import { cn } from "../../lib/utils";
 import {
   refreshSourceControlDiscovery,
@@ -37,8 +45,14 @@ import {
   NumberFieldIncrement,
   NumberFieldInput,
 } from "../ui/number-field";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { DraftTextarea } from "../ui/draft-textarea";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  TextGenerationModelControl,
+  textGenerationInstanceEntries,
+} from "./TextGenerationModelControl";
 import {
   AzureDevOpsIcon,
   BitbucketIcon,
@@ -49,7 +63,12 @@ import {
   type Icon,
 } from "../Icons";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
-import { SettingResetButton, SettingsPageContainer, SettingsSection } from "./settingsLayout";
+import {
+  SettingResetButton,
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
@@ -362,6 +381,222 @@ function GitFetchIntervalSettings() {
   );
 }
 
+function SourceControlPanelSection() {
+  const sourceControlPanelDefaultOpen = useSettings(
+    (settings) => settings.sourceControlPanelDefaultOpen,
+  );
+  const { updateSettings } = useUpdateSettings();
+
+  return (
+    <SettingsSection title="Panel">
+      <SettingsRow
+        title="Open panel by default"
+        description="Show the source control panel when you enter a thread. Narrow windows always start with it closed, since the panel covers the conversation there."
+        resetAction={
+          sourceControlPanelDefaultOpen !==
+          DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen ? (
+            <SettingResetButton
+              label="open panel by default"
+              onClick={() =>
+                updateSettings({
+                  sourceControlPanelDefaultOpen:
+                    DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen,
+                })
+              }
+            />
+          ) : null
+        }
+        control={
+          <Switch
+            checked={sourceControlPanelDefaultOpen}
+            onCheckedChange={(checked) =>
+              updateSettings({ sourceControlPanelDefaultOpen: Boolean(checked) })
+            }
+            aria-label="Open source control panel by default"
+          />
+        }
+      />
+    </SettingsSection>
+  );
+}
+
+const WRITING_STYLE_OPTIONS: ReadonlyArray<{
+  readonly value: SourceControlWritingStyleMode;
+  readonly label: string;
+  readonly description: string;
+}> = [
+  {
+    value: "repo_conventions",
+    label: "Repository conventions",
+    description: "In each project, matches the style of recent commit messages and PR titles.",
+  },
+  {
+    value: "conventional_commits",
+    label: "Conventional Commits",
+    description:
+      "Uses Conventional Commit prefixes for commit messages; PR titles and descriptions stay concise.",
+  },
+  {
+    value: "custom",
+    label: "Custom instructions",
+    description:
+      "Applies your instructions to commit messages, PR titles, and PR descriptions in every project.",
+  },
+];
+
+function isWritingStyleMode(value: string): value is SourceControlWritingStyleMode {
+  return WRITING_STYLE_OPTIONS.some((option) => option.value === value);
+}
+
+function TextGenerationSection() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const serverProviders = useServerProviders();
+
+  const writingStyle = settings.sourceControlWritingStyle;
+  const defaultWritingStyle = DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle;
+  const selectedStyleOption =
+    WRITING_STYLE_OPTIONS.find((option) => option.value === writingStyle.mode) ??
+    WRITING_STYLE_OPTIONS[0];
+  const isStyleDirty =
+    writingStyle.mode !== defaultWritingStyle.mode ||
+    writingStyle.customInstructions !== defaultWritingStyle.customInstructions;
+
+  const primarySelection = resolveAppModelSelectionState(settings, serverProviders);
+  const writerSelection = resolveSourceControlWriterModelSelectionState(settings, serverProviders);
+  const instanceEntries = textGenerationInstanceEntries(serverProviders);
+
+  return (
+    <SettingsSection title="Text generation">
+      <SettingsRow
+        title="Source control writing style"
+        description={selectedStyleOption?.description ?? ""}
+        resetAction={
+          isStyleDirty ? (
+            <SettingResetButton
+              label="source control writing style"
+              onClick={() =>
+                updateSettings({
+                  sourceControlWritingStyle: {
+                    ...writingStyle,
+                    mode: defaultWritingStyle.mode,
+                    customInstructions: defaultWritingStyle.customInstructions,
+                  },
+                })
+              }
+            />
+          ) : null
+        }
+        control={
+          <Select
+            value={writingStyle.mode}
+            onValueChange={(value) => {
+              if (typeof value === "string" && isWritingStyleMode(value)) {
+                updateSettings({ sourceControlWritingStyle: { ...writingStyle, mode: value } });
+              }
+            }}
+          >
+            <SelectTrigger className="w-full sm:w-56" aria-label="Source control writing style">
+              <SelectValue>{selectedStyleOption?.label ?? ""}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {WRITING_STYLE_OPTIONS.map((option) => (
+                <SelectItem hideIndicator key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      >
+        {writingStyle.mode === "custom" ? (
+          <div className="pb-3.5 pt-3">
+            <DraftTextarea
+              rows={4}
+              value={writingStyle.customInstructions}
+              placeholder="Keep titles concise. Use short bullet points in descriptions."
+              aria-label="Custom source control writing instructions"
+              onCommit={(next) =>
+                updateSettings({
+                  sourceControlWritingStyle: { ...writingStyle, customInstructions: next },
+                })
+              }
+            />
+          </div>
+        ) : null}
+      </SettingsRow>
+
+      <SettingsRow
+        title="Follow PR templates"
+        description="Structures PR descriptions using the repository's pull request template when one is available."
+        resetAction={
+          writingStyle.followPrTemplates !== defaultWritingStyle.followPrTemplates ? (
+            <SettingResetButton
+              label="follow PR templates"
+              onClick={() =>
+                updateSettings({
+                  sourceControlWritingStyle: {
+                    ...writingStyle,
+                    followPrTemplates: defaultWritingStyle.followPrTemplates,
+                  },
+                })
+              }
+            />
+          ) : null
+        }
+        control={
+          <Switch
+            checked={writingStyle.followPrTemplates}
+            onCheckedChange={(checked) =>
+              updateSettings({
+                sourceControlWritingStyle: {
+                  ...writingStyle,
+                  followPrTemplates: Boolean(checked),
+                },
+              })
+            }
+            aria-label="Follow repository pull request templates"
+          />
+        }
+      />
+
+      <SettingsRow
+        title="Source control writer model"
+        description="Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the text generation model."
+        control={
+          <>
+            {writerSelection ? (
+              <TextGenerationModelControl
+                selection={writerSelection}
+                settings={settings}
+                serverProviders={serverProviders}
+                instanceEntries={instanceEntries}
+                onSelectionChange={(nextSelection) => {
+                  updateSettings({
+                    sourceControlWriterModelSelection: resolveAppModelSelectionState(
+                      { ...settings, textGenerationModelSelection: nextSelection },
+                      serverProviders,
+                    ),
+                  });
+                }}
+              />
+            ) : null}
+            <Switch
+              checked={writerSelection !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  sourceControlWriterModelSelection: checked ? primarySelection : null,
+                })
+              }
+              aria-label="Use a dedicated source control writer model"
+            />
+          </>
+        }
+      />
+    </SettingsSection>
+  );
+}
+
 function SourceControlSectionSkeleton({
   title,
   headerAction,
@@ -474,6 +709,7 @@ export function SourceControlSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SourceControlPanelSection />
       {isInitialScanPending ? (
         <>
           <SourceControlSectionSkeleton title="Version Control" headerAction={scanButton} />
@@ -509,6 +745,7 @@ export function SourceControlSettingsPanel() {
           onScan={handleScan}
         />
       )}
+      <TextGenerationSection />
     </SettingsPageContainer>
   );
 }

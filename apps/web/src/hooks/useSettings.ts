@@ -187,35 +187,42 @@ export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings)
 }
 
 /**
- * Returns an updater that routes each key to the correct backing store.
+ * Routes each key of a patch to the correct backing store.
  *
  * Server keys are optimistically patched in atom-backed server state, then
  * persisted via RPC. Client keys go through client persistence.
+ *
+ * A plain function rather than a hook body so imperative code paths -- a click
+ * handler that writes an approval on its way to somewhere else -- can settle a
+ * setting without first being a component.
+ */
+export function updateSettings(patch: Partial<UnifiedSettings>): void {
+  const { serverPatch, clientPatch } = splitPatch(patch);
+
+  if (Object.keys(serverPatch).length > 0) {
+    const currentServerConfig = getServerConfig();
+    if (currentServerConfig) {
+      applySettingsUpdated(applyServerSettingsPatch(currentServerConfig.settings, serverPatch));
+    }
+    // Fire-and-forget RPC — push will reconcile on success
+    void ensureLocalApi().server.updateSettings(serverPatch);
+  }
+
+  if (Object.keys(clientPatch).length > 0) {
+    persistClientSettings({
+      ...getClientSettingsSnapshot(),
+      ...clientPatch,
+    });
+  }
+}
+
+/**
+ * Returns an updater that routes each key to the correct backing store.
  */
 export function useUpdateSettings() {
-  const updateSettings = useCallback((patch: Partial<UnifiedSettings>) => {
-    const { serverPatch, clientPatch } = splitPatch(patch);
-
-    if (Object.keys(serverPatch).length > 0) {
-      const currentServerConfig = getServerConfig();
-      if (currentServerConfig) {
-        applySettingsUpdated(applyServerSettingsPatch(currentServerConfig.settings, serverPatch));
-      }
-      // Fire-and-forget RPC — push will reconcile on success
-      void ensureLocalApi().server.updateSettings(serverPatch);
-    }
-
-    if (Object.keys(clientPatch).length > 0) {
-      persistClientSettings({
-        ...getClientSettingsSnapshot(),
-        ...clientPatch,
-      });
-    }
-  }, []);
-
   const resetSettings = useCallback(() => {
     updateSettings(DEFAULT_UNIFIED_SETTINGS);
-  }, [updateSettings]);
+  }, []);
 
   return {
     updateSettings,

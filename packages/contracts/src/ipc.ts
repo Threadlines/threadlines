@@ -390,6 +390,31 @@ export const DesktopPreviewTargetSchema = Schema.Struct({
 });
 export type DesktopPreviewTarget = typeof DesktopPreviewTargetSchema.Type;
 
+/**
+ * Which sites a preview guest may navigate itself to.
+ *
+ * Pushed per guest rather than read from settings in the main process: the
+ * renderer is the only side that knows which project a tab belongs to, and the
+ * main process stays a dumb enforcer. A guest with no policy yet is treated as
+ * private-network-only, so the gap between attaching and the first push fails
+ * closed rather than open.
+ */
+export const DesktopPreviewNavigationPolicyInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  /** Approval keys, as produced by `browserApprovalKey` in shared/preview. */
+  approvedDomains: Schema.Array(Schema.String),
+});
+export type DesktopPreviewNavigationPolicyInput =
+  typeof DesktopPreviewNavigationPolicyInputSchema.Type;
+
+/** A page-initiated navigation the main process refused, so the panel can ask. */
+export const DesktopPreviewNavigationBlockedSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  host: Schema.String,
+  url: Schema.String,
+});
+export type DesktopPreviewNavigationBlocked = typeof DesktopPreviewNavigationBlockedSchema.Type;
+
 export const DesktopPreviewEvaluateInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   expression: Schema.String,
@@ -931,6 +956,12 @@ export interface DesktopBridge {
   /** Resolves false when the element is no longer on the page. */
   previewRevealElement?: (input: DesktopPreviewRevealInput) => Promise<boolean>;
   previewSetViewport?: (input: DesktopPreviewViewportInput) => Promise<void>;
+  /** Replaces the guest's allowlist. Until one is set, only private hosts load. */
+  previewSetNavigationPolicy?: (input: DesktopPreviewNavigationPolicyInput) => Promise<void>;
+  /** Fires when a page tried to navigate somewhere the guest is not allowed. */
+  onPreviewNavigationBlocked?: (
+    listener: (event: DesktopPreviewNavigationBlocked) => void,
+  ) => () => void;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

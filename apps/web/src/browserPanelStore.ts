@@ -171,6 +171,20 @@ export interface PreviewWebviewHandle {
   getBoundingClientRect: () => DOMRect;
 }
 
+/**
+ * A <webview> rejects imperative calls until its guest has attached and fired
+ * dom-ready. Navigation still happens: `src` is bound to the tab's url, so a
+ * tab created and immediately pointed somewhere loads from the attribute once
+ * it is ready. This helper keeps that race from surfacing as an error.
+ */
+export function callWhenReady<T>(action: () => T): T | null {
+  try {
+    return action();
+  } catch {
+    return null;
+  }
+}
+
 const webviewRegistry = new Map<string, PreviewWebviewHandle>();
 const webviewListeners = new Set<() => void>();
 
@@ -291,9 +305,23 @@ export const EMPTY_AGENT_STATE: ThreadBrowserAgentState = Object.freeze({
   activity: null,
 });
 
+/**
+ * A site something tried to reach that this project has not approved.
+ *
+ * One at a time per thread, and deliberately not persisted: it is a question
+ * being asked right now, and a question that survived a restart would be asked
+ * about a page nobody is looking at any more.
+ */
+export interface PendingBrowserApproval {
+  readonly host: string;
+  /** The address to load once allowed, so the answer is the page, not a retry. */
+  readonly url: string;
+}
+
 interface BrowserPanelStoreState {
   browserStateByThreadKey: Record<string, ThreadBrowserState>;
   agentStateByThreadKey: Record<string, ThreadBrowserAgentState>;
+  pendingApprovalByThreadKey: Record<string, PendingBrowserApproval | null>;
   splitChatFraction: number;
   /** Hides the chat so the page gets the whole centre; the split is remembered. */
   expanded: boolean;
@@ -307,6 +335,14 @@ interface BrowserPanelStoreState {
   setBrowserOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   toggleBrowserOpen: (threadRef: ScopedThreadRef) => void;
   openTab: (threadRef: ScopedThreadRef) => void;
+  /**
+   * A new tab that already knows where it is going.
+   *
+   * Separate from `openTab` + `setTabUrl` because the tab's `<webview>` fixes
+   * its source at mount: created blank and pointed afterwards, the page would
+   * need an imperative load that cannot happen until the element attaches.
+   */
+  openTabWithUrl: (threadRef: ScopedThreadRef, url: string) => void;
   closeTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   selectTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   setTabUrl: (threadRef: ScopedThreadRef, tabId: string, url: string) => void;
@@ -331,6 +367,10 @@ interface BrowserPanelStoreState {
   setAgentActivity: (
     threadRef: ScopedThreadRef,
     activity: ThreadBrowserAgentState["activity"],
+  ) => void;
+  setPendingBrowserApproval: (
+    threadRef: ScopedThreadRef,
+    approval: PendingBrowserApproval | null,
   ) => void;
   setSplitChatFraction: (fraction: number) => void;
   toggleExpanded: () => void;
@@ -374,6 +414,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
     (set) => ({
       browserStateByThreadKey: {},
       agentStateByThreadKey: {},
+      pendingApprovalByThreadKey: {},
       splitChatFraction: DEFAULT_BROWSER_SPLIT_CHAT_FRACTION,
       expanded: false,
       deviceToolbarOpen: false,
@@ -391,6 +432,14 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
             return { ...current, tabs: [...current.tabs, tab], activeTabId: tab.id };
           }),
         ),
+      openTabWithUrl: (threadRef, url) =>
+        set((state) => ({
+          ...updateThread(state, threadRef, (current) => {
+            const tab = { ...makeBrowserTab(), url };
+            return { ...current, tabs: [...current.tabs, tab], activeTabId: tab.id };
+          }),
+          visitedUrls: rememberVisit(state.visitedUrls, url, Date.now()),
+        })),
       closeTab: (threadRef, tabId) =>
         set((state) =>
           updateThread(state, threadRef, (current) => {
@@ -448,6 +497,13 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         ),
       setAgentActivity: (threadRef, activity) =>
         set((state) => updateAgentState(state, threadRef, (current) => ({ ...current, activity }))),
+      setPendingBrowserApproval: (threadRef, approval) =>
+        set((state) => ({
+          pendingApprovalByThreadKey: {
+            ...state.pendingApprovalByThreadKey,
+            [scopedThreadKey(threadRef)]: approval,
+          },
+        })),
       setSplitChatFraction: (fraction) =>
         set(() => ({ splitChatFraction: clampBrowserSplitFraction(fraction) })),
       toggleExpanded: () => set((state) => ({ expanded: !state.expanded })),
@@ -491,6 +547,16 @@ export function selectThreadAgentState(
     return EMPTY_AGENT_STATE;
   }
   return agentStateByThreadKey[scopedThreadKey(threadRef)] ?? EMPTY_AGENT_STATE;
+}
+
+export function selectPendingBrowserApproval(
+  pendingApprovalByThreadKey: Record<string, PendingBrowserApproval | null>,
+  threadRef: ScopedThreadRef | null,
+): PendingBrowserApproval | null {
+  if (threadRef === null) {
+    return null;
+  }
+  return pendingApprovalByThreadKey[scopedThreadKey(threadRef)] ?? null;
 }
 
 export function selectActiveTab(state: ThreadBrowserState): BrowserTab | null {

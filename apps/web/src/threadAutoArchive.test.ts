@@ -37,6 +37,7 @@ function thread(id: string, overrides: Partial<SidebarThreadSummary> = {}): Side
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    cumulativeDiffStat: null,
     ...overrides,
   };
 }

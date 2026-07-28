@@ -129,6 +129,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL, input),
   previewSetViewport: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_SET_VIEWPORT_CHANNEL, input),
+  previewSetNavigationPolicy: (input) =>
+    ipcRenderer.invoke(IpcChannels.PREVIEW_SET_NAVIGATION_POLICY_CHANNEL, input),
+  onPreviewNavigationBlocked: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, blocked: unknown) => {
+      if (typeof blocked !== "object" || blocked === null) return;
+      listener(blocked as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, wrappedListener);
+    };
+  },
   previewPickElement: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, input),
   previewCancelPick: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CANCEL_PICK_CHANNEL, input),

@@ -82,6 +82,7 @@ function makeSidebarThreadSummary(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    cumulativeDiffStat: null,
     ...overrides,
   };
 }

@@ -8,6 +8,7 @@ import type {
   RepositoryIdentity,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  OrchestrationThreadDiffStat,
   OrchestrationThreadGoal,
   ProjectKind,
   ProjectScript as ContractProjectScript,
@@ -193,6 +194,12 @@ export interface SidebarThreadSummary {
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasActionableProposedPlan: boolean;
+  /**
+   * What this thread changed, summed over its own turns. Null until a turn has
+   * reported files. Not the checkout's working tree: threads sharing a checkout
+   * each get their own number.
+   */
+  cumulativeDiffStat: OrchestrationThreadDiffStat | null;
 }
 
 export interface ThreadSession {

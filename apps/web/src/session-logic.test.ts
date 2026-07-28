@@ -4799,6 +4799,94 @@ describe("deriveSubagentResultEntries", () => {
     ).toBeNull();
   });
 
+  it("settles a background agent when its completion arrives without a toolUseId", () => {
+    // A session restart makes the SDK synthesize the completion itself
+    // ("no completion record found..."): status "stopped", taskId only. The
+    // agent must settle through the taskId link instead of running forever.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-bg-agent-launch-ack",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [
+                {
+                  type: "text",
+                  text: "Async agent launched successfully. agentId: agent-bg-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-bg-1', summary: '<recap>' to continue this agent.) The agent is working in the background.",
+                },
+              ],
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-bg-agent-task-progress",
+        createdAt: "2026-02-23T00:00:20.000Z",
+        kind: "task.progress",
+        turnId: "turn-2",
+        payload: {
+          taskId: "task-bg-agent",
+          detail: "Reading contracts",
+          toolUseId: "tool-agent-bg",
+          subagentType: "Explore",
+        },
+      }),
+      makeActivity({
+        id: "claude-bg-agent-task-stopped",
+        createdAt: "2026-02-23T00:00:30.000Z",
+        kind: "task.completed",
+        payload: {
+          taskId: "task-bg-agent",
+          status: "stopped",
+          detail:
+            'No completion record was found for background agent "Inventory Threadlines features" from the previous session.',
+        },
+      }),
+    ];
+
+    // Spawn turn still the latest: the record settles as interrupted instead
+    // of pulsing "Running" forever.
+    const progress = deriveSubagentProgressState({
+      activities,
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: true,
+    });
+    expect(progress?.items).toEqual([
+      expect.objectContaining({
+        agentThreadId: "tool-agent-bg",
+        status: "interrupted",
+        statusLabel: "Interrupted",
+      }),
+    ]);
+    expect(progress?.activeCount).toBe(0);
+    expect(progress?.failedCount).toBe(1);
+
+    // A newer turn on top: the settled task no longer pins the old spawn into
+    // view, same as a completion that carries its toolUseId.
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-2"),
+        latestTurnSettled: true,
+      }),
+    ).toBeNull();
+  });
+
   it("replays background subagent completion notifications into styled results", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

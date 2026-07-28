@@ -121,15 +121,23 @@ export function preserveRightPanelSearchParamsForDraftNavigation<T extends Recor
 }
 
 /**
- * Closed unless asked for. The panel used to default open on desktop widths,
- * which spent a third of the window on a panel most turns never touch; the
- * header toggle and explicit ?sourceControl=1 deep links still open it.
+ * Closed unless asked for. Explicit URL state (a toggle press or a deep link)
+ * always wins; `defaultOpen` only decides what a thread with no panel state
+ * shows. UI code should not call this directly — `useSourceControlPanelOpen`
+ * in rightPanelLayout.ts is the single place that resolves `defaultOpen` from
+ * the user's setting and the layout, so every surface agrees.
  */
-export function isSourceControlPanelOpen(search: DiffRouteSearch): boolean {
-  if (search.diff === "1") {
+export function isSourceControlPanelOpen(
+  search: DiffRouteSearch,
+  options: { defaultOpen?: boolean } = {},
+): boolean {
+  if (search.diff === "1" || search.sourceControl === "0") {
     return false;
   }
-  return search.sourceControl === "1";
+  if (search.sourceControl === "1") {
+    return true;
+  }
+  return options.defaultOpen ?? false;
 }
 
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {

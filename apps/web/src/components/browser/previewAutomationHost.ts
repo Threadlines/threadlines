@@ -186,7 +186,14 @@ export function createPreviewAutomationHandler(
       // describes it, and a target with no page has its own answer.
       await prepare().catch(() => undefined);
     }
-    const target = resolveTarget();
+    let target: PreviewAutomationHostTarget;
+    try {
+      target = resolveTarget();
+    } catch (cause) {
+      // A target that cannot even be read is the same conversation as a page
+      // that is not there: an answer, never a rejection the broker waits out.
+      return { requestId: request.requestId, error: describe(cause) };
+    }
     sequence += 1;
     const verb = ACTIVITY_VERBS[request.operation];
     const detail = describeSubject(request.operation, request.input);
@@ -411,7 +418,17 @@ export function usePreviewAutomationHost(input: {
         operations: PREVIEW_AUTOMATION_HOST_OPERATIONS,
       },
       (request) => {
-        void handle(request).then((response) => api.previewAutomation.respond(response));
+        // The handler promises never to reject, but a request that slips
+        // through anyway must still answer: an unhandled rejection here is
+        // twenty seconds of silence for the agent, with nothing logged.
+        void handle(request)
+          .catch(
+            (cause): PreviewAutomationResponse => ({
+              requestId: request.requestId,
+              error: describe(cause),
+            }),
+          )
+          .then((response) => api.previewAutomation.respond(response));
       },
     );
   }, [enabled, threadRef.environmentId, threadRef.threadId]);

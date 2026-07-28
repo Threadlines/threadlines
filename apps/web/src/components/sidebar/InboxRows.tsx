@@ -25,7 +25,6 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../../terminal
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
-import { resolveWorkingTreeDiffStat } from "../ChatView.logic";
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import {
   ChangeRequestStatusIcon,
@@ -55,19 +54,68 @@ function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }
 }
 
 /**
- * Actions take the timestamp's place rather than covering it: same line, same
- * right edge, so nothing shifts and no surface has to be painted over the row.
- * Touch has no hover, so there they simply sit beside the time.
+ * The fill of a hovered row, as static classes: the floating actions only show
+ * while their row is hovered (or holds focus), so their backdrop can restate
+ * the row's hover tone and composite to the identical colour. Must stay in
+ * lockstep with {@link resolveRowSurfaceTone}.
+ */
+function resolveRowHoverFillTone(input: { isActive: boolean; isSelected: boolean }): string {
+  if (input.isSelected) {
+    return "bg-primary/19 dark:bg-primary/28";
+  }
+  if (input.isActive) {
+    return "bg-sidebar-accent";
+  }
+  return "bg-sidebar-accent/60";
+}
+
+/**
+ * Actions float in beside the time rather than reserving space or covering it:
+ * anchored just left of the meta text, painted over the row's flexible middle
+ * content. Nothing shifts, the time and a live "working · 4m" stay put, and at
+ * rest the row gives up no width. Touch has no hover, so there they simply sit
+ * in flow beside the time.
  */
 const ROW_ACTIONS_CLASS_NAME =
-  "flex shrink-0 items-center gap-0.5 sm:pointer-events-none sm:absolute sm:top-1/2 sm:right-0 sm:-translate-y-1/2 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:group-hover/thread-row:pointer-events-auto sm:group-hover/thread-row:opacity-100 sm:group-focus-within/thread-row:pointer-events-auto sm:group-focus-within/thread-row:opacity-100";
+  "flex shrink-0 items-center gap-0.5 sm:pointer-events-none sm:absolute sm:top-1/2 sm:right-full sm:-translate-y-1/2 sm:pl-4 sm:pr-1 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:[mask-image:linear-gradient(to_right,transparent,black_16px)] sm:group-hover/thread-row:pointer-events-auto sm:group-hover/thread-row:opacity-100 sm:group-focus-within/thread-row:pointer-events-auto sm:group-focus-within/thread-row:opacity-100";
 
 /** The slot a row's first line gives to the time, and to the actions. */
 const ROW_META_SLOT_CLASS_NAME =
   "relative ml-auto flex flex-none items-center gap-1.5 whitespace-nowrap";
 
+/** `relative` lifts the buttons above their own backdrop layers. */
 const ROW_ACTION_BUTTON_CLASS_NAME =
-  "inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
+  "relative inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
+
+/**
+ * The floating container for a row's hover actions. The two backdrop layers
+ * rebuild the hovered row's exact colour (opaque sidebar base + the row's own
+ * hover fill), and the container's mask melts their leading edge so covered
+ * text fades out instead of clipping against a seam.
+ */
+function RowFloatingActions(props: {
+  isActive: boolean;
+  isSelected: boolean;
+  /** For click-initiated states (archive confirm) that must not fade away. */
+  alwaysVisible?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        ROW_ACTIONS_CLASS_NAME,
+        props.alwaysVisible === true && "sm:pointer-events-auto sm:opacity-100",
+      )}
+    >
+      <span aria-hidden="true" className="absolute inset-0 hidden bg-sidebar sm:block" />
+      <span
+        aria-hidden="true"
+        className={cn("absolute inset-0 hidden sm:block", resolveRowHoverFillTone(props))}
+      />
+      {props.children}
+    </div>
+  );
+}
 
 /**
  * The thread's own project cwd. Grouped projects put threads from several
@@ -150,8 +198,9 @@ export interface InboxThreadRowProps {
  *
  * Line one carries identity and state (dot, title, status); line two carries
  * where the work lives (project, branch) and what it has produced (diffstat,
- * provider). Hovering swaps the status for the row's actions — the meta and the
- * actions share the same corner, so the row never changes height.
+ * provider). The row's actions float in beside the status on hover, covering
+ * only the line's truncatable middle — never the status, and never blank
+ * reserved width.
  */
 export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRowProps) {
   const {
@@ -210,12 +259,18 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     environmentId: thread.environmentId,
     cwd: gitCwd,
   });
-  const diffStat = resolveWorkingTreeDiffStat(gitStatus.data ?? null);
+  // The +/- is the thread's own running total, summed by the server across the
+  // turns it has taken -- not the checkout's working tree, which several
+  // threads can share and which would print the same numbers on each of them.
+  // Nothing to report reads as nothing shown, so a thread that has not touched
+  // a file yet stays quiet rather than claiming a clean tree.
+  const diffStat = thread.cumulativeDiffStat;
+  const showDiffStat = diffStat !== null && (diffStat.additions > 0 || diffStat.deletions > 0);
   // The row names only the branch the thread pinned: a checkout's current ref
   // is shared by every thread in it, so printing it on each row says nothing
-  // about the thread. The resolved branch still drives the change request and
-  // the diffstat, which do belong to the checkout the thread works in, and the
-  // hover card is where the current ref gets its say.
+  // about the thread. The resolved branch still drives the change request,
+  // which does belong to the checkout the thread works in, and the hover card
+  // is where the current ref gets its say.
   const resolvedBranch = thread.branch ?? gitStatus.data?.refName ?? null;
   const pr = resolveThreadPr(resolvedBranch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
@@ -224,7 +279,19 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const isRenaming = renamingThreadKey === threadKey;
   const statusWord = inboxStatusWord(status);
   const isInFlight = status?.label === "Working" || status?.label === "Starting";
-  const inFlightStartedAt = thread.latestTurn?.startedAt ?? thread.latestTurn?.requestedAt ?? null;
+  // A follow-up flips the pill to "Starting" before the new turn's row lands
+  // in the projection, so for a beat `latestTurn` is still the previous,
+  // finished turn -- its clock must not run under the new label. That is the
+  // only stale window: once work is under way the pill and the timestamps
+  // describe the same turn, and mid-turn session wobbles (tool waits,
+  // reconnects) must not blank the timer, so "Working" trusts them as-is.
+  const inFlightTurn =
+    status?.label === "Starting" && thread.latestTurn?.state !== "running"
+      ? null
+      : thread.latestTurn;
+  const inFlightStartedAt = inFlightTurn
+    ? (inFlightTurn.startedAt ?? inFlightTurn.requestedAt)
+    : null;
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
@@ -364,7 +431,10 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 aria-label={status.label}
                 className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
               />
-            ) : isPinned ? (
+            ) : null}
+            {/* Pinned is persistent state, not activity: it stays visible even
+                while the status dot occupies the leading slot. */}
+            {isPinned ? (
               <span
                 aria-label="Pinned thread"
                 className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
@@ -393,7 +463,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 data-testid={`thread-meta-${thread.id}`}
                 className={cn(
                   "shrink-0 font-mono text-[11px] leading-none tabular-nums",
-                  "transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0",
                   statusWord !== null || isInFlight
                     ? (status?.colorClass ?? "text-muted-foreground/50")
                     : "text-muted-foreground/50",
@@ -422,7 +491,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 )}
               </span>
               {/* Two actions, both icons: the words live in their tooltips. */}
-              <div className={ROW_ACTIONS_CLASS_NAME}>
+              <RowFloatingActions isActive={isActive} isSelected={isSelected}>
                 {canMarkDone ? (
                   <Tooltip>
                     <TooltipTrigger
@@ -454,7 +523,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                         aria-pressed={isPinned}
                         className={cn(
                           ROW_ACTION_BUTTON_CLASS_NAME,
-                          isPinned && "text-primary-readable",
+                          // Unpin keeps its blue on hover -- flipping to the
+                          // foreground colour read as a different button. It
+                          // brightens instead, the blue analogue of the grey
+                          // icons' grey-to-white.
+                          isPinned &&
+                            "text-primary-readable hover:text-primary-readable hover:brightness-125",
                         )}
                         onPointerDown={stopPropagationOnPointerDown}
                         onClick={handleTogglePinClick}
@@ -469,7 +543,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   />
                   <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
                 </Tooltip>
-              </div>
+              </RowFloatingActions>
             </span>
           </div>
           {/* Line two: which thread, and what it has produced. */}
@@ -549,9 +623,9 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
                 </Tooltip>
               ) : null}
-              {diffStat ? (
+              {showDiffStat && diffStat ? (
                 <span className="font-mono text-[10px] leading-none">
-                  <span className="text-success">+{formatDiffCount(diffStat.insertions)}</span>
+                  <span className="text-success">+{formatDiffCount(diffStat.additions)}</span>
                   <span className="ps-1 text-destructive">
                     −{formatDiffCount(diffStat.deletions)}
                   </span>
@@ -740,29 +814,29 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
             </span>
           ) : null}
           <span className={ROW_META_SLOT_CLASS_NAME}>
-            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45 transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0">
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
               {doneAt ? formatRelativeTimeLabel(doneAt) : null}
             </span>
             {isConfirmingArchive ? (
-              <div className={cn(ROW_ACTIONS_CLASS_NAME, "sm:pointer-events-auto sm:opacity-100")}>
+              <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>
                 <button
                   ref={handleConfirmArchiveRef}
                   type="button"
                   data-thread-selection-safe
                   data-testid={`thread-archive-confirm-${thread.id}`}
                   aria-label={`Confirm archive ${thread.title}`}
-                  className="inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
+                  className="relative inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
                   onPointerDown={stopPropagationOnPointerDown}
                   onClick={handleConfirmArchiveClick}
                 >
                   Confirm
                 </button>
-              </div>
+              </RowFloatingActions>
             ) : (
               // A done thread is settled by definition, so archive is always
               // available here -- the "running" guard the live rows needed is
               // exactly the state that keeps a thread out of this list.
-              <div className={ROW_ACTIONS_CLASS_NAME}>
+              <RowFloatingActions isActive={isActive} isSelected={false}>
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -813,7 +887,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                     <TooltipPopup side="top">Archive</TooltipPopup>
                   </Tooltip>
                 )}
-              </div>
+              </RowFloatingActions>
             )}
           </span>
         </div>

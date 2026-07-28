@@ -22,6 +22,115 @@ const POSIX_FILE_ROOT_PREFIXES = [
   "/root/",
 ] as const;
 
+/**
+ * Local dev servers, written the way people actually write them.
+ *
+ * `localhost:5173` is not a link to any markdown parser -- it has no scheme --
+ * but in a coding transcript it is always an address, and being told to copy it
+ * into a browser by hand is the wrong end of the tool. The port is required:
+ * "localhost" on its own is a word in a sentence far more often than it is a
+ * place to go.
+ */
+const LOCALHOST_HOST_SOURCE = "(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)";
+const BARE_LOCALHOST_URL_REGEX = new RegExp(
+  `${LOCALHOST_HOST_SOURCE}:\\d{1,5}(?:[/?#][^\\s]*)?`,
+  "gi",
+);
+const WHOLE_LOCALHOST_URL_REGEX = new RegExp(
+  `^(https?://)?${LOCALHOST_HOST_SOURCE}(:\\d{1,5})?(?:[/?#][^\\s]*)?$`,
+  "i",
+);
+/** Characters that make a `localhost:` run part of something longer. */
+const LOCALHOST_BOUNDARY_BLOCKERS = /[A-Za-z0-9._\-/:@]/;
+const URL_TRAILING_PUNCTUATION = ".,;:!?'\"";
+
+export interface BareLocalhostUrlMatch {
+  readonly start: number;
+  readonly end: number;
+  /** The run as written, so the transcript still reads the way it was sent. */
+  readonly text: string;
+  /** The same address made loadable. */
+  readonly url: string;
+}
+
+function trimUrlTrailingPunctuation(value: string): string {
+  let end = value.length;
+  while (end > 0) {
+    const char = value[end - 1]!;
+    if (URL_TRAILING_PUNCTUATION.includes(char)) {
+      end -= 1;
+      continue;
+    }
+    if (char === ")") {
+      const slice = value.slice(0, end);
+      const opened = slice.split("(").length - 1;
+      const closed = slice.split(")").length - 1;
+      if (closed > opened) {
+        end -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return value.slice(0, end);
+}
+
+/**
+ * Every bare `host:port` run in a stretch of plain text, in order.
+ *
+ * Scheme-less by design: text that already carries `http://` is turned into a
+ * link by the markdown autolinker before this ever sees it.
+ */
+export function findBareLocalhostUrls(text: string): BareLocalhostUrlMatch[] {
+  const matches: BareLocalhostUrlMatch[] = [];
+  for (const match of text.matchAll(BARE_LOCALHOST_URL_REGEX)) {
+    const start = match.index ?? 0;
+    const previous = start === 0 ? "" : text[start - 1]!;
+    if (previous !== "" && LOCALHOST_BOUNDARY_BLOCKERS.test(previous)) {
+      continue;
+    }
+    const followingIndex = start + match[0].length;
+    const following = text[followingIndex] ?? "";
+    const afterFollowing = text[followingIndex + 1] ?? "";
+    if (
+      following !== "" &&
+      LOCALHOST_BOUNDARY_BLOCKERS.test(following) &&
+      // A full stop ending a sentence is punctuation, while `.example` means
+      // the apparent port was only the start of a longer token.
+      !(following === "." && !/[A-Za-z0-9_/-]/.test(afterFollowing))
+    ) {
+      continue;
+    }
+    const raw = trimUrlTrailingPunctuation(match[0]);
+    if (!WHOLE_LOCALHOST_URL_REGEX.test(raw)) {
+      continue;
+    }
+    matches.push({ start, end: start + raw.length, text: raw, url: `http://${raw}` });
+  }
+  return matches;
+}
+
+/**
+ * The loadable address for a string that is entirely a localhost url, else null.
+ *
+ * Used for inline code spans, where the backticks already say "this is one
+ * thing", so a scheme is optional and a bare host with a scheme but no port
+ * (`http://localhost/health`) still counts.
+ */
+export function localhostUrlFromText(text: string): string | null {
+  const trimmed = text.trim();
+  const match = WHOLE_LOCALHOST_URL_REGEX.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+  const scheme = match[1];
+  const port = match[2];
+  if (!scheme && !port) {
+    return null;
+  }
+  return scheme ? trimmed : `http://${trimmed}`;
+}
+
 export interface MarkdownFileLinkMeta {
   filePath: string;
   targetPath: string;
@@ -163,6 +272,7 @@ export function resolveMarkdownFileLinkTarget(
   if (!href) return null;
   const rawHref = normalizeMarkdownLinkDestination(href);
   if (rawHref.length === 0 || rawHref.startsWith("#")) return null;
+  if (localhostUrlFromText(rawHref) !== null) return null;
 
   const fileUrlTarget = rawHref.toLowerCase().startsWith("file:")
     ? parseFileUrlHref(rawHref)

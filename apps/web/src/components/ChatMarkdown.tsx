@@ -1,5 +1,10 @@
 import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
-import type { EnvironmentId, ServerProviderSkill, ThreadId } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  ScopedThreadRef,
+  ServerProviderSkill,
+  ThreadId,
+} from "@threadlines/contracts";
 import React, {
   Children,
   Suspense,
@@ -38,11 +43,15 @@ import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import {
+  localhostUrlFromText,
   normalizeMarkdownLinkDestination,
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
+import { ChatWebLink } from "./chat/ChatWebLink";
+import { copyTextWithToast } from "./chat/copyTextWithToast";
+import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
 import {
   type MarkdownFileLinkKind,
   useMarkdownFileLinkKinds,
@@ -268,6 +277,9 @@ const MARKDOWN_FILE_LINK_CLASS_NAME =
   "chat-markdown-file-link relative top-[2px] max-w-full no-underline";
 const MARKDOWN_FILE_LINK_ICON_CLASS_NAME = "chat-markdown-file-link-icon size-3.5 shrink-0";
 const MARKDOWN_FILE_LINK_LABEL_CLASS_NAME = "chat-markdown-file-link-label truncate";
+/** Inline code that does something when clicked, whether a file or an address. */
+const CLICKABLE_INLINE_CODE_CLASS_NAME =
+  "cursor-pointer transition-colors hover:text-foreground hover:underline hover:decoration-dotted hover:underline-offset-2";
 function pathParentSegments(path: string): string[] {
   const normalized = path.replaceAll("\\", "/");
   const segments = normalized.split("/").filter((segment) => segment.length > 0);
@@ -431,38 +443,6 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     );
   }, [displayPath, openInInternalViewer]);
 
-  const handleCopy = useCallback((value: string, title: string) => {
-    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Failed to copy ${title.toLowerCase()}`,
-          description: "Clipboard API unavailable.",
-        }),
-      );
-      return;
-    }
-
-    void navigator.clipboard.writeText(value).then(
-      () => {
-        toastManager.add({
-          type: "success",
-          title: `${title} copied`,
-          description: value,
-        });
-      },
-      (error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Failed to copy ${title.toLowerCase()}`,
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      },
-    );
-  }, []);
-
   const handleContextMenu = useCallback(
     async (event: ReactMouseEvent<HTMLAnchorElement>) => {
       event.preventDefault();
@@ -512,16 +492,15 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         return;
       }
       if (clicked === "copy-relative") {
-        handleCopy(displayPath, "Relative path");
+        copyTextWithToast(displayPath, "Relative path");
         return;
       }
       if (clicked === "copy-full") {
-        handleCopy(targetPath, "Full path");
+        copyTextWithToast(targetPath, "Full path");
       }
     },
     [
       displayPath,
-      handleCopy,
       handleOpenExternally,
       handleOpenInViewer,
       handleRevealInFileManager,
@@ -644,11 +623,19 @@ function ChatMarkdownDocument({
   text,
   cwd,
   environmentId,
+  threadId,
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
+  // Null unless both halves of the identity are here: a transcript rendered
+  // outside a thread (a plan preview, a subagent excerpt without context) has
+  // no browser to open anything in, and its links stay ordinary links.
+  const threadRef = useMemo<ScopedThreadRef | null>(
+    () => (environmentId && threadId ? { environmentId, threadId } : null),
+    [environmentId, threadId],
+  );
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
@@ -679,35 +666,50 @@ function ChatMarkdownDocument({
       const rewrittenFileHref = rewriteMarkdownFileUriHref(href);
       if (rewrittenFileHref) return rewrittenFileHref;
 
+      const localhostHref = localhostUrlFromText(href);
+      if (localhostHref) return localhostHref;
+
       const fileLinkMeta = resolveMarkdownFileLinkMeta(href, cwd);
       return fileLinkMeta?.href ?? defaultUrlTransform(href);
     },
     [cwd],
   );
+  const inlineContext = useMemo(
+    () => ({ skills, searchHighlightQuery, threadRef }),
+    [searchHighlightQuery, skills, threadRef],
+  );
   const markdownComponents = useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
-        return (
-          <p {...props}>
-            {renderSkillInlineMarkdownChildren(children, skills, searchHighlightQuery)}
-          </p>
-        );
+        return <p {...props}>{renderSkillInlineMarkdownChildren(children, inlineContext)}</p>;
       },
       li({ node: _node, children, ...props }) {
-        return (
-          <li {...props}>
-            {renderSkillInlineMarkdownChildren(children, skills, searchHighlightQuery)}
-          </li>
-        );
+        return <li {...props}>{renderSkillInlineMarkdownChildren(children, inlineContext)}</li>;
       },
-      a({ node: _node, href, ...props }) {
+      a({ node: _node, href, children, ...props }) {
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
         const fileLinkMeta = normalizedHref
           ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
             resolveMarkdownFileLinkMeta(normalizedHref, cwd))
           : null;
         if (!fileLinkMeta) {
-          return <a {...props} href={href} target="_blank" rel="noopener noreferrer" />;
+          if (href && isBrowserPanelHref(href)) {
+            return (
+              <ChatWebLink
+                href={href}
+                threadRef={threadRef}
+                className={props.className}
+                title={props.title}
+              >
+                {children}
+              </ChatWebLink>
+            );
+          }
+          return (
+            <a {...props} href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          );
         }
 
         const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
@@ -746,6 +748,23 @@ function ChatMarkdownDocument({
         ) : (
           children
         );
+        // A dev-server address in backticks is an address first: it would also
+        // read as a file reference (`127.0.0.1:8080`), and searching the
+        // workspace for it would find nothing.
+        const localhostUrl = className || !text ? null : localhostUrlFromText(text);
+        if (localhostUrl) {
+          return (
+            <code {...props} className={className}>
+              <ChatWebLink
+                href={localhostUrl}
+                threadRef={threadRef}
+                className={CLICKABLE_INLINE_CODE_CLASS_NAME}
+              >
+                {renderedChildren}
+              </ChatWebLink>
+            </code>
+          );
+        }
         if (className || !text || !parseChatFileReference(text)) {
           return (
             <code {...props} className={className}>
@@ -770,7 +789,7 @@ function ChatMarkdownDocument({
             role="button"
             tabIndex={0}
             title={`Open ${text}`}
-            className="cursor-pointer transition-colors hover:text-foreground hover:underline hover:decoration-dotted hover:underline-offset-2"
+            className={CLICKABLE_INLINE_CODE_CLASS_NAME}
             onClick={openReference}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
@@ -821,11 +840,12 @@ function ChatMarkdownDocument({
       diffThemeName,
       fileLinkKindByPath,
       fileLinkParentSuffixByPath,
+      inlineContext,
       isStreaming,
       markdownFileLinkMetaByHref,
       resolvedTheme,
       searchHighlightQuery,
-      skills,
+      threadRef,
     ],
   );
 
@@ -846,6 +866,7 @@ function StreamingTailBlock({
   text,
   cwd,
   environmentId,
+  threadId,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
 }: Omit<ChatMarkdownProps, "isStreaming">) {
@@ -857,6 +878,7 @@ function StreamingTailBlock({
       text={deferredText}
       cwd={cwd}
       environmentId={environmentId}
+      threadId={threadId}
       isStreaming
       skills={skills}
       searchHighlightQuery={searchHighlightQuery}
@@ -868,6 +890,7 @@ function ChatMarkdownBody({
   text,
   cwd,
   environmentId,
+  threadId,
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
@@ -887,6 +910,7 @@ function ChatMarkdownBody({
           text={block}
           cwd={cwd}
           environmentId={environmentId}
+          threadId={threadId}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
         />
@@ -896,6 +920,7 @@ function ChatMarkdownBody({
           text={block}
           cwd={cwd}
           environmentId={environmentId}
+          threadId={threadId}
           isStreaming={false}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
@@ -909,6 +934,7 @@ function ChatMarkdownBody({
         text={text}
         cwd={cwd}
         environmentId={environmentId}
+        threadId={threadId}
         isStreaming={false}
         skills={skills}
         searchHighlightQuery={searchHighlightQuery}
@@ -954,6 +980,7 @@ function ChatMarkdown({
             text={segment.text}
             cwd={cwd}
             environmentId={environmentId}
+            threadId={threadId}
             isStreaming={isStreaming && index === segments.length - 1}
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}

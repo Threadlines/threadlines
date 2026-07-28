@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import type { ScopedThreadRef } from "@threadlines/contracts";
+import { isBrowserHostApproved } from "@threadlines/shared/preview";
 
 import {
   PREVIEW_WEBVIEW_WAIT_MS,
@@ -12,11 +13,26 @@ import {
   waitForPreviewWebview,
   type PreviewWebviewHandle,
 } from "../../browserPanelStore";
+import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
 import { normalizePreviewUrl } from "./previewUrl";
 import {
   usePreviewAutomationHost,
   type PreviewAutomationHostTarget,
 } from "./previewAutomationHost";
+
+/**
+ * A registered webview is not yet a usable one: the element registers at
+ * mount, and Electron throws on `getWebContentsId` until the guest attaches a
+ * moment later. Null is "not attached yet", which every caller already treats
+ * as "no page".
+ */
+function attachedWebContentsId(webview: PreviewWebviewHandle): number | null {
+  try {
+    return webview.getWebContentsId();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The agent's end of the browser, mounted with the thread rather than with the
@@ -37,6 +53,65 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
   const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
+  const setPendingBrowserApproval = useBrowserPanelStore(
+    (store) => store.setPendingBrowserApproval,
+  );
+  const { approvedDomains } = useBrowserApprovals(threadRef);
+
+  /** Every attached guest this thread owns, which is what a policy applies to. */
+  const attachedGuestIds = useCallback((): ReadonlyArray<number> => {
+    const store = useBrowserPanelStore.getState();
+    const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
+    return browserState.tabs.flatMap((tab) => {
+      const webview = getPreviewWebview(threadRef, tab.id);
+      const id = webview === null ? null : attachedWebContentsId(webview);
+      return id === null ? [] : [id];
+    });
+  }, [threadRef]);
+
+  /**
+   * Hands the main process the same allowlist the agent is held to.
+   *
+   * Pushed on every attachment and every change rather than read from settings
+   * over there: only this side knows which project a tab belongs to, and a guest
+   * whose policy has not arrived is private-network-only until it does.
+   */
+  useEffect(() => {
+    const pushPolicy = () => {
+      for (const webContentsId of attachedGuestIds()) {
+        pushNavigationPolicy(webContentsId, approvedDomains);
+      }
+    };
+    pushPolicy();
+    // A tab that mounts or attaches later is a guest with no policy yet.
+    return subscribePreviewWebviews(pushPolicy);
+  }, [approvedDomains, attachedGuestIds]);
+
+  /**
+   * A page that tried to take itself somewhere unapproved.
+   *
+   * The main process refused it and says so here, because the block is silent
+   * on the page: a link that does nothing reads as a broken site rather than as
+   * a question waiting to be answered.
+   */
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onPreviewNavigationBlocked;
+    if (subscribe === undefined) {
+      return;
+    }
+    return subscribe((blocked) => {
+      // Every window hears about every guest, so a thread only answers for its own.
+      if (!attachedGuestIds().includes(blocked.webContentsId)) {
+        return;
+      }
+      setPendingBrowserApproval(threadRef, { host: blocked.host, url: blocked.url });
+      const store = useBrowserPanelStore.getState();
+      if (!selectThreadBrowserState(store.browserStateByThreadKey, threadRef).open) {
+        // A question nobody can see is a stall, not a prompt.
+        setBrowserOpen(threadRef, true);
+      }
+    });
+  }, [attachedGuestIds, setBrowserOpen, setPendingBrowserApproval, threadRef]);
 
   /**
    * Reads the world at the moment the agent acts, not at the moment this
@@ -58,7 +133,7 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
     const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
 
     return {
-      webContentsId: webview === null ? null : webview.getWebContentsId(),
+      webContentsId: webview === null ? null : attachedWebContentsId(webview),
       onAgentPoint: (point) => setAgentPoint(threadRef, point),
       onAgentActivity: (activity) => setAgentActivity(threadRef, activity),
       selectTab: (index) => {
@@ -92,11 +167,38 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
         if (tabId === "") {
           throw new Error("The browser panel has no tab to navigate.");
         }
+        // Refused here rather than in the main process, because this is the one
+        // navigation we can stop before it happens and answer in words the
+        // agent can act on. The user's own navigations do not come through here.
+        const host = new URL(normalized).hostname;
+        if (!isBrowserHostApproved(host, approvedDomains)) {
+          setPendingBrowserApproval(threadRef, { host, url: normalized });
+          throw new Error(
+            `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel; once they do, navigate again.`,
+          );
+        }
         setTabUrl(threadRef, tabId, normalized);
-        await getPreviewWebview(threadRef, tabId)?.loadURL(normalized);
+        await getPreviewWebview(threadRef, tabId)
+          ?.loadURL(normalized)
+          .catch((cause: unknown) => {
+            // A page that immediately redirects aborts the load it interrupts,
+            // which is a successful navigation wearing an error.
+            if (!String(cause).includes("ERR_ABORTED")) {
+              throw cause;
+            }
+          });
       },
     };
-  }, [selectTab, setAgentActivity, setAgentPoint, setAgentTab, setTabUrl, threadRef]);
+  }, [
+    approvedDomains,
+    selectTab,
+    setAgentActivity,
+    setAgentPoint,
+    setAgentTab,
+    setPendingBrowserApproval,
+    setTabUrl,
+    threadRef,
+  ]);
 
   /**
    * Opens the panel for an arriving operation and waits for it to have a page.
@@ -120,7 +222,11 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
         const pinned = agent.tabId;
         const tabId =
           pinned !== null && state.tabs.some((tab) => tab.id === pinned) ? pinned : activeTabId;
-        return tabId === "" ? null : getPreviewWebview(threadRef, tabId);
+        const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
+        // Attached, not merely registered: the element registers at mount, and
+        // an operation dispatched in the gap before the guest attaches finds a
+        // webview that cannot answer anything yet.
+        return webview !== null && attachedWebContentsId(webview) !== null ? webview : null;
       },
       subscribe: subscribePreviewWebviews,
       timeoutMs: PREVIEW_WEBVIEW_WAIT_MS,

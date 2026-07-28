@@ -5072,6 +5072,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const existingContext = sessions.get(input.threadId);
       if (existingContext) {
+        // Replacing a live session tears down its Claude process, and any
+        // background tasks (subagents, backgrounded commands) run inside that
+        // process — a silent replace kills them mid-flight. Refuse while work
+        // is pending; callers must stop the session explicitly to discard it.
+        // A dead process never blocks here: stream-end cleanup deletes the
+        // context from the session map before this check can see it.
+        const runningTaskIds = existingContext.stopped
+          ? []
+          : Array.from(existingContext.tasks.entries())
+              .filter(([, task]) => completedTaskStatusFromClaudeStatus(task.status) === undefined)
+              .map(([taskId]) => taskId);
+        if (runningTaskIds.length > 0) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: `Refusing to replace the live Claude session for thread '${input.threadId}' while ${runningTaskIds.length} background task(s) are still running. Stop the session first to discard them.`,
+          });
+        }
         yield* Effect.logWarning("claude.session.replacing", {
           threadId: input.threadId,
           existingSessionStatus: existingContext.session.status,

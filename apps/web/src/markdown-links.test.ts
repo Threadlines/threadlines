@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  findBareLocalhostUrls,
+  localhostUrlFromText,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
@@ -70,6 +72,8 @@ describe("resolveMarkdownFileLinkTarget", () => {
 
   it("ignores external urls", () => {
     expect(resolveMarkdownFileLinkTarget("https://example.com/docs")).toBeNull();
+    expect(resolveMarkdownFileLinkTarget("localhost:5173")).toBeNull();
+    expect(resolveMarkdownFileLinkTarget("127.0.0.1:5173")).toBeNull();
   });
 
   it("does not double-decode file URLs", () => {
@@ -153,5 +157,69 @@ describe("toMarkdownFileUrlHref", () => {
     expect(toMarkdownFileUrlHref("D:/Programme/threadlines/file name.ts")).toBe(
       "file:///D:/Programme/threadlines/file%20name.ts",
     );
+  });
+});
+
+describe("findBareLocalhostUrls", () => {
+  it("finds dev server addresses written without a scheme", () => {
+    expect(findBareLocalhostUrls("Server ready on localhost:5173")).toEqual([
+      { start: 16, end: 30, text: "localhost:5173", url: "http://localhost:5173" },
+    ]);
+  });
+
+  it("keeps the path and query attached", () => {
+    const [match] = findBareLocalhostUrls("Open 127.0.0.1:8080/admin?tab=logs now");
+
+    expect(match?.text).toBe("127.0.0.1:8080/admin?tab=logs");
+    expect(match?.url).toBe("http://127.0.0.1:8080/admin?tab=logs");
+  });
+
+  it("finds every address in a line", () => {
+    expect(
+      findBareLocalhostUrls("api on 0.0.0.0:3000 and web on localhost:5173").map(
+        (match) => match.url,
+      ),
+    ).toEqual(["http://0.0.0.0:3000", "http://localhost:5173"]);
+  });
+
+  it("leaves the word localhost alone when it names no port", () => {
+    expect(findBareLocalhostUrls("bound to localhost only")).toEqual([]);
+  });
+
+  it("does not match inside a longer word or an address already written in full", () => {
+    expect(findBareLocalhostUrls("mylocalhost:5173")).toEqual([]);
+    expect(findBareLocalhostUrls("see http://localhost:5173")).toEqual([]);
+    expect(findBareLocalhostUrls("localhost:5173preview")).toEqual([]);
+    expect(findBareLocalhostUrls("localhost:123456")).toEqual([]);
+    expect(findBareLocalhostUrls("localhost:5173.example")).toEqual([]);
+  });
+
+  it("drops sentence punctuation that is not part of the address", () => {
+    expect(findBareLocalhostUrls("Try localhost:5173.").map((match) => match.text)).toEqual([
+      "localhost:5173",
+    ]);
+    expect(findBareLocalhostUrls("(localhost:5173/app)").map((match) => match.text)).toEqual([
+      "localhost:5173/app",
+    ]);
+  });
+});
+
+describe("localhostUrlFromText", () => {
+  it("accepts a whole-string address with or without a scheme", () => {
+    expect(localhostUrlFromText("localhost:5173")).toBe("http://localhost:5173");
+    expect(localhostUrlFromText("http://localhost:3000/foo")).toBe("http://localhost:3000/foo");
+    expect(localhostUrlFromText("https://127.0.0.1:8443")).toBe("https://127.0.0.1:8443");
+  });
+
+  it("allows a scheme without a port, but never a bare host", () => {
+    expect(localhostUrlFromText("http://localhost/health")).toBe("http://localhost/health");
+    expect(localhostUrlFromText("localhost")).toBeNull();
+    expect(localhostUrlFromText("localhost/app")).toBeNull();
+  });
+
+  it("rejects anything that is not entirely an address", () => {
+    expect(localhostUrlFromText("run localhost:5173")).toBeNull();
+    expect(localhostUrlFromText("localhost:5173 and more")).toBeNull();
+    expect(localhostUrlFromText("example.com:5173")).toBeNull();
   });
 });

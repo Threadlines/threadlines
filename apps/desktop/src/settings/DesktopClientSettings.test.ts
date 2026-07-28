@@ -12,6 +12,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  agentBrowserApprovedDomains: {},
   autoOpenPlanSidebar: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,
@@ -32,6 +33,7 @@ const clientSettings: ClientSettings = {
   sidebarProjectSortOrder: "manual",
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
+  sourceControlPanelDefaultOpen: false,
   timestampFormat: "24-hour",
 };
 

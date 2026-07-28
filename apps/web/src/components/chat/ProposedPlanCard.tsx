@@ -1,5 +1,5 @@
 import { memo, useState, useId } from "react";
-import type { EnvironmentId } from "@threadlines/contracts";
+import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildProposedPlanMarkdownFilename,
@@ -84,6 +84,7 @@ function PlanStatusChip({
 export const ProposedPlanCard = memo(function ProposedPlanCard({
   planMarkdown,
   environmentId,
+  threadId,
   cwd,
   workspaceRoot,
   status = "actionable",
@@ -94,6 +95,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
 }: {
   planMarkdown: string;
   environmentId: EnvironmentId;
+  threadId?: ThreadId | undefined;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
   status?: ProposedPlanCardStatus;
@@ -251,6 +253,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
               text={collapsedPreview ?? ""}
               cwd={cwd}
               environmentId={environmentId}
+              threadId={threadId}
               isStreaming={false}
             />
           ) : (
@@ -258,6 +261,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
               text={displayedPlanMarkdown}
               cwd={cwd}
               environmentId={environmentId}
+              threadId={threadId}
               isStreaming={false}
             />
           )}

@@ -16,6 +16,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyOrchestrationEvent,
   applyOrchestrationEvents,
+  applyShellEvent,
   removeEnvironmentState,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
@@ -493,6 +494,110 @@ describe("incremental orchestration updates", () => {
       localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
         ?.effectiveCwd,
     ).toBe("/tmp/project/.worktrees/feature");
+  });
+
+  it("carries the server's per-thread diff stat from a shell upsert into the sidebar summary", () => {
+    const state = makeState(makeThread());
+
+    const next = applyShellEvent(
+      state,
+      {
+        kind: "thread-upserted",
+        sequence: 2,
+        thread: {
+          id: ThreadId.make("thread-1"),
+          projectId: ProjectId.make("project-1"),
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          effectiveCwd: null,
+          goal: null,
+          latestTurn: null,
+          createdAt: "2026-02-13T00:00:00.000Z",
+          updatedAt: "2026-02-27T00:00:01.000Z",
+          archivedAt: null,
+          pinnedAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+          cumulativeDiffStat: { additions: 12, deletions: 4 },
+        },
+      },
+      localEnvironmentId,
+    );
+
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toEqual({ additions: 12, deletions: 4 });
+  });
+
+  it("sums the thread's own turn diffs into the sidebar summary as turns land", () => {
+    const state = makeState(
+      makeThread({
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:00.000Z",
+            status: "ready",
+            checkpointRef: CheckpointRef.make("checkpoint-1"),
+            checkpointTurnCount: 1,
+            files: [{ path: "a.ts", kind: "modified", additions: 10, deletions: 2 }],
+          },
+        ],
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-diff-completed", {
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-2"),
+        checkpointTurnCount: 2,
+        checkpointRef: CheckpointRef.make("checkpoint-2"),
+        status: "ready",
+        files: [{ path: "b.ts", kind: "added", additions: 5, deletions: 3 }],
+        assistantMessageId: null,
+        completedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    // The sidebar badge is a per-thread total, so the open thread's own stream
+    // has to keep it moving rather than waiting on the next shell push.
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toEqual({ additions: 15, deletions: 5 });
+  });
+
+  it("leaves the sidebar diff stat null until a turn reports a file", () => {
+    const state = makeState(makeThread());
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.meta-updated", {
+        threadId: ThreadId.make("thread-1"),
+        title: "Updated title",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    // Null is "nothing to say", not "+0 -0": a thread that has not touched a
+    // file yet must not render a badge claiming a clean slate.
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toBe(null);
   });
 
   it("does not mark bootstrap complete for incremental events", () => {

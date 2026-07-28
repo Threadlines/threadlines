@@ -518,6 +518,17 @@ export const OrchestrationCheckpointFile = Schema.Struct({
 });
 export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Type;
 
+/**
+ * A thread's own line count, summed across every turn file summary it has
+ * produced. Distinct from a checkout's working-tree diffstat, which is shared
+ * by every thread pointing at the same checkout.
+ */
+export const OrchestrationThreadDiffStat = Schema.Struct({
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+});
+export type OrchestrationThreadDiffStat = typeof OrchestrationThreadDiffStat.Type;
+
 export const OrchestrationCheckpointStatus = Schema.Literals(["ready", "missing", "error"]);
 export type OrchestrationCheckpointStatus = typeof OrchestrationCheckpointStatus.Type;
 
@@ -663,6 +674,14 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
+  /**
+   * Sum of every turn file summary this thread has produced. Null until a turn
+   * produces one. Turn deltas are summed, so re-editing the same lines across
+   * turns overstates the total -- accepted for a sidebar-sized signal.
+   */
+  cumulativeDiffStat: Schema.NullOr(OrchestrationThreadDiffStat).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 

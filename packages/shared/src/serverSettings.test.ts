@@ -229,6 +229,55 @@ describe("serverSettings helpers", () => {
     ).toBeNull();
   });
 
+  it("merges source control writing style field by field", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWritingStyle: {
+        mode: "custom" as const,
+        customInstructions: "Keep titles short.",
+        followPrTemplates: false,
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        sourceControlWritingStyle: { followPrTemplates: true },
+      }).sourceControlWritingStyle,
+    ).toEqual({
+      mode: "custom",
+      customInstructions: "Keep titles short.",
+      followPrTemplates: true,
+    });
+  });
+
+  it("replaces and clears the source control writer selection", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-haiku-4-5",
+        [{ id: "effort", value: "low" }],
+      ),
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        sourceControlWriterModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4-mini",
+        },
+      }).sourceControlWriterModelSelection,
+    ).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4-mini",
+    });
+
+    expect(
+      applyServerSettingsPatch(current, { sourceControlWriterModelSelection: null })
+        .sourceControlWriterModelSelection,
+    ).toBeNull();
+  });
+
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {
     const codexId = ProviderInstanceId.make("codex");
     const current = {

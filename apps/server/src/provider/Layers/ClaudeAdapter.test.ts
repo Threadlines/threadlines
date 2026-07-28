@@ -573,6 +573,84 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("refuses to replace a live session while background tasks are running", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const startedEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-replace-guard",
+        description: "Long-running background agent",
+        task_type: "local_agent",
+        session_id: "sdk-session-replace-guard",
+        uuid: "task-replace-guard-started",
+      } as unknown as SDKMessage);
+
+      yield* Fiber.join(startedEventsFiber);
+
+      const blocked = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+      assert.equal(blocked._tag, "Failure");
+      if (blocked._tag === "Failure") {
+        assert.deepEqual(
+          blocked.failure,
+          new ProviderAdapterValidationError({
+            provider: ProviderDriverKind.make("claudeAgent"),
+            operation: "startSession",
+            issue: `Refusing to replace the live Claude session for thread '${THREAD_ID}' while 1 background task(s) are still running. Stop the session first to discard them.`,
+          }),
+        );
+      }
+
+      const completedEventFiber = yield* Stream.take(adapter.streamEvents, 1).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-replace-guard",
+        patch: {
+          status: "completed",
+        },
+        session_id: "sdk-session-replace-guard",
+        uuid: "task-replace-guard-updated",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(completedEventFiber);
+
+      // With every task settled the replace proceeds as before.
+      const replaced = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+      assert.equal(replaced._tag, "Success");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("derives bypass permission mode from full-access runtime policy", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

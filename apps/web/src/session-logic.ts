@@ -6,6 +6,7 @@ import {
   type MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
+  type OrchestrationThreadDiffStat,
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -975,6 +976,7 @@ function collectSubagentActivityRecords(
   // front and merged into the record the spawning tool call builds.
   const telemetryByToolUseId = new Map<string, SubagentTelemetry>();
   const taskIdByToolUseId = new Map<string, string>();
+  const toolUseIdByTaskId = new Map<string, string>();
   for (const activity of sortedActivities) {
     if (
       activity.kind !== "task.started" &&
@@ -984,7 +986,12 @@ function collectSubagentActivityRecords(
       continue;
     }
     const payload = asRecord(activity.payload);
-    const toolUseId = asTrimmedString(payload?.toolUseId);
+    const taskId = asTrimmedString(payload?.taskId);
+    // Synthesized completions carry no toolUseId (e.g. the SDK reporting a
+    // background agent lost to a session restart); recover the link through
+    // the taskId the start edge established so the agent still settles.
+    const toolUseId =
+      asTrimmedString(payload?.toolUseId) ?? (taskId ? toolUseIdByTaskId.get(taskId) : undefined);
     if (!toolUseId) {
       continue;
     }
@@ -993,9 +1000,11 @@ function collectSubagentActivityRecords(
     } else {
       liveBackgroundTaskToolUseIds.add(toolUseId);
     }
-    const taskId = asTrimmedString(payload?.taskId);
     if (taskId && !taskIdByToolUseId.has(toolUseId)) {
       taskIdByToolUseId.set(toolUseId, taskId);
+    }
+    if (taskId && !toolUseIdByTaskId.has(taskId)) {
+      toolUseIdByTaskId.set(taskId, toolUseId);
     }
     const telemetry = mergeSubagentTelemetry(
       telemetryByToolUseId.get(toolUseId),
@@ -1024,7 +1033,7 @@ function collectSubagentActivityRecords(
     // in a different (or no) turn. It links back via toolUseId and only
     // updates already-known records, so it bypasses turn scoping.
     if (activity.kind === "task.completed") {
-      applySubagentTaskCompletion(byAgentId, activity, payload);
+      applySubagentTaskCompletion(byAgentId, activity, payload, toolUseIdByTaskId);
       continue;
     }
 
@@ -1220,8 +1229,14 @@ function applySubagentTaskCompletion(
   byAgentId: Map<string, InternalSubagentRecord>,
   activity: OrchestrationThreadActivity,
   payload: Record<string, unknown>,
+  toolUseIdByTaskId: ReadonlyMap<string, string>,
 ): void {
-  const toolUseId = asTrimmedString(payload.toolUseId);
+  // Synthesized completions carry no toolUseId (e.g. the SDK reporting a
+  // background agent lost to a session restart); fall back to the taskId
+  // link so the agent settles instead of showing "Running" forever.
+  const taskId = asTrimmedString(payload.taskId);
+  const toolUseId =
+    asTrimmedString(payload.toolUseId) ?? (taskId ? toolUseIdByTaskId.get(taskId) : undefined);
   const record = toolUseId ? byAgentId.get(toolUseId) : undefined;
   if (!record) {
     return;
@@ -4066,6 +4081,29 @@ export function inferCheckpointTurnCountByTurnId(
     result[summary.turnId] = index + 1;
   }
   return result;
+}
+
+/**
+ * What a thread has changed, summed across its own turns -- the client-side
+ * twin of the shell's `cumulativeDiffStat`, for the detail stream, which
+ * carries the per-turn summaries but not the rollup. Returns null when no turn
+ * has reported a file yet, which is the same "nothing to say" the shell means
+ * by null; a thread whose turns cancel out to zero still returns zeroes.
+ */
+export function sumTurnDiffStats(
+  summaries: ReadonlyArray<TurnDiffSummary>,
+): OrchestrationThreadDiffStat | null {
+  let additions = 0;
+  let deletions = 0;
+  let sawFile = false;
+  for (const summary of summaries) {
+    for (const file of summary.files) {
+      sawFile = true;
+      additions += file.additions ?? 0;
+      deletions += file.deletions ?? 0;
+    }
+  }
+  return sawFile ? { additions, deletions } : null;
 }
 
 export function derivePhase(session: ThreadSession | null): SessionPhase {

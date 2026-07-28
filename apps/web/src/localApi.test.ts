@@ -739,6 +739,7 @@ describe("wsApi", () => {
 
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
+      agentBrowserApprovedDomains: {},
       autoOpenPlanSidebar: false,
       chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,
@@ -759,6 +760,7 @@ describe("wsApi", () => {
       sidebarProjectSortOrder: "manual" as const,
       sidebarThreadSortOrder: "created_at" as const,
       sidebarThreadPreviewCount: 6,
+      sourceControlPanelDefaultOpen: false,
       timestampFormat: "24-hour" as const,
     };
     const getClientSettings = vi.fn().mockResolvedValue({
@@ -807,6 +809,7 @@ describe("wsApi", () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
+      agentBrowserApprovedDomains: {},
       autoOpenPlanSidebar: false,
       chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,
@@ -827,6 +830,7 @@ describe("wsApi", () => {
       sidebarProjectSortOrder: "manual" as const,
       sidebarThreadSortOrder: "created_at" as const,
       sidebarThreadPreviewCount: 6,
+      sourceControlPanelDefaultOpen: false,
       timestampFormat: "24-hour" as const,
     };
 

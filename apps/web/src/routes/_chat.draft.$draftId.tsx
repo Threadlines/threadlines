@@ -9,7 +9,6 @@ import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineS
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
   closeRightPanelSearchParams,
-  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
@@ -20,6 +19,7 @@ import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   useAutoHideSourceControlSheet,
+  useSourceControlPanelOpen,
 } from "../rightPanelLayout";
 import { SidebarInset } from "../components/ui/sidebar";
 import { RightPanelSheet } from "../components/RightPanelSheet";
@@ -83,7 +83,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const rawSourceControlOpen = isSourceControlPanelOpen(search);
+  const rawSourceControlOpen = useSourceControlPanelOpen(search);
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;

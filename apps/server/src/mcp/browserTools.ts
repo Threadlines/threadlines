@@ -100,7 +100,7 @@ export const BrowserSelectTabTool = changesThePage(
 export const BrowserNavigateTool = changesThePage(
   Tool.make("browser_navigate", {
     description:
-      "Go to a URL in the Threadlines preview panel the user is watching. This replaces what they are looking at, so navigate when you need to be somewhere else, not to reset state you can reach by clicking.",
+      "Go to a URL in the Threadlines preview panel the user is watching. This replaces what they are looking at, so navigate when you need to be somewhere else, not to reset state you can reach by clicking. Local and private addresses always work, but a site outside the project's approved list needs the user's approval: if this is refused for that reason, wait for them to allow it in the browser panel and then navigate again.",
     parameters: PreviewAutomationNavigateInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,

@@ -1,6 +1,9 @@
 import { type RefCallback, useCallback, useEffect, useRef } from "react";
 
+import { type DiffRouteSearch, isSourceControlPanelOpen } from "./diffRouteSearch";
 import { isElectron } from "./env";
+import { useMediaQuery } from "./hooks/useMediaQuery";
+import { useSettings } from "./hooks/useSettings";
 
 export const RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 980px)";
 
@@ -77,6 +80,22 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
       viewport?.removeEventListener("scroll", publish);
     };
   }, []);
+}
+
+/**
+ * Whether the source control panel is showing for the given route search
+ * params. The routes and the header toggle must always agree on this, so the
+ * settings default and its wide-layout gate live here instead of at call
+ * sites (a per-surface `defaultOpen` is how the 0.3.0 default-closed change
+ * missed the draft route and the header button).
+ *
+ * The default-open setting only applies on wide layouts: in sheet mode the
+ * panel covers the conversation, so threads there always start closed.
+ */
+export function useSourceControlPanelOpen(search: DiffRouteSearch): boolean {
+  const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const defaultOpenSetting = useSettings((settings) => settings.sourceControlPanelDefaultOpen);
+  return isSourceControlPanelOpen(search, { defaultOpen: defaultOpenSetting && !sheetLayout });
 }
 
 export function normalizeRightPanelStoredWidth(width: number) {

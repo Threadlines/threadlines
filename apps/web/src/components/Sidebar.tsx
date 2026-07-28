@@ -5,7 +5,6 @@ import {
   MessagesSquareIcon,
   SearchIcon,
   SettingsIcon,
-  SquarePenIcon,
 } from "lucide-react";
 import { ThreadlinesGlyph } from "./Icons";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -1307,46 +1306,24 @@ export default function Sidebar() {
               {/* Outside the scroll container: search and compose are chrome, and
                 chrome does not scroll away. The list clips beneath the rule. */}
               <SidebarGroup className="shrink-0 bg-sidebar px-2 pt-2 pb-1.5">
-                <div className="flex items-center gap-1.5">
-                  <CommandDialogTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-testid="command-palette-trigger"
-                        className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
-                      />
-                    }
-                  >
-                    <SearchIcon className="size-3.5" />
-                    <span className="min-w-0 flex-1 truncate text-left text-xs">Search</span>
-                    {commandPaletteShortcutLabel ? (
-                      // Keyboard chrome means nothing to a touch pointer.
-                      <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px] pointer-coarse:hidden">
-                        {commandPaletteShortcutLabel}
-                      </Kbd>
-                    ) : null}
-                  </CommandDialogTrigger>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          aria-label="New thread"
-                          data-testid="new-thread-button"
-                          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-ring"
-                          onClick={handleComposeClick}
-                        />
-                      }
-                    >
-                      <SquarePenIcon className="size-3.5" />
-                    </TooltipTrigger>
-                    <TooltipPopup side="bottom">
-                      {newThreadShortcutLabel
-                        ? `New thread (${newThreadShortcutLabel})`
-                        : "New thread"}
-                    </TooltipPopup>
-                  </Tooltip>
-                </div>
+                <CommandDialogTrigger
+                  render={
+                    <button
+                      type="button"
+                      data-testid="command-palette-trigger"
+                      className="flex h-7 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
+                    />
+                  }
+                >
+                  <SearchIcon className="size-3.5" />
+                  <span className="min-w-0 flex-1 truncate text-left text-xs">Search</span>
+                  {commandPaletteShortcutLabel ? (
+                    // Keyboard chrome means nothing to a touch pointer.
+                    <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px] pointer-coarse:hidden">
+                      {commandPaletteShortcutLabel}
+                    </Kbd>
+                  ) : null}
+                </CommandDialogTrigger>
               </SidebarGroup>
               {/* No rule under the search: the boundary is the opaque chrome
                 above and a short fade the rows pass into. The Wrapped header
@@ -1402,6 +1379,8 @@ export default function Sidebar() {
                     scopedProjectKey={scopedProjectKeyValue}
                     onScopeChange={handleScopeChange}
                     onAddProject={openAddProjectCommandPalette}
+                    onNewThread={handleComposeClick}
+                    newThreadShortcutLabel={newThreadShortcutLabel}
                   />
 
                   {liveEntries.length === 0 ? (

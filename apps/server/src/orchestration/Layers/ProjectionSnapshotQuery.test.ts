@@ -450,6 +450,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          cumulativeDiffStat: { additions: 2, deletions: 1 },
         },
       ]);
 
@@ -1871,6 +1872,232 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.projects.length, 0);
       assert.equal(shellSnapshot.threads.length, 0);
+    }),
+  );
+
+  it.effect("sums each thread's own turn file summaries into its shell diff stat", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_turns`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-1',
+          'Project 1',
+          '/tmp/project-1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-07-01T00:00:00.000Z',
+          '2026-07-01T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      // Two threads in one checkout: the whole point of the per-thread rollup
+      // is that they do not report the same numbers.
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-busy',
+            'project-1',
+            'Busy thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-01T00:00:02.000Z',
+            '2026-07-01T00:00:03.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-quiet',
+            'project-1',
+            'Quiet thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-01T00:00:02.000Z',
+            '2026-07-01T00:00:03.000Z',
+            NULL,
+            NULL
+          )
+      `;
+
+      // thread-busy: two captured turns plus a provider-reported fallback
+      // (status "missing", which the turn timeline renders like any other), and
+      // a turn that touched nothing. thread-quiet only ever touched nothing.
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          source_proposed_plan_thread_id,
+          source_proposed_plan_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json
+        )
+        VALUES
+          (
+            'thread-busy',
+            'turn-1',
+            NULL,
+            NULL,
+            NULL,
+            'message-1',
+            'completed',
+            '2026-07-01T00:00:10.000Z',
+            '2026-07-01T00:00:10.000Z',
+            '2026-07-01T00:00:11.000Z',
+            1,
+            'checkpoint-1',
+            'ready',
+            '[{"path":"a.ts","kind":"modified","additions":10,"deletions":2},{"path":"b.ts","kind":"added","additions":5,"deletions":0}]'
+          ),
+          (
+            'thread-busy',
+            'turn-2',
+            NULL,
+            NULL,
+            NULL,
+            'message-2',
+            'completed',
+            '2026-07-01T00:00:20.000Z',
+            '2026-07-01T00:00:20.000Z',
+            '2026-07-01T00:00:21.000Z',
+            2,
+            'checkpoint-2',
+            'ready',
+            '[{"path":"a.ts","kind":"modified","additions":1,"deletions":7}]'
+          ),
+          (
+            'thread-busy',
+            'turn-3',
+            NULL,
+            NULL,
+            NULL,
+            'message-3',
+            'completed',
+            '2026-07-01T00:00:30.000Z',
+            '2026-07-01T00:00:30.000Z',
+            '2026-07-01T00:00:31.000Z',
+            3,
+            'provider-diff:event-3',
+            'missing',
+            '[{"path":"c.ts","kind":"modified","additions":4,"deletions":3}]'
+          ),
+          (
+            'thread-busy',
+            'turn-4',
+            NULL,
+            NULL,
+            NULL,
+            'message-4',
+            'completed',
+            '2026-07-01T00:00:40.000Z',
+            '2026-07-01T00:00:40.000Z',
+            '2026-07-01T00:00:41.000Z',
+            4,
+            'checkpoint-4',
+            'ready',
+            '[]'
+          ),
+          (
+            'thread-quiet',
+            'turn-5',
+            NULL,
+            NULL,
+            NULL,
+            'message-5',
+            'completed',
+            '2026-07-01T00:00:50.000Z',
+            '2026-07-01T00:00:50.000Z',
+            '2026-07-01T00:00:51.000Z',
+            1,
+            'checkpoint-5',
+            'ready',
+            '[]'
+          )
+      `;
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const busy = shellSnapshot.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-busy"),
+      );
+      const quiet = shellSnapshot.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-quiet"),
+      );
+      assert.deepEqual(busy?.cumulativeDiffStat, { additions: 20, deletions: 12 });
+      // No turn has reported a file, so the row has nothing to print -- which is
+      // not the same claim as "+0 -0".
+      assert.equal(quiet?.cumulativeDiffStat, null);
+
+      // The incremental thread-upserted path has to agree with the snapshot, or
+      // the badge would drift between a reload and a live update.
+      const busyShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-busy"));
+      assert.equal(busyShell._tag, "Some");
+      if (busyShell._tag === "Some") {
+        assert.deepEqual(busyShell.value.cumulativeDiffStat, { additions: 20, deletions: 12 });
+      }
+
+      const quietShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-quiet"));
+      assert.equal(quietShell._tag, "Some");
+      if (quietShell._tag === "Some") {
+        assert.equal(quietShell.value.cumulativeDiffStat, null);
+      }
     }),
   );
 });

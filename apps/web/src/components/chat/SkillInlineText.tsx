@@ -1,5 +1,5 @@
 import { Children, cloneElement, isValidElement, type ReactNode } from "react";
-import type { ServerProviderSkill } from "@threadlines/contracts";
+import type { ScopedThreadRef, ServerProviderSkill } from "@threadlines/contracts";
 
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import {
@@ -9,10 +9,85 @@ import {
   SKILL_CHIP_ICON_SVG,
 } from "../composerInlineChip";
 import { splitSearchTextHighlightSegments } from "../../lib/searchTextHighlight";
+import { findBareLocalhostUrls } from "../../markdown-links";
+import { ChatWebLink } from "./ChatWebLink";
 
 const SKILL_TOKEN_REGEX = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
 
 type InlineSkill = Pick<ServerProviderSkill, "name" | "displayName">;
+
+/**
+ * What the inline pass needs to know beyond the text itself: which skills are
+ * real, what is being searched for, and which thread a bare dev-server address
+ * should open in.
+ */
+export interface InlineMarkdownContext {
+  readonly skills: ReadonlyArray<InlineSkill>;
+  readonly searchHighlightQuery?: string | undefined;
+  readonly threadRef?: ScopedThreadRef | null;
+}
+
+interface InlineToken {
+  readonly start: number;
+  readonly end: number;
+  readonly node: ReactNode;
+}
+
+/**
+ * Every replacement to make in one string, in order and without overlaps.
+ *
+ * Both passes run over the same text, so they are collected together rather
+ * than chained: a second pass over the first one's output would have to walk
+ * back into elements it did not make.
+ */
+function collectInlineTokens(text: string, context: InlineMarkdownContext): InlineToken[] {
+  const tokens: InlineToken[] = [];
+
+  for (const match of text.matchAll(SKILL_TOKEN_REGEX)) {
+    const prefix = match[1] ?? "";
+    const name = match[2] ?? "";
+    const start = (match.index ?? 0) + prefix.length;
+    const rawText = `$${name}`;
+    const skill = context.skills.find((candidate) => candidate.name === name);
+    if (!skill) {
+      continue;
+    }
+    tokens.push({
+      start,
+      end: start + rawText.length,
+      node: <SkillChip key={`${start}:${name}`} skill={skill} rawText={rawText} />,
+    });
+  }
+
+  for (const match of findBareLocalhostUrls(text)) {
+    tokens.push({
+      start: match.start,
+      end: match.end,
+      node: (
+        <ChatWebLink
+          key={`link:${match.start}`}
+          href={match.url}
+          threadRef={context.threadRef ?? null}
+        >
+          {match.text}
+        </ChatWebLink>
+      ),
+    });
+  }
+
+  tokens.sort((left, right) => left.start - right.start);
+
+  const ordered: InlineToken[] = [];
+  let consumed = 0;
+  for (const token of tokens) {
+    if (token.start < consumed) {
+      continue;
+    }
+    ordered.push(token);
+    consumed = token.end;
+  }
+  return ordered;
+}
 
 export function SearchHighlightedInlineText(props: { text: string; query?: string | undefined }) {
   if (!props.query) {
@@ -36,40 +111,28 @@ export function SearchHighlightedInlineText(props: { text: string; query?: strin
   );
 }
 
-export function SkillInlineText(props: {
-  text: string;
-  skills: ReadonlyArray<InlineSkill>;
-  searchHighlightQuery?: string | undefined;
-}) {
+export function SkillInlineText(props: { text: string } & InlineMarkdownContext) {
+  const tokens = collectInlineTokens(props.text, props);
+  if (tokens.length === 0) {
+    return <SearchHighlightedInlineText text={props.text} query={props.searchHighlightQuery} />;
+  }
+
   const nodes: ReactNode[] = [];
   let cursor = 0;
-
-  for (const match of props.text.matchAll(SKILL_TOKEN_REGEX)) {
-    const prefix = match[1] ?? "";
-    const name = match[2] ?? "";
-    const start = (match.index ?? 0) + prefix.length;
-    const rawText = `$${name}`;
-    const skill = props.skills.find((candidate) => candidate.name === name);
-    if (!skill) {
-      continue;
-    }
-
-    if (start > cursor) {
+  for (const token of tokens) {
+    if (token.start > cursor) {
       nodes.push(
         <SearchHighlightedInlineText
-          key={`text:${cursor}:${start}`}
-          text={props.text.slice(cursor, start)}
+          key={`text:${cursor}:${token.start}`}
+          text={props.text.slice(cursor, token.start)}
           query={props.searchHighlightQuery}
         />,
       );
     }
-    nodes.push(<SkillChip key={`${start}:${name}`} skill={skill} rawText={rawText} />);
-    cursor = start + rawText.length;
+    nodes.push(token.node);
+    cursor = token.end;
   }
 
-  if (cursor === 0) {
-    return <SearchHighlightedInlineText text={props.text} query={props.searchHighlightQuery} />;
-  }
   if (cursor < props.text.length) {
     nodes.push(
       <SearchHighlightedInlineText
@@ -84,19 +147,22 @@ export function SkillInlineText(props: {
 
 export function renderSkillInlineMarkdownChildren(
   children: ReactNode,
-  skills: ReadonlyArray<InlineSkill>,
-  searchHighlightQuery?: string | undefined,
+  context: InlineMarkdownContext,
 ): ReactNode {
   return Children.map(children, (child) => {
     if (typeof child === "string") {
-      return (
-        <SkillInlineText text={child} skills={skills} searchHighlightQuery={searchHighlightQuery} />
-      );
+      return <SkillInlineText text={child} {...context} />;
     }
-    if (!isValidElement<{ children?: ReactNode }>(child)) {
+    if (!isValidElement<{ children?: ReactNode; href?: string }>(child)) {
       return child;
     }
     if (child.type === "code" || child.type === "a") {
+      return child;
+    }
+    // Custom anchor components are elements like any other, so the tag check
+    // above misses them: an href is what actually says "already a link", and
+    // tokenizing inside one would nest an anchor in an anchor.
+    if ("href" in child.props) {
       return child;
     }
     if (!("children" in child.props)) {
@@ -105,7 +171,7 @@ export function renderSkillInlineMarkdownChildren(
     return cloneElement(
       child,
       undefined,
-      renderSkillInlineMarkdownChildren(child.props.children, skills, searchHighlightQuery),
+      renderSkillInlineMarkdownChildren(child.props.children, context),
     );
   });
 }

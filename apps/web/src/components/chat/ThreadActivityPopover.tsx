@@ -46,7 +46,11 @@ import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import { SubagentInspector } from "./SubagentInspector";
-import { formatSubagentMetaParts, resolveSubagentModelLabel } from "./subagentMeta";
+import {
+  formatSubagentMetaParts,
+  resolveSubagentModelLabel,
+  SubagentModelMeta,
+} from "./subagentMeta";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
@@ -946,9 +950,10 @@ function SubagentSection({
           const showSubagentChip = shouldShowSubagentDisplayChip(item);
           const transcriptAvailable = item.agentThreadId !== null;
           const active = isActiveSubagentStatus(item.status);
+          const modelLabel = resolveSubagentModelLabel(providers, item.model);
+          const hasModelMeta = Boolean(modelLabel ?? item.reasoningEffort);
           const metaParts = formatSubagentMetaParts(item, {
             context: details.context,
-            modelLabel: resolveSubagentModelLabel(providers, item.model),
             elapsed: active ? formatElapsedDurationLabel(item.createdAt) : null,
             includeCurrentTool: false,
           });
@@ -1031,13 +1036,26 @@ function SubagentSection({
                     </div>
                   ) : null}
 
-                  {metaParts.length > 0 ? (
+                  {hasModelMeta || metaParts.length > 0 ? (
                     <div
-                      className="mt-1 min-w-0 truncate font-mono text-[10px] leading-4 text-muted-foreground/60"
-                      title={metaParts.join(" · ")}
+                      className="mt-1 flex min-w-0 items-baseline gap-1.5 font-mono text-[10px] leading-4"
+                      title={[modelLabel, item.reasoningEffort, ...metaParts]
+                        .filter(Boolean)
+                        .join(" · ")}
                       data-subagent-progress-meta="true"
                     >
-                      {metaParts.join(" · ")}
+                      <SubagentModelMeta
+                        modelLabel={modelLabel}
+                        reasoningEffort={item.reasoningEffort}
+                      />
+                      {hasModelMeta && metaParts.length > 0 ? (
+                        <span className="text-muted-foreground/30">·</span>
+                      ) : null}
+                      {metaParts.length > 0 ? (
+                        <span className="min-w-0 truncate text-muted-foreground/60">
+                          {metaParts.join(" · ")}
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
 

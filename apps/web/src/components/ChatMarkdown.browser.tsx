@@ -193,6 +193,51 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("links web addresses, including dev servers written without a scheme", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="See [the docs](https://example.com/docs), [the app](localhost:4173), or open localhost:5173 now."
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+        threadId={CHAT_MARKDOWN_THREAD_ID}
+      />,
+    );
+
+    try {
+      const docsLink = page.getByRole("link", { name: "the docs" });
+      await expect.element(docsLink).toHaveAttribute("href", "https://example.com/docs");
+      await expect.element(docsLink).toHaveAttribute("target", "_blank");
+
+      const devServerLink = page.getByRole("link", { name: "localhost:5173" });
+      await expect.element(devServerLink).toHaveAttribute("href", "http://localhost:5173");
+
+      const markdownDevServerLink = page.getByRole("link", { name: "the app" });
+      await expect.element(markdownDevServerLink).toHaveAttribute("href", "http://localhost:4173");
+
+      document
+        .querySelector<HTMLAnchorElement>('a[href="https://example.com/docs"]')
+        ?.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 24,
+            clientY: 48,
+          }),
+        );
+      await vi.waitFor(() => {
+        expect(contextMenuShowMock).toHaveBeenCalledWith(
+          [
+            { id: "open-external", label: "Open in external browser" },
+            { id: "copy-link", label: "Copy link address" },
+          ],
+          { x: 24, y: 48 },
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("opens file links in the active project file viewer before using external editors", async () => {
     const cwd = "/repo/project";
     const filePath = "/repo/project/src/utils/permissions/PermissionRule.ts";

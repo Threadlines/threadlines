@@ -2212,7 +2212,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const timestampStyle = getComputedStyle(timestampWrapper);
       expect(timestampStyle.display).not.toBe("none");
       expect(timestampStyle.opacity).toBe("1");
-      // The timestamp sits fully left of the always-visible touch actions.
+      // The timestamp sits fully left of the always-visible touch actions:
+      // both stay readable, neither covers the other.
       const timestampRect = timestampWrapper.getBoundingClientRect();
       const actionsRect = compactActions!.getBoundingClientRect();
       expect(timestampRect.right).toBeLessThanOrEqual(actionsRect.left);

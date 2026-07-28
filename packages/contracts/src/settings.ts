@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -55,6 +55,14 @@ export type AutoArchiveInactiveThreadsDays = typeof AutoArchiveInactiveThreadsDa
 export const DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS: AutoArchiveInactiveThreadsDays = 0;
 
 export const ClientSettingsSchema = Schema.Struct({
+  // Sites the browser panel may be driven to, per project. Values are approval
+  // keys (lowercased host with a leading `www.` dropped) and cover subdomains.
+  // Private-network addresses are always reachable and are never recorded here,
+  // so an empty list is the normal state for a project that only ever looks at
+  // its own dev server.
+  agentBrowserApprovedDomains: Schema.Record(ProjectId, Schema.Array(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   chatChangedFilesDefaultExpanded: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
@@ -120,6 +128,12 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
+  ),
+  // Open the source control panel when entering a thread. Applies only on
+  // wide layouts; narrow layouts overlay the panel on the conversation and
+  // always start closed. Explicit toggles and deep links override it.
+  sourceControlPanelDefaultOpen: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -373,6 +387,27 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
+/**
+ * How generated source control text (commit messages, PR titles and bodies)
+ * should be styled. `repo_conventions` samples recent commit subjects from the
+ * repository being worked in, so the style follows each project.
+ */
+export const SourceControlWritingStyleMode = Schema.Literals([
+  "repo_conventions",
+  "conventional_commits",
+  "custom",
+]);
+export type SourceControlWritingStyleMode = typeof SourceControlWritingStyleMode.Type;
+
+export const SourceControlWritingStyleSettings = Schema.Struct({
+  mode: SourceControlWritingStyleMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("repo_conventions" as const)),
+  ),
+  customInstructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  followPrTemplates: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type SourceControlWritingStyleSettings = typeof SourceControlWritingStyleSettings.Type;
+
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(2);
 
 export const ServerSettings = Schema.Struct({
@@ -407,6 +442,15 @@ export const ServerSettings = Schema.Struct({
     ),
   ),
   textGenerationBackupModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sourceControlWritingStyle: SourceControlWritingStyleSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  // Dedicated model for source control text (commit messages, PR titles and
+  // bodies, branch names). `null` means source control text uses
+  // `textGenerationModelSelection`. Thread titles never use this selection.
+  sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
 
@@ -508,6 +552,14 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   textGenerationBackupModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
+  sourceControlWritingStyle: Schema.optionalKey(
+    Schema.Struct({
+      mode: Schema.optionalKey(SourceControlWritingStyleMode),
+      customInstructions: Schema.optionalKey(TrimmedString),
+      followPrTemplates: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),
@@ -531,6 +583,9 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  agentBrowserApprovedDomains: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.Array(TrimmedNonEmptyString)),
+  ),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
@@ -569,6 +624,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
+  sourceControlPanelDefaultOpen: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

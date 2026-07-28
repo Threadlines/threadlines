@@ -22,14 +22,11 @@ import {
 } from "@threadlines/contracts";
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
-import { createModelSelection } from "@threadlines/shared/model";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import { APP_VERSION } from "../../branding";
 import { getDesktopUpdateButtonTooltip } from "../../components/desktopUpdate.logic";
-import { ProviderModelPicker } from "../chat/ProviderModelPicker";
-import { TraitsPicker } from "../chat/TraitsPicker";
 import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
@@ -42,16 +39,10 @@ import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
 import {
-  getCustomModelOptionsByInstance,
   resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionState,
   resolveTextGenerationBackupModelSelectionState,
 } from "../../modelSelection";
-import {
-  deriveProviderInstanceEntries,
-  filterMaintainedProviderInstanceEntries,
-  sortProviderInstanceEntries,
-} from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -112,6 +103,10 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import {
+  TextGenerationModelControl,
+  textGenerationInstanceEntries,
+} from "./TextGenerationModelControl";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 import { newCommandId } from "../../lib/utils";
@@ -463,6 +458,16 @@ export function useSettingsRestore(onRestored?: () => void) {
     settings.textGenerationBackupModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection ?? null,
   );
+  const writingStyle = settings.sourceControlWritingStyle;
+  const defaultWritingStyle = DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle;
+  const isSourceControlWritingStyleDirty =
+    writingStyle.mode !== defaultWritingStyle.mode ||
+    writingStyle.customInstructions !== defaultWritingStyle.customInstructions ||
+    writingStyle.followPrTemplates !== defaultWritingStyle.followPrTemplates;
+  const isSourceControlWriterModelDirty = !Equal.equals(
+    settings.sourceControlWriterModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.sourceControlWriterModelSelection ?? null,
+  );
 
   const changedSettingLabels = useMemo(
     () => [
@@ -504,6 +509,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
         ? ["Automatic Git fetch interval"]
         : []),
+      ...(settings.sourceControlPanelDefaultOpen !==
+      DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen
+        ? ["Source control panel default"]
+        : []),
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["New thread mode"]
         : []),
@@ -518,10 +527,14 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
+      ...(isSourceControlWritingStyleDirty ? ["Source control writing style"] : []),
+      ...(isSourceControlWriterModelDirty ? ["Source control writer model"] : []),
     ],
     [
       isGitWritingBackupModelDirty,
       isGitWritingModelDirty,
+      isSourceControlWriterModelDirty,
+      isSourceControlWritingStyleDirty,
       settings.autoArchiveInactiveThreadsDays,
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
@@ -534,6 +547,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.preventSleepDuringActiveTurns,
+      settings.sourceControlPanelDefaultOpen,
       settings.usageAnalyticsEnabled,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -564,6 +578,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       preventSleepDuringActiveTurns: DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns,
       usageAnalyticsEnabled: DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
+      sourceControlPanelDefaultOpen: DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
@@ -571,6 +586,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:
         DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
+      sourceControlWritingStyle: DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle,
+      sourceControlWriterModelSelection: DEFAULT_UNIFIED_SETTINGS.sourceControlWriterModelSelection,
     });
     onRestored?.();
   }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
@@ -743,14 +760,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   });
 
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
-  const textGenInstanceId = textGenerationModelSelection.instanceId;
-  const textGenModel = textGenerationModelSelection.model;
-  const textGenModelOptions = textGenerationModelSelection.options;
-  const gitModelInstanceEntries = sortProviderInstanceEntries(
-    filterMaintainedProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders)),
-  );
+  const gitModelInstanceEntries = textGenerationInstanceEntries(serverProviders);
   const textGenInstanceEntry = gitModelInstanceEntries.find(
-    (entry) => entry.instanceId === textGenInstanceId,
+    (entry) => entry.instanceId === textGenerationModelSelection.instanceId,
   );
   const textGenProvider: ProviderDriverKind =
     textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
@@ -765,22 +777,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
       serverProviders,
       textGenerationModelSelection,
     );
-  const textGenBackupInstanceId = textGenerationBackupModelSelection?.instanceId ?? null;
-  const textGenBackupModel = textGenerationBackupModelSelection?.model ?? null;
-  const textGenBackupModelOptions = textGenerationBackupModelSelection?.options;
   const gitBackupModelInstanceEntries = gitModelInstanceEntries.filter(
     (entry) => entry.driverKind !== textGenProvider,
-  );
-  const textGenBackupInstanceEntry = textGenBackupInstanceId
-    ? gitBackupModelInstanceEntries.find((entry) => entry.instanceId === textGenBackupInstanceId)
-    : undefined;
-  const textGenBackupProvider: ProviderDriverKind =
-    textGenBackupInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
-  const gitModelOptionsByInstance = getCustomModelOptionsByInstance(
-    settings,
-    serverProviders,
-    textGenInstanceId,
-    textGenModel,
   );
   const isGitWritingModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
@@ -957,7 +955,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
         <SettingsRow
           title="Text generation model"
-          description="Configure the model used for generated thread titles, branch names, commit messages, and PR text."
+          description="Default model for generated text like thread titles and source control content. Source control settings can override it with a dedicated writer model."
           resetAction={
             isGitWritingModelDirty ? (
               <SettingResetButton
@@ -972,71 +970,37 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
             ) : null
           }
           control={
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <ProviderModelPicker
-                activeInstanceId={textGenInstanceId}
-                model={textGenModel}
-                lockedProvider={null}
-                instanceEntries={gitModelInstanceEntries}
-                modelOptionsByInstance={gitModelOptionsByInstance}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onInstanceModelChange={(instanceId, model) => {
-                  const nextPrimarySelection = resolveAppModelSelectionState(
-                    {
-                      ...settings,
-                      textGenerationModelSelection: createModelSelection(instanceId, model),
-                    },
-                    serverProviders,
-                  );
-                  updateSettings({
-                    textGenerationModelSelection: nextPrimarySelection,
-                    ...(settings.textGenerationBackupModelSelection !== null
-                      ? {
-                          textGenerationBackupModelSelection:
-                            resolveTextGenerationBackupModelSelectionState(
-                              {
-                                ...settings,
-                                textGenerationModelSelection: nextPrimarySelection,
-                              },
-                              serverProviders,
-                              nextPrimarySelection,
-                            ),
-                        }
-                      : {}),
-                  });
-                }}
-              />
-              <TraitsPicker
-                provider={textGenProvider}
-                models={
-                  // Use the exact instance's models (rather than the
-                  // first-kind-match) so a custom text-gen instance like
-                  // `codex_personal` gets its own model list, not the
-                  // default Codex one.
-                  textGenInstanceEntry?.models ?? []
-                }
-                model={textGenModel}
-                modelOptions={textGenModelOptions}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onModelOptionsChange={(nextOptions) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(
-                          textGenInstanceId,
-                          textGenModel,
-                          nextOptions,
-                        ),
-                      },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-            </div>
+            <TextGenerationModelControl
+              selection={textGenerationModelSelection}
+              settings={settings}
+              serverProviders={serverProviders}
+              instanceEntries={gitModelInstanceEntries}
+              onSelectionChange={(nextSelection, change) => {
+                const nextPrimarySelection = resolveAppModelSelectionState(
+                  { ...settings, textGenerationModelSelection: nextSelection },
+                  serverProviders,
+                );
+                updateSettings({
+                  textGenerationModelSelection: nextPrimarySelection,
+                  // Switching providers can invalidate the backup (it must sit
+                  // on a different driver), so re-resolve it alongside.
+                  ...(change === "instanceModel" &&
+                  settings.textGenerationBackupModelSelection !== null
+                    ? {
+                        textGenerationBackupModelSelection:
+                          resolveTextGenerationBackupModelSelectionState(
+                            {
+                              ...settings,
+                              textGenerationModelSelection: nextPrimarySelection,
+                            },
+                            serverProviders,
+                            nextPrimarySelection,
+                          ),
+                      }
+                    : {}),
+                });
+              }}
+            />
           }
         />
 
@@ -1058,63 +1022,24 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
           control={
             <div className="flex flex-wrap items-center justify-end gap-1.5">
-              {textGenerationBackupModelSelection &&
-              textGenBackupInstanceId &&
-              textGenBackupModel ? (
-                <>
-                  <ProviderModelPicker
-                    activeInstanceId={textGenBackupInstanceId}
-                    model={textGenBackupModel}
-                    lockedProvider={null}
-                    instanceEntries={gitBackupModelInstanceEntries}
-                    modelOptionsByInstance={gitModelOptionsByInstance}
-                    triggerVariant="outline"
-                    triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                    onInstanceModelChange={(instanceId, model) => {
-                      const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
-                        {
-                          ...settings,
-                          textGenerationBackupModelSelection: createModelSelection(
-                            instanceId,
-                            model,
-                          ),
-                        },
-                        serverProviders,
-                        textGenerationModelSelection,
-                      );
-                      if (!nextBackupSelection) return;
-                      updateSettings({
-                        textGenerationBackupModelSelection: nextBackupSelection,
-                      });
-                    }}
-                  />
-                  <TraitsPicker
-                    provider={textGenBackupProvider}
-                    models={textGenBackupInstanceEntry?.models ?? []}
-                    model={textGenBackupModel}
-                    modelOptions={textGenBackupModelOptions}
-                    triggerVariant="outline"
-                    triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                    onModelOptionsChange={(nextOptions) => {
-                      const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
-                        {
-                          ...settings,
-                          textGenerationBackupModelSelection: createModelSelection(
-                            textGenBackupInstanceId,
-                            textGenBackupModel,
-                            nextOptions,
-                          ),
-                        },
-                        serverProviders,
-                        textGenerationModelSelection,
-                      );
-                      if (!nextBackupSelection) return;
-                      updateSettings({
-                        textGenerationBackupModelSelection: nextBackupSelection,
-                      });
-                    }}
-                  />
-                </>
+              {textGenerationBackupModelSelection ? (
+                <TextGenerationModelControl
+                  selection={textGenerationBackupModelSelection}
+                  settings={settings}
+                  serverProviders={serverProviders}
+                  instanceEntries={gitBackupModelInstanceEntries}
+                  onSelectionChange={(nextSelection) => {
+                    const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
+                      { ...settings, textGenerationBackupModelSelection: nextSelection },
+                      serverProviders,
+                      textGenerationModelSelection,
+                    );
+                    if (!nextBackupSelection) return;
+                    updateSettings({
+                      textGenerationBackupModelSelection: nextBackupSelection,
+                    });
+                  }}
+                />
               ) : defaultTextGenerationBackupModelSelection ? (
                 <Button
                   size="sm"
