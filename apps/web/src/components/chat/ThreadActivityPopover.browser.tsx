@@ -11,14 +11,8 @@ import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadAct
 
 const transcriptRpcMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../../environments/runtime/service", () => ({
-  requireEnvironmentConnection: () => ({
-    client: {
-      server: {
-        readSubagentTranscript: transcriptRpcMock,
-      },
-    },
-  }),
+vi.mock("./subagentTranscriptClient", () => ({
+  readSubagentTranscriptPage: transcriptRpcMock,
 }));
 
 const TASK_BADGE = {
@@ -231,12 +225,14 @@ describe("ThreadActivityPopover", () => {
   it("shows live subagent text only while the agent is running", async () => {
     const baseItem: Omit<SubagentProgressItem, "id" | "status" | "statusLabel" | "liveBody"> = {
       agentThreadId: "agent-1",
+      transcriptAgentId: "agent-1",
       turnId: null,
       label: "Subagent",
       role: "code-reviewer",
       objective: "Audit the SQL changes",
       model: null,
       reasoningEffort: null,
+      telemetry: null,
       createdAt: "2026-02-23T00:00:01.000Z",
       updatedAt: "2026-02-23T00:00:02.000Z",
     };
@@ -303,6 +299,7 @@ describe("ThreadActivityPopover", () => {
       items: [
         {
           agentThreadId: "agent-parent",
+          transcriptAgentId: "agent-parent",
           agentPath: "/root/research",
           parentAgentPath: null,
           treeDepth: 0,
@@ -315,12 +312,14 @@ describe("ThreadActivityPopover", () => {
           statusLabel: "Running",
           model: null,
           reasoningEffort: null,
+          telemetry: null,
           liveBody: null,
           createdAt: "2026-02-23T00:00:01.000Z",
           updatedAt: "2026-02-23T00:00:02.000Z",
         },
         {
           agentThreadId: "agent-child",
+          transcriptAgentId: "agent-child",
           agentPath: "/root/research/database",
           parentAgentPath: "/root/research",
           treeDepth: 1,
@@ -333,6 +332,7 @@ describe("ThreadActivityPopover", () => {
           statusLabel: "Running",
           model: null,
           reasoningEffort: null,
+          telemetry: null,
           liveBody: null,
           createdAt: "2026-02-23T00:00:02.000Z",
           updatedAt: "2026-02-23T00:00:03.000Z",
@@ -425,9 +425,10 @@ describe("ThreadActivityPopover", () => {
       expect(popupBounds.top).toBeGreaterThanOrEqual(0);
       expect(popupBounds.bottom).toBeLessThanOrEqual(window.innerHeight);
       expect(transcriptRpcMock).toHaveBeenCalledWith({
+        environmentId: ACTIVE_ENVIRONMENT_ID,
         threadId: ACTIVE_THREAD_ID,
         agentId: "agent-child",
-        limit: 80,
+        limit: 60,
         fromEnd: true,
       });
 
@@ -436,6 +437,7 @@ describe("ThreadActivityPopover", () => {
         expect(document.querySelectorAll("[data-subagent-transcript-entry]")).toHaveLength(4);
       });
       expect(transcriptRpcMock).toHaveBeenCalledWith({
+        environmentId: ACTIVE_ENVIRONMENT_ID,
         threadId: ACTIVE_THREAD_ID,
         agentId: "agent-child",
         offset: 0,
@@ -444,12 +446,12 @@ describe("ThreadActivityPopover", () => {
 
       const transcriptEntries = [
         ...document.querySelectorAll<HTMLElement>("[data-subagent-transcript-entry]"),
-      ].map((entry) => entry.textContent);
+      ].map((entry) => `${entry.dataset.subagentTranscriptEntry}:${entry.textContent}`);
       expect(transcriptEntries).toEqual([
-        "userInspect persistence",
-        "Checking migrations",
-        "assistantLatest child step",
-        "assistantCurrent child output",
+        "user:InstructionInspect persistence",
+        "thinking:Checking migrationsReasoning",
+        "assistant:Latest child step",
+        "assistant:Current child output",
       ]);
     } finally {
       await mounted.unmount();
@@ -477,6 +479,7 @@ describe("ThreadActivityPopover", () => {
       items: [
         {
           agentThreadId: "agent-live",
+          transcriptAgentId: "agent-live",
           id: "agent-live",
           turnId: null,
           label: "Live subagent",
@@ -486,6 +489,7 @@ describe("ThreadActivityPopover", () => {
           statusLabel: "Running",
           model: "gpt-5.6",
           reasoningEffort: "high",
+          telemetry: null,
           liveBody: "Reporting progress.",
           createdAt: "2026-02-23T00:00:01.000Z",
           updatedAt: "2026-02-23T00:00:02.000Z",

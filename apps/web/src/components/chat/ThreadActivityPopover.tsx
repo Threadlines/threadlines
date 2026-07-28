@@ -29,7 +29,7 @@ import {
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import {
   formatSubagentDisplayName,
   isActiveSubagentStatus,
@@ -39,12 +39,14 @@ import {
   type SubagentProgressItem,
   type SubagentProgressState,
 } from "../../session-logic";
+import { useServerProviders } from "../../rpc/serverState";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import { SubagentInspector } from "./SubagentInspector";
+import { formatSubagentMetaParts, resolveSubagentModelLabel } from "./subagentMeta";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
@@ -78,6 +80,9 @@ interface ThreadActivityPopoverProps {
   activeThreadId: ThreadId;
   taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
+  /** Working directory of the thread, used to resolve file references the
+   *  inspector renders in agent prose. */
+  threadCwd?: string | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
@@ -105,15 +110,10 @@ interface ActivityTriggerState {
   summary: string;
 }
 
-export interface SubagentMetadataChip {
-  title: string;
-  label: string;
-}
-
 export interface SubagentDisplayDetails {
   goal: string | null;
+  /** Where the agent is working, lifted out of the objective prose. */
   context: string | null;
-  metadata: ReadonlyArray<SubagentMetadataChip>;
   title: string | null;
 }
 
@@ -499,23 +499,16 @@ function subagentStatusIcon(status: SubagentProgressItem["status"]): ReactNode {
 }
 
 export function deriveSubagentDisplayDetails(
-  item: Pick<SubagentProgressItem, "objective" | "model" | "reasoningEffort">,
+  item: Pick<SubagentProgressItem, "objective">,
 ): SubagentDisplayDetails {
   const rawObjective = item.objective?.trim() || null;
   const normalizedObjective = rawObjective ? normalizeSubagentInlineText(rawObjective) : null;
   const objectiveParts = normalizedObjective
     ? parseSubagentDisplayObjective(normalizedObjective)
     : null;
-  const metadata = [
-    objectiveParts?.context ? { title: "Scope", label: objectiveParts.context } : null,
-    item.model ? { title: "Model", label: item.model } : null,
-    item.reasoningEffort ? { title: "Reasoning", label: item.reasoningEffort } : null,
-  ].filter((part): part is SubagentMetadataChip => part !== null);
-
   return {
     goal: objectiveParts?.goal || normalizedObjective,
     context: objectiveParts?.context ?? null,
-    metadata,
     title: rawObjective,
   };
 }
@@ -920,6 +913,7 @@ function SubagentSection({
   state: SubagentProgressState;
   onInspect: (item: SubagentProgressItem) => void;
 }) {
+  const providers = useServerProviders();
   const [expanded, setExpanded] = useState(false);
   const shouldCollapse = state.items.length > COLLAPSED_SUBAGENT_LIMIT;
   const visibleItems = useMemo(
@@ -951,6 +945,19 @@ function SubagentSection({
           const displayName = formatSubagentDisplayName(item);
           const showSubagentChip = shouldShowSubagentDisplayChip(item);
           const transcriptAvailable = item.agentThreadId !== null;
+          const active = isActiveSubagentStatus(item.status);
+          const metaParts = formatSubagentMetaParts(item, {
+            context: details.context,
+            modelLabel: resolveSubagentModelLabel(providers, item.model),
+            elapsed: active ? formatElapsedDurationLabel(item.createdAt) : null,
+            includeCurrentTool: false,
+          });
+          // The step the provider reports is the freshest signal; the agent's
+          // streamed prose is the fallback when there is no task stream.
+          const activityLine = active
+            ? (item.telemetry?.step ??
+              (item.liveBody ? normalizeSubagentInlineText(item.liveBody) : null))
+            : null;
           return (
             <div
               key={item.id}
@@ -1024,27 +1031,22 @@ function SubagentSection({
                     </div>
                   ) : null}
 
-                  {details.metadata.length > 0 ? (
-                    <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-                      {details.metadata.map((chip) => (
-                        <span
-                          key={`${item.id}:${chip.title}:${chip.label}`}
-                          className="inline-flex max-w-full items-center rounded border border-border/55 bg-background/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80"
-                          title={`${chip.title}: ${chip.label}`}
-                          data-subagent-progress-meta="true"
-                        >
-                          <span className="min-w-0 truncate">{chip.label}</span>
-                        </span>
-                      ))}
+                  {metaParts.length > 0 ? (
+                    <div
+                      className="mt-1 min-w-0 truncate font-mono text-[10px] leading-4 text-muted-foreground/60"
+                      title={metaParts.join(" · ")}
+                      data-subagent-progress-meta="true"
+                    >
+                      {metaParts.join(" · ")}
                     </div>
                   ) : null}
 
-                  {item.liveBody && isActiveSubagentStatus(item.status) ? (
+                  {activityLine ? (
                     <div
                       className="mt-1 line-clamp-1 text-[11px] leading-4 text-muted-foreground/75"
                       data-subagent-progress-live="true"
                     >
-                      {normalizeSubagentInlineText(item.liveBody)}
+                      {activityLine}
                     </div>
                   ) : null}
                 </div>
@@ -1277,6 +1279,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   activeThreadId,
   taskProgress,
   subagentProgress,
+  threadCwd,
   backgroundRuns,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
@@ -1413,6 +1416,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
               threadId={activeThreadId}
               item={selectedSubagent}
               details={deriveSubagentDisplayDetails(selectedSubagent)}
+              cwd={threadCwd ?? undefined}
               onClose={closeSubagentInspector}
             />
           </DialogPopup>

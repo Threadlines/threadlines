@@ -136,6 +136,34 @@ function SpineRow({
 }
 
 /**
+ * Accent fade for the connectors approaching a live terminus: the spine warms
+ * toward accent as it nears the row where work is happening now, and settles
+ * to the hairline colour a row and a half away.
+ *
+ * @param distanceFromLive Rows between this row and the live terminus.
+ */
+function spineAccentRowStyle(distanceFromLive: number): React.CSSProperties {
+  return {
+    ["--spine-top"]: spineAccentSegment(distanceFromLive + 0.5, distanceFromLive),
+    ["--spine-bottom"]: spineAccentSegment(distanceFromLive, Math.max(0, distanceFromLive - 0.5)),
+  } as React.CSSProperties;
+}
+
+function spineAccentColor(distanceFromLive: number): string {
+  if (distanceFromLive >= 1.5) {
+    return "var(--border)";
+  }
+  const primaryMix = Math.round(82 - distanceFromLive * 48);
+  return `color-mix(in oklab, var(--primary-graph) ${primaryMix}%, var(--border))`;
+}
+
+function spineAccentSegment(fromDistance: number, toDistance: number): string {
+  const from = spineAccentColor(fromDistance);
+  const to = spineAccentColor(toDistance);
+  return from === to ? from : `linear-gradient(to bottom, ${from}, ${to})`;
+}
+
+/**
  * Current marker: a short rounded accent segment marking the selected item
  * in a list or rail. The parent needs `relative`; override the edge/offsets
  * via `className` (defaults to the left edge, vertically centered).
@@ -153,4 +181,4 @@ function CurrentMarker({ className, ...props }: React.ComponentPropsWithoutRef<"
   );
 }
 
-export { CurrentMarker, LiveNode, SectionLabel, SectionTick, SpineRow };
+export { CurrentMarker, LiveNode, SectionLabel, SectionTick, SpineRow, spineAccentRowStyle };

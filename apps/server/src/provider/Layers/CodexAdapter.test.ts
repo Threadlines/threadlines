@@ -201,6 +201,7 @@ function makeStoredThread(input: {
   readonly id: string;
   readonly parentThreadId: string;
   readonly items?: ReadonlyArray<unknown>;
+  readonly startedAt?: number;
 }): EffectCodexSchema.V2ThreadReadResponse["thread"] {
   return {
     id: input.id,
@@ -218,6 +219,7 @@ function makeStoredThread(input: {
         id: `turn-${input.id}`,
         items: input.items ?? [],
         status: "completed",
+        ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
       },
     ],
   } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
@@ -614,6 +616,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
           makeStoredThread({
             id: providerThreadId,
             parentThreadId: "provider-thread-1",
+            startedAt: 1_769_947_200,
             items: [
               {
                 id: "assistant-child-1",
@@ -634,8 +637,16 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
       });
 
       assert.deepStrictEqual(result, {
-        entries: [{ role: "assistant", text: "Child result", toolUses: [] }],
+        entries: [
+          {
+            role: "assistant",
+            text: "Child result",
+            at: "2026-02-01T12:00:00.000Z",
+            toolUses: [],
+          },
+        ],
         truncated: false,
+        agent: { id: "child-provider-thread" },
         offset: 0,
         totalEntries: 1,
       });

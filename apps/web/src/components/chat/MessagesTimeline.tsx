@@ -69,7 +69,7 @@ import {
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
-import { LiveNode, SpineRow } from "../ui/threadline";
+import { LiveNode, SpineRow, spineAccentRowStyle } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
@@ -2716,30 +2716,8 @@ function liveSpineDimClass(indexFromBottom: number): string {
   return LIVE_SPINE_DIM[indexFromBottom] ?? "opacity-50";
 }
 
-function liveSpineColor(distanceFromCurrent: number): string {
-  if (distanceFromCurrent >= 1.5) {
-    return "var(--border)";
-  }
-
-  const primaryMix = Math.round(82 - distanceFromCurrent * 48);
-  return `color-mix(in oklab, var(--primary-graph) ${primaryMix}%, var(--border))`;
-}
-
-function liveSpineSegment(fromDistance: number, toDistance: number): string {
-  const from = liveSpineColor(fromDistance);
-  const to = liveSpineColor(toDistance);
-  return from === to ? from : `linear-gradient(to bottom, ${from}, ${to})`;
-}
-
 function liveSpineRowStyle(index: number, lastIndex: number): CSSProperties {
-  const distanceFromCurrent = lastIndex - index;
-  return {
-    ["--spine-top"]: liveSpineSegment(distanceFromCurrent + 0.5, distanceFromCurrent),
-    ["--spine-bottom"]: liveSpineSegment(
-      distanceFromCurrent,
-      Math.max(0, distanceFromCurrent - 0.5),
-    ),
-  } as CSSProperties;
+  return spineAccentRowStyle(lastIndex - index);
 }
 
 function spineStyle(): CSSProperties {
