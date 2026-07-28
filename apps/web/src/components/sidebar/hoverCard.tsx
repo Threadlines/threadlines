@@ -10,7 +10,11 @@ import { TooltipProvider } from "../ui/tooltip";
  * card read as the same object with different contents.
  */
 export const HOVER_CARD_POPUP_CLASS_NAME =
-  "w-64 rounded-lg p-2.5 text-left text-popover-foreground text-sm shadow-none elevate-popover";
+  // w-56, not w-64: every row inside truncates, so width is a choice about
+  // density, and 224px holds the longest real label (a machine name) while
+  // matching the competitor's snugness. rounded-md per the one-radius rule --
+  // this card was the last rounded-lg in the sidebar's orbit.
+  "w-56 rounded-md p-2.5 text-left text-popover-foreground text-sm shadow-none elevate-popover";
 
 export function HoverCardTitle({ children }: { children: ReactNode }) {
   return (

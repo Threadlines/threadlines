@@ -454,7 +454,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                         aria-pressed={isPinned}
                         className={cn(
                           ROW_ACTION_BUTTON_CLASS_NAME,
-                          isPinned && "text-primary-readable hover:text-primary",
+                          isPinned && "text-primary-readable",
                         )}
                         onPointerDown={stopPropagationOnPointerDown}
                         onClick={handleTogglePinClick}
