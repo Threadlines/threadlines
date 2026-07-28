@@ -19,6 +19,7 @@ import type {
   SidebarProjectSnapshot,
 } from "../../sidebarProjectGrouping";
 import type { ProjectScopeOption } from "../Sidebar.logic";
+import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -465,6 +466,13 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
               }
             }}
           >
+            {scopedProject ? (
+              <ProjectFavicon
+                cwd={scopedProject.cwd}
+                environmentId={scopedProject.environmentId}
+                className="size-3.5 shrink-0"
+              />
+            ) : null}
             <span className="min-w-0 truncate">{scopedProject?.displayName ?? "All projects"}</span>
             <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/50" />
           </MenuTrigger>
@@ -489,6 +497,16 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                   }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
+                    {(() => {
+                      const project = projectByKey.get(option.key);
+                      return project ? (
+                        <ProjectFavicon
+                          cwd={project.cwd}
+                          environmentId={project.environmentId}
+                          className="size-3.5 shrink-0"
+                        />
+                      ) : null;
+                    })()}
                     <span className="min-w-0 flex-1 truncate">{option.label}</span>
                     {option.needsYouCount > 0 ? (
                       <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">

@@ -770,25 +770,24 @@ export function buildProjectScopeOptions(input: {
 }
 
 /**
- * Whether a live row earns a second line.
+ * Which live rows show while the list is folded.
  *
- * A row spends one only when it has something to put there: a status (which
- * includes an unseen completion), or -- while the list spans every project --
- * the branch the work sits on. Everything else collapses to a single line, so
- * the threads that are moving carry the weight and quiet ones recede.
+ * The live list keeps every thread, but only the first few quiet ones are
+ * worth screen space at rest -- a dev session mints a dozen threads a day and
+ * a wall of two-line rows buries the ones that matter. Rows with a status are
+ * exempt from the fold entirely: hiding a pending approval behind "show more"
+ * defeats the approval, and hiding running work hides where its result will
+ * land. Order is never changed, only membership.
  */
-export function isTwoLineInboxRow(input: {
-  readonly status: ThreadStatusPill | null;
-  readonly projectLabel: string | null;
-  readonly branch: string | null;
-}): boolean {
-  if (input.status !== null) return true;
-  // A default-branch name is a branch line saying nothing: "main" tells you
-  // no more than the row's existence does. Name-based rather than asking git
-  // which ref is default, because this is display economy, not correctness --
-  // a repo whose default is called something else gets one avoidable second
-  // line, and that is the whole cost of guessing wrong.
-  const branchWorthShowing =
-    input.branch !== null && input.branch !== "main" && input.branch !== "master";
-  return input.projectLabel !== null && branchWorthShowing;
+export function windowInboxThreads<T>(input: {
+  readonly rows: readonly T[];
+  readonly hasAttention: (row: T) => boolean;
+  readonly limit: number;
+  readonly expanded: boolean;
+}): { readonly visible: T[]; readonly hiddenCount: number } {
+  if (input.expanded || input.rows.length <= input.limit) {
+    return { visible: [...input.rows], hiddenCount: 0 };
+  }
+  const visible = input.rows.filter((row, index) => index < input.limit || input.hasAttention(row));
+  return { visible, hiddenCount: input.rows.length - visible.length };
 }

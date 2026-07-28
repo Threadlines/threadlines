@@ -2390,7 +2390,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     };
   }
 
-  it("narrows the live list from the scope menu and compresses the implied row", async () => {
+  it("narrows the live list from the scope menu and drops the implied project label", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: withThreadBranch(
@@ -2423,9 +2423,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
             `[data-testid="thread-row-${THREAD_ID}"]`,
           );
           expect(scopedRow).not.toBeNull();
-          // Scoped and quiet: project implied, branch dropped, one line left.
+          // Scoped: the project is implied, but the row keeps its second line.
           expect(scopedRow?.textContent).not.toContain("Project");
-          expect(scopedRow?.textContent).not.toContain("main");
+          expect(
+            scopedRow?.querySelector(`[data-testid="thread-detail-${THREAD_ID}"]`),
+          ).not.toBeNull();
         },
         { timeout: 4_000, interval: 16 },
       );
@@ -5160,6 +5162,51 @@ describe("ChatView timeline estimator parity (full app)", () => {
         document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
         "A settled thread offers Done.",
       ).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("folds the quiet tail of the live list behind a reveal", async () => {
+    const extraThreadIds = Array.from(
+      { length: 7 },
+      (_, index) => `thread-quiet-${index}` as ThreadId,
+    );
+    const snapshot = extraThreadIds.reduce(
+      (current, threadId) => addThreadToSnapshot(current, threadId),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-live-fold" as MessageId,
+        targetText: "live fold target",
+      }),
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    try {
+      const reveal = page.getByTestId("inbox-live-show-more");
+      await expect.element(reveal).toBeInTheDocument();
+
+      // Eight quiet threads, six unfolded.
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll('[data-testid^="thread-row-"]').length).toBe(6);
+          expect(
+            document.querySelector('[data-testid="inbox-live-show-more"]')?.textContent,
+          ).toContain("Show 2 more");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await reveal.click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll('[data-testid^="thread-row-"]').length).toBe(8);
+          expect(
+            document.querySelector('[data-testid="inbox-live-show-more"]')?.textContent,
+          ).toContain("Show fewer");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

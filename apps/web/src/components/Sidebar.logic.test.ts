@@ -22,8 +22,8 @@ import {
 import {
   buildProjectScopeOptions,
   isThreadDone,
-  isTwoLineInboxRow,
   sortInboxThreads,
+  windowInboxThreads,
 } from "./Sidebar.logic";
 import {
   EnvironmentId,
@@ -1157,26 +1157,36 @@ describe("buildProjectScopeOptions", () => {
   });
 });
 
-describe("isTwoLineInboxRow", () => {
-  const pill = {
-    label: "Working" as const,
-    colorClass: "",
-    dotClass: "",
-    pulse: true,
-  };
+describe("windowInboxThreads", () => {
+  const rows = [
+    { id: "a", attention: false },
+    { id: "b", attention: false },
+    { id: "c", attention: false },
+    { id: "d", attention: true },
+    { id: "e", attention: false },
+  ];
+  const hasAttention = (row: { attention: boolean }) => row.attention;
 
-  it("spends a second line only on rows with something to put there", () => {
-    expect(isTwoLineInboxRow({ status: pill, projectLabel: null, branch: null })).toBe(true);
-    expect(
-      isTwoLineInboxRow({ status: null, projectLabel: "badcode", branch: "feature/inbox" }),
-    ).toBe(true);
-    // Scoped: the project is implied and the branch alone does not earn a line.
-    expect(isTwoLineInboxRow({ status: null, projectLabel: null, branch: "main" })).toBe(false);
-    expect(isTwoLineInboxRow({ status: null, projectLabel: "badcode", branch: null })).toBe(false);
-    // A default-branch name is a branch line saying nothing: "main" tells you
-    // no more than the row's existence does.
-    expect(isTwoLineInboxRow({ status: null, projectLabel: "badcode", branch: "main" })).toBe(
-      false,
+  it("folds quiet rows past the limit but never one that needs you", () => {
+    // Hiding a pending approval behind "show more" defeats the approval.
+    const { visible, hiddenCount } = windowInboxThreads({
+      rows,
+      hasAttention,
+      limit: 2,
+      expanded: false,
+    });
+
+    expect(visible.map((row) => row.id)).toEqual(["a", "b", "d"]);
+    expect(hiddenCount).toBe(2);
+  });
+
+  it("shows everything when expanded or when the list fits", () => {
+    expect(windowInboxThreads({ rows, hasAttention, limit: 2, expanded: true }).hiddenCount).toBe(
+      0,
     );
+    expect(
+      windowInboxThreads({ rows: rows.slice(0, 2), hasAttention, limit: 2, expanded: false })
+        .visible.length,
+    ).toBe(2);
   });
 });
