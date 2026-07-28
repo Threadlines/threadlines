@@ -412,6 +412,12 @@ export const DesktopPreviewNavigationBlockedSchema = Schema.Struct({
   webContentsId: Schema.Number,
   host: Schema.String,
   url: Schema.String,
+  /**
+   * The site whose page tried to go there, or null when the guest had no
+   * committed page. The prompt names it so the block is pinned on the page
+   * that navigated, not on the agent.
+   */
+  fromHost: Schema.NullOr(Schema.String),
 });
 export type DesktopPreviewNavigationBlocked = typeof DesktopPreviewNavigationBlockedSchema.Type;
 

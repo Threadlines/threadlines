@@ -116,20 +116,37 @@ export function isPrivateNetworkHost(hostname: string): boolean {
 /**
  * The form a host is remembered in once approved.
  *
- * Approval is deliberately exact-host. Collapsing `www.` or allowing arbitrary
- * subdomains without a public-suffix-aware parser can turn an approval for a
- * tenant host such as `www.github.io` into approval for every `*.github.io`
- * site.
+ * Approval is deliberately exact-host, with one exception below. Allowing
+ * arbitrary subdomains without a public-suffix-aware parser can turn an
+ * approval for a tenant host such as `www.github.io` into approval for every
+ * `*.github.io` site.
  */
 export function browserApprovalKey(hostname: string): string {
   return normalizeHostname(hostname);
 }
 
 /**
+ * Whether `www.example.com` and `example.com` are the same site, which on the
+ * public web they are: most sites answer on one and redirect the other to it,
+ * so approving one and prompting for the other reads as asking twice.
+ *
+ * Only the single fixed `www.` label, and only when the bare side has a dot of
+ * its own -- so `www.example.com` never covers a lone label like `com`, and
+ * nothing here covers arbitrary subdomains. The tenant concern above does not
+ * apply: `www.github.io` <-> `github.io` grants the suffix's own apex, not any
+ * other tenant.
+ */
+function isSameSiteWww(left: string, right: string): boolean {
+  const [longer, shorter] = left.length > right.length ? [left, right] : [right, left];
+  return longer === `www.${shorter}` && shorter.includes(".");
+}
+
+/**
  * Whether the browser may go to this host for this project.
  *
- * Exact-host by design. A host suffix is not necessarily one site:
- * `github.io` and many other public suffixes contain unrelated tenants.
+ * Exact-host by design, plus the `www.` equivalence above. A broader host
+ * suffix is not necessarily one site: `github.io` and many other public
+ * suffixes contain unrelated tenants.
  */
 export function isBrowserHostApproved(hostname: string, approved: ReadonlyArray<string>): boolean {
   if (isPrivateNetworkHost(hostname)) {
@@ -141,7 +158,7 @@ export function isBrowserHostApproved(hostname: string, approved: ReadonlyArray<
   }
   return approved.some((entry) => {
     const approvedKey = browserApprovalKey(entry);
-    return approvedKey !== "" && key === approvedKey;
+    return approvedKey !== "" && (key === approvedKey || isSameSiteWww(key, approvedKey));
   });
 }
 

@@ -265,12 +265,17 @@ describe("ProviderSessionReaper", () => {
           getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
+          listThreadDiffStatBaselines: () => Effect.die("unused"),
           getThreadShellById: (threadId) => {
             const thread = input.readModel.threads.find((entry) => entry.id === threadId);
             return Effect.succeed(
               thread === undefined
                 ? Option.none()
-                : Option.some({ ...thread, cumulativeDiffStat: null }),
+                : Option.some({
+                    ...thread,
+                    cumulativeDiffStat: null,
+                    diffStatBaselineTurnCount: 0,
+                  }),
             );
           },
           getThreadDetailById: () => Effect.die("unused"),
@@ -281,6 +286,7 @@ describe("ProviderSessionReaper", () => {
           readEvents: () => Stream.empty,
           dispatch,
           streamDomainEvents: Stream.empty,
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
         }),
       ),
       Layer.provideMerge(NodeServices.layer),

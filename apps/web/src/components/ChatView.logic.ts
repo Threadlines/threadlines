@@ -177,6 +177,7 @@ export function mergeLocalDraftThreadWithServerThread(
     pendingSourceProposedPlan: serverThread.pendingSourceProposedPlan,
     branch: serverThread.branch,
     worktreePath: serverThread.worktreePath,
+    diffStatBaselineTurnCount: serverThread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: serverThread.turnDiffSummaries,
     activities: serverThread.activities,
   };

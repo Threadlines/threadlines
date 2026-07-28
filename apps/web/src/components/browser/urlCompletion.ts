@@ -72,9 +72,14 @@ export function rememberVisit(
 /**
  * The best completion for what has been typed so far, or null.
  *
- * Returns the whole URL, not the remainder, because the caller replaces the
- * field's value and selects the part the user did not type -- so carrying on
- * typing overwrites the guess instead of fighting it.
+ * Always `typed` plus a remainder, never the stored URL verbatim: the caller
+ * replaces the field's value and selects the part the user did not type, so
+ * the typed text has to survive as a literal prefix. Putting the stored
+ * `http://...` form in the field would shove the caret into the middle of a
+ * scheme the user never typed, and the next keystroke would land there.
+ * The scheme and `www.` are dropped from the guess just as matching ignores
+ * them; Enter still lands the right place because navigation normalizes the
+ * address anyway.
  */
 export function completeUrl(typed: string, visited: ReadonlyArray<VisitedUrl>): string | null {
   const key = completionKey(typed);
@@ -83,15 +88,16 @@ export function completeUrl(typed: string, visited: ReadonlyArray<VisitedUrl>): 
   if (key.length < 2) {
     return null;
   }
-  const match = [...visited]
-    .sort(rank)
-    .find((entry) => completionKey(entry.url).startsWith(key) && entry.url !== typed);
+  const match = [...visited].sort(rank).find((entry) => completionKey(entry.url).startsWith(key));
   if (match === undefined) {
     return null;
   }
-  // Only offer it when the typed text is a genuine prefix of what we would put
-  // in the field. Otherwise accepting the completion would silently rewrite
-  // what is already there -- typing `facpmanuals.com/x` should not become the
-  // homepage just because that is the ranked hit.
-  return match.url.toLowerCase().includes(key) ? match.url : null;
+  // The same stripping as completionKey, minus the lowercasing: the remainder
+  // keeps the stored URL's own case, since paths can be case-sensitive.
+  const stripped = match.url
+    .trim()
+    .replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "")
+    .replace(/^www\./i, "");
+  const remainder = stripped.slice(key.length);
+  return remainder === "" ? null : typed + remainder;
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import type { ScopedThreadRef } from "@threadlines/contracts";
+import type { ProjectId, ScopedThreadRef } from "@threadlines/contracts";
 import { isBrowserHostApproved } from "@threadlines/shared/preview";
 
 import {
@@ -46,7 +46,14 @@ function attachedWebContentsId(webview: PreviewWebviewHandle): number | null {
  *
  * Renders nothing. It is a subscription with a React lifetime.
  */
-export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadRef }) {
+export function PreviewAutomationMount({
+  threadRef,
+  projectId = null,
+}: {
+  threadRef: ScopedThreadRef;
+  /** The thread's project, for approvals while the thread is still a local draft. */
+  projectId?: ProjectId | null;
+}) {
   const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
   const setAgentTab = useBrowserPanelStore((store) => store.setAgentTab);
   const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
@@ -56,16 +63,19 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
   const setPendingBrowserApproval = useBrowserPanelStore(
     (store) => store.setPendingBrowserApproval,
   );
-  const { approvedDomains } = useBrowserApprovals(threadRef);
+  const { approvedDomains } = useBrowserApprovals(threadRef, projectId);
 
   /** Every attached guest this thread owns, which is what a policy applies to. */
-  const attachedGuestIds = useCallback((): ReadonlyArray<number> => {
+  const attachedGuests = useCallback((): ReadonlyArray<{
+    tabId: string;
+    webContentsId: number;
+  }> => {
     const store = useBrowserPanelStore.getState();
     const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
     return browserState.tabs.flatMap((tab) => {
       const webview = getPreviewWebview(threadRef, tab.id);
       const id = webview === null ? null : attachedWebContentsId(webview);
-      return id === null ? [] : [id];
+      return id === null ? [] : [{ tabId: tab.id, webContentsId: id }];
     });
   }, [threadRef]);
 
@@ -78,14 +88,14 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
    */
   useEffect(() => {
     const pushPolicy = () => {
-      for (const webContentsId of attachedGuestIds()) {
-        pushNavigationPolicy(webContentsId, approvedDomains);
+      for (const guest of attachedGuests()) {
+        pushNavigationPolicy(guest.webContentsId, approvedDomains);
       }
     };
     pushPolicy();
     // A tab that mounts or attaches later is a guest with no policy yet.
     return subscribePreviewWebviews(pushPolicy);
-  }, [approvedDomains, attachedGuestIds]);
+  }, [approvedDomains, attachedGuests]);
 
   /**
    * A page that tried to take itself somewhere unapproved.
@@ -101,17 +111,25 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
     }
     return subscribe((blocked) => {
       // Every window hears about every guest, so a thread only answers for its own.
-      if (!attachedGuestIds().includes(blocked.webContentsId)) {
+      const guest = attachedGuests().find((entry) => entry.webContentsId === blocked.webContentsId);
+      if (guest === undefined) {
         return;
       }
-      setPendingBrowserApproval(threadRef, { host: blocked.host, url: blocked.url });
+      setPendingBrowserApproval(threadRef, {
+        host: blocked.host,
+        url: blocked.url,
+        // A page navigated itself; the agent's own requests never get this far.
+        source: "page",
+        fromHost: blocked.fromHost ?? null,
+        tabId: guest.tabId,
+      });
       const store = useBrowserPanelStore.getState();
       if (!selectThreadBrowserState(store.browserStateByThreadKey, threadRef).open) {
         // A question nobody can see is a stall, not a prompt.
         setBrowserOpen(threadRef, true);
       }
     });
-  }, [attachedGuestIds, setBrowserOpen, setPendingBrowserApproval, threadRef]);
+  }, [attachedGuests, setBrowserOpen, setPendingBrowserApproval, threadRef]);
 
   /**
    * Reads the world at the moment the agent acts, not at the moment this
@@ -172,7 +190,13 @@ export function PreviewAutomationMount({ threadRef }: { threadRef: ScopedThreadR
         // agent can act on. The user's own navigations do not come through here.
         const host = new URL(normalized).hostname;
         if (!isBrowserHostApproved(host, approvedDomains)) {
-          setPendingBrowserApproval(threadRef, { host, url: normalized });
+          setPendingBrowserApproval(threadRef, {
+            host,
+            url: normalized,
+            source: "agent",
+            fromHost: null,
+            tabId: null,
+          });
           throw new Error(
             `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel; once they do, navigate again.`,
           );

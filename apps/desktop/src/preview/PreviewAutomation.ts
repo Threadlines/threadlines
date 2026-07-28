@@ -262,6 +262,10 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       webContentsId: contents.id,
       host: blockedHost,
       url,
+      // Who was navigating. The agent's own navigations are refused in the
+      // renderer before they start, so anything blocked here came from a page
+      // -- a redirect or a link -- and the prompt should say which one.
+      fromHost: navigationHost(contents.getURL()),
     };
     const embedder = contents.hostWebContents;
     if (embedder !== null && !embedder.isDestroyed()) {

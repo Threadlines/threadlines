@@ -99,6 +99,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
     proposedPlans: [],
     activities: [],
     checkpoints: [],
+    diffStatBaselineTurnCount: 0,
     session: failedSession,
     ...overrides,
   };

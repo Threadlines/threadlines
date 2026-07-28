@@ -559,6 +559,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             effectiveCwd: null,
             goal: null,
             voiceActive: 0,
+            diffStatBaselineTurnCount: 0,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -817,6 +818,27 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
+        case "thread.diffstat-rebased": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          // The decider only emits this event when the baseline moves forward,
+          // but replay order is the projector's problem alone -- clamp so a
+          // re-applied event can never walk the rollup backwards.
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            diffStatBaselineTurnCount: Math.max(
+              existingRow.value.diffStatBaselineTurnCount ?? 0,
+              event.payload.baselineTurnCount,
+            ),
+            updatedAt: event.payload.occurredAt,
+          });
           return;
         }
 

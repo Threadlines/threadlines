@@ -45,6 +45,8 @@ export interface BrowserTab {
   url: string | null;
   /** The page's own title, used as the tab label once it has one. */
   title: string | null;
+  /** The page's favicon, shown in the tab strip; null falls back to a globe. */
+  faviconUrl: string | null;
   /** Per-tab, because the viewport belongs to the thing you are looking at. */
   viewport: BrowserViewport;
   zoomFactor: number;
@@ -74,7 +76,14 @@ function nextTabId(): string {
 }
 
 export function makeBrowserTab(): BrowserTab {
-  return { id: nextTabId(), url: null, title: null, viewport: RESPONSIVE_VIEWPORT, zoomFactor: 1 };
+  return {
+    id: nextTabId(),
+    url: null,
+    title: null,
+    faviconUrl: null,
+    viewport: RESPONSIVE_VIEWPORT,
+    zoomFactor: 1,
+  };
 }
 
 /**
@@ -90,6 +99,7 @@ const DEFAULT_TAB: BrowserTab = Object.freeze({
   id: "tab-initial",
   url: null,
   title: null,
+  faviconUrl: null,
   viewport: RESPONSIVE_VIEWPORT,
   zoomFactor: 1,
 });
@@ -316,6 +326,21 @@ export interface PendingBrowserApproval {
   readonly host: string;
   /** The address to load once allowed, so the answer is the page, not a retry. */
   readonly url: string;
+  /**
+   * Who asked. The agent's `navigate` is one source; a page taking itself
+   * somewhere -- a redirect, a link -- is the other, and the prompt must not
+   * pin a page's navigation on the agent.
+   */
+  readonly source: "agent" | "page";
+  /** The site whose page navigated, when the source is a page and it had one. */
+  readonly fromHost: string | null;
+  /**
+   * The tab the blocked navigation happened in, when it was a page's. Allowing
+   * it resumes there: the user may have been browsing that tab themselves, and
+   * their page appearing in the agent's tab would be the mix-up this exists to
+   * avoid. Null for the agent's own requests, which load into the agent's tab.
+   */
+  readonly tabId: string | null;
 }
 
 interface BrowserPanelStoreState {
@@ -355,6 +380,7 @@ interface BrowserPanelStoreState {
    */
   visitedUrls: ReadonlyArray<VisitedUrl>;
   setTabTitle: (threadRef: ScopedThreadRef, tabId: string, title: string) => void;
+  setTabFavicon: (threadRef: ScopedThreadRef, tabId: string, faviconUrl: string | null) => void;
   setTabViewport: (threadRef: ScopedThreadRef, tabId: string, viewport: BrowserViewport) => void;
   setTabZoom: (threadRef: ScopedThreadRef, tabId: string, zoomFactor: number) => void;
   toggleDeviceToolbar: () => void;
@@ -472,6 +498,10 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       setTabTitle: (threadRef, tabId, title) =>
         set((state) =>
           updateThread(state, threadRef, (current) => updateTab(current, tabId, { title })),
+        ),
+      setTabFavicon: (threadRef, tabId, faviconUrl) =>
+        set((state) =>
+          updateThread(state, threadRef, (current) => updateTab(current, tabId, { faviconUrl })),
         ),
       setTabViewport: (threadRef, tabId, viewport) =>
         set((state) =>

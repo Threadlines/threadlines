@@ -464,6 +464,8 @@ describe("ProviderCommandReactor", () => {
             Effect.die("refreshLocalStatus should not be called in this test"),
           refreshStatus,
           streamStatus: () => Stream.die("streamStatus should not be called in this test"),
+          observeLocalStatus: () =>
+            Stream.die("observeLocalStatus should not be called in this test"),
         }),
       ),
       Layer.provideMerge(

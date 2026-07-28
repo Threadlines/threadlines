@@ -15,17 +15,41 @@ export function hostOf(url: string): string {
   }
 }
 
+/**
+ * Whether a bare address should default to http rather than https.
+ *
+ * Local and private destinations rarely have a certificate, and an explicit
+ * port is virtually always a dev server. Everything else is the public web,
+ * where a normal browser tries https first -- so should we. A genuinely
+ * http-only public site is reachable by typing the scheme.
+ */
+function defaultsToHttp(url: URL): boolean {
+  if (url.port !== "") {
+    return true;
+  }
+  const host = url.hostname;
+  return (
+    // A single-label name (localhost included) never left the local network.
+    !host.includes(".") ||
+    host.endsWith(".localhost") ||
+    host === "[::1]" ||
+    host.startsWith("127.") ||
+    host.startsWith("10.") ||
+    host.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
 export function normalizePreviewUrl(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === "") {
     return null;
   }
 
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : // A bare host:port or path is http, not https: dev servers rarely have a
-      // certificate, and defaulting to https would fail on every one of them.
-      `http://${trimmed.replace(/^\/+/, "")}`;
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+  // Parsed as http first because a bare host:port is not a valid URL at all
+  // without some scheme; the real default is chosen once the host is known.
+  const candidate = hasScheme ? trimmed : `http://${trimmed.replace(/^\/+/, "")}`;
 
   try {
     const url = new URL(candidate);
@@ -34,6 +58,9 @@ export function normalizePreviewUrl(input: string): string | null {
     }
     if (url.hostname === "") {
       return null;
+    }
+    if (!hasScheme && !defaultsToHttp(url)) {
+      url.protocol = "https:";
     }
     return url.toString();
   } catch {

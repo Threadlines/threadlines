@@ -621,6 +621,8 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+  /** See OrchestrationThreadShell.diffStatBaselineTurnCount. */
+  diffStatBaselineTurnCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -675,13 +677,23 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
   /**
-   * Sum of every turn file summary this thread has produced. Null until a turn
-   * produces one. Turn deltas are summed, so re-editing the same lines across
-   * turns overstates the total -- accepted for a sidebar-sized signal.
+   * Sum of the turn file summaries this thread has produced since its checkout
+   * was last observed clean (see `diffStatBaselineTurnCount`). Null until a
+   * counted turn produces one. Turn deltas are summed, so re-editing the same
+   * lines across turns overstates the total -- accepted for a sidebar-sized
+   * signal.
    */
   cumulativeDiffStat: Schema.NullOr(OrchestrationThreadDiffStat).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /**
+   * Turn count the thread's diff rollup starts *after*: only turns with a
+   * greater `checkpointTurnCount` are summed. Advanced when the checkout this
+   * thread works in is observed with no uncommitted changes, so committing (or
+   * discarding) everything clears the badge instead of accumulating forever.
+   * Zero means "count every turn", which is what pre-existing threads decode to.
+   */
+  diffStatBaselineTurnCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
@@ -1253,6 +1265,20 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Advance the turn count a thread's diff rollup starts after. Dispatched when
+ * the checkout the thread works in is observed with no uncommitted changes:
+ * everything up to `baselineTurnCount` has left the working tree, so it no
+ * longer belongs in "what this thread changed".
+ */
+const ThreadDiffStatRebaseCommand = Schema.Struct({
+  type: Schema.Literal("thread.diffstat.rebase"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  baselineTurnCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
 const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
@@ -1296,6 +1322,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
+  ThreadDiffStatRebaseCommand,
   ThreadActivityAppendCommand,
   ThreadFollowUpAcceptCommand,
   ThreadRevertCompleteCommand,
@@ -1342,6 +1369,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.goal-state-set",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
+  "thread.diffstat-rebased",
   "thread.activity-appended",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
@@ -1578,6 +1606,12 @@ export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   proposedPlan: OrchestrationProposedPlan,
 });
 
+export const ThreadDiffStatRebasedPayload = Schema.Struct({
+  threadId: ThreadId,
+  baselineTurnCount: NonNegativeInt,
+  occurredAt: IsoDateTime,
+});
+
 export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
@@ -1780,6 +1814,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-diff-completed"),
     payload: ThreadTurnDiffCompletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.diffstat-rebased"),
+    payload: ThreadDiffStatRebasedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

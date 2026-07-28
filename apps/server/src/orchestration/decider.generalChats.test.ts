@@ -275,6 +275,7 @@ function makeThread(input: {
     proposedPlans: [],
     activities: [],
     checkpoints: [],
+    diffStatBaselineTurnCount: 0,
     session: null,
   };
 }

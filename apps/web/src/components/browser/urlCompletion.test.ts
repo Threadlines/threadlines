@@ -16,20 +16,30 @@ describe("completeUrl", () => {
   ];
 
   it("finishes a site from the few letters people actually type", () => {
-    expect(completeUrl("facp", history)).toBe("https://facpmanuals.com/");
+    expect(completeUrl("facp", history)).toBe("facpmanuals.com/");
   });
 
   it("ignores the scheme and www, which nobody types", () => {
-    expect(completeUrl("localhost:1", history)).toBe("http://localhost:18821/");
+    expect(completeUrl("localhost:1", history)).toBe("localhost:18821/");
     expect(completeUrl("www.facp", [visited("https://www.facpmanuals.com/", 4, 10)])).toBe(
-      "https://www.facpmanuals.com/",
+      "www.facpmanuals.com/",
+    );
+  });
+
+  it("extends what was typed instead of rewriting it", () => {
+    // The caller selects everything past the typed text, so the guess must
+    // keep it as a literal prefix. Offering the stored `http://...` form here
+    // once turned continued typing of "google" into "httple".
+    expect(completeUrl("goog", [visited("http://google.com/", 1, 1)])).toBe("google.com/");
+    expect(completeUrl("http://goog", [visited("http://google.com/", 1, 1)])).toBe(
+      "http://google.com/",
     );
   });
 
   it("prefers the site you go to often over the one you saw recently", () => {
     // fastmail was visited more recently; facpmanuals is where this person
     // actually lives, and "fa" should not become a coin toss.
-    expect(completeUrl("fa", history)).toBe("https://facpmanuals.com/");
+    expect(completeUrl("fa", history)).toBe("facpmanuals.com/");
   });
 
   it("stays quiet until there is enough to go on", () => {

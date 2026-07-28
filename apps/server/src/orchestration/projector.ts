@@ -39,6 +39,7 @@ import {
   ThreadFollowUpSubmittedPayload,
   ThreadFollowUpAcceptedPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadDiffStatRebasedPayload,
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
@@ -727,6 +728,34 @@ export function projectEvent(
           }),
         };
       });
+
+    case "thread.diffstat-rebased":
+      return decodeForEvent(
+        ThreadDiffStatRebasedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              // Clamped rather than assigned: the decider rejects backwards
+              // baselines, so replaying an out-of-order event must not undo a
+              // later rebase either.
+              diffStatBaselineTurnCount: Math.max(
+                thread.diffStatBaselineTurnCount,
+                payload.baselineTurnCount,
+              ),
+              updatedAt: payload.occurredAt,
+            }),
+          };
+        }),
+      );
 
     case "thread.reverted":
       return decodeForEvent(ThreadRevertedPayload, event.payload, event.type, "payload").pipe(

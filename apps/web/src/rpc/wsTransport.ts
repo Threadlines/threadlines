@@ -48,6 +48,12 @@ export interface RequestRetryOptions {
 }
 
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
+// Ceiling for the exponential backoff applied to subscription streams that
+// fail with non-transport errors (server-side stream failures, protocol
+// teardown races). Retrying forever is intentional: these streams are the
+// only source of live orchestration state, so abandoning one permanently
+// freezes the UI until a full page reload.
+const MAX_SUBSCRIPTION_FAILURE_BACKOFF_MS = 15_000;
 const DEFAULT_REQUEST_ATTEMPT_TIMEOUT_MS = 25_000;
 const DEFAULT_REQUEST_RETRY_BUDGET_MS = 90_000;
 // A pong newer than this means the socket the failure happened on is alive,
@@ -229,6 +235,7 @@ export class WsTransport {
 
     let active = true;
     let hasReceivedValue = false;
+    let consecutiveFailures = 0;
     const retryDelayMs = Duration.toMillis(
       Duration.fromInputUnsafe(options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS),
     );
@@ -264,6 +271,7 @@ export class WsTransport {
             () => {
               this.hasReportedTransportDisconnect = false;
               hasReceivedValue = true;
+              consecutiveFailures = 0;
             },
           );
           cancelCurrentStream = runningStream.cancel;
@@ -295,10 +303,23 @@ export class WsTransport {
 
           const formattedError = formatErrorMessage(error);
           if (!isTransportConnectionErrorMessage(formattedError)) {
+            // Non-transport failures must still resubscribe: the socket may
+            // be healthy while a single stream died (server-side stream
+            // error, teardown race), and nothing else will revive it.
+            // Backoff keeps a persistent server error from becoming a hot
+            // retry loop.
+            consecutiveFailures += 1;
             console.warn("WebSocket RPC subscription failed", {
               error: formattedError,
+              attempt: consecutiveFailures,
             });
-            return;
+            await sleep(
+              Math.min(
+                retryDelayMs * 2 ** Math.min(consecutiveFailures - 1, 10),
+                MAX_SUBSCRIPTION_FAILURE_BACKOFF_MS,
+              ),
+            );
+            continue;
           }
 
           if (!this.hasReportedTransportDisconnect) {

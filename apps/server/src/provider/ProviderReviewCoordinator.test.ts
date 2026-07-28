@@ -53,6 +53,7 @@ function makeThreadShell(
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
+    diffStatBaselineTurnCount: 0,
     ...overrides,
   };
 }

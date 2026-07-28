@@ -22,7 +22,7 @@ import { selectEnvironmentState, useStore, type AppState } from "../../store";
 const NO_APPROVALS: ReadonlyArray<string> = Object.freeze([]);
 
 export interface BrowserApprovals {
-  /** Null before the thread's shell has arrived; nothing can be approved yet. */
+  /** Null only when no shell has arrived and the caller knew no project either. */
   readonly projectId: ProjectId | null;
   readonly approvedDomains: ReadonlyArray<string>;
   /**
@@ -71,8 +71,19 @@ export function approveBrowserHostForProject(
   return next;
 }
 
-export function useBrowserApprovals(threadRef: ScopedThreadRef): BrowserApprovals {
-  const projectId = useStore(
+export function useBrowserApprovals(
+  threadRef: ScopedThreadRef,
+  /**
+   * The project the caller already knows this thread belongs to.
+   *
+   * A new thread is a local draft until its first message reaches the server,
+   * so it has no shell to look up -- and without this, typing an address in a
+   * fresh thread recorded nothing and armed the guest with an empty allowlist,
+   * which blocked the very page the user asked for at its first redirect.
+   */
+  knownProjectId?: ProjectId | null,
+): BrowserApprovals {
+  const shellProjectId = useStore(
     useMemo(
       // The shell rather than the derived thread: this selector re-runs on every
       // store change, and deriving a whole thread to read one id off it would
@@ -84,6 +95,9 @@ export function useBrowserApprovals(threadRef: ScopedThreadRef): BrowserApproval
       [threadRef.environmentId, threadRef.threadId],
     ),
   );
+  // The shell is authoritative once it exists; the caller's knowledge covers
+  // the draft window before it does.
+  const projectId = shellProjectId ?? knownProjectId ?? null;
   const approvedByProject = useSettings((settings) => settings.agentBrowserApprovedDomains);
   const approvedDomains =
     projectId === null ? NO_APPROVALS : (approvedByProject[projectId] ?? NO_APPROVALS);

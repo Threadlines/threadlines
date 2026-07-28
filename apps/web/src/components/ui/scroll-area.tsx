@@ -1,6 +1,7 @@
 "use client";
 
 import { ScrollArea as ScrollAreaPrimitive } from "@base-ui/react/scroll-area";
+import { useEffect, useRef } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -11,19 +12,64 @@ function ScrollArea({
   scrollbarGutter = false,
   hideScrollbars = false,
   chainVerticalScroll = false,
+  observeContentResize = false,
+  contentClassName,
+  horizontalWheelScroll = false,
   ...props
 }: ScrollAreaPrimitive.Root.Props & {
   scrollFade?: boolean;
   scrollbarGutter?: boolean;
   hideScrollbars?: boolean;
   chainVerticalScroll?: boolean;
+  /**
+   * Re-measure overflow when the content itself grows or shrinks (Base UI only
+   * watches the viewport by default, so e.g. a tab strip gaining a tab would
+   * not update the scrollbar or edge fades until the panel resizes). Wraps
+   * children in the primitive's Content div; size it via `contentClassName`
+   * (`h-full` for horizontal strips) so the observer tracks the real content
+   * box.
+   */
+  observeContentResize?: boolean;
+  contentClassName?: string;
+  /** Translate vertical wheel motion into horizontal scrolling. For rows that
+   * only ever overflow sideways, where plain wheel input would otherwise do
+   * nothing. */
+  horizontalWheelScroll?: boolean;
 }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!horizontalWheelScroll || viewport === null) {
+      return;
+    }
+    const onWheel = (event: WheelEvent) => {
+      // Trackpads and shift+wheel already produce horizontal deltas; only
+      // repurpose pure vertical motion, and only when there is somewhere to go.
+      if (event.deltaY === 0 || event.deltaX !== 0) {
+        return;
+      }
+      if (viewport.scrollWidth <= viewport.clientWidth) {
+        return;
+      }
+      viewport.scrollLeft += event.deltaY;
+      event.preventDefault();
+    };
+    // Native listener: React registers wheel as passive, which would make
+    // preventDefault a no-op.
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", onWheel);
+    };
+  }, [horizontalWheelScroll]);
+
   return (
     <ScrollAreaPrimitive.Root
       className={cn("relative size-full min-h-0 overflow-hidden rounded-[inherit]", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport
+        ref={viewportRef}
         className={cn(
           "h-full max-h-[inherit] overflow-auto overscroll-contain rounded-[inherit] outline-none transition-shadows focus-ring data-has-overflow-x:overscroll-x-contain",
           chainVerticalScroll && "overscroll-y-auto",
@@ -35,7 +81,13 @@ function ScrollArea({
         )}
         data-slot="scroll-area-viewport"
       >
-        {children}
+        {observeContentResize ? (
+          <ScrollAreaPrimitive.Content className={contentClassName}>
+            {children}
+          </ScrollAreaPrimitive.Content>
+        ) : (
+          children
+        )}
       </ScrollAreaPrimitive.Viewport>
       {!hideScrollbars && (
         <>

@@ -51,6 +51,23 @@ export interface ProjectionFullThreadDiffContext {
 }
 
 /**
+ * One row per non-deleted thread: where it works, where its diff rollup
+ * currently starts, and the newest completed turn it could start from. Narrow
+ * on purpose -- the clean-checkout observer runs this on every fresh git status
+ * and must not hydrate a shell snapshot to do it.
+ */
+export interface ProjectionThreadDiffStatBaseline {
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly workspaceRoot: string;
+  readonly worktreePath: string | null;
+  readonly effectiveCwd: string | null;
+  readonly baselineTurnCount: number;
+  /** Null when the thread has no completed turn with a checkpoint yet. */
+  readonly latestCompletedCheckpointTurnCount: number | null;
+}
+
+/**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
@@ -146,6 +163,17 @@ export interface ProjectionSnapshotQueryShape {
     threadId: ThreadId,
     toTurnCount: number,
   ) => Effect.Effect<Option.Option<ProjectionFullThreadDiffContext>, ProjectionRepositoryError>;
+
+  /**
+   * Read every non-deleted thread's working directory and diff-rollup baseline.
+   *
+   * Archived threads are included: their badge is derived the same way, so
+   * leaving them behind would make an unarchived thread report a stale total.
+   */
+  readonly listThreadDiffStatBaselines: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadDiffStatBaseline>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read a single active thread shell row by id.

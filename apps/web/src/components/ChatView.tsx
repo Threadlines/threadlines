@@ -6491,7 +6491,13 @@ export default function ChatView(props: ChatViewProps) {
             the panel: a closed panel is a closed panel, not the absence of a
             browser, and a request for the browser opens it. */}
         {browserAvailable && routeThreadRef !== null ? (
-          <PreviewAutomationMount threadRef={routeThreadRef} />
+          // The project is passed alongside the thread because a local draft
+          // thread has no shell to look it up from, and browser approvals are
+          // recorded per project.
+          <PreviewAutomationMount
+            threadRef={routeThreadRef}
+            projectId={activeThread?.projectId ?? null}
+          />
         ) : null}
         {browserOpen && routeThreadRef !== null ? (
           <>
@@ -6503,6 +6509,7 @@ export default function ChatView(props: ChatViewProps) {
             )}
             <BrowserPanel
               threadRef={routeThreadRef}
+              projectId={activeThread?.projectId ?? null}
               flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
               onClose={handleCloseBrowser}
               onPickElement={appendPickedElementToComposer}

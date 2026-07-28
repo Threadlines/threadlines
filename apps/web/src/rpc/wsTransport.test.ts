@@ -1027,7 +1027,7 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
-  it("does not retry stream subscriptions after application-level failures", async () => {
+  it("keeps retrying stream subscriptions after application-level failures", async () => {
     const transport = createTransport("ws://localhost:3020");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let attempts = 0;
@@ -1049,13 +1049,16 @@ describe("WsTransport", () => {
     getSocket().open();
 
     await waitFor(() => {
-      expect(attempts).toBe(1);
+      expect(attempts).toBeGreaterThanOrEqual(2);
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(attempts).toBe(1);
     expect(warnSpy).toHaveBeenCalledWith("WebSocket RPC subscription failed", {
       error: "Git command failed in GitCore.statusDetails",
+      attempt: 1,
+    });
+    expect(warnSpy).toHaveBeenCalledWith("WebSocket RPC subscription failed", {
+      error: "Git command failed in GitCore.statusDetails",
+      attempt: 2,
     });
     expect(warnSpy).not.toHaveBeenCalledWith(
       "WebSocket RPC subscription disconnected",

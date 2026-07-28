@@ -187,6 +187,7 @@ const makeDefaultOrchestrationReadModel = () => {
         activities: [],
         proposedPlans: [],
         checkpoints: [],
+        diffStatBaselineTurnCount: 0,
         deletedAt: null,
       },
     ],
@@ -219,6 +220,7 @@ const makeDefaultOrchestrationThreadShell = (
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
+    diffStatBaselineTurnCount: 0,
     ...overrides,
   };
 };
@@ -725,6 +727,7 @@ const buildAppUnderTest = (options?: {
           readEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 0 }),
           streamDomainEvents: Stream.empty,
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
           ...options?.layers?.orchestrationEngine,
         }),
       ),
@@ -3428,6 +3431,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             activities: [],
             proposedPlans: [],
             checkpoints: [],
+            diffStatBaselineTurnCount: 0,
             deletedAt: null,
           },
         ],

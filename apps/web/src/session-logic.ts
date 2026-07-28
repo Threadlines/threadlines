@@ -4086,17 +4086,31 @@ export function inferCheckpointTurnCountByTurnId(
 /**
  * What a thread has changed, summed across its own turns -- the client-side
  * twin of the shell's `cumulativeDiffStat`, for the detail stream, which
- * carries the per-turn summaries but not the rollup. Returns null when no turn
- * has reported a file yet, which is the same "nothing to say" the shell means
- * by null; a thread whose turns cancel out to zero still returns zeroes.
+ * carries the per-turn summaries but not the rollup. Returns null when no
+ * counted turn has reported a file, which is the same "nothing to say" the
+ * shell means by null; a thread whose turns cancel out to zero still returns
+ * zeroes.
+ *
+ * `baselineTurnCount` mirrors the server rollup's baseline join: turns at or
+ * below it were committed (or discarded) out of the checkout and no longer
+ * count. Zero counts every turn, since turn counts start at 1. A summary
+ * without a turn count predates the field and is always counted, which is the
+ * behavior it had before the baseline existed.
  */
 export function sumTurnDiffStats(
   summaries: ReadonlyArray<TurnDiffSummary>,
+  baselineTurnCount = 0,
 ): OrchestrationThreadDiffStat | null {
   let additions = 0;
   let deletions = 0;
   let sawFile = false;
   for (const summary of summaries) {
+    if (
+      summary.checkpointTurnCount !== undefined &&
+      summary.checkpointTurnCount <= baselineTurnCount
+    ) {
+      continue;
+    }
     for (const file of summary.files) {
       sawFile = true;
       additions += file.additions ?? 0;

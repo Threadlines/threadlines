@@ -105,6 +105,15 @@ const ProjectionThreadDiffStatDbRowSchema = Schema.Struct({
   additions: NonNegativeInt,
   deletions: NonNegativeInt,
 });
+const ProjectionThreadDiffStatBaselineDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  workspaceRoot: Schema.String,
+  worktreePath: Schema.NullOr(Schema.String),
+  effectiveCwd: Schema.NullOr(Schema.String),
+  baselineTurnCount: NonNegativeInt,
+  latestCompletedCheckpointTurnCount: Schema.NullOr(NonNegativeInt),
+});
 const ProjectionLatestTurnDbRowSchema = Schema.Struct({
   threadId: ProjectionThread.fields.threadId,
   turnId: TurnId,
@@ -377,6 +386,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           effective_cwd AS "effectiveCwd",
           goal AS "goal",
           voice_active AS "voiceActive",
+          diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -409,6 +419,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           effective_cwd AS "effectiveCwd",
           goal AS "goal",
           voice_active AS "voiceActive",
+          diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -443,6 +454,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           effective_cwd AS "effectiveCwd",
           goal AS "goal",
           voice_active AS "voiceActive",
+          diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -681,6 +693,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // the transcript. projection_turns holds one row per turn, and the projector
   // refuses to let a placeholder overwrite a real capture, so no turn is
   // counted twice.
+  //
+  // The join to projection_threads is what makes the badge resettable: turns at
+  // or below the thread's baseline were already committed (or discarded) out of
+  // the checkout, so they stop counting. A baseline of 0 -- every thread until
+  // its checkout is first observed clean -- counts every turn, since turn counts
+  // start at 1. A turn with files always carries a checkpoint_turn_count, so the
+  // NULL-excluding comparison drops nothing a `json_each` pass would have found.
   const threadDiffStatSelection = sql`
     SELECT
       turns.thread_id AS "threadId",
@@ -692,8 +711,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SUM(CAST(json_extract(checkpoint_file.value, '$.deletions') AS INTEGER)),
         0
       ) AS "deletions"
-    FROM projection_turns turns,
-      json_each(turns.checkpoint_files_json) AS checkpoint_file
+    FROM projection_turns turns
+    JOIN projection_threads threads
+      ON threads.thread_id = turns.thread_id
+      AND turns.checkpoint_turn_count > COALESCE(threads.diff_stat_baseline_turn_count, 0)
+    CROSS JOIN json_each(turns.checkpoint_files_json) AS checkpoint_file
   `;
 
   const listThreadDiffStatRows = SqlSchema.findAll({
@@ -716,6 +738,39 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE turns.thread_id = ${request.threadId}
           AND turns.checkpoint_files_json IS NOT NULL
         GROUP BY turns.thread_id
+      `,
+  });
+
+  // The clean-checkout observer's whole read: where each thread works, where
+  // its rollup starts now, and the newest turn it could start from instead.
+  // `completed_at IS NOT NULL` is what keeps an in-flight turn out of the
+  // baseline -- a commit landing mid-turn rebases to the last finished turn and
+  // the running one still counts in full when it lands.
+  const listThreadDiffStatBaselineRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadDiffStatBaselineDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          threads.thread_id AS "threadId",
+          threads.project_id AS "projectId",
+          projects.workspace_root AS "workspaceRoot",
+          threads.worktree_path AS "worktreePath",
+          threads.effective_cwd AS "effectiveCwd",
+          COALESCE(threads.diff_stat_baseline_turn_count, 0) AS "baselineTurnCount",
+          (
+            SELECT MAX(turns.checkpoint_turn_count)
+            FROM projection_turns turns
+            WHERE turns.thread_id = threads.thread_id
+              AND turns.checkpoint_turn_count IS NOT NULL
+              AND turns.completed_at IS NOT NULL
+          ) AS "latestCompletedCheckpointTurnCount"
+        FROM projection_threads threads
+        JOIN projection_projects projects
+          ON projects.project_id = threads.project_id
+        WHERE threads.deleted_at IS NULL
+          AND projects.deleted_at IS NULL
+        ORDER BY threads.thread_id ASC
       `,
   });
 
@@ -916,6 +971,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           effective_cwd AS "effectiveCwd",
           goal AS "goal",
           voice_active AS "voiceActive",
+          diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1373,6 +1429,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activities: activitiesByThread.get(row.threadId) ?? [],
                 checkpoints: checkpointsByThread.get(row.threadId) ?? [],
                 session: sessionsByThread.get(row.threadId) ?? null,
+                diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
               }));
 
               const snapshot = {
@@ -1609,6 +1666,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activities: [],
                   checkpoints: [],
                   session: sessionByThread.get(row.threadId) ?? null,
+                  diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
                 });
               }
 
@@ -1754,6 +1812,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       hasPendingUserInput: row.pendingUserInputCount > 0,
                       hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                       cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
+                      diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
                     }),
                   ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -1902,6 +1961,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     hasPendingUserInput: row.pendingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                     cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
+                    diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
                   }),
                 ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -2092,6 +2152,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       });
     });
 
+  const listThreadDiffStatBaselines: ProjectionSnapshotQueryShape["listThreadDiffStatBaselines"] =
+    () =>
+      listThreadDiffStatBaselineRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listThreadDiffStatBaselines:query",
+            "ProjectionSnapshotQuery.listThreadDiffStatBaselines:decodeRows",
+          ),
+        ),
+      );
+
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow, diffStatRow] = yield* Effect.all([
@@ -2156,6 +2227,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         cumulativeDiffStat: mapThreadDiffStat(Option.getOrUndefined(diffStatRow)),
+        diffStatBaselineTurnCount: threadRow.value.diffStatBaselineTurnCount ?? 0,
       } satisfies OrchestrationThreadShell);
     });
 
@@ -2277,6 +2349,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           completedAt: row.completedAt,
         })),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        diffStatBaselineTurnCount: threadRow.value.diffStatBaselineTurnCount ?? 0,
       };
 
       return Option.some(
@@ -2300,6 +2373,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getFullThreadDiffContext,
+    listThreadDiffStatBaselines,
     getThreadShellById,
     getThreadDetailById,
   } satisfies ProjectionSnapshotQueryShape;

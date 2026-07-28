@@ -8,6 +8,7 @@ import type {
   DesktopPreviewAnnotationMode,
   DesktopPreviewPickedElement,
   DesktopPreviewPickMode,
+  ProjectId,
   ScopedThreadRef,
 } from "@threadlines/contracts";
 import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
@@ -61,6 +62,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
@@ -112,6 +114,7 @@ const IDLE_NAV_STATE: NavState = { canGoBack: false, canGoForward: false, loadin
 
 export function BrowserPanel({
   threadRef,
+  projectId = null,
   flexGrow,
   onClose,
   onPickElement,
@@ -121,6 +124,8 @@ export function BrowserPanel({
   onRevealHandled,
 }: {
   threadRef: ScopedThreadRef;
+  /** The thread's project, for approvals while the thread is still a local draft. */
+  projectId?: ProjectId | null;
   /** Complement of the chat column's share, so the two honour one ratio. */
   flexGrow: number;
   onClose: () => void;
@@ -155,7 +160,7 @@ export function BrowserPanel({
   const setPendingBrowserApproval = useBrowserPanelStore(
     (store) => store.setPendingBrowserApproval,
   );
-  const { approveHost } = useBrowserApprovals(threadRef);
+  const { approveHost } = useBrowserApprovals(threadRef, projectId);
   const { resolvedTheme } = useTheme();
   const guestColorScheme = appearance === "system" ? resolvedTheme : appearance;
 
@@ -332,7 +337,11 @@ export function BrowserPanel({
       if (webContentsId !== null) {
         pushNavigationPolicy(webContentsId, approved);
       }
-      callWhenReady(() => void webview?.loadURL(url));
+      // Swallowed rather than surfaced: a page that redirects on arrival
+      // aborts the load it interrupts, and a load the navigation guard refuses
+      // already asks its question through the approval bar. Left unhandled,
+      // either one dumps a GUEST_VIEW_MANAGER_CALL rejection on the console.
+      callWhenReady(() => void webview?.loadURL(url).catch(() => {}));
     },
     [approveHost, setTabUrl, threadRef, webviewFor],
   );
@@ -352,19 +361,28 @@ export function BrowserPanel({
   /**
    * Allowing the site and going there are one act.
    *
-   * The page loads into the agent's own tab rather than whichever one is in
-   * front, so the next thing the agent looks at is the page it asked for
-   * instead of an approval it has no way to notice.
+   * An agent's request loads into the agent's own tab rather than whichever
+   * one is in front, so the next thing the agent looks at is the page it asked
+   * for instead of an approval it has no way to notice. A page's blocked
+   * navigation resumes in the tab it happened in -- the user may have been
+   * browsing that tab themselves, and their page landing in the agent's tab
+   * would be the very mix-up this bar exists to avoid.
    */
   const allowPendingApproval = useCallback(() => {
     if (pendingApproval === null) {
       return;
     }
     setPendingBrowserApproval(threadRef, null);
+    const blockedTabId =
+      pendingApproval.tabId !== null &&
+      browserState.tabs.some((tab) => tab.id === pendingApproval.tabId)
+        ? pendingApproval.tabId
+        : null;
     const targetTabId =
-      agentTabId !== null && browserState.tabs.some((tab) => tab.id === agentTabId)
+      blockedTabId ??
+      (agentTabId !== null && browserState.tabs.some((tab) => tab.id === agentTabId)
         ? agentTabId
-        : activeTabId;
+        : activeTabId);
     if (targetTabId === "") {
       approveHost(pendingApproval.host);
       return;
@@ -542,17 +560,18 @@ export function BrowserPanel({
   }, [revealMissing]);
 
   /**
-   * Closing the last tab closes the panel rather than leaving a blank one.
-   * Clicking close and being handed a fresh tab reads as nothing having
-   * happened, and reopening the panel provides one anyway.
+   * Closing the last tab closes the panel rather than leaving a blank one:
+   * clicking close and being handed a fresh tab reads as nothing having
+   * happened. The tab is still closed in the store -- which replaces a last
+   * tab with a blank one -- because tab state persists per thread, and a page
+   * that was closed must not come back the next time the panel opens.
    */
   const closeBrowserTab = useCallback(
     (tabId: string) => {
+      closeTab(threadRef, tabId);
       if (browserState.tabs.length <= 1) {
         onClose();
-        return;
       }
-      closeTab(threadRef, tabId);
     },
     [browserState.tabs.length, closeTab, onClose, threadRef],
   );
@@ -590,24 +609,38 @@ export function BrowserPanel({
       data-testid="browser-panel"
       aria-label="Browser preview"
     >
-      <div className="flex h-9 shrink-0 items-stretch gap-px overflow-x-auto border-b border-border px-1.5 pt-1.5">
-        {browserState.tabs.map((tab) => (
-          <TabStripItem
-            key={tab.id}
-            tab={tab}
-            isActive={tab.id === activeTabId}
-            closable
-            agentState={
-              tab.id !== agentTabId
-                ? "none"
-                : agentActivity?.phase === "running"
-                  ? "working"
-                  : "pinned"
-            }
-            onSelect={() => selectTab(threadRef, tab.id)}
-            onClose={() => closeBrowserTab(tab.id)}
-          />
-        ))}
+      <div className="flex h-9 shrink-0 items-stretch border-b border-border px-1.5 pt-1.5">
+        {/* Tabs scroll; everything after this stays put. ScrollArea keeps the
+            strip's height honest: edge mask-fades mark hidden tabs and the
+            overlay scrollbar takes no layout height, where a native bar would
+            eat into the row and force a vertical one too. */}
+        <ScrollArea
+          scrollFade
+          observeContentResize
+          contentClassName="h-full"
+          horizontalWheelScroll
+          className="min-w-0 flex-1 self-stretch [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100"
+        >
+          <div className="flex h-full items-stretch gap-px">
+            {browserState.tabs.map((tab) => (
+              <TabStripItem
+                key={tab.id}
+                tab={tab}
+                isActive={tab.id === activeTabId}
+                closable
+                agentState={
+                  tab.id !== agentTabId
+                    ? "none"
+                    : agentActivity?.phase === "running"
+                      ? "working"
+                      : "pinned"
+                }
+                onSelect={() => selectTab(threadRef, tab.id)}
+                onClose={() => closeBrowserTab(tab.id)}
+              />
+            ))}
+          </div>
+        </ScrollArea>
         <button
           type="button"
           aria-label="New tab"
@@ -620,7 +653,7 @@ export function BrowserPanel({
 
         {/* Panel-level controls only: where the browser sits and whether it is
             open. What acts on the page lives with the address it acts on. */}
-        <div className="ms-auto flex shrink-0 items-center gap-0.5 self-center">
+        <div className="flex shrink-0 items-center gap-0.5 self-center">
           <NavButton
             label={expanded ? "Restore chat" : "Expand browser"}
             onClick={toggleExpanded}
@@ -821,6 +854,8 @@ export function BrowserPanel({
       {pendingApproval !== null ? (
         <AgentApprovalLine
           host={pendingApproval.host}
+          source={pendingApproval.source}
+          fromHost={pendingApproval.fromHost}
           onAllow={allowPendingApproval}
           onDismiss={() => setPendingBrowserApproval(threadRef, null)}
         />
@@ -908,6 +943,12 @@ function TabStripItem({
   onClose: () => void;
 }) {
   const label = tab.title ?? (tab.url === null ? "New tab" : tab.url.replace(/^https?:\/\//, ""));
+  // Tabs rehydrated from storage predating the field arrive without it.
+  const faviconUrl = tab.faviconUrl ?? null;
+  // A favicon that fails to load falls back to the globe rather than a broken
+  // image. Keyed by URL so a later navigation gets to try again.
+  const [failedFaviconUrl, setFailedFaviconUrl] = useState<string | null>(null);
+  const favicon = faviconUrl !== null && faviconUrl !== failedFaviconUrl ? faviconUrl : null;
   return (
     <div
       className={cn(
@@ -931,7 +972,17 @@ function TabStripItem({
             this only needs to answer "is the agent in here". It pulses while a
             call is in flight and holds steady between them. */}
         {agentState === "none" ? (
-          <GlobeIcon className="size-3 shrink-0 opacity-70" />
+          favicon !== null ? (
+            <img
+              src={favicon}
+              alt=""
+              aria-hidden
+              className="size-3 shrink-0"
+              onError={() => setFailedFaviconUrl(favicon)}
+            />
+          ) : (
+            <GlobeIcon className="size-3 shrink-0 opacity-70" />
+          )
         ) : (
           <span
             aria-label={agentState === "working" ? "Agent working here" : "The agent's tab"}
@@ -1001,6 +1052,7 @@ function PreviewTabFrame({
   const [initialSrc] = useState(() => tab.url ?? "about:blank");
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
   const setTabTitle = useBrowserPanelStore((store) => store.setTabTitle);
+  const setTabFavicon = useBrowserPanelStore((store) => store.setTabFavicon);
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
   const colorSchemeRef = useRef(colorScheme);
@@ -1076,6 +1128,11 @@ function PreviewTabFrame({
         });
       }
     };
+    // Tracked so the favicon only resets when the page actually moved to a
+    // different site: a site without one would otherwise wear the previous
+    // site's icon forever, while clearing on every navigation would flash the
+    // globe on each same-site reload.
+    let lastHost: string | null = null;
     const onNavigated = () => {
       // Electron remembers zoom per origin inside the session, so a page
       // visited at 125% comes back at 125% while our control still reads
@@ -1086,10 +1143,19 @@ function PreviewTabFrame({
       // written back it would dismiss the new-tab view under a fake address.
       if (url !== null && url !== "" && url !== "about:blank") {
         setTabUrl(threadRef, tab.id, url);
+        const host = hostOf(url);
+        if (lastHost !== null && host !== lastHost) {
+          setTabFavicon(threadRef, tab.id, null);
+        }
+        lastHost = host;
       }
       publishNav(false);
     };
     const onTitle = () => setTabTitle(threadRef, tab.id, webview.getTitle());
+    const onFavicon = (event: Event) => {
+      const favicons = (event as Event & { favicons?: string[] }).favicons;
+      setTabFavicon(threadRef, tab.id, favicons?.[0] ?? null);
+    };
     const onStart = () => publishNav(true);
     const onStop = () => publishNav(false);
 
@@ -1097,6 +1163,7 @@ function PreviewTabFrame({
     webview.addEventListener("did-navigate", onNavigated);
     webview.addEventListener("did-navigate-in-page", onNavigated);
     webview.addEventListener("page-title-updated", onTitle);
+    webview.addEventListener("page-favicon-updated", onFavicon);
     webview.addEventListener("did-start-loading", onStart);
     webview.addEventListener("did-stop-loading", onStop);
     return () => {
@@ -1104,13 +1171,14 @@ function PreviewTabFrame({
       webview.removeEventListener("did-navigate", onNavigated);
       webview.removeEventListener("did-navigate-in-page", onNavigated);
       webview.removeEventListener("page-title-updated", onTitle);
+      webview.removeEventListener("page-favicon-updated", onFavicon);
       webview.removeEventListener("did-start-loading", onStart);
       webview.removeEventListener("did-stop-loading", onStop);
       if (attachedId !== null) {
         void window.desktopBridge?.previewDetach?.({ webContentsId: attachedId });
       }
     };
-  }, [onNavState, setTabTitle, setTabUrl, tab.id, threadRef]);
+  }, [onNavState, setTabFavicon, setTabTitle, setTabUrl, tab.id, threadRef]);
 
   // The container is measured so the frame can be placed at computed
   // coordinates: Electron positions the guest's surface from the element's own
@@ -1427,26 +1495,36 @@ function PageToolControl({
  * beside "Agent went to") because it is the same narration, paused: an amber
  * dot instead of a second bar, and the two answers where "show" would sit.
  *
+ * The subject is whoever actually navigated. Saying "Agent" for a page's own
+ * redirect or link would accuse it of something the user did -- the exact
+ * confusion between your browsing and the agent's this bar is meant to keep
+ * straight.
+ *
  * "for this project" is load-bearing: it says the click is remembered and says
  * how far it reaches, so allowing a docs site once does not quietly allow it
  * everywhere you work.
  */
 export function AgentApprovalLine({
   host,
+  source,
+  fromHost,
   onAllow,
   onDismiss,
 }: {
   host: string;
+  source: "agent" | "page";
+  fromHost: string | null;
   onAllow: () => void;
   onDismiss: () => void;
 }) {
+  const subject = source === "agent" ? "Agent" : (fromHost ?? "This page");
   return (
     <div
       className="flex h-[22px] w-full shrink-0 items-center gap-1.5 border-b border-border px-2 font-mono text-[11px] text-muted-foreground"
       data-testid="browser-approval-bar"
     >
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
-      <span className="shrink-0 text-foreground">Agent</span>
+      <span className="min-w-0 shrink truncate text-foreground">{subject}</span>
       <span className="min-w-0 truncate">wants to visit {host}</span>
       <button
         type="button"

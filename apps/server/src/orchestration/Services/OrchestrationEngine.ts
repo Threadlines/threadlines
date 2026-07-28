@@ -13,6 +13,7 @@
 import type { OrchestrationCommand, OrchestrationEvent } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
@@ -49,8 +50,27 @@ export interface OrchestrationEngineShape {
    * Stream persisted domain events in dispatch order.
    *
    * This is a hot runtime stream (new events only), not a historical replay.
+   * The underlying PubSub subscription is only established once the stream
+   * runs — use `subscribeDomainEvents` when events must not be lost between
+   * an earlier read (e.g. a projection snapshot) and stream consumption.
    */
   readonly streamDomainEvents: Stream.Stream<OrchestrationEvent>;
+
+  /**
+   * Subscribe to the domain-event feed within the current scope and return
+   * the resulting hot stream.
+   *
+   * Unlike `streamDomainEvents`, the subscription is registered when this
+   * effect runs, so events published afterwards are buffered even if the
+   * stream is consumed later. This is required for snapshot-then-live
+   * handlers: subscribe first, read the snapshot, then forward buffered
+   * events newer than the snapshot — nothing falls into the gap.
+   */
+  readonly subscribeDomainEvents: Effect.Effect<
+    Stream.Stream<OrchestrationEvent>,
+    never,
+    Scope.Scope
+  >;
 }
 
 /**

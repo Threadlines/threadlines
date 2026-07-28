@@ -373,6 +373,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
+          diffStatBaselineTurnCount: 0,
         },
       ]);
 
@@ -451,6 +452,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
           cumulativeDiffStat: { additions: 2, deletions: 1 },
+          diffStatBaselineTurnCount: 0,
         },
       ]);
 
@@ -2098,6 +2100,182 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (quietShell._tag === "Some") {
         assert.equal(quietShell.value.cumulativeDiffStat, null);
       }
+
+      // Committing everything in the checkout advances thread-busy's baseline
+      // past its last completed turn. Its badge has to go quiet, and the turns
+      // it already reported must stop counting -- in the snapshot and in the
+      // incremental per-thread query alike.
+      yield* sql`
+        UPDATE projection_threads
+        SET diff_stat_baseline_turn_count = 2
+        WHERE thread_id = 'thread-busy'
+      `;
+
+      const afterPartialRebase = yield* snapshotQuery.getShellSnapshot();
+      // Turns 1 and 2 (+11 -9) drop out; turn 3's provider-reported diff
+      // (+4 -3) still counts, turn 4 touched nothing.
+      assert.deepEqual(
+        afterPartialRebase.threads.find((thread) => thread.id === ThreadId.make("thread-busy"))
+          ?.cumulativeDiffStat,
+        { additions: 4, deletions: 3 },
+      );
+
+      yield* sql`
+        UPDATE projection_threads
+        SET diff_stat_baseline_turn_count = 4
+        WHERE thread_id = 'thread-busy'
+      `;
+
+      const afterFullRebase = yield* snapshotQuery.getShellSnapshot();
+      const rebasedBusy = afterFullRebase.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-busy"),
+      );
+      assert.equal(rebasedBusy?.cumulativeDiffStat, null);
+      assert.equal(rebasedBusy?.diffStatBaselineTurnCount, 4);
+
+      const rebasedBusyShell = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-busy"),
+      );
+      assert.equal(rebasedBusyShell._tag, "Some");
+      if (rebasedBusyShell._tag === "Some") {
+        assert.equal(rebasedBusyShell.value.cumulativeDiffStat, null);
+        assert.equal(rebasedBusyShell.value.diffStatBaselineTurnCount, 4);
+      }
+    }),
+  );
+
+  it.effect("reports where each thread works and the baseline it could advance to", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_turns`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-1',
+          'Project 1',
+          '/tmp/project-1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-07-01T00:00:00.000Z',
+          '2026-07-01T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      // One thread on the project root, one in a worktree, one archived (which
+      // still needs a baseline so unarchiving does not resurrect a stale total).
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          effective_cwd,
+          diff_stat_baseline_turn_count,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-root', 'project-1', 'Root thread',
+            '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+            NULL, NULL, NULL, 1, NULL, NULL, 0, 0, 0,
+            '2026-07-01T00:00:02.000Z', '2026-07-01T00:00:03.000Z', NULL, NULL
+          ),
+          (
+            'thread-worktree', 'project-1', 'Worktree thread',
+            '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+            NULL, '/tmp/worktrees/feature', NULL, 0, NULL, NULL, 0, 0, 0,
+            '2026-07-01T00:00:02.000Z', '2026-07-01T00:00:03.000Z', NULL, NULL
+          ),
+          (
+            'thread-archived', 'project-1', 'Archived thread',
+            '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+            NULL, NULL, NULL, 0, NULL, NULL, 0, 0, 0,
+            '2026-07-01T00:00:02.000Z', '2026-07-01T00:00:03.000Z',
+            '2026-07-01T00:00:04.000Z', NULL
+          ),
+          (
+            'thread-deleted', 'project-1', 'Deleted thread',
+            '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+            NULL, NULL, NULL, 0, NULL, NULL, 0, 0, 0,
+            '2026-07-01T00:00:02.000Z', '2026-07-01T00:00:03.000Z', NULL,
+            '2026-07-01T00:00:05.000Z'
+          )
+      `;
+
+      // thread-root finished turns 1 and 2; thread-worktree's only turn is
+      // still running, so it has nothing to rebase to yet.
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, source_proposed_plan_thread_id,
+          source_proposed_plan_id, assistant_message_id, state, requested_at,
+          started_at, completed_at, checkpoint_turn_count, checkpoint_ref,
+          checkpoint_status, checkpoint_files_json
+        )
+        VALUES
+          (
+            'thread-root', 'turn-1', NULL, NULL, NULL, 'message-1', 'completed',
+            '2026-07-01T00:00:10.000Z', '2026-07-01T00:00:10.000Z',
+            '2026-07-01T00:00:11.000Z', 1, 'checkpoint-1', 'ready', '[]'
+          ),
+          (
+            'thread-root', 'turn-2', NULL, NULL, NULL, 'message-2', 'completed',
+            '2026-07-01T00:00:20.000Z', '2026-07-01T00:00:20.000Z',
+            '2026-07-01T00:00:21.000Z', 2, 'checkpoint-2', 'ready', '[]'
+          ),
+          (
+            'thread-worktree', 'turn-3', NULL, NULL, NULL, NULL, 'running',
+            '2026-07-01T00:00:30.000Z', '2026-07-01T00:00:30.000Z',
+            NULL, NULL, NULL, NULL, '[]'
+          )
+      `;
+
+      const baselines = yield* snapshotQuery.listThreadDiffStatBaselines();
+
+      assert.deepEqual(
+        baselines.map((row) => row.threadId),
+        [
+          ThreadId.make("thread-archived"),
+          ThreadId.make("thread-root"),
+          ThreadId.make("thread-worktree"),
+        ],
+      );
+
+      const root = baselines.find((row) => row.threadId === ThreadId.make("thread-root"));
+      assert.equal(root?.workspaceRoot, "/tmp/project-1");
+      assert.equal(root?.worktreePath, null);
+      assert.equal(root?.baselineTurnCount, 1);
+      assert.equal(root?.latestCompletedCheckpointTurnCount, 2);
+
+      const worktree = baselines.find((row) => row.threadId === ThreadId.make("thread-worktree"));
+      assert.equal(worktree?.worktreePath, "/tmp/worktrees/feature");
+      assert.equal(worktree?.latestCompletedCheckpointTurnCount, null);
     }),
   );
 });

@@ -90,8 +90,20 @@ describe("isBrowserHostApproved", () => {
     const approved = ["example.com"];
     expect(isBrowserHostApproved("example.com", approved)).toBe(true);
     expect(isBrowserHostApproved("EXAMPLE.com", approved)).toBe(true);
-    expect(isBrowserHostApproved("www.example.com", approved)).toBe(false);
     expect(isBrowserHostApproved("docs.example.com", approved)).toBe(false);
+  });
+
+  it("treats www and the bare domain as one site, in both directions", () => {
+    // Typing google.com lands on www.google.com via the site's own redirect;
+    // prompting for it would read as asking permission for the page the user
+    // just asked for.
+    expect(isBrowserHostApproved("www.example.com", ["example.com"])).toBe(true);
+    expect(isBrowserHostApproved("example.com", ["www.example.com"])).toBe(true);
+    // Only the www label, nothing broader.
+    expect(isBrowserHostApproved("docs.example.com", ["www.example.com"])).toBe(false);
+    expect(isBrowserHostApproved("wwwexample.com", ["example.com"])).toBe(false);
+    // www.com is a site of its own, not permission for the whole of .com.
+    expect(isBrowserHostApproved("com", ["www.com"])).toBe(false);
   });
 
   it("refuses a host that merely ends with an approved one", () => {

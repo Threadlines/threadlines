@@ -295,6 +295,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     effectiveCwd: thread.effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
+    diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
   };
@@ -329,6 +330,7 @@ function mapThreadShell(
     effectiveCwd: thread.effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
+    diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -384,6 +386,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     effectiveCwd: thread.effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
+    diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
   };
 }
 
@@ -454,7 +457,7 @@ function toSidebarThreadSummary(
       ? hasActionableProposedPlan(latestProposedPlan)
       : (previous?.hasActionableProposedPlan ?? false),
     cumulativeDiffStat: hasTurnDiffEvidence
-      ? sumTurnDiffStats(thread.turnDiffSummaries)
+      ? sumTurnDiffStats(thread.turnDiffSummaries, thread.diffStatBaselineTurnCount ?? 0)
       : (previous?.cumulativeDiffStat ?? null),
   };
 }
@@ -558,6 +561,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.worktreePath === right.worktreePath &&
     left.effectiveCwd === right.effectiveCwd &&
     left.voiceActive === right.voiceActive &&
+    left.diffStatBaselineTurnCount === right.diffStatBaselineTurnCount &&
     threadGoalsEqual(left.goal, right.goal)
   );
 }
@@ -1506,6 +1510,7 @@ function applyEnvironmentOrchestrationEvent(
           activities: [],
           checkpoints: [],
           session: null,
+          diffStatBaselineTurnCount: 0,
         },
         environmentId,
       );
@@ -1590,6 +1595,19 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         voiceActive: event.payload.active,
         updatedAt: event.payload.updatedAt,
+      }));
+
+    // The open thread recomputes its own badge from per-turn summaries, so it
+    // has to learn the new baseline here. Otherwise the detail stream would
+    // keep overwriting the reset the shell push just delivered.
+    case "thread.diffstat-rebased":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        diffStatBaselineTurnCount: Math.max(
+          thread.diffStatBaselineTurnCount ?? 0,
+          event.payload.baselineTurnCount,
+        ),
+        updatedAt: event.payload.occurredAt,
       }));
 
     case "thread.turn-start-requested":

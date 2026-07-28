@@ -147,6 +147,7 @@ function makeThreadShellSnapshot(params: {
         hasPendingUserInput: params.hasPendingUserInput ?? false,
         hasActionableProposedPlan: params.hasActionableProposedPlan ?? false,
         cumulativeDiffStat: null,
+        diffStatBaselineTurnCount: 0,
       },
     ],
   };

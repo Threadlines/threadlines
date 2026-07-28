@@ -99,6 +99,7 @@ describe("orchestration projector", () => {
         checkpoints: [],
         session: null,
         voiceActive: false,
+        diffStatBaselineTurnCount: 0,
       },
     ]);
   });
@@ -988,5 +989,102 @@ describe("orchestration projector", () => {
     expect(thread?.checkpoints).toHaveLength(500);
     expect(thread?.checkpoints[0]?.turnId).toBe("turn-100");
     expect(thread?.checkpoints.at(-1)?.turnId).toBe("turn-599");
+  });
+
+  describe("thread.diffstat-rebased", () => {
+    const now = "2026-04-01T00:00:00.000Z";
+
+    const createThread = () =>
+      Effect.runPromise(
+        projectEvent(
+          createEmptyReadModel(now),
+          makeEvent({
+            sequence: 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: "thread-rebase",
+            occurredAt: now,
+            commandId: "cmd-thread-create",
+            payload: {
+              threadId: "thread-rebase",
+              projectId: "project-1",
+              title: "rebase",
+              modelSelection: {
+                provider: ProviderDriverKind.make("codex"),
+                model: "gpt-5-codex",
+              },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+        ),
+      );
+
+    const rebaseEvent = (sequence: number, baselineTurnCount: number, occurredAt: string) =>
+      makeEvent({
+        sequence,
+        type: "thread.diffstat-rebased",
+        aggregateKind: "thread",
+        aggregateId: "thread-rebase",
+        occurredAt,
+        commandId: `cmd-rebase-${sequence}`,
+        payload: {
+          threadId: "thread-rebase",
+          baselineTurnCount,
+          occurredAt,
+        },
+      });
+
+    it("moves the thread's diff-stat baseline forward", async () => {
+      const created = await createThread();
+      expect(created.threads[0]?.diffStatBaselineTurnCount).toBe(0);
+
+      const next = await Effect.runPromise(
+        projectEvent(created, rebaseEvent(2, 3, "2026-04-01T00:01:00.000Z")),
+      );
+
+      expect(next.threads[0]?.diffStatBaselineTurnCount).toBe(3);
+      expect(next.threads[0]?.updatedAt).toBe("2026-04-01T00:01:00.000Z");
+    });
+
+    it("never lets a replayed lower baseline undo a later rebase", async () => {
+      const created = await createThread();
+      const rebased = await Effect.runPromise(
+        projectEvent(created, rebaseEvent(2, 7, "2026-04-01T00:01:00.000Z")),
+      );
+      const next = await Effect.runPromise(
+        projectEvent(rebased, rebaseEvent(3, 2, "2026-04-01T00:02:00.000Z")),
+      );
+
+      expect(next.threads[0]?.diffStatBaselineTurnCount).toBe(7);
+    });
+
+    it("ignores a rebase for an unknown thread", async () => {
+      const created = await createThread();
+      const next = await Effect.runPromise(
+        projectEvent(
+          created,
+          makeEvent({
+            sequence: 2,
+            type: "thread.diffstat-rebased",
+            aggregateKind: "thread",
+            aggregateId: "thread-missing",
+            occurredAt: "2026-04-01T00:01:00.000Z",
+            commandId: "cmd-rebase-missing",
+            payload: {
+              threadId: "thread-missing",
+              baselineTurnCount: 4,
+              occurredAt: "2026-04-01T00:01:00.000Z",
+            },
+          }),
+        ),
+      );
+
+      expect(next.threads).toHaveLength(1);
+      expect(next.threads[0]?.diffStatBaselineTurnCount).toBe(0);
+    });
   });
 });

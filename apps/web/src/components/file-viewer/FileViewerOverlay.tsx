@@ -1180,6 +1180,9 @@ function FileViewerTabs({
     // scrollbar fades in on hover/scroll without occupying layout height.
     <ScrollArea
       scrollFade
+      observeContentResize
+      contentClassName="h-full"
+      horizontalWheelScroll
       className="min-w-0 flex-1 self-stretch [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100"
     >
       <div className="flex h-full items-center gap-1">

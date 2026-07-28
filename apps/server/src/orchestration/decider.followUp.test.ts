@@ -52,6 +52,7 @@ const readModelAfterProviderDelivery: OrchestrationReadModel = {
       proposedPlans: [],
       activities: [],
       checkpoints: [],
+      diffStatBaselineTurnCount: 0,
       session: {
         threadId: ThreadId.make("thread-follow-up"),
         status: "ready",

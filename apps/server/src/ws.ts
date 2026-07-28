@@ -888,41 +888,54 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (_input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
-            Effect.gen(function* () {
-              const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
-                Effect.tapError((cause) =>
-                  Effect.logError("orchestration shell snapshot load failed", { cause }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationGetSnapshotError({
-                      message: "Failed to load orchestration shell snapshot",
-                      cause,
+            Effect.succeed(
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  // Subscribe to the event feed before reading the snapshot:
+                  // events committed between the two are buffered by the
+                  // subscription instead of lost, which would leave this
+                  // subscriber stale until the next event for that aggregate.
+                  const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
+
+                  const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                    Effect.tapError((cause) =>
+                      Effect.logError("orchestration shell snapshot load failed", { cause }),
+                    ),
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: "Failed to load orchestration shell snapshot",
+                          cause,
+                        }),
+                    ),
+                  );
+
+                  // Coalesce the domain-event firehose before resolving shells:
+                  // during streaming turns events arrive ~every 50ms per thread,
+                  // and each resolved event costs projection queries plus a full
+                  // thread-shell push per subscriber.
+                  const liveStream = coalesceLatestAggregateEvents(
+                    Stream.filter(
+                      domainEvents,
+                      (event) => event.sequence > snapshot.snapshotSequence,
+                    ),
+                  ).pipe(
+                    Stream.mapEffect(toShellStreamEvent),
+                    Stream.flatMap((event) =>
+                      Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                    ),
+                  );
+
+                  return Stream.concat(
+                    Stream.make({
+                      kind: "snapshot" as const,
+                      snapshot,
                     }),
-                ),
-              );
-
-              // Coalesce the domain-event firehose before resolving shells:
-              // during streaming turns events arrive ~every 50ms per thread,
-              // and each resolved event costs projection queries plus a full
-              // thread-shell push per subscriber.
-              const liveStream = coalesceLatestAggregateEvents(
-                orchestrationEngine.streamDomainEvents,
-              ).pipe(
-                Stream.mapEffect(toShellStreamEvent),
-                Stream.flatMap((event) =>
-                  Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
-                ),
-              );
-
-              return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot,
+                    liveStream,
+                  );
                 }),
-                liveStream,
-              );
-            }),
+              ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
@@ -945,60 +958,75 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
-            Effect.gen(function* () {
-              const [threadDetail, snapshotSequence] = yield* Effect.all([
-                projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
-                  ),
-                ),
-                projectionSnapshotQuery.getSnapshotSequence().pipe(
-                  Effect.map(({ snapshotSequence }) => snapshotSequence),
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: "Failed to load orchestration snapshot sequence",
-                        cause,
-                      }),
-                  ),
-                ),
-              ]);
+            Effect.succeed(
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  // Subscribe before reading, and read the sequence before the
+                  // thread row: every event newer than snapshotSequence is then
+                  // guaranteed to reach the live stream. An event committed
+                  // between the two reads may be both in the snapshot and
+                  // re-delivered, which the client's id-keyed upsert reducers
+                  // absorb — losing it instead would leave the thread stale.
+                  const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
 
-              if (Option.isNone(threadDetail)) {
-                return yield* new OrchestrationGetSnapshotError({
-                  message: `Thread ${input.threadId} was not found`,
-                  cause: input.threadId,
-                });
-              }
+                  const snapshotSequence = yield* projectionSnapshotQuery
+                    .getSnapshotSequence()
+                    .pipe(
+                      Effect.map(({ snapshotSequence }) => snapshotSequence),
+                      Effect.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: "Failed to load orchestration snapshot sequence",
+                            cause,
+                          }),
+                      ),
+                    );
+                  const threadDetail = yield* projectionSnapshotQuery
+                    .getThreadDetailById(input.threadId)
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: `Failed to load thread ${input.threadId}`,
+                            cause,
+                          }),
+                      ),
+                    );
 
-              const liveStream = orchestrationEngine.streamDomainEvents.pipe(
-                Stream.filter(
-                  (event) =>
-                    event.aggregateKind === "thread" &&
-                    event.aggregateId === input.threadId &&
-                    isThreadDetailEvent(event),
-                ),
-                Stream.map((event) => ({
-                  kind: "event" as const,
-                  event,
-                })),
-              );
+                  if (Option.isNone(threadDetail)) {
+                    return yield* new OrchestrationGetSnapshotError({
+                      message: `Thread ${input.threadId} was not found`,
+                      cause: input.threadId,
+                    });
+                  }
 
-              return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: {
-                    snapshotSequence,
-                    thread: threadDetail.value,
-                  },
+                  const liveStream = domainEvents.pipe(
+                    Stream.filter(
+                      (event) =>
+                        event.sequence > snapshotSequence &&
+                        event.aggregateKind === "thread" &&
+                        event.aggregateId === input.threadId &&
+                        isThreadDetailEvent(event),
+                    ),
+                    Stream.map((event) => ({
+                      kind: "event" as const,
+                      event,
+                    })),
+                  );
+
+                  return Stream.concat(
+                    Stream.make({
+                      kind: "snapshot" as const,
+                      snapshot: {
+                        snapshotSequence,
+                        thread: threadDetail.value,
+                      },
+                    }),
+                    liveStream,
+                  );
                 }),
-                liveStream,
-              );
-            }),
+              ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [WS_METHODS.serverGetConfig]: (_input) =>

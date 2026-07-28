@@ -141,6 +141,13 @@ export interface Thread {
   goal: OrchestrationThreadGoal | null;
   /** Projected Codex realtime voice-session state. */
   voiceActive?: boolean;
+  /**
+   * Turn count this thread's cumulative diff starts *after*. Advanced when its
+   * checkout is seen with nothing uncommitted, so `turnDiffSummaries` at or
+   * below it are already committed away and must not be summed. Absent means 0
+   * (count everything).
+   */
+  diffStatBaselineTurnCount?: number;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
 }
@@ -167,6 +174,8 @@ export interface ThreadShell {
   goal: OrchestrationThreadGoal | null;
   /** See Thread.voiceActive. */
   voiceActive?: boolean;
+  /** See Thread.diffStatBaselineTurnCount. */
+  diffStatBaselineTurnCount?: number;
 }
 
 export interface ThreadTurnState {

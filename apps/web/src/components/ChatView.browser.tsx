@@ -416,6 +416,7 @@ function createSnapshotForTargetUser(options: {
         activities: [],
         proposedPlans: [],
         checkpoints: [],
+        diffStatBaselineTurnCount: 0,
         session: {
           threadId: THREAD_ID,
           providerThreadId: null,
@@ -486,6 +487,7 @@ function addThreadToSnapshot(
         activities: [],
         proposedPlans: [],
         checkpoints: [],
+        diffStatBaselineTurnCount: 0,
         session: {
           threadId,
           providerThreadId: null,
@@ -1045,6 +1047,7 @@ function createSnapshotWithSecondaryProject(options?: {
           activities: [],
           proposedPlans: [],
           checkpoints: [],
+          diffStatBaselineTurnCount: 0,
           session: {
             threadId: "thread-secondary-project" as ThreadId,
             providerThreadId: null,
@@ -1082,6 +1085,7 @@ function createSnapshotWithSecondaryProject(options?: {
           activities: [],
           proposedPlans: [],
           checkpoints: [],
+          diffStatBaselineTurnCount: 0,
           session: {
             threadId: ARCHIVED_SECONDARY_THREAD_ID,
             providerThreadId: null,

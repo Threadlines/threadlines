@@ -47,6 +47,20 @@ interface VcsStatusChange {
   readonly event: VcsStatusStreamEvent;
 }
 
+/**
+ * A freshly computed local status for a checkout, published on every refresh
+ * regardless of whether it changed anything or which subscriber asked for it.
+ *
+ * Distinct from the subscriber-facing `streamStatus` feed, which only carries
+ * *changes*: consumers that react to a standing condition ("this checkout has
+ * no uncommitted work") need to see the observation that re-confirms it too.
+ */
+export interface VcsLocalStatusObservation {
+  /** Normalized (real) path of the checkout the status was taken in. */
+  readonly cwd: string;
+  readonly local: VcsStatusLocalResult;
+}
+
 interface CachedValue<T> {
   readonly fingerprint: string;
   readonly updatedAtMs: number;
@@ -107,6 +121,12 @@ export interface VcsStatusBroadcasterShape {
     input: VcsStatusInput,
     options?: StreamStatusOptions,
   ) => Stream.Stream<VcsStatusStreamEvent, GitManagerServiceError>;
+  /**
+   * Every fresh local status this broadcaster computes, for consumers that
+   * observe checkouts rather than render them. Hot: observations produced while
+   * nothing is subscribed are dropped.
+   */
+  readonly observeLocalStatus: () => Stream.Stream<VcsLocalStatusObservation>;
 }
 
 export class VcsStatusBroadcaster extends Context.Service<
@@ -132,6 +152,10 @@ export const layer = Layer.effect(
     const path = yield* Path.Path;
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<VcsStatusChange>(),
+      (pubsub) => PubSub.shutdown(pubsub),
+    );
+    const localObservationsPubSub = yield* Effect.acquireRelease(
+      PubSub.unbounded<VcsLocalStatusObservation>(),
       (pubsub) => PubSub.shutdown(pubsub),
     );
     const broadcasterScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -173,6 +197,11 @@ export const layer = Layer.effect(
             },
           });
         }
+
+        // Unconditional, unlike the change feed above: an observer waiting for
+        // "this checkout is clean" has to see the refresh that keeps saying so,
+        // not just the one that first said it.
+        yield* PubSub.publish(localObservationsPubSub, { cwd, local });
 
         return local;
       },
@@ -594,11 +623,17 @@ export const layer = Layer.effect(
         }),
       );
 
+    const observeLocalStatus: VcsStatusBroadcasterShape["observeLocalStatus"] = () =>
+      Stream.unwrap(
+        PubSub.subscribe(localObservationsPubSub).pipe(Effect.map(Stream.fromSubscription)),
+      );
+
     return VcsStatusBroadcaster.of({
       getStatus,
       refreshLocalStatus,
       refreshStatus,
       streamStatus,
+      observeLocalStatus,
     });
   }),
 );

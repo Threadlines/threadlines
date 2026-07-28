@@ -139,6 +139,7 @@ function makeState(thread: Thread): AppState {
         effectiveCwd: thread.effectiveCwd,
         goal: null,
         voiceActive: thread.voiceActive ?? false,
+        diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
       },
     },
     threadSessionById: {
@@ -529,6 +530,7 @@ describe("incremental orchestration updates", () => {
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
           cumulativeDiffStat: { additions: 12, deletions: 4 },
+          diffStatBaselineTurnCount: 0,
         },
       },
       localEnvironmentId,
@@ -594,6 +596,123 @@ describe("incremental orchestration updates", () => {
 
     // Null is "nothing to say", not "+0 -0": a thread that has not touched a
     // file yet must not render a badge claiming a clean slate.
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toBe(null);
+  });
+
+  it("stops counting turns the checkout has already committed away", () => {
+    const state = makeState(
+      makeThread({
+        // The checkout was observed clean after turn 1, so only turn 2 is still
+        // uncommitted work this thread can claim.
+        diffStatBaselineTurnCount: 1,
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:00.000Z",
+            status: "ready",
+            checkpointRef: CheckpointRef.make("checkpoint-1"),
+            checkpointTurnCount: 1,
+            files: [{ path: "a.ts", kind: "modified", additions: 10, deletions: 2 }],
+          },
+        ],
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-diff-completed", {
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-2"),
+        checkpointTurnCount: 2,
+        checkpointRef: CheckpointRef.make("checkpoint-2"),
+        status: "ready",
+        files: [{ path: "b.ts", kind: "added", additions: 5, deletions: 3 }],
+        assistantMessageId: null,
+        completedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toEqual({ additions: 5, deletions: 3 });
+  });
+
+  it("clears the open thread's badge when a rebase event lands", () => {
+    const state = makeState(
+      makeThread({
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:00.000Z",
+            status: "ready",
+            checkpointRef: CheckpointRef.make("checkpoint-1"),
+            checkpointTurnCount: 1,
+            files: [{ path: "a.ts", kind: "modified", additions: 10, deletions: 2 }],
+          },
+        ],
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.diffstat-rebased", {
+        threadId: ThreadId.make("thread-1"),
+        baselineTurnCount: 1,
+        occurredAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    // The user committed everything the thread had produced, so the open
+    // thread's own recomputation has to go quiet too -- not just the sidebar.
+    expect(
+      localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
+        ?.cumulativeDiffStat,
+    ).toBe(null);
+  });
+
+  it("keeps the open thread's badge clear while every turn is below the baseline", () => {
+    const state = makeState(
+      makeThread({
+        diffStatBaselineTurnCount: 2,
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:00.000Z",
+            status: "ready",
+            checkpointRef: CheckpointRef.make("checkpoint-1"),
+            checkpointTurnCount: 1,
+            files: [{ path: "a.ts", kind: "modified", additions: 10, deletions: 2 }],
+          },
+          {
+            turnId: TurnId.make("turn-2"),
+            completedAt: "2026-02-27T00:00:01.000Z",
+            status: "ready",
+            checkpointRef: CheckpointRef.make("checkpoint-2"),
+            checkpointTurnCount: 2,
+            files: [{ path: "b.ts", kind: "added", additions: 5, deletions: 3 }],
+          },
+        ],
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.meta-updated", {
+        threadId: ThreadId.make("thread-1"),
+        title: "Updated title",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    // Same "nothing to say" the server rollup produces when the baseline has
+    // swallowed every turn, so the open thread and the sidebar agree.
     expect(
       localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
         ?.cumulativeDiffStat,

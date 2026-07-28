@@ -70,6 +70,7 @@ function thread(
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
+    diffStatBaselineTurnCount: 0,
     ...overrides,
   };
 }
@@ -109,6 +110,7 @@ function makeSnapshotQuery(
     getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
     getThreadCheckpointContext: () => Effect.succeed(Option.none()),
     getFullThreadDiffContext: () => Effect.succeed(Option.none()),
+    listThreadDiffStatBaselines: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
@@ -165,6 +167,7 @@ describe("ThreadAutoArchiveSweeper", () => {
         );
       },
       streamDomainEvents: Stream.empty,
+      subscribeDomainEvents: Effect.succeed(Stream.empty),
     };
     const layer = makeThreadAutoArchiveSweeperLive({ sweepIntervalMs: 60_000 }).pipe(
       Layer.provideMerge(

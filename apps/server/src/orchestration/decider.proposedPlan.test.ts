@@ -62,6 +62,7 @@ function makeReadModel(proposedPlan: OrchestrationProposedPlan): OrchestrationRe
         proposedPlans: [proposedPlan],
         activities: [],
         checkpoints: [],
+        diffStatBaselineTurnCount: 0,
         session: null,
       },
     ],

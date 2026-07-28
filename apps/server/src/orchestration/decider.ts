@@ -14,6 +14,7 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   findProjectById,
   listThreadsByProjectId,
+  requireNonNegativeInteger,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -1367,6 +1368,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           files: command.files,
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
+        },
+      };
+    }
+
+    case "thread.diffstat.rebase": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      yield* requireNonNegativeInteger({
+        commandType: command.type,
+        field: "baselineTurnCount",
+        value: command.baselineTurnCount,
+      });
+      // Forward-only. Rejecting an equal baseline is what makes the clean-
+      // checkout observer idempotent: a checkout that stays clean re-derives
+      // the same baseline on every poll and must not append an event each time.
+      if (command.baselineTurnCount <= thread.diffStatBaselineTurnCount) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' already counts its diff from turn ${thread.diffStatBaselineTurnCount}; baseline cannot move to ${command.baselineTurnCount}.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.diffstat-rebased",
+        payload: {
+          threadId: command.threadId,
+          baselineTurnCount: command.baselineTurnCount,
+          occurredAt: command.createdAt,
         },
       };
     }

@@ -36,6 +36,12 @@ export const ProjectionThread = Schema.Struct({
   effectiveCwd: Schema.NullOr(Schema.String),
   goal: Schema.NullOr(OrchestrationThreadGoal),
   voiceActive: Schema.optional(NonNegativeInt),
+  /**
+   * Turn count the thread's cumulative diff rollup starts after. See
+   * `OrchestrationThreadShell.diffStatBaselineTurnCount`. Optional so rows
+   * written before migration 041 decode; absent means 0.
+   */
+  diffStatBaselineTurnCount: Schema.optional(NonNegativeInt),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
