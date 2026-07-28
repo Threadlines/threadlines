@@ -72,11 +72,13 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
-  buildProjectChips,
+  buildProjectScopeOptions,
   canMarkThreadDone,
   countThreadsNeedingUser,
   getSidebarThreadIdsToPrewarm,
   isNeedsUserStatus,
+  isTwoLineInboxRow,
+  INBOX_AUTO_DONE_AFTER_DAYS,
   isThreadDone,
   resolveAdjacentThreadId,
   resolveDoneTimestamp,
@@ -90,7 +92,7 @@ import {
   type ThreadStatusPill,
 } from "./Sidebar.logic";
 import { InboxDoneRow, InboxThreadRow } from "./sidebar/InboxRows";
-import { ProjectChipsRow } from "./sidebar/ProjectChipsRow";
+import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
@@ -115,8 +117,6 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
-/** How many chips fit beside "All" and the add-project button. */
-const MAX_PROJECT_CHIPS = 3;
 /** The Done tail opens short and reveals in bigger steps: it is history. */
 const DONE_PREVIEW_COUNT = 10;
 const DONE_REVEAL_STEP = 20;
@@ -166,9 +166,14 @@ function buildThreadJumpLabelMap(input: {
 }
 
 /** Section voice for the inbox: mono, quiet, with the count on the right. */
+/**
+ * Section voice for the inbox, and the list's only structural rule: with rows
+ * separated by spacing rather than borders, the hairline belongs to the
+ * boundary between sections.
+ */
 function InboxSectionHeader({ label, children }: { label: string; children?: React.ReactNode }) {
   return (
-    <div className="flex items-baseline gap-2 px-3 pt-3 pb-1.5">
+    <div className="mt-1 flex items-baseline gap-2 border-t border-border px-3 pt-2.5 pb-1.5">
       <SectionLabel tick={false} className="font-mono text-[11px] tracking-[0.06em]">
         {label}
       </SectionLabel>
@@ -484,7 +489,10 @@ export default function Sidebar() {
         });
         const projectKey = resolveThreadProjectKey(thread);
         const override = doneThreadOverrides[threadKey];
-        const isDone = isThreadDone(thread, override, { now: nowIso });
+        const isDone = isThreadDone({ ...thread, lastVisitedAt }, override, {
+          now: nowIso,
+          autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
+        });
         return {
           thread,
           threadKey,
@@ -511,7 +519,7 @@ export default function Sidebar() {
       ? inboxProjectScopeKey
       : null;
 
-  const { chips, overflowChips } = useMemo(() => {
+  const scopeOptions = useMemo(() => {
     const lastActivityMsByKey = new Map<string, number>();
     const needsYouCountByKey = new Map<string, number>();
     for (const entry of entries) {
@@ -530,19 +538,16 @@ export default function Sidebar() {
         );
       }
     }
-    const built = buildProjectChips({
+    return buildProjectScopeOptions({
       projects: sidebarProjects
         .filter((project) => project.kind !== "general-chat")
         .map((project) => ({ key: project.projectKey, label: project.displayName })),
       lastActivityMsByKey,
       needsYouCountByKey,
-      scopedKey: scopedProjectKeyValue,
-      maxChips: MAX_PROJECT_CHIPS,
     });
-    return { chips: built.chips, overflowChips: built.overflow };
-  }, [entries, scopedProjectKeyValue, sidebarProjects]);
+  }, [entries, sidebarProjects]);
 
-  const { liveEntries, doneEntries } = useMemo(() => {
+  const { liveRows, doneEntries } = useMemo(() => {
     const scoped =
       scopedProjectKeyValue === null
         ? entries
@@ -553,17 +558,34 @@ export default function Sidebar() {
     const liveEntries = sortInboxThreads(
       scoped.filter((entry) => !entry.isDone).map((entry) => entry.thread),
     ).map(lookup);
+    // Tall rows are ruled off from each other; quiet ones lean on spacing, so
+    // a run of them reads as a list rather than a table.
+    const liveRows = liveEntries.map((entry, index) => {
+      const isTwoLine = isTwoLineInboxRow({
+        status: entry.status,
+        projectLabel: scopedProjectKeyValue === null ? entry.projectLabel : null,
+        branch: entry.thread.branch,
+      });
+      return { entry, isTwoLine, index };
+    });
     const doneEntries = sortDoneThreads(
       scoped.filter((entry) => entry.isDone).map((entry) => entry.thread),
       (thread) =>
         doneThreadOverrides[scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))],
     ).map(lookup);
-    return { liveEntries, doneEntries };
+    return {
+      liveRows: liveRows.map(({ entry, isTwoLine, index }) => ({
+        entry,
+        isTwoLine,
+        showDivider: index > 0 && isTwoLine && (liveRows[index - 1]?.isTwoLine ?? false),
+      })),
+      doneEntries,
+    };
   }, [doneThreadOverrides, entries, scopedProjectKeyValue]);
 
   const needsYouCount = useMemo(
-    () => countThreadsNeedingUser(liveEntries.map((entry) => entry.status)),
-    [liveEntries],
+    () => countThreadsNeedingUser(liveRows.map((row) => row.entry.status)),
+    [liveRows],
   );
   const visibleDoneEntries = useMemo(
     () => doneEntries.slice(0, DONE_PREVIEW_COUNT + revealedDoneCount),
@@ -581,10 +603,10 @@ export default function Sidebar() {
 
   const orderedThreadKeys = useMemo(
     () => [
-      ...liveEntries.map((entry) => entry.threadKey),
+      ...liveRows.map((row) => row.entry.threadKey),
       ...visibleDoneEntries.map((entry) => entry.threadKey),
     ],
-    [liveEntries, visibleDoneEntries],
+    [liveRows, visibleDoneEntries],
   );
 
   const navigateToThread = useCallback(
@@ -1261,9 +1283,8 @@ export default function Sidebar() {
                 </div>
               </SidebarGroup>
 
-              <ProjectChipsRow
-                chips={chips}
-                overflow={overflowChips}
+              <ProjectScopeMenu
+                options={scopeOptions}
                 projectByKey={sidebarProjectByKey}
                 scopedProjectKey={scopedProjectKeyValue}
                 onScopeChange={handleScopeChange}
@@ -1272,7 +1293,7 @@ export default function Sidebar() {
               />
 
               <InboxSectionHeader label="Threads">
-                {liveEntries.length > 0 ? (
+                {liveRows.length > 0 ? (
                   <>
                     {needsYouCount > 0 ? (
                       <span className="text-amber-600 dark:text-amber-300/90">
@@ -1280,23 +1301,25 @@ export default function Sidebar() {
                       </span>
                     ) : null}
                     {needsYouCount > 0 ? " · " : null}
-                    {liveEntries.length}
+                    {liveRows.length}
                   </>
                 ) : null}
               </InboxSectionHeader>
 
-              {liveEntries.length === 0 ? (
-                <div className="border-t border-border px-3 py-3 text-[11px] text-muted-foreground/60">
+              {liveRows.length === 0 ? (
+                <div className="px-3 py-2 text-[11px] text-muted-foreground/60">
                   {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
                 </div>
               ) : (
                 <ul data-testid="inbox-thread-list">
-                  {liveEntries.map((entry) => (
+                  {liveRows.map(({ entry, isTwoLine, showDivider }) => (
                     <InboxThreadRow
                       key={entry.threadKey}
                       thread={entry.thread}
                       status={entry.status}
                       projectLabel={scopedProjectKeyValue === null ? entry.projectLabel : null}
+                      isTwoLine={isTwoLine}
+                      showDivider={showDivider}
                       isActive={routeThreadKey === entry.threadKey}
                       jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
                       canMarkDone={entry.canMarkDone}

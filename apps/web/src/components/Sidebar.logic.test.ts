@@ -19,7 +19,12 @@ import {
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
-import { buildProjectChips, isThreadDone, sortInboxThreads } from "./Sidebar.logic";
+import {
+  buildProjectScopeOptions,
+  isThreadDone,
+  isTwoLineInboxRow,
+  sortInboxThreads,
+} from "./Sidebar.logic";
 import {
   EnvironmentId,
   OrchestrationLatestTurn,
@@ -54,13 +59,8 @@ describe("hasUnseenCompletion", () => {
   it("returns true when a thread completed after its last visit", () => {
     expect(
       hasUnseenCompletion({
-        hasActionableProposedPlan: false,
-        hasPendingApprovals: false,
-        hasPendingUserInput: false,
-        interactionMode: "default",
         latestTurn: makeLatestTurn(),
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
-        session: null,
       }),
     ).toBe(true);
   });
@@ -1024,6 +1024,8 @@ describe("inbox done lifecycle", () => {
     session: null,
     latestUserMessageAt: null,
     latestTurn: null,
+    createdAt: "2026-07-27T12:00:00.000Z",
+    updatedAt: undefined,
   };
   const doneMark = { state: "done", at: NOW } as const;
 
@@ -1074,6 +1076,47 @@ describe("inbox done lifecycle", () => {
     expect(isThreadDone(base, null, { now: NOW })).toBe(false);
     expect(isThreadDone(base, { state: "active", at: NOW }, { now: NOW })).toBe(false);
   });
+
+  it("ignores an override older than the thread's last activity", () => {
+    // New work outranks an old word, in both directions: the done thread that
+    // starts again returns by itself, the reopened one may re-file itself.
+    const activeAgain = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+    };
+    expect(
+      isThreadDone(activeAgain, { state: "done", at: "2026-07-28T10:00:00.000Z" }, { now: NOW }),
+    ).toBe(false);
+  });
+
+  it("files an idle thread under Done on its own", () => {
+    const staleThread = {
+      ...base,
+      latestUserMessageAt: "2026-07-24T12:00:00.000Z",
+    };
+    expect(isThreadDone(staleThread, null, { now: NOW, autoDoneAfterDays: 2 })).toBe(true);
+    // Fresh activity holds it live under the same rule.
+    expect(
+      isThreadDone({ ...base, latestUserMessageAt: "2026-07-28T09:00:00.000Z" }, null, {
+        now: NOW,
+        autoDoneAfterDays: 2,
+      }),
+    ).toBe(false);
+  });
+
+  it("never auto-files a completion the user has not seen", () => {
+    // Filing unread work is the sidebar reading your mail for you. Only an
+    // explicit Done may put an unseen completion in the tail.
+    const unseen = {
+      ...base,
+      latestTurn: { completedAt: "2026-07-24T12:00:00.000Z" } as never,
+      lastVisitedAt: undefined,
+    };
+    expect(isThreadDone(unseen, null, { now: NOW, autoDoneAfterDays: 2 })).toBe(false);
+    expect(
+      isThreadDone(unseen, { state: "done", at: NOW }, { now: NOW, autoDoneAfterDays: 2 }),
+    ).toBe(true);
+  });
 });
 
 describe("sortInboxThreads", () => {
@@ -1090,46 +1133,50 @@ describe("sortInboxThreads", () => {
   });
 });
 
-describe("buildProjectChips", () => {
-  const projects = [
-    { key: "a", label: "alpha" },
-    { key: "b", label: "beta" },
-    { key: "c", label: "gamma" },
-    { key: "d", label: "delta" },
-  ];
-  const activity = new Map([
-    ["a", 400],
-    ["b", 300],
-    ["c", 200],
-    ["d", 100],
-  ]);
-
+describe("buildProjectScopeOptions", () => {
   it("orders by recent activity and carries needs-you counts", () => {
-    const { chips, overflow } = buildProjectChips({
-      projects,
-      lastActivityMsByKey: activity,
+    const options = buildProjectScopeOptions({
+      projects: [
+        { key: "a", label: "alpha" },
+        { key: "b", label: "beta" },
+        { key: "c", label: "gamma" },
+        { key: "d", label: "delta" },
+      ],
+      lastActivityMsByKey: new Map([
+        ["a", 400],
+        ["b", 300],
+        ["c", 200],
+      ]),
       needsYouCountByKey: new Map([["b", 2]]),
-      scopedKey: null,
-      maxChips: 3,
     });
 
-    expect(chips.map((chip) => chip.key)).toEqual(["a", "b", "c"]);
-    expect(chips[1]?.needsYouCount).toBe(2);
-    expect(overflow.map((chip) => chip.key)).toEqual(["d"]);
+    // "d" has never been touched, so it sorts last rather than dropping out.
+    expect(options.map((option) => option.key)).toEqual(["a", "b", "c", "d"]);
+    expect(options[1]?.needsYouCount).toBe(2);
+    expect(options[0]?.needsYouCount).toBe(0);
   });
+});
 
-  it("pulls the scoped project out of the overflow", () => {
-    // Filtering by a project and watching its chip vanish into the ellipsis
-    // reads as the sidebar losing your place.
-    const { chips, overflow } = buildProjectChips({
-      projects,
-      lastActivityMsByKey: activity,
-      needsYouCountByKey: new Map(),
-      scopedKey: "d",
-      maxChips: 3,
-    });
+describe("isTwoLineInboxRow", () => {
+  const pill = {
+    label: "Working" as const,
+    colorClass: "",
+    dotClass: "",
+    pulse: true,
+  };
 
-    expect(chips.map((chip) => chip.key)).toEqual(["a", "b", "d"]);
-    expect(overflow.map((chip) => chip.key)).toEqual(["c"]);
+  it("spends a second line only on rows with something to put there", () => {
+    expect(isTwoLineInboxRow({ status: pill, projectLabel: null, branch: null })).toBe(true);
+    expect(
+      isTwoLineInboxRow({ status: null, projectLabel: "badcode", branch: "feature/inbox" }),
+    ).toBe(true);
+    // Scoped: the project is implied and the branch alone does not earn a line.
+    expect(isTwoLineInboxRow({ status: null, projectLabel: null, branch: "main" })).toBe(false);
+    expect(isTwoLineInboxRow({ status: null, projectLabel: "badcode", branch: null })).toBe(false);
+    // A default-branch name is a branch line saying nothing: "main" tells you
+    // no more than the row's existence does.
+    expect(isTwoLineInboxRow({ status: null, projectLabel: "badcode", branch: "main" })).toBe(
+      false,
+    );
   });
 });

@@ -1,9 +1,9 @@
-import { EllipsisIcon, FolderPlusIcon, MessagesSquareIcon } from "lucide-react";
+import { ChevronDownIcon, FolderPlusIcon, MessagesSquareIcon } from "lucide-react";
 import React, { memo, useCallback, useState } from "react";
 import type { ContextMenuItem, SidebarProjectGroupingMode } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
 
-import { cn, newCommandId } from "../../lib/utils";
+import { newCommandId } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -18,7 +18,7 @@ import type {
   SidebarProjectGroupMember,
   SidebarProjectSnapshot,
 } from "../../sidebarProjectGrouping";
-import type { ProjectChipModel } from "../Sidebar.logic";
+import type { ProjectScopeOption } from "../Sidebar.logic";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -30,7 +30,15 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -63,31 +71,31 @@ function formatProjectMemberActionLabel(
   return member.environmentLabel ? `${member.environmentLabel} — ${member.cwd}` : member.cwd;
 }
 
-const CHIP_CLASS_NAME =
-  "inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-md px-2 text-[11.5px] transition-colors focus-ring";
+/** The radio value standing in for "no project scope"; keys are never empty. */
+const ALL_PROJECTS_VALUE = "";
 
-export interface ProjectChipsRowProps {
-  chips: readonly ProjectChipModel[];
-  overflow: readonly ProjectChipModel[];
+export interface ProjectScopeMenuProps {
+  options: readonly ProjectScopeOption[];
   projectByKey: ReadonlyMap<string, SidebarProjectSnapshot>;
   scopedProjectKey: string | null;
   onScopeChange: (projectKey: string | null) => void;
   onAddProject: () => void;
-  /** Null while there are no general chats: the footer link has nothing to open. */
+  /** Null while there are no general chats: the link has nothing to open. */
   onOpenChats: (() => void) | null;
 }
 
 /**
- * The scope filter, one click per project.
+ * The scope filter: one quiet line naming what the list is showing.
  *
- * Projects stopped being a tree, so this is where a project is addressed:
- * picking a chip narrows the list, and the chip's context menu holds what the
- * project header used to (rename, grouping, path, removal). "Add project" is a
- * primary action pinned to the right end; the overflow chip appears only when
- * there are projects it has to hold.
+ * Projects stopped being a tree, so this is where a project is addressed.
+ * Picking one narrows the list; right-clicking it opens what the project
+ * header used to hold (rename, grouping, path, removal), which keeps those
+ * off the menu itself. A menu scales with the pane where a chip row could
+ * not, so only "Add project" stays out here as a visible button.
  */
-export const ProjectChipsRow = memo(function ProjectChipsRow(props: ProjectChipsRowProps) {
-  const { chips, overflow, projectByKey, scopedProjectKey, onScopeChange, onAddProject } = props;
+export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectScopeMenuProps) {
+  const { options, projectByKey, scopedProjectKey, onScopeChange, onAddProject, onOpenChats } =
+    props;
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const { updateSettings } = useUpdateSettings();
   const [projectRenameTarget, setProjectRenameTarget] = useState<SidebarProjectGroupMember | null>(
@@ -429,7 +437,7 @@ export const ProjectChipsRow = memo(function ProjectChipsRow(props: ProjectChips
     updateSettings,
   ]);
 
-  const handleChipContextMenu = useCallback(
+  const handleProjectContextMenu = useCallback(
     (event: React.MouseEvent, projectKey: string) => {
       const project = projectByKey.get(projectKey);
       if (!project) return;
@@ -439,93 +447,71 @@ export const ProjectChipsRow = memo(function ProjectChipsRow(props: ProjectChips
     [projectByKey, showProjectContextMenu],
   );
 
-  const showOverflowChip = overflow.length > 0 || props.onOpenChats !== null;
+  const scopedProject =
+    scopedProjectKey === null ? null : (projectByKey.get(scopedProjectKey) ?? null);
 
   return (
     <>
-      <div className="flex items-center gap-1 overflow-hidden px-2 pb-1.5">
-        <button
-          type="button"
-          data-testid="inbox-scope-all"
-          aria-pressed={scopedProjectKey === null}
-          className={cn(
-            CHIP_CLASS_NAME,
-            scopedProjectKey === null
-              ? "bg-sidebar-accent text-foreground"
-              : "text-muted-foreground/80 hover:bg-sidebar-accent/60 hover:text-foreground",
-          )}
-          onClick={() => {
-            onScopeChange(null);
-          }}
-        >
-          All
-        </button>
-        {chips.map((chip) => (
-          <button
-            key={chip.key}
-            type="button"
-            data-testid={`inbox-scope-${chip.key}`}
-            aria-pressed={scopedProjectKey === chip.key}
-            className={cn(
-              CHIP_CLASS_NAME,
-              "min-w-0",
-              scopedProjectKey === chip.key
-                ? "bg-sidebar-accent text-foreground"
-                : "text-muted-foreground/80 hover:bg-sidebar-accent/60 hover:text-foreground",
-            )}
-            onClick={() => {
-              onScopeChange(scopedProjectKey === chip.key ? null : chip.key);
-            }}
-            onContextMenu={(event) => {
-              handleChipContextMenu(event, chip.key);
+      <div className="flex items-center gap-1 px-2 pb-1.5">
+        <Menu>
+          <MenuTrigger
+            data-testid="inbox-scope-trigger"
+            className="inline-flex h-6 min-w-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground/80 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+            // Right-clicking the trigger addresses the project you are already
+            // scoped to, so the menu is not the only way in.
+            onContextMenu={(event: React.MouseEvent) => {
+              if (scopedProject) {
+                handleProjectContextMenu(event, scopedProject.projectKey);
+              }
             }}
           >
-            <span className="min-w-0 truncate">{chip.label}</span>
-            {chip.needsYouCount > 0 ? (
-              <span className="shrink-0 font-mono text-[10px] text-muted-foreground/50">
-                {chip.needsYouCount}
-              </span>
-            ) : null}
-          </button>
-        ))}
-        {showOverflowChip ? (
-          <Menu>
-            <MenuTrigger
-              className={cn(
-                CHIP_CLASS_NAME,
-                "px-1.5 text-muted-foreground/70 hover:bg-sidebar-accent/60 hover:text-foreground",
-              )}
-              aria-label="More projects"
-              data-testid="inbox-scope-overflow"
+            <span className="min-w-0 truncate">{scopedProject?.displayName ?? "All projects"}</span>
+            <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/50" />
+          </MenuTrigger>
+          <MenuPopup align="start" side="bottom" className="min-w-56">
+            <MenuRadioGroup
+              value={scopedProjectKey ?? ALL_PROJECTS_VALUE}
+              onValueChange={(value) => {
+                onScopeChange(value === ALL_PROJECTS_VALUE ? null : String(value));
+              }}
             >
-              <EllipsisIcon className="size-3.5" />
-            </MenuTrigger>
-            <MenuPopup align="start" side="bottom" className="min-w-48">
-              {overflow.map((chip) => (
-                <MenuItem
-                  key={chip.key}
-                  onClick={() => {
-                    onScopeChange(chip.key);
+              <MenuRadioItem data-testid="inbox-scope-all" value={ALL_PROJECTS_VALUE}>
+                All projects
+              </MenuRadioItem>
+              {options.map((option) => (
+                <MenuRadioItem
+                  key={option.key}
+                  data-testid={`inbox-scope-${option.key}`}
+                  value={option.key}
+                  // Same management actions the project header used to hold.
+                  onContextMenu={(event: React.MouseEvent) => {
+                    handleProjectContextMenu(event, option.key);
                   }}
                 >
-                  <span className="min-w-0 flex-1 truncate">{chip.label}</span>
-                  {chip.needsYouCount > 0 ? (
-                    <span className="font-mono text-[10px] text-muted-foreground/60">
-                      {chip.needsYouCount}
-                    </span>
-                  ) : null}
-                </MenuItem>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    {option.needsYouCount > 0 ? (
+                      <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">
+                        {option.needsYouCount}
+                      </span>
+                    ) : null}
+                  </span>
+                </MenuRadioItem>
               ))}
-              {overflow.length > 0 && props.onOpenChats ? <MenuSeparator /> : null}
-              {props.onOpenChats ? (
-                <MenuItem data-testid="inbox-chats-link" onClick={props.onOpenChats}>
-                  <MessagesSquareIcon />
-                  <span className="min-w-0 flex-1 truncate">General chats</span>
-                </MenuItem>
-              ) : null}
-            </MenuPopup>
-          </Menu>
-        ) : null}
+            </MenuRadioGroup>
+            <MenuSeparator />
+            {onOpenChats ? (
+              <MenuItem data-testid="inbox-chats-link" onClick={onOpenChats}>
+                <MessagesSquareIcon />
+                <span className="min-w-0 flex-1 truncate">Chats</span>
+              </MenuItem>
+            ) : null}
+            <MenuItem onClick={onAddProject}>
+              <FolderPlusIcon />
+              <span className="min-w-0 flex-1 truncate">Add project…</span>
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -533,10 +519,7 @@ export const ProjectChipsRow = memo(function ProjectChipsRow(props: ProjectChips
                 type="button"
                 aria-label="Add project"
                 data-testid="sidebar-add-project-trigger"
-                className={cn(
-                  CHIP_CLASS_NAME,
-                  "ml-auto px-1.5 text-muted-foreground/60 hover:bg-sidebar-accent/60 hover:text-foreground",
-                )}
+                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
                 onClick={onAddProject}
               />
             }

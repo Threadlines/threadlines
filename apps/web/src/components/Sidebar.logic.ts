@@ -149,7 +149,9 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
+export function hasUnseenCompletion(
+  thread: Pick<SidebarThreadSummary, "latestTurn"> & { lastVisitedAt?: string | undefined },
+): boolean {
   if (!thread.latestTurn?.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
@@ -618,19 +620,48 @@ export interface ThreadDoneOverride {
   readonly at: string;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
 /**
- * Where a thread lives. The blockers outrank the override in both
- * directions: new activity in a done thread pulls it back to the live list
- * without anyone having to un-mark it, which is what makes Done safe to use
- * freely.
+ * How long a thread sits idle before it files itself under Done.
+ *
+ * Without this the live list is every thread ever opened: one-off questions
+ * from three weeks ago standing shoulder to shoulder with this morning's
+ * work, which is the sidebar this design exists to replace. Two days keeps
+ * yesterday's threads at hand and lets the weekend clear the desk.
+ */
+export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
+
+/**
+ * Where a thread lives. Resolution order, each layer outranking the next:
+ *
+ * 1. Blockers. Moving or blocked-on-you work is live, whatever anyone said.
+ * 2. The user's override -- but only while it is FRESHER than the thread's
+ *    last activity. New work outranks an old word in both directions: a done
+ *    thread that starts again pulls itself back without being un-marked, and
+ *    a reopened thread that goes quiet again is allowed to re-file itself.
+ * 3. Auto-done on idle, unless the thread holds a completion the user has
+ *    not seen -- unread work is the inbox's reason to exist, and filing it
+ *    unread would be the sidebar reading your mail for you.
  */
 export function isThreadDone(
-  thread: InboxLifecycleInput,
+  thread: InboxLifecycleInput & DoneSortInput & { readonly lastVisitedAt?: string | undefined },
   override: ThreadDoneOverride | null | undefined,
-  options: { readonly now: string },
+  options: { readonly now: string; readonly autoDoneAfterDays?: number | null },
 ): boolean {
   if (!canMarkThreadDone(thread, options)) return false;
-  return override?.state === "done";
+  const lastActivityAt = resolveDoneTimestamp(thread, null);
+  const overrideIsStale =
+    override != null &&
+    lastActivityAt !== null &&
+    Date.parse(lastActivityAt) > Date.parse(override.at);
+  if (override != null && !overrideIsStale) {
+    return override.state === "done";
+  }
+  if (options.autoDoneAfterDays == null) return false;
+  if (hasUnseenCompletion(thread)) return false;
+  if (lastActivityAt === null) return false;
+  return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;
 }
 
 /**
@@ -705,56 +736,59 @@ export function sortDoneThreads<T extends DoneSortInput & { readonly id: string 
   );
 }
 
-// ── Project chips ────────────────────────────────────────────────────
+// ── Project scope ────────────────────────────────────────────────────
 
-export interface ProjectChipModel {
+export interface ProjectScopeOption {
   readonly key: string;
   readonly label: string;
-  /** Threads in this project blocked on the user, shown on the chip. */
+  /** Threads in this project blocked on the user, shown beside its name. */
   readonly needsYouCount: number;
 }
 
 /**
- * Which projects earn a chip, in most-recently-active order.
+ * The scope menu's projects, most-recently-active first.
  *
- * The scoped project always gets a chip even when its activity would not
- * earn one: filtering by a project and then watching its chip vanish into
- * the overflow reads as the sidebar losing your place.
+ * A menu has room for all of them, so ordering is the whole job: whatever you
+ * touched last sits under the cursor when the menu opens.
  */
-export function buildProjectChips(input: {
+export function buildProjectScopeOptions(input: {
   readonly projects: ReadonlyArray<{ readonly key: string; readonly label: string }>;
   readonly lastActivityMsByKey: ReadonlyMap<string, number>;
   readonly needsYouCountByKey: ReadonlyMap<string, number>;
-  readonly scopedKey: string | null;
-  readonly maxChips: number;
-}): { readonly chips: ProjectChipModel[]; readonly overflow: ProjectChipModel[] } {
-  const toModel = (project: { key: string; label: string }): ProjectChipModel => ({
-    key: project.key,
-    label: project.label,
-    needsYouCount: input.needsYouCountByKey.get(project.key) ?? 0,
-  });
-  const ordered = [...input.projects]
+}): ProjectScopeOption[] {
+  return [...input.projects]
     .toSorted(
       (left, right) =>
         (input.lastActivityMsByKey.get(right.key) ?? 0) -
           (input.lastActivityMsByKey.get(left.key) ?? 0) || left.label.localeCompare(right.label),
     )
-    .map(toModel);
-  if (ordered.length <= input.maxChips) {
-    return { chips: ordered, overflow: [] };
-  }
-  const chips = ordered.slice(0, input.maxChips);
-  const overflow = ordered.slice(input.maxChips);
-  if (input.scopedKey !== null && !chips.some((chip) => chip.key === input.scopedKey)) {
-    const scoped = overflow.find((chip) => chip.key === input.scopedKey);
-    if (scoped !== undefined) {
-      // The scoped project takes the last visible slot; the displaced chip
-      // joins the overflow where the scoped one came from.
-      const displaced = chips[chips.length - 1]!;
-      chips[chips.length - 1] = scoped;
-      const index = overflow.indexOf(scoped);
-      overflow[index] = displaced;
-    }
-  }
-  return { chips, overflow };
+    .map((project) => ({
+      key: project.key,
+      label: project.label,
+      needsYouCount: input.needsYouCountByKey.get(project.key) ?? 0,
+    }));
+}
+
+/**
+ * Whether a live row earns a second line.
+ *
+ * A row spends one only when it has something to put there: a status (which
+ * includes an unseen completion), or -- while the list spans every project --
+ * the branch the work sits on. Everything else collapses to a single line, so
+ * the threads that are moving carry the weight and quiet ones recede.
+ */
+export function isTwoLineInboxRow(input: {
+  readonly status: ThreadStatusPill | null;
+  readonly projectLabel: string | null;
+  readonly branch: string | null;
+}): boolean {
+  if (input.status !== null) return true;
+  // A default-branch name is a branch line saying nothing: "main" tells you
+  // no more than the row's existence does. Name-based rather than asking git
+  // which ref is default, because this is display economy, not correctness --
+  // a repo whose default is called something else gets one avoidable second
+  // line, and that is the whole cost of guessing wrong.
+  const branchWorthShowing =
+    input.branch !== null && input.branch !== "main" && input.branch !== "master";
+  return input.projectLabel !== null && branchWorthShowing;
 }

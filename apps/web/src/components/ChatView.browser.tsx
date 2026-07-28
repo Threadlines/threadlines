@@ -102,7 +102,10 @@ const PROJECT_LOGICAL_KEY = deriveLogicalProjectKeyFromSettings(
     sidebarProjectGroupingOverrides: DEFAULT_CLIENT_SETTINGS.sidebarProjectGroupingOverrides,
   },
 );
-const NOW_ISO = "2026-03-04T12:00:00.000Z";
+// The fixture clock is "a few minutes ago", not a fixed date: the sidebar's
+// lifecycle is relative (threads file themselves under Done once idle), so a
+// pinned calendar date would age into the Done tail as real time moved on.
+const NOW_ISO = new Date(Date.now() - 10 * 60_000).toISOString();
 const BASE_TIME_MS = Date.parse(NOW_ISO);
 const ATTACHMENT_SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'></svg>";
 const ADD_PROJECT_SUBMENU_PLACEHOLDER = "Enter path (e.g. ~/projects/my-app)";
@@ -2375,13 +2378,28 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("narrows the live list to the scoped project and hides the implied label", async () => {
+  function withThreadBranch(
+    snapshot: ReturnType<typeof createSnapshotForTargetUser>,
+    branch: string,
+  ): ReturnType<typeof createSnapshotForTargetUser> {
+    return {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID ? { ...thread, branch } : thread,
+      ),
+    };
+  }
+
+  it("narrows the live list from the scope menu and compresses the implied row", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-scope-target" as MessageId,
-        targetText: "scope target",
-      }),
+      snapshot: withThreadBranch(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-scope-target" as MessageId,
+          targetText: "scope target",
+        }),
+        "feature/scope-test",
+      ),
     });
 
     try {
@@ -2389,8 +2407,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find thread row.",
       );
+      // Unscoped: the row names its project and the branch its work sits on --
+      // a FEATURE branch. A thread on main would compress to one line, since
+      // the default branch's name carries no information.
       expect(threadRow.textContent).toContain("Project");
+      expect(threadRow.textContent).toContain("feature/scope-test");
 
+      await page.getByTestId("inbox-scope-trigger").click();
       await page.getByTestId(`inbox-scope-${PROJECT_LOGICAL_KEY}`).click();
 
       await vi.waitFor(
@@ -2400,7 +2423,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
             `[data-testid="thread-row-${THREAD_ID}"]`,
           );
           expect(scopedRow).not.toBeNull();
+          // Scoped and quiet: project implied, branch dropped, one line left.
           expect(scopedRow?.textContent).not.toContain("Project");
+          expect(scopedRow?.textContent).not.toContain("main");
         },
         { timeout: 4_000, interval: 16 },
       );
