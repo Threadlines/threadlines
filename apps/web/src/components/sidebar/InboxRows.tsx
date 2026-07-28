@@ -339,7 +339,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
 
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
-      <ThreadHoverCard thread={thread} status={status} side="right">
+      <ThreadHoverCard thread={thread} status={status}>
         <div
           role="button"
           tabIndex={0}
@@ -707,7 +707,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     >
       {/* Same card the live rows carry: a wrapped thread's detail is no less
           worth a hover, and status={null} reads as its idle state. */}
-      <ThreadHoverCard thread={thread} status={null} side="right">
+      <ThreadHoverCard thread={thread} status={null}>
         <div
           role="button"
           tabIndex={0}

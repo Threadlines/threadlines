@@ -100,6 +100,7 @@ import {
 import { InboxDoneRow, InboxThreadRow } from "./sidebar/InboxRows";
 import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
+import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
@@ -1302,257 +1303,261 @@ export default function Sidebar() {
       ) : (
         <>
           <SidebarHoverCardGroup>
-            {/* Outside the scroll container: search and compose are chrome, and
+            <ThreadHoverCardProvider>
+              {/* Outside the scroll container: search and compose are chrome, and
                 chrome does not scroll away. The list clips beneath the rule. */}
-            <SidebarGroup className="shrink-0 bg-sidebar px-2 pt-2 pb-1.5">
-              <div className="flex items-center gap-1.5">
-                <CommandDialogTrigger
-                  render={
-                    <button
-                      type="button"
-                      data-testid="command-palette-trigger"
-                      className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
-                    />
-                  }
-                >
-                  <SearchIcon className="size-3.5" />
-                  <span className="min-w-0 flex-1 truncate text-left text-xs">Search</span>
-                  {commandPaletteShortcutLabel ? (
-                    // Keyboard chrome means nothing to a touch pointer.
-                    <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px] pointer-coarse:hidden">
-                      {commandPaletteShortcutLabel}
-                    </Kbd>
-                  ) : null}
-                </CommandDialogTrigger>
-                <Tooltip>
-                  <TooltipTrigger
+              <SidebarGroup className="shrink-0 bg-sidebar px-2 pt-2 pb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <CommandDialogTrigger
                     render={
                       <button
                         type="button"
-                        aria-label="New thread"
-                        data-testid="new-thread-button"
-                        className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-ring"
-                        onClick={handleComposeClick}
+                        data-testid="command-palette-trigger"
+                        className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
                       />
                     }
                   >
-                    <SquarePenIcon className="size-3.5" />
-                  </TooltipTrigger>
-                  <TooltipPopup side="bottom">
-                    {newThreadShortcutLabel
-                      ? `New thread (${newThreadShortcutLabel})`
-                      : "New thread"}
-                  </TooltipPopup>
-                </Tooltip>
-              </div>
-            </SidebarGroup>
-            {/* No rule under the search: the boundary is the opaque chrome
-                above and a short fade the rows pass into. The Wrapped header
-                keeps its own hairline -- that one is a section rule. */}
-            <div className="relative flex min-h-0 flex-1 flex-col">
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
-              />
-              <SidebarContent className="gap-0">
-                <div className="group/chats-row relative px-2 py-1">
-                  <button
-                    type="button"
-                    data-testid="sidebar-general-chats"
-                    aria-current={isOnChats ? "page" : undefined}
-                    className={cn(
-                      "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
-                      // The fill answers to the wrapper, not to this button:
-                      // reaching for the new-chat icon leaves the row element,
-                      // and the row should not go dark under your cursor.
-                      isOnChats
-                        ? "bg-sidebar-accent text-foreground"
-                        : "text-muted-foreground/80 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
-                    )}
-                    onClick={handleOpenChats}
-                  >
-                    <MessagesSquareIcon className="size-3.5 shrink-0" />
-                    <span className="min-w-0 truncate">General Chats</span>
-                  </button>
-                  {/* A sibling, not a child: a button inside a button is invalid,
-                      and starting a chat should not first walk you to the page. */}
+                    <SearchIcon className="size-3.5" />
+                    <span className="min-w-0 flex-1 truncate text-left text-xs">Search</span>
+                    {commandPaletteShortcutLabel ? (
+                      // Keyboard chrome means nothing to a touch pointer.
+                      <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px] pointer-coarse:hidden">
+                        {commandPaletteShortcutLabel}
+                      </Kbd>
+                    ) : null}
+                  </CommandDialogTrigger>
                   <Tooltip>
                     <TooltipTrigger
                       render={
                         <button
                           type="button"
-                          data-testid="sidebar-new-general-chat"
-                          aria-label="New general chat"
-                          className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
-                          onClick={handleNewGeneralChat}
+                          aria-label="New thread"
+                          data-testid="new-thread-button"
+                          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-ring"
+                          onClick={handleComposeClick}
                         />
                       }
                     >
-                      <MessageCirclePlusIcon className="size-3.5" />
+                      <SquarePenIcon className="size-3.5" />
                     </TooltipTrigger>
-                    <TooltipPopup side="bottom">New general chat</TooltipPopup>
+                    <TooltipPopup side="bottom">
+                      {newThreadShortcutLabel
+                        ? `New thread (${newThreadShortcutLabel})`
+                        : "New thread"}
+                    </TooltipPopup>
                   </Tooltip>
                 </div>
-
-                <ProjectScopeMenu
-                  options={scopeOptions}
-                  projectByKey={sidebarProjectByKey}
-                  scopedProjectKey={scopedProjectKeyValue}
-                  onScopeChange={handleScopeChange}
-                  onAddProject={openAddProjectCommandPalette}
+              </SidebarGroup>
+              {/* No rule under the search: the boundary is the opaque chrome
+                above and a short fade the rows pass into. The Wrapped header
+                keeps its own hairline -- that one is a section rule. */}
+              <div className="relative flex min-h-0 flex-1 flex-col">
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
-
-                {liveEntries.length === 0 ? (
-                  <div className="flex flex-col items-start gap-1.5 px-3 py-2">
-                    <span className="text-[11px] text-muted-foreground/60">
-                      {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
-                    </span>
-                    {hasWorkspaceProjects ? null : (
-                      <button
-                        type="button"
-                        data-testid="inbox-empty-add-project"
-                        className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                        onClick={openAddProjectCommandPalette}
-                      >
-                        Add a project
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <ul data-testid="inbox-thread-list">
-                    {visibleLiveEntries.map((entry) => (
-                      <InboxThreadRow
-                        key={entry.threadKey}
-                        thread={entry.thread}
-                        status={entry.status}
-                        projectLabel={scopedProjectKeyValue === null ? entry.projectLabel : null}
-                        isActive={routeThreadKey === entry.threadKey}
-                        jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
-                        canMarkDone={entry.canMarkDone}
-                        orderedThreadKeys={orderedThreadKeys}
-                        renamingThreadKey={renamingThreadKey}
-                        renamingTitle={renamingTitle}
-                        setRenamingTitle={setRenamingTitle}
-                        renamingInputRef={renamingInputRef}
-                        renamingCommittedRef={renamingCommittedRef}
-                        handleThreadClick={handleThreadClick}
-                        navigateToThread={navigateToThread}
-                        handleMultiSelectContextMenu={handleMultiSelectContextMenu}
-                        handleThreadContextMenu={handleThreadContextMenu}
-                        clearSelection={clearSelection}
-                        commitRename={commitRename}
-                        cancelRename={cancelRename}
-                        attemptTogglePinThread={attemptTogglePinThread}
-                        markThreadDone={markThreadDone}
-                        openPrLink={openPrLink}
-                      />
-                    ))}
-                  </ul>
-                )}
-
-                {hiddenLiveCount > 0 || revealedLiveCount > 0 ? (
-                  <div className="flex items-center gap-1 px-3 pt-1 pb-1.5">
-                    {nextLiveRevealCount > 0 ? (
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        data-testid="inbox-live-show-more"
-                        className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
-                        onClick={() => {
-                          setRevealedLiveCount((count) => count + nextLiveRevealCount);
-                        }}
-                      >
-                        Show {nextLiveRevealCount} more…
-                      </button>
-                    ) : (
-                      <span className="min-w-0 flex-1" aria-hidden="true" />
-                    )}
+                <SidebarContent className="gap-0">
+                  <div className="group/chats-row relative px-2 py-1">
+                    <button
+                      type="button"
+                      data-testid="sidebar-general-chats"
+                      aria-current={isOnChats ? "page" : undefined}
+                      className={cn(
+                        "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
+                        // The fill answers to the wrapper, not to this button:
+                        // reaching for the new-chat icon leaves the row element,
+                        // and the row should not go dark under your cursor.
+                        isOnChats
+                          ? "bg-sidebar-accent text-foreground"
+                          : "text-muted-foreground/80 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
+                      )}
+                      onClick={handleOpenChats}
+                    >
+                      <MessagesSquareIcon className="size-3.5 shrink-0" />
+                      <span className="min-w-0 truncate">General Chats</span>
+                    </button>
+                    {/* A sibling, not a child: a button inside a button is invalid,
+                      and starting a chat should not first walk you to the page. */}
                     <Tooltip>
                       <TooltipTrigger
                         render={
-                          <CommandDialogTrigger
-                            data-testid="inbox-live-search"
-                            aria-label="Search threads"
-                            className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                          <button
+                            type="button"
+                            data-testid="sidebar-new-general-chat"
+                            aria-label="New general chat"
+                            className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
+                            onClick={handleNewGeneralChat}
                           />
                         }
                       >
-                        <SearchIcon className="size-3.5" />
+                        <MessageCirclePlusIcon className="size-3.5" />
                       </TooltipTrigger>
-                      <TooltipPopup side="top">Search threads</TooltipPopup>
+                      <TooltipPopup side="bottom">New general chat</TooltipPopup>
                     </Tooltip>
-                    {revealedLiveCount > 0 ? (
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <button
-                              type="button"
-                              data-thread-selection-safe
-                              data-testid="inbox-live-show-fewer"
-                              aria-label="Show fewer threads"
-                              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
-                              onClick={() => {
-                                setRevealedLiveCount(0);
-                              }}
-                            />
-                          }
-                        >
-                          <ChevronsUpIcon className="size-3.5" />
-                        </TooltipTrigger>
-                        <TooltipPopup side="top">Show fewer</TooltipPopup>
-                      </Tooltip>
-                    ) : null}
                   </div>
-                ) : null}
 
-                {doneEntries.length > 0 ? (
-                  <>
-                    <InboxSectionHeader
-                      label="Wrapped"
-                      count={doneEntries.length}
-                      collapsed={doneCollapsed}
-                      onToggleCollapsed={toggleDoneCollapsed}
-                      testId="inbox-done-toggle"
-                    />
-                    <ul data-testid="inbox-done-list">
-                      {renderedDoneEntries.map((entry) => (
-                        <InboxDoneRow
+                  <ProjectScopeMenu
+                    options={scopeOptions}
+                    projectByKey={sidebarProjectByKey}
+                    scopedProjectKey={scopedProjectKeyValue}
+                    onScopeChange={handleScopeChange}
+                    onAddProject={openAddProjectCommandPalette}
+                  />
+
+                  {liveEntries.length === 0 ? (
+                    <div className="flex flex-col items-start gap-1.5 px-3 py-2">
+                      <span className="text-[11px] text-muted-foreground/60">
+                        {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
+                      </span>
+                      {hasWorkspaceProjects ? null : (
+                        <button
+                          type="button"
+                          data-testid="inbox-empty-add-project"
+                          className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
+                          onClick={openAddProjectCommandPalette}
+                        >
+                          Add a project
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <ul data-testid="inbox-thread-list">
+                      {visibleLiveEntries.map((entry) => (
+                        <InboxThreadRow
                           key={entry.threadKey}
                           thread={entry.thread}
+                          status={entry.status}
                           projectLabel={scopedProjectKeyValue === null ? entry.projectLabel : null}
-                          doneAt={entry.doneAt}
                           isActive={routeThreadKey === entry.threadKey}
-                          appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
-                          confirmingArchiveThreadKey={confirmingArchiveThreadKey}
-                          setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
-                          confirmArchiveButtonRefs={confirmArchiveButtonRefs}
+                          jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
+                          canMarkDone={entry.canMarkDone}
+                          orderedThreadKeys={orderedThreadKeys}
+                          renamingThreadKey={renamingThreadKey}
+                          renamingTitle={renamingTitle}
+                          setRenamingTitle={setRenamingTitle}
+                          renamingInputRef={renamingInputRef}
+                          renamingCommittedRef={renamingCommittedRef}
+                          handleThreadClick={handleThreadClick}
                           navigateToThread={navigateToThread}
+                          handleMultiSelectContextMenu={handleMultiSelectContextMenu}
                           handleThreadContextMenu={handleThreadContextMenu}
-                          reopenThread={reopenThread}
-                          attemptArchiveThread={attemptArchiveThread}
+                          clearSelection={clearSelection}
+                          commitRename={commitRename}
+                          cancelRename={cancelRename}
+                          attemptTogglePinThread={attemptTogglePinThread}
+                          markThreadDone={markThreadDone}
+                          openPrLink={openPrLink}
                         />
                       ))}
                     </ul>
-                    {!doneCollapsed && nextDoneRevealCount > 0 ? (
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        data-testid="inbox-done-show-more"
-                        className={cn(
-                          "w-full cursor-pointer px-3 pt-2 pb-3 text-left text-[11px]",
-                          "text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring",
-                        )}
-                        onClick={() => {
-                          setRevealedDoneCount((current) => current + DONE_REVEAL_STEP);
-                        }}
-                      >
-                        Show {nextDoneRevealCount} more…
-                      </button>
-                    ) : null}
-                  </>
-                ) : null}
-              </SidebarContent>
-            </div>
+                  )}
+
+                  {hiddenLiveCount > 0 || revealedLiveCount > 0 ? (
+                    <div className="flex items-center gap-1 px-3 pt-1 pb-1.5">
+                      {nextLiveRevealCount > 0 ? (
+                        <button
+                          type="button"
+                          data-thread-selection-safe
+                          data-testid="inbox-live-show-more"
+                          className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
+                          onClick={() => {
+                            setRevealedLiveCount((count) => count + nextLiveRevealCount);
+                          }}
+                        >
+                          Show {nextLiveRevealCount} more…
+                        </button>
+                      ) : (
+                        <span className="min-w-0 flex-1" aria-hidden="true" />
+                      )}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <CommandDialogTrigger
+                              data-testid="inbox-live-search"
+                              aria-label="Search threads"
+                              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                            />
+                          }
+                        >
+                          <SearchIcon className="size-3.5" />
+                        </TooltipTrigger>
+                        <TooltipPopup side="top">Search threads</TooltipPopup>
+                      </Tooltip>
+                      {revealedLiveCount > 0 ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                type="button"
+                                data-thread-selection-safe
+                                data-testid="inbox-live-show-fewer"
+                                aria-label="Show fewer threads"
+                                className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                                onClick={() => {
+                                  setRevealedLiveCount(0);
+                                }}
+                              />
+                            }
+                          >
+                            <ChevronsUpIcon className="size-3.5" />
+                          </TooltipTrigger>
+                          <TooltipPopup side="top">Show fewer</TooltipPopup>
+                        </Tooltip>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {doneEntries.length > 0 ? (
+                    <>
+                      <InboxSectionHeader
+                        label="Wrapped"
+                        count={doneEntries.length}
+                        collapsed={doneCollapsed}
+                        onToggleCollapsed={toggleDoneCollapsed}
+                        testId="inbox-done-toggle"
+                      />
+                      <ul data-testid="inbox-done-list">
+                        {renderedDoneEntries.map((entry) => (
+                          <InboxDoneRow
+                            key={entry.threadKey}
+                            thread={entry.thread}
+                            projectLabel={
+                              scopedProjectKeyValue === null ? entry.projectLabel : null
+                            }
+                            doneAt={entry.doneAt}
+                            isActive={routeThreadKey === entry.threadKey}
+                            appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
+                            confirmingArchiveThreadKey={confirmingArchiveThreadKey}
+                            setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
+                            confirmArchiveButtonRefs={confirmArchiveButtonRefs}
+                            navigateToThread={navigateToThread}
+                            handleThreadContextMenu={handleThreadContextMenu}
+                            reopenThread={reopenThread}
+                            attemptArchiveThread={attemptArchiveThread}
+                          />
+                        ))}
+                      </ul>
+                      {!doneCollapsed && nextDoneRevealCount > 0 ? (
+                        <button
+                          type="button"
+                          data-thread-selection-safe
+                          data-testid="inbox-done-show-more"
+                          className={cn(
+                            "w-full cursor-pointer px-3 pt-2 pb-3 text-left text-[11px]",
+                            "text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring",
+                          )}
+                          onClick={() => {
+                            setRevealedDoneCount((current) => current + DONE_REVEAL_STEP);
+                          }}
+                        >
+                          Show {nextDoneRevealCount} more…
+                        </button>
+                      ) : null}
+                    </>
+                  ) : null}
+                </SidebarContent>
+              </div>
+            </ThreadHoverCardProvider>
           </SidebarHoverCardGroup>
 
           <SidebarSeparator />

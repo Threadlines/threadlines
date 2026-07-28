@@ -5451,7 +5451,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(hoverCard?.textContent).toContain(THREAD_TITLE);
           // The hover card is the only popup: a truncated title must not raise
           // a second one on top of it.
-          expect(document.querySelectorAll('[data-slot="tooltip-popup"]').length).toBe(1);
+          expect(document.querySelectorAll('[data-testid="thread-hover-card"]').length).toBe(1);
+          // And no tooltip stacked on top: the card moved off the tooltip
+          // primitive precisely so the two can never compete.
+          expect(document.querySelectorAll('[data-slot="tooltip-popup"]').length).toBe(0);
         },
         { timeout: 8_000, interval: 16 },
       );

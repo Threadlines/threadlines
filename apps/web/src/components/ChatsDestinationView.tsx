@@ -20,7 +20,7 @@ import { formatRelativeTimeLabel } from "../timestampFormat";
 import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
 import { PROVIDER_OPTIONS } from "../session-logic";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
-import { ThreadHoverCard } from "./sidebar/ThreadHoverCard";
+import { ThreadHoverCard, ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import type { SidebarThreadSummary } from "../types";
 
@@ -126,56 +126,58 @@ export function ChatsDestinationView() {
   );
 
   return (
-    <div
-      className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 py-8"
-      data-testid="chats-view"
-    >
-      <div className="mb-1 flex items-center gap-3">
-        <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
-        {newChatButton}
-      </div>
-      <p className="text-sm text-muted-foreground/70">
-        Conversations that aren&apos;t tied to a project.
-      </p>
-
-      {chats.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-          <div className="flex flex-col gap-1">
-            <p className="text-sm text-muted-foreground/70">No general chats yet</p>
-            <p className="text-xs text-muted-foreground/50">
-              Start one for anything that doesn&apos;t belong to a project.
-            </p>
-          </div>
+    <ThreadHoverCardProvider side="bottom">
+      <div
+        className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 py-8"
+        data-testid="chats-view"
+      >
+        <div className="mb-1 flex items-center gap-3">
+          <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
           {newChatButton}
         </div>
-      ) : (
-        <SidebarHoverCardGroup>
-          {groups.map((group) => (
-            <section key={group.id} className="mt-8 first:mt-10">
-              <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
-                {CHAT_GROUP_LABELS[group.id]}
-              </h2>
-              <div className="flex flex-col divide-y divide-border/50">
-                {group.chats.map((thread) => (
-                  <ChatRow
-                    key={`${thread.environmentId}:${thread.id}`}
-                    thread={thread}
-                    onOpen={() => {
-                      void navigate({
-                        to: "/$environmentId/$threadId",
-                        params: buildThreadRouteParams(
-                          scopeThreadRef(thread.environmentId, thread.id),
-                        ),
-                      });
-                    }}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-        </SidebarHoverCardGroup>
-      )}
-    </div>
+        <p className="text-sm text-muted-foreground/70">
+          Conversations that aren&apos;t tied to a project.
+        </p>
+
+        {chats.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm text-muted-foreground/70">No general chats yet</p>
+              <p className="text-xs text-muted-foreground/50">
+                Start one for anything that doesn&apos;t belong to a project.
+              </p>
+            </div>
+            {newChatButton}
+          </div>
+        ) : (
+          <SidebarHoverCardGroup>
+            {groups.map((group) => (
+              <section key={group.id} className="mt-8 first:mt-10">
+                <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
+                  {CHAT_GROUP_LABELS[group.id]}
+                </h2>
+                <div className="flex flex-col divide-y divide-border/50">
+                  {group.chats.map((thread) => (
+                    <ChatRow
+                      key={`${thread.environmentId}:${thread.id}`}
+                      thread={thread}
+                      onOpen={() => {
+                        void navigate({
+                          to: "/$environmentId/$threadId",
+                          params: buildThreadRouteParams(
+                            scopeThreadRef(thread.environmentId, thread.id),
+                          ),
+                        });
+                      }}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </SidebarHoverCardGroup>
+        )}
+      </div>
+    </ThreadHoverCardProvider>
   );
 }
 
@@ -189,7 +191,7 @@ function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () 
     : null;
 
   return (
-    <ThreadHoverCard thread={thread} status={resolveThreadStatusPill({ thread })} side="right">
+    <ThreadHoverCard thread={thread} status={resolveThreadStatusPill({ thread })}>
       <button
         type="button"
         className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring"

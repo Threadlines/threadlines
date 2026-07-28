@@ -30,7 +30,7 @@ import { render } from "vitest-browser-react";
 
 import type { ThreadStatusPill } from "../Sidebar.logic";
 import type { SidebarThreadSummary } from "../../types";
-import { ThreadHoverCard } from "./ThreadHoverCard";
+import { ThreadHoverCard, ThreadHoverCardProvider } from "./ThreadHoverCard";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
@@ -75,11 +75,17 @@ async function waitForProductionStyles(): Promise<void> {
 async function openCard(summary: SidebarThreadSummary, pill: ThreadStatusPill | null) {
   await waitForProductionStyles();
   render(
-    <ThreadHoverCard thread={summary} status={pill}>
-      <button type="button" data-testid="hover-trigger">
-        row
-      </button>
-    </ThreadHoverCard>,
+    // The trigger and the shared card mount separately in production too:
+    // rows carry triggers, the surface mounts one ThreadHoverCardCard.
+    // A fresh provider per render, exactly like a real surface: no handle
+    // state survives between tests.
+    <ThreadHoverCardProvider>
+      <ThreadHoverCard thread={summary} status={pill}>
+        <button type="button" data-testid="hover-trigger">
+          row
+        </button>
+      </ThreadHoverCard>
+    </ThreadHoverCardProvider>,
   );
   await page.getByTestId("hover-trigger").hover();
   return page.getByTestId("thread-hover-card");
