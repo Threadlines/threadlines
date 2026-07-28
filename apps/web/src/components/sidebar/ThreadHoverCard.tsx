@@ -10,6 +10,8 @@ import {
 } from "../../environments/runtime";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { selectProjectByRef, useStore } from "../../store";
+import { useGitStatus } from "../../lib/gitStatusState";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { createThreadSelectorByRef } from "../../storeSelectors";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
@@ -81,6 +83,17 @@ export function ThreadHoverCard({
   // A worktree is the more specific fact when present: it implies the branch
   // and tells you the checkout is isolated.
   const worktreeName = thread.worktreePath ? thread.worktreePath.split("/").pop() : null;
+  // The row prints only a pinned branch; here there is room to answer the
+  // question a branchless thread leaves open -- which ref its checkout is on.
+  const gitStatus = useGitStatus({
+    environmentId: thread.environmentId,
+    cwd: resolveThreadWorkingCwd({
+      projectCwd: backingProject?.cwd ?? null,
+      worktreePath: thread.worktreePath,
+      effectiveCwd: thread.effectiveCwd,
+    }),
+  });
+  const branch = thread.branch ?? gitStatus.data?.refName ?? null;
 
   return (
     <Tooltip>
@@ -107,10 +120,13 @@ export function ThreadHoverCard({
               {environmentLabel}
             </HoverCardDetailRow>
           ) : null}
-          {thread.branch || worktreeName ? (
-            <HoverCardDetailRow icon={<GitBranchIcon className="size-3.5" />}>
-              {thread.branch ?? worktreeName}
-              {worktreeName && thread.branch ? (
+          {branch || worktreeName ? (
+            <HoverCardDetailRow
+              className="font-mono text-[11px]"
+              icon={<GitBranchIcon className="size-3.5" />}
+            >
+              {branch ?? worktreeName}
+              {worktreeName && branch ? (
                 <span className="ml-1.5 text-muted-foreground/50">worktree</span>
               ) : null}
             </HoverCardDetailRow>

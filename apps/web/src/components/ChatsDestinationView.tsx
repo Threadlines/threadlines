@@ -126,7 +126,10 @@ export function ChatsDestinationView() {
   );
 
   return (
-    <div className="flex h-full w-full max-w-2xl flex-col px-6 py-8" data-testid="chats-view">
+    <div
+      className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 py-8"
+      data-testid="chats-view"
+    >
       <div className="mb-1 flex items-center gap-3">
         <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
         {newChatButton}
@@ -149,7 +152,7 @@ export function ChatsDestinationView() {
         <SidebarHoverCardGroup>
           {groups.map((group) => (
             <section key={group.id} className="mt-8 first:mt-10">
-              <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
+              <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
                 {CHAT_GROUP_LABELS[group.id]}
               </h2>
               <div className="flex flex-col divide-y divide-border/50">
@@ -189,7 +192,7 @@ function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () 
     <ThreadHoverCard thread={thread} status={resolveThreadStatusPill({ thread })} side="right">
       <button
         type="button"
-        className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 px-1 py-2.5 text-left transition-colors hover:bg-muted focus-ring"
+        className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring"
         data-testid="chats-view-row"
         onClick={onOpen}
       >
@@ -197,7 +200,7 @@ function ChatRow({ thread, onOpen }: { thread: SidebarThreadSummary; onOpen: () 
           <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
             {thread.title}
           </span>
-          <span className="shrink-0 font-mono text-xs text-muted-foreground/50">
+          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground/50">
             {formatRelativeTimeLabel(chatActivityAt(thread))}
           </span>
         </span>

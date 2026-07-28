@@ -210,10 +210,13 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     cwd: gitCwd,
   });
   const diffStat = resolveWorkingTreeDiffStat(gitStatus.data ?? null);
-  // A recorded branch wins; otherwise the checkout's current ref stands in,
-  // for the label and for the change request that belongs to it.
-  const branch = thread.branch ?? gitStatus.data?.refName ?? null;
-  const pr = resolveThreadPr(branch, gitStatus.data);
+  // The row names only the branch the thread pinned: a checkout's current ref
+  // is shared by every thread in it, so printing it on each row says nothing
+  // about the thread. The resolved branch still drives the change request and
+  // the diffstat, which do belong to the checkout the thread works in, and the
+  // hover card is where the current ref gets its say.
+  const resolvedBranch = thread.branch ?? gitStatus.data?.refName ?? null;
+  const pr = resolveThreadPr(resolvedBranch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
@@ -224,7 +227,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
-  const showBranch = branch !== null;
+  const showBranch = thread.branch !== null;
 
   const handleRowClick = useCallback(
     (event: React.MouseEvent) => {
@@ -353,7 +356,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
             {status ? (
               <span
                 aria-label={status.label}
-                title={status.label}
                 className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
               />
             ) : isPinned ? (
@@ -377,14 +379,14 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
             {showBranch ? (
               <span className="flex min-w-0 items-center gap-1">
                 <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
-                <span className="min-w-0 truncate font-mono text-[10px]">{branch}</span>
+                <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
               </span>
             ) : null}
             <span className={ROW_META_SLOT_CLASS_NAME}>
               <span
                 data-testid={`thread-meta-${thread.id}`}
                 className={cn(
-                  "shrink-0 font-mono text-[11px] leading-none",
+                  "shrink-0 font-mono text-[11px] leading-none tabular-nums",
                   "transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0",
                   statusWord !== null || isInFlight
                     ? (status?.colorClass ?? "text-muted-foreground/50")
@@ -392,10 +394,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 )}
               >
                 {jumpLabel ? (
-                  <span
-                    className="inline-flex h-4 items-center rounded-full border border-border/80 bg-background/90 px-1.5 text-[10px] font-medium tracking-tight text-foreground"
-                    title={jumpLabel}
-                  >
+                  <span className="inline-flex h-4 items-center rounded-full border border-border/80 bg-background/90 px-1.5 text-[10px] font-medium tracking-tight text-foreground">
                     {jumpLabel}
                   </span>
                 ) : statusWord !== null ? (
@@ -426,7 +425,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                           type="button"
                           data-thread-selection-safe
                           data-testid={`thread-done-${thread.id}`}
-                          aria-label={`Tie off ${thread.title}`}
+                          aria-label={`Wrap up ${thread.title}`}
                           className={ROW_ACTION_BUTTON_CLASS_NAME}
                           onPointerDown={stopPropagationOnPointerDown}
                           onClick={handleMarkDoneClick}
@@ -435,7 +434,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                         </button>
                       }
                     />
-                    <TooltipPopup side="top">Tie off</TooltipPopup>
+                    <TooltipPopup side="top">Wrap up</TooltipPopup>
                   </Tooltip>
                 ) : null}
                 <Tooltip>
@@ -497,7 +496,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 <span
                   role="img"
                   aria-label={terminalStatus.label}
-                  title={terminalStatus.label}
                   className={cn(
                     "inline-flex items-center justify-center",
                     terminalStatus.colorClass,
@@ -733,7 +731,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
           </span>
         ) : null}
         <span className={ROW_META_SLOT_CLASS_NAME}>
-          <span className="shrink-0 font-mono text-[11px] text-muted-foreground/45 transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0">
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45 transition-opacity duration-150 sm:group-hover/thread-row:opacity-0 sm:group-focus-within/thread-row:opacity-0">
             {doneAt ? formatRelativeTimeLabel(doneAt) : null}
           </span>
           {isConfirmingArchive ? (

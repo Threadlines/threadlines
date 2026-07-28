@@ -2,6 +2,7 @@ import {
   ChevronDownIcon,
   ChevronsUpIcon,
   MessagesSquareIcon,
+  PlusIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -1078,6 +1079,20 @@ export default function Sidebar() {
     sidebarProjectByKey,
   ]);
 
+  const handleNewGeneralChat = useCallback(() => {
+    const generalChatsProject = sidebarProjects.find((project) => project.kind === "general-chat");
+    const projectRef = generalChatsProject
+      ? scopeProjectRef(generalChatsProject.environmentId, generalChatsProject.id)
+      : null;
+    if (projectRef === null) {
+      return;
+    }
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+    void startNewGeneralChatThread(handleNewThread, projectRef);
+  }, [handleNewThread, isMobile, setOpenMobile, sidebarProjects]);
+
   const handleOpenChats = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
@@ -1295,7 +1310,7 @@ export default function Sidebar() {
                       <button
                         type="button"
                         data-testid="command-palette-trigger"
-                        className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-2 text-muted-foreground/70 transition-colors hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
+                        className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
                       />
                     }
                   >
@@ -1331,13 +1346,13 @@ export default function Sidebar() {
                 </div>
               </SidebarGroup>
 
-              <div className="px-2 py-1">
+              <div className="group/chats-row relative px-2 py-1">
                 <button
                   type="button"
                   data-testid="sidebar-general-chats"
                   aria-current={isOnChats ? "page" : undefined}
                   className={cn(
-                    "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1.5 text-xs transition-colors focus-ring",
+                    "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
                     isOnChats
                       ? "bg-sidebar-accent text-foreground"
                       : "text-muted-foreground/80 hover:bg-sidebar-accent/60 hover:text-foreground",
@@ -1347,6 +1362,24 @@ export default function Sidebar() {
                   <MessagesSquareIcon className="size-3.5 shrink-0" />
                   <span className="min-w-0 truncate">General Chats</span>
                 </button>
+                {/* A sibling, not a child: a button inside a button is invalid,
+                    and starting a chat should not first walk you to the page. */}
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        data-testid="sidebar-new-general-chat"
+                        aria-label="New general chat"
+                        className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
+                        onClick={handleNewGeneralChat}
+                      />
+                    }
+                  >
+                    <PlusIcon className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="bottom">New general chat</TooltipPopup>
+                </Tooltip>
               </div>
 
               <ProjectScopeMenu
@@ -1358,8 +1391,20 @@ export default function Sidebar() {
               />
 
               {liveEntries.length === 0 ? (
-                <div className="px-3 py-2 text-[11px] text-muted-foreground/60">
-                  {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
+                <div className="flex flex-col items-start gap-1.5 px-3 py-2">
+                  <span className="text-[11px] text-muted-foreground/60">
+                    {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
+                  </span>
+                  {hasWorkspaceProjects ? null : (
+                    <button
+                      type="button"
+                      data-testid="inbox-empty-add-project"
+                      className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
+                      onClick={openAddProjectCommandPalette}
+                    >
+                      Add a project
+                    </button>
+                  )}
                 </div>
               ) : (
                 <ul data-testid="inbox-thread-list">
@@ -1451,7 +1496,7 @@ export default function Sidebar() {
               {doneEntries.length > 0 ? (
                 <>
                   <InboxSectionHeader
-                    label="Tied off"
+                    label="Wrapped"
                     count={doneEntries.length}
                     collapsed={doneCollapsed}
                     onToggleCollapsed={toggleDoneCollapsed}

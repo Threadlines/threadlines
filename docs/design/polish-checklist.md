@@ -32,6 +32,10 @@ instance without recording its genre.
   PR: tooltip padding/truncation.)
 - Tooltip and preview content truncates; unbounded strings (errors, paths)
   never blow a popup open. (PR: error tooltip.)
+- No `title` attributes on decoration. A native tooltip is a second popup, it
+  cannot be styled, and on a surface that already has a hover card it fires on
+  top of it. Interactive controls get a real tooltip; dots, glyphs and badges
+  get an `aria-label` and nothing else. (Audit: status dot, terminal glyph.)
 - Empty states are designed, not blank: quiet copy plus the one action that
   fills the space.
 
@@ -45,6 +49,10 @@ instance without recording its genre.
   (Will: sidebar auto-collapse; T3: static sort.)
 - Nothing the user might be standing in disappears: collapsing a section keeps
   the routed row; hiding blocked-on-you work is forbidden everywhere.
+- Volume is managed by folding, never by flattening: when a list is too long,
+  show fewer rows, not thinner ones. Stripping a row's second line to buy
+  height costs the information the row existed to carry, and makes distinct
+  kinds of row look alike. (Will: one-line quiet rows, reverted.)
 - Text that shouldn't select doesn't: labels and chrome are select-none; no
   selection underlines on click-drag. (PR: project text underline.)
 

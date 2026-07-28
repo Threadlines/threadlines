@@ -2408,9 +2408,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "Unable to find thread row.",
       );
-      // Unscoped: the row names its project and the branch its work sits on --
-      // a FEATURE branch. A thread on main would compress to one line, since
-      // the default branch's name carries no information.
+      // Unscoped: the row names its project and the branch the thread pinned.
       expect(threadRow.textContent).toContain("Project");
       expect(threadRow.textContent).toContain("feature/scope-test");
 
@@ -5106,7 +5104,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(compactActions?.className).toContain("group-focus-within/thread-row:opacity-100");
       expect(pinButton.getAttribute("aria-label")).toBe(`Pin ${THREAD_TITLE}`);
       expect(pinButton.getAttribute("aria-pressed")).toBe("false");
-      expect(doneButton.getAttribute("aria-label")).toBe(`Tie off ${THREAD_TITLE}`);
+      expect(doneButton.getAttribute("aria-label")).toBe(`Wrap up ${THREAD_TITLE}`);
       // Icons only: the words for these two live in their tooltips.
       expect(doneButton.textContent).toBe("");
       expect(pinButton.textContent).toBe("");

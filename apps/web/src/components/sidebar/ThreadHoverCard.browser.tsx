@@ -5,6 +5,27 @@ import "../../index.css";
 import { EnvironmentId, ProjectId, ProviderDriverKind, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
+
+// The card asks git for the checkout's current ref; the test decides what it
+// hears back.
+const gitStatusRef = vi.hoisted(() => ({ current: null as string | null }));
+
+vi.mock("../../lib/gitStatusState", () => ({
+  useGitStatus: () => ({
+    data: gitStatusRef.current === null ? null : { refName: gitStatusRef.current },
+    error: null,
+    cause: null,
+    isPending: false,
+  }),
+  useGitStatuses: () => new Map(),
+  refreshGitStatus: () => Promise.resolve(null),
+  refreshLocalGitStatus: () => Promise.resolve(null),
+  resetGitStatusStateForTests: () => undefined,
+}));
+
+function setGitStatusRefName(refName: string | null): void {
+  gitStatusRef.current = refName;
+}
 import { render } from "vitest-browser-react";
 
 import type { ThreadStatusPill } from "../Sidebar.logic";
@@ -95,6 +116,19 @@ describe("ThreadHoverCard", () => {
     const card = await openCard(thread({ branch: "feature/deck-sidebar" }), null);
 
     await expect.element(card).toHaveTextContent("feature/deck-sidebar");
+  });
+
+  it("falls back to the checkout's current ref when the thread pinned no branch", async () => {
+    // The row prints only a pinned branch, so a branchless thread would
+    // otherwise never say which ref its work is on.
+    setGitStatusRefName("main");
+    try {
+      const card = await openCard(thread({ branch: null }), null);
+
+      await expect.element(card).toHaveTextContent("main");
+    } finally {
+      setGitStatusRefName(null);
+    }
   });
 
   it("truncates an overlong title and branch instead of blowing the card open", async () => {
