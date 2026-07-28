@@ -71,6 +71,14 @@
       }
       .scope:hover { background: var(--hover); color: var(--fg); }
       .scope .chev { color: var(--fg-dim); font-size: 9px; }
+      .chips { display: flex; gap: 4px; padding: 0 4px 2px; overflow: hidden; }
+      .chip {
+        font-size: 11.5px; color: var(--fg-mid); padding: 3px 8px; border-radius: 5px;
+        white-space: nowrap; cursor: default;
+      }
+      .chip:hover { background: var(--hover); color: var(--fg); }
+      .chip.on { background: var(--active-row); color: var(--fg); }
+      .chip .n { color: var(--fg-dim); font-size: 10px; margin-left: 3px; font-family: var(--mono); }
 
       /* ── Section headers ────────────────────────── */
       .sect {
@@ -266,6 +274,37 @@
       </div>
 
       <div>
+        <div class="frame-label">Option B &mdash; project chips instead of the dropdown</div>
+        <div class="sidebar" style="min-height: 0; margin-bottom: 28px;">
+          <div class="chrome">
+            <div class="searchrow">
+              <div class="search">&#8981; Search <span class="kbd">&#8984;K</span></div>
+              <div class="iconbtn" title="New thread">&#9998;</div>
+            </div>
+            <div class="chips">
+              <span class="chip on">All</span>
+              <span class="chip">threadlines <span class="n">4</span></span>
+              <span class="chip">badcode <span class="n">2</span></span>
+              <span class="chip">dotfiles</span>
+              <span class="chip">&hellip;</span>
+            </div>
+          </div>
+          <div class="sect">Threads</div>
+          <ul>
+            <li class="row">
+              <div class="l1">
+                <span class="dot motion"></span>
+                <span class="title">Polish the inbox sidebar</span>
+                <span class="stat motion">working &middot; 4m</span>
+              </div>
+              <div class="l2">
+                <span class="proj">threadlines</span><span class="sep">&middot;</span>
+                <span class="branch">feature/sidebar-polish</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+
         <div class="frame-label">Same rows &mdash; hover affordances forced</div>
         <div class="sidebar" style="min-height: 0;">
           <div class="sect">Threads</div>
@@ -320,13 +359,29 @@
           Auto-done on merged PRs and after idle weeks (needs settled server semantics first).
           Multi-select.
 
-          <h2 class="q">Open questions for Will</h2>
-          1. Collapsed state: with the rail gone, does the sidebar still icon-collapse to
-          something (project favicons only), or does it just hide? The auto-fold-when-squeezed
-          behavior needs a target.<br />
-          2. Done placement: tail at the bottom (shown), or behind a destinations-band entry so
-          the sidebar is only live work?<br />
-          3. Do the destinations (Chats etc.) survive above the thread list as-is?
+          <h2>Decided</h2>
+          Collapsing the sidebar hides it completely, with the same toggle button as today.
+          No icon strip.
+
+          <h2>Switching projects: dropdown vs chips</h2>
+          &ldquo;All projects&rdquo; is one combined list &mdash; every project&rsquo;s threads
+          mixed together, newest first, each row saying which project it belongs to. Picking a
+          project narrows the list to just that one (and the row label can disappear, since
+          it&rsquo;s implied). The dropdown (option A) is compact but costs two clicks per
+          switch. The chips row (option B) puts your most recent projects one click away, with
+          a count of threads that need you on each &mdash; overflow projects live behind the
+          &ldquo;&hellip;&rdquo;. Worth knowing: in an inbox, you often don&rsquo;t need to
+          switch at all &mdash; whatever you touched last is already near the top of the
+          combined list. The filter is for focus, not for finding things.
+
+          <h2 class="q">Still open for Will</h2>
+          1. Where finished threads live: the dimmed &ldquo;Done&rdquo; list at the bottom of
+          the sidebar (as shown), or on its own page you open from a link, keeping the sidebar
+          for live work only.<br />
+          2. Today's sidebar has a small row of quick links at the top (Chats, and the new-chat
+          shortcut) that jump to pages rather than to a specific thread. Keep that row above
+          the new list, or fold what it does into the search and compose buttons?<br />
+          3. Dropdown or chips, per the section above.
         </div>
       </div>
     </div>
