@@ -4,6 +4,7 @@
 
 - All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering tasks completed. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
 - Run the tests covering the code you changed: `vp run '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
+- Web UI changes also need the browser suite: `vp run '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it — green unit tests alone do not mean a green branch.
 - NEVER run `bun test`. The Bun toolchain is not used for repo tasks.
 
 ## Testing Discipline
