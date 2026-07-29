@@ -43,9 +43,16 @@ export const make = Effect.gen(function* LocalServersMake() {
         const probe =
           cached !== undefined && now - cached.at < PROBE_CACHE_MS
             ? cached.result
-            : await probeHttpServer(entry.port);
+            : await probeHttpServer(entry.port, entry.probeHost);
         probeCache.set(key, { at: now, result: probe });
-        return probe === null ? null : { ...entry, title: probe.title };
+        return probe === null
+          ? null
+          : {
+              port: entry.port,
+              processName: entry.processName,
+              pid: entry.pid,
+              title: probe.title,
+            };
       }),
     );
     for (const [key, value] of probeCache) {

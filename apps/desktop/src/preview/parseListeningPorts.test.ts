@@ -8,15 +8,27 @@ describe("parseListeningPorts", () => {
 
     // Sorted by port, so the lowest listener is first regardless of lsof order.
     expect(parseListeningPorts(output)).toEqual([
-      { port: 5173, processName: "node", pid: 123 },
-      { port: 8000, processName: "Python", pid: 456 },
+      { port: 5173, processName: "node", pid: 123, probeHost: "127.0.0.1" },
+      { port: 8000, processName: "Python", pid: 456, probeHost: "127.0.0.1" },
     ]);
   });
 
-  it("collapses a port listed once per address family", () => {
-    const output = ["p1", "cnode", "n*:3000", "n[::1]:3000"].join("\n");
+  it("collapses a port listed once per address family, preferring IPv4", () => {
+    const output = ["p1", "cnode", "n[::1]:3000", "n*:3000"].join("\n");
 
-    expect(parseListeningPorts(output)).toEqual([{ port: 3000, processName: "node", pid: 1 }]);
+    expect(parseListeningPorts(output)).toEqual([
+      { port: 3000, processName: "node", pid: 1, probeHost: "127.0.0.1" },
+    ]);
+  });
+
+  it("keeps the IPv6 loopback for a listener bound only to ::1", () => {
+    // Node resolving "localhost" to ::1 produces exactly this: a dev server
+    // that refuses 127.0.0.1 but serves [::1] fine.
+    const output = ["p1", "cnode", "n[::1]:4321"].join("\n");
+
+    expect(parseListeningPorts(output)).toEqual([
+      { port: 4321, processName: "node", pid: 1, probeHost: "::1" },
+    ]);
   });
 
   it("ignores addresses this machine's browser cannot reach", () => {
@@ -35,8 +47,8 @@ describe("parseListeningPorts", () => {
     const output = ["p1", "cnode", "n*:3000", "p2", "n*:4000"].join("\n");
 
     expect(parseListeningPorts(output)).toEqual([
-      { port: 3000, processName: "node", pid: 1 },
-      { port: 4000, processName: "", pid: 2 },
+      { port: 3000, processName: "node", pid: 1, probeHost: "127.0.0.1" },
+      { port: 4000, processName: "", pid: 2, probeHost: "127.0.0.1" },
     ]);
   });
 });

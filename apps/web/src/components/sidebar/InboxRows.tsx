@@ -753,24 +753,30 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
           onKeyDown={handleKeyDown}
           onContextMenu={handleContextMenu}
         >
+          {/* The project leads the row as an icon, not a name: a one-line row
+              has one thing worth reading whole, and spelling out the project
+              on every row cost the title half its width to repeat what a glyph
+              says at a glance. The name still lives in the hover card, and in
+              the accessible label here. */}
+          {projectLabel && threadProjectCwd ? (
+            <span
+              role="img"
+              aria-label={projectLabel}
+              className="inline-flex shrink-0 items-center opacity-70"
+            >
+              <ProjectFavicon
+                cwd={threadProjectCwd}
+                environmentId={thread.environmentId}
+                className="size-3.5 shrink-0"
+              />
+            </span>
+          ) : null}
           <span
             className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
             data-testid={`done-title-${thread.id}`}
           >
             {thread.title}
           </span>
-          {projectLabel ? (
-            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground/45">
-              {threadProjectCwd ? (
-                <ProjectFavicon
-                  cwd={threadProjectCwd}
-                  environmentId={thread.environmentId}
-                  className="size-3 shrink-0 opacity-70"
-                />
-              ) : null}
-              <span className="truncate">{projectLabel}</span>
-            </span>
-          ) : null}
           <span className={ROW_META_SLOT_CLASS_NAME}>
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
               {doneAt ? formatRelativeTimeLabel(doneAt) : null}

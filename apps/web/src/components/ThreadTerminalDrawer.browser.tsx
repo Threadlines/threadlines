@@ -1,7 +1,12 @@
 import "../index.css";
 
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@threadlines/contracts";
+import {
+  ProjectId,
+  ThreadId,
+  type TerminalEvent,
+  type TerminalSessionSnapshot,
+} from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -18,6 +23,8 @@ const {
   environmentApiById,
   readEnvironmentApiMock,
   readLocalApiMock,
+  linkProviderRef,
+  terminalBufferLinesRef,
   onTerminalWriteRef,
   terminalOnDataRef,
   pendingTerminalWriteCallbacks,
@@ -39,12 +46,32 @@ const {
       | {
           contextMenu: { show: ReturnType<typeof vi.fn> };
           shell: { openExternal: ReturnType<typeof vi.fn> };
+          persistence?: { setClientSettings: ReturnType<typeof vi.fn> };
         }
       | undefined
   >(() => ({
     contextMenu: { show: vi.fn(async () => null) },
     shell: { openExternal: vi.fn(async () => undefined) },
+    persistence: { setClientSettings: vi.fn(async () => undefined) },
   })),
+  linkProviderRef: {
+    current: null as {
+      provideLinks: (
+        bufferLineNumber: number,
+        callback: (
+          links?: ReadonlyArray<{
+            text: string;
+            activate: (event: MouseEvent) => void;
+            hover?: (event: MouseEvent, text: string) => void;
+            leave?: (event: MouseEvent, text: string) => void;
+          }>,
+        ) => void,
+      ) => void;
+    } | null,
+  },
+  terminalBufferLinesRef: {
+    current: [] as string[],
+  },
   onTerminalWriteRef: {
     current: null as ((data: string) => void) | null,
   },
@@ -78,7 +105,11 @@ vi.mock("@xterm/xterm", () => ({
       active: {
         viewportY: 0,
         baseY: 0,
-        getLine: vi.fn(() => null),
+        getLine: (index: number) => {
+          const text = terminalBufferLinesRef.current[index];
+          if (text === undefined) return null;
+          return { isWrapped: false, translateToString: () => text };
+        },
       },
     };
 
@@ -136,7 +167,8 @@ vi.mock("@xterm/xterm", () => ({
       return true;
     }
 
-    registerLinkProvider() {
+    registerLinkProvider(provider: NonNullable<typeof linkProviderRef.current>) {
+      linkProviderRef.current = provider;
       return { dispose: vi.fn() };
     }
 
@@ -157,19 +189,80 @@ vi.mock("@xterm/xterm", () => ({
 
 vi.mock("~/environmentApi", () => ({
   readEnvironmentApi: readEnvironmentApiMock,
+  ensureEnvironmentApi: (environmentId: string) => {
+    const api = readEnvironmentApiMock(environmentId);
+    if (!api) {
+      throw new Error(`ensureEnvironmentApi: no environment api for ${environmentId}`);
+    }
+    return api;
+  },
 }));
 
 vi.mock("~/localApi", () => ({
   ensureLocalApi: vi.fn(() => {
-    throw new Error("ensureLocalApi not implemented in browser test");
+    const api = readLocalApiMock();
+    if (!api) {
+      throw new Error("ensureLocalApi not implemented in browser test");
+    }
+    return api;
   }),
   readLocalApi: readLocalApiMock,
 }));
 
+// The link-into-browser-panel route only exists inside the desktop app.
+vi.mock("../env", () => ({ isElectron: true }));
+
 import { TerminalViewport } from "./ThreadTerminalDrawer";
 import { selectTerminalSubmittedCommand, useTerminalStateStore } from "../terminalStateStore";
+import {
+  selectActiveTab,
+  selectThreadBrowserState,
+  useBrowserPanelStore,
+} from "../browserPanelStore";
+import { useStore, type EnvironmentState } from "../store";
 
 const THREAD_ID = ThreadId.make("thread-terminal-browser");
+const PROJECT_ID = ProjectId.make("project-terminal-browser");
+
+function seedWorkspaceThread(environmentId: string): void {
+  const environmentState = {
+    projectIds: [PROJECT_ID],
+    projectById: {
+      [PROJECT_ID]: {
+        id: PROJECT_ID,
+        environmentId,
+        kind: "workspace",
+        name: "Project",
+        cwd: "/repo/project",
+      },
+    },
+    threadShellById: {
+      [THREAD_ID]: { id: THREAD_ID, environmentId, projectId: PROJECT_ID },
+    },
+  } as unknown as EnvironmentState;
+  useStore.setState({
+    activeEnvironmentId: environmentId as never,
+    environmentStateById: { [environmentId]: environmentState },
+  });
+}
+
+function provideTerminalLinks(line: string) {
+  terminalBufferLinesRef.current = [line];
+  let provided: Parameters<
+    Parameters<NonNullable<typeof linkProviderRef.current>["provideLinks"]>[1]
+  >[0] = undefined;
+  linkProviderRef.current?.provideLinks(1, (links) => {
+    provided = links;
+  });
+  return provided ?? [];
+}
+
+function linkActivationEvent(): MouseEvent {
+  return new MouseEvent(
+    "click",
+    /mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true },
+  );
+}
 
 function createEnvironmentApi(snapshot?: Partial<TerminalSessionSnapshot>) {
   return {
@@ -286,6 +379,10 @@ describe("TerminalViewport", () => {
     pendingTerminalWriteCallbacks.length = 0;
     deferTerminalWriteCallbacksRef.current = false;
     terminalSelectionStateRef.current = null;
+    linkProviderRef.current = null;
+    terminalBufferLinesRef.current = [];
+    useStore.setState({ activeEnvironmentId: null, environmentStateById: {} });
+    useBrowserPanelStore.setState({ browserStateByThreadKey: {}, visitedUrls: [] });
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
       terminalLaunchContextByThreadKey: {},
@@ -478,6 +575,121 @@ describe("TerminalViewport", () => {
       });
       expect(terminalClearSelectionSpy).toHaveBeenCalledTimes(1);
       expect(terminalFocusSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens an activated terminal url in the thread's browser panel", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    seedWorkspaceThread("environment-a");
+    const localApi = {
+      contextMenu: { show: vi.fn(async () => null) },
+      shell: { openExternal: vi.fn(async () => undefined) },
+    };
+    readLocalApiMock.mockReturnValueOnce(localApi);
+
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+        expect(linkProviderRef.current).not.toBeNull();
+      });
+
+      const links = provideTerminalLinks("  Local   http://localhost:4321/");
+      expect(links).toHaveLength(1);
+      links[0]?.activate(linkActivationEvent());
+
+      const panel = selectThreadBrowserState(
+        useBrowserPanelStore.getState().browserStateByThreadKey,
+        threadRef,
+      );
+      expect(panel.open).toBe(true);
+      expect(selectActiveTab(panel)?.url).toBe("http://localhost:4321/");
+      expect(localApi.shell.openExternal).not.toHaveBeenCalled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("falls back to the external browser when the thread has no browser panel", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const localApi = {
+      contextMenu: { show: vi.fn(async () => null) },
+      shell: { openExternal: vi.fn(async () => undefined) },
+    };
+    readLocalApiMock.mockReturnValueOnce(localApi);
+
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+        expect(linkProviderRef.current).not.toBeNull();
+      });
+
+      const links = provideTerminalLinks("Docs at https://example.com/docs");
+      links[0]?.activate(linkActivationEvent());
+
+      expect(localApi.shell.openExternal).toHaveBeenCalledWith("https://example.com/docs");
+      expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers the external browser from a link's right-click menu", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    seedWorkspaceThread("environment-a");
+    const localApi = {
+      contextMenu: { show: vi.fn(async () => "open-external") },
+      shell: { openExternal: vi.fn(async () => undefined) },
+    };
+    readLocalApiMock.mockReturnValueOnce(localApi);
+
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+        expect(linkProviderRef.current).not.toBeNull();
+      });
+
+      const links = provideTerminalLinks("Docs at https://example.com/docs");
+      links[0]?.hover?.(new MouseEvent("mousemove"), "https://example.com/docs");
+
+      const terminalMount = document.querySelector<HTMLElement>(
+        "[data-terminal-viewport-mount='true']",
+      );
+      expect(terminalMount).not.toBeNull();
+      terminalMount?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 120,
+          clientY: 60,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(localApi.contextMenu.show).toHaveBeenCalledWith(
+          [
+            { id: "open-external", label: "Open in external browser" },
+            { id: "copy-link", label: "Copy link address" },
+          ],
+          { x: 120, y: 60 },
+        );
+        expect(localApi.shell.openExternal).toHaveBeenCalledWith("https://example.com/docs");
+      });
+      // The activated route stayed untouched: nothing landed in the panel.
+      expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
     } finally {
       await mounted.cleanup();
     }

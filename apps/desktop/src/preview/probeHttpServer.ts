@@ -40,9 +40,15 @@ export interface HttpProbeResult {
   title: string | null;
 }
 
-/** Resolves null for anything that is not an HTML-serving HTTP endpoint. */
+/**
+ * Resolves null for anything that is not an HTML-serving HTTP endpoint.
+ *
+ * The host must be the loopback address the listener is bound to: a server on
+ * ::1 refuses 127.0.0.1, and vice versa.
+ */
 export function probeHttpServer(
   port: number,
+  host: string,
   redirectsLeft = MAX_REDIRECTS,
 ): Promise<HttpProbeResult | null> {
   return new Promise((resolve) => {
@@ -55,7 +61,7 @@ export function probeHttpServer(
     };
 
     const request = get(
-      { host: "127.0.0.1", port, path: "/", timeout: PROBE_TIMEOUT_MS },
+      { host, port, path: "/", timeout: PROBE_TIMEOUT_MS },
       (response: IncomingMessage) => {
         const status = response.statusCode ?? 0;
         const location = response.headers.location;
@@ -68,7 +74,7 @@ export function probeHttpServer(
             finish(null);
             return;
           }
-          void probeHttpServer(port, redirectsLeft - 1).then(finish);
+          void probeHttpServer(port, host, redirectsLeft - 1).then(finish);
           return;
         }
         if (status >= 400 || !isHtmlContentType(response.headers["content-type"])) {

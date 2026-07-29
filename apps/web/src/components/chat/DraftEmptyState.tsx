@@ -47,6 +47,19 @@ export function DraftEmptyState({
   );
   const currentProjectKey = currentProjectRef ? scopedProjectKey(currentProjectRef) : null;
   const targetName = isGeneralChat ? "general chat" : (currentProjectName ?? "this project");
+  // Show the selected project's icon in the heading so the active project is
+  // recognizable at a glance, not just by reading the name.
+  const currentProject = useMemo(
+    () =>
+      currentProjectKey === null
+        ? null
+        : (orderedProjects.find(
+            (project) =>
+              scopedProjectKey(scopeProjectRef(project.environmentId, project.id)) ===
+              currentProjectKey,
+          ) ?? null),
+    [currentProjectKey, orderedProjects],
+  );
 
   return (
     <div className="flex w-full max-w-xl flex-col items-center">
@@ -60,13 +73,23 @@ export function DraftEmptyState({
         <Menu>
           <MenuTrigger
             render={
-              <button
-                className="cursor-pointer font-medium text-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 transition-colors hover:decoration-foreground"
-                type="button"
-              />
+              <button className="group cursor-pointer font-medium text-foreground" type="button" />
             }
           >
-            {targetName}
+            {/* Chrome never paints text-decoration under a replaced element, so
+                the dotted rule is a border on a flex wrapper — that's what keeps
+                the icon inside the underline instead of beside it. */}
+            <span className="inline-flex items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground">
+              {isGeneralChat ? (
+                <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+              ) : currentProject ? (
+                <ProjectFavicon
+                  cwd={currentProject.cwd}
+                  environmentId={currentProject.environmentId}
+                />
+              ) : null}
+              {targetName}
+            </span>
           </MenuTrigger>
           <MenuPopup align="center">
             {generalChatsRef ? (

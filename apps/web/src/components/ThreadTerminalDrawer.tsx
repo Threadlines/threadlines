@@ -32,7 +32,10 @@ import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
+import { isElectron } from "../env";
 import { openInPreferredEditor } from "../editorPreferences";
+import { openUrlInBrowserPanel } from "./browser/openInBrowserPanel";
+import { copyTextWithToast } from "./chat/copyTextWithToast";
 import { applyTerminalInputData, createTerminalCommandInputState } from "../terminalCommandTracker";
 import {
   collectWrappedTerminalLinkLine,
@@ -41,6 +44,7 @@ import {
   resolvePathLinkTarget,
   resolveWrappedTerminalLinkRange,
   wrappedTerminalLinkRangeIntersectsBufferLine,
+  type TerminalLinkMatch,
 } from "../terminal-links";
 import {
   isDiffToggleShortcut,
@@ -465,6 +469,8 @@ export function TerminalViewport({
   const selectionActionOpenRef = useRef(false);
   const selectionActionTimerRef = useRef<number | null>(null);
   const keybindingsRef = useRef(keybindings);
+  // The link under the pointer right now, so a right click knows what it is on.
+  const hoveredLinkRef = useRef<TerminalLinkMatch | null>(null);
   const lastAppliedTerminalEventIdRef = useRef(0);
   const terminalHydratedRef = useRef(false);
   const terminalCommandInputStateRef = useRef(createTerminalCommandInputState());
@@ -688,6 +694,14 @@ export function TerminalViewport({
           links.map(({ match, range }) => ({
             text: match.text,
             range,
+            hover: () => {
+              hoveredLinkRef.current = match;
+            },
+            leave: () => {
+              if (hoveredLinkRef.current === match) {
+                hoveredLinkRef.current = null;
+              }
+            },
             activate: (event: MouseEvent) => {
               if (!isTerminalLinkActivation(event)) return;
 
@@ -695,6 +709,13 @@ export function TerminalViewport({
               if (!latestTerminal) return;
 
               if (match.kind === "url") {
+                // Same rule as a chat link: the plain activation stays in the
+                // thread's own browser. Threads without a panel (general chat,
+                // plain web) fall through to the external browser as before;
+                // the right-click menu is the deliberate way out.
+                if (isElectron && openUrlInBrowserPanel(threadRef, match.text)) {
+                  return;
+                }
                 void localApi.shell.openExternal(match.text).catch((error: unknown) => {
                   writeSystemMessage(
                     latestTerminal,
@@ -758,8 +779,65 @@ export function TerminalViewport({
       clearSelectionAction();
       selectionGestureActiveRef.current = event.button === 0;
     };
+    const handleLinkContextMenu = (event: MouseEvent) => {
+      const link = hoveredLinkRef.current;
+      if (!link) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const position = { x: event.clientX, y: event.clientY };
+      void (async () => {
+        if (link.kind === "url") {
+          const clicked = await localApi.contextMenu.show(
+            [
+              { id: "open-external", label: "Open in external browser" },
+              { id: "copy-link", label: "Copy link address" },
+            ] as const,
+            position,
+          );
+          if (clicked === "open-external") {
+            await localApi.shell.openExternal(link.text).catch((error: unknown) => {
+              const activeTerminal = terminalRef.current;
+              if (!activeTerminal) return;
+              writeSystemMessage(
+                activeTerminal,
+                error instanceof Error ? error.message : "Unable to open link",
+              );
+            });
+            return;
+          }
+          if (clicked === "copy-link") {
+            copyTextWithToast(link.text, "Link address");
+          }
+          return;
+        }
+
+        const target = resolvePathLinkTarget(link.text, cwd);
+        const clicked = await localApi.contextMenu.show(
+          [
+            { id: "open-editor", label: "Open in editor" },
+            { id: "copy-path", label: "Copy path" },
+          ] as const,
+          position,
+        );
+        if (clicked === "open-editor") {
+          await openInPreferredEditor(localApi, target).catch((error) => {
+            const activeTerminal = terminalRef.current;
+            if (!activeTerminal) return;
+            writeSystemMessage(
+              activeTerminal,
+              error instanceof Error ? error.message : "Unable to open path",
+            );
+          });
+          return;
+        }
+        if (clicked === "copy-path") {
+          copyTextWithToast(target, "Path");
+        }
+      })();
+    };
     window.addEventListener("mouseup", handleMouseUp);
     mount.addEventListener("pointerdown", handlePointerDown);
+    mount.addEventListener("contextmenu", handleLinkContextMenu);
 
     const themeObserver = new MutationObserver(() => {
       const activeTerminal = terminalRef.current;
@@ -968,6 +1046,8 @@ export function TerminalViewport({
       }
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
+      mount.removeEventListener("contextmenu", handleLinkContextMenu);
+      hoveredLinkRef.current = null;
       themeObserver.disconnect();
       setSelectionAction(null);
       selectionActionOpenRef.current = false;

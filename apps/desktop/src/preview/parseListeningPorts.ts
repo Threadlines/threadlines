@@ -12,21 +12,32 @@ export interface ListeningPort {
   port: number;
   processName: string;
   pid: number;
+  /**
+   * The loopback address the listener actually accepts connections on. A
+   * server bound only to ::1 (Node resolves "localhost" that way on some
+   * machines) refuses 127.0.0.1, so probing the wrong family reports a live
+   * server as absent.
+   */
+  probeHost: "127.0.0.1" | "::1";
 }
 
-/** Addresses that a browser on this machine can actually reach. */
-function isLocallyReachable(address: string): boolean {
+/** Maps a bound address to the loopback it is reachable at, or null for none. */
+function loopbackProbeHost(address: string): "127.0.0.1" | "::1" | null {
   const host = address.slice(0, address.lastIndexOf(":"));
-  return (
-    host === "*" ||
-    host === "" ||
-    host === "127.0.0.1" ||
-    host === "localhost" ||
-    host === "[::1]" ||
-    host === "::1" ||
-    host === "0.0.0.0" ||
-    host === "[::]"
-  );
+  switch (host) {
+    case "*":
+    case "":
+    case "0.0.0.0":
+    case "127.0.0.1":
+    case "localhost":
+      return "127.0.0.1";
+    case "[::1]":
+    case "::1":
+    case "[::]":
+      return "::1";
+    default:
+      return null;
+  }
 }
 
 export function parseListeningPorts(lsofOutput: string): ListeningPort[] {
@@ -54,16 +65,21 @@ export function parseListeningPorts(lsofOutput: string): ListeningPort[] {
     }
     // IPv6 arrives bracketed, and lsof writes "->" for established
     // connections; a listener has no peer.
-    if (value.includes("->") || !isLocallyReachable(value)) {
+    const probeHost = value.includes("->") ? null : loopbackProbeHost(value);
+    if (probeHost === null) {
       continue;
     }
     const port = Number.parseInt(value.slice(value.lastIndexOf(":") + 1), 10);
     if (Number.isNaN(port) || port <= 0) {
       continue;
     }
-    // The same port often appears twice, once per address family. One entry.
-    if (!byPort.has(port)) {
-      byPort.set(port, { port, processName, pid });
+    // The same port often appears twice, once per address family: one entry,
+    // probed over IPv4 when either family accepts it.
+    const existing = byPort.get(port);
+    if (existing === undefined) {
+      byPort.set(port, { port, processName, pid, probeHost });
+    } else if (probeHost === "127.0.0.1") {
+      existing.probeHost = probeHost;
     }
   }
 
