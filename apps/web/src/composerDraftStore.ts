@@ -121,7 +121,12 @@ export interface ComposerFileAttachment extends ChatFileAttachment {
 
 export type ComposerAttachment = ComposerImageAttachment | ComposerFileAttachment;
 
-const PersistedTerminalContextDraft = Schema.Struct({
+/**
+ * Context-chip schemas are exported so other persisted stores (the prompt
+ * stash) can carry the same chips without redeclaring their shapes. A second
+ * copy would drift the moment a field is added here.
+ */
+export const PersistedTerminalContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,
   createdAt: Schema.String,
@@ -132,7 +137,7 @@ const PersistedTerminalContextDraft = Schema.Struct({
 });
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
-const PersistedTranscriptHighlightContextDraft = Schema.Struct({
+export const PersistedTranscriptHighlightContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,
   createdAt: Schema.String,
@@ -144,7 +149,7 @@ const PersistedTranscriptHighlightContextDraft = Schema.Struct({
 type PersistedTranscriptHighlightContextDraft =
   typeof PersistedTranscriptHighlightContextDraft.Type;
 
-const PersistedPickedElementContextDraft = Schema.Struct({
+export const PersistedPickedElementContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,
   createdAt: Schema.String,
@@ -163,7 +168,7 @@ const PersistedPickedElementContextDraft = Schema.Struct({
 });
 type PersistedPickedElementContextDraft = typeof PersistedPickedElementContextDraft.Type;
 
-const PersistedFileSelectionContextDraft = Schema.Struct({
+export const PersistedFileSelectionContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: Schema.String,
   createdAt: Schema.String,
@@ -534,6 +539,12 @@ interface ComposerDraftStoreState {
     attachments: PersistedComposerAttachment[],
   ) => void;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
+  /**
+   * Clears exactly what a stash takes: prompt, attachments and the four
+   * persisted chip types. Drawings stay put, since the stash cannot carry
+   * their image and a chip without its picture shows nothing.
+   */
+  clearStashableComposerContent: (threadRef: ComposerThreadTarget) => void;
 }
 
 export interface EffectiveComposerModelState {
@@ -651,7 +662,15 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
   };
 }
 
-function composerAttachmentDedupKey(attachment: ComposerAttachment): string {
+/**
+ * Identity used to decide whether two attachments are "the same file" when
+ * one of them was rebuilt from storage. Exported so the prompt stash counts
+ * capacity against the same key the store will dedupe on, instead of burning
+ * a slot on an attachment the store then refuses.
+ */
+export function composerAttachmentDedupKey(
+  attachment: Pick<ComposerAttachment, "mimeType" | "sizeBytes" | "name">,
+): string {
   // Keep this independent from File.lastModified so dedupe is stable for hydrated
   // attachments reconstructed from localStorage (which get a fresh lastModified value).
   return `${attachment.mimeType}\u0000${attachment.sizeBytes}\u0000${attachment.name}`;
@@ -2172,7 +2191,12 @@ function hydratePersistedComposerAttachment(attachment: PersistedComposerAttachm
   }
 }
 
-function hydrateAttachmentsFromPersisted(
+/**
+ * Rebuilds live composer attachments from their persisted data URLs.
+ * Exported so the prompt stash restores attachments through exactly the same
+ * path a reloaded draft does, rather than reinventing the image/file split.
+ */
+export function hydrateAttachmentsFromPersisted(
   attachments: ReadonlyArray<PersistedComposerAttachment>,
 ): ComposerAttachment[] {
   return attachments.flatMap((attachment): ComposerAttachment[] => {
@@ -2286,6 +2310,47 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
   persist(
     (setBase, get) => {
       const set = setBase;
+
+      /**
+       * Empties the composer's content for a target. Sending clears
+       * everything; stashing keeps drawings, because a drawing is mostly its
+       * image and the stash does not carry one — clearing it here would
+       * destroy work the user can never get back.
+       */
+      const clearDraftContent = (
+        threadRef: ComposerThreadTarget,
+        options: { includeDrawingContexts: boolean },
+      ): void => {
+        const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+        if (threadKey.length === 0) {
+          return;
+        }
+        set((state) => {
+          const current = state.draftsByThreadKey[threadKey];
+          if (!current) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...current,
+            prompt: "",
+            attachments: [],
+            nonPersistedAttachmentIds: [],
+            persistedAttachments: [],
+            terminalContexts: [],
+            transcriptHighlightContexts: [],
+            fileSelectionContexts: [],
+            pickedElementContexts: [],
+            ...(options.includeDrawingContexts ? { drawingContexts: [] } : {}),
+          };
+          const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadKey[threadKey];
+          } else {
+            nextDraftsByThreadKey[threadKey] = nextDraft;
+          }
+          return { draftsByThreadKey: nextDraftsByThreadKey };
+        });
+      };
 
       return {
         draftsByThreadKey: {},
@@ -3542,35 +3607,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
         },
         clearComposerContent: (threadRef) => {
-          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
-          if (threadKey.length === 0) {
-            return;
-          }
-          set((state) => {
-            const current = state.draftsByThreadKey[threadKey];
-            if (!current) {
-              return state;
-            }
-            const nextDraft: ComposerThreadDraftState = {
-              ...current,
-              prompt: "",
-              attachments: [],
-              nonPersistedAttachmentIds: [],
-              persistedAttachments: [],
-              terminalContexts: [],
-              transcriptHighlightContexts: [],
-              fileSelectionContexts: [],
-              pickedElementContexts: [],
-              drawingContexts: [],
-            };
-            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-            if (shouldRemoveDraft(nextDraft)) {
-              delete nextDraftsByThreadKey[threadKey];
-            } else {
-              nextDraftsByThreadKey[threadKey] = nextDraft;
-            }
-            return { draftsByThreadKey: nextDraftsByThreadKey };
-          });
+          clearDraftContent(threadRef, { includeDrawingContexts: true });
+        },
+        clearStashableComposerContent: (threadRef) => {
+          clearDraftContent(threadRef, { includeDrawingContexts: false });
         },
       };
     },
