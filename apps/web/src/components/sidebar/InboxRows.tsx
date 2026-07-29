@@ -639,6 +639,13 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
   const threadProjectCwd = useThreadProjectCwd(thread);
+  // Wrapping a thread settles the conversation, not its terminals: a dev
+  // server started there keeps running, and this is the icon that finds it.
+  const runningTerminalIds = useTerminalStateStore(
+    (state) =>
+      selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
+  );
+  const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
   const handleClick = useCallback(() => {
     navigateToThread(threadRef);
@@ -778,6 +785,17 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
             {thread.title}
           </span>
           <span className={ROW_META_SLOT_CLASS_NAME}>
+            {terminalStatus ? (
+              <span
+                role="img"
+                aria-label={terminalStatus.label}
+                className={cn("inline-flex items-center justify-center", terminalStatus.colorClass)}
+              >
+                <TerminalIcon
+                  className={cn("size-3", terminalStatus.pulse && "animate-status-pulse")}
+                />
+              </span>
+            ) : null}
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
               {doneAt ? formatRelativeTimeLabel(doneAt) : null}
             </span>
