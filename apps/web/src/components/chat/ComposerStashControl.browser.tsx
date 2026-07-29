@@ -84,7 +84,7 @@ describe("ComposerStashControl", () => {
     await screen.unmount();
   });
 
-  it("deletes an entry without restoring it, and offers no stash action on an empty composer", async () => {
+  it("deletes an entry only after confirmation, and offers no stash action on an empty composer", async () => {
     const onRestore = vi.fn();
     const onDelete = vi.fn();
     const screen = await renderStashControl({
@@ -98,10 +98,23 @@ describe("ComposerStashControl", () => {
     // Nothing typed, so the popover is a list only.
     expect(page.getByRole("menuitem", { name: /Stash this prompt/ }).query()).toBeNull();
 
+    // The X on the row asks first; a stray click must not lose the prompt.
     await page.getByRole("button", { name: /Delete stashed prompt/ }).click();
+    expect(onDelete).not.toHaveBeenCalled();
+    await expect.element(page.getByRole("alertdialog")).toBeVisible();
+
+    await page.getByRole("button", { name: "Cancel" }).click();
+    // The dialog animates out; wait for it to leave before reopening.
+    await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+
+    await page.getByRole("button", { name: /Delete stashed prompt/ }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
     expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onDelete.mock.calls[0]?.[0]?.id).toBe("only");
     // The delete must not double as an activation of the row it sits in.
     expect(onRestore).not.toHaveBeenCalled();
+    await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
     await screen.unmount();
   });
 
