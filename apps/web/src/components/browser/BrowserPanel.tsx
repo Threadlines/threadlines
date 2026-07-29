@@ -16,6 +16,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CameraIcon,
+  CheckIcon,
   ExternalLinkIcon,
   GlobeIcon,
   MaximizeIcon,
@@ -63,6 +64,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
+import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
@@ -131,8 +133,9 @@ export function BrowserPanel({
   onClose: () => void;
   /** Hands a picked element to the composer as context for the next message. */
   onPickElement?: ((element: DesktopPreviewPickedElement) => void) | undefined;
-  /** Attaches a captured screenshot to the message being written. */
-  onScreenshot?: ((input: { dataUrl: string; name: string }) => void) | undefined;
+  /** Attaches a captured screenshot to the message being written. Returns
+   *  whether it actually attached, so the panel confirms only what happened. */
+  onScreenshot?: ((input: { dataUrl: string; name: string }) => boolean) | undefined;
   /** Attaches a drawing made on the page: one chip carrying its picture. */
   onDrawing?: ((context: DrawingContext) => void) | undefined;
   /** An element to show again, requested from a composer chip. */
@@ -585,22 +588,92 @@ export function BrowserPanel({
    * attaches itself -- making this one a copy-then-paste errand would be the
    * odd one out.
    */
+  /** The camera button briefly becomes a check after a capture attaches.
+   *  Deliberately the whole confirmation: a flash over the page read as an
+   *  event, and a screenshot landing where you sent it only needs a nod. */
+  const [captureConfirmed, setCaptureConfirmed] = useState(false);
+  const captureConfirmTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (captureConfirmTimerRef.current !== null) {
+        window.clearTimeout(captureConfirmTimerRef.current);
+      }
+    };
+  }, []);
+
+  const confirmCapture = useCallback(() => {
+    setCaptureConfirmed(true);
+    if (captureConfirmTimerRef.current !== null) {
+      window.clearTimeout(captureConfirmTimerRef.current);
+    }
+    captureConfirmTimerRef.current = window.setTimeout(() => setCaptureConfirmed(false), 1400);
+  }, []);
+
+  /**
+   * Where the new-tab button sits: after the last tab while there is room --
+   * next to what it acts on, and away from the close-panel control it is not
+   * -- docking at the strip's right edge once the tabs overflow, where it
+   * would otherwise scroll away with them. The comparison uses a constant for
+   * the button's own slot and normalises the viewport to its undocked width,
+   * because docking changes both real widths and measuring them would feed
+   * the answer back into the question.
+   */
+  const [newTabDocked, setNewTabDocked] = useState(false);
+  const newTabDockedRef = useRef(false);
+  const tabsRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const tabsRow = tabsRowRef.current;
+    const viewport = tabsRow?.closest('[data-slot="scroll-area-viewport"]') ?? null;
+    if (tabsRow === null || viewport === null) {
+      return;
+    }
+    const measure = () => {
+      const available =
+        viewport.clientWidth + (newTabDockedRef.current ? NEW_TAB_BUTTON_SLOT_PX : 0);
+      const next = tabsRow.scrollWidth + NEW_TAB_BUTTON_SLOT_PX > available;
+      newTabDockedRef.current = next;
+      setNewTabDocked(next);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(tabsRow);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
   const captureScreenshot = useCallback(() => {
     const webview = webviewFor(activeTabId);
     if (webview === null || !isElectron) {
       return;
     }
+    // Every way this can fail says so. This used to fall through silently on an
+    // empty capture or a rejected IPC call, which looked exactly like success
+    // until the composer turned out to be missing the image.
+    const captureFailed = () => {
+      toastManager.add({
+        type: "error",
+        title: "Screenshot capture failed.",
+        description: "The page did not produce an image. Try again.",
+      });
+    };
     void window.desktopBridge
       ?.previewScreenshot?.({ webContentsId: webview.getWebContentsId() })
       .then((shot) => {
         // A payload-less data URL is still a non-empty string, so the emptiness
         // check has to look past the header.
         if (shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1) === "") {
+          captureFailed();
           return;
         }
-        onScreenshot?.({ dataUrl: shot.dataUrl, name: `${screenshotName()}.png` });
-      });
-  }, [activeTabId, onScreenshot, screenshotName]);
+        const attached =
+          onScreenshot?.({ dataUrl: shot.dataUrl, name: `${screenshotName()}.png` }) ?? false;
+        // When the composer declines the image it explains itself (its own
+        // toast or thread error), so the panel only confirms, never doubles up.
+        if (attached) {
+          confirmCapture();
+        }
+      })
+      .catch(captureFailed);
+  }, [activeTabId, confirmCapture, onScreenshot, screenshotName]);
 
   return (
     <section
@@ -621,35 +694,30 @@ export function BrowserPanel({
           horizontalWheelScroll
           className="min-w-0 flex-1 self-stretch [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100"
         >
-          <div className="flex h-full items-stretch gap-px">
-            {browserState.tabs.map((tab) => (
-              <TabStripItem
-                key={tab.id}
-                tab={tab}
-                isActive={tab.id === activeTabId}
-                closable
-                agentState={
-                  tab.id !== agentTabId
-                    ? "none"
-                    : agentActivity?.phase === "running"
-                      ? "working"
-                      : "pinned"
-                }
-                onSelect={() => selectTab(threadRef, tab.id)}
-                onClose={() => closeBrowserTab(tab.id)}
-              />
-            ))}
+          <div className="flex h-full items-stretch">
+            <div ref={tabsRowRef} className="flex h-full items-stretch gap-px">
+              {browserState.tabs.map((tab) => (
+                <TabStripItem
+                  key={tab.id}
+                  tab={tab}
+                  isActive={tab.id === activeTabId}
+                  closable
+                  agentState={
+                    tab.id !== agentTabId
+                      ? "none"
+                      : agentActivity?.phase === "running"
+                        ? "working"
+                        : "pinned"
+                  }
+                  onSelect={() => selectTab(threadRef, tab.id)}
+                  onClose={() => closeBrowserTab(tab.id)}
+                />
+              ))}
+            </div>
+            {newTabDocked ? null : <NewTabButton onClick={() => openTab(threadRef)} />}
           </div>
         </ScrollArea>
-        <button
-          type="button"
-          aria-label="New tab"
-          data-testid="browser-new-tab"
-          className="ms-0.5 inline-flex size-6 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-          onClick={() => openTab(threadRef)}
-        >
-          <PlusIcon className="size-3.5" />
-        </button>
+        {newTabDocked ? <NewTabButton onClick={() => openTab(threadRef)} /> : null}
 
         {/* Panel-level controls only: where the browser sits and whether it is
             open. What acts on the page lives with the address it acts on. */}
@@ -742,11 +810,18 @@ export function BrowserPanel({
           }}
         />
         <NavButton
-          label="Capture screenshot"
+          label={captureConfirmed ? "Screenshot attached" : "Capture screenshot"}
           onClick={captureScreenshot}
           testId="browser-screenshot"
         >
-          <CameraIcon className="size-3.5" />
+          {captureConfirmed ? (
+            <CheckIcon
+              className="size-3.5 text-primary-readable"
+              data-testid="browser-screenshot-confirmed"
+            />
+          ) : (
+            <CameraIcon className="size-3.5" />
+          )}
         </NavButton>
         <Menu>
           <MenuTrigger
@@ -923,6 +998,25 @@ export function BrowserPanel({
         )}
       </div>
     </section>
+  );
+}
+
+/** The new-tab button's footprint in the strip: its size-6 box plus lead-in
+ *  margin. A constant rather than a measurement, so the docking decision never
+ *  depends on where the button currently is. */
+const NEW_TAB_BUTTON_SLOT_PX = 26;
+
+function NewTabButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label="New tab"
+      data-testid="browser-new-tab"
+      className="ms-0.5 inline-flex size-6 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+      onClick={onClick}
+    >
+      <PlusIcon className="size-3.5" />
+    </button>
   );
 }
 
@@ -1353,12 +1447,18 @@ function ViewportResizeHandle({
 
   return (
     <>
-      {dragging ? <div className="fixed inset-0 z-40 cursor-inherit" /> : null}
+      {/* pointer-events-auto throughout: these live inside the overlay that
+          sets pointer-events-none to stay out of the page's way, and the
+          value inherits -- without the override the handles are decoration. */}
+      {dragging ? <div className="pointer-events-auto fixed inset-0 z-40 cursor-inherit" /> : null}
       <div
         role="separator"
         aria-label={`Resize ${edge === "corner" ? "viewport" : edge + " edge"}`}
         data-testid={`browser-resize-${edge}`}
-        className={cn("absolute z-50 flex items-center justify-center", position)}
+        className={cn(
+          "pointer-events-auto absolute z-50 flex items-center justify-center",
+          position,
+        )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
@@ -1469,6 +1569,7 @@ function PageToolControl({
               <MenuRadioItem
                 key={entry.tool}
                 value={entry.tool}
+                variant="fill"
                 data-testid={`browser-page-tool-${entry.tool}`}
               >
                 {/* Flexed because the reset makes an svg a block, which would

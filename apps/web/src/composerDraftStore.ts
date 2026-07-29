@@ -3561,6 +3561,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               transcriptHighlightContexts: [],
               fileSelectionContexts: [],
               pickedElementContexts: [],
+              drawingContexts: [],
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

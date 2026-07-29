@@ -329,6 +329,26 @@ describe("composerDraftStore clearComposerContent", () => {
     expect(draft).toBeUndefined();
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:optimistic");
   });
+
+  it("clears attached drawings along with every other chip", () => {
+    // Sending clears through here; a list this misses stays in the composer
+    // as chips for a message that already went out.
+    useComposerDraftStore.getState().setDrawingContexts(threadRef, [
+      {
+        id: "drawing-1",
+        threadId,
+        createdAt: "2026-07-29T00:00:00.000Z",
+        note: "make the brick wall take up this entire area",
+        imageDataUrl: "data:image/png;base64,AAAA",
+        url: "http://localhost:4321/",
+        elements: [],
+      },
+    ]);
+
+    useComposerDraftStore.getState().clearComposerContent(threadRef);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
 });
 
 describe("composerDraftStore syncPersistedAttachments", () => {

@@ -165,3 +165,110 @@ export function appendPickedElementContextsToPrompt(
     return appendBlockToPrompt(current, formatPickedElementContextBlock(context));
   }, prompt);
 }
+
+// The body must not cross a closing tag, or two adjacent blocks read as one
+// with the earlier block's fields overwritten by the later's.
+const TRAILING_SELECTED_ELEMENT_BLOCK_PATTERN =
+  /\n*<selected_element>\n((?:(?!<\/selected_element>)[\s\S])*)\n<\/selected_element>\s*$/;
+
+/** The keys formatPickedElementContextBlock writes, in the order it writes them. */
+const SELECTED_ELEMENT_BLOCK_KEYS = [
+  "note",
+  "tag",
+  "role",
+  "name",
+  "selector",
+  "text",
+  "size",
+  "url",
+  "proposed styles",
+] as const;
+
+type SelectedElementBlockKey = (typeof SELECTED_ELEMENT_BLOCK_KEYS)[number];
+
+export interface ExtractedPickedElementContexts {
+  promptText: string;
+  contexts: PickedElementContext[];
+}
+
+function parseStyleChanges(value: string): PickedElementStyleChange[] {
+  return value
+    .split("; ")
+    .map((entry) => /^(.+?): (.*?) → (.*)$/.exec(entry))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => ({ property: match[1]!, from: match[2]!, to: match[3]! }));
+}
+
+/**
+ * The inverse of formatPickedElementContextBlock, so a sent message can show
+ * the element as the chip it was attached as rather than as the serialized
+ * lines the agent reads.
+ *
+ * A line that opens with a known key starts that field; any other line
+ * continues the one before it, because a note or an element's text is allowed
+ * to span lines and nothing else is.
+ */
+export function parsePickedElementContextBlock(block: string): PickedElementContext | null {
+  const fields = new Map<SelectedElementBlockKey, string>();
+  let currentKey: SelectedElementBlockKey | null = null;
+  for (const line of block.split("\n")) {
+    const key = SELECTED_ELEMENT_BLOCK_KEYS.find((candidate) => line.startsWith(`${candidate}: `));
+    if (key !== undefined) {
+      currentKey = key;
+      fields.set(key, line.slice(key.length + 2));
+      continue;
+    }
+    if (currentKey !== null) {
+      fields.set(currentKey, `${fields.get(currentKey) ?? ""}\n${line}`);
+    }
+  }
+  const selector = fields.get("selector")?.trim() ?? "";
+  // The same rule as normalizePickedElementContextDraft: without a selector
+  // there is nothing to act on, and a chip would promise otherwise.
+  if (selector === "") {
+    return null;
+  }
+  const size = /^(\d+)x(\d+)$/.exec(fields.get("size")?.trim() ?? "");
+  return {
+    note: fields.get("note") ?? null,
+    styleChanges: parseStyleChanges(fields.get("proposed styles") ?? ""),
+    tagName: fields.get("tag")?.trim() || "element",
+    role: fields.get("role") ?? null,
+    name: fields.get("name") ?? null,
+    selector,
+    text: fields.get("text") ?? null,
+    width: size === null ? 0 : Number(size[1]),
+    height: size === null ? 0 : Number(size[2]),
+    url: fields.get("url") ?? "",
+  };
+}
+
+/**
+ * Peel trailing <selected_element> blocks off a sent message.
+ *
+ * Stops at the first block it cannot represent as a chip: hiding text the chip
+ * would not carry loses what the user said, so anything unparseable stays
+ * visible as the text it always was.
+ */
+export function extractTrailingPickedElementContexts(
+  prompt: string,
+): ExtractedPickedElementContexts {
+  const contexts: PickedElementContext[] = [];
+  let remaining = prompt;
+  for (;;) {
+    const match = TRAILING_SELECTED_ELEMENT_BLOCK_PATTERN.exec(remaining);
+    if (match === null) {
+      break;
+    }
+    const parsed = parsePickedElementContextBlock(match[1] ?? "");
+    if (parsed === null) {
+      break;
+    }
+    contexts.unshift(parsed);
+    remaining = remaining.slice(0, match.index);
+  }
+  return {
+    promptText: contexts.length === 0 ? prompt : remaining.replace(/\n+$/, ""),
+    contexts,
+  };
+}

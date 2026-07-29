@@ -1,4 +1,9 @@
 import { type ThreadId } from "@threadlines/contracts";
+import { extractTrailingDrawingContexts, type ParsedDrawingContextEntry } from "./drawingContext";
+import {
+  extractTrailingPickedElementContexts,
+  type PickedElementContext,
+} from "./pickedElementContext";
 import {
   extractTrailingTranscriptHighlightContexts,
   type ParsedTranscriptHighlightContextEntry,
@@ -32,6 +37,8 @@ export interface DisplayedUserMessageState {
   previewTitle: string | null;
   contexts: ParsedTerminalContextEntry[];
   transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
+  pickedElements: PickedElementContext[];
+  drawings: ParsedDrawingContextEntry[];
 }
 
 export interface ParsedTerminalContextEntry {
@@ -240,7 +247,15 @@ export function extractTrailingTerminalContexts(prompt: string): ExtractedTermin
 }
 
 export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMessageState {
-  const extractedHighlights = extractTrailingTranscriptHighlightContexts(prompt);
+  // Peeled in the reverse of the order the send path appends them, since each
+  // extractor only recognises its own blocks at the very end of the text.
+  const extractedDrawings = extractTrailingDrawingContexts(prompt);
+  const extractedPickedElements = extractTrailingPickedElementContexts(
+    extractedDrawings.promptText,
+  );
+  const extractedHighlights = extractTrailingTranscriptHighlightContexts(
+    extractedPickedElements.promptText,
+  );
   const extractedContexts = extractTrailingTerminalContexts(extractedHighlights.promptText);
   return {
     visibleText: extractedContexts.promptText,
@@ -249,6 +264,8 @@ export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMe
     previewTitle: extractedContexts.previewTitle,
     contexts: extractedContexts.contexts,
     transcriptHighlights: extractedHighlights.contexts,
+    pickedElements: extractedPickedElements.contexts,
+    drawings: extractedDrawings.contexts,
   };
 }
 

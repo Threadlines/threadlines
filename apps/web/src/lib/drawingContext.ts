@@ -52,6 +52,11 @@ export function formatDrawingDescriptor(context: DrawingContext): string {
  * something -- which elements those were, so the agent can find them in the
  * source rather than only look at them.
  */
+// Said plainly, because an agent that assumes the marks are part of the
+// page would try to find them in the source.
+const DRAWING_IMAGE_SENTENCE =
+  "The attached image is a screenshot of this page with the user's drawing on top.";
+
 export function formatDrawingContextBlock(context: DrawingContext): string {
   const lines = [
     ...(context.note === null ? [] : [`note: ${context.note}`]),
@@ -63,9 +68,7 @@ export function formatDrawingContextBlock(context: DrawingContext): string {
             .map((element) => `${formatPickedElementDescriptor(element)} (${element.selector})`)
             .join("; ")}`,
         ]),
-    // Said plainly, because an agent that assumes the marks are part of the
-    // page would try to find them in the source.
-    "The attached image is a screenshot of this page with the user's drawing on top.",
+    DRAWING_IMAGE_SENTENCE,
   ];
   return `<drawing>\n${lines.join("\n")}\n</drawing>`;
 }
@@ -78,4 +81,79 @@ export function appendDrawingContextsToPrompt(
     (current, context) => appendBlockToPrompt(current, formatDrawingContextBlock(context)),
     prompt,
   );
+}
+
+// The body must not cross a closing tag, or two adjacent blocks read as one.
+const TRAILING_DRAWING_BLOCK_PATTERN =
+  /\n*<drawing>\n((?:(?!<\/drawing>)[\s\S])*)\n<\/drawing>\s*$/;
+
+/**
+ * A drawing read back out of a sent message. The picture travelled as an
+ * attachment, so the block only ever carried the words; this is those words,
+ * with the circled elements kept as the labels they were written as.
+ */
+export interface ParsedDrawingContextEntry {
+  note: string | null;
+  url: string;
+  /** `descriptor (selector)` labels, one per circled element. */
+  circled: string[];
+}
+
+export interface ExtractedDrawingContexts {
+  promptText: string;
+  contexts: ParsedDrawingContextEntry[];
+}
+
+function parseDrawingContextBlock(block: string): ParsedDrawingContextEntry {
+  let note: string | null = null;
+  let url = "";
+  let circled: string[] = [];
+  let inNote = false;
+  for (const line of block.split("\n")) {
+    if (line === DRAWING_IMAGE_SENTENCE) {
+      inNote = false;
+    } else if (line.startsWith("url: ")) {
+      url = line.slice("url: ".length);
+      inNote = false;
+    } else if (line.startsWith("circled: ")) {
+      circled = line.slice("circled: ".length).split("; ");
+      inNote = false;
+    } else if (line.startsWith("note: ")) {
+      note = line.slice("note: ".length);
+      inNote = true;
+    } else if (inNote) {
+      // Only the note may span lines: it is the one field a person typed.
+      note = `${note ?? ""}\n${line}`;
+    }
+  }
+  return { note, url, circled };
+}
+
+/** Peel trailing <drawing> blocks off a sent message. */
+export function extractTrailingDrawingContexts(prompt: string): ExtractedDrawingContexts {
+  const contexts: ParsedDrawingContextEntry[] = [];
+  let remaining = prompt;
+  for (;;) {
+    const match = TRAILING_DRAWING_BLOCK_PATTERN.exec(remaining);
+    if (match === null) {
+      break;
+    }
+    contexts.unshift(parseDrawingContextBlock(match[1] ?? ""));
+    remaining = remaining.slice(0, match.index);
+  }
+  return {
+    promptText: contexts.length === 0 ? prompt : remaining.replace(/\n+$/, ""),
+    contexts,
+  };
+}
+
+/** The chip's label for a drawing read back out of a sent message. */
+export function formatParsedDrawingDescriptor(entry: ParsedDrawingContextEntry): string {
+  if (entry.circled.length === 1) {
+    return "Drawing · 1 element";
+  }
+  if (entry.circled.length > 1) {
+    return `Drawing · ${entry.circled.length} elements`;
+  }
+  return "Drawing";
 }

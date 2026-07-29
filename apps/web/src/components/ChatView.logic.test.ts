@@ -321,6 +321,26 @@ describe("deriveComposerSendState", () => {
     expect(state.sendableTranscriptHighlightContexts).toHaveLength(1);
     expect(state.hasSendableContent).toBe(true);
   });
+
+  it("treats browser annotations as sendable without any typed text", () => {
+    // A picked element or a drawing is a complete message: the annotation says
+    // where, its note says what.
+    const withPickedElement = deriveComposerSendState({
+      prompt: "",
+      attachmentCount: 0,
+      terminalContexts: [],
+      pickedElementContextCount: 1,
+    });
+    const withDrawing = deriveComposerSendState({
+      prompt: "",
+      attachmentCount: 0,
+      terminalContexts: [],
+      drawingContextCount: 1,
+    });
+
+    expect(withPickedElement.hasSendableContent).toBe(true);
+    expect(withDrawing.hasSendableContent).toBe(true);
+  });
 });
 
 describe("desktopCapturedScreenshotToFile", () => {

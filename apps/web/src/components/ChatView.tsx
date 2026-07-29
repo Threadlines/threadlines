@@ -4295,6 +4295,8 @@ export default function ChatView(props: ChatViewProps) {
       terminalContexts: composerTerminalContexts,
       transcriptHighlightContexts: composerTranscriptHighlightContexts,
       fileSelectionContextCount: composerFileSelectionContexts.length,
+      pickedElementContextCount: composerPickedElementContexts.length,
+      drawingContextCount: composerDrawingContexts.length,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -6238,6 +6240,7 @@ export default function ChatView(props: ChatViewProps) {
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               onRevertUserMessage={onRevertUserMessage}
               onContinueInNewThread={onContinueMessageInNewThread}
+              onRevealPickedElement={isElectron ? revealPickedElement : undefined}
               onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
@@ -6513,7 +6516,7 @@ export default function ChatView(props: ChatViewProps) {
               flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
               onClose={handleCloseBrowser}
               onPickElement={appendPickedElementToComposer}
-              onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot)}
+              onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot) ?? false}
               onDrawing={(drawing) => composerRef.current?.addDrawingContext(drawing)}
               pendingReveal={pendingElementReveal}
               onRevealHandled={() => setPendingElementReveal(null)}

@@ -185,6 +185,38 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Show full message");
   }, 20_000);
 
+  it("renders trailing picked-element blocks as chips instead of raw text", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          buildUserTimelineEntry(
+            [
+              "Move this below the heading",
+              "",
+              "<selected_element>",
+              "note: Lets move this below the DOJO STORM Heading",
+              "tag: p",
+              "role: paragraph",
+              "name: Facility Services",
+              "selector: #top > div:nth-of-type(1) > p:nth-of-type(1)",
+              "size: 477x49",
+              "url: http://localhost:4321/",
+              "</selected_element>",
+            ].join("\n"),
+          ),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Move this below the heading");
+    // The chip names the element; the serialized block stays out of the text.
+    expect(markup).toContain("paragraph &quot;Facility Services&quot;");
+    expect(markup).not.toContain("selected_element");
+    expect(markup).not.toContain("selector: #top");
+  });
+
   it("keeps the copy button for collapsed long user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(

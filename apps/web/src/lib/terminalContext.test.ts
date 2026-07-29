@@ -21,6 +21,8 @@ import {
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "./terminalContext";
+import { appendDrawingContextsToPrompt } from "./drawingContext";
+import { appendPickedElementContextsToPrompt } from "./pickedElementContext";
 import { appendTranscriptHighlightContextsToPrompt } from "./transcriptHighlightContext";
 
 function makeContext(overrides?: Partial<TerminalContextDraft>): TerminalContextDraft {
@@ -156,6 +158,59 @@ describe("terminalContext", () => {
         },
       ],
       transcriptHighlights: [],
+      pickedElements: [],
+      drawings: [],
+    });
+  });
+
+  it("peels picked elements and drawings appended after the other context blocks", () => {
+    // The send path appends terminal contexts, then highlights, then picked
+    // elements, then drawings; the display must unwind all of it or none of
+    // the earlier blocks are found either.
+    const pickedElement = {
+      note: "move this below the heading",
+      styleChanges: [],
+      tagName: "p",
+      role: "paragraph",
+      name: "Facility Services",
+      selector: "#top > p",
+      text: null,
+      width: 477,
+      height: 49,
+      url: "http://localhost:4321/",
+    };
+    const prompt = appendDrawingContextsToPrompt(
+      appendPickedElementContextsToPrompt(
+        appendTranscriptHighlightContextsToPrompt(
+          appendTerminalContextsToPrompt("Investigate this", [makeContext()]),
+          [
+            {
+              sourceMessageId: MessageId.make("assistant-1"),
+              sourceRole: "assistant",
+              selectedText: "What does this part mean?",
+              note: "I mean the last sentence.",
+            },
+          ],
+        ),
+        [pickedElement],
+      ),
+      [
+        {
+          note: "gold, like this",
+          imageDataUrl: "data:image/png;base64,AAAA",
+          url: "http://localhost:4321/",
+          elements: [],
+        },
+      ],
+    );
+
+    expect(deriveDisplayedUserMessageState(prompt)).toMatchObject({
+      visibleText: "Investigate this",
+      copyText: prompt,
+      contexts: [{ header: "Terminal 1 lines 12-13" }],
+      transcriptHighlights: [{ selectedText: "What does this part mean?" }],
+      pickedElements: [pickedElement],
+      drawings: [{ note: "gold, like this", url: "http://localhost:4321/", circled: [] }],
     });
   });
 

@@ -304,6 +304,10 @@ export function buildPickOverlayScript(
   // rectangle caught in region mode; the note field appears once it is filled.
   let chosen = [];
 
+  // Registered while the note field is open, removed on settle: if the
+  // document dies mid-note, what was typed attaches rather than vanishing.
+  let onPageHide = null;
+
   // The properties worth trying on the spot. Enough to describe a visual
   // change precisely, not so many that the panel becomes a style editor: the
   // agent makes the real change, this only says what to aim for.
@@ -376,6 +380,20 @@ export function buildPickOverlayScript(
     const resetButton = field.querySelector(".reset");
     input.placeholder = placeholder;
     toggle.hidden = !styleable;
+
+    // Tell the host what was chosen now, while the elements exist: the page
+    // is free to reload out from under a half-written note (a dev server
+    // rebuilding, most often), and a description taken at choose time is what
+    // lets the annotation survive that.
+    window[STASH] = chosen;
+    window[BINDING](JSON.stringify({ chosen: chosen.length }));
+
+    // The page going away is not the user changing their mind: attach what
+    // was typed. Removed in dispose, so a settled pick leaves nothing armed.
+    onPageHide = () => {
+      attach(input.value.trim(), [...tweaks.values()]);
+    };
+    window.addEventListener("pagehide", onPageHide);
 
     const place = () => {
       const rect = anchorRect();
@@ -732,6 +750,10 @@ export function buildPickOverlayScript(
   };
 
   function dispose() {
+    if (onPageHide !== null) {
+      window.removeEventListener("pagehide", onPageHide);
+      onPageHide = null;
+    }
     cursorStyle.remove();
     document.removeEventListener("mousemove", onMove, true);
     document.removeEventListener("mousedown", onRegionDown, true);

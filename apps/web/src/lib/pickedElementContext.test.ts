@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   appendPickedElementContextsToPrompt,
+  extractTrailingPickedElementContexts,
   formatPickedElementDescriptor,
   normalizePickedElementContextDraft,
   pickedElementFromPreview,
@@ -135,6 +136,54 @@ describe("appendPickedElementContextsToPrompt", () => {
     ]);
 
     expect(prompt.match(/<selected_element>/g)).toHaveLength(2);
+  });
+});
+
+describe("extractTrailingPickedElementContexts", () => {
+  it("reads the appended blocks back as the contexts they were, in order", () => {
+    const first: PickedElementContext = {
+      ...context,
+      note: "move this\nbelow the heading",
+      styleChanges: [{ property: "font-size", from: "16px", to: "18px" }],
+    };
+    const second: PickedElementContext = {
+      ...context,
+      role: null,
+      name: null,
+      selector: "#top > p",
+      text: "Facility Services",
+      url: "http://localhost:4321/",
+    };
+    const prompt = appendPickedElementContextsToPrompt("Use that sigil as the favicon", [
+      first,
+      second,
+    ]);
+
+    const extracted = extractTrailingPickedElementContexts(prompt);
+
+    expect(extracted.promptText).toBe("Use that sigil as the favicon");
+    expect(extracted.contexts).toEqual([
+      // The block omits text when it only repeats the name, so the round trip
+      // comes back without it; the descriptor does not need it.
+      { ...first, text: null },
+      second,
+    ]);
+  });
+
+  it("leaves a prompt without blocks untouched", () => {
+    expect(extractTrailingPickedElementContexts("plain question")).toEqual({
+      promptText: "plain question",
+      contexts: [],
+    });
+  });
+
+  it("keeps a block it cannot represent as a chip visible as text", () => {
+    const prompt = "look here\n\n<selected_element>\nnote: no selector\n</selected_element>\n";
+
+    expect(extractTrailingPickedElementContexts(prompt)).toEqual({
+      promptText: prompt,
+      contexts: [],
+    });
   });
 });
 

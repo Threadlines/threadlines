@@ -67,8 +67,6 @@ import * as Schema from "effect/Schema";
 
 /** Enough to explain a failure without letting a chatty page grow unboundedly. */
 const MAX_CONSOLE_ENTRIES = 200;
-/** Long enough to choose deliberately, short enough not to strand inspect mode. */
-const PICK_TIMEOUT_MS = 60_000;
 /** Drag-and-drop and text selection depend on held movement between press and release. */
 const DRAG_MOVE_STEPS = 10;
 
@@ -1096,59 +1094,103 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         expression: buildPickOverlayScript(colorScheme, mode),
       });
 
-      const picked = yield* Effect.tryPromise({
-        try: () =>
-          new Promise<PickResult | null>((resolve) => {
-            let done = false;
-            const finish = (value: PickResult | null) => {
-              if (done) return;
-              done = true;
-              contents.debugger.off("message", onMessage);
-              clearTimeout(timer);
-              resolve(value);
-            };
-            const onMessage = (
-              _event: unknown,
-              method: string,
-              params: Record<string, unknown>,
-            ) => {
-              if (method !== "Runtime.bindingCalled" || params.name !== PICK_OVERLAY_BINDING) {
-                return;
-              }
-              try {
-                const payload = JSON.parse(String(params.payload ?? "{}")) as {
-                  count?: number;
-                  note?: string | null;
-                  styleChanges?: ReadonlyArray<{ property: string; from: string; to: string }>;
-                  cancelled?: boolean;
-                };
-                finish(
-                  payload.cancelled === true || payload.count === undefined || payload.count < 1
-                    ? null
-                    : {
-                        count: payload.count,
-                        note: payload.note ?? null,
-                        styleChanges: payload.styleChanges ?? [],
-                      },
-                );
-              } catch {
-                finish(null);
-              }
-            };
-            contents.debugger.on("message", onMessage);
-            // Reaching for another tool settles this one, rather than leaving
-            // it waiting on a binding that will never be called.
-            supersede = () => {
-              pendingPicks.delete(webContentsId);
-              finish(null);
-            };
-            // Picking is a deliberate act; if the user wanders off, stop
-            // waiting rather than leaving the overlay armed forever.
-            const timer = setTimeout(() => finish(null), PICK_TIMEOUT_MS);
-          }),
-        catch: (cause) =>
-          new PreviewCommandError({ webContentsId, method: "Runtime.bindingCalled", cause }),
-      });
+      // The wait is a loop rather than one promise, because the overlay now
+      // speaks twice: once when elements are chosen -- so they can be described
+      // while they still exist -- and once when the note is settled. Between
+      // the two the page is free to die (a dev server reloading it, most
+      // often), and the early description is what lets the annotation survive
+      // that. No timeout: writing a note takes as long as it takes, and an
+      // armed pick is settled by escape, by another tool, or by the page
+      // itself navigating away before anything was chosen.
+      type PickEvent =
+        | { readonly kind: "chosen"; readonly count: number }
+        | { readonly kind: "final"; readonly result: PickResult | null };
+      const eventQueue: PickEvent[] = [];
+      let closed = false;
+      let notifyWaiter: (() => void) | null = null;
+      const push = (event: PickEvent) => {
+        if (closed) return;
+        eventQueue.push(event);
+        notifyWaiter?.();
+      };
+      const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => {
+        if (method === "Page.frameNavigated") {
+          const frame = params.frame as { parentId?: string } | undefined;
+          // Main frame only. The document the overlay lived in is gone; any
+          // last words it had (the pagehide auto-attach below) arrive on this
+          // same ordered stream before this does, so a note in progress is
+          // already in the queue and this settles only a truly idle pick.
+          if (frame?.parentId === undefined) {
+            push({ kind: "final", result: null });
+          }
+          return;
+        }
+        if (method !== "Runtime.bindingCalled" || params.name !== PICK_OVERLAY_BINDING) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(String(params.payload ?? "{}")) as {
+            chosen?: number;
+            count?: number;
+            note?: string | null;
+            styleChanges?: ReadonlyArray<{ property: string; from: string; to: string }>;
+            cancelled?: boolean;
+          };
+          if (typeof payload.chosen === "number") {
+            push({ kind: "chosen", count: payload.chosen });
+            return;
+          }
+          push({
+            kind: "final",
+            result:
+              payload.cancelled === true || payload.count === undefined || payload.count < 1
+                ? null
+                : {
+                    count: payload.count,
+                    note: payload.note ?? null,
+                    styleChanges: payload.styleChanges ?? [],
+                  },
+          });
+        } catch {
+          push({ kind: "final", result: null });
+        }
+      };
+      contents.debugger.on("message", onMessage);
+      // Reaching for another tool settles this one, rather than leaving it
+      // waiting on a binding that will never be called.
+      supersede = () => {
+        pendingPicks.delete(webContentsId);
+        push({ kind: "final", result: null });
+      };
+      const nextEvent = () =>
+        new Promise<PickEvent>((resolve) => {
+          const take = () => {
+            const event = eventQueue.shift();
+            if (event === undefined) {
+              notifyWaiter = take;
+              return;
+            }
+            notifyWaiter = null;
+            resolve(event);
+          };
+          take();
+        });
+
+      let earlyDescribed: DesktopPreviewPickedElement[] = [];
+      let picked: PickResult | null = null;
+      for (;;) {
+        const event = yield* Effect.promise(() => nextEvent());
+        if (event.kind === "chosen") {
+          earlyDescribed = yield* describeStashed(contents, PICK_OVERLAY_STASH, event.count).pipe(
+            Effect.orElseSucceed(() => []),
+          );
+          continue;
+        }
+        picked = event.result;
+        break;
+      }
+      closed = true;
+      contents.debugger.off("message", onMessage);
 
       // A superseded pick owns nothing on the page any more: its overlay was
       // replaced, and tearing down would take its replacement with it.
@@ -1161,7 +1203,15 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       // the overlay's handles on the elements it chose.
       const described: DesktopPreviewPickedElement[] = [];
       if (current && picked !== null) {
-        const elements = yield* describeStashed(contents, PICK_OVERLAY_STASH, picked.count);
+        let elements = yield* describeStashed(contents, PICK_OVERLAY_STASH, picked.count).pipe(
+          Effect.orElseSucceed((): DesktopPreviewPickedElement[] => []),
+        );
+        // Fewer than were chosen means the document died with the stash --
+        // the note arrived from pagehide -- and the descriptions taken at
+        // choose time are the ones that still know the elements.
+        if (elements.length < picked.count && earlyDescribed.length > elements.length) {
+          elements = earlyDescribed;
+        }
         for (const element of elements) {
           described.push({
             ...element,

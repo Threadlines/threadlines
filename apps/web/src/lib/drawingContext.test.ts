@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   appendDrawingContextsToPrompt,
+  extractTrailingDrawingContexts,
   formatDrawingContextBlock,
   formatDrawingDescriptor,
+  formatParsedDrawingDescriptor,
   type DrawingContext,
 } from "./drawingContext";
 import type { PickedElementContext } from "./pickedElementContext";
@@ -82,5 +84,48 @@ describe("appendDrawingContextsToPrompt", () => {
     const prompt = appendDrawingContextsToPrompt("fix this", [drawing(), drawing({ note: null })]);
     expect(prompt.match(/<drawing>/g)).toHaveLength(2);
     expect(prompt).toContain("fix this");
+  });
+});
+
+describe("extractTrailingDrawingContexts", () => {
+  it("reads the appended blocks back without the screenshot sentence leaking in", () => {
+    const prompt = appendDrawingContextsToPrompt("fix this", [
+      drawing({
+        note: "make it like this\nbut gold",
+        elements: [element("region", "Alpha", "#alpha")],
+      }),
+      drawing({ note: null }),
+    ]);
+
+    expect(extractTrailingDrawingContexts(prompt)).toEqual({
+      promptText: "fix this",
+      contexts: [
+        {
+          note: "make it like this\nbut gold",
+          url: "http://localhost:3000/",
+          circled: ['region "Alpha" (#alpha)'],
+        },
+        { note: null, url: "http://localhost:3000/", circled: [] },
+      ],
+    });
+  });
+
+  it("leaves a prompt without blocks untouched", () => {
+    expect(extractTrailingDrawingContexts("plain question")).toEqual({
+      promptText: "plain question",
+      contexts: [],
+    });
+  });
+});
+
+describe("formatParsedDrawingDescriptor", () => {
+  it("counts circled elements without pretending to still know their names", () => {
+    expect(formatParsedDrawingDescriptor({ note: null, url: "", circled: [] })).toBe("Drawing");
+    expect(formatParsedDrawingDescriptor({ note: null, url: "", circled: ["a"] })).toBe(
+      "Drawing · 1 element",
+    );
+    expect(formatParsedDrawingDescriptor({ note: null, url: "", circled: ["a", "b"] })).toBe(
+      "Drawing · 2 elements",
+    );
   });
 });

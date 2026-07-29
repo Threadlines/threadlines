@@ -1420,6 +1420,8 @@ export function deriveComposerSendState(options: {
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   transcriptHighlightContexts?: ReadonlyArray<TranscriptHighlightContextDraft> | undefined;
   fileSelectionContextCount?: number | undefined;
+  pickedElementContextCount?: number | undefined;
+  drawingContextCount?: number | undefined;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
@@ -1437,12 +1439,17 @@ export function deriveComposerSendState(options: {
     sendableTerminalContexts,
     sendableTranscriptHighlightContexts,
     expiredTerminalContextCount,
+    // Every kind of attached context counts: a picked element or a drawing is
+    // a complete message by itself -- the annotation says where, the note says
+    // what -- and demanding words on top of it makes people type "see above".
     hasSendableContent:
       trimmedPrompt.length > 0 ||
       options.attachmentCount > 0 ||
       sendableTerminalContexts.length > 0 ||
       sendableTranscriptHighlightContexts.length > 0 ||
-      (options.fileSelectionContextCount ?? 0) > 0,
+      (options.fileSelectionContextCount ?? 0) > 0 ||
+      (options.pickedElementContextCount ?? 0) > 0 ||
+      (options.drawingContextCount ?? 0) > 0,
   };
 }
 

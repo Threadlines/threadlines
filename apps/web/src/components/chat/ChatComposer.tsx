@@ -420,8 +420,9 @@ export interface ChatComposerHandle {
   addTranscriptHighlightContext: (selection: TranscriptHighlightContextSelection) => void;
   /** Attach an element picked in the browser preview. */
   addPickedElementContext: (context: PickedElementContext) => void;
-  /** Attach a screenshot captured from the browser preview. */
-  addScreenshotAttachment: (input: { dataUrl: string; name: string }) => void;
+  /** Attach a screenshot captured from the browser preview. Returns whether
+   *  it actually attached, so the capture surface can confirm honestly. */
+  addScreenshotAttachment: (input: { dataUrl: string; name: string }) => boolean;
   /** Attach a drawing made on the page: one chip carrying the picture, the
    *  note and whatever the closed strokes went round. */
   addDrawingContext: (context: DrawingContext) => void;
@@ -1106,12 +1107,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         terminalContexts: composerTerminalContexts,
         transcriptHighlightContexts: composerTranscriptHighlightContexts,
         fileSelectionContextCount: composerFileSelectionContexts.length,
+        pickedElementContextCount: composerPickedElementContexts.length,
+        drawingContextCount: composerDrawingContexts.length,
       }),
     [
       composerAttachments.length,
       composerTerminalContexts,
       composerTranscriptHighlightContexts,
       composerFileSelectionContexts.length,
+      composerPickedElementContexts.length,
+      composerDrawingContexts.length,
       prompt,
     ],
   );
@@ -2136,14 +2141,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Callbacks: images
   // ------------------------------------------------------------------
-  const addComposerFiles = (files: File[]) => {
-    if (!activeThreadId || files.length === 0) return;
+  /** Returns whether at least one file made it into the draft, so callers can
+   *  confirm the attachment rather than the attempt. */
+  const addComposerFiles = (files: File[]): boolean => {
+    if (!activeThreadId || files.length === 0) return false;
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
         title: "Attach files after answering plan questions.",
       });
-      return;
+      return false;
     }
     const nextAttachments: ComposerAttachment[] = [];
     let nextAttachmentCount = composerAttachmentsRef.current.length;
@@ -2208,6 +2215,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       addComposerAttachmentsToDraft(nextAttachments);
     }
     setThreadError(activeThreadId, error);
+    return nextAttachments.length > 0;
   };
 
   const openImageFilePicker = () => {
@@ -2497,10 +2505,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             title: "Screenshot capture failed.",
             description: "The captured image could not be read.",
           });
-          return;
+          return false;
         }
-        addComposerFiles([file]);
-        focusComposer();
+        const attached = addComposerFiles([file]);
+        if (attached) {
+          focusComposer();
+        }
+        return attached;
       },
       getSendContext: () => ({
         prompt: promptRef.current,

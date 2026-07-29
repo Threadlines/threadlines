@@ -57,6 +57,7 @@ import {
   LogInIcon,
   RefreshCwIcon,
   SearchIcon,
+  PencilIcon,
   ShieldCheckIcon,
   SplitIcon,
   SquarePenIcon,
@@ -88,6 +89,7 @@ import {
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { PickedElementContextChip } from "./ComposerPendingPickedElementContexts";
 import {
   handleTranscriptHighlightNoteFormSubmit,
   handleTranscriptHighlightNoteKeyDown,
@@ -99,6 +101,11 @@ import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
+import type { PickedElementContext, PickedElementContextDraft } from "~/lib/pickedElementContext";
+import {
+  formatParsedDrawingDescriptor,
+  type ParsedDrawingContextEntry,
+} from "~/lib/drawingContext";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@threadlines/contracts/settings";
@@ -146,6 +153,9 @@ interface TimelineRowSharedState {
   failedTurnRetry: FailedTurnRetryAction | null;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
+  /** Shows a sent message's picked element again in the preview; absent
+   *  outside the desktop app. */
+  onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onPreviewFile: (request: FilePreviewRequest) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -539,6 +549,7 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
+  onRevealPickedElement?: ((context: PickedElementContextDraft) => void) | undefined;
   onAddTranscriptHighlightContext?: (selection: TranscriptHighlightContextSelection) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -598,6 +609,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
   onContinueInNewThread,
+  onRevealPickedElement,
   onAddTranscriptHighlightContext,
   isRevertingCheckpoint,
   onImageExpand,
@@ -1203,6 +1215,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       failedTurnRetry,
       onRevertUserMessage,
       ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
+      ...(onRevealPickedElement ? { onRevealPickedElement } : {}),
       onImageExpand,
       onPreviewFile,
       onOpenTurnDiff,
@@ -1229,6 +1242,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       failedTurnRetry,
       onRevertUserMessage,
       onContinueInNewThread,
+      onRevealPickedElement,
       onImageExpand,
       onPreviewFile,
       onOpenTurnDiff,
@@ -1874,6 +1888,17 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;
+  const pickedElements = displayedUserMessage.pickedElements.map((context, index) => ({
+    // Stable enough to key a chip and name a reveal request: the blocks in a
+    // sent message no longer move.
+    id: `${row.message.id}:element:${index}`,
+    createdAt: row.message.createdAt,
+    context,
+  }));
+  const drawings = displayedUserMessage.drawings.map((entry, index) => ({
+    id: `${row.message.id}:drawing:${index}`,
+    entry,
+  }));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
   const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
 
@@ -1890,6 +1915,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           text={displayedUserMessage.visibleText}
           terminalContexts={terminalContexts}
           transcriptHighlights={transcriptHighlights}
+          pickedElements={pickedElements}
+          drawings={drawings}
           transcriptMessage={{
             id: row.message.id,
             role: "user",
@@ -3900,6 +3927,90 @@ const UserMessageTranscriptHighlightInlineLabel = memo(
   },
 );
 
+/** A picked element read back out of a sent message, keyed for rendering. */
+interface SentPickedElementEntry {
+  id: string;
+  createdAt: string;
+  context: PickedElementContext;
+}
+
+/**
+ * The same chip the composer showed for this element, minus what no longer
+ * applies: the message is sent, so the note reads as it was said and nothing
+ * is removable. The way back to the element on the page stays.
+ */
+const UserMessagePickedElementChip = memo(function UserMessagePickedElementChip(props: {
+  entry: SentPickedElementEntry;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const revealPickedElement = ctx.onRevealPickedElement;
+  const threadId = ctx.activeThreadId;
+  const { id, createdAt, context } = props.entry;
+  const onReveal =
+    revealPickedElement === undefined || threadId === null
+      ? undefined
+      : () => revealPickedElement({ ...context, id, threadId, createdAt });
+  return <PickedElementContextChip context={context} chipId={id} onReveal={onReveal} />;
+});
+
+const UserMessageDrawingInlineLabel = memo(function UserMessageDrawingInlineLabel(props: {
+  entry: ParsedDrawingContextEntry;
+}) {
+  const descriptor = formatParsedDrawingDescriptor(props.entry);
+  return (
+    <Popover>
+      <PopoverTrigger
+        openOnHover
+        delay={200}
+        closeDelay={0}
+        render={
+          <button
+            type="button"
+            aria-label={`View ${descriptor}`}
+            className="inline-flex max-w-56 cursor-pointer items-center gap-1.5 rounded-md border border-border/70 bg-accent/40 py-1 px-2 text-[12px] font-medium leading-tight text-foreground outline-none transition-colors hover:bg-accent/60 focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <PencilIcon className="size-3 shrink-0 text-muted-foreground/70" />
+            <span className="min-w-0 truncate">{descriptor}</span>
+            {props.entry.note === null ? null : (
+              <span
+                aria-label="Has a note"
+                className="size-1 shrink-0 rounded-full bg-primary-readable"
+              />
+            )}
+          </button>
+        }
+      />
+      <PopoverPopup
+        className="w-72"
+        viewportClassName="p-2 [--viewport-inline-padding:--spacing(2)]"
+        side="top"
+        align="start"
+      >
+        <p className="truncate text-xs font-medium text-foreground">{descriptor}</p>
+        {props.entry.url.length === 0 ? null : (
+          <p className="mb-1.5 truncate font-mono text-[10px] text-muted-foreground/70">
+            {props.entry.url}
+          </p>
+        )}
+        {props.entry.circled.length === 0 ? null : (
+          <ul className="mb-1.5 flex flex-col gap-0.5">
+            {props.entry.circled.map((label) => (
+              <li key={label} className="truncate font-mono text-[10px] text-muted-foreground">
+                {label}
+              </li>
+            ))}
+          </ul>
+        )}
+        {props.entry.note === null ? null : (
+          <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-xs leading-snug text-foreground">
+            {props.entry.note}
+          </p>
+        )}
+      </PopoverPopup>
+    </Popover>
+  );
+});
+
 const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
 const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
 
@@ -3914,6 +4025,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
   transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
+  pickedElements: SentPickedElementEntry[];
+  drawings: Array<{ id: string; entry: ParsedDrawingContextEntry }>;
   transcriptMessage?: { id: MessageId; role: TranscriptHighlightSourceRole } | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   forceExpanded?: boolean | undefined;
@@ -3925,6 +4038,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
     props.text.trim().length > 0 ||
     props.terminalContexts.length > 0 ||
     props.transcriptHighlights.length > 0;
+  const hasAttachedContextChips = props.pickedElements.length > 0 || props.drawings.length > 0;
   const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
   const isCollapsed = canCollapse && !expanded && !props.forceExpanded;
 
@@ -3949,6 +4063,21 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
             skills={props.skills}
             searchHighlightQuery={props.searchHighlightQuery}
           />
+        </div>
+      ) : null}
+      {hasAttachedContextChips ? (
+        // Outside the collapsible region: the chips are the evidence attached
+        // to the message, and folding the text should not hide them.
+        <div
+          className={cn("flex flex-wrap gap-1.5", hasVisibleBody && "mt-2")}
+          data-testid="sent-context-chips"
+        >
+          {props.pickedElements.map((entry) => (
+            <UserMessagePickedElementChip key={entry.id} entry={entry} />
+          ))}
+          {props.drawings.map(({ id, entry }) => (
+            <UserMessageDrawingInlineLabel key={id} entry={entry} />
+          ))}
         </div>
       ) : null}
       {canCollapse || props.footer ? (

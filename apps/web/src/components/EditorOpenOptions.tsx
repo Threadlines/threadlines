@@ -132,7 +132,7 @@ export function EditorOpenRadioGroup({
         }}
       >
         {options.map(({ label, Icon: OptionIcon, value }) => (
-          <MenuRadioItem key={value} value={value} closeOnClick>
+          <MenuRadioItem key={value} value={value} variant="fill" closeOnClick>
             <span className="flex items-center gap-2">
               <OptionIcon aria-hidden="true" className="text-muted-foreground" />
               {label}
