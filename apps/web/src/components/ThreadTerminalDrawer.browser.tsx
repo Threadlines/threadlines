@@ -11,6 +11,20 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+interface TestTerminalLink {
+  text: string;
+  activate: (event: MouseEvent) => void;
+  hover?: (event: MouseEvent, text: string) => void;
+  leave?: (event: MouseEvent, text: string) => void;
+}
+
+interface TestTerminalLinkProvider {
+  provideLinks: (
+    bufferLineNumber: number,
+    callback: (links?: ReadonlyArray<TestTerminalLink>) => void,
+  ) => void;
+}
+
 const {
   terminalConstructorSpy,
   terminalDisposeSpy,
@@ -55,19 +69,7 @@ const {
     persistence: { setClientSettings: vi.fn(async () => undefined) },
   })),
   linkProviderRef: {
-    current: null as {
-      provideLinks: (
-        bufferLineNumber: number,
-        callback: (
-          links?: ReadonlyArray<{
-            text: string;
-            activate: (event: MouseEvent) => void;
-            hover?: (event: MouseEvent, text: string) => void;
-            leave?: (event: MouseEvent, text: string) => void;
-          }>,
-        ) => void,
-      ) => void;
-    } | null,
+    current: null as TestTerminalLinkProvider | null,
   },
   terminalBufferLinesRef: {
     current: [] as string[],
@@ -246,11 +248,9 @@ function seedWorkspaceThread(environmentId: string): void {
   });
 }
 
-function provideTerminalLinks(line: string) {
+function provideTerminalLinks(line: string): ReadonlyArray<TestTerminalLink> {
   terminalBufferLinesRef.current = [line];
-  let provided: Parameters<
-    Parameters<NonNullable<typeof linkProviderRef.current>["provideLinks"]>[1]
-  >[0] = undefined;
+  let provided: ReadonlyArray<TestTerminalLink> | undefined;
   linkProviderRef.current?.provideLinks(1, (links) => {
     provided = links;
   });
