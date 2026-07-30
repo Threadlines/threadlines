@@ -514,6 +514,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.done-override.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.done-override-set",
+        payload: {
+          threadId: command.threadId,
+          state: command.state,
+          // The client's stamp, not `occurredAt`: the inbox compares this
+          // against the thread's activity to decide whether the word still
+          // stands.
+          at: command.at,
+        },
+      };
+    }
+
+    case "thread.seen.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.seen-set",
+        payload: {
+          threadId: command.threadId,
+          // Last-write-wins, backwards included: "mark unread" sets seen to
+          // just before the completion it is un-seeing.
+          at: command.at,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       const thread = yield* requireThread({
         readModel,

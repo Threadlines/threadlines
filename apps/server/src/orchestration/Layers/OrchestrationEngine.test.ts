@@ -150,6 +150,8 @@ describe("OrchestrationEngine", () => {
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
           pinnedAt: null,
+          doneOverride: null,
+          lastSeenAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -481,6 +483,85 @@ describe("OrchestrationEngine", () => {
     expect(
       (await system.readModel()).threads.find((thread) => thread.id === "thread-pin")?.pinnedAt,
     ).toBeNull();
+
+    await system.dispose();
+  });
+
+  it("keeps inbox lifecycle state on the thread so every device reads the same answer", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-inbox-create"),
+        projectId: asProjectId("project-inbox"),
+        title: "Project Inbox",
+        workspaceRoot: "/tmp/project-inbox",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-inbox-create"),
+        threadId: ThreadId.make("thread-inbox"),
+        projectId: asProjectId("project-inbox"),
+        title: "File me",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    const readThread = async () =>
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-inbox");
+    const updatedAtAfterCreate = (await readThread())?.updatedAt;
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.done-override.set",
+        commandId: CommandId.make("cmd-thread-inbox-done"),
+        threadId: ThreadId.make("thread-inbox"),
+        state: "done",
+        at: "2026-01-02T09:30:00.000Z",
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.seen.set",
+        commandId: CommandId.make("cmd-thread-inbox-seen"),
+        threadId: ThreadId.make("thread-inbox"),
+        at: "2026-01-02T09:31:00.000Z",
+      }),
+    );
+    // Mark unread walks the stamp back to just before the completion it
+    // un-sees, so a later write with an earlier stamp has to win.
+    await system.run(
+      engine.dispatch({
+        type: "thread.seen.set",
+        commandId: CommandId.make("cmd-thread-inbox-unread"),
+        threadId: ThreadId.make("thread-inbox"),
+        at: "2026-01-02T09:29:59.999Z",
+      }),
+    );
+
+    const thread = await readThread();
+    expect(thread?.doneOverride).toEqual({ state: "done", at: "2026-01-02T09:30:00.000Z" });
+    expect(thread?.lastSeenAt).toBe("2026-01-02T09:29:59.999Z");
+    // Filing and reading are not work: `updatedAt` is what the inbox weighs
+    // these stamps against, and what auto-wrap idles off.
+    expect(thread?.updatedAt).toBe(updatedAtAfterCreate);
 
     await system.dispose();
   });

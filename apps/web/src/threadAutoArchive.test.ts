@@ -28,6 +28,8 @@ function thread(id: string, overrides: Partial<SidebarThreadSummary> = {}): Side
     createdAt: daysAgo(45),
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     updatedAt: daysAgo(45),
     latestTurn: null,
     branch: null,

@@ -21,6 +21,7 @@ import {
   type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationThreadDiffStat,
+  type OrchestrationThreadDoneOverride,
   type OrchestrationThreadShell,
   ModelSelection,
   OrchestrationThreadGoal,
@@ -231,6 +232,15 @@ function mapLatestTurn(
   };
 }
 
+function mapThreadDoneOverride(
+  row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>,
+): OrchestrationThreadDoneOverride | null {
+  if (row.doneOverride == null || row.doneOverrideAt == null) {
+    return null;
+  }
+  return { state: row.doneOverride, at: row.doneOverrideAt };
+}
+
 function mapThreadDiffStat(
   row: Schema.Schema.Type<typeof ProjectionThreadDiffStatDbRowSchema> | undefined,
 ): OrchestrationThreadDiffStat | null {
@@ -392,6 +402,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
+          done_override AS "doneOverride",
+          done_override_at AS "doneOverrideAt",
+          last_seen_at AS "lastSeenAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -425,6 +438,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
+          done_override AS "doneOverride",
+          done_override_at AS "doneOverrideAt",
+          last_seen_at AS "lastSeenAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -460,6 +476,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
+          done_override AS "doneOverride",
+          done_override_at AS "doneOverrideAt",
+          last_seen_at AS "lastSeenAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -977,6 +996,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
+          done_override AS "doneOverride",
+          done_override_at AS "doneOverrideAt",
+          last_seen_at AS "lastSeenAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -1423,6 +1445,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 updatedAt: row.updatedAt,
                 archivedAt: row.archivedAt,
                 pinnedAt: row.pinnedAt,
+                doneOverride: mapThreadDoneOverride(row),
+                lastSeenAt: row.lastSeenAt ?? null,
                 deletedAt: row.deletedAt,
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1660,6 +1684,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
                   pinnedAt: row.pinnedAt,
+                  doneOverride: mapThreadDoneOverride(row),
+                  lastSeenAt: row.lastSeenAt ?? null,
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1806,6 +1832,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       updatedAt: row.updatedAt,
                       archivedAt: row.archivedAt,
                       pinnedAt: row.pinnedAt,
+                      doneOverride: mapThreadDoneOverride(row),
+                      lastSeenAt: row.lastSeenAt ?? null,
                       session: sessionByThread.get(row.threadId) ?? null,
                       latestUserMessageAt: row.latestUserMessageAt,
                       hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -1955,6 +1983,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     updatedAt: row.updatedAt,
                     archivedAt: row.archivedAt,
                     pinnedAt: row.pinnedAt,
+                    doneOverride: mapThreadDoneOverride(row),
+                    lastSeenAt: row.lastSeenAt ?? null,
                     session: sessionByThread.get(row.threadId) ?? null,
                     latestUserMessageAt: row.latestUserMessageAt,
                     hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -2221,6 +2251,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
         pinnedAt: threadRow.value.pinnedAt,
+        doneOverride: mapThreadDoneOverride(threadRow.value),
+        lastSeenAt: threadRow.value.lastSeenAt ?? null,
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
@@ -2321,6 +2353,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
         pinnedAt: threadRow.value.pinnedAt,
+        doneOverride: mapThreadDoneOverride(threadRow.value),
+        lastSeenAt: threadRow.value.lastSeenAt ?? null,
         deletedAt: null,
         messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),

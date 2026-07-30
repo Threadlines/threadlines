@@ -47,6 +47,8 @@ function makeThreadShell(
     updatedAt: NOW,
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     session: null,
     latestUserMessageAt: null,
     hasPendingApprovals: false,

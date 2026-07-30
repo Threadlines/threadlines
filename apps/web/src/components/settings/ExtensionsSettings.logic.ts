@@ -355,6 +355,8 @@ export interface ExtensionProviderThreadCandidate {
   readonly createdAt?: string | undefined;
   readonly updatedAt?: string | undefined;
   readonly sessionUpdatedAt?: string | undefined;
+  /** Server-held "last seen"; part of how recently the user touched a thread. */
+  readonly lastSeenAt?: string | null | undefined;
 }
 
 export interface ExtensionInventoryCacheKeyInput {
@@ -608,14 +610,12 @@ export function deriveDetectedProviderThreadId({
   providerInstanceId,
   projects,
   threads,
-  threadLastVisitedAtById,
 }: {
   readonly cwd: string;
   readonly providerDriver: string;
   readonly providerInstanceId: string;
   readonly projects: ReadonlyArray<ExtensionProviderThreadProject>;
   readonly threads: ReadonlyArray<ExtensionProviderThreadCandidate>;
-  readonly threadLastVisitedAtById: Readonly<Record<string, string>>;
 }): string {
   const cwdKey = normalizedCwdKey(cwd);
   const selectedProviderDriver = providerDriver.trim();
@@ -647,7 +647,7 @@ export function deriveDetectedProviderThreadId({
 
     const instanceRank = candidateInstanceId === selectedProviderInstanceId ? 1 : 0;
     const timestamp = Math.max(
-      parsedTime(threadLastVisitedAtById[thread.key]),
+      parsedTime(thread.lastSeenAt ?? undefined),
       parsedTime(thread.sessionUpdatedAt),
       parsedTime(thread.updatedAt),
       parsedTime(thread.createdAt),

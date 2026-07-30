@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   clearThreadUi,
+  dropLegacyInboxState,
   hydratePersistedProjectState,
-  markThreadVisited,
-  markThreadUnread,
   PERSISTED_STATE_KEY,
   type PersistedUiState,
   persistState,
+  readLegacyInboxState,
   reorderProjects,
+  resolveSeenOverlay,
   setDefaultAdvertisedEndpointKey,
   setLastChatThreadRef,
   setProjectExpanded,
@@ -23,9 +24,10 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
     projectExpandedById: {},
     projectOrder: [],
-    threadLastVisitedAtById: {},
+    seenThreadOverlays: {},
+    threadSeedVisitedAtById: {},
     threadChangedFilesExpandedById: {},
-    doneThreadOverrides: {},
+    doneThreadOverlays: {},
     inboxProjectScopeKey: null,
     defaultAdvertisedEndpointKey: null,
     lastChatThreadRef: null,
@@ -34,53 +36,35 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
 }
 
 describe("uiStateStore pure functions", () => {
-  it("markThreadVisited stores the provided server timestamp", () => {
+  it("a settled overlay retires once the server value moves off its baseline", () => {
     const threadId = ThreadId.make("thread-1");
-    const initialState = makeUiState();
-
-    const next = markThreadVisited(initialState, threadId, "2026-02-25T12:30:00.700Z");
-
-    expect(next.threadLastVisitedAtById[threadId]).toBe("2026-02-25T12:30:00.700Z");
-  });
-
-  it("markThreadVisited does not move visit state backwards under clock skew", () => {
-    const threadId = ThreadId.make("thread-1");
-    const initialState = makeUiState({
-      threadLastVisitedAtById: {
-        [threadId]: "2026-02-25T12:30:00.700Z",
+    const seen = makeUiState({
+      seenThreadOverlays: {
+        [threadId]: { at: "2026-02-25T12:30:00.700Z", baselineAt: null, settled: false },
       },
     });
 
-    const next = markThreadVisited(initialState, threadId, "2026-02-25T12:30:00.000Z");
+    const confirmed = resolveSeenOverlay(seen, threadId, "2026-02-25T12:30:00.700Z", "confirmed");
+    const stillPending = syncThreads(confirmed, [{ key: threadId, serverLastSeenAt: null }]);
+    expect(stillPending.seenThreadOverlays[threadId]?.at).toBe("2026-02-25T12:30:00.700Z");
 
-    expect(next).toBe(initialState);
+    const retired = syncThreads(confirmed, [
+      { key: threadId, serverLastSeenAt: "2026-02-25T12:30:00.700Z" },
+    ]);
+    expect(retired.seenThreadOverlays).toEqual({});
   });
 
-  it("markThreadUnread moves lastVisitedAt before completion for a completed thread", () => {
+  it("a failed overlay write is dropped so the row cannot diverge from the server", () => {
     const threadId = ThreadId.make("thread-1");
-    const latestTurnCompletedAt = "2026-02-25T12:30:00.000Z";
-    const initialState = makeUiState({
-      threadLastVisitedAtById: {
-        [threadId]: "2026-02-25T12:35:00.000Z",
+    const seen = makeUiState({
+      seenThreadOverlays: {
+        [threadId]: { at: "2026-02-25T12:30:00.700Z", baselineAt: null, settled: false },
       },
     });
 
-    const next = markThreadUnread(initialState, threadId, latestTurnCompletedAt);
+    const next = resolveSeenOverlay(seen, threadId, "2026-02-25T12:30:00.700Z", "failed");
 
-    expect(next.threadLastVisitedAtById[threadId]).toBe("2026-02-25T12:29:59.999Z");
-  });
-
-  it("markThreadUnread does not change a thread without a completed turn", () => {
-    const threadId = ThreadId.make("thread-1");
-    const initialState = makeUiState({
-      threadLastVisitedAtById: {
-        [threadId]: "2026-02-25T12:35:00.000Z",
-      },
-    });
-
-    const next = markThreadUnread(initialState, threadId, null);
-
-    expect(next).toBe(initialState);
+    expect(next.seenThreadOverlays).toEqual({});
   });
 
   it("reorderProjects moves a project to a target index", () => {
@@ -358,7 +342,7 @@ describe("uiStateStore pure functions", () => {
     const thread1 = ThreadId.make("thread-1");
     const thread2 = ThreadId.make("thread-2");
     const initialState = makeUiState({
-      threadLastVisitedAtById: {
+      threadSeedVisitedAtById: {
         [thread1]: "2026-02-25T12:35:00.000Z",
         [thread2]: "2026-02-25T12:36:00.000Z",
       },
@@ -374,7 +358,7 @@ describe("uiStateStore pure functions", () => {
 
     const next = syncThreads(initialState, [{ key: thread1 }]);
 
-    expect(next.threadLastVisitedAtById).toEqual({
+    expect(next.threadSeedVisitedAtById).toEqual({
       [thread1]: "2026-02-25T12:35:00.000Z",
     });
     expect(next.threadChangedFilesExpandedById).toEqual({
@@ -395,7 +379,7 @@ describe("uiStateStore pure functions", () => {
       },
     ]);
 
-    expect(next.threadLastVisitedAtById).toEqual({
+    expect(next.threadSeedVisitedAtById).toEqual({
       [thread1]: "2026-02-25T12:35:00.000Z",
     });
   });
@@ -418,7 +402,7 @@ describe("uiStateStore pure functions", () => {
   it("clearThreadUi removes visit state for deleted threads", () => {
     const thread1 = ThreadId.make("thread-1");
     const initialState = makeUiState({
-      threadLastVisitedAtById: {
+      threadSeedVisitedAtById: {
         [thread1]: "2026-02-25T12:35:00.000Z",
       },
       threadChangedFilesExpandedById: {
@@ -430,7 +414,7 @@ describe("uiStateStore pure functions", () => {
 
     const next = clearThreadUi(initialState, thread1);
 
-    expect(next.threadLastVisitedAtById).toEqual({});
+    expect(next.threadSeedVisitedAtById).toEqual({});
     expect(next.threadChangedFilesExpandedById).toEqual({});
   });
 
@@ -524,6 +508,36 @@ describe("uiStateStore persistence round-trip", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("reads the legacy persisted inbox state and drops migrated keys", () => {
+    const threadId = ThreadId.make("thread-1");
+    const otherThreadId = ThreadId.make("thread-2");
+    window.localStorage.setItem(
+      PERSISTED_STATE_KEY,
+      JSON.stringify({
+        doneThreadOverrides: {
+          [threadId]: { state: "done", at: "2026-02-25T12:30:00.000Z" },
+          [otherThreadId]: { state: "active", at: "2026-02-25T12:31:00.000Z" },
+        },
+        threadLastVisitedAtById: { [threadId]: "2026-02-25T12:32:00.000Z" },
+      } satisfies PersistedUiState),
+    );
+
+    const legacy = readLegacyInboxState();
+    expect(legacy.doneThreadOverrides[threadId]).toEqual({
+      state: "done",
+      at: "2026-02-25T12:30:00.000Z",
+    });
+    expect(legacy.threadLastVisitedAtById[threadId]).toBe("2026-02-25T12:32:00.000Z");
+
+    dropLegacyInboxState([threadId]);
+
+    const remaining = readLegacyInboxState();
+    expect(remaining.doneThreadOverrides).toEqual({
+      [otherThreadId]: { state: "active", at: "2026-02-25T12:31:00.000Z" },
+    });
+    expect(remaining.threadLastVisitedAtById).toEqual({});
   });
 
   it("preserves all-collapsed project state across restart", () => {

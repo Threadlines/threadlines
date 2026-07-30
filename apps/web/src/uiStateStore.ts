@@ -23,7 +23,14 @@ export interface PersistedUiState {
   projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
+  /**
+   * Legacy: inbox lifecycle state lived here before it moved onto the thread
+   * on the server, which is why a phone and a desktop disagreed about the
+   * Active/Wrapped split. Read once for migration, never written again.
+   */
   doneThreadOverrides?: Record<string, { state: "done" | "active"; at: string }>;
+  /** Legacy, see `doneThreadOverrides`. */
+  threadLastVisitedAtById?: Record<string, string>;
   inboxProjectScopeKey?: string | null;
 }
 
@@ -32,18 +39,45 @@ export interface UiProjectState {
   projectOrder: string[];
 }
 
+/**
+ * An unconfirmed local write to server-held thread lifecycle state. It shows
+ * instantly, then retires: `baselineAt` is the server value at the moment the
+ * write was made, so once the server moves off that baseline the write has
+ * either landed or been superseded, and the overlay stops speaking either way.
+ * Nothing here survives a reload -- the server holds the truth.
+ */
+export interface ThreadOverlayWrite {
+  readonly at: string;
+  readonly baselineAt: string | null;
+  /** True once the dispatch resolved; only settled overlays are retired. */
+  readonly settled: boolean;
+}
+
+export interface ThreadDoneOverlayWrite extends ThreadOverlayWrite {
+  readonly state: "done" | "active";
+}
+
 export interface UiThreadState {
-  threadLastVisitedAtById: Record<string, string>;
+  /** Unconfirmed local "seen" writes, by scoped thread key. */
+  seenThreadOverlays: Record<string, ThreadOverlayWrite>;
+  /**
+   * Seen-as-of stamp for threads the server has no visit recorded for,
+   * captured the first time this device sees the thread so a backlog does not
+   * arrive all-unread. Frozen once set; any server value supersedes it.
+   */
+  threadSeedVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
 }
 
 export interface UiInboxState {
   /**
-   * The user's explicit word on each thread's lifecycle, by scoped thread
-   * key. An override never decides on its own -- isThreadDone resolves it
-   * against the thread's live state, so activity blockers always win.
+   * Unconfirmed local Mark done / Reopen writes, by scoped thread key. The
+   * confirmed word lives on the thread itself (`doneOverride`) so every device
+   * sees it; this only covers the gap until the server echoes the write back.
+   * An override never decides on its own -- isThreadDone resolves it against
+   * the thread's live state, so activity blockers always win.
    */
-  doneThreadOverrides: Record<string, { state: "done" | "active"; at: string }>;
+  doneThreadOverlays: Record<string, ThreadDoneOverlayWrite>;
   /** Which project chip is selected; null is All. */
   inboxProjectScopeKey: string | null;
 }
@@ -70,14 +104,18 @@ export interface SyncProjectInput {
 export interface SyncThreadInput {
   key: string;
   seedVisitedAt?: string | undefined;
+  /** Current server-held stamps, used to retire settled overlays. */
+  serverLastSeenAt?: string | null | undefined;
+  serverDoneOverrideAt?: string | null | undefined;
 }
 
 const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
-  threadLastVisitedAtById: {},
+  seenThreadOverlays: {},
+  threadSeedVisitedAtById: {},
   threadChangedFilesExpandedById: {},
-  doneThreadOverrides: {},
+  doneThreadOverlays: {},
   inboxProjectScopeKey: null,
   defaultAdvertisedEndpointKey: null,
   lastChatThreadRef: null,
@@ -125,7 +163,6 @@ function readPersistedState(): UiState {
       threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
         parsed.threadChangedFilesExpandedById,
       ),
-      doneThreadOverrides: sanitizePersistedDoneOverrides(parsed.doneThreadOverrides),
       inboxProjectScopeKey:
         typeof parsed.inboxProjectScopeKey === "string" && parsed.inboxProjectScopeKey.length > 0
           ? parsed.inboxProjectScopeKey
@@ -134,6 +171,91 @@ function readPersistedState(): UiState {
   } catch {
     return initialState;
   }
+}
+
+/**
+ * The inbox lifecycle state a pre-sync build left in localStorage. Returned
+ * for one-time migration onto the server; see `migrateLegacyInboxState`.
+ */
+export function readLegacyInboxState(): {
+  doneThreadOverrides: Record<string, { state: "done" | "active"; at: string }>;
+  threadLastVisitedAtById: Record<string, string>;
+} {
+  if (typeof window === "undefined") {
+    return { doneThreadOverrides: {}, threadLastVisitedAtById: {} };
+  }
+  try {
+    const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
+    if (!raw) {
+      return { doneThreadOverrides: {}, threadLastVisitedAtById: {} };
+    }
+    const parsed = JSON.parse(raw) as PersistedUiState;
+    return {
+      doneThreadOverrides: sanitizePersistedDoneOverrides(parsed.doneThreadOverrides),
+      threadLastVisitedAtById: sanitizePersistedVisitedAt(parsed.threadLastVisitedAtById),
+    };
+  } catch {
+    return { doneThreadOverrides: {}, threadLastVisitedAtById: {} };
+  }
+}
+
+/**
+ * Drop the given threads' legacy inbox entries once the server holds them.
+ * Scoped to specific keys because the legacy blob spans every environment and
+ * migration runs per environment -- clearing it wholesale would throw away
+ * entries belonging to an environment that has not connected yet.
+ */
+export function dropLegacyInboxState(threadKeys: readonly string[]): void {
+  if (typeof window === "undefined" || threadKeys.length === 0) {
+    return;
+  }
+  try {
+    const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
+    if (!raw) {
+      return;
+    }
+    const parsed = JSON.parse(raw) as PersistedUiState;
+    const dropped = new Set(threadKeys);
+    const pruneRecord = <T>(record: Record<string, T> | undefined) => {
+      if (record === undefined || record === null || typeof record !== "object") {
+        return undefined;
+      }
+      const next = Object.fromEntries(
+        Object.entries(record).filter(([threadKey]) => !dropped.has(threadKey)),
+      );
+      return Object.keys(next).length > 0 ? next : undefined;
+    };
+    const nextDoneThreadOverrides = pruneRecord(parsed.doneThreadOverrides);
+    const nextThreadLastVisitedAtById = pruneRecord(parsed.threadLastVisitedAtById);
+    const { doneThreadOverrides: _done, threadLastVisitedAtById: _visited, ...rest } = parsed;
+    window.localStorage.setItem(
+      PERSISTED_STATE_KEY,
+      JSON.stringify({
+        ...rest,
+        ...(nextDoneThreadOverrides ? { doneThreadOverrides: nextDoneThreadOverrides } : {}),
+        ...(nextThreadLastVisitedAtById
+          ? { threadLastVisitedAtById: nextThreadLastVisitedAtById }
+          : {}),
+      } satisfies PersistedUiState),
+    );
+  } catch {
+    // Ignore quota/storage errors to avoid breaking chat UX.
+  }
+}
+
+function sanitizePersistedVisitedAt(
+  value: PersistedUiState["threadLastVisitedAtById"],
+): Record<string, string> {
+  if (value === undefined || value === null || typeof value !== "object") {
+    return {};
+  }
+  const sanitized: Record<string, string> = {};
+  for (const [key, at] of Object.entries(value)) {
+    if (typeof key === "string" && key.length > 0 && typeof at === "string" && at.length > 0) {
+      sanitized[key] = at;
+    }
+  }
+  return sanitized;
 }
 
 function sanitizePersistedDoneOverrides(
@@ -242,7 +364,6 @@ export function persistState(state: UiState): void {
         projectOrderCwds,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
-        doneThreadOverrides: state.doneThreadOverrides,
         inboxProjectScopeKey: state.inboxProjectScopeKey,
       } satisfies PersistedUiState),
     );
@@ -445,29 +566,67 @@ export function syncProjects(state: UiState, projects: readonly SyncProjectInput
   };
 }
 
+/**
+ * Whether a settled overlay has done its job. The write is only made when it
+ * would change what the server holds, so the server value moving off the
+ * baseline means the write either landed or was overtaken by another device;
+ * either way the server is now the better answer.
+ */
+function shouldRetireOverlay(
+  overlay: ThreadOverlayWrite,
+  serverAt: string | null | undefined,
+): boolean {
+  return overlay.settled && (serverAt ?? null) !== overlay.baselineAt;
+}
+
 export function syncThreads(state: UiState, threads: readonly SyncThreadInput[]): UiState {
-  const retainedThreadIds = new Set(threads.map((thread) => thread.key));
-  const nextThreadLastVisitedAtById = Object.fromEntries(
-    Object.entries(state.threadLastVisitedAtById).filter(([threadId]) =>
-      retainedThreadIds.has(threadId),
+  const retainedThreadKeys = new Set(threads.map((thread) => thread.key));
+
+  const nextSeedVisitedAtById = Object.fromEntries(
+    Object.entries(state.threadSeedVisitedAtById).filter(([threadKey]) =>
+      retainedThreadKeys.has(threadKey),
     ),
   );
   for (const thread of threads) {
     if (
-      nextThreadLastVisitedAtById[thread.key] === undefined &&
+      nextSeedVisitedAtById[thread.key] === undefined &&
       thread.seedVisitedAt !== undefined &&
       thread.seedVisitedAt.length > 0
     ) {
-      nextThreadLastVisitedAtById[thread.key] = thread.seedVisitedAt;
+      nextSeedVisitedAtById[thread.key] = thread.seedVisitedAt;
     }
   }
+
+  const serverSeenAtByKey = new Map(
+    threads.map((thread) => [thread.key, thread.serverLastSeenAt ?? null] as const),
+  );
+  const serverDoneAtByKey = new Map(
+    threads.map((thread) => [thread.key, thread.serverDoneOverrideAt ?? null] as const),
+  );
+  const nextSeenThreadOverlays = Object.fromEntries(
+    Object.entries(state.seenThreadOverlays).filter(
+      ([threadKey, overlay]) =>
+        retainedThreadKeys.has(threadKey) &&
+        !shouldRetireOverlay(overlay, serverSeenAtByKey.get(threadKey)),
+    ),
+  );
+  const nextDoneThreadOverlays = Object.fromEntries(
+    Object.entries(state.doneThreadOverlays).filter(
+      ([threadKey, overlay]) =>
+        retainedThreadKeys.has(threadKey) &&
+        !shouldRetireOverlay(overlay, serverDoneAtByKey.get(threadKey)),
+    ),
+  );
+
   const nextThreadChangedFilesExpandedById = Object.fromEntries(
-    Object.entries(state.threadChangedFilesExpandedById).filter(([threadId]) =>
-      retainedThreadIds.has(threadId),
+    Object.entries(state.threadChangedFilesExpandedById).filter(([threadKey]) =>
+      retainedThreadKeys.has(threadKey),
     ),
   );
   if (
-    recordsEqual(state.threadLastVisitedAtById, nextThreadLastVisitedAtById) &&
+    recordsEqual(state.threadSeedVisitedAtById, nextSeedVisitedAtById) &&
+    recordsEqual(state.seenThreadOverlays, nextSeenThreadOverlays) &&
+    recordsEqual(state.doneThreadOverlays, nextDoneThreadOverlays) &&
     nestedBooleanRecordsEqual(
       state.threadChangedFilesExpandedById,
       nextThreadChangedFilesExpandedById,
@@ -477,90 +636,106 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
   }
   return {
     ...state,
-    threadLastVisitedAtById: nextThreadLastVisitedAtById,
+    threadSeedVisitedAtById: nextSeedVisitedAtById,
+    seenThreadOverlays: nextSeenThreadOverlays,
+    doneThreadOverlays: nextDoneThreadOverlays,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
   };
 }
 
 /**
- * Stamp the user's word on a thread's lifecycle. Pure and idempotent: marking
- * a done thread done again refreshes nothing, so a double-click cannot move a
- * row twice.
+ * Show the user's word on a thread's lifecycle before the server has echoed
+ * it back. The stamp is the caller's, because the same stamp is sent to the
+ * server -- overlay and confirmed value must agree or the row would move
+ * twice.
  */
-export function setDoneOverride(
+export function setDoneOverlay(
   state: UiState,
   threadKey: string,
-  override: { state: "done" | "active"; at: string },
+  overlay: ThreadDoneOverlayWrite,
 ): UiState {
-  const current = state.doneThreadOverrides[threadKey];
-  if (current !== undefined && current.state === override.state) {
-    return state;
-  }
   return {
     ...state,
-    doneThreadOverrides: { ...state.doneThreadOverrides, [threadKey]: override },
+    doneThreadOverlays: { ...state.doneThreadOverlays, [threadKey]: overlay },
   };
 }
 
-export function markThreadVisited(state: UiState, threadId: string, visitedAt?: string): UiState {
-  const at = visitedAt ?? new Date().toISOString();
-  const visitedAtMs = Date.parse(at);
-  const previousVisitedAt = state.threadLastVisitedAtById[threadId];
-  const previousVisitedAtMs = previousVisitedAt ? Date.parse(previousVisitedAt) : NaN;
-  if (
-    Number.isFinite(previousVisitedAtMs) &&
-    Number.isFinite(visitedAtMs) &&
-    previousVisitedAtMs >= visitedAtMs
-  ) {
-    return state;
-  }
-  return {
-    ...state,
-    threadLastVisitedAtById: {
-      ...state.threadLastVisitedAtById,
-      [threadId]: at,
-    },
-  };
-}
-
-export function markThreadUnread(
+export function setSeenOverlay(
   state: UiState,
-  threadId: string,
-  latestTurnCompletedAt: string | null | undefined,
+  threadKey: string,
+  overlay: ThreadOverlayWrite,
 ): UiState {
-  if (!latestTurnCompletedAt) {
-    return state;
-  }
-  const latestTurnCompletedAtMs = Date.parse(latestTurnCompletedAt);
-  if (Number.isNaN(latestTurnCompletedAtMs)) {
-    return state;
-  }
-  const unreadVisitedAt = new Date(latestTurnCompletedAtMs - 1).toISOString();
-  if (state.threadLastVisitedAtById[threadId] === unreadVisitedAt) {
-    return state;
-  }
   return {
     ...state,
-    threadLastVisitedAtById: {
-      ...state.threadLastVisitedAtById,
-      [threadId]: unreadVisitedAt,
-    },
+    seenThreadOverlays: { ...state.seenThreadOverlays, [threadKey]: overlay },
   };
 }
 
-export function clearThreadUi(state: UiState, threadId: string): UiState {
-  const hasVisitedState = threadId in state.threadLastVisitedAtById;
-  const hasChangedFilesState = threadId in state.threadChangedFilesExpandedById;
-  if (!hasVisitedState && !hasChangedFilesState) {
+/**
+ * Close out a dispatched overlay write. A confirmed write stands until the
+ * server value moves off its baseline; a failed one is dropped immediately,
+ * so a dead connection can never strand the row in a state the server has
+ * never heard of.
+ */
+export function resolveDoneOverlay(
+  state: UiState,
+  threadKey: string,
+  at: string,
+  outcome: "confirmed" | "failed",
+): UiState {
+  const overlay = state.doneThreadOverlays[threadKey];
+  if (overlay === undefined || overlay.at !== at) {
     return state;
   }
-  const nextThreadLastVisitedAtById = { ...state.threadLastVisitedAtById };
+  const nextOverlays = { ...state.doneThreadOverlays };
+  if (outcome === "failed") {
+    delete nextOverlays[threadKey];
+  } else {
+    nextOverlays[threadKey] = { ...overlay, settled: true };
+  }
+  return { ...state, doneThreadOverlays: nextOverlays };
+}
+
+export function resolveSeenOverlay(
+  state: UiState,
+  threadKey: string,
+  at: string,
+  outcome: "confirmed" | "failed",
+): UiState {
+  const overlay = state.seenThreadOverlays[threadKey];
+  if (overlay === undefined || overlay.at !== at) {
+    return state;
+  }
+  const nextOverlays = { ...state.seenThreadOverlays };
+  if (outcome === "failed") {
+    delete nextOverlays[threadKey];
+  } else {
+    nextOverlays[threadKey] = { ...overlay, settled: true };
+  }
+  return { ...state, seenThreadOverlays: nextOverlays };
+}
+
+export function clearThreadUi(state: UiState, threadKey: string): UiState {
+  const hasSeenOverlay = threadKey in state.seenThreadOverlays;
+  const hasDoneOverlay = threadKey in state.doneThreadOverlays;
+  const hasSeedState = threadKey in state.threadSeedVisitedAtById;
+  const hasChangedFilesState = threadKey in state.threadChangedFilesExpandedById;
+  if (!hasSeenOverlay && !hasDoneOverlay && !hasSeedState && !hasChangedFilesState) {
+    return state;
+  }
+  const nextSeenThreadOverlays = { ...state.seenThreadOverlays };
+  const nextDoneThreadOverlays = { ...state.doneThreadOverlays };
+  const nextSeedVisitedAtById = { ...state.threadSeedVisitedAtById };
   const nextThreadChangedFilesExpandedById = { ...state.threadChangedFilesExpandedById };
-  delete nextThreadLastVisitedAtById[threadId];
-  delete nextThreadChangedFilesExpandedById[threadId];
+  delete nextSeenThreadOverlays[threadKey];
+  delete nextDoneThreadOverlays[threadKey];
+  delete nextSeedVisitedAtById[threadKey];
+  delete nextThreadChangedFilesExpandedById[threadKey];
   return {
     ...state,
-    threadLastVisitedAtById: nextThreadLastVisitedAtById,
+    seenThreadOverlays: nextSeenThreadOverlays,
+    doneThreadOverlays: nextDoneThreadOverlays,
+    threadSeedVisitedAtById: nextSeedVisitedAtById,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
   };
 }
@@ -710,12 +885,12 @@ export function reorderProjects(
 interface UiStateStore extends UiState {
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
   syncThreads: (threads: readonly SyncThreadInput[]) => void;
-  markThreadDone: (threadKey: string, at: string) => void;
-  reopenThread: (threadKey: string, at: string) => void;
+  setDoneOverlay: (threadKey: string, overlay: ThreadDoneOverlayWrite) => void;
+  setSeenOverlay: (threadKey: string, overlay: ThreadOverlayWrite) => void;
+  resolveDoneOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
+  resolveSeenOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
   setInboxProjectScope: (projectKey: string | null) => void;
-  markThreadVisited: (threadId: string, visitedAt?: string) => void;
-  markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
-  clearThreadUi: (threadId: string) => void;
+  clearThreadUi: (threadKey: string) => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
     turnId: string,
@@ -736,21 +911,19 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   ...readPersistedState(),
   syncProjects: (projects) => set((state) => syncProjects(state, projects)),
   syncThreads: (threads) => set((state) => syncThreads(state, threads)),
-  markThreadDone: (threadKey, at) =>
-    set((state) => setDoneOverride(state, threadKey, { state: "done", at })),
-  reopenThread: (threadKey, at) =>
-    set((state) => setDoneOverride(state, threadKey, { state: "active", at })),
+  setDoneOverlay: (threadKey, overlay) => set((state) => setDoneOverlay(state, threadKey, overlay)),
+  setSeenOverlay: (threadKey, overlay) => set((state) => setSeenOverlay(state, threadKey, overlay)),
+  resolveDoneOverlay: (threadKey, at, outcome) =>
+    set((state) => resolveDoneOverlay(state, threadKey, at, outcome)),
+  resolveSeenOverlay: (threadKey, at, outcome) =>
+    set((state) => resolveSeenOverlay(state, threadKey, at, outcome)),
   setInboxProjectScope: (projectKey) =>
     set((state) =>
       state.inboxProjectScopeKey === projectKey
         ? state
         : { ...state, inboxProjectScopeKey: projectKey },
     ),
-  markThreadVisited: (threadId, visitedAt) =>
-    set((state) => markThreadVisited(state, threadId, visitedAt)),
-  markThreadUnread: (threadId, latestTurnCompletedAt) =>
-    set((state) => markThreadUnread(state, threadId, latestTurnCompletedAt)),
-  clearThreadUi: (threadId) => set((state) => clearThreadUi(state, threadId)),
+  clearThreadUi: (threadKey) => set((state) => clearThreadUi(state, threadKey)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
     set((state) =>
       setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),

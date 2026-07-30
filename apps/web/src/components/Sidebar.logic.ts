@@ -608,6 +608,37 @@ export interface ThreadDoneOverride {
   readonly at: string;
 }
 
+/**
+ * One answer from two sources: the thread's server-held word (shared by every
+ * device) and this device's unconfirmed local write. Freshest stamp wins, and
+ * the server wins ties -- a landed write carries the same stamp it was sent
+ * with, so a tie is the same word twice, not a conflict.
+ */
+export function mergeThreadDoneOverride(
+  overlay: ThreadDoneOverride | null | undefined,
+  server: ThreadDoneOverride | null | undefined,
+): ThreadDoneOverride | null {
+  const overlayAt = overlay ? toSortableTimestamp(overlay.at) : null;
+  const serverAt = server ? toSortableTimestamp(server.at) : null;
+  if (overlay == null || overlayAt === null)
+    return server != null && serverAt !== null ? server : null;
+  if (server == null || serverAt === null) return overlay;
+  return overlayAt > serverAt ? overlay : server;
+}
+
+/**
+ * When the user last saw a thread. A pending local write speaks first, then
+ * the server's value, then this device's seed for threads the server has
+ * never recorded a visit for.
+ */
+export function mergeThreadLastSeenAt(input: {
+  readonly overlayAt?: string | undefined;
+  readonly serverLastSeenAt?: string | null | undefined;
+  readonly seedAt?: string | undefined;
+}): string | undefined {
+  return input.overlayAt ?? input.serverLastSeenAt ?? input.seedAt ?? undefined;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
 /**

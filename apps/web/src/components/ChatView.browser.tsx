@@ -97,6 +97,15 @@ const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const REMOTE_ENVIRONMENT_ID = EnvironmentId.make("environment-remote");
 const THREAD_REF = scopeThreadRef(LOCAL_ENVIRONMENT_ID, THREAD_ID);
 const THREAD_KEY = scopedThreadKey(THREAD_REF);
+/**
+ * File a thread from a test without a server round-trip: the optimistic
+ * overlay is exactly what the real Mark done action shows first.
+ */
+function markThreadDoneInTest(threadKey: string, at: string) {
+  useUiStateStore
+    .getState()
+    .setDoneOverlay(threadKey, { state: "done", at, baselineAt: null, settled: false });
+}
 const UUID_ROUTE_RE = /^\/draft\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PROJECT_DRAFT_KEY = `${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}`;
 const PROJECT_LOGICAL_KEY = deriveLogicalProjectKeyFromSettings(
@@ -411,6 +420,8 @@ function createSnapshotForTargetUser(options: {
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: options.threadPinnedAt ?? null,
+        doneOverride: null,
+        lastSeenAt: null,
         deletedAt: null,
         messages,
         activities: [],
@@ -482,6 +493,8 @@ function addThreadToSnapshot(
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: null,
+        doneOverride: null,
+        lastSeenAt: null,
         deletedAt: null,
         messages: [],
         activities: [],
@@ -519,6 +532,8 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     updatedAt: thread.updatedAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    doneOverride: thread.doneOverride,
+    lastSeenAt: thread.lastSeenAt,
     session: thread.session,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
@@ -1043,6 +1058,8 @@ function createSnapshotWithSecondaryProject(options?: {
           updatedAt: isoAt(31),
           deletedAt: null,
           pinnedAt: null,
+          doneOverride: null,
+          lastSeenAt: null,
           messages: [],
           activities: [],
           proposedPlans: [],
@@ -1081,6 +1098,8 @@ function createSnapshotWithSecondaryProject(options?: {
           updatedAt: isoAt(25),
           deletedAt: null,
           pinnedAt: null,
+          doneOverride: null,
+          lastSeenAt: null,
           messages: [],
           activities: [],
           proposedPlans: [],
@@ -1250,6 +1269,12 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
     return customResult;
   }
   const tag = body._tag;
+  // Accept commands by default, the way a connected server does. Optimistic UI
+  // rolls back on a rejected dispatch, so without this every action that goes
+  // through the orchestration command path silently snaps back.
+  if (tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+    return { sequence: fixture.snapshot.snapshotSequence + 1 };
+  }
   if (tag === WS_METHODS.serverGetConfig) {
     return encodeServerConfig(fixture.serverConfig);
   }
@@ -2100,8 +2125,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     useUiStateStore.setState({
       projectExpandedById: {},
       projectOrder: [],
-      threadLastVisitedAtById: {},
-      doneThreadOverrides: {},
+      seenThreadOverlays: {},
+      threadSeedVisitedAtById: {},
+      doneThreadOverlays: {},
       inboxProjectScopeKey: null,
     });
     useTerminalStateStore.persist.clearStorage();
@@ -2347,7 +2373,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
         [PROJECT_LOGICAL_KEY]: false,
       },
       projectOrder: [PROJECT_LOGICAL_KEY],
-      threadLastVisitedAtById: {},
+      seenThreadOverlays: {},
+      threadSeedVisitedAtById: {},
     });
 
     const mounted = await mountChatView({
@@ -5452,8 +5479,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
         scopeThreadRef(LOCAL_ENVIRONMENT_ID, otherDoneThreadId),
       );
       const doneAt = new Date().toISOString();
-      useUiStateStore.getState().markThreadDone(THREAD_KEY, doneAt);
-      useUiStateStore.getState().markThreadDone(otherThreadKey, doneAt);
+      markThreadDoneInTest(THREAD_KEY, doneAt);
+      markThreadDoneInTest(otherThreadKey, doneAt);
 
       await vi.waitFor(
         () => {
@@ -5578,7 +5605,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // live -> done -> archived: archive is only offered once a thread has
       // been filed away.
       await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
-      useUiStateStore.getState().markThreadDone(THREAD_KEY, new Date().toISOString());
+      markThreadDoneInTest(THREAD_KEY, new Date().toISOString());
 
       const doneRow = page.getByTestId(`done-row-${THREAD_ID}`);
       await expect.element(doneRow).toBeInTheDocument();

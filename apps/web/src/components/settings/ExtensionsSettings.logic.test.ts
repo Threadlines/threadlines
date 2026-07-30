@@ -378,11 +378,9 @@ describe("ExtensionsSettings logic", () => {
             providerInstanceId: "codex",
             providerThreadId: "codex-thread-new",
             updatedAt: "2026-05-30T09:00:00.000Z",
+            lastSeenAt: "2026-05-30T11:00:00.000Z",
           },
         ],
-        threadLastVisitedAtById: {
-          "local:thread-new": "2026-05-30T11:00:00.000Z",
-        },
       }),
     ).toBe("codex-thread-new");
   });
@@ -421,7 +419,6 @@ describe("ExtensionsSettings logic", () => {
             updatedAt: "2026-05-30T10:00:00.000Z",
           },
         ],
-        threadLastVisitedAtById: {},
       }),
     ).toBe("exact-thread");
   });
@@ -459,7 +456,6 @@ describe("ExtensionsSettings logic", () => {
             providerThreadId: "other-provider-thread",
           },
         ],
-        threadLastVisitedAtById: {},
       }),
     ).toBe("");
   });

@@ -9,6 +9,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { useGitStatus } from "../lib/gitStatusState";
+import { selectThreadLastSeenAt } from "../lib/threadInboxSync";
 import { cn } from "../lib/utils";
 import { type AppState, selectProjectByRef, useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -175,8 +176,8 @@ export function ThreadStatusLabel({
  */
 export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummary }) {
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-  const lastVisitedAt = useUiStateStore(
-    (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
+  const lastVisitedAt = useUiStateStore((state) =>
+    selectThreadLastSeenAt(state, scopedThreadKey(threadRef), thread.lastSeenAt),
   );
   const threadProjectCwd = useStore(
     useMemo(

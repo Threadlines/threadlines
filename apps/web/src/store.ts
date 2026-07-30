@@ -287,6 +287,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    doneOverride: thread.doneOverride,
+    lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
@@ -324,6 +326,8 @@ function mapThreadShell(
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    doneOverride: thread.doneOverride,
+    lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
@@ -347,6 +351,8 @@ function mapThreadShell(
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    doneOverride: thread.doneOverride,
+    lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
     branch: thread.branch,
@@ -380,6 +386,8 @@ function toThreadShell(thread: Thread): ThreadShell {
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    doneOverride: thread.doneOverride,
+    lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
@@ -441,6 +449,8 @@ function toSidebarThreadSummary(
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
+    doneOverride: thread.doneOverride,
+    lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
     branch: thread.branch,
@@ -505,6 +515,15 @@ function threadSessionsEqual(
   );
 }
 
+function doneOverridesEqual(
+  left: SidebarThreadSummary["doneOverride"],
+  right: SidebarThreadSummary["doneOverride"],
+): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  return left.state === right.state && left.at === right.at;
+}
+
 function threadDiffStatsEqual(
   left: SidebarThreadSummary["cumulativeDiffStat"],
   right: SidebarThreadSummary["cumulativeDiffStat"],
@@ -528,6 +547,8 @@ function sidebarThreadSummariesEqual(
     left.createdAt === right.createdAt &&
     left.archivedAt === right.archivedAt &&
     left.pinnedAt === right.pinnedAt &&
+    doneOverridesEqual(left.doneOverride, right.doneOverride) &&
+    left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
     left.branch === right.branch &&
@@ -556,6 +577,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.createdAt === right.createdAt &&
     left.archivedAt === right.archivedAt &&
     left.pinnedAt === right.pinnedAt &&
+    doneOverridesEqual(left.doneOverride, right.doneOverride) &&
+    left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
@@ -1504,6 +1527,8 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.payload.updatedAt,
           archivedAt: null,
           pinnedAt: null,
+          doneOverride: null,
+          lastSeenAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -1546,6 +1571,20 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         pinnedAt: null,
         updatedAt: event.payload.updatedAt,
+      }));
+
+    // Neither event moves `updatedAt`: filing or reading a thread is not work
+    // on it, and the inbox weighs both stamps against real activity.
+    case "thread.done-override-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        doneOverride: { state: event.payload.state, at: event.payload.at },
+      }));
+
+    case "thread.seen-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        lastSeenAt: event.payload.at,
       }));
 
     case "thread.meta-updated":

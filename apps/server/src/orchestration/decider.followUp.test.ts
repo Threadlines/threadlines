@@ -47,6 +47,8 @@ const readModelAfterProviderDelivery: OrchestrationReadModel = {
       updatedAt: now,
       archivedAt: null,
       pinnedAt: null,
+      doneOverride: null,
+      lastSeenAt: null,
       deletedAt: null,
       messages: [],
       proposedPlans: [],

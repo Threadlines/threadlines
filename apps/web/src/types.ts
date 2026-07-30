@@ -9,6 +9,7 @@ import type {
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
   OrchestrationThreadDiffStat,
+  OrchestrationThreadDoneOverride,
   OrchestrationThreadGoal,
   ProjectKind,
   ProjectScript as ContractProjectScript,
@@ -126,6 +127,10 @@ export interface Thread {
   createdAt: string;
   archivedAt: string | null;
   pinnedAt: string | null;
+  /** See ThreadShell.doneOverride. */
+  doneOverride: OrchestrationThreadDoneOverride | null;
+  /** See ThreadShell.lastSeenAt. */
+  lastSeenAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
@@ -165,6 +170,13 @@ export interface ThreadShell {
   createdAt: string;
   archivedAt: string | null;
   pinnedAt: string | null;
+  /**
+   * The user's last explicit Mark done / Reopen, held on the server so every
+   * device agrees on the inbox's Active/Wrapped split. Null when never filed.
+   */
+  doneOverride: OrchestrationThreadDoneOverride | null;
+  /** When the user last saw this thread, server-held. Null until first seen. */
+  lastSeenAt: string | null;
   updatedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
@@ -193,6 +205,10 @@ export interface SidebarThreadSummary {
   createdAt: string;
   archivedAt: string | null;
   pinnedAt: string | null;
+  /** See ThreadShell.doneOverride. */
+  doneOverride: OrchestrationThreadDoneOverride | null;
+  /** See ThreadShell.lastSeenAt. */
+  lastSeenAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
   branch: string | null;

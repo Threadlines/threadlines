@@ -30,6 +30,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     createdAt: "2026-03-09T10:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
     latestTurn: null,
     branch: null,
@@ -197,6 +199,8 @@ describe("sortThreads", () => {
             },
           ],
           pinnedAt: "2026-03-09T10:11:00.000Z",
+          doneOverride: null,
+          lastSeenAt: null,
         }),
       ],
       "updated_at",
@@ -271,15 +275,23 @@ describe("selectActiveAndRecentThreads", () => {
     const threads = [
       makeTimestampedThread("pinned-1", "2026-03-09T09:01:00.000Z", {
         pinnedAt: "2026-03-09T10:11:00.000Z",
+        doneOverride: null,
+        lastSeenAt: null,
       }),
       makeTimestampedThread("pinned-2", "2026-03-09T09:02:00.000Z", {
         pinnedAt: "2026-03-09T10:11:00.000Z",
+        doneOverride: null,
+        lastSeenAt: null,
       }),
       makeTimestampedThread("pinned-3", "2026-03-09T09:03:00.000Z", {
         pinnedAt: "2026-03-09T10:11:00.000Z",
+        doneOverride: null,
+        lastSeenAt: null,
       }),
       makeTimestampedThread("pinned-4", "2026-03-09T09:04:00.000Z", {
         pinnedAt: "2026-03-09T10:11:00.000Z",
+        doneOverride: null,
+        lastSeenAt: null,
       }),
       makeTimestampedThread("running-newer", "2026-03-09T10:10:00.000Z", { session }),
       makeTimestampedThread("running-older", "2026-03-09T09:00:00.000Z", { session }),

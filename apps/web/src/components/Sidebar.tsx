@@ -30,6 +30,11 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import { toSortableTimestamp } from "../lib/threadSort";
 import {
+  markThreadDoneByKey,
+  markThreadUnreadByKey,
+  reopenThreadByKey,
+} from "../lib/threadInboxSync";
+import {
   selectProjectByRef,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -84,6 +89,8 @@ import {
   isNeedsUserStatus,
   INBOX_AUTO_DONE_AFTER_DAYS,
   isThreadDone,
+  mergeThreadDoneOverride,
+  mergeThreadLastSeenAt,
   resolveAdjacentThreadId,
   resolveDoneTimestamp,
   resolveSidebarNewThreadSeedContext,
@@ -335,13 +342,11 @@ export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const threadLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
-  const doneThreadOverrides = useUiStateStore((store) => store.doneThreadOverrides);
+  const seenThreadOverlays = useUiStateStore((store) => store.seenThreadOverlays);
+  const threadSeedVisitedAtById = useUiStateStore((store) => store.threadSeedVisitedAtById);
+  const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
   const inboxProjectScopeKey = useUiStateStore((store) => store.inboxProjectScopeKey);
   const setInboxProjectScope = useUiStateStore((store) => store.setInboxProjectScope);
-  const markThreadDoneInStore = useUiStateStore((store) => store.markThreadDone);
-  const reopenThreadInStore = useUiStateStore((store) => store.reopenThread);
-  const markThreadUnread = useUiStateStore((store) => store.markThreadUnread);
   const navigate = useNavigate();
   const router = useRouter();
   const pathname = useLocation({ select: (loc) => loc.pathname });
@@ -524,7 +529,11 @@ export default function Sidebar() {
     () =>
       inboxThreads.map((thread) => {
         const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-        const lastVisitedAt = threadLastVisitedAtById[threadKey];
+        const lastVisitedAt = mergeThreadLastSeenAt({
+          overlayAt: seenThreadOverlays[threadKey]?.at,
+          serverLastSeenAt: thread.lastSeenAt,
+          seedAt: threadSeedVisitedAtById[threadKey],
+        });
         const status = resolveThreadStatusPill({
           thread: {
             ...thread,
@@ -532,7 +541,10 @@ export default function Sidebar() {
           },
         });
         const projectKey = resolveThreadProjectKey(thread);
-        const override = doneThreadOverrides[threadKey];
+        const override = mergeThreadDoneOverride(
+          doneThreadOverlays[threadKey],
+          thread.doneOverride,
+        );
         const isDone = isThreadDone({ ...thread, lastVisitedAt }, override, {
           now: nowIso,
           autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
@@ -549,12 +561,13 @@ export default function Sidebar() {
         };
       }),
     [
-      doneThreadOverrides,
+      doneThreadOverlays,
       inboxThreads,
       nowIso,
       resolveThreadProjectKey,
+      seenThreadOverlays,
       sidebarProjectByKey,
-      threadLastVisitedAtById,
+      threadSeedVisitedAtById,
     ],
   );
 
@@ -605,10 +618,13 @@ export default function Sidebar() {
     const doneEntries = sortDoneThreads(
       scoped.filter((entry) => entry.isDone).map((entry) => entry.thread),
       (thread) =>
-        doneThreadOverrides[scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))],
+        mergeThreadDoneOverride(
+          doneThreadOverlays[scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))],
+          thread.doneOverride,
+        ),
     ).map(lookup);
     return { liveEntries, doneEntries };
-  }, [doneThreadOverrides, entries, scopedProjectKeyValue]);
+  }, [doneThreadOverlays, entries, scopedProjectKeyValue]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and anything with a status stays put.
@@ -776,18 +792,12 @@ export default function Sidebar() {
     [pinThread, unpinThread],
   );
 
-  const markThreadDone = useCallback(
-    (threadKey: string) => {
-      markThreadDoneInStore(threadKey, new Date().toISOString());
-    },
-    [markThreadDoneInStore],
-  );
-  const reopenThread = useCallback(
-    (threadKey: string) => {
-      reopenThreadInStore(threadKey, new Date().toISOString());
-    },
-    [reopenThreadInStore],
-  );
+  const markThreadDone = useCallback((threadKey: string) => {
+    markThreadDoneByKey(threadKey);
+  }, []);
+  const reopenThread = useCallback((threadKey: string) => {
+    reopenThreadByKey(threadKey);
+  }, []);
 
   const cancelRename = useCallback(() => {
     setRenamingThreadKey(null);
@@ -860,7 +870,7 @@ export default function Sidebar() {
       if (clicked === "mark-unread") {
         for (const threadKey of threadKeys) {
           const thread = sidebarThreadByKeyRef.current.get(threadKey);
-          markThreadUnread(threadKey, thread?.latestTurn?.completedAt);
+          markThreadUnreadByKey(threadKey, thread?.latestTurn?.completedAt);
         }
         clearSelection();
         return;
@@ -886,13 +896,7 @@ export default function Sidebar() {
       }
       removeFromSelection(threadKeys);
     },
-    [
-      appSettingsConfirmThreadDelete,
-      clearSelection,
-      deleteThread,
-      markThreadUnread,
-      removeFromSelection,
-    ],
+    [appSettingsConfirmThreadDelete, clearSelection, deleteThread, removeFromSelection],
   );
 
   const handleThreadContextMenu = useCallback(
@@ -935,7 +939,7 @@ export default function Sidebar() {
       }
 
       if (clicked === "mark-unread") {
-        markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+        markThreadUnreadByKey(threadKey, thread.latestTurn?.completedAt);
         return;
       }
       if (clicked === "copy-path") {
@@ -976,7 +980,6 @@ export default function Sidebar() {
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
-      markThreadUnread,
     ],
   );
 

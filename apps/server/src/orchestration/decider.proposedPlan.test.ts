@@ -57,6 +57,8 @@ function makeReadModel(proposedPlan: OrchestrationProposedPlan): OrchestrationRe
         updatedAt: now,
         archivedAt: null,
         pinnedAt: null,
+        doneOverride: null,
+        lastSeenAt: null,
         deletedAt: null,
         messages: [],
         proposedPlans: [proposedPlan],

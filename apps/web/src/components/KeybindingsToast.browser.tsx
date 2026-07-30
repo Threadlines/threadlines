@@ -185,6 +185,8 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: null,
+        doneOverride: null,
+        lastSeenAt: null,
         deletedAt: null,
         messages: [
           {
@@ -245,6 +247,8 @@ function toShellSnapshot(snapshot: OrchestrationReadModel) {
       updatedAt: thread.updatedAt,
       archivedAt: thread.archivedAt,
       pinnedAt: thread.pinnedAt,
+      doneOverride: thread.doneOverride,
+      lastSeenAt: thread.lastSeenAt,
       session: thread.session,
       latestUserMessageAt:
         thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,

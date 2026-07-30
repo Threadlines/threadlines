@@ -64,6 +64,8 @@ function thread(
     updatedAt: daysAgo(45),
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     session: null,
     latestUserMessageAt: daysAgo(45),
     hasPendingApprovals: false,
