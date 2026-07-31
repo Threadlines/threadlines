@@ -125,7 +125,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         >
       </div>
       <p class="pv-note pv-rise" style="--pv-d: 0.7s">
-        Free and open source (MIT) · No account · Your code never leaves your machine
+        Free and open source (MIT) · Bring your own Codex or Claude account · Runs locally
       </p>
       <div class="pv-providers pv-rise" style="--pv-d: 0.8s" aria-label="Supported agents">
         <span class="pv-providers-label">Runs the agents you already use</span>
@@ -473,7 +473,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       <div class="pv-grid">
         <div class="pv-card pv-reveal">
           <h3>Survives restarts</h3>
-          <p>Sessions resume across app and server restarts via event replay. Close the lid mid-turn and pick it back up.</p>
+          <p>Sessions resume across app and server restarts via event replay. Reopen the app and continue the same thread.</p>
         </div>
         <div class="pv-card pv-reveal" style="--pv-d: 0.08s">
           <h3>Fork from anywhere</h3>
@@ -596,7 +596,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         </div>
         <div class="pv-card pv-reveal" style="--pv-d: 0.16s">
           <h3>No lock-in</h3>
-          <p>Every feature works across providers. Switching is a feature here, not a betrayal.</p>
+          <p>The core workflow supports both providers. Switching is a feature here, not a betrayal.</p>
         </div>
       </div>
     </div>
@@ -620,6 +620,15 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         <div><span>6e766b4</span> Add motion, hero app frame, and cropped captures</div>
         <div><span>43a45e9</span> Freeze marketing deploys and draft new homepage</div>
         <div><span>6fcd267</span> Link background task notifications to tool calls</div>
+      </div>
+      <div class="pv-cta-row">
+        <a class="pv-cta pv-cta-primary" href="/download">Download Threadlines</a>
+        <a
+          class="pv-cta"
+          href="https://github.com/Threadlines/threadlines"
+          target="_blank"
+          rel="noopener noreferrer">Star on GitHub</a
+        >
       </div>
       <p class="pv-note">github.com/Threadlines/threadlines · macOS + Windows + Linux</p>
     </div>
@@ -658,17 +667,17 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     } else if (isLinux) {
       label.textContent = "Download for Linux";
       document.getElementById("pv-dl-mac")!.hidden = true;
+    } else if (isMac) {
+      label.textContent = "Choose a macOS download";
     }
-    if (isWin || isLinux || isMac) {
+    if (isWin || isLinux) {
       // deep-link the button straight to the installer; /download stays the fallback
       fetchLatestRelease()
         .then((release) => {
           const installers = classifyAssets(release.assets);
           const asset = isWin
             ? (installers.winX64 ?? installers.winArm)
-            : isLinux
-              ? installers.linuxX64
-              : (installers.macArm ?? installers.macX64);
+            : installers.linuxX64;
           if (asset) dl.href = asset.browser_download_url;
         })
         .catch(() => {});

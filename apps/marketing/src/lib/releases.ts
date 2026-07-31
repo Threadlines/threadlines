@@ -1,10 +1,7 @@
 const REPO = "Threadlines/threadlines";
 
-export const RELEASES_URL = `https://github.com/${REPO}/releases`;
-
 const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
-const LIST_URL = `https://api.github.com/repos/${REPO}/releases?per_page=1`;
-const CACHE_KEY = "threadlines-latest-release-v2";
+const CACHE_KEY = "threadlines-latest-stable-release-v3";
 
 export interface ReleaseAsset {
   name: string;
@@ -42,15 +39,7 @@ export async function fetchLatestRelease(): Promise<Release> {
     if (isRelease(parsed)) return parsed;
   }
 
-  // /releases/latest only knows stable releases; fall back to the newest
-  // release of any kind (nightlies are prereleases) when none exists yet.
-  let data: unknown;
-  try {
-    data = await fetchJson(LATEST_URL);
-  } catch {
-    const list = await fetchJson(LIST_URL);
-    data = Array.isArray(list) ? list[0] : undefined;
-  }
+  const data = await fetchJson(LATEST_URL);
 
   if (!isRelease(data)) throw new Error("No release available");
 
