@@ -253,6 +253,7 @@ import {
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
   buildRevertConfirmView,
+  resolveRemoteBehindCount,
   resolveWorkingTreeDiffStat,
   type RevertConfirmView,
 } from "./ChatView.logic";
@@ -2555,6 +2556,10 @@ export default function ChatView(props: ChatViewProps) {
   }, [routeThreadRef, setBrowserOpen]);
   const workingTreeDiffStat = useMemo(
     () => resolveWorkingTreeDiffStat(gitStatusQuery.data ?? null),
+    [gitStatusQuery.data],
+  );
+  const remoteBehindCount = useMemo(
+    () => resolveRemoteBehindCount(gitStatusQuery.data ?? null),
     [gitStatusQuery.data],
   );
   const terminalShortcutLabelOptions = useMemo(
@@ -6123,6 +6128,7 @@ export default function ChatView(props: ChatViewProps) {
           browserOpen={browserOpen}
           onToggleBrowser={handleToggleBrowser}
           workingTreeDiffStat={workingTreeDiffStat}
+          remoteBehindCount={remoteBehindCount}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}

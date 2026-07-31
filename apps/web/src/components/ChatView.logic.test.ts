@@ -16,6 +16,7 @@ import { type ChatMessage, type Thread } from "../types";
 
 import {
   buildRevertConfirmView,
+  resolveRemoteBehindCount,
   resolveWorkingTreeDiffStat,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
@@ -2546,5 +2547,17 @@ describe("resolveWorkingTreeDiffStat", () => {
       resolveWorkingTreeDiffStat({ isRepo: false, workingTree: { insertions: 9, deletions: 9 } }),
     ).toBeNull();
     expect(resolveWorkingTreeDiffStat(null)).toBeNull();
+  });
+});
+
+describe("resolveRemoteBehindCount", () => {
+  it("reports the count only when a repository branch is behind", () => {
+    expect(resolveRemoteBehindCount({ isRepo: true, behindCount: 2 })).toBe(2);
+  });
+
+  it("stays quiet for an up-to-date branch, a non-repo, and an unloaded status", () => {
+    expect(resolveRemoteBehindCount({ isRepo: true, behindCount: 0 })).toBeNull();
+    expect(resolveRemoteBehindCount({ isRepo: false, behindCount: 3 })).toBeNull();
+    expect(resolveRemoteBehindCount(null)).toBeNull();
   });
 });
