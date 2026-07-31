@@ -2324,6 +2324,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc subscribeServerConfig streams snapshot then update", () =>
     Effect.gen(function* () {
+      let providerRefreshCalls = 0;
       const providers = [
         {
           instanceId: ProviderInstanceId.make("codex"),
@@ -2359,6 +2360,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           providerRegistry: {
             getProviders: Effect.succeed(providers),
+            refresh: () =>
+              Effect.sync(() => {
+                providerRefreshCalls += 1;
+                return providers;
+              }),
           },
         },
       });
@@ -2393,6 +2399,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         type: "keybindingsUpdated",
         payload: { keybindings: [], issues: [] },
       });
+      assert.equal(providerRefreshCalls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

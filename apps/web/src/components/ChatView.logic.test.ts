@@ -460,6 +460,22 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     });
   });
 
+  it("detects a revoked Codex refresh token as a terminal sign-in prompt", () => {
+    const message =
+      "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.";
+
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: codexProvider,
+        threadError: message,
+      }),
+    ).toEqual({
+      provider: codexProvider,
+      command: "codex login",
+      message,
+    });
+  });
+
   it("ignores diagnostic assistant prose that mentions unauthenticated UI state", () => {
     expect(
       deriveProviderAuthReconnectPrompt({

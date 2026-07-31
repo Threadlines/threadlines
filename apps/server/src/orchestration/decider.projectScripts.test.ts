@@ -98,7 +98,7 @@ describe("decider project scripts", () => {
     expect((event.payload as { scripts?: unknown[] }).scripts).toEqual(scripts);
   });
 
-  it("emits user message, starting session, and turn-start-requested events for thread.turn.start", async () => {
+  it("atomically seeds the first-message title with the turn-start events", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const initial = createEmptyReadModel(now);
     const withProject = await Effect.runPromise(
@@ -140,7 +140,7 @@ describe("decider project scripts", () => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
-          title: "Thread",
+          title: "New thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -173,6 +173,7 @@ describe("decider project scripts", () => {
           ]),
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
+          titleSeed: "hello",
           createdAt: now,
         },
         readModel,
@@ -181,9 +182,18 @@ describe("decider project scripts", () => {
 
     expect(Array.isArray(result)).toBe(true);
     const events = Array.isArray(result) ? result : [result];
-    expect(events).toHaveLength(3);
+    expect(events).toHaveLength(4);
     expect(events[0]?.type).toBe("thread.message-sent");
-    const sessionEvent = events[1];
+    const titleEvent = events[1];
+    expect(titleEvent?.type).toBe("thread.meta-updated");
+    expect(titleEvent?.causationEventId).toBe(events[0]?.eventId ?? null);
+    if (titleEvent?.type === "thread.meta-updated") {
+      expect(titleEvent.payload).toMatchObject({
+        threadId: ThreadId.make("thread-1"),
+        title: "hello",
+      });
+    }
+    const sessionEvent = events[2];
     expect(sessionEvent?.type).toBe("thread.session-set");
     if (sessionEvent?.type === "thread.session-set") {
       expect(sessionEvent.payload.session).toMatchObject({
@@ -193,7 +203,7 @@ describe("decider project scripts", () => {
         runtimeMode: "approval-required",
       });
     }
-    const turnStartEvent = events[2];
+    const turnStartEvent = events[3];
     expect(turnStartEvent?.type).toBe("thread.turn-start-requested");
     expect(turnStartEvent?.causationEventId).toBe(events[0]?.eventId ?? null);
     if (turnStartEvent?.type !== "thread.turn-start-requested") {

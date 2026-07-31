@@ -16,6 +16,7 @@ const AUTH_ERROR_PATTERNS = [
   /\binvalid authentication\b/u,
   /\binvalid authorization\b/u,
   /\bmissing api key\b/u,
+  /\brefresh token (?:has been |is |was )?revoked\b/u,
   /\brequires openai auth\b/u,
 ] as const;
 

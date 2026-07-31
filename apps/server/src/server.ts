@@ -64,6 +64,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
+import { AutomaticGitFetchSupervisorLive } from "./vcs/AutomaticGitFetchSupervisor.ts";
 import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
@@ -168,6 +169,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(SleepInhibitorLive),
   Layer.provideMerge(StorageMaintenanceDaemonLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
+  Layer.provideMerge(AutomaticGitFetchSupervisorLive),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(

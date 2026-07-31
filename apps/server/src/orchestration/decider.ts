@@ -26,6 +26,7 @@ import {
   requireWorkspaceProject,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import { canReplaceThreadTitle } from "./threadTitle.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -698,6 +699,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const titleSeedEvent: Omit<OrchestrationEvent, "sequence"> | null =
+        command.titleSeed !== undefined &&
+        targetThread.messages.length === 0 &&
+        targetThread.title !== command.titleSeed &&
+        canReplaceThreadTitle(targetThread.title, command.titleSeed)
+          ? {
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              }),
+              causationEventId: userMessageEvent.eventId,
+              type: "thread.meta-updated",
+              payload: {
+                threadId: command.threadId,
+                title: command.titleSeed,
+                updatedAt: command.createdAt,
+              },
+            }
+          : null;
       const requestedModelSelection = command.modelSelection ?? targetThread.modelSelection;
       const startingSessionEvent: Omit<OrchestrationEvent, "sequence"> | null =
         targetThread.session?.status === "running"
@@ -751,9 +773,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      return startingSessionEvent
-        ? [userMessageEvent, startingSessionEvent, turnStartRequestedEvent]
-        : [userMessageEvent, turnStartRequestedEvent];
+      return [
+        userMessageEvent,
+        ...(titleSeedEvent ? [titleSeedEvent] : []),
+        ...(startingSessionEvent ? [startingSessionEvent] : []),
+        turnStartRequestedEvent,
+      ];
     }
 
     case "thread.turn.retry": {

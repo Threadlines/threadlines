@@ -16,6 +16,11 @@ describe("provider auth helpers", () => {
       ),
     ).toBe(true);
     expect(isProviderAuthErrorMessage("Access token expired")).toBe(true);
+    expect(
+      isProviderAuthErrorMessage(
+        "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+      ),
+    ).toBe(true);
     expect(isProviderAuthErrorMessage("Not logged in • Please run /login")).toBe(true);
     expect(isProviderAuthErrorMessage("Not logged in · Please run /login")).toBe(true);
     expect(isProviderAuthErrorMessage("Sandbox setup failed")).toBe(false);

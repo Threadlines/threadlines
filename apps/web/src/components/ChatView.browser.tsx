@@ -3912,6 +3912,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
             },
           });
           expect(turnStartRequest?.bootstrap?.createThread).toBeUndefined();
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.meta.update" &&
+                "title" in request,
+            ),
+          ).toBe(false);
         },
         { timeout: 8_000, interval: 16 },
       );

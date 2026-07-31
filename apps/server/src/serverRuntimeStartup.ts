@@ -30,6 +30,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
+import { AutomaticGitFetchSupervisor } from "./vcs/AutomaticGitFetchSupervisor.ts";
 import { pauseActiveThreadGoalForStop } from "./orchestration/threadGoalLifecycle.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
@@ -324,6 +325,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
+  const automaticGitFetchSupervisor = yield* AutomaticGitFetchSupervisor;
   const sleepInhibitor = yield* SleepInhibitor;
   const lifecycleEvents = yield* ServerLifecycleEvents;
   const serverSettings = yield* ServerSettingsService;
@@ -382,6 +384,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));
+        yield* automaticGitFetchSupervisor.start().pipe(Scope.provide(reactorScope));
         yield* sleepInhibitor.start().pipe(Scope.provide(reactorScope));
       }),
     );
