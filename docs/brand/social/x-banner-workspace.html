@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        width: 1500px;
+        height: 500px;
+        background: #0a0a0a;
+        overflow: hidden;
+        position: relative;
+        color: #fafafa;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .ambient {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at 76% 10%, rgba(110, 148, 250, 0.1), transparent 33%),
+          linear-gradient(180deg, #0d0d10 0%, #0a0a0a 34%);
+      }
+      .masthead {
+        position: absolute;
+        top: 34px;
+        right: 62px;
+        left: 62px;
+        display: flex;
+        height: 52px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 32px;
+      }
+      .brand {
+        display: flex;
+        min-width: max-content;
+        align-items: center;
+        gap: 14px;
+      }
+      .brand svg {
+        width: 66px;
+        height: 36px;
+      }
+      .brand-name {
+        font-size: 36px;
+        font-weight: 700;
+        letter-spacing: -0.035em;
+      }
+      .positioning {
+        color: rgba(250, 250, 250, 0.7);
+        font-size: 22px;
+        font-weight: 500;
+        letter-spacing: -0.018em;
+        white-space: nowrap;
+      }
+      .positioning strong {
+        color: #8ca5ff;
+        font-weight: 600;
+      }
+      .window {
+        position: absolute;
+        left: 62px;
+        top: 106px;
+        width: 1376px;
+        border-radius: 14px 14px 0 0;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-bottom: none;
+        box-shadow:
+          0 -2px 60px rgba(110, 148, 250, 0.1),
+          0 8px 40px rgba(0, 0, 0, 0.6);
+      }
+      .window img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="ambient" aria-hidden="true"></div>
+    <header class="masthead">
+      <div class="brand">
+        <svg viewBox="36 86 184 100" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient
+              id="banner-glyph-live"
+              gradientUnits="userSpaceOnUse"
+              x1="108"
+              y1="98"
+              x2="194"
+              y2="162"
+            >
+              <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45" />
+              <stop offset="1" stop-color="#6e94fa" />
+            </linearGradient>
+          </defs>
+          <g stroke-linecap="round" stroke-width="10">
+            <path d="M 44 98 L 212 98" stroke="#ffffff" stroke-opacity="0.32" />
+            <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="url(#banner-glyph-live)" />
+          </g>
+          <g fill="#ffffff" fill-opacity="0.45">
+            <circle cx="70" cy="98" r="7" />
+            <circle cx="108" cy="98" r="8.5" />
+            <circle cx="178" cy="98" r="7" />
+          </g>
+          <circle cx="194" cy="162" r="21" fill="#6e94fa" fill-opacity="0.16" />
+          <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
+        </svg>
+        <span class="brand-name">Threadlines</span>
+      </div>
+      <div class="positioning">
+        Agents, browser, and <strong>source control</strong>. One workspace.
+      </div>
+    </header>
+    <div class="window">
+      <img
+        src="../../../apps/marketing/public/Screenshots/launch/workspace-four-panel-overview.png"
+      />
+    </div>
+  </body>
+</html>
