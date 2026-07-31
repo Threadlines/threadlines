@@ -7,6 +7,10 @@ on:
         description: "Git ref to build and deploy. Defaults to the caller's commit."
         required: false
         type: string
+      version:
+        description: "Application version to embed in the web build. Defaults to the version derived from the Git ref."
+        required: false
+        type: string
       channel:
         description: "Hosted app channel: latest deploys app.threadlines.dev, nightly deploys nightly.app.threadlines.dev."
         required: false
@@ -17,6 +21,10 @@ on:
       ref:
         description: "Git ref (tag or sha) to build and deploy. Use a release tag so the hosted app version matches the desktop build."
         required: true
+        type: string
+      version:
+        description: "Application version to embed in the web build. Defaults to the version derived from the Git ref."
+        required: false
         type: string
       channel:
         description: "Hosted app channel: latest deploys app.threadlines.dev, nightly deploys nightly.app.threadlines.dev."
@@ -45,6 +53,7 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ inputs.channel == 'nightly' && secrets.VERCEL_PROJECT_ID_NIGHTLY || secrets.VERCEL_PROJECT_ID }}
+      APP_VERSION: ${{ inputs.version }}
       VITE_HOSTED_APP_CHANNEL: ${{ inputs.channel == 'nightly' && 'nightly' || 'latest' }}
       VITE_HOSTED_APP_URL: ${{ inputs.channel == 'nightly' && 'https://nightly.app.threadlines.dev' || 'https://app.threadlines.dev' }}
       HOSTED_APP_URL: ${{ inputs.channel == 'nightly' && 'https://nightly.app.threadlines.dev' || 'https://app.threadlines.dev' }}

@@ -118,11 +118,17 @@ latest GitHub Release, and gives stable-channel installs a normal update target.
 
 ## Release Notes
 
-Release notes are generated automatically from commit subjects. Nightly releases
-compare against the previous nightly build when one exists, otherwise against
-the latest prior stable tag. Stable releases compare against the previous stable
-tag, so their notes include the full stable-to-stable commit range even if some
-of those commits already appeared in nightly notes.
+Release notes combine GitHub's generated PR metadata with the local commit range.
+That keeps the public list compact while retaining PR authors, first-time
+contributors, meaningful direct commits, and the full compare link. Release-prep
+PRs are omitted from the public changes and contributor sections. If GitHub's
+note-generation endpoint is unavailable, the workflow falls back to local commit
+and PR detection instead of blocking the release.
+
+Nightly releases compare against the previous nightly build when one exists,
+otherwise against the latest prior stable tag. Stable releases compare against
+the previous stable tag, so their notes include the full stable-to-stable commit
+range even if some of those commits already appeared in nightly notes.
 
 Stable releases also require a human-reviewed changelog entry under
 `apps/marketing/src/content/changelog/v<version>.md`. Nightly releases do not
@@ -131,8 +137,8 @@ create marketing changelog entries.
 Before publishing a stable release, run **Prepare Stable Release Content** from
 GitHub Actions with the target version. The workflow:
 
-1. summarizes the commits since the previous stable tag with schema-constrained
-   GitHub Models output;
+1. asks GitHub Copilot to summarize the commits since the previous stable tag,
+   then applies strict local validation;
 2. validates that every public claim cites a commit in that release range;
 3. creates the marketing changelog entry and an X draft capped at 280 Unicode
    characters; and
@@ -150,26 +156,39 @@ the Vercel Preview check to inspect the rendered page. Merging the PR approves
 the marketing and GitHub release copy. The X draft links to the GitHub release
 so X renders GitHub's release card. It never posts to social media.
 
-The generator uses GitHub Models through the `RELEASE_MODELS_TOKEN` repository
-secret. Create a fine-grained personal access token with only the `Models: read`
-account permission, then save it as an Actions repository secret with that name.
-Keep the token owner’s paid GitHub Models usage disabled if release drafting
-must remain within the free, rate-limited allowance. The default model is
-`openai/gpt-4.1`; set the optional `GITHUB_RELEASE_SUMMARY_MODEL` repository
-variable to choose another model from the GitHub Models catalog.
+The generator uses GitHub Copilot through the `COPILOT_GITHUB_TOKEN` repository
+secret. Create a fine-grained personal access token owned by the Copilot Free
+user, grant only the account-level **Copilot Requests** permission, and save it
+with that secret name. The SDK receives that token explicitly and does not fall
+back to the workflow's built-in `GITHUB_TOKEN`; in an organization-owned
+repository, that fallback would use organization-metered requests instead of the
+token owner's personal Copilot allowance.
+
+Copilot Free supports automatic model selection only, so the generator always
+requests `auto` and has no named-model override. Each draft consumes the user's
+included monthly GitHub AI Credits. Keep paid additional usage disabled (or its
+budget at a hard stop) if this workflow must never incur overage charges. Once
+the included allowance is exhausted, generation fails and the fallback below is
+used until the allowance resets.
+
+If the token is missing or the provider request fails, the workflow still opens a
+Draft PR with deterministic placeholders and `reviewRequired: true` in the
+changelog frontmatter. Stable publishing rejects either that marker or any
+remaining reserved `TODO:` placeholder. Replace every placeholder and delete
+`reviewRequired` before merging the content PR.
 
 For a local draft, use:
 
 ```bash
-RELEASE_MODELS_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
+COPILOT_GITHUB_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
 ```
 
-For a local run, `GITHUB_TOKEN` remains supported as a fallback. Whichever token
-is used needs `models: read` permission.
+Without `COPILOT_GITHUB_TOKEN`, a local run creates the same blocked
+human-review fallback used by GitHub Actions.
 
 The stable release workflow refuses to publish when the matching reviewed entry
 is missing. Its GitHub release body places those highlights first and keeps the
-complete categorized commit list in a collapsed technical-details section.
+complete compact technical change list in a collapsed details section.
 
 The release assets should include:
 

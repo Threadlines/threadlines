@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, it } from "vitest";
 
 import {
   formatReleaseNotes,
@@ -6,7 +6,7 @@ import {
   parseGitLogOutput,
 } from "./generate-release-notes.ts";
 
-it("formats direct commits in categorized sections with commit links and a compare link", () => {
+it("formats direct commits in a compact fallback section with a compare link", () => {
   assert.equal(
     formatReleaseNotes({
       channel: "nightly",
@@ -24,11 +24,9 @@ it("formats direct commits in categorized sections with commit links and a compa
       ],
     }),
     [
-      "## What's changed",
+      "## What's Changed",
       "",
-      "Changes since `v0.0.17`.",
-      "",
-      "### Performance",
+      "### Direct changes",
       "",
       "- [`62ae093`](https://github.com/Threadlines/threadlines/commit/62ae0936452552cff68db2293db9ad455d981e8b) Cache diagnostics reads and reduce background polling",
       "",
@@ -38,7 +36,7 @@ it("formats direct commits in categorized sections with commit links and a compa
   );
 });
 
-it("formats GitHub merge and squash commits as pull request entries", () => {
+it("formats locally detected pull requests without per-entry commit SHAs", () => {
   assert.equal(
     formatReleaseNotes({
       channel: "stable",
@@ -66,22 +64,100 @@ it("formats GitHub merge and squash commits as pull request entries", () => {
       ],
     }),
     [
-      "## What's changed",
+      "## What's Changed",
       "",
-      "Changes since `v0.0.17`.",
-      "",
-      "### Features",
-      "",
-      "- [#42](https://github.com/Threadlines/threadlines/pull/42) Improve generated release notes ([`aaaaaaaa`](https://github.com/Threadlines/threadlines/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa))",
-      "",
-      "### Fixes",
-      "",
-      "- [#43](https://github.com/Threadlines/threadlines/pull/43) Handle updater diagnostics ([`bbbbbbbb`](https://github.com/Threadlines/threadlines/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb))",
+      "- Improve generated release notes in [#42](https://github.com/Threadlines/threadlines/pull/42)",
+      "- Handle updater diagnostics in [#43](https://github.com/Threadlines/threadlines/pull/43)",
       "",
       "**Full Changelog**: https://github.com/Threadlines/threadlines/compare/v0.0.17...v0.0.18",
       "",
     ].join("\n"),
   );
+});
+
+it("uses GitHub PR attribution, filters release-preparation noise, and keeps direct commits", () => {
+  assert.equal(
+    formatReleaseNotes({
+      channel: "nightly",
+      currentTag: "v0.3.1-nightly.20260731.205",
+      previousTag: "v0.3.1-nightly.20260731.204",
+      repository: "Threadlines/threadlines",
+      commits: [
+        {
+          hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          shortHash: "aaaaaaaa",
+          parentHashes: ["1111111111111111111111111111111111111111"],
+          subject: "Add prompt stashing (#93)",
+          body: "",
+        },
+        {
+          hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          shortHash: "bbbbbbbb",
+          parentHashes: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          subject: "Prepare v0.3.1 changelog and announcement (#96)",
+          body: "",
+        },
+        {
+          hash: "cccccccccccccccccccccccccccccccccccccccc",
+          shortHash: "cccccccc",
+          parentHashes: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+          subject: "Keep updater diagnostics visible",
+          body: "",
+        },
+      ],
+      githubGeneratedNotes: `## What's Changed
+
+* Add prompt stashing by @will in https://github.com/Threadlines/threadlines/pull/93
+* Prepare v0.3.1 changelog and announcement by @will in https://github.com/Threadlines/threadlines/pull/96
+
+## New Contributors
+* @will made their first contribution in https://github.com/Threadlines/threadlines/pull/93
+* @release-helper made their first contribution in https://github.com/Threadlines/threadlines/pull/96
+
+**Full Changelog**: https://github.com/Threadlines/threadlines/compare/v0.3.1-nightly.20260731.204...v0.3.1-nightly.20260731.205`,
+    }),
+    [
+      "## What's Changed",
+      "",
+      "- Add prompt stashing by @will in https://github.com/Threadlines/threadlines/pull/93",
+      "",
+      "### Direct changes",
+      "",
+      "- [`cccccccc`](https://github.com/Threadlines/threadlines/commit/cccccccccccccccccccccccccccccccccccccccc) Keep updater diagnostics visible",
+      "",
+      "## New Contributors",
+      "* @will made their first contribution in https://github.com/Threadlines/threadlines/pull/93",
+      "",
+      "**Full Changelog**: https://github.com/Threadlines/threadlines/compare/v0.3.1-nightly.20260731.204...v0.3.1-nightly.20260731.205",
+      "",
+    ].join("\n"),
+  );
+});
+
+it("falls back to locally detected pull requests when GitHub notes are empty or unrecognized", () => {
+  for (const githubGeneratedNotes of ["", "GitHub returned an unexpected response."]) {
+    const notes = formatReleaseNotes({
+      channel: "nightly",
+      currentTag: "v0.3.1-nightly.20260731.205",
+      previousTag: "v0.3.1-nightly.20260731.204",
+      repository: "Threadlines/threadlines",
+      commits: [
+        {
+          hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          shortHash: "aaaaaaaa",
+          parentHashes: ["1111111111111111111111111111111111111111"],
+          subject: "Add prompt stashing (#93)",
+          body: "",
+        },
+      ],
+      githubGeneratedNotes,
+    });
+
+    assert.match(
+      notes,
+      /- Add prompt stashing in \[#93\]\(https:\/\/github\.com\/Threadlines\/threadlines\/pull\/93\)/,
+    );
+  }
 });
 
 it("formats an empty release range", () => {
@@ -93,14 +169,7 @@ it("formats an empty release range", () => {
       repository: undefined,
       commits: [],
     }),
-    [
-      "## What's changed",
-      "",
-      "Changes since `v0.0.17`.",
-      "",
-      "- No commits found in this release range.",
-      "",
-    ].join("\n"),
+    ["## What's Changed", "", "- No commits found in this release range.", ""].join("\n"),
   );
 });
 
@@ -159,7 +228,42 @@ alsoImproved:
   });
 
   assert.match(notes, /^## Highlights\n\nGoals are easier/);
+  assert.match(
+    notes,
+    /- \*\*Codex Goals\*\* — Set an objective and optional token budget from the composer\./,
+  );
   assert.match(notes, /<summary>Complete technical changes<\/summary>/);
-  assert.match(notes, /## What's changed/);
+  assert.match(notes, /## What's Changed/);
   assert.match(notes, /Add goal monitoring/);
+});
+
+it("rejects stable content that is still marked for human review", () => {
+  assert.throws(
+    () =>
+      parseCuratedReleaseContent(`---
+reviewRequired: true
+summary: Replace this fallback summary.
+highlights:
+  - title: Review required
+    description: Replace this fallback highlight.
+alsoImproved: []
+---
+`),
+    /still requires human review/,
+  );
+});
+
+it("rejects stable content when a fallback TODO remains after the review marker is removed", () => {
+  assert.throws(
+    () =>
+      parseCuratedReleaseContent(`---
+summary: Reviewed summary.
+highlights:
+  - title: Reviewed title
+    description: "TODO: replace this fallback description."
+alsoImproved: []
+---
+`),
+    /still contains a reserved 'TODO:' human-review placeholder/,
+  );
 });

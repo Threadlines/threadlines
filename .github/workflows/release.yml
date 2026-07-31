@@ -306,12 +306,41 @@ jobs:
 
       - name: Generate release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ needs.preflight.outputs.channel }}
           TAG: ${{ needs.preflight.outputs.tag }}
           CURRENT_REF: ${{ needs.preflight.outputs.ref }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+
+          previous_tag="$(
+            node scripts/generate-release-notes.ts \
+              --channel "$CHANNEL" \
+              --current-tag "$TAG" \
+              --print-baseline-tag
+          )"
+
+          api_args=(
+            --method POST
+            "repos/$REPOSITORY/releases/generate-notes"
+            --field tag_name="$TAG"
+            --field target_commitish="$CURRENT_REF"
+          )
+          if [[ -n "$previous_tag" ]]; then
+            api_args+=(--field previous_tag_name="$previous_tag")
+          fi
+
+          github_notes_file=""
+          if gh api "${api_args[@]}" --jq '.body' > github-generated-notes.md; then
+            if [[ -s github-generated-notes.md ]]; then
+              github_notes_file="github-generated-notes.md"
+            else
+              echo "::warning::GitHub generated an empty release-notes body; using local release-note metadata instead."
+            fi
+          else
+            echo "::warning::GitHub's generated release-notes API failed; using local release-note metadata instead."
+          fi
 
           args=(
             --channel "$CHANNEL"
@@ -320,6 +349,9 @@ jobs:
             --repository "$REPOSITORY"
             --output release-notes.md
           )
+          if [[ -n "$github_notes_file" ]]; then
+            args+=(--github-notes-file "$github_notes_file")
+          fi
 
           if [[ "$CHANNEL" == "stable" ]]; then
             highlights_file="apps/marketing/src/content/changelog/${TAG}.md"
@@ -1039,6 +1071,7 @@ jobs:
     uses: ./.github/workflows/deploy-web.yml
     with:
       ref: ${{ needs.preflight.outputs.ref }}
+      version: ${{ needs.preflight.outputs.version }}
       channel: ${{ needs.preflight.outputs.channel == 'nightly' && 'nightly' || 'latest' }}
     secrets: inherit
 

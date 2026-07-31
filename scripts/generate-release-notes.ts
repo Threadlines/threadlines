@@ -23,6 +23,7 @@ interface FormatReleaseNotesInput {
   readonly previousTag: string | undefined;
   readonly repository: string | undefined;
   readonly commits: ReadonlyArray<ReleaseNoteCommit>;
+  readonly githubGeneratedNotes?: string;
   readonly curated?: CuratedReleaseContent;
 }
 
@@ -43,87 +44,27 @@ interface ReleaseNoteEntry {
   readonly pullRequestNumber?: number;
 }
 
-type ReleaseNoteCategoryId =
-  | "breaking"
-  | "features"
-  | "fixes"
-  | "performance"
-  | "reliability"
-  | "documentation"
-  | "tests"
-  | "maintenance"
-  | "other";
-
-interface ReleaseNoteCategory {
-  readonly id: ReleaseNoteCategoryId;
-  readonly title: string;
-}
-
 interface ConventionalSubject {
-  readonly type: string;
-  readonly breaking: boolean;
   readonly title: string;
 }
 
-interface ClassifiedReleaseNoteEntry extends ReleaseNoteEntry {
-  readonly categoryId: ReleaseNoteCategoryId;
-  readonly displayTitle: string;
-}
-
-const releaseNoteCategories: ReadonlyArray<ReleaseNoteCategory> = [
-  { id: "breaking", title: "Breaking changes" },
-  { id: "features", title: "Features" },
-  { id: "fixes", title: "Fixes" },
-  { id: "performance", title: "Performance" },
-  { id: "reliability", title: "Reliability" },
-  { id: "documentation", title: "Documentation" },
-  { id: "tests", title: "Tests" },
-  { id: "maintenance", title: "Maintenance" },
-  { id: "other", title: "Other changes" },
-];
-
-const conventionalTypeCategories = new Map<string, ReleaseNoteCategoryId>([
-  ["feat", "features"],
-  ["feature", "features"],
-  ["fix", "fixes"],
-  ["perf", "performance"],
-  ["performance", "performance"],
-  ["docs", "documentation"],
-  ["doc", "documentation"],
-  ["test", "tests"],
-  ["tests", "tests"],
-  ["refactor", "maintenance"],
-  ["chore", "maintenance"],
-  ["build", "maintenance"],
-  ["ci", "maintenance"],
-  ["style", "maintenance"],
-  ["revert", "maintenance"],
+const conventionalTypes = new Set([
+  "feat",
+  "feature",
+  "fix",
+  "perf",
+  "performance",
+  "docs",
+  "doc",
+  "test",
+  "tests",
+  "refactor",
+  "chore",
+  "build",
+  "ci",
+  "style",
+  "revert",
 ]);
-
-const keywordCategories: ReadonlyArray<readonly [ReleaseNoteCategoryId, RegExp]> = [
-  [
-    "fixes",
-    /\b(fix|fixed|fixes|repair|repairs|repaired|restore|restores|restored|prevent|prevents|prevented|avoid|avoids|avoided|handle|handles|handled|resolve|resolves|resolved|correct|corrects|corrected|patch|patches|patched)\b/i,
-  ],
-  [
-    "performance",
-    /\b(perf|performance|fast|faster|speed|cache|cached|caching|polling|cpu|batch|batched|latency|memory|optimize|optimized|optimizes|optimizing|optimization|optimise|optimised|optimises|optimising|optimisation|reduce|reduces|reduced|reducing)\b/i,
-  ],
-  [
-    "reliability",
-    /\b(reliability|reliable|retry|retries|retried|recover|recovers|recovered|recovery|reconnect|reconnects|reconnected|restart|restarts|restarted|fallback|failure|failures|error|errors|timeout|timeouts|diagnostic|diagnostics|guard|guards|guarded|resilient|resilience|crash|crashes|crashed|stream|streams|streaming)\b/i,
-  ],
-  ["documentation", /\b(doc|docs|documentation|readme|guide|guides)\b/i],
-  ["tests", /\b(test|tests|tested|vitest|coverage|spec|specs)\b/i],
-  [
-    "features",
-    /\b(add|adds|added|enable|enables|enabled|introduce|introduces|introduced|integrate|integrates|integrated|support|supports|supported|implement|implements|implemented|create|creates|created|new)\b/i,
-  ],
-  [
-    "maintenance",
-    /\b(chore|chores|ci|build|builds|release|releases|publish|publishes|published|dependency|dependencies|lockfile|refactor|refactors|refactored|rename|renames|renamed|migrate|migrates|migrated|move|moves|moved|cleanup|format|formatted|lint|typecheck|configure|configures|configured|configuration|config|workflow|workflows)\b/i,
-  ],
-];
 
 function normalizeRequiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -236,40 +177,16 @@ function parseConventionalSubject(subject: string): ConventionalSubject | undefi
   if (!type || !title) return undefined;
 
   const breaking = match[2] === "!";
-  if (!breaking && !conventionalTypeCategories.has(type)) return undefined;
+  if (!breaking && !conventionalTypes.has(type)) return undefined;
 
   return {
-    type,
-    breaking,
     title: sentenceCaseTitle(cleanPullRequestTitle(title)),
   };
 }
 
-function hasBreakingChangeBody(body: string): boolean {
-  return /^BREAKING[ -]CHANGE:/im.test(body);
-}
-
-function classifyReleaseNoteEntry(entry: ReleaseNoteEntry): ClassifiedReleaseNoteEntry {
+function displayTitle(entry: ReleaseNoteEntry): string {
   const conventional = parseConventionalSubject(entry.title);
-  const displayTitle = conventional?.title ?? sentenceCaseTitle(cleanPullRequestTitle(entry.title));
-
-  if (conventional?.breaking === true || hasBreakingChangeBody(entry.commit.body)) {
-    return { ...entry, categoryId: "breaking", displayTitle };
-  }
-
-  const conventionalCategory =
-    conventional === undefined ? undefined : conventionalTypeCategories.get(conventional.type);
-  if (conventionalCategory) {
-    return { ...entry, categoryId: conventionalCategory, displayTitle };
-  }
-
-  for (const [categoryId, pattern] of keywordCategories) {
-    if (pattern.test(displayTitle)) {
-      return { ...entry, categoryId, displayTitle };
-    }
-  }
-
-  return { ...entry, categoryId: "other", displayTitle };
+  return conventional?.title ?? sentenceCaseTitle(cleanPullRequestTitle(entry.title));
 }
 
 function releaseNoteEntryFromCommit(commit: ReleaseNoteCommit): ReleaseNoteEntry {
@@ -304,10 +221,7 @@ function commitLink(repository: string | undefined, commit: ReleaseNoteCommit): 
   return url ? `[\`${commit.shortHash}\`](${url})` : `\`${commit.shortHash}\``;
 }
 
-function formatPullRequestEntry(
-  repository: string | undefined,
-  entry: ClassifiedReleaseNoteEntry,
-): string {
+function formatPullRequestEntry(repository: string | undefined, entry: ReleaseNoteEntry): string {
   const pullRequestNumber = entry.pullRequestNumber;
   const pullRequest = pullRequestNumber ? pullRequestUrl(repository, pullRequestNumber) : undefined;
   const pullRequestLabel =
@@ -315,60 +229,119 @@ function formatPullRequestEntry(
       ? `[#${pullRequestNumber}](${pullRequest})`
       : `#${pullRequestNumber}`;
 
-  return `- ${pullRequestLabel} ${entry.displayTitle} (${commitLink(repository, entry.commit)})`;
+  return `- ${displayTitle(entry)} in ${pullRequestLabel}`;
 }
 
-function formatCommitEntry(
-  repository: string | undefined,
-  entry: ClassifiedReleaseNoteEntry,
-): string {
-  return `- ${commitLink(repository, entry.commit)} ${entry.displayTitle}`;
+function formatCommitEntry(repository: string | undefined, entry: ReleaseNoteEntry): string {
+  return `- ${commitLink(repository, entry.commit)} ${displayTitle(entry)}`;
 }
 
-function formatReleaseNoteEntry(
-  repository: string | undefined,
-  entry: ClassifiedReleaseNoteEntry,
-): string {
-  return entry.pullRequestNumber === undefined
-    ? formatCommitEntry(repository, entry)
-    : formatPullRequestEntry(repository, entry);
+function isReleasePreparationTitle(title: string): boolean {
+  const conventionalTitle = parseConventionalSubject(title)?.title ?? title;
+  return /^(?:prepare|prep|draft|update)\s+v?\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?\s+(?:(?:stable\s+)?release\s+(?:content|notes?)|changelog(?:\s+and\s+(?:announcement|social(?:\s+post)?))?)/i.test(
+    conventionalTitle.trim(),
+  );
+}
+
+interface ParsedGitHubGeneratedNotes {
+  readonly pullRequestLines: ReadonlyArray<string>;
+  readonly newContributorLines: ReadonlyArray<string>;
+  readonly fullChangelogLine: string | undefined;
+}
+
+function parseGitHubGeneratedNotes(body: string): ParsedGitHubGeneratedNotes {
+  const lines = body.replaceAll("\r\n", "\n").split("\n");
+  const newContributorsStart = lines.findIndex((line) => /^##\s+New Contributors\s*$/i.test(line));
+  const fullChangelogIndex = lines.findIndex((line) => /^\*\*Full Changelog\*\*:/i.test(line));
+  const pullRequestSectionEnd =
+    [newContributorsStart, fullChangelogIndex]
+      .filter((index) => index >= 0)
+      .toSorted((left, right) => left - right)[0] ?? lines.length;
+  const filteredPullRequestNumbers = new Set<string>();
+  const pullRequestLines = lines
+    .slice(0, pullRequestSectionEnd)
+    .filter((line) => /^[-*]\s+.+\/pull\/\d+(?:\)|\s|$)/i.test(line.trim()))
+    .filter((line) => {
+      const title = line
+        .trim()
+        .replace(/^[-*]\s+/, "")
+        .replace(/\s+by\s+@\S+\s+in\s+.+\/pull\/\d+\)?\s*$/i, "");
+      if (!isReleasePreparationTitle(title)) return true;
+
+      const pullRequestNumber = /\/pull\/(\d+)/i.exec(line)?.[1];
+      if (pullRequestNumber) filteredPullRequestNumbers.add(pullRequestNumber);
+      return false;
+    })
+    .map((line) => line.trim().replace(/^\*\s+/, "- "));
+
+  const newContributorSection =
+    newContributorsStart === -1
+      ? []
+      : lines
+          .slice(
+            newContributorsStart,
+            fullChangelogIndex > newContributorsStart ? fullChangelogIndex : undefined,
+          )
+          .filter((line) => {
+            const pullRequestNumber = /\/pull\/(\d+)/i.exec(line)?.[1];
+            return !pullRequestNumber || !filteredPullRequestNumbers.has(pullRequestNumber);
+          })
+          .map((line) => line.trimEnd())
+          .filter((line, index, section) => {
+            if (line.length > 0) return true;
+            return index > 0 && index < section.length - 1;
+          });
+  const newContributorLines = newContributorSection.some((line) => /^[-*]\s+/.test(line.trim()))
+    ? newContributorSection
+    : [];
+
+  return {
+    pullRequestLines,
+    newContributorLines,
+    fullChangelogLine: fullChangelogIndex === -1 ? undefined : lines[fullChangelogIndex]?.trim(),
+  };
 }
 
 function formatTechnicalReleaseNotes(input: FormatReleaseNotesInput): string {
-  const lines: Array<string> = [];
-  const entries = input.commits.map(releaseNoteEntryFromCommit).map(classifyReleaseNoteEntry);
+  const lines: Array<string> = ["## What's Changed", ""];
+  const entries = input.commits.map(releaseNoteEntryFromCommit);
+  const generated = input.githubGeneratedNotes
+    ? parseGitHubGeneratedNotes(input.githubGeneratedNotes)
+    : undefined;
+  const localPullRequestLines = entries
+    .filter(
+      (entry) => entry.pullRequestNumber !== undefined && !isReleasePreparationTitle(entry.title),
+    )
+    .map((entry) => formatPullRequestEntry(input.repository, entry));
+  const pullRequestLines =
+    generated && generated.pullRequestLines.length > 0
+      ? generated.pullRequestLines
+      : localPullRequestLines;
+  const directCommitLines = entries
+    .filter(
+      (entry) => entry.pullRequestNumber === undefined && !isReleasePreparationTitle(entry.title),
+    )
+    .map((entry) => formatCommitEntry(input.repository, entry));
 
-  lines.push("## What's changed", "");
-
-  if (input.previousTag) {
-    lines.push(`Changes since \`${input.previousTag}\`.`, "");
-  } else {
-    lines.push("Initial release notes for this channel.", "");
+  lines.push(...pullRequestLines);
+  if (directCommitLines.length > 0) {
+    if (pullRequestLines.length > 0) lines.push("");
+    lines.push("### Direct changes", "", ...directCommitLines);
   }
 
-  if (input.commits.length === 0) {
+  if (pullRequestLines.length === 0 && directCommitLines.length === 0) {
     lines.push("- No commits found in this release range.");
-  } else {
-    let wroteCategory = false;
-    for (const category of releaseNoteCategories) {
-      const categoryEntries = entries.filter((entry) => entry.categoryId === category.id);
-      if (categoryEntries.length === 0) continue;
+  }
 
-      if (wroteCategory) {
-        lines.push("");
-      }
-      wroteCategory = true;
-
-      lines.push(`### ${category.title}`, "");
-      for (const entry of categoryEntries) {
-        lines.push(formatReleaseNoteEntry(input.repository, entry));
-      }
-    }
+  if (generated && generated.newContributorLines.length > 0) {
+    lines.push("", ...generated.newContributorLines);
   }
 
   const url = compareUrl(input.repository, input.previousTag, input.currentTag);
-  if (url) {
-    lines.push("", `**Full Changelog**: ${url}`);
+  const fullChangelogLine =
+    generated?.fullChangelogLine ?? (url ? `**Full Changelog**: ${url}` : undefined);
+  if (fullChangelogLine) {
+    lines.push("", fullChangelogLine);
   }
 
   return `${lines.join("\n")}\n`;
@@ -390,6 +363,16 @@ export function parseCuratedReleaseContent(content: string): CuratedReleaseConte
     throw new Error("Curated release frontmatter must be an object.");
   }
   const record = parsed as Record<string, unknown>;
+  if (record.reviewRequired === true) {
+    throw new Error(
+      "Curated release content still requires human review. Remove 'reviewRequired: true' before publishing.",
+    );
+  }
+  if (containsHumanReviewPlaceholder(record)) {
+    throw new Error(
+      "Curated release content still contains a reserved 'TODO:' human-review placeholder.",
+    );
+  }
   if (!Array.isArray(record.highlights) || record.highlights.length === 0) {
     throw new Error("Curated release content must include highlights.");
   }
@@ -423,10 +406,17 @@ export function parseCuratedReleaseContent(content: string): CuratedReleaseConte
   };
 }
 
+function containsHumanReviewPlaceholder(value: unknown): boolean {
+  if (typeof value === "string") return /^TODO:/i.test(value.trim());
+  if (Array.isArray(value)) return value.some(containsHumanReviewPlaceholder);
+  if (value === null || typeof value !== "object") return false;
+  return Object.values(value).some(containsHumanReviewPlaceholder);
+}
+
 function formatCuratedReleaseContent(content: CuratedReleaseContent): string {
-  const lines = ["## Highlights", "", content.summary];
+  const lines = ["## Highlights", "", content.summary, ""];
   for (const highlight of content.highlights) {
-    lines.push("", `### ${highlight.title}`, "", highlight.description);
+    lines.push(`- **${highlight.title}** — ${highlight.description}`);
   }
   if (content.alsoImproved.length > 0) {
     lines.push("", "### Also improved", "");
@@ -463,6 +453,8 @@ function main(): void {
       repository: { type: "string" },
       output: { type: "string" },
       "highlights-file": { type: "string" },
+      "github-notes-file": { type: "string" },
+      "print-baseline-tag": { type: "boolean", default: false },
     },
   });
 
@@ -477,12 +469,21 @@ function main(): void {
       ? values["highlights-file"].trim() || undefined
       : undefined;
   const previousTag = resolveReleaseNotesBaselineTag(channel, currentTag, listGitTags());
+  if (values["print-baseline-tag"]) {
+    process.stdout.write(previousTag ?? "");
+    return;
+  }
+  const githubNotesFile =
+    typeof values["github-notes-file"] === "string"
+      ? values["github-notes-file"].trim() || undefined
+      : undefined;
   const body = formatReleaseNotes({
     channel,
     currentTag,
     previousTag,
     repository,
     commits: listCommits(previousTag, currentRef),
+    ...(githubNotesFile ? { githubGeneratedNotes: readFileSync(githubNotesFile, "utf8") } : {}),
     ...(highlightsFile
       ? { curated: parseCuratedReleaseContent(readFileSync(highlightsFile, "utf8")) }
       : {}),

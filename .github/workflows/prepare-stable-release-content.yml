@@ -20,7 +20,6 @@ on:
 
 permissions:
   contents: write
-  models: read
   pull-requests: write
 
 concurrency:
@@ -33,9 +32,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      GITHUB_TOKEN: ${{ github.token }}
-      RELEASE_MODELS_TOKEN: ${{ secrets.RELEASE_MODELS_TOKEN }}
-      GITHUB_RELEASE_SUMMARY_MODEL: ${{ vars.GITHUB_RELEASE_SUMMARY_MODEL }}
       VERSION_INPUT: ${{ inputs.version }}
       CURRENT_REF_INPUT: ${{ inputs.current_ref }}
       RELEASE_DATE_INPUT: ${{ inputs.release_date }}
@@ -58,15 +54,9 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile
 
-      - name: Verify release drafting token
-        run: |
-          set -euo pipefail
-          if [[ -z "${RELEASE_MODELS_TOKEN:-}" ]]; then
-            echo "::error::The RELEASE_MODELS_TOKEN repository secret is unavailable. Add a fine-grained personal access token with Models: read permission before preparing stable release content."
-            exit 1
-          fi
-
       - name: Generate stable release draft
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 

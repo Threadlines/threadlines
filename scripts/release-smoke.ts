@@ -299,10 +299,43 @@ async function assertReleaseBuildIdentity(): Promise<void> {
   );
 }
 
+function assertHostedWebVersionPropagation(): void {
+  const deployWebWorkflow = readFileSync(
+    resolve(repoRoot, ".github/workflows/deploy-web.yml"),
+    "utf8",
+  );
+  const reusableDeployWebWorkflow = deployWebWorkflow.slice(
+    0,
+    deployWebWorkflow.indexOf("  workflow_dispatch:"),
+  );
+  assertContains(
+    reusableDeployWebWorkflow,
+    'version:\n        description: "Application version to embed in the web build.',
+    "Deploy Web App must expose a reusable application version input.",
+  );
+  assertContains(
+    deployWebWorkflow,
+    "APP_VERSION: ${{ inputs.version }}",
+    "Deploy Web App must inject its version input into the Vite build environment.",
+  );
+
+  const releaseWorkflow = readFileSync(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const releaseDeployJob = releaseWorkflow.slice(
+    releaseWorkflow.indexOf("\n  deploy_web_app:"),
+    releaseWorkflow.indexOf("\n  cleanup_failed_release:"),
+  );
+  assertContains(
+    releaseDeployJob,
+    "version: ${{ needs.preflight.outputs.version }}",
+    "Desktop Release must pass its resolved release version to the hosted web deployment.",
+  );
+}
+
 const tempRoot = mkdtempSync(join(tmpdir(), "threadlines-release-smoke-"));
 
 try {
   await assertReleaseBuildIdentity();
+  assertHostedWebVersionPropagation();
   copyWorkspaceManifestFixture(tempRoot);
 
   execFileSync(
