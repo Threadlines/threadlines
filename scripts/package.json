@@ -10,6 +10,7 @@
     "@anthropic-ai/claude-agent-sdk": "catalog:",
     "@anthropic-ai/sdk": "catalog:",
     "@effect/platform-node": "catalog:",
+    "@github/copilot-sdk": "catalog:",
     "@threadlines/contracts": "workspace:*",
     "@threadlines/shared": "workspace:*",
     "effect": "catalog:",

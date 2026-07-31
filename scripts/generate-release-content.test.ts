@@ -1,7 +1,9 @@
-import { assert, expect, it } from "@effect/vitest";
+import { assert, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
+import type { CopilotClientOptions, SessionConfig } from "@github/copilot-sdk";
 
 import {
+  createHumanReviewFallback,
   parseReleaseContentPolicy,
   parseReleaseEvidenceLog,
   renderChangelogEntry,
@@ -166,9 +168,13 @@ it("rejects release titles that repeat the product or version", () => {
   );
 });
 
-it("uses schema-constrained GitHub Models output and defaults a blank model", async () => {
-  let requestUrl: string | undefined;
-  let requestBody: Record<string, unknown> | undefined;
+it("uses Copilot Free auto selection without exposing agent tools", async () => {
+  let clientOptions: CopilotClientOptions | undefined;
+  let sessionConfig: SessionConfig | undefined;
+  let prompt: string | undefined;
+  let timeout: number | undefined;
+  let disconnected = 0;
+  let stopped = 0;
   const unnormalizedDraft = {
     ...draft,
     title: "Threadlines v0.2.5: Goals and visible subagents",
@@ -176,23 +182,6 @@ it("uses schema-constrained GitHub Models output and defaults a blank model", as
       `\n\nRelease notes: https://github.com/Threadlines/threadlines/releases/tag/v0.2.5`,
       ` https://github.com/Threadlines/threadlines/releases/tag/v0.2.5`,
     ),
-  };
-  const fakeFetch: typeof fetch = async (input, init) => {
-    requestUrl = String(input);
-    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return new Response(
-      JSON.stringify({
-        choices: [
-          {
-            message: {
-              role: "assistant",
-              content: JSON.stringify(unnormalizedDraft),
-            },
-          },
-        ],
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
   };
 
   const result = await requestReleaseSummary(
@@ -205,25 +194,121 @@ it("uses schema-constrained GitHub Models output and defaults a blank model", as
       evidence,
       excludedTopics,
     },
-    { token: "test-token", model: "   ", fetch: fakeFetch },
+    {
+      token: "test-token",
+      timeoutMs: 1_234,
+      createClient: (options) => {
+        clientOptions = options;
+        return {
+          createSession: async (config) => {
+            sessionConfig = config;
+            return {
+              sendAndWait: async (options, timeoutMs) => {
+                prompt = options.prompt;
+                timeout = timeoutMs;
+                return {
+                  data: { content: `\`\`\`json\n${JSON.stringify(unnormalizedDraft)}\n\`\`\`` },
+                };
+              },
+              abort: async () => undefined,
+              disconnect: async () => {
+                disconnected += 1;
+              },
+            };
+          },
+          stop: async () => {
+            stopped += 1;
+            return [];
+          },
+        };
+      },
+    },
   );
 
   assert.deepEqual(result, draft);
-  assert.equal(requestUrl, "https://models.github.ai/inference/chat/completions");
-  assert.equal(requestBody?.model, "openai/gpt-4.1");
-  assert.match(JSON.stringify(requestBody?.messages), /Realtime voice mode/);
-  assert.equal(
-    (requestBody?.response_format as { type?: unknown } | undefined)?.type,
-    "json_schema",
-  );
+  assert.equal(clientOptions?.mode, "empty");
+  assert.equal(clientOptions?.gitHubToken, "test-token");
+  assert.equal(clientOptions?.useLoggedInUser, false);
+  assert.equal(sessionConfig?.model, "auto");
+  assert.deepEqual(sessionConfig?.availableTools, []);
+  assert.equal(sessionConfig?.skipCustomInstructions, true);
+  assert.deepEqual(sessionConfig?.infiniteSessions, { enabled: false });
+  assert.match(prompt ?? "", /Realtime voice mode/);
+  assert.match(prompt ?? "", /Return only one JSON object/);
+  assert.match(prompt ?? "", /"additionalProperties":false/);
+  assert.equal(timeout, 1_234);
+  assert.equal(disconnected, 1);
+  assert.equal(stopped, 1);
 });
 
-it("reports non-JSON GitHub Models API errors", async () => {
-  const fakeFetch: typeof fetch = async () =>
-    new Response("Model not found. Valid models can be found by calling /catalog/models.", {
-      status: 400,
-    });
+it("aborts timed-out Copilot work and always cleans up", async () => {
+  const input = {
+    version: "0.2.5",
+    releaseDate: "2026-07-22",
+    previousTag: "v0.2.4",
+    currentRef: "main",
+    repository: "Threadlines/threadlines",
+    evidence,
+  };
+  let aborted = 0;
+  let disconnected = 0;
+  let stopped = 0;
+  await expect(
+    requestReleaseSummary(input, {
+      token: "test-token",
+      createClient: () => ({
+        createSession: async () => ({
+          sendAndWait: async () => {
+            throw new Error("Timed out waiting for session idle");
+          },
+          abort: async () => {
+            aborted += 1;
+          },
+          disconnect: async () => {
+            disconnected += 1;
+          },
+        }),
+        stop: async () => {
+          stopped += 1;
+          return [];
+        },
+      }),
+    }),
+  ).rejects.toThrow("Timed out waiting for session idle");
+  assert.equal(aborted, 1);
+  assert.equal(disconnected, 1);
+  assert.equal(stopped, 1);
+});
 
+it("creates a schema-valid fallback that blocks stable publishing", () => {
+  const fallback = createHumanReviewFallback({
+    version: "0.2.5",
+    repository: "Threadlines/threadlines",
+    evidence,
+  });
+  const changelog = renderChangelogEntry(fallback, {
+    releaseDate: "2026-07-22",
+    repository: "Threadlines/threadlines",
+  });
+  const frontmatter = changelog.slice(4, changelog.lastIndexOf("---")).trim();
+  const parsed = parseYaml(frontmatter) as Record<string, unknown>;
+
+  assert.equal(fallback.reviewRequired, true);
+  assert.equal(parsed.reviewRequired, true);
+  assert.match(String(parsed.title), /^TODO:/);
+  assert.isAtMost(Array.from(fallback.social).length, 280);
+  assert.deepEqual(fallback.highlights[0]?.evidence, ["aaaaaaaa"]);
+
+  const prBody = renderDraftPrBody(fallback, {
+    repository: "Threadlines/threadlines",
+    previousTag: "v0.2.4",
+    currentRef: "main",
+  });
+  assert.match(prBody, /Stable publishing is blocked/);
+  assert.match(prBody, /delete the `reviewRequired` field/);
+});
+
+it("rejects non-JSON Copilot output", async () => {
   await expect(
     requestReleaseSummary(
       {
@@ -234,9 +319,19 @@ it("reports non-JSON GitHub Models API errors", async () => {
         repository: "Threadlines/threadlines",
         evidence,
       },
-      { token: "test-token", fetch: fakeFetch },
+      {
+        token: "test-token",
+        createClient: () => ({
+          createSession: async () => ({
+            sendAndWait: async () => ({ data: { content: "I cannot summarize this release." } }),
+            abort: async () => undefined,
+            disconnect: async () => undefined,
+          }),
+          stop: async () => [],
+        }),
+      },
     ),
-  ).rejects.toThrow("GitHub Models API 400 returned a non-JSON response: Model not found");
+  ).rejects.toThrow("GitHub Copilot returned non-JSON release content");
 });
 
 it("parses commit evidence records with optional path data", () => {

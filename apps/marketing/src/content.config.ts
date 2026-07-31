@@ -13,6 +13,7 @@ const changelog = defineCollection({
   }),
   schema: z.object({
     version: z.string().regex(/^\d+\.\d+\.\d+$/),
+    reviewRequired: z.literal(true).optional(),
     date: z.coerce.date(),
     title: z.string().min(1).max(90),
     summary: z.string().min(1).max(280),
