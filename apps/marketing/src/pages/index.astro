@@ -43,7 +43,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
 
 <Layout
   title="Threadlines: a local workspace for coding agents"
-  description="Run Claude Code and Codex in parallel threads with real source control, live usage meters, and full visibility into every task, subagent, and background run."
+  description="Run Claude Code and Codex in one local desktop workspace with project threads, a live browser, project files, real source control, and complete visibility into running work."
   canonicalPath="/"
   structuredData={[appStructuredData]}
 >
@@ -111,9 +111,9 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
 
       <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Every thread leaves a line.</h1>
       <p class="pv-sub pv-rise" style="--pv-d: 0.4s">
-        Threadlines is a local desktop workspace that runs Claude&nbsp;Code and Codex in
-        parallel threads, with <span class="pv-accent">real source control</span> at the
-        center and nothing hidden. Bring the subscriptions you already pay for.
+        Threadlines is a local desktop workspace for Claude&nbsp;Code and Codex. Keep the
+        agent conversation, a <span class="pv-accent">live browser</span>, project files, and
+        source control open together.
       </p>
       <div class="pv-cta-row pv-rise" style="--pv-d: 0.55s">
         <a class="pv-cta pv-cta-primary" id="pv-download" href="/download"><span class="pv-cta-ico" id="pv-dl-mac"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></span><span class="pv-cta-ico" id="pv-dl-win" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg></span><span id="pv-dl-label">Download for macOS</span></a>
@@ -148,24 +148,141 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       >
         <video
           class="pv-video"
+          data-theme-swap
+          data-clip-base="workspace-four-panel-overview"
+          data-clip="workspace-four-panel-overview-dark"
           muted
           playsinline
           loop
           preload="metadata"
-          poster={`${L}/Posters/rich-subagent-chat.webp`}
+          poster={`${L}/Posters/workspace-four-panel-overview-dark.webp`}
           width="3200"
           height="1868"
-          aria-label="Scrolling through a Threadlines conversation where a Scout subagent's full findings render as a first-class message, with the source control panel and commit graph beside the thread"
+          aria-label="Threadlines 0.3 with the cross-project sidebar, Checkout recovery conversation, live Orbit systems dashboard, and source control changes and Git graph open together"
         >
-          <source src={`${L}/rich-subagent-chat.webm`} type="video/webm" />
-          <source src={`${L}/rich-subagent-chat.mp4`} type="video/mp4" />
+          <source
+            src={`${L}/workspace-four-panel-overview-dark-mobile.webm`}
+            type="video/webm"
+            media="(max-width: 720px)"
+            data-size="mobile"
+          />
+          <source
+            src={`${L}/workspace-four-panel-overview-dark-mobile.mp4`}
+            type="video/mp4"
+            media="(max-width: 720px)"
+            data-size="mobile"
+          />
+          <source src={`${L}/workspace-four-panel-overview-dark.webm`} type="video/webm" />
+          <source src={`${L}/workspace-four-panel-overview-dark.mp4`} type="video/mp4" />
         </video>
         <button class="pv-play" type="button" aria-label="Play video" hidden set:html={playGlyphs} />
       </div>
       <figcaption>
-        A subagent reporting back, with source control one panel away.
+        The 0.3 workspace: sidebar, agent conversation, live browser, and source control in
+        one frame.
       </figcaption>
     </figure>
+  </section>
+
+  <section class="pv-section">
+    <div class="pv-wrap pv-center pv-reveal">
+      <p class="pv-kicker">Cross-project sidebar</p>
+      <h2>See what needs you. Let quiet work stay quiet.</h2>
+      <p class="pv-lede">
+        Five active threads across three projects; input needed, working, and background are
+        distinct at a glance, while idle work stays unlabelled and everything older folds
+        into Wrapped.
+      </p>
+    </div>
+    <div class="pv-showcase pv-reveal pv-reveal-late">
+      <div
+        class="pv-frame pv-expand"
+        role="button"
+        tabindex="0"
+        aria-label="Expand the cross-project sidebar"
+      >
+        <video
+          class="pv-video"
+          data-theme-swap
+          data-clip-base="sidebar-attention-states"
+          data-clip="sidebar-attention-states-dark"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster={`${L}/Posters/sidebar-attention-states-dark.webp`}
+          width="3200"
+          height="1868"
+          aria-label="A restrained Threadlines sidebar with five active threads: one awaiting input, one recently started working thread, one cyan background run, and two quiet threads above eleven wrapped threads"
+        >
+          <source
+            src={`${L}/sidebar-attention-states-dark-mobile.webm`}
+            type="video/webm"
+            media="(max-width: 720px)"
+            data-size="mobile"
+          />
+          <source
+            src={`${L}/sidebar-attention-states-dark-mobile.mp4`}
+            type="video/mp4"
+            media="(max-width: 720px)"
+            data-size="mobile"
+          />
+          <source src={`${L}/sidebar-attention-states-dark.webm`} type="video/webm" />
+          <source src={`${L}/sidebar-attention-states-dark.mp4`} type="video/mp4" />
+        </video>
+        <button class="pv-play" type="button" aria-label="Play video" hidden set:html={playGlyphs} />
+      </div>
+    </div>
+  </section>
+
+  <section class="pv-section">
+    <div class="pv-wrap pv-center pv-reveal">
+      <p class="pv-kicker">A browser built into the work</p>
+      <h2>Review what the agent changed without changing context</h2>
+      <p class="pv-lede">
+        Point to the exact element that needs work, attach the annotation to the
+        conversation, and watch the agent update the live preview beside its thread.
+      </p>
+    </div>
+    <div class="pv-showcase pv-reveal pv-reveal-late">
+      <div
+        class="pv-frame pv-expand"
+        role="button"
+        tabindex="0"
+        aria-label="Expand the built-in browser workflow"
+      >
+        <video
+          class="pv-video"
+          data-theme-swap
+          data-clip-base="agent-browser-workflow"
+          data-clip="agent-browser-workflow-dark"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster={`${L}/Posters/agent-browser-workflow-dark.webp`}
+          width="3200"
+          height="1868"
+          aria-label="Annotating a service-health element in Threadlines' built-in browser, attaching the note to the composer, and watching the agent update the live preview"
+        >
+          <source
+            src={`${L}/agent-browser-workflow-dark-mobile.webm`}
+            type="video/webm"
+            media="(max-width: 720px)"
+            data-size="mobile"
+          />
+          <source
+            src={`${L}/agent-browser-workflow-dark-mobile.mp4`}
+            type="video/mp4"
+            media="(max-width: 720px)"
+            data-size="mobile"
+          />
+          <source src={`${L}/agent-browser-workflow-dark.webm`} type="video/webm" />
+          <source src={`${L}/agent-browser-workflow-dark.mp4`} type="video/mp4" />
+        </video>
+        <button class="pv-play" type="button" aria-label="Play video" hidden set:html={playGlyphs} />
+      </div>
+    </div>
   </section>
 
   <section class="pv-section">
@@ -325,6 +442,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         <video
           class="pv-video"
           data-theme-swap
+          data-clip-base="activity-header"
           data-clip="activity-header-dark"
           muted
           playsinline
@@ -522,13 +640,16 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
 
   const dl = document.getElementById("pv-download") as HTMLAnchorElement | null;
   if (dl) {
-    const plat = (
-      (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ||
-      navigator.platform ||
-      ""
+    const userAgent = navigator.userAgent.toLowerCase();
+    const platform = (
+      (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ?? ""
     ).toLowerCase();
-    const isWin = plat.includes("win");
-    const isLinux = plat.includes("linux");
+    const isMobile = /android|iphone|ipad|ipod/.test(userAgent);
+    const isWin = platform.includes("win") || userAgent.includes("windows");
+    const isLinux =
+      !isMobile && (platform.includes("linux") || userAgent.includes("linux"));
+    const isMac =
+      !isMobile && (platform.includes("mac") || userAgent.includes("macintosh"));
     const label = document.getElementById("pv-dl-label")!;
     if (isWin) {
       label.textContent = "Download for Windows";
@@ -538,7 +659,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       label.textContent = "Download for Linux";
       document.getElementById("pv-dl-mac")!.hidden = true;
     }
-    if (isWin || isLinux || plat.includes("mac")) {
+    if (isWin || isLinux || isMac) {
       // deep-link the button straight to the installer; /download stays the fallback
       fetchLatestRelease()
         .then((release) => {
@@ -735,28 +856,30 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     });
   }
 
-  // --- theme-following capture -----------------------------------------------
-  // The activity showcase has a light-theme twin; swap it when the site theme flips.
-  const themed = document.querySelector<HTMLVideoElement>("video[data-theme-swap]");
-  const applyThemedClip = () => {
-    if (!themed) return;
-    const name =
-      document.documentElement.dataset.theme === "light"
-        ? "activity-header-light"
-        : "activity-header-dark";
-    if (themed.dataset.clip === name) return;
-    themed.dataset.clip = name;
-    const wasPlaying = !themed.paused;
-    themed.poster = `/Screenshots/launch/Posters/${name}.webp`;
-    for (const source of themed.querySelectorAll("source")) {
-      const ext = source.type === "video/webm" ? "webm" : "mp4";
-      source.src = `/Screenshots/launch/${name}.${ext}`;
+  // --- theme-following captures ----------------------------------------------
+  const applyThemedClips = () => {
+    const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    for (const themed of document.querySelectorAll<HTMLVideoElement>(
+      "video[data-theme-swap]",
+    )) {
+      const base = themed.dataset.clipBase;
+      if (!base) continue;
+      const name = `${base}-${theme}`;
+      if (themed.dataset.clip === name) continue;
+      themed.dataset.clip = name;
+      const wasPlaying = !themed.paused;
+      themed.poster = `/Screenshots/launch/Posters/${name}.webp`;
+      for (const source of themed.querySelectorAll("source")) {
+        const ext = source.type === "video/webm" ? "webm" : "mp4";
+        const size = source.dataset.size === "mobile" ? "-mobile" : "";
+        source.src = `/Screenshots/launch/${name}${size}.${ext}`;
+      }
+      themed.load();
+      if (wasPlaying) themed.play().catch(() => {});
     }
-    themed.load();
-    if (wasPlaying) themed.play().catch(() => {});
   };
-  document.addEventListener("tl-themechange", applyThemedClip);
-  applyThemedClip();
+  document.addEventListener("tl-themechange", applyThemedClips);
+  applyThemedClips();
 </script>
 
 <style>
@@ -879,12 +1002,11 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     font-weight: 600;
     color: inherit;
     text-decoration: none;
-    transition: border-color 0.2s ease, transform 0.2s ease;
+    transition: border-color 0.2s ease;
   }
 
   .pv-cta:hover {
     border-color: var(--accent-bright);
-    transform: translateY(-1px);
   }
 
   .pv-cta-primary {
@@ -1367,13 +1489,11 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     border-radius: 12px;
     padding: 22px;
     text-align: left;
-    transition: border-color 0.25s ease, transform 0.25s ease,
-      opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: border-color 0.25s ease, opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .pv-card:hover {
     border-color: var(--accent-soft);
-    transform: translateY(-2px);
   }
 
   .pv-card h3 {

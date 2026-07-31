@@ -163,7 +163,11 @@ export const ChatHeader = memo(function ChatHeader({
   );
 
   return (
-    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
+    <div
+      className="@container/header-actions flex min-w-0 flex-1 items-center gap-2"
+      data-active-project-name={activeProjectName}
+      data-active-thread-title={activeThreadTitle}
+    >
       <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
         <SidebarOpenTrigger className="size-7 shrink-0" />
         {activeProjectName && (

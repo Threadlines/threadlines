@@ -24,4 +24,11 @@ describe("resolveElectronSidebarWordmarkLayout", () => {
     });
     expect(layout.wordmarkRowClassName).toContain("pl-[var(--workspace-titlebar-content-left)]");
   });
+
+  it("removes macOS traffic-light clearance in marketing capture mode", () => {
+    expect(resolveElectronSidebarWordmarkLayout("MacIntel", true)).toEqual({
+      spacerClassName: null,
+      wordmarkRowClassName: WINDOWS_SIDEBAR_WORDMARK_ROW_CLASS,
+    });
+  });
 });

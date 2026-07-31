@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "release": "0.3.0",
+  "geometry": {
+    "logicalWidth": 1600,
+    "logicalHeight": 934,
+    "deviceScaleFactor": 2,
+    "masterWidth": 3200,
+    "masterHeight": 1868,
+    "framesPerSecond": 60,
+    "colorSpace": "bt709"
+  },
+  "capture": {
+    "debugPort": 9223,
+    "demoUrl": "http://127.0.0.1:4173/",
+    "preRollSeconds": 1,
+    "postRollSeconds": 1
+  },
+  "delivery": {
+    "desktopWidth": 3200,
+    "mobileWidth": 1600,
+    "keyframeIntervalSeconds": 2,
+    "posterQuality": 82
+  },
+  "scenes": [
+    {
+      "id": "workspace-four-panel-overview-dark",
+      "kind": "motion",
+      "audience": "release",
+      "windowMode": "neutral",
+      "theme": "dark",
+      "cursorMode": "native",
+      "project": "Orbit",
+      "threadTitle": "Checkout recovery",
+      "browserUrl": "http://127.0.0.1:4173/?theme=dark",
+      "sourceControlOpen": true,
+      "durationSeconds": 20,
+      "expectedLabels": ["Checkout recovery", "Orbit", "Changes"],
+      "story": "Show the complete dark Threadlines workspace, collapse the pending input, review live browser activity, inspect a source-control diff, and return to the four-panel overview."
+    },
+    {
+      "id": "workspace-four-panel-overview-light",
+      "kind": "motion",
+      "audience": "release",
+      "windowMode": "neutral",
+      "theme": "light",
+      "cursorMode": "native",
+      "project": "Orbit",
+      "threadTitle": "Checkout recovery",
+      "browserUrl": "http://127.0.0.1:4173/?theme=light",
+      "sourceControlOpen": true,
+      "durationSeconds": 20,
+      "expectedLabels": ["Checkout recovery", "Orbit", "Changes"],
+      "story": "Show the complete light Threadlines workspace, collapse the pending input, review live browser activity, inspect a source-control diff, and return to the four-panel overview."
+    },
+    {
+      "id": "sidebar-attention-states-dark",
+      "kind": "motion",
+      "audience": "release",
+      "windowMode": "neutral",
+      "theme": "dark",
+      "cursorMode": "hidden",
+      "project": "Orbit",
+      "threadTitle": "Checkout recovery",
+      "sourceControlOpen": false,
+      "durationSeconds": 9,
+      "expectedLabels": [
+        "Checkout recovery",
+        "Project file editing",
+        "Deploy health",
+        "Usage insights",
+        "Rollout cohorts"
+      ],
+      "story": "Show input needed, recently started working, and background signals beside two quiet threads in a natural five-item dark sidebar."
+    },
+    {
+      "id": "sidebar-attention-states-light",
+      "kind": "motion",
+      "audience": "release",
+      "windowMode": "neutral",
+      "theme": "light",
+      "cursorMode": "hidden",
+      "project": "Orbit",
+      "threadTitle": "Checkout recovery",
+      "sourceControlOpen": false,
+      "durationSeconds": 9,
+      "expectedLabels": [
+        "Checkout recovery",
+        "Project file editing",
+        "Deploy health",
+        "Usage insights",
+        "Rollout cohorts"
+      ],
+      "story": "Show input needed, recently started working, and background signals beside two quiet threads in a natural five-item light sidebar."
+    },
+    {
+      "id": "agent-browser-workflow-dark",
+      "kind": "motion",
+      "audience": "evergreen",
+      "windowMode": "neutral",
+      "theme": "dark",
+      "cursorMode": "native",
+      "project": "Orbit",
+      "threadTitle": "Project file editing",
+      "browserUrl": "http://127.0.0.1:4173/?theme=dark",
+      "sourceControlOpen": false,
+      "durationSeconds": 20,
+      "expectedLabels": ["Project file editing"],
+      "story": "Annotate the service-health heading in the dark built-in browser, attach the real element note to the composer, and show the agent applying that exact change to the live preview."
+    },
+    {
+      "id": "agent-browser-workflow-light",
+      "kind": "motion",
+      "audience": "evergreen",
+      "windowMode": "neutral",
+      "theme": "light",
+      "cursorMode": "native",
+      "project": "Orbit",
+      "threadTitle": "Project file editing",
+      "browserUrl": "http://127.0.0.1:4173/?theme=light",
+      "sourceControlOpen": false,
+      "durationSeconds": 20,
+      "expectedLabels": ["Project file editing"],
+      "story": "Annotate the service-health heading in the light built-in browser, attach the real element note to the composer, and show the agent applying that exact change to the live preview."
+    },
+    {
+      "id": "platform-macos",
+      "kind": "still",
+      "audience": "evergreen",
+      "windowMode": "native",
+      "theme": "dark",
+      "cursorMode": "hidden",
+      "project": "Orbit",
+      "threadTitle": "Project file editing",
+      "browserUrl": "http://127.0.0.1:4173/",
+      "sourceControlOpen": false,
+      "expectedLabels": ["Project file editing"],
+      "story": "Authentic macOS platform proof with genuine native window controls."
+    }
+  ]
+}

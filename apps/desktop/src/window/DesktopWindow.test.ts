@@ -62,6 +62,7 @@ function makeFakeBrowserWindow(input?: {
   };
 
   const window = {
+    center: vi.fn(),
     focus: vi.fn(),
     getBounds: vi.fn(() => bounds),
     getNormalBounds: vi.fn(() => normalBounds),
@@ -80,8 +81,11 @@ function makeFakeBrowserWindow(input?: {
     once: vi.fn(),
     restore: vi.fn(),
     setBackgroundColor: vi.fn(),
+    setContentSize: vi.fn(),
+    setResizable: vi.fn(),
     setTitle: vi.fn(),
     setTitleBarOverlay: vi.fn(),
+    setWindowButtonVisibility: vi.fn(),
     show: vi.fn(),
     webContents,
   };
@@ -90,6 +94,10 @@ function makeFakeBrowserWindow(input?: {
     window: window as unknown as Electron.BrowserWindow,
     loadURL: window.loadURL,
     maximize: window.maximize,
+    center: window.center,
+    setContentSize: window.setContentSize,
+    setResizable: window.setResizable,
+    setWindowButtonVisibility: window.setWindowButtonVisibility,
     webContentsFocus: webContents.focus,
     openDevTools: webContents.openDevTools,
     replaceMisspelling: webContents.replaceMisspelling,
@@ -312,6 +320,49 @@ describe("DesktopWindow", () => {
         yield* desktopWindow.handleBackendReady;
 
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("uses exact frameless content geometry in marketing capture mode", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const createOptions = yield* Ref.make<
+        ReadonlyArray<Electron.BrowserWindowConstructorOptions>
+      >([]);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        createOptions,
+        mainWindow,
+        env: {
+          THREADLINES_DESKTOP_MARKETING_CAPTURE: "true",
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const [options] = yield* Ref.get(createOptions);
+        assert.equal(options?.width, DesktopWindow.MARKETING_CAPTURE_CONTENT_SIZE.width);
+        assert.equal(options?.height, DesktopWindow.MARKETING_CAPTURE_CONTENT_SIZE.height);
+        assert.equal(options?.useContentSize, true);
+        assert.equal(options?.frame, false);
+        assert.equal(options?.resizable, false);
+        assert.equal(options?.hasShadow, false);
+        assert.deepEqual(fakeWindow.setContentSize.mock.calls, [
+          [
+            DesktopWindow.MARKETING_CAPTURE_CONTENT_SIZE.width,
+            DesktopWindow.MARKETING_CAPTURE_CONTENT_SIZE.height,
+          ],
+        ]);
+        assert.deepEqual(fakeWindow.setResizable.mock.calls, [[false]]);
+        assert.equal(fakeWindow.center.mock.calls.length, 1);
+        assert.deepEqual(fakeWindow.setWindowButtonVisibility.mock.calls, [[false]]);
+        assert.equal(fakeWindow.maximize.mock.calls.length, 0);
       }).pipe(Effect.provide(layer));
     }),
   );

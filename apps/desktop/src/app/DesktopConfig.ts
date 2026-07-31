@@ -179,6 +179,10 @@ export const DesktopConfig = Config.all({
     "BADCODE_DESKTOP_OPEN_DEVTOOLS",
     "T3CODE_DESKTOP_OPEN_DEVTOOLS",
   ),
+  marketingCaptureMode: Config.boolean("THREADLINES_DESKTOP_MARKETING_CAPTURE").pipe(
+    Config.option,
+    Config.map((value) => Option.getOrElse(value, () => false)),
+  ),
   mockUpdates: optionalBooleanAlias(
     "THREADLINES_DESKTOP_MOCK_UPDATES",
     "BADCODE_DESKTOP_MOCK_UPDATES",

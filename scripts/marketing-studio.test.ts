@@ -50,6 +50,21 @@ describe("marketing-studio", () => {
           projectName + " should be a Git repository",
         );
       }
+      assert.equal(FileSystem.existsSync(NodePath.join(project, "scripts/demo-server.mjs")), true);
+      assert.equal(FileSystem.existsSync(NodePath.join(project, "src/demoData.js")), true);
+      const demoData = FileSystem.readFileSync(NodePath.join(project, "src/demoData.js"), "utf8");
+      const demoScript = FileSystem.readFileSync(NodePath.join(project, "src/demo.js"), "utf8");
+      const demoStyles = FileSystem.readFileSync(NodePath.join(project, "src/styles.css"), "utf8");
+      assert.equal(/\$|revenue/i.test(demoData), false);
+      assert.equal(/0\.3\.0|production/i.test(demoData), false);
+      assert.match(demoData, /P95 latency/);
+      assert.equal(/launch|release readiness/i.test(demoData), false);
+      assert.match(demoScript, /requestedTheme/);
+      assert.match(demoScript, /__threadlinesApplyAnnotationDemo/);
+      assert.match(demoScript, /Agent applying annotation/);
+      assert.match(demoScript, /All services healthy/);
+      assert.match(demoStyles, /:root\[data-theme="light"\]/);
+      assert.match(demoStyles, /readiness\[data-agent-state="applied"\]/);
       assert.equal(
         FileSystem.existsSync(NodePath.join(root, ".threadlines-marketing-projects-seeded")),
         true,
@@ -69,10 +84,17 @@ describe("marketing-studio", () => {
           readonly threads: ReadonlyArray<{
             readonly title: string;
             readonly branch: string | null;
+            readonly createdAt: string;
             readonly modelSelection: {
               readonly instanceId: string;
               readonly model: string;
               readonly options: ReadonlyArray<{ readonly id: string; readonly value: string }>;
+            };
+            readonly interactionMode?: "default" | "plan";
+            readonly scenario?: {
+              readonly status: string;
+              readonly prompt: string;
+              readonly assistantText?: string;
             };
           }>;
         }>;
@@ -112,6 +134,31 @@ describe("marketing-studio", () => {
           options: [{ id: "reasoningEffort", value: "max" }],
         },
       );
+      assert.equal(
+        seededThreads.find((thread) => thread.title === "Checkout recovery")?.scenario?.status,
+        "awaiting-input",
+      );
+      const workingThread = seededThreads.find((thread) => thread.title === "Project file editing");
+      const workingThreadAgeMs = Date.now() - Date.parse(workingThread?.createdAt ?? "");
+      assert.isAtLeast(workingThreadAgeMs, 0);
+      assert.isAtMost(workingThreadAgeMs, 5 * 60_000);
+      assert.equal(
+        seededThreads.find((thread) => thread.title === "Deploy health")?.scenario?.status,
+        "background",
+      );
+      assert.equal(
+        seededThreads.find((thread) => thread.title === "Usage insights")?.scenario?.status,
+        "idle",
+      );
+      assert.equal(
+        seededThreads.find((thread) => thread.title === "Rollout cohorts")?.scenario?.status,
+        "idle",
+      );
+      assert.equal(
+        seededThreads.find((thread) => thread.title === "Rollout cohorts")?.interactionMode,
+        "plan",
+      );
+      assert.equal(seededThreads.filter((thread) => thread.scenario !== undefined).length, 5);
       for (const worktree of [
         ["Orbit", "project-files"],
         ["Orbit", "usage-insights"],
@@ -188,9 +235,9 @@ describe("marketing-studio", () => {
           ),
         ),
         {
-          width: 1624,
-          height: 995,
-          isMaximized: true,
+          width: 1600,
+          height: 934,
+          isMaximized: false,
         },
       );
 

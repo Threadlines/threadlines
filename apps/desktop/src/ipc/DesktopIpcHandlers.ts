@@ -41,6 +41,7 @@ import {
   confirm,
   captureScreenshot,
   getAppBranding,
+  isMarketingCaptureMode,
   getLocalEnvironmentBootstrap,
   openExternal,
   pickFolder,
@@ -80,6 +81,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
 
   yield* ipc.handleSync(getAppBranding);
+  yield* ipc.handleSync(isMarketingCaptureMode);
   yield* ipc.handleSync(getLocalEnvironmentBootstrap);
 
   yield* ipc.handle(getClientSettings);

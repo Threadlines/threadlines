@@ -55,6 +55,16 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
 }
 
 describe("ChatHeader", () => {
+  it("exposes the active capture context on the rendered header", () => {
+    const markup = renderChatHeader({
+      activeProjectName: "Orbit",
+      activeThreadTitle: "Project file editing",
+    });
+
+    expect(markup).toContain('data-active-project-name="Orbit"');
+    expect(markup).toContain('data-active-thread-title="Project file editing"');
+  });
+
   it("renders an actionable continue-in-project control by default", () => {
     const markup = renderChatHeader({ onContinueInProject: vi.fn() });
 
