@@ -2029,3 +2029,17 @@ export function resolveWorkingTreeDiffStat(
   const { insertions, deletions } = status.workingTree;
   return insertions === 0 && deletions === 0 ? null : { insertions, deletions };
 }
+
+/**
+ * Commits the branch is behind its upstream, surfaced on a closed source
+ * control toggle as a pull-available hint, or null when there is nothing to
+ * pull. An unloaded or non-repo status must not read as "up to date".
+ */
+export function resolveRemoteBehindCount(
+  status: { readonly isRepo: boolean; readonly behindCount: number } | null,
+): number | null {
+  if (status === null || !status.isRepo) {
+    return null;
+  }
+  return status.behindCount > 0 ? status.behindCount : null;
+}

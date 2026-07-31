@@ -64,6 +64,12 @@ interface ChatHeaderProps {
    * the tree is clean or the status has not loaded.
    */
   workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
+  /**
+   * Commits the branch is behind its upstream, surfaced on the closed source
+   * control toggle as a pull-available hint. Null when there is nothing to
+   * pull or the status has not loaded.
+   */
+  remoteBehindCount: number | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
@@ -132,6 +138,7 @@ export const ChatHeader = memo(function ChatHeader({
   browserOpen,
   onToggleBrowser,
   workingTreeDiffStat,
+  remoteBehindCount,
   fileBrowserAvailable,
   taskProgress,
   subagentProgress,
@@ -355,7 +362,9 @@ export const ChatHeader = memo(function ChatHeader({
                         // on both sides -- the icon otherwise sits against the
                         // hover fill -- and less between them: the base gap is
                         // sized for icons, not for a label that belongs to one.
-                        workingTreeDiffStat !== null && !sourceControlOpen && "gap-1 px-1.5",
+                        (workingTreeDiffStat !== null || remoteBehindCount !== null) &&
+                          !sourceControlOpen &&
+                          "gap-1 px-1.5",
                       )}
                       pressed={sourceControlOpen}
                       onPressedChange={onToggleSourceControl}
@@ -367,12 +376,31 @@ export const ChatHeader = memo(function ChatHeader({
                       <SourceControlIcon className="size-[11px]" />
                       {/* Only while closed: once the panel is open it shows the
                           per-file counts, and repeating the total is noise. */}
-                      {!sourceControlOpen && workingTreeDiffStat ? (
+                      {!sourceControlOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
                         <span className="font-mono text-[10px] leading-none">
-                          <span className="text-success">+{workingTreeDiffStat.insertions}</span>
-                          <span className="ps-1 text-destructive">
-                            −{workingTreeDiffStat.deletions}
-                          </span>
+                          {workingTreeDiffStat ? (
+                            <>
+                              <span className="text-success">
+                                +{workingTreeDiffStat.insertions}
+                              </span>
+                              <span className="ps-1 text-destructive">
+                                −{workingTreeDiffStat.deletions}
+                              </span>
+                            </>
+                          ) : null}
+                          {/* Deliberately hue-less: the arrow is the signal, and a
+                              third color next to the green/red counts would crowd
+                              an icon-sized control. */}
+                          {remoteBehindCount !== null ? (
+                            <span
+                              className={cn(
+                                "text-muted-foreground",
+                                workingTreeDiffStat !== null && "ps-1",
+                              )}
+                            >
+                              ↓{remoteBehindCount}
+                            </span>
+                          ) : null}
                         </span>
                       ) : null}
                     </Toggle>
@@ -384,6 +412,14 @@ export const ChatHeader = memo(function ChatHeader({
                     : sourceControlToggleShortcutLabel
                       ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
                       : "Toggle source control panel"}
+                  {!sourceControlOpen && sourceControlAvailable && remoteBehindCount !== null ? (
+                    <div className="text-muted-foreground">
+                      {remoteBehindCount === 1
+                        ? "1 commit behind the remote."
+                        : `${remoteBehindCount} commits behind the remote.`}{" "}
+                      Pull from the source control panel.
+                    </div>
+                  ) : null}
                 </TooltipPopup>
               </Tooltip>
             ) : null}

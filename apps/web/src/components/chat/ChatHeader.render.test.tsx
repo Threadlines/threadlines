@@ -29,6 +29,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     browserAvailable: true,
     browserOpen: false,
     workingTreeDiffStat: null,
+    remoteBehindCount: null,
     fileBrowserAvailable: false,
     taskProgress: null,
     subagentProgress: null,
@@ -106,5 +107,25 @@ describe("ChatHeader", () => {
 
     expect(markup).not.toContain("+38");
     expect(markup).not.toContain("−12");
+  });
+
+  it("shows the behind-remote count on the closed source control toggle", () => {
+    const markup = renderChatHeader({
+      sourceControlAvailable: true,
+      sourceControlOpen: false,
+      remoteBehindCount: 2,
+    });
+
+    expect(markup).toContain("↓2");
+  });
+
+  it("drops the behind-remote count once the panel is open", () => {
+    const markup = renderChatHeader({
+      sourceControlAvailable: true,
+      sourceControlOpen: true,
+      remoteBehindCount: 2,
+    });
+
+    expect(markup).not.toContain("↓2");
   });
 });
