@@ -92,6 +92,8 @@ describe("orchestration projector", () => {
         updatedAt: now,
         archivedAt: null,
         pinnedAt: null,
+        doneOverride: null,
+        lastSeenAt: null,
         deletedAt: null,
         messages: [],
         proposedPlans: [],
@@ -208,6 +210,94 @@ describe("orchestration projector", () => {
       ),
     );
     expect(unarchived.threads[0]?.archivedAt).toBeNull();
+  });
+
+  it("applies inbox lifecycle events without counting them as thread activity", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const later = "2026-01-02T00:00:00.000Z";
+    const created = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-thread-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    expect(created.threads[0]?.doneOverride).toBeNull();
+    expect(created.threads[0]?.lastSeenAt).toBeNull();
+
+    const filed = await Effect.runPromise(
+      projectEvent(
+        created,
+        makeEvent({
+          sequence: 2,
+          type: "thread.done-override-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: later,
+          commandId: "cmd-thread-done",
+          payload: { threadId: "thread-1", state: "done", at: later },
+        }),
+      ),
+    );
+    expect(filed.threads[0]?.doneOverride).toEqual({ state: "done", at: later });
+    // The inbox compares the override against the thread's last activity, and
+    // auto-wrap idles off the same stamp -- filing must not touch either.
+    expect(filed.threads[0]?.updatedAt).toBe(now);
+
+    // Mark unread moves seen to just before the completion it un-sees, so a
+    // backwards stamp has to win.
+    const seenBackwards = await Effect.runPromise(
+      projectEvent(
+        filed,
+        makeEvent({
+          sequence: 3,
+          type: "thread.seen-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: later,
+          commandId: "cmd-thread-seen-forward",
+          payload: { threadId: "thread-1", at: later },
+        }),
+      ),
+    ).then((forward) =>
+      Effect.runPromise(
+        projectEvent(
+          forward,
+          makeEvent({
+            sequence: 4,
+            type: "thread.seen-set",
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: later,
+            commandId: "cmd-thread-seen-backwards",
+            payload: { threadId: "thread-1", at: now },
+          }),
+        ),
+      ),
+    );
+    expect(seenBackwards.threads[0]?.lastSeenAt).toBe(now);
+    expect(seenBackwards.threads[0]?.updatedAt).toBe(now);
   });
 
   it("applies thread.pinned and thread.unpinned events", async () => {

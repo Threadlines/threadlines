@@ -565,6 +565,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.payload.updatedAt,
             archivedAt: null,
             pinnedAt: null,
+            doneOverride: null,
+            doneOverrideAt: null,
+            lastSeenAt: null,
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
@@ -629,6 +632,37 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             pinnedAt: null,
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        // Inbox filing and read state deliberately leave `updatedAt` alone --
+        // the client weighs both stamps against the thread's real activity.
+        case "thread.done-override-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            doneOverride: event.payload.state,
+            doneOverrideAt: event.payload.at,
+          });
+          return;
+        }
+
+        case "thread.seen-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            lastSeenAt: event.payload.at,
           });
           return;
         }

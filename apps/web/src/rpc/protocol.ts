@@ -3,6 +3,8 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
+import type * as Scope from "effect/Scope";
+import type { Rpc, RpcClientError, RpcGroup } from "effect/unstable/rpc";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
@@ -64,10 +66,19 @@ export interface WsProtocolLifecycleHandlers {
   ) => void;
 }
 
-export const makeWsRpcProtocolClient = RpcClient.make(WsRpcGroup);
-type RpcClientFactory = typeof makeWsRpcProtocolClient;
-export type WsRpcProtocolClient =
-  RpcClientFactory extends Effect.Effect<infer Client, any, any> ? Client : never;
+type WsRpcs = typeof WsRpcGroup extends RpcGroup.RpcGroup<infer Rpcs> ? Rpcs : never;
+/**
+ * Named rather than inferred: the generated client expands to one method per
+ * RPC, so letting the compiler infer it puts the whole surface (every command
+ * payload included) inline, and adding a command tips it past the type
+ * serialization limit.
+ */
+export type WsRpcProtocolClient = RpcClient.RpcClient<WsRpcs, RpcClientError.RpcClientError>;
+export const makeWsRpcProtocolClient: Effect.Effect<
+  WsRpcProtocolClient,
+  never,
+  RpcClient.Protocol | Rpc.MiddlewareClient<WsRpcs> | Scope.Scope
+> = RpcClient.make(WsRpcGroup);
 export type WsRpcProtocolSocketUrlProvider = string | (() => Promise<string>);
 
 export interface WsRpcProtocolOptions {

@@ -32,6 +32,7 @@ import {
 } from "~/composerDraftStore";
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
+import { migrateLegacyInboxStateForEnvironment } from "~/lib/threadInboxSync";
 import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
 import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
@@ -1031,6 +1032,8 @@ function syncThreadUiFromStore() {
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       seedVisitedAt: thread.updatedAt ?? thread.createdAt,
+      serverLastSeenAt: thread.lastSeenAt,
+      serverDoneOverrideAt: thread.doneOverride?.at ?? null,
     })),
   );
   markPromotedDraftThreadsByRef(
@@ -1101,16 +1104,15 @@ function applyRecoveredEventBatch(
   }
 
   const needsThreadUiSync = events.some(
-    (event) => event.type === "thread.created" || event.type === "thread.deleted",
+    (event) =>
+      event.type === "thread.created" ||
+      event.type === "thread.deleted" ||
+      // Retires the optimistic overlay these events confirm or supersede.
+      event.type === "thread.seen-set" ||
+      event.type === "thread.done-override-set",
   );
   if (needsThreadUiSync) {
-    const threads = selectThreadsAcrossEnvironments(useStore.getState());
-    useUiStateStore.getState().syncThreads(
-      threads.map((thread) => ({
-        key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        seedVisitedAt: thread.updatedAt ?? thread.createdAt,
-      })),
-    );
+    syncThreadUiFromStore();
   }
 
   const draftStore = useComposerDraftStore.getState();
@@ -1218,6 +1220,9 @@ function createEnvironmentConnectionHandlers() {
       );
       reconcileThreadDetailSubscriptionEvictionForEnvironment(environmentId);
       reconcileSnapshotDerivedState();
+      // Deferred inside; the first snapshot is what makes the environment's
+      // threads (and their server-held lifecycle state) knowable.
+      migrateLegacyInboxStateForEnvironment(environmentId);
     },
     applyTerminalEvent: (event: TerminalEvent, environmentId: EnvironmentId) => {
       const threadRef = scopeThreadRef(environmentId, ThreadId.make(event.threadId));

@@ -87,7 +87,6 @@ import {
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../../store";
-import { useUiStateStore } from "../../uiStateStore";
 import { providerMcpLoginCommand, type ExtensionMcpLoginProvider } from "../../mcpAuthStatus";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -3983,7 +3982,6 @@ export function ExtensionsSettingsPanel() {
   const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const threadLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const serverConfig = useServerConfig();
   const serverProviders = useServerProviders();
   const projectOptions = useMemo(
@@ -4074,10 +4072,10 @@ export function ExtensionsSettingsPanel() {
           createdAt: thread.createdAt,
           updatedAt: thread.updatedAt,
           sessionUpdatedAt: thread.session?.updatedAt,
+          lastSeenAt: thread.lastSeenAt,
         })),
-        threadLastVisitedAtById,
       }),
-    [cwd, projects, threadScopeProviderEntry, threadLastVisitedAtById, threads],
+    [cwd, projects, threadScopeProviderEntry, threads],
   );
   const effectiveProviderThreadId = manualProviderThreadId.trim() || detectedProviderThreadId;
   const providerThreadContextSource = manualProviderThreadId.trim()

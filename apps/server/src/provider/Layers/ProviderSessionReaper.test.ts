@@ -110,6 +110,8 @@ function makeReadModel(
       updatedAt: now,
       archivedAt: null,
       pinnedAt: null,
+      doneOverride: null,
+      lastSeenAt: null,
       latestUserMessageAt: null,
       hasPendingApprovals: false,
       hasPendingUserInput: false,

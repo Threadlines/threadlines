@@ -510,6 +510,20 @@ export const OrchestrationThreadGoal = Schema.Struct({
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
 
+export const ThreadDoneOverrideState = Schema.Literals(["done", "active"]);
+export type ThreadDoneOverrideState = typeof ThreadDoneOverrideState.Type;
+
+/**
+ * The user's explicit word on where a thread belongs in the inbox, stamped
+ * when given. Server-held so every device agrees on the Active/Wrapped split;
+ * the freshness rule that weighs it against real activity stays client-side.
+ */
+export const OrchestrationThreadDoneOverride = Schema.Struct({
+  state: ThreadDoneOverrideState,
+  at: IsoDateTime,
+});
+export type OrchestrationThreadDoneOverride = typeof OrchestrationThreadDoneOverride.Type;
+
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: TrimmedNonEmptyString,
   kind: TrimmedNonEmptyString,
@@ -613,6 +627,12 @@ export const OrchestrationThread = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** See OrchestrationThreadShell.doneOverride. */
+  doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** See OrchestrationThreadShell.lastSeenAt. */
+  lastSeenAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -671,6 +691,21 @@ export const OrchestrationThreadShell = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /**
+   * The user's last explicit Mark done / Reopen for this thread, or null if
+   * they never gave one. Deliberately does not move `updatedAt`: the inbox
+   * weighs this stamp against real work activity, so filing a thread must not
+   * count as activity.
+   */
+  doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * When the user last saw this thread, last-write-wins across devices. Moves
+   * backwards on purpose when a thread is marked unread. Null until the first
+   * visit is recorded; also does not move `updatedAt`.
+   */
+  lastSeenAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -881,6 +916,32 @@ const ThreadUnpinCommand = Schema.Struct({
   type: Schema.Literal("thread.unpin"),
   commandId: CommandId,
   threadId: ThreadId,
+});
+
+/**
+ * Record the user's explicit inbox filing for a thread. `at` is the client's
+ * stamp and is stored verbatim: the inbox compares it against the thread's
+ * activity to decide whether the word still stands, so a server clock would
+ * make an override look fresher than the work that preceded it.
+ */
+const ThreadDoneOverrideSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.done-override.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  state: ThreadDoneOverrideState,
+  at: IsoDateTime,
+});
+
+/**
+ * Record when the user last saw a thread. Last-write-wins; backwards stamps
+ * are legal because "mark unread" sets seen to just before the completion it
+ * is un-seeing.
+ */
+const ThreadSeenSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.seen.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  at: IsoDateTime,
 });
 
 const ThreadMetaUpdateCommand = Schema.Struct({
@@ -1130,6 +1191,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadDoneOverrideSetCommand,
+  ThreadSeenSetCommand,
   ThreadMetaUpdateCommand,
   ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1162,6 +1225,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadDoneOverrideSetCommand,
+  ThreadSeenSetCommand,
   ThreadMetaUpdateCommand,
   ClientThreadForkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1345,6 +1410,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.pinned",
   "thread.unpinned",
+  "thread.done-override-set",
+  "thread.seen-set",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1445,6 +1512,19 @@ export const ThreadPinnedPayload = Schema.Struct({
 export const ThreadUnpinnedPayload = Schema.Struct({
   threadId: ThreadId,
   updatedAt: IsoDateTime,
+});
+
+/** No `updatedAt`: filing a thread is not work on it. */
+export const ThreadDoneOverrideSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  state: ThreadDoneOverrideState,
+  at: IsoDateTime,
+});
+
+/** No `updatedAt`: reading a thread is not work on it. */
+export const ThreadSeenSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  at: IsoDateTime,
 });
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
@@ -1694,6 +1774,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unpinned"),
     payload: ThreadUnpinnedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.done-override-set"),
+    payload: ThreadDoneOverrideSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.seen-set"),
+    payload: ThreadSeenSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

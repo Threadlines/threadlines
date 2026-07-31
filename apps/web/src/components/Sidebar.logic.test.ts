@@ -21,6 +21,8 @@ import {
 import {
   buildProjectScopeOptions,
   isThreadDone,
+  mergeThreadDoneOverride,
+  mergeThreadLastSeenAt,
   sortInboxThreads,
   windowInboxThreads,
 } from "./Sidebar.logic";
@@ -754,6 +756,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     createdAt: "2026-03-09T10:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
     latestTurn: null,
     branch: null,
@@ -1090,6 +1094,52 @@ describe("inbox done lifecycle", () => {
     expect(
       isThreadDone(unseen, { state: "done", at: NOW }, { now: NOW, autoDoneAfterDays: 2 }),
     ).toBe(true);
+  });
+});
+
+describe("merging device-local and server-held inbox state", () => {
+  const serverMark = { state: "done", at: "2026-07-28T10:00:00.000Z" } as const;
+
+  it("lets the freshest word win, whichever device gave it", () => {
+    const newerLocal = { state: "active", at: "2026-07-28T11:00:00.000Z" } as const;
+    const olderLocal = { state: "active", at: "2026-07-28T09:00:00.000Z" } as const;
+
+    expect(mergeThreadDoneOverride(newerLocal, serverMark)).toBe(newerLocal);
+    expect(mergeThreadDoneOverride(olderLocal, serverMark)).toBe(serverMark);
+  });
+
+  it("falls back to whichever side has a word at all", () => {
+    expect(mergeThreadDoneOverride(undefined, serverMark)).toBe(serverMark);
+    expect(mergeThreadDoneOverride(serverMark, null)).toBe(serverMark);
+    expect(mergeThreadDoneOverride(null, null)).toBeNull();
+  });
+
+  it("prefers the server on a tie, because a landed write is the same word twice", () => {
+    const sameStamp = { state: "done", at: serverMark.at } as const;
+    expect(mergeThreadDoneOverride(sameStamp, serverMark)).toBe(serverMark);
+  });
+
+  it("reads seen state as pending write, then server, then this device's seed", () => {
+    expect(
+      mergeThreadLastSeenAt({
+        overlayAt: "2026-07-28T12:00:00.000Z",
+        serverLastSeenAt: "2026-07-28T10:00:00.000Z",
+        seedAt: "2026-07-27T12:00:00.000Z",
+      }),
+    ).toBe("2026-07-28T12:00:00.000Z");
+    expect(
+      mergeThreadLastSeenAt({
+        serverLastSeenAt: "2026-07-28T10:00:00.000Z",
+        seedAt: "2026-07-27T12:00:00.000Z",
+      }),
+    ).toBe("2026-07-28T10:00:00.000Z");
+    // A thread the server has never recorded a visit for is treated as seen
+    // as of the moment this device first saw it, so a backlog does not arrive
+    // all-unread.
+    expect(
+      mergeThreadLastSeenAt({ serverLastSeenAt: null, seedAt: "2026-07-27T12:00:00.000Z" }),
+    ).toBe("2026-07-27T12:00:00.000Z");
+    expect(mergeThreadLastSeenAt({ serverLastSeenAt: null })).toBeUndefined();
   });
 });
 

@@ -40,6 +40,8 @@ function makeReadModel(diffStatBaselineTurnCount: number): OrchestrationReadMode
         updatedAt: now,
         archivedAt: null,
         pinnedAt: null,
+        doneOverride: null,
+        lastSeenAt: null,
         deletedAt: null,
         messages: [],
         proposedPlans: [],

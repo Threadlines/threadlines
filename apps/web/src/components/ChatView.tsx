@@ -127,6 +127,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { ChevronDownIcon, CornerDownRightIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
+import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -1030,9 +1031,10 @@ export default function ChatView(props: ChatViewProps) {
     useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
   const setStoreThreadError = useStore((store) => store.setError);
-  const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
-    routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
+    routeKind === "server"
+      ? selectThreadLastSeenAt(store, routeThreadKey, serverThread?.lastSeenAt)
+      : undefined,
   );
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -1615,15 +1617,14 @@ export default function ChatView(props: ChatViewProps) {
     const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
     if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= turnCompletedAt) return;
 
-    markThreadVisited(
-      scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
+    markThreadSeen(
+      scopeThreadRef(serverThread.environmentId, serverThread.id),
       activeLatestTurn.completedAt,
     );
   }, [
     activeLatestTurn?.completedAt,
     activeThreadLastVisitedAt,
     latestTurnSettled,
-    markThreadVisited,
     serverThread?.environmentId,
     serverThread?.id,
   ]);

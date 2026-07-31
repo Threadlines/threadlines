@@ -116,6 +116,8 @@ function serverThread(input: {
     createdAt: "2026-07-09T00:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     latestTurn: null,
     branch: "main",
     worktreePath: null,

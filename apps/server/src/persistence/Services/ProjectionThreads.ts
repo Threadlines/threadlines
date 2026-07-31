@@ -14,6 +14,7 @@ import {
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadDoneOverrideState,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -47,6 +48,15 @@ export const ProjectionThread = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
   pinnedAt: Schema.NullOr(IsoDateTime),
+  /**
+   * The user's explicit inbox filing and its stamp. Optional so rows written
+   * before migration 042 decode; absent reads as "never filed". Kept as two
+   * columns rather than a struct so the pair matches the projection table.
+   */
+  doneOverride: Schema.optional(Schema.NullOr(ThreadDoneOverrideState)),
+  doneOverrideAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** When the user last saw the thread; see migration 042. */
+  lastSeenAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,

@@ -24,11 +24,13 @@ import {
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDeletedPayload,
+  ThreadDoneOverrideSetPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadPinnedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
+  ThreadSeenSetPayload,
   ThreadUnarchivedPayload,
   ThreadUnpinnedPayload,
   ThreadRevertedPayload,
@@ -278,6 +280,8 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             archivedAt: null,
             pinnedAt: null,
+            doneOverride: null,
+            lastSeenAt: null,
             deletedAt: null,
             messages: [],
             activities: [],
@@ -347,6 +351,33 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             pinnedAt: null,
             updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    // Neither lifecycle event touches `updatedAt`: filing or reading a thread
+    // is not work on it, and the inbox weighs these stamps against activity.
+    case "thread.done-override-set":
+      return decodeForEvent(
+        ThreadDoneOverrideSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            doneOverride: { state: payload.state, at: payload.at },
+          }),
+        })),
+      );
+
+    case "thread.seen-set":
+      return decodeForEvent(ThreadSeenSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            lastSeenAt: payload.at,
           }),
         })),
       );

@@ -46,6 +46,8 @@ function thread(overrides: Partial<SidebarThreadSummary> = {}): SidebarThreadSum
     createdAt: "2026-07-23T00:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
     latestTurn: null,
     branch: null,
     worktreePath: null,
