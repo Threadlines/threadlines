@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppBranding"]>;
   },
+  isMarketingCaptureMode: () =>
+    ipcRenderer.sendSync(IpcChannels.IS_MARKETING_CAPTURE_MODE_CHANNEL) === true,
   getLocalEnvironmentBootstrap: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL);
     if (typeof result !== "object" || result === null) {

@@ -3,7 +3,7 @@ import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
-import { isElectron } from "../env";
+import { isElectron, isMarketingCaptureMode } from "../env";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
@@ -47,7 +47,10 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const appSettings = useSettings();
   const sidebarStyle = {
     "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
-    ...(isElectron && typeof navigator !== "undefined" && isMacPlatform(navigator.platform)
+    ...(isElectron &&
+    !isMarketingCaptureMode &&
+    typeof navigator !== "undefined" &&
+    isMacPlatform(navigator.platform)
       ? { "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET }
       : {}),
   } as CSSProperties;

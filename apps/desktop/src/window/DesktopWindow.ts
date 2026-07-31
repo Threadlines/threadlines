@@ -50,6 +50,10 @@ const MIN_MAIN_WINDOW_WIDTH = 840;
 const MIN_MAIN_WINDOW_HEIGHT = 620;
 const MAX_RESTORED_MAIN_WINDOW_DIMENSION = 10_000;
 const MAIN_WINDOW_STATE_FILE_NAME = "window-state.json";
+export const MARKETING_CAPTURE_CONTENT_SIZE = {
+  width: 1600,
+  height: 934,
+} as const;
 const PRINT_SCREEN_ACCELERATOR = "PrintScreen";
 const PRINT_SCREEN_KEYS = new Set(["print", "printscreen"]);
 export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
@@ -147,7 +151,14 @@ function getInitialWindowBackgroundColor(shouldUseDarkColors: boolean): string {
   return shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
 }
 
-function getWindowTitleBarOptions(shouldUseDarkColors: boolean): WindowTitleBarOptions {
+function getWindowTitleBarOptions(
+  shouldUseDarkColors: boolean,
+  marketingCaptureMode = false,
+): WindowTitleBarOptions {
+  if (marketingCaptureMode) {
+    return {};
+  }
+
   if (process.platform === "darwin") {
     return {
       titleBarStyle: "hiddenInset",
@@ -260,6 +271,7 @@ function savePersistedMainWindowState(
 function syncWindowAppearance(
   window: Electron.BrowserWindow,
   shouldUseDarkColors: boolean,
+  marketingCaptureMode: boolean,
 ): Effect.Effect<void> {
   return Effect.sync(() => {
     if (window.isDestroyed()) {
@@ -267,7 +279,7 @@ function syncWindowAppearance(
     }
 
     window.setBackgroundColor(getInitialWindowBackgroundColor(shouldUseDarkColors));
-    const { titleBarOverlay } = getWindowTitleBarOptions(shouldUseDarkColors);
+    const { titleBarOverlay } = getWindowTitleBarOptions(shouldUseDarkColors, marketingCaptureMode);
     if (typeof titleBarOverlay === "object") {
       window.setTitleBarOverlay(titleBarOverlay);
     }
@@ -345,13 +357,20 @@ const make = Effect.gen(function* () {
       environment.stateDir,
       MAIN_WINDOW_STATE_FILE_NAME,
     );
-    const persistedWindowState = yield* loadPersistedMainWindowState(fileSystem, windowStatePath);
-    const persistedWindowOptions = Option.isSome(persistedWindowState)
+    const persistedWindowState = environment.marketingCaptureMode
+      ? Option.none<PersistedMainWindowState>()
+      : yield* loadPersistedMainWindowState(fileSystem, windowStatePath);
+    const persistedWindowOptions = environment.marketingCaptureMode
       ? {
-          width: persistedWindowState.value.width,
-          height: persistedWindowState.value.height,
+          ...MARKETING_CAPTURE_CONTENT_SIZE,
+          useContentSize: true,
         }
-      : defaultMainWindowSize(yield* electronWindow.workAreaSize);
+      : Option.isSome(persistedWindowState)
+        ? {
+            width: persistedWindowState.value.width,
+            height: persistedWindowState.value.height,
+          }
+        : defaultMainWindowSize(yield* electronWindow.workAreaSize);
     const window = yield* electronWindow.create({
       ...persistedWindowOptions,
       minWidth: MIN_MAIN_WINDOW_WIDTH,
@@ -361,7 +380,16 @@ const make = Effect.gen(function* () {
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       ...iconOption,
       title: environment.displayName,
-      ...getWindowTitleBarOptions(shouldUseDarkColors),
+      ...getWindowTitleBarOptions(shouldUseDarkColors, environment.marketingCaptureMode),
+      ...(environment.marketingCaptureMode
+        ? {
+            frame: false,
+            fullscreenable: false,
+            hasShadow: false,
+            maximizable: false,
+            resizable: false,
+          }
+        : {}),
       webPreferences: {
         preload: environment.preloadPath,
         contextIsolation: true,
@@ -374,6 +402,18 @@ const make = Effect.gen(function* () {
         webviewTag: true,
       },
     });
+
+    if (environment.marketingCaptureMode) {
+      window.setContentSize(
+        MARKETING_CAPTURE_CONTENT_SIZE.width,
+        MARKETING_CAPTURE_CONTENT_SIZE.height,
+      );
+      window.setResizable(false);
+      window.center();
+      if (environment.platform === "darwin") {
+        window.setWindowButtonVisibility(false);
+      }
+    }
 
     // Preview content is untrusted: no Node, no custom preload, and it must run
     // in the preview partition rather than the app's own session.
@@ -394,11 +434,18 @@ const make = Effect.gen(function* () {
       }
     });
 
-    if (Option.isSome(persistedWindowState) && persistedWindowState.value.isMaximized) {
+    if (
+      !environment.marketingCaptureMode &&
+      Option.isSome(persistedWindowState) &&
+      persistedWindowState.value.isMaximized
+    ) {
       window.maximize();
     }
 
     window.on("close", () => {
+      if (environment.marketingCaptureMode) {
+        return;
+      }
       const bounds = getPersistableMainWindowBounds(window);
       const width = normalizeRestoredDimension(bounds.width, MIN_MAIN_WINDOW_WIDTH);
       const height = normalizeRestoredDimension(bounds.height, MIN_MAIN_WINDOW_HEIGHT);
@@ -702,7 +749,7 @@ const make = Effect.gen(function* () {
     syncAppearance: Effect.gen(function* () {
       const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
       yield* electronWindow.syncAllAppearance((window) =>
-        syncWindowAppearance(window, shouldUseDarkColors),
+        syncWindowAppearance(window, shouldUseDarkColors, environment.marketingCaptureMode),
       );
     }).pipe(Effect.withSpan("desktop.window.syncAppearance")),
   });

@@ -62,6 +62,7 @@ describe("DesktopEnvironment", () => {
           THREADLINES_DESKTOP_USER_DATA_DIR_NAME: " threadlines-marketing-studio ",
           THREADLINES_OTLP_TRACES_URL: " http://127.0.0.1:4318/v1/traces ",
           THREADLINES_OTLP_EXPORT_INTERVAL_MS: "2500",
+          THREADLINES_DESKTOP_MARKETING_CAPTURE: "true",
         },
       );
 
@@ -102,6 +103,7 @@ describe("DesktopEnvironment", () => {
       assert.deepEqual(environment.otlpTracesUrl, Option.some("http://127.0.0.1:4318/v1/traces"));
       assert.equal(environment.otlpExportIntervalMs, 2500);
       assert.equal(environment.openDevToolsInDevelopment, false);
+      assert.equal(environment.marketingCaptureMode, true);
     }),
   );
 
@@ -116,6 +118,7 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.openDevToolsInDevelopment, true);
+      assert.equal(environment.marketingCaptureMode, false);
     }),
   );
 

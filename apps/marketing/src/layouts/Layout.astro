@@ -52,7 +52,7 @@ const websiteStructuredData = {
     <meta property="og:image" content={socialImageUrl} />
     <meta
       property="og:image:alt"
-      content="Threadlines: the open-source workspace for Claude Code and Codex, next to a screenshot of the app"
+      content="Threadlines with the project sidebar, agent conversation, live browser, and source control open together"
     />
     <meta property="og:image:width" content="2400" />
     <meta property="og:image:height" content="1260" />
@@ -467,11 +467,10 @@ const websiteStructuredData = {
     color: var(--accent-contrast);
     font-size: 13px;
     font-weight: 600;
-    transition: transform 0.2s ease, filter 0.2s ease;
+    transition: filter 0.2s ease;
   }
 
   .nav-dl:hover {
-    transform: translateY(-1px);
     filter: brightness(1.08);
   }
 

@@ -49,6 +49,15 @@ export const getAppBranding = makeSyncIpcMethod({
   }),
 });
 
+export const isMarketingCaptureMode = makeSyncIpcMethod({
+  channel: IpcChannels.IS_MARKETING_CAPTURE_MODE_CHANNEL,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.isMarketingCaptureMode")(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    return environment.marketingCaptureMode;
+  }),
+});
+
 export const getLocalEnvironmentBootstrap = makeSyncIpcMethod({
   channel: IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL,
   result: Schema.NullOr(DesktopEnvironmentBootstrapSchema),

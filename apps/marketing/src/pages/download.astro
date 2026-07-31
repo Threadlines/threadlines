@@ -103,14 +103,16 @@ import Layout from "../layouts/Layout.astro";
   const list = document.getElementById("dl-list")!;
   const fallback = document.getElementById("dl-fallback")!;
 
+  const userAgent = navigator.userAgent.toLowerCase();
   const platform = (
-    (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ||
-    navigator.platform ||
-    ""
+    (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ?? ""
   ).toLowerCase();
-  const isWindows = platform.includes("win");
-  const isMac = platform.includes("mac");
-  const isLinux = platform.includes("linux");
+  const isMobile = /android|iphone|ipad|ipod/.test(userAgent);
+  const isWindows = platform.includes("win") || userAgent.includes("windows");
+  const isMac =
+    !isMobile && (platform.includes("mac") || userAgent.includes("macintosh"));
+  const isLinux =
+    !isMobile && (platform.includes("linux") || userAgent.includes("linux"));
 
   try {
     const release = await fetchLatestRelease();
@@ -202,11 +204,11 @@ import Layout from "../layouts/Layout.astro";
     border-radius: 10px;
     padding: 12px 22px;
     text-decoration: none;
-    transition: transform 0.2s ease;
+    transition: filter 0.2s ease;
   }
 
   .dl-primary:hover {
-    transform: translateY(-1px);
+    filter: brightness(1.08);
   }
 
   .dl-primary[hidden] {

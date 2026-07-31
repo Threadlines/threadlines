@@ -1,13 +1,36 @@
 # Threadlines marketing capture retake
 
-This folder contains the refreshed marketing set captured against the July 12, 2026 layout. Every video is exported at a constant 60 fps. `activity-header-dark`, `rich-subagent-chat`, and `project-files-edit` are 3200×1868 Retina exports; the remaining clips are 1600×934. Matching poster frames use the same resolution as their clips and are stored in `Posters/`.
+This folder contains the refreshed marketing set. The primary 0.3.0 workspace, sidebar,
+and browser clips come from the deterministic neutral capture studio at 3200×1868 and a
+constant 60 fps. Each scene has matching `-dark` and `-light` captures, and responsive
+1600×934 variants carry the `-mobile` suffix after the theme.
+`activity-header-dark`, `rich-subagent-chat`, and `project-files-edit` are also
+3200×1868 Retina exports; the remaining legacy clips are 1600×934. Matching poster
+frames are stored in `Posters/`.
 
-WebM is the primary format: VP9 Profile 2, 10-bit `yuv420p10le`, CRF 30 with no bitrate cap. MP4 is the Safari fallback: H.264 High profile, 8-bit `yuv420p`, CRF 18 with the slow preset.
+WebM is the primary format. The new responsive 0.3.0 clips use VP9 Profile 0,
+8-bit `yuv420p`, CRF 30 with no bitrate cap; the earlier Retina clips retain their
+Profile 2, 10-bit masters. MP4 is the Safari fallback: H.264 High profile,
+8-bit `yuv420p`, CRF 18 with the slow preset.
 
-The staged sidebar has two expanded projects and one collapsed project, five or more threads per project, merged and branch indicators, and a running-terminal cue. The calibrated traffic-light clean plate is used on unobstructed full-window captures; its outer curve is mirrored from the untouched native corner at each export resolution, preserving macOS border antialiasing, normal control spacing, and the real sidebar toggle. It is intentionally omitted from the two opaque file-viewer clips so it cannot appear to float above the viewer layer.
+The 0.3.0 sidebar has five live threads across three projects: input, working, and
+background each have a distinct signal, while two threads are deliberately idle. Eleven
+older threads sit under Wrapped. New neutral captures are frameless by design and do not
+use a composited traffic-light plate.
 
 ## Recommended site use
 
+- `workspace-four-panel-overview-{dark,light}` — primary 0.3.0 homepage pair with the
+  cross-project sidebar, active conversation, matching Orbit browser, and source control
+  in one frame. The take collapses pending input, reviews browser activity, opens a
+  source-control diff, and returns to the overview. The standalone PNG remains the
+  social-card source.
+- `sidebar-attention-states-{dark,light}` — five live threads: amber input needed, blue
+  recently started working, cyan background, and two quiet threads with no status
+  treatment.
+- `agent-browser-workflow-{dark,light}` — annotates the live service-health heading in
+  the matching-theme Orbit browser, attaches the real element note to the composer, and
+  shows the agent applying the requested compact green status treatment in place.
 - `activity-header-dark` — strongest hero candidate. Opens the compact activity dropdown with 4/6 tasks, two active subagents, and one background run, then moves through the live work without expanding the six-step list or leaving focus rings.
 - `rich-subagent-chat` — full conversation with a substantial Scout subagent result and follow-up responses.
 - `project-files-edit` — browses the project tree, opens a tab, enters editing by double-click, saves a small change, then selects an exact line range and attaches it to chat; the current edit icon remains visible in the toolbar.
@@ -33,7 +56,7 @@ The staged sidebar has two expanded projects and one collapsed project, five or 
 
 - `*.mp4` — broadly compatible website video.
 - `*.webm` — smaller modern-browser alternative.
-- `Posters/*.png` — selected poster frame at the matching video resolution.
+- `Posters/*.webp` — selected poster frame at the matching video resolution.
 - `*.png` at this folder level — standalone light-mode screenshots.
 - `poster-contact-sheet.png` — quick visual review of the complete poster and still set.
 

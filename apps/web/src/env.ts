@@ -6,3 +6,10 @@
 export const isElectron =
   typeof window !== "undefined" &&
   (window.desktopBridge !== undefined || window.nativeApi !== undefined);
+
+export const isMarketingCaptureMode =
+  isElectron && window.desktopBridge?.isMarketingCaptureMode?.() === true;
+
+if (typeof document !== "undefined" && isMarketingCaptureMode) {
+  document.documentElement.dataset.marketingCapture = "true";
+}

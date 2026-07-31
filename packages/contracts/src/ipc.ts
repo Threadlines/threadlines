@@ -889,6 +889,8 @@ export const PickFolderOptionsSchema = Schema.Struct({
 
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
+  /** Present in desktop builds that can identify the isolated marketing capture runtime. */
+  isMarketingCaptureMode?: () => boolean;
   getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;

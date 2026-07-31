@@ -7,10 +7,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { resolveMarketingStudioRoot } from "./lib/marketing-studio-paths.ts";
+
 const STUDIO_KIND = "threadlines-marketing-studio";
 const APP_DATA_KIND = "threadlines-marketing-studio-app-data";
 const STUDIO_VERSION = 1;
-const THREAD_SEED_VERSION = 4;
+const THREAD_SEED_VERSION = 6;
+const MARKETING_CAPTURE_DEBUG_PORT = "9223";
 const PROJECT_NAME = "Orbit";
 const USER_DATA_DIR_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 const REPO_ROOT = NodePath.resolve(NodePath.dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,6 +39,7 @@ interface StudioPaths {
   readonly captureMasters: string;
   readonly captureExports: string;
   readonly capturePosters: string;
+  readonly capturePlan: string;
 }
 
 interface StudioMetadata {
@@ -77,11 +81,11 @@ const resolveDefaultAppDataRoot = (): string => {
 const resolveStudioPaths = (): StudioPaths => {
   const configuredRoot = process.env.THREADLINES_MARKETING_STUDIO_DIR?.trim();
   const configuredAppData = process.env.THREADLINES_MARKETING_STUDIO_APP_DATA_DIR?.trim();
-  const root = NodePath.resolve(
-    configuredRoot && configuredRoot.length > 0
-      ? configuredRoot
-      : NodePath.join(NodeOS.homedir(), "Threadlines Marketing Studio"),
-  );
+  const root = resolveMarketingStudioRoot({
+    configuredRoot,
+    homeDirectory: NodeOS.homedir(),
+    publicDirectory: process.env.PUBLIC?.trim(),
+  });
   const captures = NodePath.join(root, "Captures");
   const appData = NodePath.resolve(
     configuredAppData && configuredAppData.length > 0
@@ -110,6 +114,7 @@ const resolveStudioPaths = (): StudioPaths => {
     captureMasters: NodePath.join(captures, "Masters"),
     captureExports: NodePath.join(captures, "Exports"),
     capturePosters: NodePath.join(captures, "Posters"),
+    capturePlan: NodePath.join(root, "Capture Plan.json"),
   };
 };
 
@@ -319,9 +324,9 @@ const ensureStudioRoot = (): void => {
     paths.windowState,
     JSON.stringify(
       {
-        width: 1624,
-        height: 995,
-        isMaximized: true,
+        width: 1600,
+        height: 934,
+        isMaximized: false,
       },
       null,
       2,
@@ -345,22 +350,31 @@ const writeStudioReadme = (): void => {
       "- Northstar: companion observability project with a cyan favicon",
       "- .worktrees: branch-specific workspaces behind the seeded thread history",
       "- Captures/Masters: untouched source recordings and full-resolution screenshots",
-      "- Captures/Exports: cropped and compressed site-ready assets",
+      "- Captures/Exports: generated desktop and mobile delivery assets",
       "- Captures/Posters: still frames and video poster images",
+      "- Capture Plan.json: deterministic 0.3.0 scene, geometry, and safety requirements",
       "- .threadlines: isolated Threadlines server and session state",
       "- Electron browser state: " + paths.appData,
       "",
       "## Capture stories",
       "",
-      "1. Browse project files, open tabs, edit a feature flag, and save.",
-      "2. Select a few useful lines and attach the selection to chat.",
-      "3. Inspect staged and unstaged changes by file, then undo one file.",
-      "4. Read the visual Git graph and inspect the open feature branches.",
-      "5. Show the inhabited sidebar with 6 Orbit, 5 Northstar, and 5 Lumen threads.",
+      "1. Show the full workspace: project sidebar, agent conversation, browser, and source control.",
+      "2. Show three live signals beside two quiet threads in a five-item inbox.",
+      "3. Move from Project file editing into the live Orbit browser preview.",
+      "4. Edit publish-safe data and watch the browser update.",
+      "5. Use the browser review tools to attach exact visual context.",
+      "6. Capture genuine native controls only for explicit platform-proof stills.",
       "",
       "Run from the Threadlines source checkout:",
       "",
       "    vp run marketing:studio",
+      "",
+      "Prepare and verify a scene before recording:",
+      "",
+      "    vp run marketing:capture:prepare -- --scene workspace-four-panel-overview-dark",
+      "    vp run marketing:capture:preflight -- --scene workspace-four-panel-overview-dark",
+      "",
+      "The full operating guide is docs/marketing-capture-studio.md in the Threadlines checkout.",
       "",
       "Rebuild the synthetic project and clear only this isolated profile:",
       "",
@@ -391,7 +405,7 @@ const writeFoundation = (): void => {
         version: "0.9.0",
         type: "module",
         scripts: {
-          dev: "vite",
+          dev: "node scripts/demo-server.mjs",
           test: "vitest run",
           typecheck: "tsc --noEmit",
         },
@@ -432,9 +446,9 @@ const writeFoundation = (): void => {
     lines(
       "# Orbit",
       "",
-      "A calm operations dashboard for teams shipping subscription products.",
+      "A calm systems dashboard for software teams.",
       "",
-      "Orbit brings checkout health, usage limits, and release readiness into one focused",
+      "Orbit brings service health, background work, and operational signals into one focused",
       "workspace. This repository is a synthetic demo used for Threadlines product captures.",
       "",
       "## Product principles",
@@ -442,6 +456,314 @@ const writeFoundation = (): void => {
       "- Make risky states obvious before they become incidents.",
       "- Keep every recovery action reversible.",
       "- Prefer a useful default over another settings screen.",
+    ),
+  );
+  writeProjectFile(
+    "index.html",
+    lines(
+      "<!doctype html>",
+      '<html lang="en">',
+      "  <head>",
+      '    <meta charset="UTF-8" />',
+      '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+      '    <link rel="icon" href="/favicon.svg" />',
+      '    <link rel="stylesheet" href="/src/styles.css" />',
+      "    <title>Orbit · System overview</title>",
+      "  </head>",
+      "  <body>",
+      '    <main id="app"></main>',
+      '    <script type="module" src="/src/demo.js"></script>',
+      "  </body>",
+      "</html>",
+    ),
+  );
+  writeProjectFile(
+    "src/demoData.js",
+    lines(
+      "export const release = {",
+      '  name: "System overview",',
+      '  environment: "Live workspace",',
+      '  status: "All systems operational",',
+      "  progress: 100,",
+      "};",
+      "",
+      "export const metrics = [",
+      '  { label: "P95 latency", value: "184ms", change: "−12ms" },',
+      '  { label: "Error rate", value: "0.08%", change: "−0.02%" },',
+      '  { label: "Queue depth", value: "12", change: "normal" },',
+      "];",
+      "",
+      "export const checks = [",
+      '  { label: "API gateway", detail: "Stable · 38ms", state: "passed" },',
+      '  { label: "Worker queue", detail: "12 jobs in flight", state: "passed" },',
+      '  { label: "Data sync", detail: "Updated 3 minutes ago", state: "passed" },',
+      "];",
+    ),
+  );
+  writeProjectFile(
+    "src/demo.js",
+    lines(
+      'import { checks, metrics, release } from "./demoData.js";',
+      "",
+      'const requestedTheme = new URLSearchParams(window.location.search).get("theme");',
+      'document.documentElement.dataset.theme = requestedTheme === "light" ? "light" : "dark";',
+      "",
+      'const app = document.querySelector("#app");',
+      "",
+      "app.innerHTML = `",
+      '  <header class="topbar">',
+      '    <div class="brand"><span class="orbit-mark"></span>Orbit</div>',
+      '    <nav aria-label="Workspace"><span>Overview</span><span>Services</span><span>Activity</span></nav>',
+      '    <div class="agent-update" role="status" aria-live="polite" hidden><span></span><strong>Agent applying annotation…</strong></div>',
+      '    <button class="avatar" aria-label="Maya Chen">MC</button>',
+      "  </header>",
+      '  <section class="intro">',
+      "    <div>",
+      '      <p class="eyebrow">${release.environment} · Updated now</p>',
+      "      <h1>${release.name}</h1>",
+      '      <p class="lede">Three services are healthy and background work is within expected limits.</p>',
+      "    </div>",
+      '    <button class="launch-button">View activity</button>',
+      "  </section>",
+      '  <section class="metrics" aria-label="Release metrics">',
+      "    ${metrics",
+      "      .map(",
+      "        (metric) => `",
+      "          <article><p>${metric.label}</p><strong>${metric.value}</strong><span>${metric.change}</span></article>",
+      "        `,",
+      "      )",
+      '      .join("")}',
+      "  </section>",
+      '  <section class="readiness">',
+      '    <div class="readiness-heading">',
+      "      <div>",
+      '        <p class="eyebrow">Service health</p>',
+      "        <h2>${release.status}</h2>",
+      "      </div>",
+      "      <strong>${release.progress}%</strong>",
+      "    </div>",
+      '    <div class="progress"><span style="width: ${release.progress}%"></span></div>',
+      '    <div class="checks">',
+      "      ${checks",
+      "        .map(",
+      "          (check) => `",
+      '            <div class="check"><span class="check-dot ${check.state}"></span><strong>${check.label}</strong><small>${check.detail}</small></div>',
+      "          `,",
+      "        )",
+      '        .join("")}',
+      "    </div>",
+      "  </section>",
+      "`;",
+      "",
+      'const activityButton = document.querySelector(".launch-button");',
+      'const statusHeading = document.querySelector(".readiness h2");',
+      'const statusEyebrow = document.querySelector(".readiness .eyebrow");',
+      'const statusProgress = document.querySelector(".readiness-heading > strong");',
+      'const progressBar = document.querySelector(".progress span");',
+      'const introSummary = document.querySelector(".lede");',
+      'const readiness = document.querySelector(".readiness");',
+      'const agentUpdate = document.querySelector(".agent-update");',
+      'const agentUpdateLabel = document.querySelector(".agent-update strong");',
+      "let activityReviewed = false;",
+      "let annotationTimer;",
+      "let annotationStatusTimer;",
+      "",
+      "const renderActivityState = (reviewed) => {",
+      "  activityReviewed = reviewed;",
+      '  activityButton.textContent = reviewed ? "Activity checked" : "View activity";',
+      '  activityButton.style.background = reviewed ? "var(--positive)" : "";',
+      '  activityButton.style.color = reviewed ? "var(--accent-contrast)" : "";',
+      '  statusHeading.textContent = reviewed ? "No issues detected" : release.status;',
+      "  statusProgress.textContent = `${release.progress}%`;",
+      "  progressBar.style.width = `${release.progress}%`;",
+      "  introSummary.textContent = reviewed",
+      '    ? "All services are healthy and recent activity has been reviewed."',
+      '    : "Three services are healthy and background work is within expected limits.";',
+      "};",
+      "",
+      'activityButton.addEventListener("click", () => renderActivityState(!activityReviewed));',
+      "",
+      "window.__threadlinesApplyAnnotationDemo = () => {",
+      "  clearTimeout(annotationTimer);",
+      "  clearTimeout(annotationStatusTimer);",
+      '  readiness.dataset.agentState = "working";',
+      "  agentUpdate.hidden = false;",
+      '  agentUpdate.dataset.state = "working";',
+      '  agentUpdateLabel.textContent = "Agent applying annotation…";',
+      "  annotationTimer = setTimeout(() => {",
+      '    readiness.dataset.agentState = "applied";',
+      '    statusEyebrow.textContent = "Live service health";',
+      '    statusHeading.textContent = "All services healthy";',
+      '    statusProgress.textContent = "3 / 3 online";',
+      '    introSummary.textContent = "Service health is clear at a glance, with the same operational detail close by.";',
+      '    agentUpdate.dataset.state = "applied";',
+      '    agentUpdateLabel.textContent = "Preview updated";',
+      "    annotationStatusTimer = setTimeout(() => {",
+      "      agentUpdate.hidden = true;",
+      "    }, 1800);",
+      "  }, 1200);",
+      "};",
+      "",
+      "window.__threadlinesResetAnnotationDemo = () => {",
+      "  clearTimeout(annotationTimer);",
+      "  clearTimeout(annotationStatusTimer);",
+      "  delete readiness.dataset.agentState;",
+      '  statusEyebrow.textContent = "Service health";',
+      "  statusHeading.textContent = release.status;",
+      "  statusProgress.textContent = `${release.progress}%`;",
+      "  progressBar.style.width = `${release.progress}%`;",
+      '  introSummary.textContent = "Three services are healthy and background work is within expected limits.";',
+      "  agentUpdate.hidden = true;",
+      "  delete agentUpdate.dataset.state;",
+      '  agentUpdateLabel.textContent = "Agent applying annotation…";',
+      '  window.scrollTo({ top: 0, behavior: "instant" });',
+      "};",
+      "",
+      'const events = new EventSource("/__threadlines_reload");',
+      'events.addEventListener("change", () => window.location.reload());',
+    ),
+  );
+  writeProjectFile(
+    "src/styles.css",
+    lines(
+      ":root {",
+      "  color-scheme: dark;",
+      '  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+      "  --background: #0b0d10;",
+      "  --foreground: #f5f7fa;",
+      "  --muted: #8d99a6;",
+      "  --border: #29313a;",
+      "  --surface: #171b20;",
+      "  --surface-border: #39434d;",
+      "  --accent: #8b9cff;",
+      "  --accent-strong: #a78bfa;",
+      "  --accent-contrast: #0d0f13;",
+      "  --positive: #5ee6a8;",
+      "  --warning: #fbbf24;",
+      "  --progress-track: #242a31;",
+      "  --ambient: rgb(139 156 255 / 12%);",
+      "  background: var(--background);",
+      "  color: var(--foreground);",
+      "}",
+      ':root[data-theme="light"] {',
+      "  color-scheme: light;",
+      "  --background: #f7f8fa;",
+      "  --foreground: #17191d;",
+      "  --muted: #626b76;",
+      "  --border: #d8dde5;",
+      "  --surface: #ffffff;",
+      "  --surface-border: #c8ced8;",
+      "  --accent: #586bda;",
+      "  --accent-strong: #6552c7;",
+      "  --accent-contrast: #ffffff;",
+      "  --positive: #16805f;",
+      "  --warning: #a16207;",
+      "  --progress-track: #e4e7ec;",
+      "  --ambient: rgb(88 107 218 / 9%);",
+      "}",
+      "* { box-sizing: border-box; }",
+      "body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; background: radial-gradient(circle at 88% -8%, var(--ambient), transparent 34%), var(--background); }",
+      "button { font: inherit; }",
+      "#app { width: min(1120px, calc(100% - 64px)); margin: 0 auto; }",
+      ".topbar { height: 68px; display: flex; align-items: center; border-bottom: 1px solid var(--border); }",
+      ".brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -0.02em; }",
+      ".orbit-mark { width: 18px; height: 18px; border: 4px solid var(--accent-strong); border-radius: 50%; transform: rotate(-24deg) scaleY(.55); }",
+      ".topbar nav { display: flex; gap: 28px; margin-left: 48px; color: var(--muted); font-size: 14px; }",
+      ".topbar nav span:first-child { color: var(--foreground); }",
+      ".agent-update { display: flex; align-items: center; gap: 7px; margin-left: auto; color: var(--muted); font-size: 12px; }",
+      ".agent-update[hidden] { display: none; }",
+      ".agent-update span { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent); }",
+      ".agent-update strong { font-weight: 600; }",
+      '.agent-update[data-state="working"] span { animation: agent-pulse 900ms ease-in-out infinite alternate; }',
+      '.agent-update[data-state="applied"] { color: var(--positive); }',
+      '.agent-update[data-state="applied"] span { background: var(--positive); box-shadow: 0 0 0 4px color-mix(in srgb, var(--positive) 14%, transparent); }',
+      ".avatar { margin-left: auto; width: 32px; height: 32px; border: 1px solid var(--surface-border); border-radius: 50%; background: var(--surface); color: var(--foreground); font-size: 11px; }",
+      ".agent-update + .avatar { margin-left: 16px; }",
+      ".intro { display: flex; align-items: flex-end; justify-content: space-between; padding: 52px 0 38px; border-bottom: 1px solid var(--border); }",
+      ".eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }",
+      "h1 { margin: 0; font-size: 40px; line-height: 1.05; letter-spacing: -0.035em; }",
+      ".lede { max-width: 620px; margin: 14px 0 0; color: var(--muted); font-size: 16px; line-height: 1.55; }",
+      ".launch-button { border: 0; border-radius: 8px; padding: 11px 16px; background: var(--accent); color: var(--accent-contrast); font-weight: 700; }",
+      ".metrics { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--border); }",
+      ".metrics article { padding: 28px 0; }",
+      ".metrics article + article { padding-left: 28px; border-left: 1px solid var(--border); }",
+      ".metrics p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }",
+      ".metrics strong { font-size: 26px; letter-spacing: -0.025em; }",
+      ".metrics span { margin-left: 10px; color: var(--positive); font-size: 12px; }",
+      ".readiness { padding: 34px 0; }",
+      ".readiness-heading { display: flex; align-items: flex-end; justify-content: space-between; transition: background-color 180ms ease, border-color 180ms ease, padding 180ms ease; }",
+      ".readiness h2 { margin: 0; font-size: 20px; }",
+      ".readiness-heading > strong { color: var(--accent-strong); font-size: 24px; }",
+      ".progress { height: 4px; margin: 20px 0 28px; overflow: hidden; background: var(--progress-track); }",
+      ".progress span { display: block; height: 100%; background: var(--accent); }",
+      '.readiness[data-agent-state="working"] .readiness-heading { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: 7px; }',
+      '.readiness[data-agent-state="applied"] .readiness-heading { align-items: center; padding: 13px 15px; border: 1px solid color-mix(in srgb, var(--positive) 38%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--positive) 10%, var(--surface)); }',
+      '.readiness[data-agent-state="applied"] .readiness-heading .eyebrow { margin-bottom: 5px; color: var(--positive); }',
+      '.readiness[data-agent-state="applied"] .readiness-heading > strong { color: var(--positive); font-size: 13px; letter-spacing: .02em; }',
+      '.readiness[data-agent-state="applied"] .progress { height: 0; margin: 16px 0 12px; opacity: 0; }',
+      '.readiness[data-agent-state="applied"] .checks { margin-top: 14px; }',
+      ".checks { border-top: 1px solid var(--border); }",
+      ".check { display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 12px; padding: 17px 0; border-bottom: 1px solid var(--border); }",
+      ".check strong { font-size: 14px; }",
+      ".check small { color: var(--muted); }",
+      ".check-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }",
+      ".check-dot.passed { background: var(--positive); }",
+      "@keyframes agent-pulse { from { opacity: .45; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }",
+      "@media (max-width: 800px) { #app { width: calc(100% - 36px); } .topbar { height: 60px; } .topbar nav { gap: 16px; margin-left: 24px; } .intro { align-items: flex-start; flex-direction: column; gap: 20px; padding: 36px 0 28px; } h1 { font-size: 34px; } .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .metrics article { min-width: 0; padding: 22px 14px; } .metrics article:first-child { padding-left: 0; } .metrics article + article { padding-left: 14px; } .metrics strong { font-size: 24px; } .metrics span { display: block; margin: 6px 0 0; } .check small { text-align: right; } }",
+      "@media (max-width: 520px) { .topbar nav span:last-child { display: none; } .metrics { grid-template-columns: 1fr; } .metrics article { padding: 18px 0; } .metrics article + article { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); } }",
+    ),
+  );
+  writeProjectFile(
+    "scripts/demo-server.mjs",
+    lines(
+      'import { createServer } from "node:http";',
+      'import { readFile, stat, writeFile } from "node:fs/promises";',
+      'import { watch } from "node:fs";',
+      'import { dirname, extname, join, normalize } from "node:path";',
+      'import { fileURLToPath } from "node:url";',
+      "",
+      'const root = normalize(join(dirname(fileURLToPath(import.meta.url)), ".."));',
+      'const port = Number.parseInt(process.env.PORT ?? "4173", 10);',
+      "const readyFile = process.env.THREADLINES_MARKETING_DEMO_READY_FILE;",
+      "const clients = new Set();",
+      "const contentTypes = new Map([",
+      '  [".html", "text/html; charset=utf-8"],',
+      '  [".js", "text/javascript; charset=utf-8"],',
+      '  [".css", "text/css; charset=utf-8"],',
+      '  [".svg", "image/svg+xml"],',
+      "]);",
+      "",
+      "const server = createServer(async (request, response) => {",
+      '  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");',
+      '  if (requestUrl.pathname === "/__threadlines_reload") {',
+      '    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });',
+      '    response.write(": connected\\n\\n");',
+      "    clients.add(response);",
+      '    request.on("close", () => clients.delete(response));',
+      "    return;",
+      "  }",
+      '  const relativePath = requestUrl.pathname === "/" ? "index.html" : requestUrl.pathname.slice(1);',
+      "  const filePath = normalize(join(root, relativePath));",
+      "  if (!filePath.startsWith(root)) { response.writeHead(403).end(); return; }",
+      "  try {",
+      "    const info = await stat(filePath);",
+      '    if (!info.isFile()) throw new Error("not a file");',
+      "    const body = await readFile(filePath);",
+      '    response.writeHead(200, { "content-type": contentTypes.get(extname(filePath)) ?? "application/octet-stream", "cache-control": "no-store" });',
+      "    response.end(body);",
+      "  } catch {",
+      '    response.writeHead(404).end("Not found");',
+      "  }",
+      "});",
+      "",
+      "watch(root, { recursive: true }, (_event, fileName) => {",
+      '  if (!fileName || fileName.startsWith(".git") || fileName.includes("node_modules")) return;',
+      '  for (const client of clients) client.write("event: change\\ndata: reload\\n\\n");',
+      "});",
+      "",
+      'server.listen(port, "127.0.0.1", async () => {',
+      '  if (readyFile) await writeFile(readyFile, String(process.pid), "utf8");',
+      "});",
     ),
   );
   writeProjectFile(
@@ -1146,6 +1468,21 @@ interface MarketingThreadSeed {
   readonly worktreePath: string | null;
   readonly createdAt: string;
   readonly modelSelection: MarketingModelSelection;
+  readonly interactionMode?: "default" | "plan";
+  readonly scenario?: {
+    readonly status:
+      | "idle"
+      | "working"
+      | "starting"
+      | "completed"
+      | "pending-approval"
+      | "awaiting-input"
+      | "plan-ready"
+      | "background"
+      | "failed";
+    readonly prompt: string;
+    readonly assistantText?: string;
+  };
 }
 
 interface MarketingProjectThreadSeed {
@@ -1242,13 +1579,26 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           worktreePath: paths.project,
           createdAt: createdAtMinutesAgo(now, 8),
           modelSelection: GPT_SOL_MAX,
+          scenario: {
+            status: "awaiting-input",
+            prompt:
+              "Compare checkout recovery health across regions and ask which region should be the baseline.",
+            assistantText:
+              "The recovery paths are healthy. Which region should I use as the comparison baseline?",
+          },
         },
         {
           title: "Project file editing",
           branch: "feature/project-files",
           worktreePath: threadWorktreePath("Orbit", "project-files"),
-          createdAt: createdAtMinutesAgo(now, 36),
+          createdAt: createdAtMinutesAgo(now, 2),
           modelSelection: CLAUDE_FABLE_HIGH,
+          scenario: {
+            status: "working",
+            prompt: "Make project file selection labels clearer and verify the editor flow.",
+            assistantText:
+              "I updated the selection labels and am checking the file-to-chat flow across the editor.",
+          },
         },
         {
           title: "Usage insights",
@@ -1256,19 +1606,25 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           worktreePath: threadWorktreePath("Orbit", "usage-insights"),
           createdAt: createdAtMinutesAgo(now, 160),
           modelSelection: GPT_SOL_MAX,
+          scenario: {
+            status: "idle",
+            prompt: "Add an at-a-glance usage summary for the launch dashboard.",
+            assistantText:
+              "Usage now reads clearly at a glance, with limits capped correctly and boundary coverage added.",
+          },
         },
         {
           title: "Release guard",
           branch: null,
           worktreePath: null,
-          createdAt: createdAtMinutesAgo(now, 1_380),
+          createdAt: createdAtMinutesAgo(now, 3_360),
           modelSelection: CLAUDE_FABLE_HIGH,
         },
         {
           title: "Design token cleanup",
           branch: null,
           worktreePath: null,
-          createdAt: createdAtMinutesAgo(now, 2_160),
+          createdAt: createdAtMinutesAgo(now, 4_260),
           modelSelection: GPT_SOL_MAX,
         },
         {
@@ -1289,19 +1645,25 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           worktreePath: paths.northstarProject,
           createdAt: createdAtMinutesAgo(now, 52),
           modelSelection: CLAUDE_FABLE_HIGH,
+          scenario: {
+            status: "background",
+            prompt: "Compare deploy health across the last three production releases and regions.",
+            assistantText:
+              "The initial comparison is complete. A longer regional health check is still running in the background.",
+          },
         },
         {
           title: "Group noisy alerts",
           branch: "studio/alert-grouping",
           worktreePath: threadWorktreePath("Northstar", "alert-grouping"),
-          createdAt: createdAtMinutesAgo(now, 310),
+          createdAt: createdAtMinutesAgo(now, 3_180),
           modelSelection: GPT_SOL_MAX,
         },
         {
           title: "Trace sampling",
           branch: null,
           worktreePath: null,
-          createdAt: createdAtMinutesAgo(now, 2_880),
+          createdAt: createdAtMinutesAgo(now, 3_720),
           modelSelection: CLAUDE_FABLE_HIGH,
         },
         {
@@ -1329,12 +1691,19 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           worktreePath: paths.lumenProject,
           createdAt: createdAtMinutesAgo(now, 210),
           modelSelection: GPT_SOL_MAX,
+          interactionMode: "plan",
+          scenario: {
+            status: "idle",
+            prompt: "Plan a safer way to define overlapping rollout cohorts.",
+            assistantText:
+              "I mapped the overlap cases and documented an explicit precedence rule for the next pass.",
+          },
         },
         {
           title: "Evaluation cache",
           branch: "studio/evaluation-cache",
           worktreePath: threadWorktreePath("Lumen", "evaluation-cache"),
-          createdAt: createdAtMinutesAgo(now, 4_320),
+          createdAt: createdAtMinutesAgo(now, 4_080),
           modelSelection: CLAUDE_FABLE_HIGH,
         },
         {
@@ -1486,6 +1855,10 @@ const setupStudio = (): void => {
   ensureCompanionRepositories();
   ensureThreadWorktrees();
   installFixtureCommands();
+  FileSystem.copyFileSync(
+    NodePath.join(REPO_ROOT, "scripts/fixtures/marketing-studio/capture-scenes.json"),
+    paths.capturePlan,
+  );
   seedStudioProjects();
   seedStudioThreads();
 
@@ -1501,43 +1874,88 @@ const printPaths = (): void => {
   console.log("Capture masters:  " + paths.captureMasters);
   console.log("Capture exports:  " + paths.captureExports);
   console.log("Poster frames:    " + paths.capturePosters);
+  console.log("Capture plan:     " + paths.capturePlan);
 };
 
-const launchStudio = (): void => {
+const waitForPath = (filePath: string, child: ChildProcess.ChildProcess): void => {
+  const sleeper = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (FileSystem.existsSync(filePath)) {
+      return;
+    }
+    if (child.exitCode !== null) {
+      throw new Error(
+        "Orbit demo server exited before it was ready (code " + String(child.exitCode) + ").",
+      );
+    }
+    Atomics.wait(sleeper, 0, 0, 50);
+  }
+  throw new Error("Orbit demo server did not become ready within 3 seconds.");
+};
+
+const launchStudio = (marketingCaptureMode = true): void => {
   setupStudio();
   console.log("");
   console.log("Launching isolated Threadlines Marketing Studio...");
 
-  const result = ChildProcess.spawnSync(
+  const demoReadyFile = NodePath.join(paths.root, ".orbit-demo-server-ready");
+  FileSystem.rmSync(demoReadyFile, { force: true });
+  const demoServer = ChildProcess.spawn(
     process.execPath,
-    [
-      NodePath.join(REPO_ROOT, "scripts/dev-runner.ts"),
-      "dev:desktop",
-      "--auto-bootstrap-project-from-cwd",
-    ],
+    [NodePath.join(paths.project, "scripts/demo-server.mjs")],
     {
-      cwd: REPO_ROOT,
+      cwd: paths.project,
       env: {
         ...process.env,
-        THREADLINES_DEV_INSTANCE: "marketing-studio",
-        THREADLINES_HOME: paths.threadlinesHome,
-        THREADLINES_DESKTOP_APP_DATA_DIR: NodePath.dirname(paths.appData),
-        THREADLINES_DESKTOP_USER_DATA_DIR_NAME: NodePath.basename(paths.appData),
-        THREADLINES_DESKTOP_BACKEND_CWD: paths.project,
-        THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
-        THREADLINES_DESKTOP_OPEN_DEVTOOLS: "0",
-        THREADLINES_DESKTOP_RESTART_ON_REBUILD:
-          process.env.THREADLINES_DESKTOP_RESTART_ON_REBUILD ?? "0",
-        THREADLINES_DISABLE_AUTO_UPDATE: "1",
-        PATH: paths.fixtureBin + NodePath.delimiter + (process.env.PATH ?? ""),
-        // Keep this path whitespace-free: terminal shell resolution treats the
-        // configured value as a command and the studio root intentionally has
-        // spaces in its name. The fixture bin is already prepended to PATH.
-        SHELL: "threadlines-studio-shell",
+        PORT: "4173",
+        THREADLINES_MARKETING_DEMO_READY_FILE: demoReadyFile,
       },
-      stdio: "inherit",
+      stdio: "ignore",
     },
   );
+  demoServer.on("error", () => undefined);
+
+  let result: ChildProcess.SpawnSyncReturns<Buffer>;
+  try {
+    waitForPath(demoReadyFile, demoServer);
+    console.log("Orbit demo:       http://127.0.0.1:4173");
+    result = ChildProcess.spawnSync(
+      process.execPath,
+      [
+        NodePath.join(REPO_ROOT, "scripts/dev-runner.ts"),
+        "dev:desktop",
+        "--auto-bootstrap-project-from-cwd",
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          THREADLINES_DEV_INSTANCE: "marketing-studio",
+          THREADLINES_HOME: paths.threadlinesHome,
+          THREADLINES_DESKTOP_APP_DATA_DIR: NodePath.dirname(paths.appData),
+          THREADLINES_DESKTOP_USER_DATA_DIR_NAME: NodePath.basename(paths.appData),
+          THREADLINES_DESKTOP_BACKEND_CWD: paths.project,
+          THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
+          THREADLINES_DESKTOP_OPEN_DEVTOOLS: "0",
+          THREADLINES_DESKTOP_MARKETING_CAPTURE: marketingCaptureMode ? "1" : "0",
+          THREADLINES_CAPTURE_DEBUG_PORT:
+            process.env.THREADLINES_CAPTURE_DEBUG_PORT ?? MARKETING_CAPTURE_DEBUG_PORT,
+          THREADLINES_DESKTOP_RESTART_ON_REBUILD:
+            process.env.THREADLINES_DESKTOP_RESTART_ON_REBUILD ?? "0",
+          THREADLINES_DISABLE_AUTO_UPDATE: "1",
+          PATH: paths.fixtureBin + NodePath.delimiter + (process.env.PATH ?? ""),
+          // Keep this path whitespace-free: terminal shell resolution treats the
+          // configured value as a command and the studio root intentionally has
+          // spaces in its name. The fixture bin is already prepended to PATH.
+          SHELL: "threadlines-studio-shell",
+        },
+        stdio: "inherit",
+      },
+    );
+  } finally {
+    demoServer.kill();
+    FileSystem.rmSync(demoReadyFile, { force: true });
+  }
 
   if (result.error) {
     throw result.error;
@@ -1587,6 +2005,7 @@ const printHelp = (): void => {
       "",
       "Usage:",
       "  node scripts/marketing-studio.ts launch",
+      "  node scripts/marketing-studio.ts launch-native",
       "  node scripts/marketing-studio.ts setup",
       "  node scripts/marketing-studio.ts paths",
       "  node scripts/marketing-studio.ts reset --force",
@@ -1602,6 +2021,9 @@ const main = (): void => {
   switch (command) {
     case "launch":
       launchStudio();
+      break;
+    case "launch-native":
+      launchStudio(false);
       break;
     case "setup":
       setupStudio();

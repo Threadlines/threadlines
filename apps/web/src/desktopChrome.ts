@@ -1,4 +1,4 @@
-import { isElectron } from "./env";
+import { isElectron, isMarketingCaptureMode } from "./env";
 import { isMacPlatform, isWindowsPlatform } from "./lib/utils";
 
 export const isMacElectron =
@@ -12,14 +12,17 @@ export const WINDOWS_SIDEBAR_WORDMARK_ROW_CLASS =
   "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] items-center pr-3 pl-[var(--workspace-titlebar-content-left)]";
 
 export function needsMacTrafficLightClearance(sidebarOpen: boolean): boolean {
-  return isMacElectron && !sidebarOpen;
+  return isMacElectron && !isMarketingCaptureMode && !sidebarOpen;
 }
 
-export function resolveElectronSidebarWordmarkLayout(platform: string): {
+export function resolveElectronSidebarWordmarkLayout(
+  platform: string,
+  marketingCaptureMode = isMarketingCaptureMode,
+): {
   spacerClassName: string | null;
   wordmarkRowClassName: string;
 } {
-  if (isWindowsPlatform(platform)) {
+  if (marketingCaptureMode || isWindowsPlatform(platform)) {
     return {
       spacerClassName: null,
       wordmarkRowClassName: WINDOWS_SIDEBAR_WORDMARK_ROW_CLASS,
