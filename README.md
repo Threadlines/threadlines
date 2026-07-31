@@ -8,15 +8,25 @@
 [![Latest release](https://img.shields.io/github/v/release/Threadlines/threadlines)](https://github.com/Threadlines/threadlines/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Threadlines is a local-first desktop workspace for Codex and Claude Code.
+**[Website](https://www.threadlines.dev/) · [Download](https://www.threadlines.dev/download/) · [What's new in v0.3](https://www.threadlines.dev/changelog/v0.3.0) · [Latest release](https://github.com/Threadlines/threadlines/releases/latest)**
 
-It brings agent threads, terminals, diffs, branches, source-control workflows,
-and session recovery into one focused app so coding agents stay manageable under
-real project load.
+Threadlines is an open-source desktop workspace for Codex and Claude Code. Keep
+the agent conversation, a live browser, project files, terminal, and source
+control open together so you can see, steer, and recover agent work without
+reconstructing context across tools.
 
-The maintained provider paths are Codex and Claude. Other inherited provider
-surfaces may remain while Threadlines narrows toward a smaller native desktop
-surface.
+## Why Threadlines
+
+- **A browser beside every thread.** Review visual changes and send the exact
+  page state back to the agent without leaving the workspace.
+- **Source control you can act on.** Inspect per-file changes and the commit
+  graph, then commit, push, and open a pull request from the same app.
+- **Exact context instead of repeated prompts.** Attach selected reply, code,
+  or terminal lines directly to the next message.
+- **Nothing runs invisibly.** Track tasks, subagents, and background processes,
+  including their live state and stop controls.
+- **Durable, provider-flexible sessions.** Resume work after restarts and switch
+  between Codex and Claude Code without losing the thread or working tree.
 
 ## Installation
 
@@ -29,12 +39,15 @@ surface.
 
 ### Desktop app
 
-Install the latest desktop alpha from
-[GitHub Releases](https://github.com/Threadlines/threadlines/releases).
+Install the latest stable desktop app from the
+[download page](https://www.threadlines.dev/download/) or
+[GitHub Releases](https://github.com/Threadlines/threadlines/releases/latest).
 
 Signed Windows and macOS builds and a Linux x64 AppImage are published through
 the desktop release workflow. Linux builds are unsigned; integrity for
 auto-updates is verified through the updater manifest hashes.
+
+Then open a local project and start a thread with the provider you already use.
 
 ### Server CLI
 
@@ -63,10 +76,16 @@ output noticeably slows installs, builds, and file watching.
 
 ```powershell
 vp install --frozen-lockfile
-vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.2.0
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.3.0
 ```
 
 The artifact is written to `release/`.
+
+## Supported providers
+
+Codex and Claude Code are the maintained provider paths. Other inherited
+provider surfaces may remain visible while Threadlines narrows toward a smaller
+native desktop surface, but they are not actively supported.
 
 ## Origins
 
