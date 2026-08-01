@@ -8,6 +8,7 @@
  */
 
 export interface SubagentTranscriptEntryLike {
+  readonly id?: string | undefined;
   readonly role: "user" | "assistant" | "system" | "thinking";
   readonly text: string;
   readonly toolUses: ReadonlyArray<{ readonly name: string; readonly summary: string }>;
@@ -66,7 +67,7 @@ export function buildSubagentTranscriptView(
   const items: Array<SubagentTranscriptViewItem> = [];
   let openToolsItem: MutableToolsItem | null = null;
 
-  const attachOutput = (output: string, at: string | null): void => {
+  const attachOutput = (output: string, at: string | null, entryKey: string): void => {
     if (openToolsItem) {
       openToolsItem.output =
         openToolsItem.output === null ? output : `${openToolsItem.output}\n${output}`;
@@ -76,18 +77,19 @@ export function buildSubagentTranscriptView(
     // A result with no call in this page (the call scrolled off the top, or the
     // provider emitted an unpaired record). Show it on its own rather than
     // dropping transcript content.
-    items.push({ kind: "tools", id: `${offset + items.length}:output`, tools: [], output, at });
+    items.push({ kind: "tools", id: `${entryKey}:output`, tools: [], output, at });
   };
 
   entries.forEach((entry, index) => {
     const position = offset + index;
+    const entryKey = entry.id ?? String(position);
     const at = entry.at?.trim() ? entry.at : null;
     const text = entry.text.trim();
     const output = entry.outputPreview?.trim() ? entry.outputPreview : null;
 
     if (entry.role === "thinking") {
       if (text.length > 0) {
-        items.push({ kind: "thinking", id: `${position}:thinking`, text: entry.text, at });
+        items.push({ kind: "thinking", id: `${entryKey}:thinking`, text: entry.text, at });
       }
       return;
     }
@@ -97,7 +99,7 @@ export function buildSubagentTranscriptView(
       openToolsItem = null;
       items.push({
         kind: "message",
-        id: `${position}:message`,
+        id: `${entryKey}:message`,
         role: entry.role,
         text: entry.text,
         at,
@@ -107,8 +109,8 @@ export function buildSubagentTranscriptView(
     if (entry.toolUses.length > 0) {
       const toolsItem: MutableToolsItem = {
         kind: "tools",
-        id: `${position}:tools`,
-        tools: keyToolUses(position, entry.toolUses),
+        id: `${entryKey}:tools`,
+        tools: keyToolUses(entryKey, entry.toolUses),
         output: null,
         at,
       };
@@ -117,7 +119,7 @@ export function buildSubagentTranscriptView(
     }
 
     if (output !== null) {
-      attachOutput(output, at);
+      attachOutput(output, at, entryKey);
     }
   });
 
@@ -125,7 +127,7 @@ export function buildSubagentTranscriptView(
 }
 
 function keyToolUses(
-  position: number,
+  entryKey: string,
   toolUses: ReadonlyArray<{ readonly name: string; readonly summary: string }>,
 ): ReadonlyArray<SubagentTranscriptToolUse> {
   const occurrences = new Map<string, number>();
@@ -134,7 +136,7 @@ function keyToolUses(
     const occurrence = occurrences.get(contentKey) ?? 0;
     occurrences.set(contentKey, occurrence + 1);
     return {
-      id: `${position}:${contentKey}:${occurrence}`,
+      id: `${entryKey}:${contentKey}:${occurrence}`,
       name: toolUse.name,
       summary: toolUse.summary,
     };

@@ -9,28 +9,12 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const UPSTREAM_REF = "rust-v0.145.0";
-const USER_AGENT = "effect-codex-app-server-generator";
-const GITHUB_API_BASE =
-  "https://api.github.com/repos/openai/codex/contents/codex-rs/app-server-protocol";
-
-const GithubContentEntries = Schema.Array(
-  Schema.Struct({
-    name: Schema.String,
-    path: Schema.String,
-    download_url: Schema.NullOr(Schema.String),
-    type: Schema.String,
-  }),
-);
-type GithubContentEntry = (typeof GithubContentEntries.Type)[number];
+const CODEX_PROTOCOL_VERSION = "0.146.0";
+const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
+const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
 
 const JsonSchemaDocument = Schema.StructWithRest(
   Schema.Struct({
@@ -38,7 +22,6 @@ const JsonSchemaDocument = Schema.StructWithRest(
   }),
   [Schema.Record(Schema.String, Schema.Json)],
 );
-const decodeGithubContentEntries = Schema.decodeEffect(Schema.fromJsonString(GithubContentEntries));
 const decodeJsonSchemaDocument = Schema.decodeEffect(Schema.fromJsonString(JsonSchemaDocument));
 
 interface GeneratedPaths {
@@ -57,8 +40,13 @@ interface JsonSchemaFile {
   readonly namespace?: string;
   readonly exportName: string;
   readonly fileName: string;
-  readonly downloadUrl: string;
+  readonly sourcePath: string;
   readonly qualifiedName: string;
+}
+
+interface ProtocolSchemaPaths {
+  readonly jsonDir: string;
+  readonly typescriptDir: string;
 }
 
 class GeneratorError extends Schema.TaggedErrorClass<GeneratorError>()("GeneratorError", {
@@ -162,25 +150,79 @@ const ensureGeneratedDir = Effect.fn("ensureGeneratedDir")(function* () {
   yield* fs.makeDirectory(generatedDir, { recursive: true });
 });
 
-const fetchText = Effect.fn("fetchText")(function* (url: string) {
-  return yield* HttpClientRequest.get(url).pipe(
-    HttpClientRequest.setHeader("user-agent", USER_AGENT),
-    HttpClient.execute,
-    Effect.flatMap(HttpClientResponse.filterStatusOk),
-    Effect.flatMap((okResponse) => okResponse.text),
-    Effect.mapError(
-      (cause) =>
-        new GeneratorError({
-          detail: `Failed to fetch ${url}`,
-          cause,
-        }),
-    ),
+const runCommand = Effect.fn("runCommand")(function* (
+  command: string,
+  args: ReadonlyArray<string>,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const handle = yield* spawner.spawn(
+    ChildProcess.make(command, args, {
+      shell: process.platform === "win32",
+    }),
   );
+  const [stdout, stderr, exitCode] = yield* Effect.all(
+    [
+      handle.stdout.pipe(
+        Stream.decodeText(),
+        Stream.runFold(
+          () => "",
+          (output, chunk) => output + chunk,
+        ),
+      ),
+      handle.stderr.pipe(
+        Stream.decodeText(),
+        Stream.runFold(
+          () => "",
+          (output, chunk) => output + chunk,
+        ),
+      ),
+      handle.exitCode,
+    ],
+    { concurrency: "unbounded" },
+  );
+  if (exitCode !== 0) {
+    return yield* new GeneratorError({
+      detail: `${command} ${args.join(" ")} failed with exit code ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+    });
+  }
+  return { stdout, stderr };
 });
 
-const fetchDirectoryEntries = Effect.fn("fetchDirectoryEntries")(function* (path: string) {
-  const raw = yield* fetchText(`${GITHUB_API_BASE}/${path}?ref=${UPSTREAM_REF}`);
-  return yield* decodeGithubContentEntries(raw);
+const generateProtocolSchemas = Effect.fn("generateProtocolSchemas")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const temporaryDir = yield* fs.makeTempDirectoryScoped({
+    prefix: "threadlines-codex-protocol-",
+  });
+  const jsonDir = path.join(temporaryDir, "json");
+  const typescriptDir = path.join(temporaryDir, "typescript");
+  const binary = process.env[CODEX_SCHEMA_BINARY_ENV]?.trim() || "codex";
+  const version = yield* runCommand(binary, ["--version"]);
+  const expectedVersion = `codex-cli ${CODEX_PROTOCOL_VERSION}`;
+  if (version.stdout.trim() !== expectedVersion) {
+    return yield* new GeneratorError({
+      detail: `Codex schema generation requires ${expectedVersion}; received ${version.stdout.trim() || "no version output"}. Set ${CODEX_SCHEMA_BINARY_ENV} to the matching binary.`,
+    });
+  }
+
+  yield* fs.makeDirectory(jsonDir, { recursive: true });
+  yield* fs.makeDirectory(typescriptDir, { recursive: true });
+  yield* runCommand(binary, [
+    "app-server",
+    "generate-json-schema",
+    "--experimental",
+    "--out",
+    jsonDir,
+  ]);
+  yield* runCommand(binary, [
+    "app-server",
+    "generate-ts",
+    "--experimental",
+    "--out",
+    typescriptDir,
+  ]);
+
+  return { jsonDir, typescriptDir } satisfies ProtocolSchemaPaths;
 });
 
 function collectSchemaEntries(
@@ -298,7 +340,10 @@ function parseRequestEntries(fileContents: string): ReadonlyArray<MethodEntry> {
   while ((match = entryPattern.exec(fileContents)) !== null) {
     entries.push({
       method: match[1]!,
-      paramsType: match[2]!.trim(),
+      // Some compatibility endpoints accept either their ordinary params object
+      // or null. The generated client always sends the object form, so retain
+      // the concrete schema name used for request validation and inference.
+      paramsType: match[2]!.trim().replace(/\s*\|\s*null$/, ""),
     });
   }
   return entries;
@@ -328,6 +373,7 @@ function resolveSchemaTypeName(
   const candidates = [
     rawTypeName,
     `V2${rawTypeName}`,
+    `V2Nullable${rawTypeName}`,
     `V1${rawTypeName}`,
     `SerdeJson${rawTypeName}`,
   ];
@@ -435,37 +481,26 @@ function exportNameForPath(filePath: string): string {
   return `${namespacePrefix}${name}`;
 }
 
-function buildJsonSchemaFiles(
-  entries: ReadonlyArray<GithubContentEntry>,
-): ReadonlyArray<JsonSchemaFile> {
-  return entries
-    .filter(
-      (entry) =>
-        entry.type === "file" &&
-        entry.name.endsWith(".json") &&
-        entry.download_url !== null &&
-        !entry.name.startsWith("codex_app_server_protocol."),
-    )
-    .map((entry) => {
-      const relative = entry.path.replace(/^codex-rs\/app-server-protocol\/schema\/json\//, "");
-      const parts = relative.split("/");
-      if (parts.length > 1) {
-        return {
-          namespace: parts[0]!,
-          exportName: exportNameForPath(relative),
-          fileName: entry.name,
-          downloadUrl: entry.download_url!,
-          qualifiedName: relative.replace(/\.json$/, ""),
-        } satisfies JsonSchemaFile;
-      }
+const buildJsonSchemaFiles = Effect.fn("buildJsonSchemaFiles")(function* (
+  directory: string,
+  namespace?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const names = yield* fs.readDirectory(directory);
+  return names
+    .filter((name) => name.endsWith(".json") && !name.startsWith("codex_app_server_protocol."))
+    .map((fileName) => {
+      const relative = namespace ? `${namespace}/${fileName}` : fileName;
       return {
+        ...(namespace ? { namespace } : {}),
         exportName: exportNameForPath(relative),
-        fileName: entry.name,
-        downloadUrl: entry.download_url!,
+        fileName,
+        sourcePath: path.join(directory, fileName),
         qualifiedName: relative.replace(/\.json$/, ""),
       } satisfies JsonSchemaFile;
     });
-}
+});
 
 function rewriteExternalRefs(
   value: Schema.Json,
@@ -527,17 +562,14 @@ function rewriteExternalRefs(
 
 const generateFiles = Effect.fn("generateFiles")(function* () {
   yield* ensureGeneratedDir();
-
-  const [rootJsonEntries, v1JsonEntries, v2JsonEntries] = yield* Effect.all([
-    fetchDirectoryEntries("schema/json"),
-    fetchDirectoryEntries("schema/json/v1"),
-    fetchDirectoryEntries("schema/json/v2"),
-  ]);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const protocolSchemas = yield* generateProtocolSchemas();
 
   const jsonSchemaFiles = [
-    ...buildJsonSchemaFiles(rootJsonEntries),
-    ...buildJsonSchemaFiles(v1JsonEntries),
-    ...buildJsonSchemaFiles(v2JsonEntries),
+    ...(yield* buildJsonSchemaFiles(protocolSchemas.jsonDir)),
+    ...(yield* buildJsonSchemaFiles(path.join(protocolSchemas.jsonDir, "v1"), "v1")),
+    ...(yield* buildJsonSchemaFiles(path.join(protocolSchemas.jsonDir, "v2"), "v2")),
   ].toSorted((left, right) => left.exportName.localeCompare(right.exportName));
 
   const exportNameByQualifiedName = new Map(
@@ -546,7 +578,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   const aggregateSchemas: Record<string, Schema.Json> = {};
 
   for (const file of jsonSchemaFiles) {
-    const raw = yield* fetchText(file.downloadUrl);
+    const raw = yield* fs.readFileString(file.sourcePath);
     const parsed = yield* decodeJsonSchemaDocument(raw);
     const localDefinitionNames = new Map(
       Object.keys(parsed.definitions ?? {}).map((definitionName) => [
@@ -611,17 +643,17 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   }
 
   const generatedSchemaNames = new Set(generatedEntries.keys());
-  const clientRequestRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts`,
+  const clientRequestRaw = yield* fs.readFileString(
+    path.join(protocolSchemas.typescriptDir, "ClientRequest.ts"),
   );
-  const clientNotificationRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ClientNotification.ts`,
+  const clientNotificationRaw = yield* fs.readFileString(
+    path.join(protocolSchemas.typescriptDir, "ClientNotification.ts"),
   );
-  const serverRequestRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`,
+  const serverRequestRaw = yield* fs.readFileString(
+    path.join(protocolSchemas.typescriptDir, "ServerRequest.ts"),
   );
-  const serverNotificationRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`,
+  const serverNotificationRaw = yield* fs.readFileString(
+    path.join(protocolSchemas.typescriptDir, "ServerNotification.ts"),
   );
 
   const clientRequestEntries = parseRequestEntries(clientRequestRaw);
@@ -738,7 +770,6 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
       }),
   ].join("\n");
 
-  const fs = yield* FileSystem.FileSystem;
   const { generatedDir, metaOutputPath, namespacesOutputPath, schemaOutputPath } =
     yield* getGeneratedPaths();
   yield* fs.writeFileString(schemaOutputPath, schemaOutput);
@@ -770,12 +801,6 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
 
 generateFiles().pipe(
   Effect.scoped,
-  Effect.provide(
-    Layer.mergeAll(
-      Logger.layer([Logger.consolePretty()]),
-      NodeServices.layer,
-      FetchHttpClient.layer,
-    ),
-  ),
+  Effect.provide(Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer)),
   NodeRuntime.runMain,
 );

@@ -967,10 +967,6 @@ function collectSubagentActivityRecords(
   const latestTurnId = options.latestTurnId ?? null;
   const sortedActivities = [...activities].toSorted(compareActivitiesByOrder);
 
-  // Background agents keep reporting through task.* activities after their
-  // spawn turn settles. Spawns linked to a still-live task bypass turn scoping
-  // below so the popover keeps showing them until the task completes.
-  const liveBackgroundTaskToolUseIds = new Set<string>();
   // The same task stream carries per-agent counters and the provider's own
   // agent id. They arrive on their own activities, so they are collected up
   // front and merged into the record the spawning tool call builds.
@@ -995,11 +991,6 @@ function collectSubagentActivityRecords(
     if (!toolUseId) {
       continue;
     }
-    if (activity.kind === "task.completed") {
-      liveBackgroundTaskToolUseIds.delete(toolUseId);
-    } else {
-      liveBackgroundTaskToolUseIds.add(toolUseId);
-    }
     if (taskId && !taskIdByToolUseId.has(toolUseId)) {
       taskIdByToolUseId.set(toolUseId, taskId);
     }
@@ -1019,8 +1010,6 @@ function collectSubagentActivityRecords(
   }
 
   for (const activity of sortedActivities) {
-    const inLatestTurn = latestTurnId === null || activity.turnId === latestTurnId;
-
     const payload =
       activity.payload && typeof activity.payload === "object"
         ? (activity.payload as Record<string, unknown>)
@@ -1085,13 +1074,9 @@ function collectSubagentActivityRecords(
 
     for (const agentId of resolvedAgentIds) {
       const previous = byAgentId.get(agentId);
-      // Turn scoping applies to where an agent is spawned. Later lifecycle
-      // activities for a known agent (e.g. a background agent's completion
-      // replayed after its turn ended) still update the record, and spawns
-      // with a live background task stay visible across turns.
-      if (!inLatestTurn && previous === undefined && !liveBackgroundTaskToolUseIds.has(agentId)) {
-        continue;
-      }
+      // Fold every agent to its latest lifecycle state before applying turn
+      // visibility. Codex children can outlive their spawning root turn even
+      // though they have no separate task.* stream like Claude does.
       const pendingAgent = agentId.startsWith("pending:");
       if (pendingAgent) {
         pendingSpawnKeysByCallId.set(toolCallId, agentId);
@@ -1183,10 +1168,17 @@ function collectSubagentActivityRecords(
     }
   }
 
-  return [...byAgentId.values()].toSorted((left, right) => {
-    const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
-    return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
-  });
+  return [...byAgentId.values()]
+    .filter(
+      (record) =>
+        latestTurnId === null ||
+        record.turnId === latestTurnId ||
+        isActiveSubagentStatus(record.status),
+    )
+    .toSorted((left, right) => {
+      const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+      return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
+    });
 }
 
 /** Folds one task activity into the running telemetry for an agent. Counters

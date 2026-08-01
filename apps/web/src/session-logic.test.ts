@@ -4159,6 +4159,17 @@ describe("deriveSubagentProgressState", () => {
       ],
     });
 
+    expect(
+      deriveSubagentProgressState({
+        activities: activities.slice(0, 3),
+        latestTurnId: TurnId.make("turn-2"),
+        latestTurnSettled: false,
+      }),
+    ).toMatchObject({
+      activeCount: 1,
+      items: [expect.objectContaining({ id: "agent-native-1", status: "running" })],
+    });
+
     const completedState = deriveSubagentProgressState({
       activities,
       latestTurnId: TurnId.make("turn-1"),
@@ -4177,6 +4188,13 @@ describe("deriveSubagentProgressState", () => {
         activities,
         latestTurnId: TurnId.make("turn-1"),
         latestTurnSettled: true,
+      }),
+    ).toBeNull();
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-2"),
+        latestTurnSettled: false,
       }),
     ).toBeNull();
   });

@@ -105,6 +105,7 @@ const CODEX_EXTERNAL_THREAD_SOURCE_KINDS = [
 
 type CodexStoredThread = EffectCodexSchema.V2ThreadReadResponse["thread"];
 type CodexStoredThreadItem = CodexStoredThread["turns"][number]["items"][number];
+type CodexPaginatedThreadItem = EffectCodexSchema.V2ThreadItemsListResponse["data"][number]["item"];
 type CodexListedThread = EffectCodexSchema.V2ThreadListResponse["data"][number];
 
 function isoFromEpochSeconds(value: number): string {
@@ -437,28 +438,57 @@ export function mapCodexSubagentTranscript(
   };
 }
 
+function readCodexThreadSpawnMetadata(
+  thread: CodexStoredThread,
+):
+  | { readonly parentThreadId: string; readonly depth: number; readonly agentRole?: string }
+  | undefined {
+  const source = thread.source;
+  if (typeof source !== "object" || !("subAgent" in source)) {
+    return undefined;
+  }
+  const subAgent = source.subAgent;
+  if (typeof subAgent !== "object" || !("thread_spawn" in subAgent)) {
+    return undefined;
+  }
+  const spawn = subAgent.thread_spawn;
+  return {
+    parentThreadId: spawn.parent_thread_id,
+    depth: spawn.depth,
+    ...(spawn.agent_role?.trim() ? { agentRole: spawn.agent_role } : {}),
+  };
+}
+
+function mapCodexSubagentIdentity(thread: CodexStoredThread) {
+  const spawn = readCodexThreadSpawnMetadata(thread);
+  const agentType = thread.agentRole?.trim() || spawn?.agentRole;
+  const description = thread.preview?.trim() ?? "";
+  return {
+    id: thread.id,
+    ...(agentType ? { agentType } : {}),
+    ...(description ? { description } : {}),
+    ...(spawn ? { spawnDepth: spawn.depth } : {}),
+  };
+}
+
+function mapCodexPaginatedTranscriptEntries(
+  items: ReadonlyArray<CodexPaginatedThreadItem>,
+): ReadonlyArray<ProviderSubagentTranscriptEntry> {
+  return items.flatMap((item) => {
+    // The generated item unions for thread/read and thread/items/list are the
+    // same protocol shape but carry response-scoped TypeScript aliases.
+    const mapped = mapCodexStoredItem(item as CodexStoredThreadItem);
+    return mapped === undefined ? [] : [{ ...mapped, id: item.id }];
+  });
+}
+
 /** Prefer the canonical parentThreadId, with the source metadata retained by
  * older app-server versions as a compatibility fallback. */
 export function readCodexSubagentParentThreadId(thread: CodexStoredThread): string | undefined {
   if (thread.parentThreadId?.trim()) {
     return thread.parentThreadId;
   }
-  const source = thread.source as unknown;
-  if (!source || typeof source !== "object" || !("subAgent" in source)) {
-    return undefined;
-  }
-  const subAgent = (source as { readonly subAgent?: unknown }).subAgent;
-  if (!subAgent || typeof subAgent !== "object" || !("thread_spawn" in subAgent)) {
-    return undefined;
-  }
-  const spawn = (subAgent as { readonly thread_spawn?: unknown }).thread_spawn;
-  if (!spawn || typeof spawn !== "object" || !("parent_thread_id" in spawn)) {
-    return undefined;
-  }
-  const parentThreadId = (spawn as { readonly parent_thread_id?: unknown }).parent_thread_id;
-  return typeof parentThreadId === "string" && parentThreadId.trim().length > 0
-    ? parentThreadId
-    : undefined;
+  return readCodexThreadSpawnMetadata(thread)?.parentThreadId;
 }
 
 function providerErrorClass(message: string): "authentication_error" | "provider_error" {
@@ -2985,34 +3015,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           detail,
         });
       const context = yield* requireSession(threadId);
-      const root = yield* context.runtime.readThread.pipe(
+      const rootThreadId = yield* context.runtime.readProviderThreadId.pipe(
         Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)),
       );
-      if (input.agentId === root.threadId) {
+      if (input.agentId === rootThreadId) {
         return yield* requestError("The requested transcript belongs to the parent thread.");
       }
 
-      const readStoredThread = (providerThreadId: string) =>
+      const readStoredThreadMetadata = (providerThreadId: string) =>
         context.runtime
-          .readStoredThread(providerThreadId)
+          .readStoredThreadMetadata(providerThreadId)
           .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)));
-      const candidate = yield* readStoredThread(input.agentId);
+      const candidate = yield* readStoredThreadMetadata(input.agentId);
       const visited = new Set<string>([candidate.id]);
       let current = candidate;
+      let authorized = false;
 
       for (let depth = 0; depth < CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH; depth += 1) {
         const parentThreadId = readCodexSubagentParentThreadId(current);
-        if (parentThreadId === root.threadId) {
-          return mapCodexSubagentTranscript(
-            candidate,
-            input.limit !== undefined || input.offset !== undefined || input.fromEnd !== undefined
-              ? {
-                  ...(input.limit !== undefined ? { limit: input.limit } : {}),
-                  ...(input.offset !== undefined ? { offset: input.offset } : {}),
-                  ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
-                }
-              : undefined,
-          );
+        if (parentThreadId === rootThreadId) {
+          authorized = true;
+          break;
         }
         if (!parentThreadId || visited.has(parentThreadId)) {
           return yield* requestError(
@@ -3020,11 +3043,70 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           );
         }
         visited.add(parentThreadId);
-        current = yield* readStoredThread(parentThreadId);
+        current = yield* readStoredThreadMetadata(parentThreadId);
       }
 
-      return yield* requestError(
-        `Codex thread '${input.agentId}' exceeded the supported subagent nesting depth.`,
+      if (!authorized) {
+        return yield* requestError(
+          `Codex thread '${input.agentId}' exceeded the supported subagent nesting depth.`,
+        );
+      }
+
+      if (input.fromEnd || input.cursor !== undefined) {
+        const limit =
+          input.limit !== undefined && input.limit > 0
+            ? input.limit
+            : CODEX_SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+        const descendingEntries: ProviderSubagentTranscriptEntry[] = [];
+        let cursor = input.cursor;
+        let nextCursor: string | undefined;
+
+        for (
+          let pageNumber = 0;
+          pageNumber < 32 && descendingEntries.length < limit;
+          pageNumber += 1
+        ) {
+          const page = yield* context.runtime
+            .readStoredThreadItems({
+              threadId: candidate.id,
+              sortDirection: "desc",
+              limit: limit - descendingEntries.length,
+              ...(cursor !== undefined ? { cursor } : {}),
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                mapCodexRuntimeError(threadId, "thread/items/list", cause),
+              ),
+            );
+          descendingEntries.push(
+            ...mapCodexPaginatedTranscriptEntries(page.data.map((entry) => entry.item)),
+          );
+          nextCursor = page.nextCursor?.trim() || undefined;
+          if (nextCursor === undefined || nextCursor === cursor) {
+            break;
+          }
+          cursor = nextCursor;
+        }
+
+        return {
+          entries: descendingEntries.toReversed(),
+          truncated: nextCursor !== undefined,
+          agent: mapCodexSubagentIdentity(candidate),
+          ...(nextCursor !== undefined ? { nextCursor } : {}),
+        };
+      }
+
+      const storedCandidate = yield* context.runtime
+        .readStoredThread(candidate.id)
+        .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)));
+      return mapCodexSubagentTranscript(
+        storedCandidate,
+        input.limit !== undefined || input.offset !== undefined
+          ? {
+              ...(input.limit !== undefined ? { limit: input.limit } : {}),
+              ...(input.offset !== undefined ? { offset: input.offset } : {}),
+            }
+          : undefined,
       );
     });
 

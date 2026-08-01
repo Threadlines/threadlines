@@ -323,11 +323,26 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
+  public readonly readProviderThreadIdImpl = vi.fn(() => Promise.resolve("provider-thread-1"));
+
   public readonly readStoredThreadImpl = vi.fn(
     (providerThreadId: string): Promise<EffectCodexSchema.V2ThreadReadResponse["thread"]> =>
       Promise.resolve(
         makeStoredThread({ id: providerThreadId, parentThreadId: "provider-thread-1" }),
       ),
+  );
+
+  public readonly readStoredThreadMetadataImpl = vi.fn(
+    (providerThreadId: string): Promise<EffectCodexSchema.V2ThreadReadResponse["thread"]> =>
+      Promise.resolve(
+        makeStoredThread({ id: providerThreadId, parentThreadId: "provider-thread-1" }),
+      ),
+  );
+
+  public readonly readStoredThreadItemsImpl = vi.fn(
+    (
+      _input: EffectCodexSchema.V2ThreadItemsListParams,
+    ): Promise<EffectCodexSchema.V2ThreadItemsListResponse> => Promise.resolve({ data: [] }),
   );
 
   public readonly rollbackThreadImpl = vi.fn(
@@ -402,8 +417,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   readThread = Effect.promise(() => this.readThreadImpl());
 
+  readProviderThreadId = Effect.promise(() => this.readProviderThreadIdImpl());
+
   readStoredThread(providerThreadId: string) {
     return Effect.promise(() => this.readStoredThreadImpl(providerThreadId));
+  }
+
+  readStoredThreadMetadata(providerThreadId: string) {
+    return Effect.promise(() => this.readStoredThreadMetadataImpl(providerThreadId));
+  }
+
+  readStoredThreadItems(input: EffectCodexSchema.V2ThreadItemsListParams) {
+    return Effect.promise(() => this.readStoredThreadItemsImpl(input));
   }
 
   rollbackThread(numTurns: number) {
@@ -654,6 +679,102 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
         runtime.readStoredThreadImpl.mock.calls.map(([id]) => id),
         ["child-provider-thread"],
       );
+      assert.deepStrictEqual(
+        runtime.readStoredThreadMetadataImpl.mock.calls.map(([id]) => id),
+        ["child-provider-thread"],
+      );
+    }),
+  );
+
+  it.effect("uses bounded Codex cursor pages for the newest transcript entries", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-transcript-paginated");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = transcriptRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.readStoredThreadItemsImpl.mockImplementation((input) =>
+        Promise.resolve(
+          input.cursor === "page-2"
+            ? ({
+                data: [
+                  {
+                    turnId: "child-turn",
+                    item: {
+                      id: "child-user-1",
+                      type: "userMessage",
+                      content: [{ type: "text", text: "Earlier instruction" }],
+                    },
+                  },
+                ],
+                nextCursor: "page-3",
+              } as unknown as EffectCodexSchema.V2ThreadItemsListResponse)
+            : ({
+                data: [
+                  {
+                    turnId: "child-turn",
+                    item: { id: "child-answer-1", type: "agentMessage", text: "Latest answer" },
+                  },
+                  {
+                    turnId: "child-turn",
+                    item: { id: "empty-reasoning", type: "reasoning", summary: [] },
+                  },
+                ],
+                nextCursor: "page-2",
+              } as unknown as EffectCodexSchema.V2ThreadItemsListResponse),
+        ),
+      );
+
+      const readSubagentTranscript = adapter.readSubagentTranscript;
+      assert.ok(readSubagentTranscript);
+      const result = yield* readSubagentTranscript(threadId, {
+        threadId,
+        agentId: "child-provider-thread",
+        limit: 2,
+        fromEnd: true,
+      });
+
+      assert.deepStrictEqual(result, {
+        entries: [
+          {
+            id: "child-user-1",
+            role: "user",
+            text: "Earlier instruction",
+            toolUses: [],
+          },
+          {
+            id: "child-answer-1",
+            role: "assistant",
+            text: "Latest answer",
+            toolUses: [],
+          },
+        ],
+        truncated: true,
+        agent: { id: "child-provider-thread", spawnDepth: 1 },
+        nextCursor: "page-3",
+      });
+      assert.equal(runtime.readStoredThreadImpl.mock.calls.length, 0);
+      assert.deepStrictEqual(runtime.readStoredThreadItemsImpl.mock.calls, [
+        [
+          {
+            threadId: "child-provider-thread",
+            sortDirection: "desc",
+            limit: 2,
+          },
+        ],
+        [
+          {
+            threadId: "child-provider-thread",
+            sortDirection: "desc",
+            limit: 1,
+            cursor: "page-2",
+          },
+        ],
+      ]);
     }),
   );
 
@@ -668,7 +789,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
       });
       const runtime = transcriptRuntimeFactory.lastRuntime;
       assert.ok(runtime);
-      runtime.readStoredThreadImpl.mockImplementation((providerThreadId: string) =>
+      runtime.readStoredThreadMetadataImpl.mockImplementation((providerThreadId: string) =>
         Promise.resolve(
           makeStoredThread({
             id: providerThreadId,

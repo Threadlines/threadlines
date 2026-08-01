@@ -153,19 +153,9 @@ const CodexUserInputAnswerObject = Schema.Struct({
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
 
-// TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
-// `V2TurnStartParams` schema includes `collaborationMode` directly.
-const CodexTurnStartParamsWithCollaborationMode = EffectCodexSchema.V2TurnStartParams.pipe(
-  Schema.fieldsAssign({
-    collaborationMode: Schema.optionalKey(EffectCodexSchema.V2TurnStartParams__CollaborationMode),
-  }),
-);
-const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffect(
-  CodexTurnStartParamsWithCollaborationMode,
-);
+const decodeCodexTurnStartParams = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartParams);
 
-export type CodexTurnStartParamsWithCollaborationMode =
-  typeof CodexTurnStartParamsWithCollaborationMode.Type;
+export type CodexTurnStartParamsWithCollaborationMode = EffectCodexSchema.V2TurnStartParams;
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
@@ -274,12 +264,22 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<CodexThreadGoal, CodexSessionRuntimeError>;
   readonly getGoal: Effect.Effect<CodexThreadGoal | null, CodexSessionRuntimeError>;
   readonly clearGoal: Effect.Effect<void, CodexSessionRuntimeError>;
+  /** Current provider-owned thread id without loading its transcript. */
+  readonly readProviderThreadId: Effect.Effect<string, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   /** Read any persisted Codex provider thread without resuming it. Callers
    * must authorize the provider thread before exposing its contents. */
   readonly readStoredThread: (
     providerThreadId: string,
   ) => Effect.Effect<EffectCodexSchema.V2ThreadReadResponse["thread"], CodexSessionRuntimeError>;
+  /** Read thread identity and ancestry without materializing its turns. */
+  readonly readStoredThreadMetadata: (
+    providerThreadId: string,
+  ) => Effect.Effect<EffectCodexSchema.V2ThreadReadResponse["thread"], CodexSessionRuntimeError>;
+  /** Cursor-paginated provider items, used for bounded transcript reads. */
+  readonly readStoredThreadItems: (
+    input: EffectCodexSchema.V2ThreadItemsListParams,
+  ) => Effect.Effect<EffectCodexSchema.V2ThreadItemsListResponse, CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
   ) => Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
@@ -579,7 +579,7 @@ export function buildTurnStartParams(input: {
     ...(input.effort ? { effort: input.effort } : {}),
   });
 
-  return decodeCodexTurnStartParamsWithCollaborationMode({
+  return decodeCodexTurnStartParams({
     threadId: input.threadId,
     input: turnInput,
     ...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
@@ -1060,6 +1060,38 @@ export function readCollabParentTurnId(input: {
   return input.collabReceiverTurns.get(input.providerConversationId);
 }
 
+/** Seed routing as soon as Codex announces a spawned thread. In app-server v2
+ *  this notification can arrive before the parent collab item, so waiting for
+ *  item/started would drop the child's first deltas as foreign-thread noise. */
+export function rememberCollabThreadStartTurn(
+  collabReceiverTurns: Map<string, TurnId>,
+  notification: CodexServerNotification,
+  input: {
+    readonly rootThreadId: string | undefined;
+    readonly activeRootTurnId: TurnId | undefined;
+  },
+): void {
+  if (notification.method !== "thread/started") {
+    return;
+  }
+  const thread = notification.params.thread;
+  if (thread.id === input.rootThreadId) {
+    return;
+  }
+  const sourceMetadata = readSubAgentSourceMetadata(thread.source);
+  const parentThreadId = readTrimmedString(thread.parentThreadId) ?? sourceMetadata?.parentThreadId;
+  if (!parentThreadId) {
+    return;
+  }
+  const parentTurnId =
+    parentThreadId === input.rootThreadId
+      ? input.activeRootTurnId
+      : collabReceiverTurns.get(parentThreadId);
+  if (parentTurnId) {
+    collabReceiverTurns.set(thread.id, parentTurnId);
+  }
+}
+
 export function readCollabReceiverThreadIds(
   notification: CodexServerNotification,
 ): ReadonlyArray<string> {
@@ -1085,7 +1117,9 @@ function readTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function readSubAgentSourceMetadata(source: unknown): CollabChildThreadMetadata | undefined {
+function readSubAgentSourceMetadata(
+  source: unknown,
+): (CollabChildThreadMetadata & { readonly parentThreadId?: string }) | undefined {
   if (!source || typeof source !== "object") {
     return undefined;
   }
@@ -1103,10 +1137,12 @@ function readSubAgentSourceMetadata(source: unknown): CollabChildThreadMetadata 
   const threadSpawnRecord = threadSpawn as Record<string, unknown>;
   const agentNickname = readTrimmedString(threadSpawnRecord.agent_nickname);
   const agentRole = readTrimmedString(threadSpawnRecord.agent_role);
-  return agentNickname || agentRole
+  const parentThreadId = readTrimmedString(threadSpawnRecord.parent_thread_id);
+  return agentNickname || agentRole || parentThreadId
     ? {
         ...(agentNickname ? { agentNickname } : {}),
         ...(agentRole ? { agentRole } : {}),
+        ...(parentThreadId ? { parentThreadId } : {}),
       }
     : undefined;
 }
@@ -1462,7 +1498,12 @@ export const makeCodexSessionRuntime = (
         const collabChildThreadMetadata = yield* Ref.get(collabChildThreadMetadataRef);
         rememberCollabChildThreadMetadata(collabChildThreadMetadata, notification);
         const providerConversationId = readNotificationThreadId(notification);
-        const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        const session = yield* Ref.get(sessionRef);
+        const providerThreadId = currentProviderThreadId(session);
+        rememberCollabThreadStartTurn(collabReceiverTurns, notification, {
+          rootThreadId: providerThreadId,
+          activeRootTurnId: session.activeTurnId,
+        });
         const childParentTurnId = readCollabParentTurnId({
           collabReceiverTurns,
           providerConversationId,
@@ -1845,6 +1886,15 @@ export const makeCodexSessionRuntime = (
       }).pipe(
         Effect.andThen(Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method))),
       ),
+    );
+
+    yield* client.handleUnknownServerNotification((method, params) =>
+      emitEvent({
+        kind: "notification",
+        threadId: options.threadId,
+        method,
+        ...(params !== undefined ? { payload: params } : {}),
+      }),
     );
 
     const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
@@ -2259,6 +2309,7 @@ export const makeCodexSessionRuntime = (
           }),
         );
       }),
+      readProviderThreadId,
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         const response = yield* client.request("thread/read", {
@@ -2274,6 +2325,14 @@ export const makeCodexSessionRuntime = (
             includeTurns: true,
           })
           .pipe(Effect.map((response) => response.thread)),
+      readStoredThreadMetadata: (providerThreadId) =>
+        client
+          .request("thread/read", {
+            threadId: providerThreadId,
+            includeTurns: false,
+          })
+          .pipe(Effect.map((response) => response.thread)),
+      readStoredThreadItems: (input) => client.request("thread/items/list", input),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

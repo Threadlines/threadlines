@@ -24,6 +24,7 @@ import {
   readCollabChildThreadMetadata,
   readCollabParentTurnId,
   readCollabReceiverThreadIds,
+  rememberCollabThreadStartTurn,
   rememberCollabReceiverTurns,
   shouldAcceptCodexNotificationForSession,
   type CodexServerNotification,
@@ -349,6 +350,54 @@ describe("collab child thread metadata", () => {
     rememberCollabReceiverTurns(childTurns, notification, parentTurnId, "root-thread");
 
     assert.equal(childTurns.get("grandchild-thread-1"), rootTurnId);
+  });
+
+  it("routes a child from thread/started before its parent item arrives", () => {
+    const childTurns = new Map<string, TurnId>();
+    const notification = {
+      method: "thread/started",
+      params: {
+        thread: {
+          id: "child-thread-1",
+          parentThreadId: "root-thread",
+          source: "appServer",
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    rememberCollabThreadStartTurn(childTurns, notification, {
+      rootThreadId: "root-thread",
+      activeRootTurnId: TurnId.make("root-turn"),
+    });
+
+    assert.equal(childTurns.get("child-thread-1"), "root-turn");
+  });
+
+  it("routes nested thread starts through their known parent", () => {
+    const childTurns = new Map<string, TurnId>([["child-thread-1", TurnId.make("root-turn")]]);
+    const notification = {
+      method: "thread/started",
+      params: {
+        thread: {
+          id: "grandchild-thread-1",
+          source: {
+            subAgent: {
+              thread_spawn: {
+                depth: 2,
+                parent_thread_id: "child-thread-1",
+              },
+            },
+          },
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    rememberCollabThreadStartTurn(childTurns, notification, {
+      rootThreadId: "root-thread",
+      activeRootTurnId: TurnId.make("newer-root-turn"),
+    });
+
+    assert.equal(childTurns.get("grandchild-thread-1"), "root-turn");
   });
 
   it("reads the runtime nickname and role from child thread starts", () => {

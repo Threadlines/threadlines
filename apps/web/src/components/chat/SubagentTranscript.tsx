@@ -79,11 +79,39 @@ function transcriptPageTotal(result: ProviderSubagentTranscriptResult): number |
 function mergeTranscriptPages(
   current: ProviderSubagentTranscriptResult,
   incoming: ProviderSubagentTranscriptResult,
+  direction: "refresh" | "earlier" = "refresh",
 ): ProviderSubagentTranscriptResult {
   const currentOffset = transcriptPageOffset(current);
   const incomingOffset = transcriptPageOffset(incoming);
   if (currentOffset === null || incomingOffset === null) {
-    return incoming;
+    const hasStableIds = [...current.entries, ...incoming.entries].every(
+      (entry) => entry.id !== undefined,
+    );
+    if (!hasStableIds) {
+      return incoming;
+    }
+    // A normal live refresh replaces its bounded newest-page window. Once the
+    // user has loaded earlier pages, the current window is larger and must be
+    // retained while overlapping newest items are refreshed in place.
+    if (direction === "refresh" && current.entries.length <= incoming.entries.length) {
+      return incoming;
+    }
+
+    const orderedEntries =
+      direction === "earlier"
+        ? [...incoming.entries, ...current.entries]
+        : [...current.entries, ...incoming.entries];
+    const entriesById = new Map<string, ProviderSubagentTranscriptEntry>();
+    for (const entry of orderedEntries) {
+      entriesById.set(entry.id!, entry);
+    }
+    const nextCursor = direction === "earlier" ? incoming.nextCursor : current.nextCursor;
+    return {
+      entries: [...entriesById.values()],
+      truncated: nextCursor !== undefined,
+      ...((current.agent ?? incoming.agent) ? { agent: current.agent ?? incoming.agent } : {}),
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
+    };
   }
 
   const currentEnd = currentOffset + current.entries.length;
@@ -114,6 +142,7 @@ function mergeTranscriptPages(
   return {
     entries: entries as ProviderSubagentTranscriptEntry[],
     truncated: offset > 0 || end < totalEntries,
+    ...((current.agent ?? incoming.agent) ? { agent: current.agent ?? incoming.agent } : {}),
     offset,
     totalEntries,
   };
@@ -151,6 +180,8 @@ function transcriptRevision(
         section.agentId,
         section.result.offset ?? 0,
         section.result.totalEntries ?? section.result.entries.length,
+        section.result.nextCursor ?? "",
+        lastEntry?.id ?? "",
         lastEntry?.role ?? "",
         lastEntry?.text ?? "",
         lastEntry?.outputPreview ?? "",
@@ -192,18 +223,18 @@ export function SubagentTranscript({
     setState({ status: "loading" });
 
     const readLatestSections = async () => {
-      const sections: Array<{ agentId: string; result: ProviderSubagentTranscriptResult }> = [];
-      for (const agentId of requestedAgentIds) {
-        const result = await readSubagentTranscriptPage({
-          environmentId,
-          threadId,
+      return await Promise.all(
+        requestedAgentIds.map(async (agentId) => ({
           agentId,
-          limit: TRANSCRIPT_PAGE_SIZE,
-          fromEnd: true,
-        });
-        sections.push({ agentId, result });
-      }
-      return sections;
+          result: await readSubagentTranscriptPage({
+            environmentId,
+            threadId,
+            agentId,
+            limit: TRANSCRIPT_PAGE_SIZE,
+            fromEnd: true,
+          }),
+        })),
+      );
     };
 
     const scheduleRefresh = () => {
@@ -362,10 +393,15 @@ export function SubagentTranscript({
   const loadEarlier = useCallback(
     async (agentId: string, result: ProviderSubagentTranscriptResult) => {
       const currentOffset = transcriptPageOffset(result);
-      if (currentOffset === null || currentOffset === 0 || loadingEarlierAgentId !== null) {
+      const cursor = result.nextCursor;
+      if (
+        (cursor === undefined && (currentOffset === null || currentOffset === 0)) ||
+        loadingEarlierAgentId !== null
+      ) {
         return;
       }
-      const offset = Math.max(0, currentOffset - TRANSCRIPT_PAGE_SIZE);
+      const offset =
+        currentOffset === null ? undefined : Math.max(0, currentOffset - TRANSCRIPT_PAGE_SIZE);
       prependScrollHeightRef.current = scrollElementRef.current?.scrollHeight ?? null;
       setLoadingEarlierAgentId(agentId);
       setEarlierLoadError(null);
@@ -374,8 +410,10 @@ export function SubagentTranscript({
           environmentId,
           threadId,
           agentId,
-          offset,
-          limit: currentOffset - offset,
+          ...(cursor !== undefined ? { cursor, limit: TRANSCRIPT_PAGE_SIZE } : {}),
+          ...(cursor === undefined && offset !== undefined && currentOffset !== null
+            ? { offset, limit: currentOffset - offset }
+            : {}),
         });
         setState((current) =>
           current.status !== "loaded"
@@ -386,7 +424,7 @@ export function SubagentTranscript({
                   section.agentId === agentId
                     ? {
                         ...section,
-                        result: mergeTranscriptPages(section.result, earlierResult),
+                        result: mergeTranscriptPages(section.result, earlierResult, "earlier"),
                       }
                     : section,
                 ),
@@ -452,7 +490,7 @@ export function SubagentTranscript({
               );
               const { lead, steps } = splitSubagentTranscriptLead(
                 items,
-                (section.result.offset ?? 0) === 0,
+                section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0,
               );
               const showLiveTail =
                 follow &&
@@ -460,7 +498,7 @@ export function SubagentTranscript({
                 shouldShowSubagentLiveTail(items, fallbackBody);
               return (
                 <div key={section.agentId} className="space-y-2">
-                  {(section.result.offset ?? 0) > 0 ? (
+                  {section.result.nextCursor !== undefined || (section.result.offset ?? 0) > 0 ? (
                     <Button
                       type="button"
                       variant="ghost"
@@ -539,7 +577,9 @@ export function SubagentTranscript({
                       </SpineRow>
                     ) : null}
                   </div>
-                  {section.result.truncated && section.result.offset === undefined ? (
+                  {section.result.truncated &&
+                  section.result.offset === undefined &&
+                  section.result.nextCursor === undefined ? (
                     <p className="text-[10px] text-muted-foreground/50">
                       Transcript truncated to {section.result.entries.length} entries.
                     </p>

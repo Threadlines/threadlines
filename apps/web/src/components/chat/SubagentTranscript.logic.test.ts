@@ -99,6 +99,22 @@ describe("buildSubagentTranscriptView", () => {
       { kind: "thinking", id: "80:thinking", text: "Considering options.", at: null },
     ]);
   });
+
+  it("prefers provider item ids across cursor-paginated pages", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ id: "provider-item-7", role: "assistant", text: "Stable item." }),
+    ]);
+
+    expect(view).toEqual([
+      {
+        kind: "message",
+        id: "provider-item-7:message",
+        role: "assistant",
+        text: "Stable item.",
+        at: null,
+      },
+    ]);
+  });
 });
 
 describe("shouldShowSubagentLiveTail", () => {

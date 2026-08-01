@@ -341,6 +341,9 @@ export const ProviderSubagentTranscriptInput = Schema.Struct({
   limit: Schema.optional(NonNegativeInt),
   /** Zero-based entry offset for paginated transcript reads. */
   offset: Schema.optional(NonNegativeInt),
+  /** Provider-owned opaque cursor for the next page. Prefer this over offset
+   *  when the provider supports stable cursor pagination. */
+  cursor: Schema.optional(TrimmedNonEmptyString),
   /** Read the newest `limit` entries. Takes precedence over `offset`. */
   fromEnd: Schema.optional(Schema.Boolean),
 });
@@ -349,6 +352,8 @@ export type ProviderSubagentTranscriptInput = typeof ProviderSubagentTranscriptI
 /** One renderable step of a subagent's nested conversation, mapped
  *  provider-side from the raw transcript. */
 export const ProviderSubagentTranscriptEntry = Schema.Struct({
+  /** Stable provider item id, when available. */
+  id: Schema.optional(TrimmedNonEmptyString),
   role: Schema.Literals(["user", "assistant", "system", "thinking"]),
   text: Schema.String,
   /** ISO 8601 timestamp of the transcript record, when the provider records one. */
@@ -381,6 +386,8 @@ export const ProviderSubagentTranscriptResult = Schema.Struct({
   offset: Schema.optional(NonNegativeInt),
   /** Total mapped entries in the provider-owned transcript at read time. */
   totalEntries: Schema.optional(NonNegativeInt),
+  /** Opaque cursor for reading the page immediately before these entries. */
+  nextCursor: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderSubagentTranscriptResult = typeof ProviderSubagentTranscriptResult.Type;
 

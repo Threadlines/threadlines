@@ -163,18 +163,45 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
 
     if (schema) {
       return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
-        Effect.flatMap((decoded) =>
-          Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+        Effect.map((decoded) => ({ decoded: true as const, value: decoded })),
+        Effect.catch(() =>
+          Effect.logWarning(
+            "Dropped Codex app-server notification that failed schema decoding",
+          ).pipe(
+            Effect.annotateLogs({ method: notification.method }),
+            Effect.as({ decoded: false as const }),
+          ),
         ),
-        Effect.catch(() => Effect.void),
+        Effect.flatMap((result) =>
+          !result.decoded
+            ? Effect.void
+            : Effect.forEach(
+                handlers,
+                (handler) =>
+                  handler(result.value).pipe(
+                    Effect.catch(() =>
+                      Effect.logWarning("Codex app-server notification handler failed").pipe(
+                        Effect.annotateLogs({ method: notification.method }),
+                      ),
+                    ),
+                  ),
+                { discard: true },
+              ),
+        ),
       );
     }
 
     return unknownNotificationHandler
       ? unknownNotificationHandler(notification.method, notification.params).pipe(
-          Effect.catch(() => Effect.void),
+          Effect.catch(() =>
+            Effect.logWarning("Unknown Codex app-server notification handler failed").pipe(
+              Effect.annotateLogs({ method: notification.method }),
+            ),
+          ),
         )
-      : Effect.void;
+      : Effect.logWarning("Received unsupported Codex app-server notification").pipe(
+          Effect.annotateLogs({ method: notification.method }),
+        );
   };
 
   const dispatchRequest = (
