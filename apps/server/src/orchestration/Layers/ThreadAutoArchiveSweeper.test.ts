@@ -113,6 +113,7 @@ function makeSnapshotQuery(
     getThreadCheckpointContext: () => Effect.succeed(Option.none()),
     getFullThreadDiffContext: () => Effect.succeed(Option.none()),
     listThreadDiffStatBaselines: () => Effect.succeed([]),
+    listThreadTurnOverlapsSince: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };

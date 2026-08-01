@@ -68,6 +68,16 @@ export interface ProjectionThreadDiffStatBaseline {
 }
 
 /**
+ * Another thread's workspace whose turn activity overlapped a capture window.
+ */
+export interface ProjectionThreadTurnOverlap {
+  readonly threadId: ThreadId;
+  readonly workspaceRoot: string;
+  readonly worktreePath: string | null;
+  readonly effectiveCwd: string | null;
+}
+
+/**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
@@ -174,6 +184,18 @@ export interface ProjectionSnapshotQueryShape {
     ReadonlyArray<ProjectionThreadDiffStatBaseline>,
     ProjectionRepositoryError
   >;
+
+  /**
+   * Read the workspaces of every other thread that had a turn overlapping the
+   * window starting at `sinceIso` (a turn that started or completed at/after
+   * that stamp). Checkpoint capture uses this to decide whether a checkout was
+   * shared at any point during a turn — a session that finished seconds before
+   * capture still contaminated the window's git diff.
+   */
+  readonly listThreadTurnOverlapsSince: (input: {
+    readonly excludeThreadId: ThreadId;
+    readonly sinceIso: string;
+  }) => Effect.Effect<ReadonlyArray<ProjectionThreadTurnOverlap>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread shell row by id.

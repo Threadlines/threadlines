@@ -1330,6 +1330,18 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Provider-internal: refresh the file summary of an existing turn checkpoint
+ * while the turn is still streaming. Never touches the checkpoint ref, status,
+ * or turn count — those belong to `thread.turn.diff.complete`. */
+const ThreadTurnDiffSummaryUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.diff.summary.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  files: Schema.Array(OrchestrationCheckpointFile),
+  createdAt: IsoDateTime,
+});
+
 /**
  * Advance the turn count a thread's diff rollup starts after. Dispatched when
  * the checkout the thread works in is observed with no uncommitted changes:
@@ -1387,6 +1399,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
+  ThreadTurnDiffSummaryUpdateCommand,
   ThreadDiffStatRebaseCommand,
   ThreadActivityAppendCommand,
   ThreadFollowUpAcceptCommand,
@@ -1436,6 +1449,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.goal-state-set",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
+  "thread.turn-diff-summary-updated",
   "thread.diffstat-rebased",
   "thread.activity-appended",
 ]);
@@ -1703,6 +1717,13 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   completedAt: IsoDateTime,
 });
 
+export const ThreadTurnDiffSummaryUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  files: Schema.Array(OrchestrationCheckpointFile),
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadActivityAppendedPayload = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
@@ -1904,6 +1925,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-diff-completed"),
     payload: ThreadTurnDiffCompletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-diff-summary-updated"),
+    payload: ThreadTurnDiffSummaryUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

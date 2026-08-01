@@ -115,6 +115,16 @@ const ProjectionThreadDiffStatBaselineDbRowSchema = Schema.Struct({
   baselineTurnCount: NonNegativeInt,
   latestCompletedCheckpointTurnCount: Schema.NullOr(NonNegativeInt),
 });
+const ProjectionThreadTurnOverlapDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  workspaceRoot: Schema.String,
+  worktreePath: Schema.NullOr(Schema.String),
+  effectiveCwd: Schema.NullOr(Schema.String),
+});
+const ThreadTurnOverlapLookupInput = Schema.Struct({
+  excludeThreadId: ThreadId,
+  sinceIso: Schema.String,
+});
 const ProjectionLatestTurnDbRowSchema = Schema.Struct({
   threadId: ProjectionThread.fields.threadId,
   turnId: TurnId,
@@ -790,6 +800,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE threads.deleted_at IS NULL
           AND projects.deleted_at IS NULL
         ORDER BY threads.thread_id ASC
+      `,
+  });
+
+  // ISO-8601 UTC stamps compare lexicographically, so the window predicate is
+  // plain string comparison. A turn overlaps the window if it started or
+  // completed at/after `sinceIso`; a turn that started earlier and is still
+  // running is covered by the caller's live-session check instead, so a
+  // crashed turn that never completed cannot mark the checkout shared forever.
+  const listThreadTurnOverlapRows = SqlSchema.findAll({
+    Request: ThreadTurnOverlapLookupInput,
+    Result: ProjectionThreadTurnOverlapDbRowSchema,
+    execute: (request) =>
+      sql`
+        SELECT DISTINCT
+          threads.thread_id AS "threadId",
+          projects.workspace_root AS "workspaceRoot",
+          threads.worktree_path AS "worktreePath",
+          threads.effective_cwd AS "effectiveCwd"
+        FROM projection_threads threads
+        JOIN projection_projects projects
+          ON projects.project_id = threads.project_id
+        JOIN projection_turns turns
+          ON turns.thread_id = threads.thread_id
+        WHERE threads.deleted_at IS NULL
+          AND projects.deleted_at IS NULL
+          AND threads.thread_id != ${request.excludeThreadId}
+          AND (
+            turns.started_at >= ${request.sinceIso}
+            OR turns.completed_at >= ${request.sinceIso}
+          )
       `,
   });
 
@@ -2193,6 +2233,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const listThreadTurnOverlapsSince: ProjectionSnapshotQueryShape["listThreadTurnOverlapsSince"] = (
+    input,
+  ) =>
+    listThreadTurnOverlapRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadTurnOverlapsSince:query",
+          "ProjectionSnapshotQuery.listThreadTurnOverlapsSince:decodeRows",
+        ),
+      ),
+    );
+
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow, diffStatRow] = yield* Effect.all([
@@ -2408,6 +2460,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadCheckpointContext,
     getFullThreadDiffContext,
     listThreadDiffStatBaselines,
+    listThreadTurnOverlapsSince,
     getThreadShellById,
     getThreadDetailById,
   } satisfies ProjectionSnapshotQueryShape;

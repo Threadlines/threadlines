@@ -1447,6 +1447,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.turn.diff.summary.update": {
+      // Checkpoint existence is not an invariant here: the command read model
+      // does not hydrate checkpoint bodies, so the projector no-ops instead
+      // when the turn has no checkpoint to refresh.
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.turn-diff-summary-updated",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          files: command.files,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.diffstat.rebase": {
       const thread = yield* requireThread({
         readModel,

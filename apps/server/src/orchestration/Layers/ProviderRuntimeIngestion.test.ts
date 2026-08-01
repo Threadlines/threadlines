@@ -4087,6 +4087,214 @@ describe("ProviderRuntimeIngestion", () => {
     expect(fileActivityPayload?.data?.files).toEqual(checkpoint?.files);
   });
 
+  it("refreshes the active turn's summary from later cumulative diffs and ignores late ones", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-cumulative-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cumulative"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-cumulative",
+    );
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-cumulative-diff-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cumulative"),
+      payload: {
+        unifiedDiff:
+          "diff --git a/file.txt b/file.txt\nindex e69de29..ce01362 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -0,0 +1 @@\n+hello\n",
+      },
+    });
+    const afterFirst = await waitForThread(harness.readModel, (thread) =>
+      thread.checkpoints.some(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-cumulative",
+      ),
+    );
+    const placeholder = afterFirst.checkpoints.find(
+      (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-cumulative",
+    );
+    expect(placeholder?.files).toEqual([
+      { path: "file.txt", kind: "modified", additions: 1, deletions: 0 },
+    ]);
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-cumulative-diff-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cumulative"),
+      payload: {
+        unifiedDiff: [
+          "diff --git a/file.txt b/file.txt\nindex e69de29..ce01362 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+          "diff --git a/second.txt b/second.txt\nindex e69de29..ce01362 100644\n--- a/second.txt\n+++ b/second.txt\n@@ -0,0 +1 @@\n+more\n",
+        ].join(""),
+      },
+    });
+    const afterSecond = await waitForThread(harness.readModel, (thread) =>
+      thread.checkpoints.some(
+        (entry: ProviderRuntimeTestCheckpoint) =>
+          entry.turnId === "turn-cumulative" && entry.files.length === 2,
+      ),
+    );
+    const refreshed = afterSecond.checkpoints.find(
+      (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-cumulative",
+    );
+    expect(refreshed?.files).toEqual([
+      { path: "file.txt", kind: "modified", additions: 2, deletions: 0 },
+      { path: "second.txt", kind: "modified", additions: 1, deletions: 0 },
+    ]);
+    // The refresh patches files only; the placeholder's identity is untouched.
+    expect(refreshed?.checkpointRef).toBe("provider-diff:evt-cumulative-diff-1");
+    expect(refreshed?.checkpointTurnCount).toBe(placeholder?.checkpointTurnCount);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-cumulative-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cumulative"),
+      status: "completed",
+    });
+    await waitForThread(harness.readModel, (thread) => thread.session?.activeTurnId === null);
+
+    // A notification that arrives after the turn settled must not clobber the
+    // now-authoritative summary.
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-cumulative-diff-late"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:07.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cumulative"),
+      payload: {
+        unifiedDiff:
+          "diff --git a/late.txt b/late.txt\nindex e69de29..ce01362 100644\n--- a/late.txt\n+++ b/late.txt\n@@ -0,0 +1 @@\n+late\n",
+      },
+    });
+    await harness.drain();
+    const final = await harness.readModel();
+    const finalCheckpoint = final.threads
+      .find((entry) => entry.id === ThreadId.make("thread-1"))
+      ?.checkpoints.find(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-cumulative",
+      );
+    expect(finalCheckpoint?.files).toEqual(refreshed?.files);
+  });
+
+  it("builds claude turn summaries from accumulated per-tool file-change evidence", async () => {
+    const harness = await createHarness();
+    const seededAt = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-seed-claude-evidence"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "claudeAgent",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: seededAt,
+          lastError: null,
+        },
+        createdAt: seededAt,
+      }),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-claude-evidence-turn-started"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: seededAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-files"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-claude-files",
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-claude-edit-1"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-files"),
+      itemId: asItemId("item-claude-edit-1"),
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "Edit a.ts",
+        data: {
+          toolName: "Edit",
+          changes: [{ path: "src/a.ts", kind: "update", additions: 3, deletions: 1 }],
+        },
+      },
+    });
+    const afterFirst = await waitForThread(harness.readModel, (thread) =>
+      thread.checkpoints.some(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-claude-files",
+      ),
+    );
+    expect(
+      afterFirst.checkpoints.find(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-claude-files",
+      )?.files,
+    ).toEqual([{ path: "src/a.ts", kind: "modified", additions: 3, deletions: 1 }]);
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-claude-edit-2"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-files"),
+      itemId: asItemId("item-claude-edit-2"),
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "Write b.ts",
+        data: {
+          toolName: "Write",
+          changes: [
+            { path: "src/a.ts", kind: "update", additions: 2, deletions: 0 },
+            { path: "src/b.ts", kind: "add", additions: 5, deletions: 0 },
+          ],
+        },
+      },
+    });
+    const afterSecond = await waitForThread(harness.readModel, (thread) =>
+      thread.checkpoints.some(
+        (entry: ProviderRuntimeTestCheckpoint) =>
+          entry.turnId === "turn-claude-files" && entry.files.length === 2,
+      ),
+    );
+    expect(
+      afterSecond.checkpoints.find(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-claude-files",
+      )?.files,
+    ).toEqual([
+      { path: "src/a.ts", kind: "modified", additions: 5, deletions: 1 },
+      { path: "src/b.ts", kind: "add", additions: 5, deletions: 0 },
+    ]);
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

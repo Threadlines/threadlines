@@ -1397,6 +1397,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.turn-diff-summary-updated": {
+          const existingTurn = yield* projectionTurnRepository.getByTurnId({
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+          });
+          // Only refresh a turn that already carries a checkpoint; creation,
+          // turn counts, and status belong to thread.turn-diff-completed.
+          if (Option.isNone(existingTurn) || existingTurn.value.checkpointTurnCount === null) {
+            return;
+          }
+          yield* projectionTurnRepository.upsertByTurnId({
+            ...existingTurn.value,
+            checkpointFiles: event.payload.files,
+          });
+          return;
+        }
+
         case "thread.reverted": {
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,

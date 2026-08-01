@@ -41,6 +41,7 @@ import {
   ThreadFollowUpSubmittedPayload,
   ThreadFollowUpAcceptedPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
 } from "./Schemas.ts";
 
@@ -756,6 +757,40 @@ export function projectEvent(
               assistantMessageId: payload.assistantMessageId,
             },
             updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.turn-diff-summary-updated":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnDiffSummaryUpdatedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        // Only refresh a checkpoint that already exists for this turn; the
+        // placeholder/complete flow owns creation, turn counts, and status.
+        const existing = thread.checkpoints.find((entry) => entry.turnId === payload.turnId);
+        if (!existing) {
+          return nextBase;
+        }
+
+        const checkpoints = thread.checkpoints.map((entry) =>
+          entry.turnId === payload.turnId ? { ...entry, files: payload.files } : entry,
+        );
+
+        // Deliberately no updatedAt bump: summary refreshes stream many times
+        // per turn and must not churn thread ordering or lifecycle state.
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            checkpoints,
           }),
         };
       });

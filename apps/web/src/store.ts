@@ -1923,6 +1923,27 @@ function applyEnvironmentOrchestrationEvent(
         };
       });
 
+    // Live refresh of an in-flight turn's file summary. Only the files move;
+    // ref/status/turn count (and thread updatedAt) stay with the completion
+    // event so streaming updates don't churn ordering or lifecycle state.
+    case "thread.turn-diff-summary-updated":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const existing = thread.turnDiffSummaries.find(
+          (entry) => entry.turnId === event.payload.turnId,
+        );
+        if (!existing) {
+          return thread;
+        }
+        return {
+          ...thread,
+          turnDiffSummaries: thread.turnDiffSummaries.map((entry) =>
+            entry.turnId === event.payload.turnId
+              ? { ...entry, files: event.payload.files.map((file) => ({ ...file })) }
+              : entry,
+          ),
+        };
+      });
+
     case "thread.reverted":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const turnDiffSummaries = thread.turnDiffSummaries

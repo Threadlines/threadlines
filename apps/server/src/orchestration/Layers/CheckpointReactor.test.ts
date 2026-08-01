@@ -652,6 +652,108 @@ describe("CheckpointReactor", () => {
     expect(thread.activities.some((activity) => activity.summary === "Changed files")).toBe(false);
   });
 
+  it("treats the checkout as shared when another thread's turn overlapped this turn's window", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-window-overlap");
+    const turnStartedAt = "2026-01-01T00:01:00.000Z";
+
+    // The completing turn's window opens here (latestTurn.startedAt).
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-window-overlap"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: turnStartedAt,
+        },
+        createdAt: turnStartedAt,
+      }),
+    );
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-window-overlap"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: turnStartedAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
+
+    // Another thread in the same checkout finishes a turn inside the window,
+    // then goes idle — no live session remains for the instantaneous check.
+    const otherThreadId = ThreadId.make("thread-2");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-other"),
+        threadId: otherThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Other Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: harness.cwd,
+        createdAt: turnStartedAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-other-turn-complete"),
+        threadId: otherThreadId,
+        turnId: asTurnId("turn-other-finished"),
+        completedAt: "2026-01-01T00:02:00.000Z",
+        checkpointRef: asCheckpointRef("provider-diff:evt-other-finished"),
+        status: "ready",
+        files: [{ path: "EXTERNAL.md", kind: "modified", additions: 1, deletions: 0 }],
+        checkpointTurnCount: 1,
+        createdAt: "2026-01-01T00:02:00.000Z",
+      }),
+    );
+
+    // The other session's write lands inside this thread's turn window.
+    fs.writeFileSync(
+      path.join(harness.cwd, "EXTERNAL.md"),
+      "written by the other session\n",
+      "utf8",
+    );
+
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-window-overlap"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:02:30.000Z",
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-window-overlap" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    // Without window-based sharing detection this summary would claim
+    // EXTERNAL.md for a turn that never touched it.
+    expect(thread.checkpoints[0]?.files).toEqual([]);
+  });
+
   it("keeps provider-reported shared-checkout summaries when final diffs include unreported paths", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,

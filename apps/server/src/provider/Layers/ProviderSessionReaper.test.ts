@@ -268,6 +268,7 @@ describe("ProviderSessionReaper", () => {
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
           listThreadDiffStatBaselines: () => Effect.die("unused"),
+          listThreadTurnOverlapsSince: () => Effect.die("unused"),
           getThreadShellById: (threadId) => {
             const thread = input.readModel.threads.find((entry) => entry.id === threadId);
             return Effect.succeed(

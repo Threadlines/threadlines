@@ -3,6 +3,7 @@ import {
   EventId,
   MessageId,
   type OrchestrationCheckpointFile,
+  type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type ProjectId,
   ThreadId,
@@ -37,6 +38,7 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import type { OrchestrationDispatchError } from "../Errors.ts";
@@ -321,14 +323,20 @@ const make = Effect.gen(function* () {
       : Option.none();
   });
 
+  // A checkout counts as shared for a capture when another session is live in
+  // it now, or when any other thread's turn overlapped this turn's window. The
+  // instantaneous check alone misses a session that finished seconds before
+  // capture — its writes are still inside this window's git diff, and
+  // attributing them here is what selective revert would later act on.
   const hasConcurrentSessionInWorkspace = Effect.fn("hasConcurrentSessionInWorkspace")(
     function* (input: {
       readonly threadId: ThreadId;
       readonly cwd: string;
-    }): Effect.fn.Return<boolean> {
+      readonly turnWindowStartIso: string | undefined;
+    }): Effect.fn.Return<boolean, ProjectionRepositoryError> {
       const sessions = yield* providerService.listSessions();
       const targetCwd = normalizeWorkspacePath(input.cwd);
-      return sessions.some((session) => {
+      const liveConcurrent = sessions.some((session) => {
         if (sameId(session.threadId, input.threadId) || !session.cwd) {
           return false;
         }
@@ -337,6 +345,20 @@ const make = Effect.gen(function* () {
         }
         return normalizeWorkspacePath(session.cwd) === targetCwd;
       });
+      if (liveConcurrent || input.turnWindowStartIso === undefined) {
+        return liveConcurrent;
+      }
+
+      const overlaps = yield* projectionSnapshotQuery.listThreadTurnOverlapsSince({
+        excludeThreadId: input.threadId,
+        sinceIso: input.turnWindowStartIso,
+      });
+      return overlaps.some(
+        (overlap) =>
+          normalizeWorkspacePath(
+            overlap.effectiveCwd ?? overlap.worktreePath ?? overlap.workspaceRoot,
+          ) === targetCwd,
+      );
     },
   );
 
@@ -345,6 +367,17 @@ const make = Effect.gen(function* () {
       .getThreadDetailById(threadId)
       .pipe(Effect.map(Option.getOrUndefined));
   });
+
+  // When the completing turn's diff window opened. The pre-turn baseline is
+  // captured at turn start, so latestTurn's stamps are the read model's
+  // closest approximation of that moment.
+  const turnWindowStartIsoForThread = (
+    thread: { readonly latestTurn: OrchestrationLatestTurn | null },
+    turnId: TurnId,
+  ): string | undefined =>
+    thread.latestTurn && sameId(thread.latestTurn.turnId, turnId)
+      ? (thread.latestTurn.startedAt ?? thread.latestTurn.requestedAt)
+      : undefined;
 
   const resolveThreadProjects = Effect.fn("resolveThreadProjects")(function* (
     projectId: ProjectId,
@@ -412,6 +445,9 @@ const make = Effect.gen(function* () {
     readonly assistantMessageId: MessageId | undefined;
     readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
     readonly refreshSharedCheckoutSummaryFromCheckpoint: boolean;
+    /** When the turn's diff window opened (turn start). Undefined falls back
+     * to the instantaneous live-session check alone. */
+    readonly turnWindowStartIso: string | undefined;
     readonly createdAt: string;
   }) {
     const fromTurnCount = Math.max(0, input.turnCount - 1);
@@ -460,6 +496,7 @@ const make = Effect.gen(function* () {
     const hasConcurrentSession = yield* hasConcurrentSessionInWorkspace({
       threadId: input.threadId,
       cwd: input.cwd,
+      turnWindowStartIso: input.turnWindowStartIso,
     });
     const files = yield* checkpointStore
       .diffCheckpoints({
@@ -665,6 +702,7 @@ const make = Effect.gen(function* () {
         assistantMessageId: undefined,
         providerSummaryFiles,
         refreshSharedCheckoutSummaryFromCheckpoint: true,
+        turnWindowStartIso: turnWindowStartIsoForThread(thread, turnId),
         createdAt: event.createdAt,
       });
     },
@@ -730,6 +768,7 @@ const make = Effect.gen(function* () {
       assistantMessageId: event.payload.assistantMessageId ?? undefined,
       providerSummaryFiles: event.payload.files,
       refreshSharedCheckoutSummaryFromCheckpoint: false,
+      turnWindowStartIso: turnWindowStartIsoForThread(thread, turnId),
       createdAt: event.payload.completedAt,
     });
   });

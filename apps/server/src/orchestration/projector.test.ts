@@ -1081,6 +1081,127 @@ describe("orchestration projector", () => {
     expect(thread?.checkpoints.at(-1)?.turnId).toBe("turn-599");
   });
 
+  describe("thread.turn-diff-summary-updated", () => {
+    const now = "2026-04-02T00:00:00.000Z";
+
+    const createThreadWithCheckpoint = async () => {
+      const created = await Effect.runPromise(
+        projectEvent(
+          createEmptyReadModel(now),
+          makeEvent({
+            sequence: 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: "thread-summary",
+            occurredAt: now,
+            commandId: "cmd-thread-create",
+            payload: {
+              threadId: "thread-summary",
+              projectId: "project-1",
+              title: "summary",
+              modelSelection: {
+                provider: ProviderDriverKind.make("codex"),
+                model: "gpt-5-codex",
+              },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+        ),
+      );
+      return Effect.runPromise(
+        projectEvent(
+          created,
+          makeEvent({
+            sequence: 2,
+            type: "thread.turn-diff-completed",
+            aggregateKind: "thread",
+            aggregateId: "thread-summary",
+            occurredAt: "2026-04-02T00:00:01.000Z",
+            commandId: "cmd-turn-1",
+            payload: {
+              threadId: "thread-summary",
+              turnId: "turn-1",
+              checkpointTurnCount: 1,
+              checkpointRef: "refs/threadlines/checkpoints/thread-summary/turn/1",
+              status: "ready",
+              files: [
+                { path: "scripts/generate.ts", kind: "modified", additions: 101, deletions: 82 },
+              ],
+              assistantMessageId: "assistant-1",
+              completedAt: "2026-04-02T00:00:01.000Z",
+            },
+          }),
+        ),
+      );
+    };
+
+    it("replaces the checkpoint's files without touching ref, status, or turn count", async () => {
+      const created = await createThreadWithCheckpoint();
+      const next = await Effect.runPromise(
+        projectEvent(
+          created,
+          makeEvent({
+            sequence: 3,
+            type: "thread.turn-diff-summary-updated",
+            aggregateKind: "thread",
+            aggregateId: "thread-summary",
+            occurredAt: "2026-04-02T00:00:02.000Z",
+            commandId: "cmd-summary-1",
+            payload: {
+              threadId: "thread-summary",
+              turnId: "turn-1",
+              files: [
+                { path: "scripts/generate.ts", kind: "modified", additions: 900, deletions: 400 },
+                { path: "src/client.ts", kind: "modified", additions: 25, deletions: 5 },
+              ],
+              updatedAt: "2026-04-02T00:00:02.000Z",
+            },
+          }),
+        ),
+      );
+
+      const checkpoint = next.threads[0]?.checkpoints.find((entry) => entry.turnId === "turn-1");
+      expect(checkpoint?.files).toEqual([
+        { path: "scripts/generate.ts", kind: "modified", additions: 900, deletions: 400 },
+        { path: "src/client.ts", kind: "modified", additions: 25, deletions: 5 },
+      ]);
+      expect(checkpoint?.checkpointTurnCount).toBe(1);
+      expect(checkpoint?.checkpointRef).toBe("refs/threadlines/checkpoints/thread-summary/turn/1");
+      expect(checkpoint?.status).toBe("ready");
+      // Streaming refreshes must not churn thread ordering.
+      expect(next.threads[0]?.updatedAt).toBe("2026-04-02T00:00:01.000Z");
+    });
+
+    it("ignores an update for a turn without a checkpoint", async () => {
+      const created = await createThreadWithCheckpoint();
+      const next = await Effect.runPromise(
+        projectEvent(
+          created,
+          makeEvent({
+            sequence: 3,
+            type: "thread.turn-diff-summary-updated",
+            aggregateKind: "thread",
+            aggregateId: "thread-summary",
+            occurredAt: "2026-04-02T00:00:02.000Z",
+            commandId: "cmd-summary-orphan",
+            payload: {
+              threadId: "thread-summary",
+              turnId: "turn-unknown",
+              files: [{ path: "src/other.ts", kind: "modified", additions: 1, deletions: 1 }],
+              updatedAt: "2026-04-02T00:00:02.000Z",
+            },
+          }),
+        ),
+      );
+
+      expect(next.threads[0]?.checkpoints).toEqual(created.threads[0]?.checkpoints);
+    });
+  });
+
   describe("thread.diffstat-rebased", () => {
     const now = "2026-04-01T00:00:00.000Z";
 
