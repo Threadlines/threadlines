@@ -17,6 +17,8 @@ import {
   type ProviderSessionForkFrom,
   type RuntimeMode,
   type ThreadContextSeed,
+  ThreadCheckoutSwitchDeferredActivityKind,
+  type ThreadCheckoutSwitchDeferredPayload,
   ThreadForkContextPayload,
   ThreadForkSeedOutcomeActivityKind,
   type ThreadForkSeedOutcomePayload,
@@ -339,6 +341,55 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+
+  /**
+   * Threads whose queued checkout switch is currently deferred because the
+   * session still owns running background tasks. Deferral repeats on every
+   * turn until the tasks finish, so the explanatory activity is appended only
+   * on the leading edge of a streak.
+   */
+  const deferredCheckoutSwitchThreads = new Set<ThreadId>();
+
+  const noteCheckoutSwitchDeferred = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly fromCwd: string;
+    readonly toCwd: string;
+    readonly pendingBackgroundTaskCount: number;
+    readonly createdAt: string;
+  }) {
+    yield* Effect.logInfo("provider command reactor deferred checkout switch", {
+      threadId: input.threadId,
+      fromCwd: input.fromCwd,
+      toCwd: input.toCwd,
+      pendingBackgroundTaskCount: input.pendingBackgroundTaskCount,
+    });
+    if (deferredCheckoutSwitchThreads.has(input.threadId)) {
+      return;
+    }
+    deferredCheckoutSwitchThreads.add(input.threadId);
+    const payload: ThreadCheckoutSwitchDeferredPayload = {
+      fromCwd: input.fromCwd,
+      toCwd: input.toCwd,
+      pendingBackgroundTaskCount: input.pendingBackgroundTaskCount,
+    };
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("thread-checkout-switch-deferred"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "info",
+          kind: ThreadCheckoutSwitchDeferredActivityKind,
+          summary: "Checkout switch deferred: a background task is still running",
+          payload,
+          turnId: null,
+          createdAt: input.createdAt,
+        },
+        createdAt: input.createdAt,
+      })
+      .pipe(Effect.catch(() => Effect.void));
+  });
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -821,8 +872,33 @@ const make = Effect.gen(function* () {
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
 
       if (!runtimeModeChanged && !cwdChanged && !instanceChanged && !shouldRestartForModelChange) {
+        deferredCheckoutSwitchThreads.delete(threadId);
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
+
+      // A checkout switch is the only restart reason that can wait. Background
+      // tasks (subagents, backgrounded commands) run inside the session's
+      // runtime, so cycling it to move checkouts would kill them — the adapter
+      // refuses that outright, which used to fail the turn. Run the turn where
+      // the session already is and keep the switch queued for the first turn
+      // after the tasks finish.
+      const pendingBackgroundTaskCount = thread.session?.pendingBackgroundTaskCount ?? 0;
+      const restartRequiredBeyondCwd =
+        runtimeModeChanged || instanceChanged || shouldRestartForModelChange;
+      if (cwdChanged && !restartRequiredBeyondCwd && pendingBackgroundTaskCount > 0) {
+        const currentCwd = activeSession?.cwd ?? thread.session?.checkoutCwd ?? null;
+        if (currentCwd && effectiveCwd) {
+          yield* noteCheckoutSwitchDeferred({
+            threadId,
+            fromCwd: currentCwd,
+            toCwd: effectiveCwd,
+            pendingBackgroundTaskCount,
+            createdAt,
+          });
+        }
+        return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
+      }
+      deferredCheckoutSwitchThreads.delete(threadId);
 
       const restartReason = runtimeModeChanged
         ? "runtime_mode"
@@ -883,6 +959,7 @@ const make = Effect.gen(function* () {
     // Fresh start. When a native fork is requested, try it first; a fork
     // failure degrades (visibly, never silently) to a plain start so the
     // caller can fall back to context-seed seeding.
+    deferredCheckoutSwitchThreads.delete(threadId);
     const forkFrom = options?.forkFrom;
     if (forkFrom !== undefined) {
       const forkedSession = yield* startProviderSession({ forkFrom }).pipe(

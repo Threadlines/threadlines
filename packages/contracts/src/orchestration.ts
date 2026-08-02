@@ -430,6 +430,25 @@ export const ThreadForkSeedOutcomePayload = Schema.Struct({
 });
 export type ThreadForkSeedOutcomePayload = typeof ThreadForkSeedOutcomePayload.Type;
 
+/**
+ * Payload of the `thread.checkout.switch-deferred` activity. A queued checkout
+ * switch normally applies by cycling the provider session when the next turn
+ * dispatches, but the session's background tasks (subagents, backgrounded
+ * commands) live inside that runtime and would be killed. When any are still
+ * running the turn runs in the session's current checkout instead and the
+ * switch stays queued; this activity records that once per deferral streak.
+ */
+export const ThreadCheckoutSwitchDeferredActivityKind = "thread.checkout.switch-deferred";
+export const ThreadCheckoutSwitchDeferredPayload = Schema.Struct({
+  /** Checkout the session keeps running in. */
+  fromCwd: TrimmedNonEmptyString,
+  /** Checkout the thread is queued to move into. */
+  toCwd: TrimmedNonEmptyString,
+  /** Background tasks that blocked the switch when it was first deferred. */
+  pendingBackgroundTaskCount: NonNegativeInt,
+});
+export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDeferredPayload.Type;
+
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
 export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Type;
 

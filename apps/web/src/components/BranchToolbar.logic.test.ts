@@ -413,7 +413,10 @@ describe("resolvePendingCheckoutSwitch", () => {
       }),
     ).toEqual({
       targetCheckoutCwd: "/repo/.threadlines/worktrees/feature-a",
-      label: "feature-a",
+      fromCheckoutCwd: "/repo",
+      fromLabel: "the local checkout",
+      toLabel: "feature-a",
+      deferred: false,
     });
   });
 
@@ -425,7 +428,25 @@ describe("resolvePendingCheckoutSwitch", () => {
         activeProjectCwd: "/repo",
         activeWorktreePath: null,
       }),
-    ).toEqual({ targetCheckoutCwd: "/repo", label: "Current checkout" });
+    ).toEqual({
+      targetCheckoutCwd: "/repo",
+      fromCheckoutCwd: "/repo/.threadlines/worktrees/feature-a",
+      fromLabel: "feature-a",
+      toLabel: "the local checkout",
+      deferred: false,
+    });
+  });
+
+  it("marks the switch deferred while the session still owns a background task", () => {
+    expect(
+      resolvePendingCheckoutSwitch({
+        sessionCheckoutCwd: "/repo",
+        sessionStatus: "running",
+        pendingBackgroundTaskCount: 1,
+        activeProjectCwd: "/repo",
+        activeWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      })?.deferred,
+    ).toBe(true);
   });
 
   it("stays quiet once the session runs in the thread's target checkout", () => {
