@@ -271,6 +271,7 @@ function mapSessionRow(
     providerSessionId: row.providerSessionId,
     providerThreadId: row.providerThreadId,
     runtimeMode: row.runtimeMode,
+    checkoutCwd: row.checkoutCwd,
     activeTurnId: row.activeTurnId,
     pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
     lastError: row.lastError,
@@ -629,6 +630,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
+          checkout_cwd AS "checkoutCwd",
           active_turn_id AS "activeTurnId",
           pending_background_task_count AS "pendingBackgroundTaskCount",
           last_error AS "lastError",
@@ -651,6 +653,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.provider_session_id AS "providerSessionId",
           sessions.provider_thread_id AS "providerThreadId",
           sessions.runtime_mode AS "runtimeMode",
+          sessions.checkout_cwd AS "checkoutCwd",
           sessions.active_turn_id AS "activeTurnId",
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.last_error AS "lastError",
@@ -677,6 +680,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.provider_session_id AS "providerSessionId",
           sessions.provider_thread_id AS "providerThreadId",
           sessions.runtime_mode AS "runtimeMode",
+          sessions.checkout_cwd AS "checkoutCwd",
           sessions.active_turn_id AS "activeTurnId",
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.last_error AS "lastError",
@@ -1141,6 +1145,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
+          checkout_cwd AS "checkoutCwd",
           active_turn_id AS "activeTurnId",
           pending_background_task_count AS "pendingBackgroundTaskCount",
           last_error AS "lastError",
@@ -1433,21 +1438,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
               for (const row of sessionRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
-                sessionsByThread.set(row.threadId, {
-                  threadId: row.threadId,
-                  status: row.status,
-                  providerName: row.providerName,
-                  ...(row.providerInstanceId !== null
-                    ? { providerInstanceId: row.providerInstanceId }
-                    : {}),
-                  providerSessionId: row.providerSessionId,
-                  providerThreadId: row.providerThreadId,
-                  runtimeMode: row.runtimeMode,
-                  activeTurnId: row.activeTurnId,
-                  pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
-                  lastError: row.lastError,
-                  updatedAt: row.updatedAt,
-                });
+                sessionsByThread.set(row.threadId, mapSessionRow(row));
               }
 
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(

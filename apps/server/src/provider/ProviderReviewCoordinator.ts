@@ -119,6 +119,7 @@ export function startProviderReviewForThread(
       providerSessionId: previousSession?.providerSessionId ?? null,
       providerThreadId: previousSession?.providerThreadId ?? null,
       runtimeMode: effectiveRuntimeMode,
+      checkoutCwd: previousSession?.checkoutCwd ?? input.cwd,
       pendingBackgroundTaskCount: previousSession?.pendingBackgroundTaskCount ?? 0,
     } as const;
     const refreshReviewSessionBase = () =>

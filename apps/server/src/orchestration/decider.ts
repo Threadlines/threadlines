@@ -744,6 +744,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   providerSessionId: targetThread.session?.providerSessionId ?? null,
                   providerThreadId: targetThread.session?.providerThreadId ?? null,
                   runtimeMode: targetThread.runtimeMode,
+                  // The runtime is still in whatever checkout it started in;
+                  // the reactor rewrites this once the session is (re)bound.
+                  checkoutCwd: targetThread.session?.checkoutCwd ?? null,
                   activeTurnId: null,
                   lastError: targetThread.session?.lastError ?? null,
                   updatedAt: command.createdAt,
@@ -837,6 +840,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             providerSessionId: session.providerSessionId ?? null,
             providerThreadId: session.providerThreadId ?? null,
             runtimeMode: targetThread.runtimeMode,
+            checkoutCwd: session.checkoutCwd ?? null,
             activeTurnId: null,
             lastError: session.lastError,
             updatedAt: command.createdAt,

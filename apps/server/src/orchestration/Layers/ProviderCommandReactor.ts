@@ -507,6 +507,62 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
+  /**
+   * Pending approval / user-input prompts are answered through the live
+   * provider session. Once that runtime is gone — stopped, reaped, or replaced
+   * by a restart into a different checkout/instance — the provider-side
+   * request can never be answered, so close each open prompt with an expiry
+   * activity instead of leaving clients a Submit that is guaranteed to fail.
+   */
+  const expireOpenPendingRequests = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly activities: ReadonlyArray<{
+      readonly kind: string;
+      readonly payload?: unknown;
+      readonly turnId: TurnId | null;
+    }>;
+    readonly detail: string;
+  }) {
+    const expirations = [
+      ...collectOpenPendingRequests(input.activities, APPROVAL_ACTIVITY_KINDS).map((open) => ({
+        open,
+        kind: APPROVAL_ACTIVITY_KINDS.resolved,
+        summary: "Approval request expired",
+      })),
+      ...collectOpenPendingRequests(input.activities, USER_INPUT_ACTIVITY_KINDS).map((open) => ({
+        open,
+        kind: USER_INPUT_ACTIVITY_KINDS.resolved,
+        summary: "User input request expired",
+      })),
+    ];
+    if (expirations.length === 0) {
+      return;
+    }
+
+    const createdAt = yield* nowIso;
+    for (const { open, kind, summary } of expirations) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("pending-request-expired"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "info",
+          kind,
+          summary,
+          payload: {
+            requestId: open.requestId,
+            reason: PENDING_REQUEST_EXPIRED_REASON,
+            detail: input.detail,
+          },
+          turnId: open.activity.turnId,
+          createdAt,
+        },
+        createdAt,
+      });
+    }
+  });
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -697,6 +753,10 @@ const make = Effect.gen(function* () {
               ? (thread.session?.providerThreadId ?? null)
               : null,
             runtimeMode: desiredRuntimeMode,
+            // Checkout the runtime actually started in. The next turn compares
+            // it against the thread's target checkout to decide whether the
+            // session has to be cycled into a different worktree.
+            checkoutCwd: session.cwd ?? effectiveCwd ?? null,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
@@ -807,6 +867,14 @@ const make = Effect.gen(function* () {
         provider: restartedSession.provider,
         runtimeMode: restartedSession.runtimeMode,
         cwd: restartedSession.cwd,
+      });
+      // The outgoing runtime owned any still-open approval / user-input
+      // prompts; they die with it, so close them the same way an explicit
+      // session stop does.
+      yield* expireOpenPendingRequests({
+        threadId,
+        activities: thread.activities,
+        detail: "The provider session restarted before the request was answered.",
       });
       yield* bindSessionToThread(restartedSession);
       return { sessionThreadId: restartedSession.threadId, nativeForkApplied: false };
@@ -1805,6 +1873,7 @@ const make = Effect.gen(function* () {
         // is gone.
         providerThreadId: thread.session?.providerThreadId ?? null,
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        checkoutCwd: thread.session?.checkoutCwd ?? null,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
@@ -1847,44 +1916,11 @@ const make = Effect.gen(function* () {
       yield* setRealtimeState(thread.id, false, event.payload.session.updatedAt);
     }
 
-    const expirations = [
-      ...collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).map((open) => ({
-        open,
-        kind: APPROVAL_ACTIVITY_KINDS.resolved,
-        summary: "Approval request expired",
-      })),
-      ...collectOpenPendingRequests(thread.activities, USER_INPUT_ACTIVITY_KINDS).map((open) => ({
-        open,
-        kind: USER_INPUT_ACTIVITY_KINDS.resolved,
-        summary: "User input request expired",
-      })),
-    ];
-    if (expirations.length === 0) {
-      return;
-    }
-
-    const createdAt = yield* nowIso;
-    for (const { open, kind, summary } of expirations) {
-      yield* orchestrationEngine.dispatch({
-        type: "thread.activity.append",
-        commandId: serverCommandId("pending-request-expired"),
-        threadId: event.payload.threadId,
-        activity: {
-          id: EventId.make(crypto.randomUUID()),
-          tone: "info",
-          kind,
-          summary,
-          payload: {
-            requestId: open.requestId,
-            reason: PENDING_REQUEST_EXPIRED_REASON,
-            detail: "The provider session stopped before the request was answered.",
-          },
-          turnId: open.activity.turnId,
-          createdAt,
-        },
-        createdAt,
-      });
-    }
+    yield* expireOpenPendingRequests({
+      threadId: event.payload.threadId,
+      activities: thread.activities,
+      detail: "The provider session stopped before the request was answered.",
+    });
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (

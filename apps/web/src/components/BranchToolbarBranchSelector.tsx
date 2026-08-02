@@ -27,6 +27,7 @@ import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import {
   deriveLocalBranchNameFromRemoteRef,
+  hasActiveThreadTurn,
   resolveActiveWorktreePath,
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
@@ -34,6 +35,15 @@ import {
   resolveEffectiveEnvMode,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Button } from "./ui/button";
 import {
   Combobox,
@@ -60,6 +70,12 @@ interface BranchToolbarBranchSelectorProps {
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
 }
+
+/** A branch action that would rewrite files in the checkout an agent is
+ *  currently working in, held back until the user confirms. */
+type PendingWorkingTreeAction =
+  | { readonly kind: "switch"; readonly refName: VcsRef }
+  | { readonly kind: "create"; readonly name: string };
 
 function toBranchActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
@@ -150,16 +166,10 @@ export function BranchToolbarBranchSelector({
     (branch: string | null, worktreePath: string | null) => {
       if (!activeThreadId || !activeProject) return;
       const api = readEnvironmentApi(environmentId);
-      if (serverSession && worktreePath !== activeWorktreePath && api) {
-        void api.orchestration
-          .dispatchCommand({
-            type: "thread.session.stop",
-            commandId: newCommandId(),
-            threadId: activeThreadId,
-            createdAt: new Date().toISOString(),
-          })
-          .catch(() => undefined);
-      }
+      // Picking a checkout never stops a live session. It records the thread's
+      // target checkout for the next turn, exactly like the model picker
+      // records a model; the server cycles the runtime into the new checkout
+      // when that turn is dispatched.
       if (api && hasServerThread) {
         void api.orchestration.dispatchCommand({
           type: "thread.meta.update",
@@ -189,7 +199,6 @@ export function BranchToolbarBranchSelector({
     [
       activeThreadId,
       activeProject,
-      serverSession,
       activeWorktreePath,
       hasServerThread,
       onActiveThreadBranchOverrideChange,
@@ -206,6 +215,8 @@ export function BranchToolbarBranchSelector({
   // Git ref queries
   // ---------------------------------------------------------------------------
   const queryClient = useQueryClient();
+  const [pendingWorkingTreeAction, setPendingWorkingTreeAction] =
+    useState<PendingWorkingTreeAction | null>(null);
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
   const [branchQuery, setBranchQuery] = useState("");
   const deferredBranchQuery = useDeferredValue(branchQuery);
@@ -323,6 +334,67 @@ export function BranchToolbarBranchSelector({
     });
   };
 
+  const runSwitchRef = (refName: VcsRef, checkoutCwd: string, nextWorktreePath: string | null) => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api) return;
+    const selectedBranchName = refName.isRemote
+      ? deriveLocalBranchNameFromRemoteRef(refName.name)
+      : refName.name;
+
+    runBranchAction(async () => {
+      const previousBranch = resolvedActiveBranch;
+      setOptimisticBranch(selectedBranchName);
+      try {
+        const checkoutResult = await api.vcs.switchRef({
+          cwd: checkoutCwd,
+          refName: refName.name,
+        });
+        const nextBranchName = refName.isRemote
+          ? (checkoutResult.refName ?? selectedBranchName)
+          : selectedBranchName;
+        setOptimisticBranch(nextBranchName);
+        setThreadBranch(nextBranchName, nextWorktreePath);
+      } catch (error) {
+        setOptimisticBranch(previousBranch);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to switch ref.",
+            description: toBranchActionErrorMessage(error),
+          }),
+        );
+      }
+    });
+  };
+
+  const runCreateRef = (name: string) => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !branchCwd) return;
+
+    runBranchAction(async () => {
+      const previousBranch = resolvedActiveBranch;
+      setOptimisticBranch(name);
+      try {
+        const createBranchResult = await api.vcs.createRef({
+          cwd: branchCwd,
+          refName: name,
+          switchRef: true,
+        });
+        setOptimisticBranch(createBranchResult.refName);
+        setThreadBranch(createBranchResult.refName, activeWorktreePath);
+      } catch (error) {
+        setOptimisticBranch(previousBranch);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to create and switch ref.",
+            description: toBranchActionErrorMessage(error),
+          }),
+        );
+      }
+    });
+  };
+
   const selectBranch = (refName: VcsRef) => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !branchCwd || !activeProjectCwd || isBranchActionPending) return;
@@ -360,37 +432,19 @@ export function BranchToolbarBranchSelector({
       return;
     }
 
-    const selectedBranchName = refName.isRemote
-      ? deriveLocalBranchNameFromRemoteRef(refName.name)
-      : refName.name;
-
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
 
-    runBranchAction(async () => {
-      const previousBranch = resolvedActiveBranch;
-      setOptimisticBranch(selectedBranchName);
-      try {
-        const checkoutResult = await api.vcs.switchRef({
-          cwd: selectionTarget.checkoutCwd,
-          refName: refName.name,
-        });
-        const nextBranchName = refName.isRemote
-          ? (checkoutResult.refName ?? selectedBranchName)
-          : selectedBranchName;
-        setOptimisticBranch(nextBranchName);
-        setThreadBranch(nextBranchName, selectionTarget.nextWorktreePath);
-      } catch (error) {
-        setOptimisticBranch(previousBranch);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to switch ref.",
-            description: toBranchActionErrorMessage(error),
-          }),
-        );
-      }
-    });
+    // A real `git switch` in the checkout the agent is working in swaps files
+    // underneath it mid-turn. Confirm first; when idle it stays immediate.
+    // Picking a ref that resolves to a different checkout never lands here —
+    // that is a checkout switch, and those are now free of side effects.
+    if (hasActiveThreadTurn(serverSession)) {
+      setPendingWorkingTreeAction({ kind: "switch", refName });
+      return;
+    }
+
+    runSwitchRef(refName, selectionTarget.checkoutCwd, selectionTarget.nextWorktreePath);
   };
 
   const createRef = (rawName: string) => {
@@ -401,28 +455,29 @@ export function BranchToolbarBranchSelector({
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
 
-    runBranchAction(async () => {
-      const previousBranch = resolvedActiveBranch;
-      setOptimisticBranch(name);
-      try {
-        const createBranchResult = await api.vcs.createRef({
-          cwd: branchCwd,
-          refName: name,
-          switchRef: true,
-        });
-        setOptimisticBranch(createBranchResult.refName);
-        setThreadBranch(createBranchResult.refName, activeWorktreePath);
-      } catch (error) {
-        setOptimisticBranch(previousBranch);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to create and switch ref.",
-            description: toBranchActionErrorMessage(error),
-          }),
-        );
-      }
+    if (hasActiveThreadTurn(serverSession)) {
+      setPendingWorkingTreeAction({ kind: "create", name });
+      return;
+    }
+
+    runCreateRef(name);
+  };
+
+  const confirmPendingWorkingTreeAction = () => {
+    const pending = pendingWorkingTreeAction;
+    setPendingWorkingTreeAction(null);
+    if (!pending) return;
+    if (pending.kind === "create") {
+      runCreateRef(pending.name);
+      return;
+    }
+    if (!activeProjectCwd) return;
+    const selectionTarget = resolveBranchSelectionTarget({
+      activeProjectCwd,
+      activeWorktreePath,
+      refName: pending.refName,
     });
+    runSwitchRef(pending.refName, selectionTarget.checkoutCwd, selectionTarget.nextWorktreePath);
   };
 
   useEffect(() => {
@@ -593,72 +648,104 @@ export function BranchToolbarBranchSelector({
   }
 
   return (
-    <Combobox
-      items={branchPickerItems}
-      filteredItems={filteredBranchPickerItems}
-      autoHighlight
-      virtualized={shouldVirtualizeBranchList}
-      onItemHighlighted={(_value, eventDetails) => {
-        if (!isBranchMenuOpen || eventDetails.index < 0 || eventDetails.reason !== "keyboard") {
-          return;
-        }
-        branchListRef.current?.scrollIndexIntoView?.({
-          index: eventDetails.index,
-          animated: false,
-        });
-      }}
-      onOpenChange={handleOpenChange}
-      open={isBranchMenuOpen}
-      value={resolvedActiveBranch}
-    >
-      <ComboboxTrigger
-        render={<Button variant="ghost" size="xs" />}
-        className={cn("min-w-0 text-muted-foreground/70 hover:text-foreground/80", className)}
-        disabled={(isBranchesSearchPending && refs.length === 0) || isBranchActionPending}
+    <>
+      <AlertDialog
+        open={pendingWorkingTreeAction !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingWorkingTreeAction(null);
+          }
+        }}
       >
-        <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>
-        <ChevronDownIcon className="shrink-0" />
-      </ComboboxTrigger>
-      <ComboboxPopup align="end" side="top" className="w-80">
-        <div className="border-b p-1">
-          <ComboboxInput
-            className="[&_input]:font-sans rounded-md"
-            inputClassName="ring-0"
-            placeholder="Search refs..."
-            showTrigger={false}
-            size="sm"
-            value={branchQuery}
-            onChange={(event) => setBranchQuery(event.target.value)}
-          />
-        </div>
-        <ComboboxEmpty>No refs found.</ComboboxEmpty>
-
-        {shouldVirtualizeBranchList ? (
-          <ComboboxListVirtualized>
-            <LegendList<string>
-              ref={branchListRef}
-              data={filteredBranchPickerItems}
-              keyExtractor={(item) => item}
-              renderItem={({ item, index }) => renderPickerItem(item, index)}
-              estimatedItemSize={28}
-              drawDistance={336}
-              onEndReached={() => {
-                if (hasNextPage && !isFetchingNextPage) {
-                  void fetchNextPage().catch(() => undefined);
-                }
-              }}
-              style={{ maxHeight: "14rem" }}
+        <AlertDialogPopup className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch branch while the agent is working?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingWorkingTreeAction?.kind === "create"
+                ? `Creating "${pendingWorkingTreeAction.name}" switches this checkout to it.`
+                : pendingWorkingTreeAction
+                  ? `Switching to "${pendingWorkingTreeAction.refName.name}" changes the files in this checkout.`
+                  : ""}{" "}
+              The agent is running a turn here and will see the new files mid-task.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              Cancel
+            </AlertDialogClose>
+            <Button variant="destructive" size="sm" onClick={confirmPendingWorkingTreeAction}>
+              Switch anyway
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <Combobox
+        items={branchPickerItems}
+        filteredItems={filteredBranchPickerItems}
+        autoHighlight
+        virtualized={shouldVirtualizeBranchList}
+        onItemHighlighted={(_value, eventDetails) => {
+          if (!isBranchMenuOpen || eventDetails.index < 0 || eventDetails.reason !== "keyboard") {
+            return;
+          }
+          branchListRef.current?.scrollIndexIntoView?.({
+            index: eventDetails.index,
+            animated: false,
+          });
+        }}
+        onOpenChange={handleOpenChange}
+        open={isBranchMenuOpen}
+        value={resolvedActiveBranch}
+      >
+        <ComboboxTrigger
+          render={<Button variant="ghost" size="xs" />}
+          className={cn("min-w-0 text-muted-foreground/70 hover:text-foreground/80", className)}
+          disabled={(isBranchesSearchPending && refs.length === 0) || isBranchActionPending}
+        >
+          <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>
+          <ChevronDownIcon className="shrink-0" />
+        </ComboboxTrigger>
+        <ComboboxPopup align="end" side="top" className="w-80">
+          <div className="border-b p-1">
+            <ComboboxInput
+              className="[&_input]:font-sans rounded-md"
+              inputClassName="ring-0"
+              placeholder="Search refs..."
+              showTrigger={false}
+              size="sm"
+              value={branchQuery}
+              onChange={(event) => setBranchQuery(event.target.value)}
             />
-          </ComboboxListVirtualized>
-        ) : (
-          <ComboboxList ref={setBranchListRef} className="max-h-56">
-            {filteredBranchPickerItems.map((itemValue, index) =>
-              renderPickerItem(itemValue, index),
-            )}
-          </ComboboxList>
-        )}
-        {branchStatusText ? <ComboboxStatus>{branchStatusText}</ComboboxStatus> : null}
-      </ComboboxPopup>
-    </Combobox>
+          </div>
+          <ComboboxEmpty>No refs found.</ComboboxEmpty>
+
+          {shouldVirtualizeBranchList ? (
+            <ComboboxListVirtualized>
+              <LegendList<string>
+                ref={branchListRef}
+                data={filteredBranchPickerItems}
+                keyExtractor={(item) => item}
+                renderItem={({ item, index }) => renderPickerItem(item, index)}
+                estimatedItemSize={28}
+                drawDistance={336}
+                onEndReached={() => {
+                  if (hasNextPage && !isFetchingNextPage) {
+                    void fetchNextPage().catch(() => undefined);
+                  }
+                }}
+                style={{ maxHeight: "14rem" }}
+              />
+            </ComboboxListVirtualized>
+          ) : (
+            <ComboboxList ref={setBranchListRef} className="max-h-56">
+              {filteredBranchPickerItems.map((itemValue, index) =>
+                renderPickerItem(itemValue, index),
+              )}
+            </ComboboxList>
+          )}
+          {branchStatusText ? <ComboboxStatus>{branchStatusText}</ComboboxStatus> : null}
+        </ComboboxPopup>
+      </Combobox>
+    </>
   );
 }

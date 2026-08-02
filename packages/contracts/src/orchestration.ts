@@ -471,6 +471,14 @@ export const OrchestrationSession = Schema.Struct({
   providerSessionId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   providerThreadId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  /**
+   * Checkout the live runtime was started in. This is the session's
+   * *configured* working directory (the thread's worktree, or the project
+   * root), not `Thread.effectiveCwd` — that one records where the agent moved
+   * itself mid-session. When it stops matching the thread's target checkout,
+   * the thread has a checkout switch queued for its next turn.
+   */
+  checkoutCwd: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   activeTurnId: Schema.NullOr(TurnId),
   // Provider-reported tasks (e.g. backgrounded shell commands) still running.
   // Non-zero after a turn settles means the provider will self-wake when they

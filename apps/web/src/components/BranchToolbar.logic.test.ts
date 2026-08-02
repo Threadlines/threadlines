@@ -12,6 +12,7 @@ import {
   resolveEnvModeLabel,
   resolveBranchToolbarValue,
   resolveLockedWorkspaceLabel,
+  resolvePendingCheckoutSwitch,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 
@@ -398,6 +399,63 @@ describe("resolveBranchSelectionTarget", () => {
       nextWorktreePath: "/repo/.threadlines/worktrees/feature-a",
       reuseExistingWorktree: false,
     });
+  });
+});
+
+describe("resolvePendingCheckoutSwitch", () => {
+  it("announces the queued checkout when a live session still runs in the old one", () => {
+    expect(
+      resolvePendingCheckoutSwitch({
+        sessionCheckoutCwd: "/repo",
+        sessionStatus: "running",
+        activeProjectCwd: "/repo",
+        activeWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      }),
+    ).toEqual({
+      targetCheckoutCwd: "/repo/.threadlines/worktrees/feature-a",
+      label: "feature-a",
+    });
+  });
+
+  it("labels a switch back to the project root the way the picker does", () => {
+    expect(
+      resolvePendingCheckoutSwitch({
+        sessionCheckoutCwd: "/repo/.threadlines/worktrees/feature-a",
+        sessionStatus: "ready",
+        activeProjectCwd: "/repo",
+        activeWorktreePath: null,
+      }),
+    ).toEqual({ targetCheckoutCwd: "/repo", label: "Current checkout" });
+  });
+
+  it("stays quiet once the session runs in the thread's target checkout", () => {
+    expect(
+      resolvePendingCheckoutSwitch({
+        sessionCheckoutCwd: "/repo/.threadlines/worktrees/feature-a/",
+        sessionStatus: "running",
+        activeProjectCwd: "/repo",
+        activeWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      }),
+    ).toBeNull();
+  });
+
+  it("stays quiet when there is no live session to cycle", () => {
+    expect(
+      resolvePendingCheckoutSwitch({
+        sessionCheckoutCwd: "/repo",
+        sessionStatus: "stopped",
+        activeProjectCwd: "/repo",
+        activeWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      }),
+    ).toBeNull();
+    expect(
+      resolvePendingCheckoutSwitch({
+        sessionCheckoutCwd: null,
+        sessionStatus: null,
+        activeProjectCwd: "/repo",
+        activeWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      }),
+    ).toBeNull();
   });
 });
 

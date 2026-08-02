@@ -2062,6 +2062,76 @@ describe("ProviderCommandReactor", () => {
       },
       runtimeMode: "approval-required",
     });
+
+    // The projected session reports the checkout it actually runs in, which is
+    // what the composer compares against the thread's target checkout.
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      return (
+        snapshot.threads.find((thread) => thread.id === ThreadId.make("thread-1"))?.session
+          ?.checkoutCwd === "/tmp/provider-project-worktree"
+      );
+    });
+  });
+
+  it("keeps a running turn in its original checkout when a follow-up arrives after a checkout switch", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-steer-checkout"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-steer-checkout"),
+          role: "user",
+          text: "start working",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;
+      return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-worktree-change-while-running"),
+        threadId,
+        worktreePath: "/tmp/provider-project-worktree",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.follow-up.submit",
+        commandId: CommandId.make("cmd-follow-up-after-checkout-switch"),
+        threadId,
+        turnId: asTurnId("turn-1"),
+        message: {
+          messageId: asMessageId("user-message-steer-after-switch"),
+          role: "user",
+          text: "also handle the edge case",
+          attachments: [],
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.steerTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
   it("does not restart when the provider reports the same workspace through a path alias", async () => {

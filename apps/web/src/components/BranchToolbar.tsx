@@ -17,6 +17,7 @@ import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeS
 import {
   type EnvMode,
   type EnvironmentOption,
+  resolvePendingCheckoutSwitch,
   resolveActiveWorktreePath,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
@@ -38,6 +39,7 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { Separator } from "./ui/separator";
+import { TooltipWrapper } from "./ui/tooltip";
 
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
@@ -234,6 +236,14 @@ export const BranchToolbar = memo(function BranchToolbar({
   // matches the source-control surfaces. Mode/lock semantics stay keyed to
   // the configured worktree.
   const displayWorktreePath = serverThread?.effectiveCwd ?? activeWorktreePath;
+  // A checkout switch only takes effect on the next turn, so say so while the
+  // live session still runs in the checkout it started in.
+  const pendingCheckoutSwitch = resolvePendingCheckoutSwitch({
+    sessionCheckoutCwd: serverThread?.session?.checkoutCwd ?? null,
+    sessionStatus: serverThread?.session?.orchestrationStatus ?? null,
+    activeProjectCwd: activeProject?.cwd ?? null,
+    activeWorktreePath,
+  });
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
@@ -286,8 +296,25 @@ export const BranchToolbar = memo(function BranchToolbar({
         </div>
       )}
 
+      {pendingCheckoutSwitch ? (
+        <TooltipWrapper
+          tooltip={`This session is still running in its original checkout. Your next message starts it in ${pendingCheckoutSwitch.targetCheckoutCwd}.`}
+        >
+          <span className="ml-auto inline-flex min-w-0 max-w-[45%] shrink items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
+            <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
+            <span className="min-w-0 truncate">
+              Next message runs in {pendingCheckoutSwitch.label}
+            </span>
+          </span>
+        </TooltipWrapper>
+      ) : null}
+
       <BranchToolbarBranchSelector
-        className="min-w-0 flex-1 justify-end md:ml-auto md:flex-none"
+        className={
+          pendingCheckoutSwitch
+            ? "min-w-0 flex-1 justify-end md:flex-none"
+            : "min-w-0 flex-1 justify-end md:ml-auto md:flex-none"
+        }
         environmentId={environmentId}
         threadId={threadId}
         {...(draftId ? { draftId } : {})}

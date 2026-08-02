@@ -194,7 +194,7 @@ import {
   type SourceControlFileTreeNode,
   takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
-import { resolveBranchSelectionTarget } from "../BranchToolbar.logic";
+import { hasActiveThreadTurn, resolveBranchSelectionTarget } from "../BranchToolbar.logic";
 import { threadWorkingCwdLabel } from "@threadlines/shared/threadCwd";
 
 export interface SourceControlProjectTarget {
@@ -1497,6 +1497,12 @@ function SourceControlBranchMenu({
 }) {
   const queryClient = useQueryClient();
   const setThreadBranch = useStore((store) => store.setThreadBranch);
+  const activeThreadSession =
+    useStore(useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]))
+      ?.session ?? null;
+  const [pendingWorkingTreeSwitchRef, setPendingWorkingTreeSwitchRef] = useState<VcsRef | null>(
+    null,
+  );
   const [pendingMergeRef, setPendingMergeRef] = useState<VcsRef | null>(null);
   const [createBranchOpen, setCreateBranchOpen] = useState(false);
   const [createBranchName, setCreateBranchName] = useState("");
@@ -1597,11 +1603,8 @@ function SourceControlBranchMenu({
     ],
   );
 
-  const runSwitchRef = useCallback(
+  const executeSwitchRef = useCallback(
     (ref: VcsRef) => {
-      if (repositorySafetyReason) {
-        return;
-      }
       const selectionTarget = resolveBranchSelectionTarget({
         activeProjectCwd: target.projectCwd,
         activeWorktreePath: target.worktreePath,
@@ -1630,8 +1633,35 @@ function SourceControlBranchMenu({
     [
       checkoutMutation,
       refreshPanel,
-      repositorySafetyReason,
       syncActiveThreadBranch,
+      target.projectCwd,
+      target.worktreePath,
+    ],
+  );
+
+  const runSwitchRef = useCallback(
+    (ref: VcsRef) => {
+      if (repositorySafetyReason) {
+        return;
+      }
+      const selectionTarget = resolveBranchSelectionTarget({
+        activeProjectCwd: target.projectCwd,
+        activeWorktreePath: target.worktreePath,
+        refName: ref,
+      });
+      // Switching a branch inside the checkout an agent is working in swaps
+      // its files mid-turn. Selecting a ref that lives in another checkout is
+      // a checkout switch instead, and the next turn picks that up on its own.
+      if (!selectionTarget.reuseExistingWorktree && hasActiveThreadTurn(activeThreadSession)) {
+        setPendingWorkingTreeSwitchRef(ref);
+        return;
+      }
+      executeSwitchRef(ref);
+    },
+    [
+      activeThreadSession,
+      executeSwitchRef,
+      repositorySafetyReason,
       target.projectCwd,
       target.worktreePath,
     ],
@@ -1803,6 +1833,47 @@ function SourceControlBranchMenu({
           </MenuPopup>
         </Menu>
       </div>
+
+      <AlertDialog
+        open={pendingWorkingTreeSwitchRef !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingWorkingTreeSwitchRef(null);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch branch while the agent is working?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Switching to{" "}
+              <span className="font-mono">
+                {pendingWorkingTreeSwitchRef?.name ?? "this branch"}
+              </span>{" "}
+              changes the files in this checkout. The agent is running a turn here and will see the
+              new files mid-task.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                const ref = pendingWorkingTreeSwitchRef;
+                setPendingWorkingTreeSwitchRef(null);
+                if (ref) {
+                  executeSwitchRef(ref);
+                }
+              }}
+            >
+              Switch anyway
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
 
       <Dialog
         open={pendingMergeRef !== null}

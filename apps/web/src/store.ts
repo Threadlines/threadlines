@@ -166,6 +166,7 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     providerThreadId: session.providerThreadId ?? undefined,
     status: toLegacySessionStatus(session.status),
     orchestrationStatus: session.status,
+    checkoutCwd: session.checkoutCwd ?? undefined,
     activeTurnId: session.activeTurnId ?? undefined,
     pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
     createdAt: session.updatedAt,

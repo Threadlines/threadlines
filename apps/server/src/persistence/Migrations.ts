@@ -55,6 +55,7 @@ import Migration0039 from "./Migrations/039_ProjectionThreadProposedPlansDismiss
 import Migration0040 from "./Migrations/040_ProjectionThreadsVoiceActive.ts";
 import Migration0041 from "./Migrations/041_ProjectionThreadsDiffStatBaseline.ts";
 import Migration0042 from "./Migrations/042_ProjectionThreadsInboxLifecycle.ts";
+import Migration0043 from "./Migrations/043_ProjectionThreadSessionCheckoutCwd.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -109,6 +110,7 @@ export const migrationEntries = [
   [40, "ProjectionThreadsVoiceActive", Migration0040],
   [41, "ProjectionThreadsDiffStatBaseline", Migration0041],
   [42, "ProjectionThreadsInboxLifecycle", Migration0042],
+  [43, "ProjectionThreadSessionCheckoutCwd", Migration0043],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

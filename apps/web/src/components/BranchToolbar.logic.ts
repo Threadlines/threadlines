@@ -1,5 +1,11 @@
-import type { EnvironmentId, VcsRef, ProjectId } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  VcsRef,
+  ProjectId,
+  OrchestrationSessionStatus,
+} from "@threadlines/contracts";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
+import { threadWorkingCwdLabel } from "@threadlines/shared/threadCwd";
 import * as Schema from "effect/Schema";
 export {
   dedupeRemoteBranchesWithLocalMatches,
@@ -135,6 +141,55 @@ export function resolveBranchSelectionTarget(input: {
     checkoutCwd: nextWorktreePath ?? activeProjectCwd,
     nextWorktreePath,
     reuseExistingWorktree: false,
+  };
+}
+
+/**
+ * Whether the thread has a turn the agent is actively working (or about to
+ * start). Switching branches inside the checkout it is working in swaps files
+ * underneath it, so those actions confirm first.
+ */
+export function hasActiveThreadTurn(
+  session: { readonly orchestrationStatus: OrchestrationSessionStatus } | null | undefined,
+): boolean {
+  if (!session) {
+    return false;
+  }
+  return session.orchestrationStatus === "running" || session.orchestrationStatus === "starting";
+}
+
+/**
+ * A checkout switch is a property of the next turn, never a live mutation: the
+ * thread's target checkout moves immediately while the running session stays
+ * where it started. The server cycles the session into the new checkout when
+ * the next turn is dispatched, so surface the queued switch until then.
+ *
+ * Returns null when nothing is queued (no live session, or it already runs in
+ * the target checkout).
+ */
+export function resolvePendingCheckoutSwitch(input: {
+  /** Checkout the live session was started in; null/undefined when unknown. */
+  sessionCheckoutCwd: string | null | undefined;
+  /** Orchestration status of the thread's session, if it has one. */
+  sessionStatus: OrchestrationSessionStatus | null | undefined;
+  /** Project workspace root — the target checkout when no worktree is set. */
+  activeProjectCwd: string | null;
+  /** Thread's configured worktree, or null when it runs in the project root. */
+  activeWorktreePath: string | null;
+}): { targetCheckoutCwd: string; label: string } | null {
+  const { sessionCheckoutCwd, sessionStatus, activeProjectCwd, activeWorktreePath } = input;
+  if (!sessionCheckoutCwd || !sessionStatus || sessionStatus === "stopped") {
+    return null;
+  }
+  const targetCheckoutCwd = activeWorktreePath ?? activeProjectCwd;
+  if (!targetCheckoutCwd || areFilesystemPathsEqual(targetCheckoutCwd, sessionCheckoutCwd)) {
+    return null;
+  }
+  return {
+    targetCheckoutCwd,
+    label: activeWorktreePath
+      ? threadWorkingCwdLabel(activeWorktreePath)
+      : resolveEnvModeLabel("local"),
   };
 }
 

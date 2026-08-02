@@ -2392,6 +2392,7 @@ const make = Effect.gen(function* () {
                   ? (event.payload?.providerThreadId ?? thread.session?.providerThreadId ?? null)
                   : (thread.session?.providerThreadId ?? null),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              checkoutCwd: thread.session?.checkoutCwd ?? null,
               activeTurnId: nextActiveTurnId,
               pendingBackgroundTaskCount:
                 event.type === "session.started" || event.type === "session.exited"

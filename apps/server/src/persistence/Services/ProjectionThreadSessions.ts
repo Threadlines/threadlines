@@ -30,6 +30,7 @@ export const ProjectionThreadSession = Schema.Struct({
   providerSessionId: Schema.NullOr(Schema.String),
   providerThreadId: Schema.NullOr(Schema.String),
   runtimeMode: RuntimeMode,
+  checkoutCwd: Schema.NullOr(Schema.String),
   activeTurnId: Schema.NullOr(TurnId),
   pendingBackgroundTaskCount: NonNegativeInt,
   lastError: Schema.NullOr(Schema.String),

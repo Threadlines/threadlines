@@ -233,6 +233,12 @@ export interface ThreadSession {
   providerSessionId?: string | undefined;
   providerThreadId?: string | undefined;
   status: SessionPhase | "error" | "closed";
+  /**
+   * Checkout the live runtime was started in. Differs from the thread's
+   * `worktreePath` while a checkout switch is queued for the next turn; unlike
+   * `Thread.effectiveCwd` it never reflects a cwd the agent moved itself to.
+   */
+  checkoutCwd?: string | undefined;
   activeTurnId?: TurnId | undefined;
   pendingBackgroundTaskCount?: number | undefined;
   createdAt: string;

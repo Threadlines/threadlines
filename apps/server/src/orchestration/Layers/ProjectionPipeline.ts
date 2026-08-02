@@ -1145,6 +1145,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         providerSessionId: event.payload.session.providerSessionId ?? null,
         providerThreadId: event.payload.session.providerThreadId ?? null,
         runtimeMode: event.payload.session.runtimeMode,
+        checkoutCwd: event.payload.session.checkoutCwd ?? null,
         activeTurnId: event.payload.session.activeTurnId,
         pendingBackgroundTaskCount: event.payload.session.pendingBackgroundTaskCount ?? 0,
         lastError: event.payload.session.lastError,
