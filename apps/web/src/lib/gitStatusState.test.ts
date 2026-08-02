@@ -600,6 +600,49 @@ describe("gitStatusState", () => {
     }
   });
 
+  it("converges when reconnect attempts arrive faster than the watchdog", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+      harness.emit(BASE_STATUS);
+
+      // A dead-but-retrying transport announces an attempt start every few
+      // seconds without ever delivering. Each announcement must NOT reset the
+      // watchdog or refill the rebuild budget, or the bounded cycle never
+      // converges and the stale notice never appears.
+      harness.resubscribe();
+      for (let elapsed = 0; elapsed < 60_000; elapsed += 5_000) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        harness.resubscribe();
+      }
+
+      // Initial open + exactly two watchdog rebuilds, then the notice.
+      expect(harness.onStatus).toHaveBeenCalledTimes(3);
+      expect(getGitStatusSnapshot(TARGET).error?.message).toBe(GIT_STATUS_STALE_MESSAGE);
+      expect(getGitStatusSnapshot(TARGET).isPending).toBe(false);
+
+      // Exhausted stays exhausted: more attempt starts open nothing new...
+      await vi.advanceTimersByTimeAsync(120_000);
+      harness.resubscribe();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(harness.onStatus).toHaveBeenCalledTimes(3);
+
+      // ...but a delivered value still heals and re-arms the cycle.
+      harness.emit(BASE_STATUS);
+      expect(getGitStatusSnapshot(TARGET)).toEqual({
+        data: BASE_STATUS,
+        error: null,
+        cause: null,
+        isPending: false,
+      });
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("converges when the poll lane heals while the stream keeps failing", async () => {
     vi.useFakeTimers();
     try {

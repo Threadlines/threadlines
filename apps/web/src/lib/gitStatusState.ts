@@ -490,6 +490,10 @@ function subscribeToGitStatus(
   let firstSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let unsubscribeStream = NOOP;
   let hasOpenedStream = false;
+  // True from stream open (or a genuine post-delivery resubscribe) until a
+  // status value arrives. Guards the watchdog and rebuild budget against
+  // transport attempt-starts, which say nothing about data flowing.
+  let isAwaitingSnapshot = false;
   let rebuildCount = 0;
   let disposed = false;
 
@@ -565,13 +569,15 @@ function subscribeToGitStatus(
       hasOpenedStream = true;
       markGitStatusPending(targetKey);
     }
+    isAwaitingSnapshot = true;
     startFirstSnapshotWatchdog();
     unsubscribeStream = client.onStatus(
       { cwd },
       (status: VcsStatusResult) => {
         clearFirstSnapshotWatchdog();
-        // The stream is alive again, so the next silent stretch gets its own
-        // full rebuild budget.
+        // A delivered value is the only recovery signal: it ends the waiting
+        // phase and grants the next silent stretch its own rebuild budget.
+        isAwaitingSnapshot = false;
         rebuildCount = 0;
         appAtomRegistry.set(gitStatusStateAtom(targetKey), {
           data: status,
@@ -582,6 +588,14 @@ function subscribeToGitStatus(
       },
       {
         onResubscribe: () => {
+          // The transport announces every reconnect ATTEMPT, not deliveries.
+          // While a snapshot is already awaited, another attempt starting is
+          // not progress — resetting the watchdog and budget here let
+          // attempts arriving faster than the watchdog postpone it forever.
+          if (isAwaitingSnapshot) {
+            return;
+          }
+          isAwaitingSnapshot = true;
           rebuildCount = 0;
           markGitStatusPending(targetKey);
           startFirstSnapshotWatchdog();

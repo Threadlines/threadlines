@@ -7436,7 +7436,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(palette.getByText("This device", { exact: true }).first())
         .toBeInTheDocument();
       await palette.getByText("Staging", { exact: true }).click();
-      await palette.getByText("Local folder", { exact: true }).click();
+      // The palette re-renders its list when the environment pick commits the
+      // Sources view. Await the committed view and an attached action before
+      // clicking, or the click can land on a mid-transition node that detaches
+      // under it on a slow runner.
+      await expect.element(palette.getByText("Sources", { exact: true })).toBeInTheDocument();
+      const localFolderAction = palette.getByText("Local folder", { exact: true });
+      await expect.element(localFolderAction).toBeInTheDocument();
+      await localFolderAction.click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/workspaces/");
