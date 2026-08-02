@@ -158,6 +158,34 @@ export function hasActiveThreadTurn(
   return session.orchestrationStatus === "running" || session.orchestrationStatus === "starting";
 }
 
+/** How a checkout reads in prose: worktrees by name, the project root by role. */
+export function resolveCheckoutDisplayLabel(
+  checkoutCwd: string,
+  activeProjectCwd: string | null,
+): string {
+  if (activeProjectCwd && areFilesystemPathsEqual(checkoutCwd, activeProjectCwd)) {
+    return "the local checkout";
+  }
+  return threadWorkingCwdLabel(checkoutCwd);
+}
+
+export interface PendingCheckoutSwitch {
+  /** Checkout the thread is queued to move into. */
+  readonly targetCheckoutCwd: string;
+  /** Checkout the live session is still running in. */
+  readonly fromCheckoutCwd: string;
+  /** Display label for the checkout the session is still in. */
+  readonly fromLabel: string;
+  /** Display label for the queued destination. */
+  readonly toLabel: string;
+  /**
+   * The switch cannot apply on the next turn: the session owns running
+   * background tasks, so the server keeps running turns where they are until
+   * those finish.
+   */
+  readonly deferred: boolean;
+}
+
 /**
  * A checkout switch is a property of the next turn, never a live mutation: the
  * thread's target checkout moves immediately while the running session stays
@@ -172,11 +200,13 @@ export function resolvePendingCheckoutSwitch(input: {
   sessionCheckoutCwd: string | null | undefined;
   /** Orchestration status of the thread's session, if it has one. */
   sessionStatus: OrchestrationSessionStatus | null | undefined;
+  /** Background tasks still running inside the live session's runtime. */
+  pendingBackgroundTaskCount?: number | null | undefined;
   /** Project workspace root — the target checkout when no worktree is set. */
   activeProjectCwd: string | null;
   /** Thread's configured worktree, or null when it runs in the project root. */
   activeWorktreePath: string | null;
-}): { targetCheckoutCwd: string; label: string } | null {
+}): PendingCheckoutSwitch | null {
   const { sessionCheckoutCwd, sessionStatus, activeProjectCwd, activeWorktreePath } = input;
   if (!sessionCheckoutCwd || !sessionStatus || sessionStatus === "stopped") {
     return null;
@@ -187,10 +217,37 @@ export function resolvePendingCheckoutSwitch(input: {
   }
   return {
     targetCheckoutCwd,
-    label: activeWorktreePath
-      ? threadWorkingCwdLabel(activeWorktreePath)
-      : resolveEnvModeLabel("local"),
+    fromCheckoutCwd: sessionCheckoutCwd,
+    fromLabel: resolveCheckoutDisplayLabel(sessionCheckoutCwd, activeProjectCwd),
+    toLabel: resolveCheckoutDisplayLabel(targetCheckoutCwd, activeProjectCwd),
+    deferred: (input.pendingBackgroundTaskCount ?? 0) > 0,
   };
+}
+
+/**
+ * Chip copy leads with where the agent still is, because that is what the user
+ * is about to be surprised by. The short form survives phone widths.
+ */
+export function checkoutSwitchChipText(pending: PendingCheckoutSwitch): {
+  long: string;
+  short: string;
+} {
+  if (pending.deferred) {
+    return {
+      long: `Agent still in ${pending.fromLabel} · waiting on a background task`,
+      short: `In ${pending.fromLabel} · task running`,
+    };
+  }
+  return {
+    long: `Agent still in ${pending.fromLabel}`,
+    short: `In ${pending.fromLabel}`,
+  };
+}
+
+export function checkoutSwitchExplanation(pending: PendingCheckoutSwitch): string {
+  return pending.deferred
+    ? `A background task is still running inside this session, so it stays in ${pending.fromLabel}. The switch to ${pending.toLabel} applies on its own once that task finishes; until then your messages run in ${pending.fromLabel}.`
+    : `This session is finishing in ${pending.fromLabel}. Your next message starts it in ${pending.toLabel}.`;
 }
 
 export function shouldIncludeBranchPickerItem(input: {

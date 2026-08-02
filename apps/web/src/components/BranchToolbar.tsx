@@ -25,6 +25,7 @@ import {
   resolveLockedWorkspaceLabel,
 } from "./BranchToolbar.logic";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
+import { BranchToolbarCheckoutSwitchChip } from "./BranchToolbarCheckoutSwitchChip";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
 import { Button } from "./ui/button";
@@ -39,7 +40,6 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { Separator } from "./ui/separator";
-import { TooltipWrapper } from "./ui/tooltip";
 
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
@@ -241,6 +241,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   const pendingCheckoutSwitch = resolvePendingCheckoutSwitch({
     sessionCheckoutCwd: serverThread?.session?.checkoutCwd ?? null,
     sessionStatus: serverThread?.session?.orchestrationStatus ?? null,
+    pendingBackgroundTaskCount: serverThread?.session?.pendingBackgroundTaskCount ?? 0,
     activeProjectCwd: activeProject?.cwd ?? null,
     activeWorktreePath,
   });
@@ -297,21 +298,11 @@ export const BranchToolbar = memo(function BranchToolbar({
       )}
 
       {pendingCheckoutSwitch ? (
-        <TooltipWrapper
-          tooltip={`This session is still running in its original checkout. Your next message starts it in ${pendingCheckoutSwitch.targetCheckoutCwd}.`}
-        >
-          <span className="ml-auto inline-flex min-w-0 max-w-[45%] shrink items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
-            <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
-            <span className="min-w-0 truncate">
-              {/* Phone widths truncate the long form to the point of hiding
-                  the destination, which is the whole payload of this chip. */}
-              <span className="max-sm:hidden">
-                Next message runs in {pendingCheckoutSwitch.label}
-              </span>
-              <span className="sm:hidden">Next: {pendingCheckoutSwitch.label}</span>
-            </span>
-          </span>
-        </TooltipWrapper>
+        <BranchToolbarCheckoutSwitchChip
+          environmentId={environmentId}
+          threadId={threadId}
+          pendingCheckoutSwitch={pendingCheckoutSwitch}
+        />
       ) : null}
 
       <BranchToolbarBranchSelector

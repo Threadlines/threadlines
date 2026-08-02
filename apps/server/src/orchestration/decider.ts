@@ -747,6 +747,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   // The runtime is still in whatever checkout it started in;
                   // the reactor rewrites this once the session is (re)bound.
                   checkoutCwd: targetThread.session?.checkoutCwd ?? null,
+                  // Same reasoning: the live runtime still owns its background
+                  // tasks. Dropping the count here would tell the reactor the
+                  // session is free to be cycled into another checkout.
+                  pendingBackgroundTaskCount: targetThread.session?.pendingBackgroundTaskCount ?? 0,
                   activeTurnId: null,
                   lastError: targetThread.session?.lastError ?? null,
                   updatedAt: command.createdAt,
@@ -841,6 +845,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             providerThreadId: session.providerThreadId ?? null,
             runtimeMode: targetThread.runtimeMode,
             checkoutCwd: session.checkoutCwd ?? null,
+            pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
             activeTurnId: null,
             lastError: session.lastError,
             updatedAt: command.createdAt,

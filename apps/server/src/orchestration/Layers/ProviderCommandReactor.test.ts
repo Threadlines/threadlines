@@ -2074,6 +2074,127 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("defers a queued checkout switch while the session still owns background tasks", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    const setPendingBackgroundTaskCount = async (count: number, commandSuffix: string) => {
+      const snapshot = await harness.readModel();
+      const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;
+      if (!session) throw new Error("expected a projected session for thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-pending-tasks-${commandSuffix}`),
+          threadId,
+          session: {
+            ...session,
+            status: "ready",
+            activeTurnId: null,
+            pendingBackgroundTaskCount: count,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-defer-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-defer-1"),
+          role: "user",
+          text: "first in project root",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      cwd: "/tmp/provider-project",
+    });
+
+    // A subagent is still running inside the live runtime, and the user queues
+    // a checkout switch on top of it.
+    await setPendingBackgroundTaskCount(1, "running");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-worktree-change-defer"),
+        threadId,
+        worktreePath: "/tmp/provider-project-worktree",
+      }),
+    );
+
+    for (const [index, suffix] of ["2", "3"].entries()) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-defer-${suffix}`),
+          threadId,
+          message: {
+            messageId: asMessageId(`user-message-defer-${suffix}`),
+            role: "user",
+            text: `turn ${suffix} while a background task runs`,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === index + 2);
+    }
+
+    // The turns ran in the session's current checkout instead of cycling it,
+    // and the deferral was narrated once for the whole streak.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+    const deferredSnapshot = await harness.readModel();
+    const deferredActivities = deferredSnapshot.threads
+      .find((thread) => thread.id === threadId)
+      ?.activities.filter((activity) => activity.kind === "thread.checkout.switch-deferred");
+    expect(deferredActivities?.length).toBe(1);
+    expect(deferredActivities?.[0]).toMatchObject({
+      tone: "info",
+      payload: {
+        fromCwd: "/tmp/provider-project",
+        toCwd: "/tmp/provider-project-worktree",
+        pendingBackgroundTaskCount: 1,
+      },
+    });
+
+    // Once the background task finishes the queued switch applies on the very
+    // next turn, restarting the session into the target checkout.
+    await setPendingBackgroundTaskCount(0, "settled");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-defer-4"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-defer-4"),
+          role: "user",
+          text: "turn after the background task finished",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      cwd: "/tmp/provider-project-worktree",
+    });
+  });
+
   it("keeps a running turn in its original checkout when a follow-up arrives after a checkout switch", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");
