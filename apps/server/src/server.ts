@@ -42,6 +42,7 @@ import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeS
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { SubagentWorktreeFollowerLive } from "./orchestration/Layers/SubagentWorktreeFollower.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
@@ -162,6 +163,7 @@ const PlatformServicesLive = Layer.unwrap(
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
+  Layer.provideMerge(SubagentWorktreeFollowerLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),

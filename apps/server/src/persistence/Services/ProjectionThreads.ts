@@ -15,6 +15,7 @@ import {
   ProviderInteractionMode,
   RuntimeMode,
   ThreadDoneOverrideState,
+  ThreadEffectiveCwdSource,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -35,6 +36,12 @@ export const ProjectionThread = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   effectiveCwd: Schema.NullOr(Schema.String),
+  /**
+   * Why `effectiveCwd` holds what it holds. Optional so rows written before
+   * migration 044 decode; absent reads as session-sourced, matching the
+   * migration's backfill.
+   */
+  effectiveCwdSource: Schema.optional(Schema.NullOr(ThreadEffectiveCwdSource)),
   goal: Schema.NullOr(OrchestrationThreadGoal),
   voiceActive: Schema.optional(NonNegativeInt),
   /**

@@ -1186,6 +1186,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           effectiveCwd: command.effectiveCwd,
+          ...(command.effectiveCwd !== null
+            ? { effectiveCwdSource: command.effectiveCwdSource ?? "session" }
+            : {}),
           updatedAt: command.createdAt,
         },
       };

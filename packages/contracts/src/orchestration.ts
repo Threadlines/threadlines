@@ -625,6 +625,10 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+/** Where a thread's `effectiveCwd` came from. See OrchestrationThread. */
+export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent"]);
+export type ThreadEffectiveCwdSource = typeof ThreadEffectiveCwdSource.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -645,6 +649,15 @@ export const OrchestrationThread = Schema.Struct({
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /**
+   * Why `effectiveCwd` holds what it holds. `session` means the provider
+   * session itself reported working there; `subagent` means it was inferred
+   * from an isolated subagent's checkout. Inference must never overwrite or
+   * clear a session-sourced value, so this has to outlive a server restart.
+   * Clients do not need to read it — the same chip renders either way.
+   * Always null while `effectiveCwd` is null.
+   */
+  effectiveCwdSource: Schema.optional(Schema.NullOr(ThreadEffectiveCwdSource)),
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -709,6 +722,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** See OrchestrationThread.effectiveCwdSource. */
+  effectiveCwdSource: Schema.optional(Schema.NullOr(ThreadEffectiveCwdSource)),
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1301,6 +1316,9 @@ const ThreadEffectiveCwdSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
+  /** Omitted means `session`, which is what every emitter did before subagent
+   *  worktree inference existed. Ignored when `effectiveCwd` is null. */
+  effectiveCwdSource: Schema.optional(ThreadEffectiveCwdSource),
   createdAt: IsoDateTime,
 });
 
@@ -1700,6 +1718,9 @@ export const ThreadSessionSetPayload = Schema.Struct({
 export const ThreadEffectiveCwdSetPayload = Schema.Struct({
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
+  /** Absent on events recorded before subagent worktree inference shipped;
+   *  those were all session-sourced. */
+  effectiveCwdSource: Schema.optional(ThreadEffectiveCwdSource),
   updatedAt: IsoDateTime,
 });
 

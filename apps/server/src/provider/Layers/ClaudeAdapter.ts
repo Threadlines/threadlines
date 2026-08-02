@@ -87,6 +87,7 @@ import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { ensureClaudeSessionTranscript } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
+  locateClaudeSubagentMeta,
   locateClaudeSubagentTranscript,
   readClaudeSubagentTranscriptEntries,
 } from "../Drivers/ClaudeSubagentTranscripts.ts";
@@ -6097,6 +6098,52 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     });
 
+  /**
+   * Read where an isolated subagent is working from its sidecar record.
+   *
+   * The SDK event stream states only that a Task was spawned with worktree
+   * isolation, never the path, so the sidecar Claude writes next to the
+   * subagent transcript is the only source. It appears shortly *after* the
+   * task starts, so a null here means "not yet", and callers retry.
+   */
+  const resolveSubagentWorktree: NonNullable<ClaudeAdapterShape["resolveSubagentWorktree"]> =
+    Effect.fn("resolveSubagentWorktree")(function* (threadId, input) {
+      if (!SUBAGENT_AGENT_ID_PATTERN.test(input.toolUseId)) {
+        return null;
+      }
+      const context = yield* requireSession(threadId);
+      const sessionId = context.resumeSessionId;
+      const cwd = context.session.cwd;
+      if (!sessionId || !cwd) {
+        return null;
+      }
+      const meta = yield* locateClaudeSubagentMeta({
+        environment: claudeEnvironment,
+        cwd,
+        sessionId,
+        agentId: input.toolUseId,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        // Inference is best effort: a transient read failure must never break
+        // the caller, which is reacting to unrelated task lifecycle events.
+        Effect.catch((cause) =>
+          Effect.logDebug("claude.subagent-worktree.read-failed", {
+            threadId,
+            toolUseId: input.toolUseId,
+            detail: cause.message,
+          }).pipe(Effect.as(null)),
+        ),
+      );
+      if (!meta?.worktreePath) {
+        return null;
+      }
+      return {
+        worktreePath: meta.worktreePath,
+        ...(meta.worktreeBranch ? { worktreeBranch: meta.worktreeBranch } : {}),
+      };
+    });
+
   const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (
     context: ClaudeSessionContext,
     targetUserMessageId: MessageId | undefined,
@@ -6252,6 +6299,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     compactContext,
     readThread,
     readSubagentTranscript,
+    resolveSubagentWorktree,
     rollbackThread,
     respondToRequest,
     respondToUserInput,

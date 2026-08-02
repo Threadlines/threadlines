@@ -557,6 +557,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             effectiveCwd: null,
+            effectiveCwdSource: null,
             goal: null,
             voiceActive: 0,
             diffStatBaselineTurnCount: 0,
@@ -729,6 +730,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             effectiveCwd: event.payload.effectiveCwd,
+            effectiveCwdSource:
+              event.payload.effectiveCwd === null
+                ? null
+                : (event.payload.effectiveCwdSource ?? "session"),
             updatedAt: event.payload.updatedAt,
           });
           return;

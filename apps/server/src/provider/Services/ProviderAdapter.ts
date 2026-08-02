@@ -109,6 +109,19 @@ export interface ProviderRollbackThreadOptions {
   readonly targetUserMessageId?: MessageId;
 }
 
+export interface ProviderSubagentWorktreeInput {
+  /** Tool call that spawned the subagent. Providers key their own records by
+   *  this, so it is the only correlation id callers can rely on. */
+  readonly toolUseId: string;
+}
+
+export interface ProviderSubagentWorktree {
+  /** Absolute path of the checkout the subagent works in. */
+  readonly worktreePath: string;
+  /** Branch checked out there, when the provider states one. */
+  readonly worktreeBranch?: string;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -269,6 +282,19 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     input: ProviderSubagentTranscriptInput,
   ) => Effect.Effect<ProviderSubagentTranscriptResult, TError>;
+
+  /**
+   * Where a spawned subagent is working, when it was given its own checkout.
+   *
+   * Optional: only providers that record an isolated subagent's directory
+   * somewhere the driver can read it implement this. Resolving `null` means
+   * "not known (yet)", never "no worktree" — the record is written
+   * asynchronously, so callers that care must retry for a bounded time.
+   */
+  readonly resolveSubagentWorktree?: (
+    threadId: ThreadId,
+    input: ProviderSubagentWorktreeInput,
+  ) => Effect.Effect<ProviderSubagentWorktree | null, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

@@ -34,6 +34,12 @@ export interface ClaudeSubagentTranscriptMeta {
   readonly toolUseId?: string;
   readonly model?: string;
   readonly spawnDepth?: number;
+  /** Checkout the subagent runs in, when it was spawned with worktree
+   *  isolation. The event stream never carries this, so the sidecar is the
+   *  only place the path is stated. */
+  readonly worktreePath?: string;
+  /** Branch checked out in `worktreePath`, when the sidecar states one. */
+  readonly worktreeBranch?: string;
 }
 
 export interface ClaudeSubagentTranscriptLocation {
@@ -96,6 +102,8 @@ function parseMeta(value: string): ClaudeSubagentTranscriptMeta | undefined {
   const description = readOptionalString("description");
   const toolUseId = readOptionalString("toolUseId");
   const model = readOptionalString("model");
+  const worktreePath = readOptionalString("worktreePath");
+  const worktreeBranch = readOptionalString("worktreeBranch");
   const rawSpawnDepth = record["spawnDepth"];
   const spawnDepth =
     typeof rawSpawnDepth === "number" && Number.isInteger(rawSpawnDepth) && rawSpawnDepth >= 0
@@ -107,6 +115,8 @@ function parseMeta(value: string): ClaudeSubagentTranscriptMeta | undefined {
     ...(toolUseId ? { toolUseId } : {}),
     ...(model ? { model } : {}),
     ...(spawnDepth !== undefined ? { spawnDepth } : {}),
+    ...(worktreePath ? { worktreePath } : {}),
+    ...(worktreeBranch ? { worktreeBranch } : {}),
   };
 }
 
@@ -121,18 +131,107 @@ function readMetaFile(fileSystem: FileSystem.FileSystem, metaPath: string) {
   );
 }
 
+export interface ClaudeSubagentLookupInput {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly sessionId: string;
+  /** On-disk agent id or the spawning tool_use id. */
+  readonly agentId: string;
+}
+
+/**
+ * Every directory that can hold this session's subagent files, in the order
+ * they should be searched: the project slug the session's cwd maps to first,
+ * then the other slugs a resumed session may still be writing under, and
+ * inside each, the flat subagent root before the nested workflow directories.
+ */
+const subagentSearchDirectories = Effect.fn("subagentSearchDirectories")(function* (input: {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly sessionId: string;
+}): Effect.fn.Return<
+  ReadonlyArray<string>,
+  PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const projectsDir = path.join(resolveClaudeConfigDir(input.environment, path), "projects");
+  const expectedProject = claudeProjectDirectoryName(input.cwd);
+  const projectEntries = yield* fileSystem
+    .readDirectory(projectsDir)
+    .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
+  const projectDirectories = [
+    expectedProject,
+    ...projectEntries.filter((entry) => entry !== expectedProject).sort(),
+  ];
+
+  const directories: Array<string> = [];
+  for (const projectDirectory of projectDirectories) {
+    const searchRoot = path.join(projectsDir, projectDirectory, input.sessionId, "subagents");
+    if (!(yield* fileExists(fileSystem, searchRoot))) {
+      continue;
+    }
+    directories.push(searchRoot);
+    const workflowsRoot = path.join(searchRoot, "workflows");
+    const workflowEntries = yield* fileSystem
+      .readDirectory(workflowsRoot)
+      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
+    for (const entry of workflowEntries.sort()) {
+      directories.push(path.join(workflowsRoot, entry));
+    }
+  }
+  return directories;
+});
+
+/**
+ * Read the sidecar metadata for an agent without requiring its transcript to
+ * exist. Claude writes `agent-<id>.meta.json` as soon as the subagent is
+ * spawned, so this resolves facts the event stream never carries (notably the
+ * isolation worktree) while the agent is still starting up.
+ */
+export const locateClaudeSubagentMeta = Effect.fn("locateClaudeSubagentMeta")(function* (
+  input: ClaudeSubagentLookupInput,
+): Effect.fn.Return<
+  ClaudeSubagentTranscriptMeta | null,
+  PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const directories = yield* subagentSearchDirectories(input);
+  for (const searchedDirectory of directories) {
+    const directMetaPath = path.join(searchedDirectory, `agent-${input.agentId}.meta.json`);
+    if (yield* fileExists(fileSystem, directMetaPath)) {
+      const meta = yield* readMetaFile(fileSystem, directMetaPath);
+      if (meta) {
+        return meta;
+      }
+    }
+    const entries = yield* fileSystem
+      .readDirectory(searchedDirectory)
+      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
+    for (const entry of entries.sort()) {
+      if (!/^agent-.+\.meta\.json$/u.test(entry)) {
+        continue;
+      }
+      const meta = yield* readMetaFile(fileSystem, path.join(searchedDirectory, entry));
+      if (meta?.toolUseId === input.agentId) {
+        return meta;
+      }
+    }
+  }
+  return null;
+});
+
 /**
  * Resolve an on-disk agent id or spawning tool_use id across all project
  * slugs that can own a session transcript.
  */
 export const locateClaudeSubagentTranscript = Effect.fn("locateClaudeSubagentTranscript")(
-  function* (input: {
-    readonly environment: NodeJS.ProcessEnv;
-    readonly cwd: string;
-    readonly sessionId: string;
-    /** On-disk agent id or the spawning tool_use id. */
-    readonly agentId: string;
-  }): Effect.fn.Return<
+  function* (
+    input: ClaudeSubagentLookupInput,
+  ): Effect.fn.Return<
     ClaudeSubagentTranscriptLocation | null,
     PlatformError.PlatformError,
     FileSystem.FileSystem | Path.Path
@@ -148,70 +247,47 @@ export const locateClaudeSubagentTranscript = Effect.fn("locateClaudeSubagentTra
       resolutionCache.delete(cacheKey);
     }
 
-    const projectsDir = path.join(resolveClaudeConfigDir(input.environment, path), "projects");
-    const expectedProject = claudeProjectDirectoryName(input.cwd);
-    const projectEntries = yield* fileSystem
-      .readDirectory(projectsDir)
-      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-    const projectDirectories = [
-      expectedProject,
-      ...projectEntries.filter((entry) => entry !== expectedProject).sort(),
-    ];
+    const searchedDirectories = yield* subagentSearchDirectories(input);
 
-    for (const projectDirectory of projectDirectories) {
-      const searchRoot = path.join(projectsDir, projectDirectory, input.sessionId, "subagents");
-      if (!(yield* fileExists(fileSystem, searchRoot))) {
-        continue;
+    for (const searchedDirectory of searchedDirectories) {
+      const directTranscriptPath = path.join(searchedDirectory, `agent-${input.agentId}.jsonl`);
+      if (yield* fileExists(fileSystem, directTranscriptPath)) {
+        const meta = yield* readMetaFile(
+          fileSystem,
+          path.join(searchedDirectory, `agent-${input.agentId}.meta.json`),
+        );
+        const location = {
+          transcriptPath: directTranscriptPath,
+          agentId: input.agentId,
+          ...(meta ? { meta } : {}),
+        };
+        setCappedMapEntry(resolutionCache, cacheKey, location, RESOLUTION_CACHE_MAX_ENTRIES);
+        return location;
       }
-      const workflowsRoot = path.join(searchRoot, "workflows");
-      const workflowEntries = yield* fileSystem
-        .readDirectory(workflowsRoot)
+
+      const entries = yield* fileSystem
+        .readDirectory(searchedDirectory)
         .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-      const searchedDirectories = [
-        searchRoot,
-        ...workflowEntries.sort().map((entry) => path.join(workflowsRoot, entry)),
-      ];
-
-      for (const searchedDirectory of searchedDirectories) {
-        const directTranscriptPath = path.join(searchedDirectory, `agent-${input.agentId}.jsonl`);
-        if (yield* fileExists(fileSystem, directTranscriptPath)) {
-          const meta = yield* readMetaFile(
-            fileSystem,
-            path.join(searchedDirectory, `agent-${input.agentId}.meta.json`),
-          );
-          const location = {
-            transcriptPath: directTranscriptPath,
-            agentId: input.agentId,
-            ...(meta ? { meta } : {}),
-          };
-          setCappedMapEntry(resolutionCache, cacheKey, location, RESOLUTION_CACHE_MAX_ENTRIES);
-          return location;
+      for (const entry of entries.sort()) {
+        const match = /^agent-(.+)\.meta\.json$/u.exec(entry);
+        if (!match?.[1]) {
+          continue;
         }
-
-        const entries = yield* fileSystem
-          .readDirectory(searchedDirectory)
-          .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-        for (const entry of entries.sort()) {
-          const match = /^agent-(.+)\.meta\.json$/u.exec(entry);
-          if (!match?.[1]) {
-            continue;
-          }
-          const meta = yield* readMetaFile(fileSystem, path.join(searchedDirectory, entry));
-          if (meta?.toolUseId !== input.agentId) {
-            continue;
-          }
-          const transcriptPath = path.join(searchedDirectory, `agent-${match[1]}.jsonl`);
-          if (!(yield* fileExists(fileSystem, transcriptPath))) {
-            continue;
-          }
-          const location = {
-            transcriptPath,
-            agentId: match[1],
-            meta,
-          };
-          setCappedMapEntry(resolutionCache, cacheKey, location, RESOLUTION_CACHE_MAX_ENTRIES);
-          return location;
+        const meta = yield* readMetaFile(fileSystem, path.join(searchedDirectory, entry));
+        if (meta?.toolUseId !== input.agentId) {
+          continue;
         }
+        const transcriptPath = path.join(searchedDirectory, `agent-${match[1]}.jsonl`);
+        if (!(yield* fileExists(fileSystem, transcriptPath))) {
+          continue;
+        }
+        const location = {
+          transcriptPath,
+          agentId: match[1],
+          meta,
+        };
+        setCappedMapEntry(resolutionCache, cacheKey, location, RESOLUTION_CACHE_MAX_ENTRIES);
+        return location;
       }
     }
 
