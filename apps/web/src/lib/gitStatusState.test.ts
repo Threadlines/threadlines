@@ -600,6 +600,37 @@ describe("gitStatusState", () => {
     }
   });
 
+  it("does not touch the atom while rebuilding a stream that never delivers", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      // One pending write at mount, one stale write when the budget runs out,
+      // and nothing in between: every rebuild-cycle write re-renders every
+      // consumer, which is enough churn to destabilize the app while a
+      // connection is down (this exact pattern broke CI's browser suite).
+      const pending = getGitStatusSnapshot(TARGET);
+      expect(pending.isPending).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getGitStatusSnapshot(TARGET)).toBe(pending);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getGitStatusSnapshot(TARGET)).toBe(pending);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      const stale = getGitStatusSnapshot(TARGET);
+      expect(stale.error?.message).toBe(GIT_STATUS_STALE_MESSAGE);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getGitStatusSnapshot(TARGET)).toBe(stale);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gives a stream that delivered again a fresh rebuild budget", async () => {
     vi.useFakeTimers();
     try {

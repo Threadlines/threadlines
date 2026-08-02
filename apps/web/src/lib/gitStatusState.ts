@@ -489,6 +489,7 @@ function subscribeToGitStatus(
 ): GitStatusSubscription {
   let firstSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let unsubscribeStream = NOOP;
+  let hasOpenedStream = false;
   let rebuildCount = 0;
   let disposed = false;
 
@@ -555,7 +556,15 @@ function subscribeToGitStatus(
     unsubscribeStream = NOOP;
     previousUnsubscribe();
 
-    markGitStatusPending(targetKey);
+    // Only the first open announces "loading". Rebuilds keep whatever is on
+    // screen (data or the stale notice) until an event actually arrives:
+    // flipping back to pending on every rebuild makes the atom oscillate
+    // pending↔stale in environments where subscribing never succeeds, and
+    // that churn re-renders every consumer for a minute after mount.
+    if (!hasOpenedStream) {
+      hasOpenedStream = true;
+      markGitStatusPending(targetKey);
+    }
     startFirstSnapshotWatchdog();
     unsubscribeStream = client.onStatus(
       { cwd },
