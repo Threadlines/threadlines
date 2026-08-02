@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { WsRpcClient } from "../rpc/wsRpcClient";
 import { resetAppAtomRegistryForTests } from "../rpc/atomRegistry";
 import {
+  GIT_STATUS_STALE_MESSAGE,
   getGitStatusSnapshot,
+  rebuildGitStatusSubscription,
   resetGitStatusStateForTests,
   refreshLocalGitStatus,
   refreshGitStatus,
@@ -71,6 +73,51 @@ function emitGitStatus(event: VcsStatusResult) {
   for (const listener of gitStatusListeners) {
     listener(event);
   }
+}
+
+interface StreamHooks {
+  onResubscribe?: () => void;
+  onRetry?: (error: unknown, attempt: number) => void;
+}
+
+/**
+ * A client whose stream can be driven directly: emit snapshots, replay the
+ * transport's resubscribe/retry hooks, and count how many times the module
+ * opened a *new* subscription (the observable signal that a rebuild happened).
+ */
+function createControllableGitStatusClient() {
+  const listeners = new Set<(event: VcsStatusResult) => void>();
+  let hooks: StreamHooks = {};
+  const onStatus = vi.fn(
+    (
+      _input: { cwd: string },
+      listener: (event: VcsStatusResult) => void,
+      options?: StreamHooks,
+    ) => {
+      hooks = options ?? {};
+      return registerListener(listeners, listener);
+    },
+  );
+
+  return {
+    client: {
+      refreshStatus: vi.fn(async () => BASE_STATUS),
+      refreshLocalStatus: vi.fn(async (input: { cwd: string }) => ({
+        ...BASE_STATUS,
+        refName: `${input.cwd}-local-refreshed`,
+      })),
+      onStatus,
+    },
+    onStatus,
+    subscriberCount: () => listeners.size,
+    emit: (event: VcsStatusResult) => {
+      for (const listener of listeners) {
+        listener(event);
+      }
+    },
+    resubscribe: () => hooks.onResubscribe?.(),
+    retry: (error: unknown, attempt: number) => hooks.onRetry?.(error, attempt),
+  };
 }
 
 function createRegisteredGitStatusClient(environmentId: EnvironmentId) {
@@ -267,13 +314,18 @@ describe("gitStatusState", () => {
     const release = watchGitStatus(TARGET, gitClient);
 
     emitGitStatus(BASE_STATUS);
+    const healthy = getGitStatusSnapshot(TARGET);
     const refreshed = await refreshLocalGitStatus(TARGET, gitClient);
 
     expect(gitClient.onStatus).toHaveBeenCalledOnce();
     expect(gitClient.refreshLocalStatus).toHaveBeenCalledWith({ cwd: "/repo" });
     expect(gitClient.refreshStatus).not.toHaveBeenCalled();
     expect(refreshed).toEqual({ ...BASE_STATUS, refName: "/repo-local-refreshed" });
-    expect(getGitStatusSnapshot(TARGET)).toEqual({
+    // Reference equality, not just deep equality: a poll landing on a healthy
+    // atom must not write at all, or it races the live stream and re-renders
+    // every consumer every 5 seconds.
+    expect(getGitStatusSnapshot(TARGET)).toBe(healthy);
+    expect(healthy).toEqual({
       data: BASE_STATUS,
       error: null,
       cause: null,
@@ -407,7 +459,9 @@ describe("gitStatusState", () => {
 
       expect(getGitStatusSnapshot(TARGET).isPending).toBe(true);
 
-      await vi.advanceTimersByTimeAsync(20_000);
+      // Two silent windows are spent rebuilding the stream; the notice only
+      // appears after the third.
+      await vi.advanceTimersByTimeAsync(60_000);
 
       const snapshot = getGitStatusSnapshot(TARGET);
       expect(snapshot.isPending).toBe(false);
@@ -468,8 +522,9 @@ describe("gitStatusState", () => {
       };
       const release = watchGitStatus(TARGET, client);
 
-      // The stream never delivers; the watchdog marks the status broken.
-      await vi.advanceTimersByTimeAsync(20_000);
+      // The stream never delivers; the watchdog rebuilds twice, then marks
+      // the status broken.
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
 
       // Retry goes over the unary path, which still works when only the
@@ -508,5 +563,208 @@ describe("gitStatusState", () => {
 
     void refreshGitStatus(TARGET, stalledClient, { force: true }).catch(() => undefined);
     expect(stalledClient.refreshStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("rebuilds a silent subscription twice before showing the stale notice", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      expect(harness.onStatus).toHaveBeenCalledOnce();
+
+      // The reproduced failure is a lost opening snapshot on an otherwise
+      // working socket, so each silent window buys a fresh subscribe rather
+      // than a notice the user has to act on.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(harness.onStatus).toHaveBeenCalledTimes(2);
+      expect(harness.subscriberCount()).toBe(1);
+      expect(getGitStatusSnapshot(TARGET).error).toBeNull();
+      expect(getGitStatusSnapshot(TARGET).isPending).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(harness.onStatus).toHaveBeenCalledTimes(3);
+      expect(getGitStatusSnapshot(TARGET).error).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getGitStatusSnapshot(TARGET).error?.message).toBe(GIT_STATUS_STALE_MESSAGE);
+
+      // Bounded: once the notice is up nothing keeps resubscribing, or an
+      // environment where subscribing can never succeed loops forever.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(harness.onStatus).toHaveBeenCalledTimes(3);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("converges when the poll lane heals while the stream keeps failing", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      // Stream never delivers; polls always succeed. This is the browser-test
+      // environment and the real dead-stream case at once: after the first
+      // poll heals the atom, the fighting lanes must go quiet — a stale mark
+      // that re-breaks a poll-fed atom alternates broken↔healthy forever.
+      harness.retry(new Error("boom"), 2);
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+
+      await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+      const healed = getGitStatusSnapshot(TARGET);
+      expect(healed.data).not.toBeNull();
+      expect(healed.error).toBeNull();
+
+      for (let round = 0; round < 3; round += 1) {
+        harness.retry(new Error("boom"), 3 + round);
+        await vi.advanceTimersByTimeAsync(5_000);
+        await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+      }
+      expect(getGitStatusSnapshot(TARGET)).toBe(healed);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not touch the atom while rebuilding a stream that never delivers", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      // One pending write at mount, one stale write when the budget runs out,
+      // and nothing in between: every rebuild-cycle write re-renders every
+      // consumer, which is enough churn to destabilize the app while a
+      // connection is down (this exact pattern broke CI's browser suite).
+      const pending = getGitStatusSnapshot(TARGET);
+      expect(pending.isPending).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getGitStatusSnapshot(TARGET)).toBe(pending);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getGitStatusSnapshot(TARGET)).toBe(pending);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      const stale = getGitStatusSnapshot(TARGET);
+      expect(stale.error?.message).toBe(GIT_STATUS_STALE_MESSAGE);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getGitStatusSnapshot(TARGET)).toBe(stale);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a stream that delivered again a fresh rebuild budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(harness.onStatus).toHaveBeenCalledTimes(3);
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+
+      harness.emit(BASE_STATUS);
+      expect(getGitStatusSnapshot(TARGET)).toEqual({
+        data: BASE_STATUS,
+        error: null,
+        cause: null,
+        isPending: false,
+      });
+
+      // The transport restarting the stream reopens the watchdog. With the
+      // budget reset by the delivered event, the next silence rebuilds again
+      // instead of jumping straight back to the notice.
+      harness.resubscribe();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(harness.onStatus).toHaveBeenCalledTimes(4);
+      expect(getGitStatusSnapshot(TARGET).error).toBeNull();
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rebuilds the subscription on demand for the panel's retry", () => {
+    const harness = createControllableGitStatusClient();
+    const release = watchGitStatus(TARGET, harness.client);
+
+    harness.emit(BASE_STATUS);
+    rebuildGitStatusSubscription(TARGET);
+
+    expect(harness.onStatus).toHaveBeenCalledTimes(2);
+    expect(harness.subscriberCount()).toBe(1);
+
+    release();
+    expect(harness.subscriberCount()).toBe(0);
+
+    // Nothing is watching this target any more, so retrying must be inert.
+    rebuildGitStatusSubscription(TARGET);
+    expect(harness.onStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("feeds the local poll response into a status atom the stream never filled", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getGitStatusSnapshot(TARGET).data).toBeNull();
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+
+      await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+
+      const snapshot = getGitStatusSnapshot(TARGET);
+      expect(snapshot.data?.refName).toBe("/repo-local-refreshed");
+      expect(snapshot.error).toBeNull();
+      expect(snapshot.cause).toBeNull();
+      expect(snapshot.isPending).toBe(false);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("overlays the local poll response without dropping remote-derived fields", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      harness.emit({ ...BASE_STATUS, aheadCount: 3, behindCount: 1 });
+
+      // A healthy data-bearing atom can only go stale through a reconnect
+      // whose replacement stream stays silent past the whole rebuild budget —
+      // a lone retry no longer breaks data the poll lane keeps fresh.
+      harness.resubscribe();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+      expect(getGitStatusSnapshot(TARGET).data).not.toBeNull();
+
+      await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+
+      const snapshot = getGitStatusSnapshot(TARGET);
+      expect(snapshot.error).toBeNull();
+      expect(snapshot.data?.refName).toBe("/repo-local-refreshed");
+      // Only the local half is fresh: ahead/behind come from the last snapshot
+      // the stream did deliver, and the local RPC knows nothing about them.
+      expect(snapshot.data?.aheadCount).toBe(3);
+      expect(snapshot.data?.behindCount).toBe(1);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

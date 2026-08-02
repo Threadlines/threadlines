@@ -98,6 +98,7 @@ import {
 } from "~/lib/gitReactQuery";
 import {
   GIT_STATUS_STALE_MESSAGE,
+  rebuildGitStatusSubscription,
   refreshGitStatus,
   refreshLocalGitStatus,
   useGitStatus,
@@ -2571,6 +2572,10 @@ export function SourceControlPanel({
       return;
     }
     setIsManualRefreshPending(true);
+    // Refreshing repairs the data over the unary RPC; rebuilding repairs the
+    // push stream that stopped delivering it. Retry has to do both, or the
+    // panel goes stale again on the next change nobody hears about.
+    rebuildGitStatusSubscription({ environmentId, cwd });
     void refreshGitStatus({ environmentId, cwd }, undefined, { force: true })
       .then(() =>
         queryClient.invalidateQueries({

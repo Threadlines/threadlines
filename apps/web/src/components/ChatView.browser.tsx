@@ -84,6 +84,7 @@ vi.mock("../lib/gitStatusState", () => ({
   GIT_STATUS_STALE_MESSAGE: "Source control status isn't updating.",
   useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
   useGitStatuses: () => new Map(),
+  rebuildGitStatusSubscription: () => undefined,
   refreshGitStatus: () => Promise.resolve(null),
   refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
