@@ -7414,6 +7414,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
         createdAt: NOW_ISO,
         lastConnectedAt: NOW_ISO,
       });
+      // Adding a saved environment wakes the real connection service. Let its
+      // missing-credential attempt settle before installing the connected
+      // runtime fixture; otherwise that background patch can replace the
+      // source-picker rows while the test is clicking one of them.
+      await vi.waitFor(
+        () => {
+          expect(
+            useSavedEnvironmentRuntimeStore.getState().byId[REMOTE_ENVIRONMENT_ID]?.authState,
+          ).toBe("requires-auth");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       useSavedEnvironmentRuntimeStore.getState().patch(REMOTE_ENVIRONMENT_ID, {
         connectionState: "connected",
         authState: "authenticated",
