@@ -96,7 +96,12 @@ import {
   gitStageChangesMutationOptions,
   gitUnstageChangesMutationOptions,
 } from "~/lib/gitReactQuery";
-import { refreshGitStatus, refreshLocalGitStatus, useGitStatus } from "~/lib/gitStatusState";
+import {
+  GIT_STATUS_STALE_MESSAGE,
+  refreshGitStatus,
+  refreshLocalGitStatus,
+  useGitStatus,
+} from "~/lib/gitStatusState";
 import { cn, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useSettings } from "~/hooks/useSettings";
@@ -2094,6 +2099,11 @@ export function SourceControlPanel({
       : null;
   const isSourceControlRefreshing =
     gitStatus.isPending || isManualRefreshPending || isCommitGraphRefreshing;
+  // The live status subscription gave up on delivering a snapshot. Saying so
+  // beats an endless spinner, and the retry re-runs the same refresh the
+  // toolbar button uses.
+  const isSourceControlStatusStale =
+    status === null && !gitStatus.isPending && gitStatus.error !== null;
   const isCommitGraphLoadingMore =
     graphQuery.isFetching &&
     graphQuery.data?.truncated === true &&
@@ -4289,7 +4299,20 @@ export function SourceControlPanel({
               </span>
             </div>
           </div>
-          {changedFiles.length === 0 ? (
+          {isSourceControlStatusStale ? (
+            <div className="flex items-center gap-2 border-t border-border/70 py-2 text-[13px] text-muted-foreground/70">
+              <span>{GIT_STATUS_STALE_MESSAGE}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={isManualRefreshPending}
+                onClick={refreshPanelFromRemote}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : changedFiles.length === 0 ? (
             <div className="rounded-md border border-border/70 bg-background/40 px-2.5 py-2 text-xs text-muted-foreground/70">
               No working tree changes
             </div>

@@ -966,6 +966,37 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 
+  it("adopts a placeholder-keyed draft instead of leaving it behind for a duplicate", () => {
+    const repositoryProjectKey = "github.com/acme/app";
+    const store = useComposerDraftStore.getState();
+    // A draft opened before the project's repository identity arrived.
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setPrompt(draftId, "half-written prompt");
+
+    const adopted = useComposerDraftStore
+      .getState()
+      .adoptDraftSessionForLogicalProjectKey(projectRef, repositoryProjectKey);
+
+    expect(adopted?.draftId).toBe(draftId);
+    const afterAdoption = useComposerDraftStore.getState();
+    expect(afterAdoption.getDraftSessionByLogicalProjectKey(repositoryProjectKey)?.draftId).toBe(
+      draftId,
+    );
+    expect(
+      afterAdoption.getDraftSessionByLogicalProjectKey(scopedProjectKey(projectRef)),
+    ).toBeNull();
+    expect(afterAdoption.getDraftThread(draftId)?.logicalProjectKey).toBe(repositoryProjectKey);
+    expect(draftByKey(draftId)?.prompt).toBe("half-written prompt");
+
+    // The draft is already reachable under its real identity, so a second call
+    // must not re-key anything.
+    expect(
+      useComposerDraftStore
+        .getState()
+        .adoptDraftSessionForLogicalProjectKey(projectRef, repositoryProjectKey),
+    ).toBeNull();
+  });
+
   it("clears only matching project draft mapping entries", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });

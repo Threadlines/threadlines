@@ -12,7 +12,6 @@ import {
   type VcsPullHistoryReconciliation,
 } from "@threadlines/contracts";
 import {
-  keepPreviousData,
   infiniteQueryOptions,
   mutationOptions,
   queryOptions,
@@ -194,6 +193,27 @@ export function gitResolvePullRequestQueryOptions(input: {
   });
 }
 
+/**
+ * Commit graph keys are `["git", "commit-graph", environmentId, cwd, limit]`.
+ * Previous data may only be reused when everything but the limit matches:
+ * keeping it across a project switch renders the previous repository's commits
+ * under the new project's heading.
+ */
+export function isSameCommitGraphTarget(
+  previousQueryKey: readonly unknown[] | undefined,
+  nextQueryKey: readonly unknown[],
+): boolean {
+  if (previousQueryKey === undefined) {
+    return false;
+  }
+  return (
+    previousQueryKey[0] === nextQueryKey[0] &&
+    previousQueryKey[1] === nextQueryKey[1] &&
+    previousQueryKey[2] === nextQueryKey[2] &&
+    previousQueryKey[3] === nextQueryKey[3]
+  );
+}
+
 export function gitCommitGraphQueryOptions(input: {
   environmentId: EnvironmentId | null;
   cwd: string | null;
@@ -201,8 +221,9 @@ export function gitCommitGraphQueryOptions(input: {
   enabled?: boolean;
 }) {
   const limit = input.limit ?? 24;
+  const queryKey = gitQueryKeys.commitGraph(input.environmentId, input.cwd, limit);
   return queryOptions({
-    queryKey: gitQueryKeys.commitGraph(input.environmentId, input.cwd, limit),
+    queryKey,
     queryFn: async () => {
       if (!input.cwd || !input.environmentId) {
         throw new Error("Git graph is unavailable.");
@@ -211,7 +232,8 @@ export function gitCommitGraphQueryOptions(input: {
       return api.vcs.commitGraph({ cwd: input.cwd, limit });
     },
     enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) =>
+      isSameCommitGraphTarget(previousQuery?.queryKey, queryKey) ? previousData : undefined,
     staleTime: 10_000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,

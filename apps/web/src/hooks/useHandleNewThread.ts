@@ -31,7 +31,6 @@ import { useUiStateStore } from "../uiStateStore";
 import { useSettings } from "./useSettings";
 
 function useNewThreadState() {
-  const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
@@ -50,6 +49,7 @@ function useNewThreadState() {
       },
     ): Promise<void> => {
       const {
+        adoptDraftSessionForLogicalProjectKey,
         getDraftSessionByLogicalProjectKey,
         getDraftSession,
         getDraftThread,
@@ -58,6 +58,10 @@ function useNewThreadState() {
         setLogicalProjectDraftThreadId,
       } = useComposerDraftStore.getState();
       const currentRouteTarget = getCurrentRouteTarget();
+      // Read projects at call time: a project created moments ago reaches the
+      // store before this callback is recreated, and a stale list here means
+      // the draft is keyed to a placeholder identity.
+      const projects = selectProjectsAcrossEnvironments(useStore.getState());
       const project = projects.find(
         (candidate) =>
           candidate.id === projectRef.projectId &&
@@ -69,7 +73,9 @@ function useNewThreadState() {
       const hasBranchOption = options?.branch !== undefined;
       const hasWorktreePathOption = options?.worktreePath !== undefined;
       const hasEnvModeOption = options?.envMode !== undefined;
-      const storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
+      const storedDraftThread =
+        getDraftSessionByLogicalProjectKey(logicalProjectKey) ??
+        adoptDraftSessionForLogicalProjectKey(projectRef, logicalProjectKey);
       const latestActiveDraftThread: DraftThreadState | null = currentRouteTarget
         ? currentRouteTarget.kind === "server"
           ? getDraftThread(currentRouteTarget.threadRef)
@@ -149,7 +155,7 @@ function useNewThreadState() {
         });
       })();
     },
-    [getCurrentRouteTarget, projectGroupingSettings, router, projects],
+    [getCurrentRouteTarget, projectGroupingSettings, router],
   );
 }
 

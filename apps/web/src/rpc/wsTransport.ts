@@ -32,6 +32,12 @@ interface SubscribeOptions {
   readonly tag?: string;
   readonly resubscribe?: boolean;
   readonly onComplete?: () => void;
+  /**
+   * Fires every time a stream attempt fails and the subscription is about to
+   * retry. Consumers use it to surface "live data is broken" states instead of
+   * sitting on a spinner while the transport retries in the background.
+   */
+  readonly onRetry?: (error: unknown, attempt: number) => void;
 }
 
 interface RequestOptions {
@@ -106,6 +112,14 @@ interface StreamRequestStartInfo {
   readonly stream: boolean;
 }
 
+/**
+ * Handle for one running subscription stream, tracked per session so a session
+ * swap can interrupt every stream still bound to the replaced session.
+ */
+interface RunningStreamRegistration {
+  cancel: () => void;
+}
+
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
@@ -126,6 +140,14 @@ export class WsTransport {
   private session: TransportSession;
   private lastHeartbeatPongAt = 0;
   private readonly streamRequestStartListeners = new Set<(info: StreamRequestStartInfo) => void>();
+  // Session-replacement invariant: no subscription stream may keep awaiting a
+  // session that is no longer `this.session`. A half-open socket never fails
+  // its streams, so without this registry a subscribe loop can sit on a dead
+  // session forever while unary requests already run on the new one.
+  private readonly runningStreamsBySession = new Map<
+    TransportSession,
+    Set<RunningStreamRegistration>
+  >();
 
   constructor(
     url: WsRpcProtocolSocketUrlProvider,
@@ -236,6 +258,7 @@ export class WsTransport {
     let active = true;
     let hasReceivedValue = false;
     let consecutiveFailures = 0;
+    let retryAttempt = 0;
     const retryDelayMs = Duration.toMillis(
       Duration.fromInputUnsafe(options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS),
     );
@@ -272,6 +295,7 @@ export class WsTransport {
               this.hasReportedTransportDisconnect = false;
               hasReceivedValue = true;
               consecutiveFailures = 0;
+              retryAttempt = 0;
             },
           );
           cancelCurrentStream = runningStream.cancel;
@@ -295,6 +319,13 @@ export class WsTransport {
           if (options?.resubscribe === false) {
             options.onComplete?.();
             return;
+          }
+
+          retryAttempt += 1;
+          try {
+            options?.onRetry?.(error, retryAttempt);
+          } catch {
+            // Swallow retry hook errors so the stream can still recover.
           }
 
           if (session !== this.session) {
@@ -353,6 +384,11 @@ export class WsTransport {
       this.lastHeartbeatPongAt = 0;
       const previousSession = this.session;
       this.session = this.createSession();
+      // Interrupt before closing: a half-open socket may never fail its
+      // streams, and every subscribe loop stays parked on `completed` until
+      // its stream ends. Cancelling here is what lets them pick up the new
+      // session instead of waiting on the replaced one forever.
+      this.cancelStreamsForSession(previousSession);
       await this.closeSession(previousSession);
     });
 
@@ -372,7 +408,49 @@ export class WsTransport {
     await this.closeSession(this.session);
   }
 
+  private cancelStreamsForSession(session: TransportSession): void {
+    const running = this.runningStreamsBySession.get(session);
+    if (!running) {
+      return;
+    }
+    this.runningStreamsBySession.delete(session);
+    for (const registration of running) {
+      try {
+        registration.cancel();
+      } catch {
+        // A stream that already exited cannot be cancelled again; ignore.
+      }
+    }
+  }
+
+  private registerRunningStream(
+    session: TransportSession,
+    registration: RunningStreamRegistration,
+  ): void {
+    const running = this.runningStreamsBySession.get(session);
+    if (running) {
+      running.add(registration);
+      return;
+    }
+    this.runningStreamsBySession.set(session, new Set([registration]));
+  }
+
+  private unregisterRunningStream(
+    session: TransportSession,
+    registration: RunningStreamRegistration,
+  ): void {
+    const running = this.runningStreamsBySession.get(session);
+    if (!running) {
+      return;
+    }
+    running.delete(registration);
+    if (running.size === 0) {
+      this.runningStreamsBySession.delete(session);
+    }
+  }
+
   private closeSession(session: TransportSession) {
+    this.cancelStreamsForSession(session);
     this.intentionalCloseDepth += 1;
     return session.runtime.runPromise(Scope.close(session.clientScope, Exit.void)).finally(() => {
       this.intentionalCloseDepth -= 1;
@@ -459,6 +537,8 @@ export class WsTransport {
       };
       this.streamRequestStartListeners.add(requestStartListener);
     }
+    const registration: RunningStreamRegistration = { cancel: NOOP };
+    let hasExited = false;
     const cancel = session.runtime.runCallback(
       Effect.promise(() => session.clientPromise).pipe(
         Effect.flatMap((client) =>
@@ -480,6 +560,8 @@ export class WsTransport {
       ),
       {
         onExit: (exit) => {
+          hasExited = true;
+          this.unregisterRunningStream(session, registration);
           if (requestStartListener) {
             this.streamRequestStartListeners.delete(requestStartListener);
             requestStartListener = null;
@@ -493,6 +575,11 @@ export class WsTransport {
         },
       },
     );
+
+    registration.cancel = cancel;
+    if (!hasExited) {
+      this.registerRunningStream(session, registration);
+    }
 
     return {
       cancel,

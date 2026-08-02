@@ -54,6 +54,7 @@ const gitActionMock = vi.hoisted(() => ({
 }));
 
 vi.mock("~/lib/gitStatusState", () => ({
+  GIT_STATUS_STALE_MESSAGE: "Source control status isn't updating.",
   useGitStatus: () => ({
     data: gitStatusMock.data,
     error: null,

@@ -80,6 +80,7 @@ import {
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { waitForProjectInStore } from "../lib/waitForProject";
 import { getLatestThreadForProject } from "../lib/threadSort";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
 import {
@@ -1677,7 +1678,12 @@ function OpenCommandPaletteDialog() {
           defaultModelSelection: null,
           createdAt: new Date().toISOString(),
         });
-        await handleNewThread(scopeProjectRef(browseEnvironmentId, projectId), {
+        const createdProjectRef = scopeProjectRef(browseEnvironmentId, projectId);
+        // Let the created project reach the store first so the draft is keyed
+        // to the project's real identity. If it does not arrive in time the
+        // draft is adopted (re-keyed) on the next new-thread call instead.
+        await waitForProjectInStore(createdProjectRef);
+        await handleNewThread(createdProjectRef, {
           envMode: settings.defaultThreadEnvMode,
         }).catch(() => undefined);
         setOpen(false);

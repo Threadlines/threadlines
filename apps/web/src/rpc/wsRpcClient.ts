@@ -35,6 +35,8 @@ interface StreamSubscriptionOptions {
   readonly onResubscribe?: () => void;
   /** Fires when a non-resubscribing stream ends for any reason other than unsubscribe. */
   readonly onComplete?: () => void;
+  /** Fires when a stream attempt failed and the transport is about to retry. */
+  readonly onRetry?: (error: unknown, attempt: number) => void;
 }
 
 type RpcUnaryMethod<TTag extends RpcTag> =

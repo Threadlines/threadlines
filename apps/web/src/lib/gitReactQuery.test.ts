@@ -308,4 +308,30 @@ describe("invalidateGitQueries", () => {
       )?.isInvalidated,
     ).toBe(false);
   });
+
+  it("reuses commit graph data across page sizes but never across repositories", () => {
+    const options = gitCommitGraphQueryOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+      limit: 48,
+    });
+    const placeholderData = options.placeholderData as (
+      previousData: VcsCommitGraphResult | undefined,
+      previousQuery: { queryKey: readonly unknown[] } | undefined,
+    ) => VcsCommitGraphResult | undefined;
+    const previousKeyFor = (environmentId: EnvironmentId, cwd: string) => ({
+      queryKey: gitCommitGraphQueryOptions({ environmentId, cwd, limit: 24 }).queryKey,
+    });
+
+    expect(placeholderData(COMMIT_GRAPH_RESULT, previousKeyFor(ENVIRONMENT_A, "/repo/a"))).toEqual(
+      COMMIT_GRAPH_RESULT,
+    );
+    expect(
+      placeholderData(COMMIT_GRAPH_RESULT, previousKeyFor(ENVIRONMENT_A, "/repo/b")),
+    ).toBeUndefined();
+    expect(
+      placeholderData(COMMIT_GRAPH_RESULT, previousKeyFor(ENVIRONMENT_B, "/repo/a")),
+    ).toBeUndefined();
+    expect(placeholderData(COMMIT_GRAPH_RESULT, undefined)).toBeUndefined();
+  });
 });

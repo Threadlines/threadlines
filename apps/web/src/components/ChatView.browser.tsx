@@ -81,6 +81,7 @@ import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test
 import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 
 vi.mock("../lib/gitStatusState", () => ({
+  GIT_STATUS_STALE_MESSAGE: "Source control status isn't updating.",
   useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
   useGitStatuses: () => new Map(),
   refreshGitStatus: () => Promise.resolve(null),

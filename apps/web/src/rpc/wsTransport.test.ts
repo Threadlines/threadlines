@@ -35,6 +35,8 @@ class MockWebSocket {
   static readonly CLOSED = 3;
 
   readyState = MockWebSocket.CONNECTING;
+  /** Simulates a half-open socket: close() never lands and never emits. */
+  ignoreClose = false;
   readonly sent: string[] = [];
   readonly protocols: string | string[] | undefined;
   readonly url: string;
@@ -61,6 +63,9 @@ class MockWebSocket {
   }
 
   close(code = 1000, reason = "") {
+    if (this.ignoreClose) {
+      return;
+    }
     this.readyState = MockWebSocket.CLOSED;
     this.emit("close", { code, reason, type: "close" });
   }
@@ -1069,6 +1074,124 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("reports every stream retry through onRetry", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onRetry = vi.fn();
+    let attempts = 0;
+
+    const unsubscribe = transport.subscribe(
+      () =>
+        Stream.suspend(() => {
+          attempts += 1;
+          return attempts <= 2
+            ? Stream.fail(new Error("Git command failed in GitCore.statusDetails"))
+            : Stream.never;
+        }),
+      vi.fn(),
+      { retryDelay: 10, onRetry },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(onRetry).toHaveBeenCalledTimes(2);
+    });
+
+    expect(
+      onRetry.mock.calls.map(([error, attempt]) => [(error as Error).message, attempt]),
+    ).toEqual([
+      ["Git command failed in GitCore.statusDetails", 1],
+      ["Git command failed in GitCore.statusDetails", 2],
+    ]);
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
+  it("cancels streams left on a replaced session and resubscribes on the new one", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    const listener = vi.fn();
+    let attempts = 0;
+
+    const unsubscribe = transport.subscribe(
+      (client) =>
+        Stream.suspend(() => {
+          attempts += 1;
+          // The first attempt behaves like a half-open socket: the stream
+          // neither emits nor fails, so only an explicit cancel can end it.
+          return attempts === 1 ? Stream.never : client[WS_METHODS.subscribeServerLifecycle]({});
+        }),
+      listener,
+      { retryDelay: 10 },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    await waitFor(() => {
+      expect(attempts).toBe(1);
+    });
+
+    // A half-open socket never acknowledges close, so tearing the replaced
+    // session down never finishes and can never interrupt the stream for us.
+    firstSocket.ignoreClose = true;
+    void transport.reconnect();
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+
+    const secondSocket = getSocket();
+    secondSocket.open();
+
+    await waitFor(() => {
+      expect(secondSocket.sent).toHaveLength(1);
+    });
+
+    const request = JSON.parse(secondSocket.sent[0] ?? "{}") as { id: string; tag: string };
+    expect(request.tag).toBe(WS_METHODS.subscribeServerLifecycle);
+
+    const event = {
+      version: 1,
+      sequence: 1,
+      type: "welcome",
+      payload: {
+        environment: {
+          environmentId: "environment-local",
+          label: "Local environment",
+          platform: { os: "darwin", arch: "arm64" },
+          serverVersion: "0.0.0-test",
+          capabilities: { repositoryIdentity: true },
+        },
+        cwd: "/tmp/workspace",
+        projectName: "workspace",
+      },
+    };
+    secondSocket.serverMessage(
+      JSON.stringify({
+        _tag: "Chunk",
+        requestId: request.id,
+        values: [event],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(listener).toHaveBeenCalledWith(event);
+    });
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
   it("keeps retrying stream subscriptions after transport failures", async () => {
     const transport = createTransport("ws://localhost:3020");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -1222,6 +1345,12 @@ describe("WsTransport", () => {
         clientScope: {} as never,
         runtime,
       },
+      runningStreamsBySession: new Map(),
+      cancelStreamsForSession: (
+        WsTransport.prototype as unknown as {
+          cancelStreamsForSession: (session: unknown) => void;
+        }
+      ).cancelStreamsForSession,
       closeSession: (
         WsTransport.prototype as unknown as {
           closeSession: (session: {

@@ -387,6 +387,19 @@ interface ComposerDraftStoreState {
   getDraftSessionByLogicalProjectKey: (logicalProjectKey: string) => ProjectDraftSession | null;
   getDraftThreadByProjectRef: (projectRef: ScopedProjectRef) => ProjectDraftSession | null;
   getDraftSessionByProjectRef: (projectRef: ScopedProjectRef) => ProjectDraftSession | null;
+  /**
+   * Re-keys a project's existing draft session onto `logicalProjectKey` when
+   * nothing is mapped there yet, and returns it.
+   *
+   * A draft created before the project's repository identity reached the
+   * client is stored under a placeholder key. Without this, the next new-thread
+   * call for that project derives the real identity key, misses, and opens a
+   * second draft for the same project.
+   */
+  adoptDraftSessionForLogicalProjectKey: (
+    projectRef: ScopedProjectRef,
+    logicalProjectKey: string,
+  ) => ProjectDraftSession | null;
   /** Reads mutable draft-session metadata by `DraftId`. */
   getDraftSession: (draftId: DraftId) => DraftSessionState | null;
   /** Resolves a server-thread ref back to a matching draft session when one exists. */
@@ -2394,6 +2407,51 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
           }
           return null;
+        },
+        adoptDraftSessionForLogicalProjectKey: (projectRef, logicalProjectKey) => {
+          const normalizedLogicalProjectKey = logicalProjectDraftKey(logicalProjectKey);
+          if (normalizedLogicalProjectKey.length === 0) {
+            return null;
+          }
+          if (get().getDraftSessionByLogicalProjectKey(normalizedLogicalProjectKey)) {
+            return null;
+          }
+          const candidate = get().getDraftSessionByProjectRef(projectRef);
+          if (!candidate || candidate.logicalProjectKey === normalizedLogicalProjectKey) {
+            return null;
+          }
+
+          set((state) => {
+            const draftThread = state.draftThreadsByThreadKey[candidate.draftId];
+            if (!draftThread) {
+              return state;
+            }
+            const nextLogicalProjectDraftThreadKeyByLogicalProjectKey: Record<string, string> = {};
+            for (const [key, threadKey] of Object.entries(
+              state.logicalProjectDraftThreadKeyByLogicalProjectKey,
+            )) {
+              // Drop the placeholder keys this draft used to answer to so the
+              // draft is reachable only through its real identity.
+              if (threadKey !== candidate.draftId) {
+                nextLogicalProjectDraftThreadKeyByLogicalProjectKey[key] = threadKey;
+              }
+            }
+            nextLogicalProjectDraftThreadKeyByLogicalProjectKey[normalizedLogicalProjectKey] =
+              candidate.draftId;
+            return {
+              draftThreadsByThreadKey: {
+                ...state.draftThreadsByThreadKey,
+                [candidate.draftId]: {
+                  ...draftThread,
+                  logicalProjectKey: normalizedLogicalProjectKey,
+                },
+              },
+              logicalProjectDraftThreadKeyByLogicalProjectKey:
+                nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
+            };
+          });
+
+          return get().getDraftSessionByLogicalProjectKey(normalizedLogicalProjectKey);
         },
         getDraftSession: (draftId) => get().draftThreadsByThreadKey[draftId] ?? null,
         getDraftSessionByRef: (threadRef) => {

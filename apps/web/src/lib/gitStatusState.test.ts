@@ -375,4 +375,108 @@ describe("gitStatusState", () => {
   it("returns the cached snapshot when refresh is requested before the client is registered", async () => {
     await expect(refreshGitStatus(TARGET)).resolves.toBeNull();
   });
+
+  it("rejects and releases the in-flight refresh when the response never arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const stalledClient = {
+        refreshStatus: vi.fn(() => new Promise<VcsStatusResult>(() => undefined)),
+        onStatus: vi.fn(() => () => undefined),
+      };
+
+      const stalled = refreshGitStatus(TARGET, stalledClient, { force: true });
+      const assertion = expect(stalled).rejects.toThrow(/timed out waiting for the server/);
+      await vi.advanceTimersByTimeAsync(120_000);
+      await assertion;
+
+      // The stuck attempt must not block the next one for this cwd.
+      stalledClient.refreshStatus.mockImplementation(async () => BASE_STATUS);
+      await expect(refreshGitStatus(TARGET, stalledClient, { force: true })).resolves.toEqual(
+        BASE_STATUS,
+      );
+      expect(stalledClient.refreshStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a broken subscription when no status arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const release = watchGitStatus(TARGET, gitClient);
+
+      expect(getGitStatusSnapshot(TARGET).isPending).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const snapshot = getGitStatusSnapshot(TARGET);
+      expect(snapshot.isPending).toBe(false);
+      expect(snapshot.data).toBeNull();
+      expect(snapshot.error?.message).toBe("Source control status isn't updating.");
+      expect(snapshot.cause).not.toBeNull();
+
+      emitGitStatus(BASE_STATUS);
+      expect(getGitStatusSnapshot(TARGET)).toEqual({
+        data: BASE_STATUS,
+        error: null,
+        cause: null,
+        isPending: false,
+      });
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers a broken subscription from a successful manual refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = {
+        refreshStatus: vi.fn(async () => BASE_STATUS),
+        onStatus: vi.fn(() => () => undefined),
+      };
+      const release = watchGitStatus(TARGET, client);
+
+      // The stream never delivers; the watchdog marks the status broken.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+
+      // Retry goes over the unary path, which still works when only the
+      // push stream is dead — its response must reach the atom.
+      await expect(refreshGitStatus(TARGET, client, { force: true })).resolves.toEqual(BASE_STATUS);
+      expect(getGitStatusSnapshot(TARGET)).toEqual({
+        data: BASE_STATUS,
+        error: null,
+        cause: null,
+        isPending: false,
+      });
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops in-flight refreshes when the environment connections change", async () => {
+    const stalledClient = {
+      refreshStatus: vi.fn(() => new Promise<VcsStatusResult>(() => undefined)),
+      onStatus: vi.fn(() => () => undefined),
+    };
+
+    void refreshGitStatus(TARGET, stalledClient, { force: true }).catch(() => undefined);
+    expect(stalledClient.refreshStatus).toHaveBeenCalledTimes(1);
+
+    // Without clearing the in-flight map, this request is deduped against a
+    // promise the new connection will never settle.
+    void refreshGitStatus(TARGET, stalledClient, { force: true }).catch(() => undefined);
+    expect(stalledClient.refreshStatus).toHaveBeenCalledTimes(1);
+
+    for (const listener of serviceHarness.listeners) {
+      listener();
+    }
+
+    void refreshGitStatus(TARGET, stalledClient, { force: true }).catch(() => undefined);
+    expect(stalledClient.refreshStatus).toHaveBeenCalledTimes(2);
+  });
 });
