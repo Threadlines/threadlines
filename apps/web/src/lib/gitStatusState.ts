@@ -471,6 +471,12 @@ function subscribeToGitStatus(targetKey: string, cwd: string, client: GitStatusC
 function markGitStatusStale(targetKey: string, error: GitStatusError): void {
   const atom = gitStatusStateAtom(targetKey);
   const current = appAtomRegistry.get(atom);
+  // Idempotent: a subscription that keeps failing calls this on every retry,
+  // and re-setting an equivalent state re-renders every consumer each time —
+  // enough churn to destabilize the whole app while a connection is down.
+  if (!current.isPending && current.error?.message === error.message) {
+    return;
+  }
   appAtomRegistry.set(atom, {
     data: current.data,
     error,

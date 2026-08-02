@@ -429,6 +429,36 @@ describe("gitStatusState", () => {
     }
   });
 
+  it("keeps the same snapshot object across repeated subscription retries", () => {
+    let retry: ((error: unknown, attempt: number) => void) | undefined;
+    const failingClient = {
+      refreshStatus: vi.fn(async () => BASE_STATUS),
+      onStatus: vi.fn(
+        (
+          _input: { cwd: string },
+          _listener: (event: VcsStatusResult) => void,
+          options?: { onRetry?: (error: unknown, attempt: number) => void },
+        ) => {
+          retry = options?.onRetry;
+          return () => undefined;
+        },
+      ),
+    };
+    const release = watchGitStatus(TARGET, failingClient);
+
+    // A connection that stays down retries indefinitely; every retry past the
+    // first must be a no-op on the atom or the whole app re-renders in a loop.
+    retry?.(new Error("boom"), 2);
+    const first = getGitStatusSnapshot(TARGET);
+    expect(first.error).not.toBeNull();
+
+    retry?.(new Error("boom"), 3);
+    retry?.(new Error("boom"), 4);
+    expect(getGitStatusSnapshot(TARGET)).toBe(first);
+
+    release();
+  });
+
   it("recovers a broken subscription from a successful manual refresh", async () => {
     vi.useFakeTimers();
     try {
