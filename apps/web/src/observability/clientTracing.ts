@@ -1,8 +1,6 @@
-import * as Context from "effect/Context";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
@@ -47,51 +45,6 @@ export const ClientTracingLive = Layer.succeed(
     },
   }),
 );
-
-/**
- * Emits a zero-duration span straight onto the OTLP exporter, so plain
- * (non-Effect) code can put a fact in the server's trace file.
- *
- * The renderer's telemetry pipeline is traces-only — `OtlpTracer` posting to
- * `/api/observability/v1/traces`, which the server appends to
- * `server.trace.ndjson`. There is no log exporter, so a span *is* the
- * log-style event here; `OtlpTracer` exports on `end()`, hence start and end
- * at the same instant.
- *
- * Returns false when tracing has not been configured yet (the span would go
- * nowhere), so callers can decide whether a console fallback is worthwhile.
- */
-export function recordClientTraceEvent(
-  name: string,
-  attributes: Readonly<Record<string, unknown>>,
-): boolean {
-  const delegate = activeDelegate;
-  if (delegate === null) {
-    return false;
-  }
-
-  try {
-    const startTime = BigInt(Date.now()) * 1_000_000n;
-    const span = delegate.span({
-      name,
-      parent: Option.none(),
-      annotations: Context.empty(),
-      links: [],
-      startTime,
-      kind: "internal",
-      root: true,
-      sampled: true,
-    });
-    for (const [key, value] of Object.entries(attributes)) {
-      span.attribute(key, value);
-    }
-    span.end(startTime, Exit.void);
-    return true;
-  } catch {
-    // Diagnostics must never take down the code path they are observing.
-    return false;
-  }
-}
 
 export function configureClientTracing(config: ClientTracingConfig = {}): Promise<void> {
   if (config.exportIntervalMs === undefined && activeConfigKey !== null) {

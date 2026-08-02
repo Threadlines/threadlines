@@ -62,7 +62,6 @@ vi.mock("~/lib/gitStatusState", () => ({
     isPending: false,
   }),
   useGitStatuses: () => new Map(),
-  rebuildGitStatusSubscription: () => undefined,
   refreshGitStatus: gitStatusMock.refreshGitStatus,
   refreshLocalGitStatus: gitStatusMock.refreshLocalGitStatus,
   resetGitStatusStateForTests: () => {

@@ -10,10 +10,6 @@ import * as Stream from "effect/Stream";
 import { RpcClient } from "effect/unstable/rpc";
 
 import { ClientTracingLive } from "../observability/clientTracing";
-import {
-  recordStreamDiagnostic,
-  STREAM_DIAGNOSTIC_NAMES,
-} from "../observability/streamDiagnostics";
 import { clearAllTrackedRpcRequests } from "./requestLatencyState";
 import {
   createWsRpcProtocolLayer,
@@ -220,12 +216,6 @@ export class WsTransport {
           throw new TransportRequestRetriesExhaustedError(label, elapsedMs, error);
         }
         if (session === this.session && !this.isHeartbeatFresh(REQUEST_RETRY_HEARTBEAT_FRESH_MS)) {
-          recordStreamDiagnostic(STREAM_DIAGNOSTIC_NAMES.transportReconnect, "zombie-socket", {
-            "rpc.reconnect.trigger": "zombie-socket",
-            "rpc.request.label": label,
-            "rpc.request.attempt": attempt,
-            "error.message": formatErrorMessage(error),
-          });
           await this.reconnect().catch(() => undefined);
         }
         await sleep(retryDelayMs);
@@ -332,12 +322,6 @@ export class WsTransport {
           }
 
           retryAttempt += 1;
-          const diagnosticTag = options?.tag ?? "unknown";
-          recordStreamDiagnostic(STREAM_DIAGNOSTIC_NAMES.subscriptionRetry, diagnosticTag, {
-            "rpc.stream.tag": diagnosticTag,
-            "rpc.stream.attempt": retryAttempt,
-            "error.message": formatErrorMessage(error),
-          });
           try {
             options?.onRetry?.(error, retryAttempt);
           } catch {
@@ -390,11 +374,6 @@ export class WsTransport {
     if (this.disposed) {
       throw new Error("Transport disposed");
     }
-
-    recordStreamDiagnostic(STREAM_DIAGNOSTIC_NAMES.transportReconnect, "session-swap", {
-      "rpc.reconnect.trigger": "session-swap",
-      "rpc.heartbeat.fresh": this.isHeartbeatFresh(),
-    });
 
     const reconnectOperation = this.reconnectChain.then(async () => {
       if (this.disposed) {

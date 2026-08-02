@@ -5,7 +5,6 @@ import {
   type VcsStatusLocalResult,
   type VcsStatusResult,
 } from "@threadlines/contracts";
-import { applyGitStatusStreamEvent } from "@threadlines/shared/git";
 import * as Cause from "effect/Cause";
 import { Atom } from "effect/unstable/reactivity";
 import { useEffect } from "react";
@@ -15,10 +14,6 @@ import {
   readEnvironmentConnection,
   subscribeEnvironmentConnections,
 } from "../environments/runtime";
-import {
-  recordStreamDiagnostic,
-  STREAM_DIAGNOSTIC_NAMES,
-} from "../observability/streamDiagnostics";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
 
 /**
@@ -42,20 +37,9 @@ interface ResolvedGitStatusClient {
   readonly client: GitStatusClient;
 }
 
-/**
- * A live subscription that can be torn down and rebuilt in place. `unsubscribe`
- * is stable across rebuilds — it always releases whatever stream is current —
- * so `watchedGitStatuses` never has to swap a handle mid-rebuild and
- * refcounting stays correct while a rebuild is in flight.
- */
-interface GitStatusSubscription {
-  readonly unsubscribe: () => void;
-  readonly rebuild: () => void;
-}
-
 interface WatchedGitStatus {
   refCount: number;
-  readonly subscription: GitStatusSubscription;
+  unsubscribe: () => void;
 }
 
 interface GitStatusTarget {
@@ -97,16 +81,9 @@ const GIT_STATUS_LOCAL_REFRESH_TIMEOUT_MS = 20_000;
 // The full refresh can include a real `git fetch`, so it gets a much longer
 // budget than the local-only one.
 const GIT_STATUS_REFRESH_TIMEOUT_MS = 120_000;
-// How long a (re)subscription may go without delivering a snapshot before it
-// is treated as broken. The first expiries rebuild the stream; only the last
-// one tells the UI the live status is broken rather than still loading.
+// How long a (re)subscription may go without delivering a snapshot before the
+// UI is told the live status is broken rather than still loading.
 const GIT_STATUS_FIRST_SNAPSHOT_TIMEOUT_MS = 20_000;
-// The observed failure is a lost opening snapshot: the stream is accepted, the
-// one-shot snapshot never arrives, and a quiet repo emits nothing afterwards.
-// A fresh subscribe always heals it, so rebuild before showing a notice. The
-// cap matters — in environments where subscribing can never succeed (browser
-// tests, a server that is gone) this must settle instead of looping forever.
-const GIT_STATUS_MAX_STREAM_REBUILDS = 2;
 // One failed stream attempt is normal churn (socket blip, server restart).
 // Only a retry that did not immediately recover is worth showing.
 const GIT_STATUS_RETRY_ERROR_ATTEMPT_THRESHOLD = 2;
@@ -237,24 +214,10 @@ export function watchGitStatus(target: GitStatusTarget, client?: GitStatusClient
 
   watchedGitStatuses.set(targetKey, {
     refCount: 1,
-    subscription: subscribeToGitStatusTarget(targetKey, target, client),
+    unsubscribe: subscribeToGitStatusTarget(targetKey, target, client),
   });
 
   return () => unwatchGitStatus(targetKey);
-}
-
-/**
- * Forces the teardown-and-recreate that heals a stream whose opening snapshot
- * was lost. Exported for the panel's Retry: refreshing over the unary RPC
- * repairs the *data*, but leaves the dead stream in place, so the next real
- * change would go unnoticed again.
- */
-export function rebuildGitStatusSubscription(target: GitStatusTarget): void {
-  const targetKey = getGitStatusTargetKey(target);
-  if (targetKey === null) {
-    return;
-  }
-  watchedGitStatuses.get(targetKey)?.subscription.rebuild();
 }
 
 export function refreshGitStatus(
@@ -317,30 +280,6 @@ function recoverGitStatusFromRefresh(targetKey: string, status: VcsStatusResult)
   });
 }
 
-/**
- * Same contract as `recoverGitStatusFromRefresh`, for the panel's 5s local
- * poll: while the stream is dead this response is the only fresh data the UI
- * can get, and dropping it left the panel frozen behind the stale notice.
- *
- * `localUpdated` is exactly this situation in the shared stream reducer, so it
- * does the merge: fresh local fields over the remote fields the last merged
- * snapshot carried (ahead/behind, PR), or the empty remote part when there is
- * no snapshot yet.
- */
-function recoverGitStatusFromLocalRefresh(targetKey: string, local: VcsStatusLocalResult): void {
-  const atom = gitStatusStateAtom(targetKey);
-  const current = appAtomRegistry.get(atom);
-  if (current.error === null && current.data !== null) {
-    return;
-  }
-  appAtomRegistry.set(atom, {
-    data: applyGitStatusStreamEvent(current.data, { _tag: "localUpdated", local }),
-    error: null,
-    cause: null,
-    isPending: false,
-  });
-}
-
 export function refreshLocalGitStatus(
   target: GitStatusTarget,
   client?: GitStatusClient,
@@ -371,10 +310,7 @@ export function refreshLocalGitStatus(
   return trackGitStatusRefresh(
     gitStatusLocalRefreshInFlight,
     targetKey,
-    resolvedClient.refreshLocalStatus({ cwd: target.cwd }).then((local) => {
-      recoverGitStatusFromLocalRefresh(targetKey, local);
-      return local;
-    }),
+    resolvedClient.refreshLocalStatus({ cwd: target.cwd }),
     GIT_STATUS_LOCAL_REFRESH_TIMEOUT_MS,
     "Local git status refresh",
   );
@@ -382,7 +318,7 @@ export function refreshLocalGitStatus(
 
 export function resetGitStatusStateForTests(): void {
   for (const watched of watchedGitStatuses.values()) {
-    watched.subscription.unsubscribe();
+    watched.unsubscribe();
   }
   watchedGitStatuses.clear();
   clearGitStatusRefreshTracking();
@@ -419,27 +355,22 @@ function unwatchGitStatus(targetKey: string): void {
     return;
   }
 
-  watched.subscription.unsubscribe();
+  watched.unsubscribe();
   watchedGitStatuses.delete(targetKey);
 }
-
-const NOOP_GIT_STATUS_SUBSCRIPTION: GitStatusSubscription = {
-  unsubscribe: NOOP,
-  rebuild: NOOP,
-};
 
 function subscribeToGitStatusTarget(
   targetKey: string,
   target: GitStatusTarget,
   providedClient?: GitStatusClient,
-): GitStatusSubscription {
+): () => void {
   if (target.cwd === null) {
-    return NOOP_GIT_STATUS_SUBSCRIPTION;
+    return NOOP;
   }
 
   const cwd = target.cwd;
   let currentClientIdentity: string | null = null;
-  let current: GitStatusSubscription = NOOP_GIT_STATUS_SUBSCRIPTION;
+  let currentUnsubscribe = NOOP;
 
   const syncClientSubscription = () => {
     const resolved = providedClient
@@ -451,8 +382,8 @@ function subscribeToGitStatusTarget(
 
     if (!resolved) {
       if (currentClientIdentity !== null) {
-        current.unsubscribe();
-        current = NOOP_GIT_STATUS_SUBSCRIPTION;
+        currentUnsubscribe();
+        currentUnsubscribe = NOOP;
         currentClientIdentity = null;
       }
       markGitStatusPending(targetKey);
@@ -463,9 +394,9 @@ function subscribeToGitStatusTarget(
       return;
     }
 
-    current.unsubscribe();
+    currentUnsubscribe();
     currentClientIdentity = resolved.clientIdentity;
-    current = subscribeToGitStatus(targetKey, cwd, resolved.client);
+    currentUnsubscribe = subscribeToGitStatus(targetKey, cwd, resolved.client);
   };
 
   const unsubscribeRegistry = providedClient
@@ -473,25 +404,14 @@ function subscribeToGitStatusTarget(
     : subscribeEnvironmentConnections(syncClientSubscription);
   syncClientSubscription();
 
-  return {
-    unsubscribe: () => {
-      unsubscribeRegistry();
-      current.unsubscribe();
-    },
-    rebuild: () => current.rebuild(),
+  return () => {
+    unsubscribeRegistry();
+    currentUnsubscribe();
   };
 }
 
-function subscribeToGitStatus(
-  targetKey: string,
-  cwd: string,
-  client: GitStatusClient,
-): GitStatusSubscription {
+function subscribeToGitStatus(targetKey: string, cwd: string, client: GitStatusClient): () => void {
   let firstSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
-  let unsubscribeStream = NOOP;
-  let hasOpenedStream = false;
-  let rebuildCount = 0;
-  let disposed = false;
 
   const clearFirstSnapshotWatchdog = () => {
     if (firstSnapshotTimer !== null) {
@@ -504,127 +424,42 @@ function subscribeToGitStatus(
   // sits on `isPending` forever, which is what a half-dead socket produced.
   const startFirstSnapshotWatchdog = () => {
     clearFirstSnapshotWatchdog();
-    firstSnapshotTimer = setTimeout(onFirstSnapshotTimeout, GIT_STATUS_FIRST_SNAPSHOT_TIMEOUT_MS);
-  };
-
-  const onFirstSnapshotTimeout = () => {
-    firstSnapshotTimer = null;
-    if (disposed) {
-      return;
-    }
-
-    // The bucket carries the attempt so each of the (at most three) expiries in
-    // a cycle is recorded: they are 20s apart, inside the 30s rate-limit window.
-    recordStreamDiagnostic(
-      STREAM_DIAGNOSTIC_NAMES.gitStatusWatchdogExpired,
-      `${targetKey}#${rebuildCount}`,
-      {
-        "git.status.target": targetKey,
-        "git.status.rebuild_count": rebuildCount,
-        "git.status.timeout_ms": GIT_STATUS_FIRST_SNAPSHOT_TIMEOUT_MS,
-      },
-    );
-
-    if (rebuildCount >= GIT_STATUS_MAX_STREAM_REBUILDS) {
-      // Out of rebuilds: the notice is the last resort, not the first
-      // response. Nothing restarts the watchdog from here, so this settles.
+    firstSnapshotTimer = setTimeout(() => {
+      firstSnapshotTimer = null;
       markGitStatusStale(targetKey, gitStatusStreamError());
-      return;
-    }
-
-    rebuildCount += 1;
-    recordStreamDiagnostic(
-      STREAM_DIAGNOSTIC_NAMES.gitStatusRebuild,
-      `${targetKey}#${rebuildCount}`,
-      {
-        "git.status.target": targetKey,
-        "git.status.rebuild_attempt": rebuildCount,
-        "git.status.trigger": "watchdog",
-      },
-    );
-    openStream();
+    }, GIT_STATUS_FIRST_SNAPSHOT_TIMEOUT_MS);
   };
 
-  function openStream(): void {
-    if (disposed) {
-      return;
-    }
-
-    // Release the old stream before opening the new one, and clear the handle
-    // first so a teardown racing this rebuild cannot double-release it.
-    const previousUnsubscribe = unsubscribeStream;
-    unsubscribeStream = NOOP;
-    previousUnsubscribe();
-
-    // Only the first open announces "loading". Rebuilds keep whatever is on
-    // screen (data or the stale notice) until an event actually arrives:
-    // flipping back to pending on every rebuild makes the atom oscillate
-    // pending↔stale in environments where subscribing never succeeds, and
-    // that churn re-renders every consumer for a minute after mount.
-    if (!hasOpenedStream) {
-      hasOpenedStream = true;
-      markGitStatusPending(targetKey);
-    }
-    startFirstSnapshotWatchdog();
-    unsubscribeStream = client.onStatus(
-      { cwd },
-      (status: VcsStatusResult) => {
-        clearFirstSnapshotWatchdog();
-        // The stream is alive again, so the next silent stretch gets its own
-        // full rebuild budget.
-        rebuildCount = 0;
-        appAtomRegistry.set(gitStatusStateAtom(targetKey), {
-          data: status,
-          error: null,
-          cause: null,
-          isPending: false,
-        });
-      },
-      {
-        onResubscribe: () => {
-          rebuildCount = 0;
-          markGitStatusPending(targetKey);
-          startFirstSnapshotWatchdog();
-        },
-        onRetry: (error: unknown, attempt: number) => {
-          recordStreamDiagnostic(STREAM_DIAGNOSTIC_NAMES.subscriptionRetry, targetKey, {
-            "rpc.stream.tag": "vcs.subscribeVcsStatus",
-            "git.status.target": targetKey,
-            "rpc.stream.attempt": attempt,
-            "error.message": error instanceof Error ? error.message : String(error),
-          });
-          if (attempt < GIT_STATUS_RETRY_ERROR_ATTEMPT_THRESHOLD) {
-            return;
-          }
-          markGitStatusStale(targetKey, gitStatusStreamError(error));
-        },
-      },
-    );
-  }
-
-  openStream();
-
-  return {
-    unsubscribe: () => {
-      disposed = true;
+  markGitStatusPending(targetKey);
+  startFirstSnapshotWatchdog();
+  const unsubscribe = client.onStatus(
+    { cwd },
+    (status: VcsStatusResult) => {
       clearFirstSnapshotWatchdog();
-      const previousUnsubscribe = unsubscribeStream;
-      unsubscribeStream = NOOP;
-      previousUnsubscribe();
-    },
-    rebuild: () => {
-      if (disposed) {
-        return;
-      }
-      // A manual rebuild is a user action (Retry), so it opens a fresh cycle
-      // with a fresh budget. It cannot loop on its own.
-      rebuildCount = 0;
-      recordStreamDiagnostic(STREAM_DIAGNOSTIC_NAMES.gitStatusRebuild, targetKey, {
-        "git.status.target": targetKey,
-        "git.status.trigger": "manual",
+      appAtomRegistry.set(gitStatusStateAtom(targetKey), {
+        data: status,
+        error: null,
+        cause: null,
+        isPending: false,
       });
-      openStream();
     },
+    {
+      onResubscribe: () => {
+        markGitStatusPending(targetKey);
+        startFirstSnapshotWatchdog();
+      },
+      onRetry: (error: unknown, attempt: number) => {
+        if (attempt < GIT_STATUS_RETRY_ERROR_ATTEMPT_THRESHOLD) {
+          return;
+        }
+        markGitStatusStale(targetKey, gitStatusStreamError(error));
+      },
+    },
+  );
+
+  return () => {
+    clearFirstSnapshotWatchdog();
+    unsubscribe();
   };
 }
 
@@ -640,15 +475,6 @@ function markGitStatusStale(targetKey: string, error: GitStatusError): void {
   // and re-setting an equivalent state re-renders every consumer each time —
   // enough churn to destabilize the whole app while a connection is down.
   if (!current.isPending && current.error?.message === error.message) {
-    return;
-  }
-  // An atom that holds healthy data stays healthy: the poll lane refreshes it
-  // every few seconds while the stream is broken, and the stale notice only
-  // renders when there is no data. Setting the error here buys no UI and
-  // makes the atom alternate broken↔healthy against the poll feed — the
-  // exact churn loop that has destabilized the app twice (poll heals, retry
-  // re-marks, forever). Dead-stream repair stays the rebuild machinery's job.
-  if (current.data !== null && current.error === null && !current.isPending) {
     return;
   }
   appAtomRegistry.set(atom, {
