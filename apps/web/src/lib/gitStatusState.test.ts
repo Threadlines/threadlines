@@ -600,6 +600,37 @@ describe("gitStatusState", () => {
     }
   });
 
+  it("converges when the poll lane heals while the stream keeps failing", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
+
+      // Stream never delivers; polls always succeed. This is the browser-test
+      // environment and the real dead-stream case at once: after the first
+      // poll heals the atom, the fighting lanes must go quiet — a stale mark
+      // that re-breaks a poll-fed atom alternates broken↔healthy forever.
+      harness.retry(new Error("boom"), 2);
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+
+      await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+      const healed = getGitStatusSnapshot(TARGET);
+      expect(healed.data).not.toBeNull();
+      expect(healed.error).toBeNull();
+
+      for (let round = 0; round < 3; round += 1) {
+        harness.retry(new Error("boom"), 3 + round);
+        await vi.advanceTimersByTimeAsync(5_000);
+        await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+      }
+      expect(getGitStatusSnapshot(TARGET)).toBe(healed);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not touch the atom while rebuilding a stream that never delivers", async () => {
     vi.useFakeTimers();
     try {
@@ -706,23 +737,34 @@ describe("gitStatusState", () => {
   });
 
   it("overlays the local poll response without dropping remote-derived fields", async () => {
-    const harness = createControllableGitStatusClient();
-    const release = watchGitStatus(TARGET, harness.client);
+    vi.useFakeTimers();
+    try {
+      const harness = createControllableGitStatusClient();
+      const release = watchGitStatus(TARGET, harness.client);
 
-    harness.emit({ ...BASE_STATUS, aheadCount: 3, behindCount: 1 });
-    harness.retry(new Error("stream died"), 2);
-    expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+      harness.emit({ ...BASE_STATUS, aheadCount: 3, behindCount: 1 });
 
-    await refreshLocalGitStatus(TARGET, harness.client, { force: true });
+      // A healthy data-bearing atom can only go stale through a reconnect
+      // whose replacement stream stays silent past the whole rebuild budget —
+      // a lone retry no longer breaks data the poll lane keeps fresh.
+      harness.resubscribe();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getGitStatusSnapshot(TARGET).error).not.toBeNull();
+      expect(getGitStatusSnapshot(TARGET).data).not.toBeNull();
 
-    const snapshot = getGitStatusSnapshot(TARGET);
-    expect(snapshot.error).toBeNull();
-    expect(snapshot.data?.refName).toBe("/repo-local-refreshed");
-    // Only the local half is fresh: ahead/behind come from the last snapshot
-    // the stream did deliver, and the local RPC knows nothing about them.
-    expect(snapshot.data?.aheadCount).toBe(3);
-    expect(snapshot.data?.behindCount).toBe(1);
+      await refreshLocalGitStatus(TARGET, harness.client, { force: true });
 
-    release();
+      const snapshot = getGitStatusSnapshot(TARGET);
+      expect(snapshot.error).toBeNull();
+      expect(snapshot.data?.refName).toBe("/repo-local-refreshed");
+      // Only the local half is fresh: ahead/behind come from the last snapshot
+      // the stream did deliver, and the local RPC knows nothing about them.
+      expect(snapshot.data?.aheadCount).toBe(3);
+      expect(snapshot.data?.behindCount).toBe(1);
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

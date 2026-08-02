@@ -642,6 +642,15 @@ function markGitStatusStale(targetKey: string, error: GitStatusError): void {
   if (!current.isPending && current.error?.message === error.message) {
     return;
   }
+  // An atom that holds healthy data stays healthy: the poll lane refreshes it
+  // every few seconds while the stream is broken, and the stale notice only
+  // renders when there is no data. Setting the error here buys no UI and
+  // makes the atom alternate broken↔healthy against the poll feed — the
+  // exact churn loop that has destabilized the app twice (poll heals, retry
+  // re-marks, forever). Dead-stream repair stays the rebuild machinery's job.
+  if (current.data !== null && current.error === null && !current.isPending) {
+    return;
+  }
   appAtomRegistry.set(atom, {
     data: current.data,
     error,
