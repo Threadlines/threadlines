@@ -56,6 +56,7 @@ import { OrchestrationReactorLive } from "../src/orchestration/Layers/Orchestrat
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ThreadContextSeedBuilderLive } from "../src/provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { SubagentWorktreeFollower } from "../src/orchestration/Services/SubagentWorktreeFollower.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -309,6 +310,15 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+      // These tests never spawn an isolated subagent, so following one is out
+      // of scope; the real layer would drag the git stack in with it.
+      Layer.provideMerge(
+        Layer.succeed(SubagentWorktreeFollower, {
+          observeAgentTaskStarted: () => Effect.void,
+          observeTaskEnded: () => Effect.void,
+          observeSessionEnded: () => Effect.void,
+        }),
+      ),
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
     );

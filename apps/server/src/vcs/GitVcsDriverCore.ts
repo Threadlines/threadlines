@@ -3665,6 +3665,69 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.map((trimmed) => (trimmed.length > 0 ? trimmed : null)),
     );
 
+  /**
+   * Turn `git worktree list --porcelain` output into checkouts that actually
+   * exist on disk. Git keeps listing worktrees whose directory was deleted by
+   * hand, so callers that resolve a path (branch pickers, cwd inference) would
+   * otherwise point at nothing.
+   */
+  const parseWorktreeList = Effect.fn("parseWorktreeList")(function* (
+    result: GitVcsDriver.ExecuteGitResult,
+  ) {
+    if (result.exitCode !== 0) {
+      return [] as ReadonlyArray<GitVcsDriver.GitWorktreeEntry>;
+    }
+    const entries: Array<GitVcsDriver.GitWorktreeEntry> = [];
+    let currentPath: string | null = null;
+    for (const line of result.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        const candidatePath = line.slice("worktree ".length);
+        const exists = yield* fileSystem.stat(candidatePath).pipe(
+          Effect.map(() => true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+        currentPath = exists ? candidatePath : null;
+        if (currentPath) {
+          entries.push({ path: currentPath, branch: null });
+        }
+      } else if (line.startsWith("branch refs/heads/") && currentPath) {
+        const branch = line.slice("branch refs/heads/".length);
+        const pending = entries.at(-1);
+        if (pending && pending.path === currentPath) {
+          entries[entries.length - 1] = { path: pending.path, branch };
+        }
+      } else if (line === "") {
+        currentPath = null;
+      }
+    }
+    return entries as ReadonlyArray<GitVcsDriver.GitWorktreeEntry>;
+  });
+
+  const listWorktrees: GitVcsDriver.GitVcsDriverShape["listWorktrees"] = Effect.fn("listWorktrees")(
+    function* (input) {
+      const worktreeList = yield* executeGit(
+        "GitVcsDriver.listWorktrees",
+        input.cwd,
+        ["worktree", "list", "--porcelain"],
+        {
+          timeoutMs: 5_000,
+          allowNonZeroExit: true,
+        },
+      ).pipe(
+        Effect.catchIf(isMissingGitCwdError, () =>
+          Effect.succeed({
+            exitCode: ChildProcessSpawner.ExitCode(128),
+            stdout: "",
+            stderr: "fatal: not a git repository",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+        ),
+      );
+      return yield* parseWorktreeList(worktreeList);
+    },
+  );
+
   const listRefs: GitVcsDriver.GitVcsDriverShape["listRefs"] = Effect.fn("listRefs")(
     function* (input) {
       const localBranchResult = yield* executeGit(
@@ -3771,15 +3834,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 allowNonZeroExit: true,
               },
             ),
-            executeGit(
-              "GitVcsDriver.listRefs.worktreeList",
-              input.cwd,
-              ["worktree", "list", "--porcelain"],
-              {
-                timeoutMs: 5_000,
-                allowNonZeroExit: true,
-              },
-            ),
+            listWorktrees({ cwd: input.cwd }),
             remoteBranchResultEffect,
             remoteNamesResultEffect,
             branchRecencyPromise,
@@ -3806,21 +3861,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           : null;
 
       const worktreeMap = new Map<string, string>();
-      if (worktreeList.exitCode === 0) {
-        let currentPath: string | null = null;
-        for (const line of worktreeList.stdout.split("\n")) {
-          if (line.startsWith("worktree ")) {
-            const candidatePath = line.slice("worktree ".length);
-            const exists = yield* fileSystem.stat(candidatePath).pipe(
-              Effect.map(() => true),
-              Effect.catch(() => Effect.succeed(false)),
-            );
-            currentPath = exists ? candidatePath : null;
-          } else if (line.startsWith("branch refs/heads/") && currentPath) {
-            worktreeMap.set(line.slice("branch refs/heads/".length), currentPath);
-          } else if (line === "") {
-            currentPath = null;
-          }
+      for (const worktree of worktreeList) {
+        if (worktree.branch) {
+          worktreeMap.set(worktree.branch, worktree.path);
         }
       }
 
@@ -4499,6 +4542,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readRangeContext,
     readConfigValue,
     listRefs,
+    listWorktrees,
     commitGraph,
     commitDetails,
     workingTreeDiff,

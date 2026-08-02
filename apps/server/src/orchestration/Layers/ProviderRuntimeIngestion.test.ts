@@ -44,6 +44,8 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { SubagentWorktreeFollowerLive } from "./SubagentWorktreeFollower.ts";
+import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -95,6 +97,9 @@ function isLegacyTurnCompletedEvent(
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
+  // Where the provider says each spawned subagent is working. Empty means the
+  // provider has not written the record yet, which is its normal first answer.
+  const subagentWorktreesByToolUseId = new Map<string, { readonly worktreePath: string }>();
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
@@ -133,6 +138,8 @@ function createProviderServiceHarness() {
     },
     rollbackConversation: () => unsupported(),
     readSubagentTranscript: () => unsupported(),
+    resolveSubagentWorktree: ({ toolUseId }) =>
+      Effect.succeed(subagentWorktreesByToolUseId.get(toolUseId) ?? null),
     deleteThread: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
@@ -167,10 +174,38 @@ function createProviderServiceHarness() {
     Effect.runSync(PubSub.publish(runtimeEventPubSub, normalizeLegacyEvent(event)));
   };
 
+  const setSubagentWorktree = (toolUseId: string, worktreePath: string | null): void => {
+    if (worktreePath === null) {
+      subagentWorktreesByToolUseId.delete(toolUseId);
+      return;
+    }
+    subagentWorktreesByToolUseId.set(toolUseId, { worktreePath });
+  };
+
   return {
     service,
     emit,
     setSession,
+    setSubagentWorktree,
+  };
+}
+
+/**
+ * Enough of GitWorkflowService for the follower's one question: is this path a
+ * checkout of the thread's repository? Building the real git stack here would
+ * test git, not ingestion.
+ */
+function createGitWorkflowHarness() {
+  const worktreePaths: string[] = [];
+  const service = {
+    listWorktrees: () =>
+      Effect.succeed(worktreePaths.map((worktreePath) => ({ path: worktreePath, branch: null }))),
+  } as unknown as GitWorkflowServiceShape;
+  return {
+    service,
+    setWorktrees: (paths: ReadonlyArray<string>): void => {
+      worktreePaths.splice(0, worktreePaths.length, ...paths);
+    },
   };
 }
 
@@ -235,6 +270,7 @@ describe("ProviderRuntimeIngestion", () => {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
+    const gitWorkflow = createGitWorkflowHarness();
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -248,6 +284,8 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provideMerge(SubagentWorktreeFollowerLive),
+      Layer.provideMerge(Layer.succeed(GitWorkflowService, gitWorkflow.service)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -329,6 +367,8 @@ describe("ProviderRuntimeIngestion", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      setSubagentWorktree: provider.setSubagentWorktree,
+      setRepositoryWorktrees: gitWorkflow.setWorktrees,
       drain,
     };
   }
@@ -540,6 +580,197 @@ describe("ProviderRuntimeIngestion", () => {
       payload: { cwd: equivalentConfiguredCwd, reason: "session-init" },
     });
     await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
+  });
+
+  describe("subagent worktree inference", () => {
+    const CLAUDE = ProviderDriverKind.make("claudeAgent");
+    const CLAUDE_INSTANCE = ProviderInstanceId.make("claudeAgent");
+    const NOW = "2026-01-01T00:00:00.000Z";
+
+    async function createClaudeHarness() {
+      const harness = await createHarness();
+      await waitForThread(harness.readModel, (thread) => thread.session?.status === "ready");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-set-claude-subagent-worktree"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "ready",
+            providerName: CLAUDE,
+            providerInstanceId: CLAUDE_INSTANCE,
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            pendingBackgroundTaskCount: 0,
+            updatedAt: NOW,
+            lastError: null,
+          },
+          createdAt: NOW,
+        }),
+      );
+      await waitForThread(harness.readModel, (thread) => thread.session?.providerName === CLAUDE);
+      return harness;
+    }
+
+    function startAgentTask(
+      harness: Awaited<ReturnType<typeof createClaudeHarness>>,
+      taskId: string,
+      toolUseId: string,
+    ) {
+      harness.emit({
+        type: "task.started",
+        eventId: asEventId(`evt-agent-task-started-${taskId}`),
+        provider: CLAUDE,
+        providerInstanceId: CLAUDE_INSTANCE,
+        threadId: asThreadId("thread-1"),
+        createdAt: NOW,
+        payload: { taskId, taskType: "local_agent", toolUseId, description: "Subagent" },
+      });
+    }
+
+    function completeTask(
+      harness: Awaited<ReturnType<typeof createClaudeHarness>>,
+      taskId: string,
+    ) {
+      harness.emit({
+        type: "task.completed",
+        eventId: asEventId(`evt-agent-task-completed-${taskId}`),
+        provider: CLAUDE,
+        providerInstanceId: CLAUDE_INSTANCE,
+        threadId: asThreadId("thread-1"),
+        createdAt: NOW,
+        payload: { taskId, status: "completed" },
+      });
+    }
+
+    it("follows a subagent into its worktree and stops when the subagent finishes", async () => {
+      const harness = await createClaudeHarness();
+      const worktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, worktree]);
+      harness.setSubagentWorktree("toolu_a", worktree);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === worktree);
+
+      completeTask(harness, "task-a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
+    });
+
+    it("ignores a subagent whose checkout the provider never reports", async () => {
+      const harness = await createClaudeHarness();
+      harness.setRepositoryWorktrees([harness.workspaceRoot]);
+
+      startAgentTask(harness, "task-unknown", "toolu_unknown");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("50 millis"));
+
+      const snapshot = await harness.readModel();
+      expect(snapshot.threads[0]?.effectiveCwd).toBeNull();
+    });
+
+    it("ignores a checkout that does not belong to the thread's repository", async () => {
+      const harness = await createClaudeHarness();
+      // The provider reports a path, but git does not know it as a checkout of
+      // this repository, so it must not be followed.
+      harness.setRepositoryWorktrees([harness.workspaceRoot]);
+      harness.setSubagentWorktree("toolu_foreign", "/somewhere/else/agent-x");
+
+      startAgentTask(harness, "task-foreign", "toolu_foreign");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("50 millis"));
+
+      const snapshot = await harness.readModel();
+      expect(snapshot.threads[0]?.effectiveCwd).toBeNull();
+    });
+
+    it("follows nothing while two subagents work in different checkouts", async () => {
+      const harness = await createClaudeHarness();
+      const first = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      const second = `${harness.workspaceRoot}/.claude/worktrees/agent-b`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, first, second]);
+      harness.setSubagentWorktree("toolu_a", first);
+      harness.setSubagentWorktree("toolu_b", second);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === first);
+
+      // A second place makes "where is the work" ambiguous, so follow neither.
+      startAgentTask(harness, "task-b", "toolu_b");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
+
+      // Back down to one place, and it is followable again.
+      completeTask(harness, "task-b");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === first);
+    });
+
+    it("keeps following one place when two subagents share a checkout", async () => {
+      const harness = await createClaudeHarness();
+      const shared = `${harness.workspaceRoot}/.claude/worktrees/agent-shared`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, shared]);
+      harness.setSubagentWorktree("toolu_a", shared);
+      harness.setSubagentWorktree("toolu_b", shared);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === shared);
+      startAgentTask(harness, "task-b", "toolu_b");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("50 millis"));
+
+      const snapshot = await harness.readModel();
+      expect(snapshot.threads[0]?.effectiveCwd).toBe(shared);
+    });
+
+    it("never overwrites or clears a cwd the session itself reported", async () => {
+      const harness = await createClaudeHarness();
+      const sessionCwd = `${harness.workspaceRoot}/.claude/worktrees/session-moved`;
+      const subagentWorktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, sessionCwd, subagentWorktree]);
+      harness.setSubagentWorktree("toolu_a", subagentWorktree);
+
+      harness.emit({
+        type: "session.cwd.changed",
+        eventId: asEventId("evt-session-moved"),
+        provider: CLAUDE,
+        providerInstanceId: CLAUDE_INSTANCE,
+        threadId: asThreadId("thread-1"),
+        createdAt: NOW,
+        payload: { cwd: sessionCwd, reason: "worktree-entered" },
+      });
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === sessionCwd);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("50 millis"));
+      expect((await harness.readModel()).threads[0]?.effectiveCwd).toBe(sessionCwd);
+
+      // Nor may the subagent finishing clear what the session reported.
+      completeTask(harness, "task-a");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("50 millis"));
+      expect((await harness.readModel()).threads[0]?.effectiveCwd).toBe(sessionCwd);
+    });
+
+    it("stops following when the provider session exits", async () => {
+      const harness = await createClaudeHarness();
+      const worktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, worktree]);
+      harness.setSubagentWorktree("toolu_a", worktree);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === worktree);
+
+      harness.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-session-exited"),
+        provider: CLAUDE,
+        providerInstanceId: CLAUDE_INSTANCE,
+        threadId: asThreadId("thread-1"),
+        createdAt: NOW,
+        payload: { kind: "graceful" },
+      });
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
+    });
   });
 
   it("tracks pending provider tasks on the thread session", async () => {

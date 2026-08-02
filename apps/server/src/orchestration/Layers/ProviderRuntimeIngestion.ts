@@ -38,6 +38,7 @@ import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/Projectio
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { SubagentWorktreeFollower } from "../Services/SubagentWorktreeFollower.ts";
 import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
@@ -97,6 +98,9 @@ const MAX_BUFFERED_ACTIVITY_STREAM_CHARS = 4_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD =
   (process.env.THREADLINES_STRICT_PROVIDER_LIFECYCLE_GUARD ??
     process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD) !== "0";
+/** Provider task type for a spawned subagent, as opposed to a backgrounded
+ *  shell command (`local_bash`), which never gets its own checkout. */
+const SUBAGENT_TASK_TYPE = "local_agent";
 
 interface BufferedActivityStream {
   readonly text: string;
@@ -1116,6 +1120,7 @@ function orchestrationSessionStatusFromRuntimeState(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const subagentWorktreeFollower = yield* SubagentWorktreeFollower;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
@@ -2176,6 +2181,13 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      if (event.type === "session.started" || event.type === "session.exited") {
+        // The provider process is new or gone, so nothing it told us about
+        // where its subagents work is still true. Deliberately not a `return`:
+        // both events have their own lifecycle handling further down.
+        yield* subagentWorktreeFollower.observeSessionEnded({ threadId: thread.id });
+      }
+
       if (event.type === "goal.updated") {
         yield* orchestrationEngine.dispatch({
           type: "thread.goal.state.set",
@@ -2489,6 +2501,27 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      // An isolated subagent works in its own checkout, which the thread's
+      // session never enters. Following it keeps the "working in ..." chip and
+      // the source control panel pointed at where the work actually is.
+      if (
+        event.type === "task.started" &&
+        event.payload.taskType === SUBAGENT_TASK_TYPE &&
+        event.payload.toolUseId !== undefined
+      ) {
+        yield* subagentWorktreeFollower.observeAgentTaskStarted({
+          threadId: thread.id,
+          taskId: event.payload.taskId,
+          toolUseId: event.payload.toolUseId,
+        });
+      }
+      if (event.type === "task.completed") {
+        yield* subagentWorktreeFollower.observeTaskEnded({
+          threadId: thread.id,
+          taskId: event.payload.taskId,
+        });
       }
 
       const assistantDelta =

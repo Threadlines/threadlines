@@ -201,6 +201,17 @@ export interface GitSetBranchUpstreamInput {
   remoteBranch: string;
 }
 
+/**
+ * One checkout of a repository, as reported by `git worktree list`. Only
+ * entries whose directory still exists are surfaced.
+ */
+export interface GitWorktreeEntry {
+  /** Absolute path to the checkout, exactly as git reported it. */
+  readonly path: string;
+  /** Short branch name, or null for a detached or bare checkout. */
+  readonly branch: string | null;
+}
+
 export interface GitVcsDriverShape {
   readonly execute: (input: ExecuteGitInput) => Effect.Effect<ExecuteGitResult, GitCommandError>;
   readonly status: (input: VcsStatusInput) => Effect.Effect<VcsStatusResult, GitCommandError>;
@@ -238,6 +249,14 @@ export interface GitVcsDriverShape {
     key: string,
   ) => Effect.Effect<string | null, GitCommandError>;
   readonly listRefs: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+  /**
+   * Enumerate the repository's checkouts. Returns an empty list when `cwd` is
+   * not a git repository rather than failing, so best-effort callers do not
+   * need their own guard.
+   */
+  readonly listWorktrees: (input: {
+    readonly cwd: string;
+  }) => Effect.Effect<ReadonlyArray<GitWorktreeEntry>, GitCommandError>;
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;

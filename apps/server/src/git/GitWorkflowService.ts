@@ -60,7 +60,11 @@ import {
 } from "@threadlines/contracts";
 
 import { GitManager, type GitRunStackedActionOptions } from "./GitManager.ts";
-import { GitVcsDriver, type GitRemoteStatusOptions } from "../vcs/GitVcsDriver.ts";
+import {
+  GitVcsDriver,
+  type GitRemoteStatusOptions,
+  type GitWorktreeEntry,
+} from "../vcs/GitVcsDriver.ts";
 import { VcsDriverRegistry, type VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
 
 export interface GitWorkflowServiceShape {
@@ -106,6 +110,10 @@ export interface GitWorkflowServiceShape {
     input: GitPreparePullRequestThreadInput,
   ) => Effect.Effect<GitPreparePullRequestThreadResult, GitManagerServiceError>;
   readonly listRefs: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+  /** See GitVcsDriverShape.listWorktrees. Empty for a non-repository cwd. */
+  readonly listWorktrees: (input: {
+    readonly cwd: string;
+  }) => Effect.Effect<ReadonlyArray<GitWorktreeEntry>, GitCommandError>;
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
@@ -410,6 +418,14 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
       detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+        ),
+      ),
+    listWorktrees: (input) =>
+      detectGitRepositoryForCommand("GitWorkflowService.listWorktrees", input.cwd).pipe(
+        Effect.flatMap((isGitRepository) =>
+          isGitRepository
+            ? git.listWorktrees(input)
+            : Effect.succeed<ReadonlyArray<GitWorktreeEntry>>([]),
         ),
       ),
     commitGraph: (input) =>

@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import { mapClaudeSubagentTranscriptRecords } from "../Layers/ClaudeAdapter.ts";
 import {
   clearClaudeSubagentTranscriptCaches,
+  locateClaudeSubagentMeta,
   locateClaudeSubagentTranscript,
   readClaudeSubagentTranscriptEntries,
 } from "./ClaudeSubagentTranscripts.ts";
@@ -181,6 +182,98 @@ it.layer(NodeServices.layer)("ClaudeSubagentTranscripts", (it) => {
           agentId: "missing",
         });
         assert.equal(location, null);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            clearClaudeSubagentTranscriptCaches();
+            cleanup();
+          }),
+        ),
+      );
+    });
+  });
+
+  describe("locateClaudeSubagentMeta", () => {
+    it.effect("reports the isolation worktree before the transcript exists", () => {
+      const { configDir, cleanup } = makeConfigDir();
+      const cwd = "/repo/main";
+      const directory = subagentsDirectory(configDir, cwd);
+      mkdirSync(directory, { recursive: true });
+      // Only the sidecar is written: Claude creates it when the subagent is
+      // spawned, before the agent has produced a single transcript record.
+      writeFileSync(
+        path.join(directory, "agent-a720e4804f5b5953a.meta.json"),
+        JSON.stringify({
+          agentType: "Explore",
+          toolUseId: "toolu_01DL1vhTz3MADJXec2wnawbi",
+          worktreePath: "/repo/main/.claude/worktrees/agent-a72",
+          worktreeBranch: "agent/explore",
+        }),
+      );
+      clearClaudeSubagentTranscriptCaches();
+
+      return Effect.gen(function* () {
+        const meta = yield* locateClaudeSubagentMeta({
+          environment: { CLAUDE_CONFIG_DIR: configDir },
+          cwd,
+          sessionId: SESSION_ID,
+          agentId: "toolu_01DL1vhTz3MADJXec2wnawbi",
+        });
+        assert.equal(meta?.worktreePath, "/repo/main/.claude/worktrees/agent-a72");
+        assert.equal(meta?.worktreeBranch, "agent/explore");
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            clearClaudeSubagentTranscriptCaches();
+            cleanup();
+          }),
+        ),
+      );
+    });
+
+    it.effect("omits worktree fields for a subagent spawned without isolation", () => {
+      const { configDir, cleanup } = makeConfigDir();
+      const cwd = "/repo/main";
+      const directory = subagentsDirectory(configDir, cwd);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        path.join(directory, "agent-plain.meta.json"),
+        JSON.stringify({ agentType: "Explore", toolUseId: "toolu_plain" }),
+      );
+      clearClaudeSubagentTranscriptCaches();
+
+      return Effect.gen(function* () {
+        const meta = yield* locateClaudeSubagentMeta({
+          environment: { CLAUDE_CONFIG_DIR: configDir },
+          cwd,
+          sessionId: SESSION_ID,
+          agentId: "toolu_plain",
+        });
+        assert.equal(meta?.agentType, "Explore");
+        assert.equal(meta?.worktreePath, undefined);
+        assert.equal(meta?.worktreeBranch, undefined);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            clearClaudeSubagentTranscriptCaches();
+            cleanup();
+          }),
+        ),
+      );
+    });
+
+    it.effect("returns null when no sidecar matches", () => {
+      const { configDir, cleanup } = makeConfigDir();
+      clearClaudeSubagentTranscriptCaches();
+
+      return Effect.gen(function* () {
+        const meta = yield* locateClaudeSubagentMeta({
+          environment: { CLAUDE_CONFIG_DIR: configDir },
+          cwd: "/repo/main",
+          sessionId: SESSION_ID,
+          agentId: "toolu_missing",
+        });
+        assert.equal(meta, null);
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {

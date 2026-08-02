@@ -216,6 +216,50 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("lists the repository's checkouts and skips deleted ones", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const livePath = path.join(cwd, "worktrees", "live");
+        const deletedPath = path.join(cwd, "worktrees", "deleted");
+        yield* git(cwd, ["worktree", "add", "-b", "live-branch", livePath]);
+        yield* git(cwd, ["worktree", "add", "-b", "deleted-branch", deletedPath]);
+        // Git keeps listing a worktree whose directory was removed by hand.
+        yield* fileSystem.remove(deletedPath, { recursive: true, force: true });
+
+        const worktrees = yield* driver.listWorktrees({ cwd });
+
+        assert.deepStrictEqual(
+          worktrees.map((worktree) => worktree.branch),
+          [initialBranch, "live-branch"],
+        );
+        // Git reports checkouts by their real path, which on macOS resolves
+        // the temp directory's symlink.
+        const liveRealPath = yield* fileSystem.realPath(livePath);
+        assert.equal(worktrees[1]?.path, liveRealPath);
+        assert.isUndefined(worktrees.find((worktree) => worktree.branch === "deleted-branch"));
+
+        // The same enumeration backs listRefs' branch-to-checkout mapping.
+        const refs = yield* driver.listRefs({ cwd });
+        assert.equal(
+          refs.refs.find((ref) => ref.name === "live-branch")?.worktreePath,
+          liveRealPath,
+        );
+      }),
+    );
+
+    it.effect("reports no checkouts for a non-repository directory", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const worktrees = yield* (yield* GitVcsDriver.GitVcsDriver).listWorktrees({ cwd });
+        assert.deepStrictEqual(worktrees, []);
+      }),
+    );
+
     it.effect("reports refName and dirty state for a repository", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
