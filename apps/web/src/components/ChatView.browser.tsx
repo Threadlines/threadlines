@@ -1931,15 +1931,34 @@ async function waitForCommandPaletteInput(placeholder: string): Promise<HTMLInpu
   );
 }
 
+async function clickCommandPaletteAction(label: string): Promise<void> {
+  const action = await waitForElement(() => {
+    const palette = document.querySelector('[data-testid="command-palette"]');
+    if (!palette) return null;
+    return (
+      Array.from(palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]')).find((item) =>
+        Array.from(item.querySelectorAll("span")).some(
+          (content) => content.textContent?.trim() === label,
+        ),
+      ) ?? null
+    );
+  }, `Command palette action "${label}" did not render.`);
+  // Dispatch in the same browser task that located the row. Async palette
+  // refreshes may replace result nodes between Playwright's actionability
+  // checks even though the action itself remains continuously available.
+  action.click();
+  await waitForLayout();
+}
+
 async function selectLocalFolderAction(): Promise<void> {
-  const palette = page.getByTestId("command-palette");
-  // The palette replaces its action list when the Sources view commits. Wait
-  // for that view and an attached action so a slow render cannot detach the
-  // Local folder node between locating and clicking it.
-  await expect.element(palette.getByText("Sources", { exact: true })).toBeInTheDocument();
-  const localFolderAction = palette.getByText("Local folder", { exact: true });
-  await expect.element(localFolderAction).toBeInTheDocument();
-  await localFolderAction.click();
+  await waitForElement(
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-slot="command-group-label"]')).find(
+        (label) => label.textContent?.trim() === "Sources",
+      ) ?? null,
+    "Command palette Sources view did not render.",
+  );
+  await clickCommandPaletteAction("Local folder");
 }
 
 function getCommandPaletteLegendEntries(): string[] {
@@ -7458,7 +7477,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect
         .element(palette.getByText("This device", { exact: true }).first())
         .toBeInTheDocument();
-      await palette.getByText("Staging", { exact: true }).click();
+      await clickCommandPaletteAction("Staging");
       await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
