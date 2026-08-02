@@ -303,7 +303,12 @@ export const BranchToolbar = memo(function BranchToolbar({
           <span className="ml-auto inline-flex min-w-0 max-w-[45%] shrink items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
             <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
             <span className="min-w-0 truncate">
-              Next message runs in {pendingCheckoutSwitch.label}
+              {/* Phone widths truncate the long form to the point of hiding
+                  the destination, which is the whole payload of this chip. */}
+              <span className="max-sm:hidden">
+                Next message runs in {pendingCheckoutSwitch.label}
+              </span>
+              <span className="sm:hidden">Next: {pendingCheckoutSwitch.label}</span>
             </span>
           </span>
         </TooltipWrapper>
