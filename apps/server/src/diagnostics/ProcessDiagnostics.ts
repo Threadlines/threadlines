@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
@@ -34,6 +35,9 @@ export interface ProcessRow {
 const PROCESS_QUERY_TIMEOUT_MS = 15_000;
 const POSIX_PROCESS_QUERY_COMMAND = "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=";
 const PROCESS_QUERY_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const PROCESS_SNAPSHOT_TTL_MS = 2_000;
+const PROCESS_SNAPSHOT_INITIAL_FAILURE_BACKOFF_MS = 2_000;
+const PROCESS_SNAPSHOT_MAX_FAILURE_BACKOFF_MS = 30_000;
 
 export interface ListeningPortRow {
   readonly port: number;
@@ -62,7 +66,16 @@ export class ProcessDiagnostics extends Context.Service<
   ProcessDiagnosticsShape
 >()("threadlines/diagnostics/ProcessDiagnostics") {}
 
-class ProcessDiagnosticsError extends Schema.TaggedErrorClass<ProcessDiagnosticsError>()(
+export interface ProcessSnapshotShape {
+  readonly readTree: Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError>;
+  readonly readAll: Effect.Effect<ReadonlyArray<ProcessRow>, ProcessDiagnosticsError>;
+}
+
+export class ProcessSnapshot extends Context.Service<ProcessSnapshot, ProcessSnapshotShape>()(
+  "threadlines/diagnostics/ProcessSnapshot",
+) {}
+
+export class ProcessDiagnosticsError extends Schema.TaggedErrorClass<ProcessDiagnosticsError>()(
   "ProcessDiagnosticsError",
   {
     message: Schema.String,
@@ -706,10 +719,7 @@ function readWindowsListeningPortRows(
     ),
   );
   const readNetstatRows = readWindowsNetstatListeningPortRows(safePorts, options);
-  return readPowerShellRows.pipe(
-    Effect.catch(() => readNetstatRows),
-    Effect.flatMap((rows) => (rows.length > 0 ? Effect.succeed(rows) : readNetstatRows)),
-  );
+  return readNetstatRows.pipe(Effect.catch(() => readPowerShellRows));
 }
 
 function readWindowsNetstatListeningPortRows(
@@ -780,6 +790,155 @@ function readListeningPortRows(
 
 export const readProcessRows = (platform = process.platform) =>
   platform === "win32" ? readWindowsProcessRows() : readPosixProcessRows();
+
+interface ProcessSnapshotEntry {
+  readonly rows: ReadonlyArray<ProcessRow> | null;
+  readonly expiresAtMs: number;
+  readonly retryAtMs: number;
+  readonly consecutiveFailures: number;
+  readonly lastError: ProcessDiagnosticsError | null;
+}
+
+interface ProcessSnapshotState {
+  readonly tree: ProcessSnapshotEntry;
+  readonly all: ProcessSnapshotEntry;
+}
+
+export interface MakeProcessSnapshotOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly ttlMs?: number;
+  readonly initialFailureBackoffMs?: number;
+  readonly maxFailureBackoffMs?: number;
+  readonly queryTree?: () => Effect.Effect<ReadonlyArray<ProcessRow>, unknown>;
+  readonly queryAll?: () => Effect.Effect<ReadonlyArray<ProcessRow>, unknown>;
+}
+
+function emptyProcessSnapshotEntry(): ProcessSnapshotEntry {
+  return {
+    rows: null,
+    expiresAtMs: 0,
+    retryAtMs: 0,
+    consecutiveFailures: 0,
+    lastError: null,
+  };
+}
+
+export const makeProcessSnapshot = Effect.fn("makeProcessSnapshot")(function* (
+  options: MakeProcessSnapshotOptions = {},
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const platform = options.platform ?? process.platform;
+  const ttlMs = Math.max(0, options.ttlMs ?? PROCESS_SNAPSHOT_TTL_MS);
+  const initialFailureBackoffMs = Math.max(
+    1,
+    options.initialFailureBackoffMs ?? PROCESS_SNAPSHOT_INITIAL_FAILURE_BACKOFF_MS,
+  );
+  const maxFailureBackoffMs = Math.max(
+    initialFailureBackoffMs,
+    options.maxFailureBackoffMs ?? PROCESS_SNAPSHOT_MAX_FAILURE_BACKOFF_MS,
+  );
+  const queryTree =
+    options.queryTree ??
+    (() =>
+      readProcessRows(platform).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ));
+  const queryAll =
+    options.queryAll ??
+    (() =>
+      readAllProcessRows(platform).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ));
+  const state = yield* Ref.make<ProcessSnapshotState>({
+    tree: emptyProcessSnapshotEntry(),
+    all: emptyProcessSnapshotEntry(),
+  });
+  const querySemaphore = yield* Semaphore.make(1);
+
+  const readSnapshot = (kind: keyof ProcessSnapshotState) =>
+    Effect.gen(function* () {
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const current = (yield* Ref.get(state))[kind];
+      if (current.rows !== null && now < current.expiresAtMs) {
+        return current.rows;
+      }
+
+      return yield* querySemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const lockedNow = DateTime.toEpochMillis(yield* DateTime.now);
+          const lockedState = yield* Ref.get(state);
+          const lockedEntry = lockedState[kind];
+          if (lockedEntry.rows !== null && lockedNow < lockedEntry.expiresAtMs) {
+            return lockedEntry.rows;
+          }
+          if (lockedNow < lockedEntry.retryAtMs) {
+            if (lockedEntry.rows !== null) {
+              return lockedEntry.rows;
+            }
+            return yield* Effect.fail(
+              lockedEntry.lastError ??
+                toProcessDiagnosticsError("Process diagnostics are temporarily backing off."),
+            );
+          }
+
+          const query = kind === "tree" ? queryTree() : queryAll();
+          return yield* query.pipe(
+            Effect.mapError((cause) =>
+              isProcessDiagnosticsError(cause)
+                ? cause
+                : toProcessDiagnosticsError("Failed to query process diagnostics.", cause),
+            ),
+            Effect.tap((rows) =>
+              DateTime.now.pipe(
+                Effect.flatMap((completedAt) =>
+                  Ref.update(state, (latest) => ({
+                    ...latest,
+                    [kind]: {
+                      rows,
+                      expiresAtMs: DateTime.toEpochMillis(completedAt) + ttlMs,
+                      retryAtMs: 0,
+                      consecutiveFailures: 0,
+                      lastError: null,
+                    },
+                  })),
+                ),
+              ),
+            ),
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                const failedAt = DateTime.toEpochMillis(yield* DateTime.now);
+                const consecutiveFailures = lockedEntry.consecutiveFailures + 1;
+                const failureBackoffMs = Math.min(
+                  maxFailureBackoffMs,
+                  initialFailureBackoffMs * 2 ** Math.min(consecutiveFailures - 1, 10),
+                );
+                yield* Ref.update(state, (latest) => ({
+                  ...latest,
+                  [kind]: {
+                    ...lockedEntry,
+                    expiresAtMs: 0,
+                    retryAtMs: failedAt + failureBackoffMs,
+                    consecutiveFailures,
+                    lastError: error,
+                  },
+                }));
+                return yield* lockedEntry.rows !== null
+                  ? Effect.succeed(lockedEntry.rows)
+                  : Effect.fail(error);
+              }),
+            ),
+          );
+        }),
+      );
+    });
+
+  return ProcessSnapshot.of({
+    readTree: readSnapshot("tree"),
+    readAll: readSnapshot("all"),
+  });
+});
+
+export const processSnapshotLayer = Layer.effect(ProcessSnapshot, makeProcessSnapshot());
 
 export function aggregateProcessDiagnostics(input: {
   readonly serverPid: number;
@@ -1205,14 +1364,13 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
 
 export const make = Effect.fn("makeProcessDiagnostics")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const processSnapshot = yield* ProcessSnapshot;
   const detectedCommandRunFingerprints = yield* Ref.make(new Map<number, string>());
+  const backgroundRunResolutionSemaphore = yield* Semaphore.make(1);
 
   const read: ProcessDiagnosticsShape["read"] = Effect.gen(function* () {
     const readAt = yield* DateTime.now;
-    const rows = yield* readProcessRows().pipe(
-      Effect.withTracerEnabled(false),
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
+    const rows = yield* processSnapshot.readTree.pipe(Effect.withTracerEnabled(false));
     return makeResult({ serverPid: process.pid, rows, readAt });
   }).pipe(
     Effect.catch((error: ProcessDiagnosticsError) =>
@@ -1258,51 +1416,51 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
     },
   );
 
-  const resolveBackgroundRuns: ProcessDiagnosticsShape["resolveBackgroundRuns"] = Effect.fn(
-    "ProcessDiagnostics.resolveBackgroundRuns",
-  )(function* (input) {
-    const commandHints = input.commandHints ?? [];
-    const pids = uniquePositivePids(input.pids ?? []);
-    const ports = input.urls.flatMap((url) => {
-      const port = localhostPortFromUrl(url);
-      return port === null ? [] : [port];
-    });
-    const queryAllPorts = ports.length === 0 && commandHints.length > 0;
-    const [portRows, processRows] = yield* Effect.all(
-      [
-        readListeningPortRows(ports, { all: queryAllPorts }).pipe(
-          Effect.withTracerEnabled(false),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.catch(() => Effect.succeed([])),
-        ),
-        commandHints.length > 0 || pids.length > 0
-          ? readAllProcessRows().pipe(
+  const resolveBackgroundRuns: ProcessDiagnosticsShape["resolveBackgroundRuns"] = (input) =>
+    backgroundRunResolutionSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const commandHints = input.commandHints ?? [];
+        const pids = uniquePositivePids(input.pids ?? []);
+        const ports = input.urls.flatMap((url) => {
+          const port = localhostPortFromUrl(url);
+          return port === null ? [] : [port];
+        });
+        const queryAllPorts = ports.length === 0 && commandHints.length > 0;
+        const [portRows, processRows] = yield* Effect.all(
+          [
+            readListeningPortRows(ports, { all: queryAllPorts }).pipe(
               Effect.withTracerEnabled(false),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.catch(() => Effect.succeed([])),
-            )
-          : Effect.succeed([]),
-      ],
-      { concurrency: "unbounded" },
+            ),
+            ports.length > 0 || commandHints.length > 0 || pids.length > 0
+              ? processSnapshot.readAll.pipe(
+                  Effect.withTracerEnabled(false),
+                  Effect.catch(() => Effect.succeed([])),
+                )
+              : Effect.succeed([]),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const result = resolveBackgroundRunsFromListeningPorts({
+          urls: input.urls,
+          pids,
+          portRows,
+          processRows,
+          commandHints,
+        });
+        yield* Ref.update(detectedCommandRunFingerprints, (fingerprints) => {
+          const next = new Map(fingerprints);
+          for (const run of result.runs) {
+            if (run.port === null) {
+              next.set(run.pid, run.command);
+            }
+          }
+          return next;
+        });
+        return result;
+      }).pipe(Effect.withSpan("ProcessDiagnostics.resolveBackgroundRuns")),
     );
-    const result = resolveBackgroundRunsFromListeningPorts({
-      urls: input.urls,
-      pids,
-      portRows,
-      processRows,
-      commandHints,
-    });
-    yield* Ref.update(detectedCommandRunFingerprints, (fingerprints) => {
-      const next = new Map(fingerprints);
-      for (const run of result.runs) {
-        if (run.port === null) {
-          next.set(run.pid, run.command);
-        }
-      }
-      return next;
-    });
-    return result;
-  });
 
   const stopBackgroundRun: ProcessDiagnosticsShape["stopBackgroundRun"] = Effect.fn(
     "ProcessDiagnostics.stopBackgroundRun",

@@ -13,14 +13,13 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
-import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   aggregateProcessDiagnostics,
   buildDescendantEntries,
   isDiagnosticsQueryProcess,
+  ProcessSnapshot,
   type ProcessRow,
-  readProcessRows,
 } from "./ProcessDiagnostics.ts";
 
 const SAMPLE_INTERVAL_MS = 5_000;
@@ -302,7 +301,7 @@ export function aggregateProcessResourceHistory(input: {
 }
 
 export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const processSnapshot = yield* ProcessSnapshot;
   const monitorScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Scope.close(scope, Exit.void),
   );
@@ -318,10 +317,7 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
   const sampleOnce = Effect.gen(function* () {
     const sampledAt = yield* DateTime.now;
     const sampledAtMs = DateTime.toEpochMillis(sampledAt);
-    const rows = yield* readProcessRows().pipe(
-      Effect.withTracerEnabled(false),
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
+    const rows = yield* processSnapshot.readTree.pipe(Effect.withTracerEnabled(false));
     const samples = collectMonitoredSamples({
       rows,
       serverPid: process.pid,

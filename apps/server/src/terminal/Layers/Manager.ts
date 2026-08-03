@@ -33,7 +33,11 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
-import { readProcessRows, type ProcessRow } from "../../diagnostics/ProcessDiagnostics.ts";
+import {
+  ProcessSnapshot,
+  readProcessRows,
+  type ProcessRow,
+} from "../../diagnostics/ProcessDiagnostics.ts";
 import {
   increment,
   terminalRestartsTotal,
@@ -57,7 +61,7 @@ import {
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
-const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
@@ -812,6 +816,9 @@ interface TerminalManagerOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   subprocessChecker?: TerminalSubprocessChecker;
+  processRowsReader?: (
+    platform: NodeJS.Platform,
+  ) => Effect.Effect<ReadonlyArray<ProcessRow>, unknown>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -821,9 +828,11 @@ interface TerminalManagerOptions {
 const makeTerminalManager = Effect.fn("makeTerminalManager")(function* () {
   const { terminalLogsDir } = yield* ServerConfig;
   const ptyAdapter = yield* PtyAdapter;
+  const processSnapshot = yield* ProcessSnapshot;
   return yield* makeTerminalManagerWithOptions({
     logsDir: terminalLogsDir,
     ptyAdapter,
+    processRowsReader: () => processSnapshot.readTree,
   });
 });
 
@@ -841,6 +850,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const subprocessChecker = options.subprocessChecker ?? null;
+    const processRowsReader =
+      options.processRowsReader ??
+      ((targetPlatform: NodeJS.Platform) =>
+        readProcessRows(targetPlatform).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        ));
     const subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
     const processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
@@ -1709,12 +1724,14 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* () {
       const state = yield* readManagerState;
-      const runningSessions = [...state.sessions.values()].filter(
+      const sessionsNeedingSubprocessCheck = [...state.sessions.values()].filter(
         (session): session is TerminalSessionState & { pid: number } =>
-          session.status === "running" && Number.isInteger(session.pid),
+          session.status === "running" &&
+          Number.isInteger(session.pid) &&
+          (session.submittedCommand !== null || session.hasRunningSubprocess),
       );
 
-      if (runningSessions.length === 0) {
+      if (sessionsNeedingSubprocessCheck.length === 0) {
         return;
       }
 
@@ -1742,10 +1759,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const command = activity.hasRunningSubprocess
             ? (liveSession.value.submittedCommand ?? activity.command)
             : null;
-          if (
+          const activityUnchanged =
             liveSession.value.hasRunningSubprocess === activity.hasRunningSubprocess &&
-            liveSession.value.runningSubprocessCommand === command
-          ) {
+            liveSession.value.runningSubprocessCommand === command;
+          const shouldClearSubmittedCommand =
+            !activity.hasRunningSubprocess && liveSession.value.submittedCommand !== null;
+          if (activityUnchanged && !shouldClearSubmittedCommand) {
             return [Option.none(), state] as const;
           }
 
@@ -1756,6 +1775,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             liveSession.value.terminalCommandInputState = createTerminalCommandInputState();
           }
           liveSession.value.updatedAt = updatedAt;
+
+          if (activityUnchanged) {
+            return [Option.none(), state] as const;
+          }
 
           return [
             Option.some({
@@ -1800,20 +1823,19 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           }
         });
 
-        yield* Effect.forEach(runningSessions, checkSubprocessActivity, {
+        yield* Effect.forEach(sessionsNeedingSubprocessCheck, checkSubprocessActivity, {
           concurrency: "unbounded",
           discard: true,
         });
         return;
       }
 
-      const subprocessActivityByPid = yield* readProcessRows(platform).pipe(
+      const subprocessActivityByPid = yield* processRowsReader(platform).pipe(
         Effect.withTracerEnabled(false),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
         Effect.map((rows) => {
           const rowsByParent = buildProcessRowsByParent(rows);
           return new Map(
-            runningSessions.map((session) => {
+            sessionsNeedingSubprocessCheck.map((session) => {
               const command = findTerminalSubprocessCommand(rowsByParent, session.pid);
               return [
                 session.pid,
@@ -1828,7 +1850,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         Effect.map(Option.some),
         Effect.catch((reason) =>
           Effect.logWarning("failed to check terminal subprocess activity", {
-            terminalCount: runningSessions.length,
+            terminalCount: sessionsNeedingSubprocessCheck.length,
             reason,
           }).pipe(
             Effect.as(
@@ -1845,7 +1867,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }
 
       yield* Effect.forEach(
-        runningSessions,
+        sessionsNeedingSubprocessCheck,
         (session) =>
           publishSubprocessActivityIfChanged(
             session,
@@ -1861,14 +1883,18 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       );
     });
 
-    const hasRunningSessions = readManagerState.pipe(
+    const hasSessionsNeedingSubprocessCheck = readManagerState.pipe(
       Effect.map((state) =>
-        [...state.sessions.values()].some((session) => session.status === "running"),
+        [...state.sessions.values()].some(
+          (session) =>
+            session.status === "running" &&
+            (session.submittedCommand !== null || session.hasRunningSubprocess),
+        ),
       ),
     );
 
     yield* Effect.forever(
-      hasRunningSessions.pipe(
+      hasSessionsNeedingSubprocessCheck.pipe(
         Effect.flatMap((active) =>
           active
             ? pollSubprocessActivity().pipe(

@@ -659,7 +659,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
-  it.effect("does not invoke subprocess polling until a terminal session is running", () =>
+  it.effect("does not invoke subprocess polling until a terminal command is submitted", () =>
     Effect.gen(function* () {
       let checks = 0;
       const { manager } = yield* createManager(5, {
@@ -674,10 +674,21 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       assert.equal(checks, 0);
 
       yield* manager.open(openInput());
+      yield* Effect.sleep("80 millis");
+      assert.equal(checks, 0);
+
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "vp run dev:desktop\r",
+      });
       yield* waitFor(
         Effect.sync(() => checks > 0),
         "1200 millis",
       );
+      const checksAfterCommand = checks;
+      yield* Effect.sleep("80 millis");
+      assert.equal(checks, checksAfterCommand);
     }),
   );
 

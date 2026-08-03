@@ -225,7 +225,13 @@ describe("ProcessDiagnostics", () => {
           );
         }),
       );
-      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
+      const processSnapshotLayer = ProcessDiagnostics.processSnapshotLayer.pipe(
+        Layer.provide(spawnerLayer),
+      );
+      const layer = ProcessDiagnostics.layer.pipe(
+        Layer.provide(processSnapshotLayer),
+        Layer.provide(spawnerLayer),
+      );
 
       const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((pd) => pd.read),
@@ -248,6 +254,62 @@ describe("ProcessDiagnostics", () => {
           },
         ]);
       }
+    }),
+  );
+
+  itEffect("coalesces concurrent process snapshot reads and reuses the cached result", () =>
+    Effect.gen(function* () {
+      let queryCount = 0;
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.succeed(mockHandle({}))),
+      );
+      const snapshot = yield* ProcessDiagnostics.makeProcessSnapshot({
+        ttlMs: 10,
+        queryTree: () =>
+          Effect.gen(function* () {
+            queryCount += 1;
+            yield* Effect.sleep("20 millis");
+            return [];
+          }),
+        queryAll: () => Effect.succeed([]),
+      }).pipe(Effect.provide(spawnerLayer));
+
+      yield* Effect.all([snapshot.readTree, snapshot.readTree, snapshot.readTree], {
+        concurrency: "unbounded",
+      });
+      yield* snapshot.readTree;
+
+      expect(queryCount).toBe(1);
+    }),
+  );
+
+  itEffect("backs off concurrent process snapshot retries after a query failure", () =>
+    Effect.gen(function* () {
+      let queryCount = 0;
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.succeed(mockHandle({}))),
+      );
+      const snapshot = yield* ProcessDiagnostics.makeProcessSnapshot({
+        initialFailureBackoffMs: 10_000,
+        maxFailureBackoffMs: 10_000,
+        queryTree: () => {
+          queryCount += 1;
+          return Effect.fail(new Error("query failed"));
+        },
+        queryAll: () => Effect.succeed([]),
+      }).pipe(Effect.provide(spawnerLayer));
+
+      yield* Effect.all(
+        [snapshot.readTree, snapshot.readTree, snapshot.readTree].map((read) =>
+          read.pipe(Effect.ignore),
+        ),
+        { concurrency: "unbounded" },
+      );
+      yield* snapshot.readTree.pipe(Effect.ignore);
+
+      expect(queryCount).toBe(1);
     }),
   );
 
@@ -662,7 +724,13 @@ describe("ProcessDiagnostics", () => {
           ),
         ),
       );
-      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer));
+      const processSnapshotLayer = ProcessDiagnostics.processSnapshotLayer.pipe(
+        Layer.provide(spawnerLayer),
+      );
+      const layer = ProcessDiagnostics.layer.pipe(
+        Layer.provide(processSnapshotLayer),
+        Layer.provide(spawnerLayer),
+      );
 
       const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((pd) => pd.signal({ pid: 4242, signal: "SIGINT" })),

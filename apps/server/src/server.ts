@@ -247,7 +247,15 @@ const CheckpointingLayerLive = Layer.empty.pipe(
 
 // provideMerge rather than provide: the PTY is also how Claude's `mcp login` gets a terminal, which
 // it refuses to run without, so the adapter has to stay visible to the RPC handlers.
-const TerminalLayerLive = TerminalManagerLive.pipe(Layer.provideMerge(PtyAdapterLive));
+const ProcessSnapshotLayerLive = ProcessDiagnostics.processSnapshotLayer;
+const TerminalLayerLive = TerminalManagerLive.pipe(
+  Layer.provideMerge(PtyAdapterLive),
+  Layer.provideMerge(ProcessSnapshotLayerLive),
+);
+const ProcessDiagnosticsLayerLive = Layer.mergeAll(
+  ProcessDiagnostics.layer,
+  ProcessResourceMonitor.layer,
+).pipe(Layer.provideMerge(ProcessSnapshotLayerLive));
 
 const WorkspaceEntriesLayerLive = WorkspaceEntriesLive.pipe(
   Layer.provide(WorkspacePathsLive),
@@ -317,8 +325,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
 
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
-  Layer.provideMerge(ProcessDiagnostics.layer),
-  Layer.provideMerge(ProcessResourceMonitor.layer),
+  Layer.provideMerge(ProcessDiagnosticsLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsServiceLayerLive),
   Layer.provideMerge(ExternalLauncher.layer),

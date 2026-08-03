@@ -432,7 +432,7 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-const BACKGROUND_RUN_DETECTION_RETRY_DELAYS_MS = [0, 750, 2_000, 4_000] as const;
+const BACKGROUND_RUN_DETECTION_RETRY_DELAYS_MS = [250, 750, 2_000, 4_000] as const;
 
 function backgroundRunCommandFingerprint(command: string | null | undefined): string | null {
   if (!command) return null;
@@ -2933,6 +2933,7 @@ export default function ChatView(props: ChatViewProps) {
   const [detectedBackgroundRuns, setDetectedBackgroundRuns] = useState<ThreadBackgroundRunItem[]>(
     [],
   );
+  const backgroundRunResolutionTailRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     if (
@@ -2969,50 +2970,57 @@ export default function ChatView(props: ChatViewProps) {
       }, delay);
       retryTimers.push(timer);
     }
-    async function resolveAttempt(attemptIndex: number) {
-      try {
-        const result = await localApi.server.resolveBackgroundRuns({
-          urls: backgroundRunDetectionUrls,
-          pids: unresolvedBackgroundRunDetectionPids,
-          commandHints: backgroundRunCommandHints,
-        });
+    function resolveAttempt(attemptIndex: number) {
+      const queued = backgroundRunResolutionTailRef.current.then(async () => {
         if (cancelled) return;
-        setDetectedBackgroundRuns(
-          result.runs.map((run) => ({
-            id: run.id,
-            source: "detected",
-            terminalId: null,
-            pid: run.pid,
-            port: run.port,
-            elapsed: run.elapsed ?? null,
-            canStop: run.canStop,
-            label: deriveDetectedBackgroundRunLabel({
-              command: run.command,
+        try {
+          const result = await localApi.server.resolveBackgroundRuns({
+            urls: backgroundRunDetectionUrls,
+            pids: unresolvedBackgroundRunDetectionPids,
+            commandHints: backgroundRunCommandHints,
+          });
+          if (cancelled) return;
+          setDetectedBackgroundRuns(
+            result.runs.map((run) => ({
+              id: run.id,
+              source: "detected",
+              terminalId: null,
+              pid: run.pid,
               port: run.port,
-              providerBackgroundRuns: providerBackgroundSnapshot.runs,
-            }),
-            command: run.command,
-            detail: run.detail,
-            cwd: null,
-            statusLabel: run.statusLabel,
-            urls: run.urls,
-            pids: [run.pid],
-          })),
-        );
-        const detectedUrlSet = new Set(result.runs.flatMap((run) => run.urls));
-        const detectedPidSet = new Set(result.runs.map((run) => run.pid));
-        const hasUndetectedUrl = backgroundRunDetectionUrls.some((url) => !detectedUrlSet.has(url));
-        const hasUndetectedPid = unresolvedBackgroundRunDetectionPids.some(
-          (pid) => !detectedPidSet.has(pid),
-        );
-        if ((result.runs.length === 0 || hasUndetectedUrl || hasUndetectedPid) && !cancelled) {
+              elapsed: run.elapsed ?? null,
+              canStop: run.canStop,
+              label: deriveDetectedBackgroundRunLabel({
+                command: run.command,
+                port: run.port,
+                providerBackgroundRuns: providerBackgroundSnapshot.runs,
+              }),
+              command: run.command,
+              detail: run.detail,
+              cwd: null,
+              statusLabel: run.statusLabel,
+              urls: run.urls,
+              pids: [run.pid],
+            })),
+          );
+          const detectedUrlSet = new Set(result.runs.flatMap((run) => run.urls));
+          const detectedPidSet = new Set(result.runs.map((run) => run.pid));
+          const hasUndetectedUrl = backgroundRunDetectionUrls.some(
+            (url) => !detectedUrlSet.has(url),
+          );
+          const hasUndetectedPid = unresolvedBackgroundRunDetectionPids.some(
+            (pid) => !detectedPidSet.has(pid),
+          );
+          if ((result.runs.length === 0 || hasUndetectedUrl || hasUndetectedPid) && !cancelled) {
+            scheduleRetry(attemptIndex + 1);
+          }
+        } catch {
+          if (cancelled) return;
+          setDetectedBackgroundRuns([]);
           scheduleRetry(attemptIndex + 1);
         }
-      } catch {
-        if (cancelled) return;
-        setDetectedBackgroundRuns([]);
-        scheduleRetry(attemptIndex + 1);
-      }
+      });
+      backgroundRunResolutionTailRef.current = queued.catch(() => undefined);
+      return queued;
     }
     scheduleRetry(0);
 
