@@ -1,6 +1,6 @@
 {
-  "playwrightCoreVersion": "1.62.0",
+  "playwrightCoreVersion": "1.62.1",
   "modulePath": "packages/playwright-core/src/generated/injectedScriptSource.ts",
-  "bytes": 316337,
-  "sha256": "7584abc1379ea2cffc301df3d2c7956a6caa4b331a06812b18d1f5b362c43cd0"
+  "bytes": 316714,
+  "sha256": "fc43c7ab27d27b4e2241190a6f7a990089328dc95ca29785eb54ed59159f6315"
 }

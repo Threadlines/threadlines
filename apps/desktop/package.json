@@ -31,7 +31,7 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "electron-builder": "^26.15.3",
-    "playwright-core": "^1.62.0",
+    "playwright-core": "^1.62.1",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
