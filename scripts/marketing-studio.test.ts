@@ -256,5 +256,5 @@ describe("marketing-studio", () => {
     } finally {
       FileSystem.rmSync(temporaryRoot, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 });

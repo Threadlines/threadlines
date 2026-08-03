@@ -6,18 +6,18 @@ export function resolveDefaultMarketingStudioRoot(input: {
   readonly publicDirectory?: string | undefined;
 }): string {
   if (input.platform === "darwin") {
-    return NodePath.join("/Users", "Shared", "Threadlines Marketing Studio");
+    return NodePath.posix.join("/Users", "Shared", "Threadlines Marketing Studio");
   }
   if (input.platform === "win32") {
-    return NodePath.join(
+    return NodePath.win32.join(
       input.publicDirectory && input.publicDirectory.length > 0
         ? input.publicDirectory
-        : NodePath.join(NodePath.dirname(input.homeDirectory), "Public"),
+        : NodePath.win32.join(NodePath.win32.dirname(input.homeDirectory), "Public"),
       "Documents",
       "Threadlines Marketing Studio",
     );
   }
-  return NodePath.join("/tmp", "Threadlines Marketing Studio");
+  return NodePath.posix.join("/tmp", "Threadlines Marketing Studio");
 }
 
 export function resolveMarketingStudioRoot(input: {

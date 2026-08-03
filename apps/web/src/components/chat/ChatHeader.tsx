@@ -244,9 +244,9 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
+        {/* Desktop affordance: "open in editor" acts on the machine running
+            the server, so it earns no room in the phone-width header. */}
         {showOpenInEditor && openInCwd !== null && (
-          // Desktop affordance: "open in editor" acts on the machine running
-          // the server, so it earns no room in the phone-width header.
           <div className="flex shrink-0 items-center max-sm:hidden">
             <OpenInPicker
               keybindings={keybindings}

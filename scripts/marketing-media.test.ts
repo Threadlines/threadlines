@@ -123,6 +123,13 @@ describe("marketing media", () => {
       }),
       "/tmp/Threadlines Marketing Studio",
     );
+    assert.equal(
+      resolveDefaultMarketingStudioRoot({
+        platform: "win32",
+        homeDirectory: String.raw`C:\Users\alice`,
+      }),
+      String.raw`C:\Users\Public\Documents\Threadlines Marketing Studio`,
+    );
   });
 
   it("ships complete theme-matched marketing media pairs", () => {
