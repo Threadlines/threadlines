@@ -1931,6 +1931,36 @@ async function waitForCommandPaletteInput(placeholder: string): Promise<HTMLInpu
   );
 }
 
+async function clickCommandPaletteAction(label: string): Promise<void> {
+  const action = await waitForElement(() => {
+    const palette = document.querySelector('[data-testid="command-palette"]');
+    if (!palette) return null;
+    return (
+      Array.from(palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]')).find((item) =>
+        Array.from(item.querySelectorAll("span")).some(
+          (content) => content.textContent?.trim() === label,
+        ),
+      ) ?? null
+    );
+  }, `Command palette action "${label}" did not render.`);
+  // Dispatch in the same browser task that located the row. Async palette
+  // refreshes may replace result nodes between Playwright's actionability
+  // checks even though the action itself remains continuously available.
+  action.click();
+  await waitForLayout();
+}
+
+async function selectLocalFolderAction(): Promise<void> {
+  await waitForElement(
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-slot="command-group-label"]')).find(
+        (label) => label.textContent?.trim() === "Sources",
+      ) ?? null,
+    "Command palette Sources view did not render.",
+  );
+  await clickCommandPaletteAction("Local folder");
+}
+
 function getCommandPaletteLegendEntries(): string[] {
   const footer = document.querySelector('[data-slot="command-footer"]');
   if (!footer) {
@@ -6912,7 +6942,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await expect.element(palette).toBeInTheDocument();
       await palette.getByText("Add project", { exact: true }).click();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");
@@ -7101,7 +7131,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       const palette = page.getByTestId("command-palette");
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/");
@@ -7164,7 +7194,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       const palette = page.getByTestId("command-palette");
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/Development/");
@@ -7224,7 +7254,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await page.getByTestId("sidebar-add-project-trigger").click();
 
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Desktop/fresh-project");
 
@@ -7304,7 +7334,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await page.getByTestId("sidebar-add-project-trigger").click();
 
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/codex/");
 
@@ -7403,6 +7433,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
         createdAt: NOW_ISO,
         lastConnectedAt: NOW_ISO,
       });
+      // Adding a saved environment wakes the real connection service. Let its
+      // missing-credential attempt settle before installing the connected
+      // runtime fixture; otherwise that background patch can replace the
+      // source-picker rows while the test is clicking one of them.
+      await vi.waitFor(
+        () => {
+          expect(
+            useSavedEnvironmentRuntimeStore.getState().byId[REMOTE_ENVIRONMENT_ID]?.authState,
+          ).toBe("requires-auth");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       useSavedEnvironmentRuntimeStore.getState().patch(REMOTE_ENVIRONMENT_ID, {
         connectionState: "connected",
         authState: "authenticated",
@@ -7435,15 +7477,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect
         .element(palette.getByText("This device", { exact: true }).first())
         .toBeInTheDocument();
-      await palette.getByText("Staging", { exact: true }).click();
-      // The palette re-renders its list when the environment pick commits the
-      // Sources view. Await the committed view and an attached action before
-      // clicking, or the click can land on a mid-transition node that detaches
-      // under it on a slow runner.
-      await expect.element(palette.getByText("Sources", { exact: true })).toBeInTheDocument();
-      const localFolderAction = palette.getByText("Local folder", { exact: true });
-      await expect.element(localFolderAction).toBeInTheDocument();
-      await localFolderAction.click();
+      await clickCommandPaletteAction("Staging");
+      await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/workspaces/");
@@ -7537,7 +7572,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       const palette = page.getByTestId("command-palette");
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
       const browseInput = palette.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await browseInput.fill("~/Applications/access");
 
@@ -7655,7 +7690,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await expect.element(palette).toBeInTheDocument();
       await palette.getByText("Add project", { exact: true }).click();
-      await palette.getByText("Local folder", { exact: true }).click();
+      await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");

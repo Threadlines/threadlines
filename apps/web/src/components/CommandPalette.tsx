@@ -1211,6 +1211,9 @@ function OpenCommandPaletteDialog() {
       }
 
       void refreshSourceControlDiscovery(target).then((discovery) => {
+        if (!discovery) {
+          return;
+        }
         setViewStack((previousViews) => {
           const currentTopView = previousViews.at(-1);
           if (currentTopView?.groups[0]?.value !== `sources:${environmentId}`) {
