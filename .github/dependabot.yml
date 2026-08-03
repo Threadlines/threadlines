@@ -24,6 +24,11 @@ updates:
       # (43.1.1 produced stale-tile strips at the sidebar boundary on
       # Windows). Bump manually and soak on real hardware first.
       - dependency-name: "electron"
+      # Playwright upgrades change private injected engine source that is
+      # vendored for the desktop preview. Bump both packages together and
+      # regenerate the checked-in artifacts with vendor:playwright.
+      - dependency-name: "playwright"
+      - dependency-name: "playwright-core"
       # effect core is patched (patches/effect@4.0.0-beta.97.patch and
       # patches/@effect__platform-node-shared@4.0.0-beta.97.patch), and the
       # effect beta packages must move in lockstep — bumping satellites alone
