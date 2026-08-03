@@ -1932,21 +1932,22 @@ async function waitForCommandPaletteInput(placeholder: string): Promise<HTMLInpu
 }
 
 async function clickCommandPaletteAction(label: string): Promise<void> {
-  const action = await waitForElement(() => {
+  await waitForElement(() => {
     const palette = document.querySelector('[data-testid="command-palette"]');
     if (!palette) return null;
-    return (
+    const action =
       Array.from(palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]')).find((item) =>
         Array.from(item.querySelectorAll("span")).some(
           (content) => content.textContent?.trim() === label,
         ),
-      ) ?? null
-    );
+      ) ?? null;
+    if (!action) return null;
+    action.click();
+    return action;
   }, `Command palette action "${label}" did not render.`);
   // Dispatch in the same browser task that located the row. Async palette
   // refreshes may replace result nodes between Playwright's actionability
   // checks even though the action itself remains continuously available.
-  action.click();
   await waitForLayout();
 }
 
