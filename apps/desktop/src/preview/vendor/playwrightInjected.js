@@ -2789,6 +2789,9 @@ function runPlugins(snapshot, plugins, options) {
 function isLeafGeneric(node) {
   return node.role === "generic" && node.children.every((child) => typeof child === "string");
 }
+function isClickTargetRoot(node, ctx) {
+  return !!node.ref && hasPointerCursor(node) && !ctx.ancestors.some((ancestor) => !!ancestor.ref && hasPointerCursor(ancestor));
+}
 var mergeStringChildren = {
   name: "mergeStringChildren",
   exit(node) {
@@ -2818,15 +2821,18 @@ var mergeStringChildren = {
 };
 var unwrapSingleChildGenerics = {
   name: "unwrapSingleChildGenerics",
-  exit(node) {
-    if (node.role === "generic" && !node.name && node.children.length <= 1 && node.children.every((child) => typeof child !== "string" && !!child.ref))
-      return "unwrap";
+  exit(node, ctx) {
+    if (node.role !== "generic" || node.name || node.children.length > 1 || !node.children.every((child) => typeof child !== "string" && !!child.ref))
+      return;
+    if (!node.children.length && isClickTargetRoot(node, ctx))
+      return;
+    return "unwrap";
   }
 };
 var removeNamelessImages = {
   name: "removeNamelessImages",
-  exit(node) {
-    if (node.role === "img" && !node.name && !node.children.length)
+  exit(node, ctx) {
+    if (node.role === "img" && !node.name && !node.children.length && !isClickTargetRoot(node, ctx))
       return "remove";
   }
 };
@@ -2865,8 +2871,11 @@ var removeNameRepeatingChild = {
       return;
     const singleTextChild = node.children.length === 1 && typeof node.children[0] === "string" ? node.children[0] : void 0;
     const text = node.name ? node.children.length ? void 0 : node.name : singleTextChild;
-    if (text && text === parent.name)
+    if (text && text === parent.name) {
+      if (node.ref)
+        ctx.pendingContentRefs.add(node.ref);
       return "remove";
+    }
   }
 };
 var inlineTextIntoGeneric = {
