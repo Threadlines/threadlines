@@ -401,9 +401,10 @@ describe("orchestration projector", () => {
     expect(next.threads).toEqual([]);
   });
 
-  it("tracks latest turn id from session lifecycle events", async () => {
+  it("tracks and settles the latest turn from session lifecycle events", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const startedAt = "2026-02-23T08:00:05.000Z";
+    const stoppedAt = "2026-02-23T08:00:10.000Z";
     const model = createEmptyReadModel(createdAt);
 
     const afterCreate = await Effect.runPromise(
@@ -465,6 +466,41 @@ describe("orchestration projector", () => {
     const thread = afterRunning.threads[0];
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
     expect(thread?.session?.status).toBe("running");
+
+    const afterStopped = await Effect.runPromise(
+      projectEvent(
+        afterRunning,
+        makeEvent({
+          sequence: 3,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: stoppedAt,
+          commandId: "cmd-stopped",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "stopped",
+              providerName: "codex",
+              providerSessionId: "session-1",
+              providerThreadId: "provider-thread-1",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: stoppedAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(afterStopped.threads[0]?.latestTurn).toMatchObject({
+      turnId: "turn-1",
+      state: "interrupted",
+      completedAt: stoppedAt,
+    });
+    expect(afterStopped.threads[0]?.session?.status).toBe("stopped");
   });
 
   it("updates canonical thread runtime mode from thread.runtime-mode-set", async () => {

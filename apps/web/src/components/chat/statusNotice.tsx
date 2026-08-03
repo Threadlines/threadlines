@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useState, type ReactNode } from "react";
 import { ActivityIcon, CircleAlertIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
 import { ensureLocalApi } from "../../localApi";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 export function useProviderStatusRefresh(instanceId: ProviderInstanceId | null): {
@@ -81,27 +82,50 @@ export function CompactStatusNoticeRow({
   message,
   errorText,
   actions,
+  tone = "warning",
 }: {
   title: string;
-  message: string;
-  errorText?: string | null;
+  message: ReactNode;
+  errorText?: ReactNode;
   actions: ReactNode;
+  tone?: "warning" | "error";
 }) {
   return (
     <div className="mx-auto w-full max-w-4xl px-4 pt-2 sm:px-0">
       <div
-        className="mx-auto flex max-w-2xl flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-warning/20 bg-warning/5 px-2.5 py-1.5 text-xs shadow-sm shadow-warning/5"
-        role="status"
+        className={cn(
+          "mx-auto flex max-w-2xl flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-xs shadow-sm",
+          tone === "error"
+            ? "border-destructive/20 bg-destructive/5 shadow-destructive/5"
+            : "border-warning/20 bg-warning/5 shadow-warning/5",
+        )}
+        data-status-notice-tone={tone}
+        role={tone === "error" ? "alert" : "status"}
       >
-        <CircleAlertIcon className="size-3.5 shrink-0 text-warning" aria-hidden="true" />
-        <div className="min-w-56 flex-1 leading-5">
-          <span className="font-medium text-foreground">{title}: </span>
-          <span className="text-muted-foreground">{message}</span>
+        <CircleAlertIcon
+          className={cn(
+            "size-3.5 shrink-0",
+            tone === "error" ? "text-destructive" : "text-warning",
+          )}
+          aria-hidden="true"
+        />
+        <div className="min-w-0 basis-56 flex-1">
+          <div className="line-clamp-2 leading-5">
+            <span className="font-medium text-foreground">{title}: </span>
+            <span className="text-muted-foreground">{message}</span>
+          </div>
           {errorText ? (
-            <span className="block text-[11px] text-warning-foreground/85">{errorText}</span>
+            <span
+              className={cn(
+                "block truncate text-[10px] leading-4",
+                tone === "error" ? "text-destructive/60" : "text-warning-foreground/85",
+              )}
+            >
+              {errorText}
+            </span>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1">{actions}</div>
+        <div className="ml-auto flex shrink-0 items-center gap-1">{actions}</div>
       </div>
     </div>
   );

@@ -23,6 +23,8 @@ describe("ThreadErrorBanner", () => {
     expect(markup).toContain("claude auth login");
     expect(markup).toContain("complete the browser sign-in");
     expect(markup).toContain("Sign in in terminal");
+    expect(markup).toContain('data-status-notice-tone="error"');
+    expect(markup).toContain('role="alert"');
   });
 
   it("renders a Codex usage reset action for usage-limit errors", () => {

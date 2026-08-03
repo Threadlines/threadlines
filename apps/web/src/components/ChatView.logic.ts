@@ -1463,6 +1463,18 @@ export interface ProviderAuthReconnectPrompt {
   readonly message: string;
 }
 
+export function shouldRenderThreadErrorBanner(input: {
+  readonly threadError: string | null | undefined;
+  readonly hasInlineProviderAuthError: boolean;
+}): boolean {
+  const threadError = input.threadError?.trim();
+  if (!threadError) {
+    return false;
+  }
+
+  return !(input.hasInlineProviderAuthError && isProviderAuthErrorMessage(threadError));
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

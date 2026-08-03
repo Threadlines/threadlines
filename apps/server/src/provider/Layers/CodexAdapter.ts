@@ -3052,7 +3052,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         );
       }
 
-      if (input.fromEnd || input.cursor !== undefined) {
+      // Legacy threads expose their stored turns through `thread/read`. The
+      // cursor API only exists for Codex's explicit paginated history mode;
+      // treating every newest-page read as paginated makes active legacy
+      // subagents look empty (or fail with method-not-found on older CLIs).
+      if (candidate.historyMode === "paginated" && (input.fromEnd || input.cursor !== undefined)) {
         const limit =
           input.limit !== undefined && input.limit > 0
             ? input.limit
@@ -3101,10 +3105,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)));
       return mapCodexSubagentTranscript(
         storedCandidate,
-        input.limit !== undefined || input.offset !== undefined
+        input.limit !== undefined || input.offset !== undefined || input.fromEnd
           ? {
               ...(input.limit !== undefined ? { limit: input.limit } : {}),
               ...(input.offset !== undefined ? { offset: input.offset } : {}),
+              ...(input.fromEnd ? { fromEnd: true } : {}),
             }
           : undefined,
       );

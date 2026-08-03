@@ -4113,6 +4113,20 @@ describe("deriveSubagentProgressState", () => {
         },
       }),
       makeActivity({
+        id: "native-agent-command",
+        createdAt: "2026-07-13T18:38:49.500Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          title: "Ran command",
+          sourceAgentThreadId: "agent-native-1",
+          data: { command: "rg implementation_review" },
+        },
+      }),
+      makeActivity({
         id: "synthetic-native-agent-result",
         createdAt: "2026-07-13T18:38:50.000Z",
         kind: "subagent.result",
@@ -4137,7 +4151,7 @@ describe("deriveSubagentProgressState", () => {
     ];
 
     const runningState = deriveSubagentProgressState({
-      activities: activities.slice(0, 3),
+      activities: activities.slice(0, 4),
       latestTurnId: TurnId.make("turn-1"),
       latestTurnSettled: false,
     });
@@ -4155,13 +4169,14 @@ describe("deriveSubagentProgressState", () => {
           role: "implementation_review",
           label: "Implementation review subagent",
           status: "running",
+          telemetry: expect.objectContaining({ step: "Running command" }),
         }),
       ],
     });
 
     expect(
       deriveSubagentProgressState({
-        activities: activities.slice(0, 3),
+        activities: activities.slice(0, 4),
         latestTurnId: TurnId.make("turn-2"),
         latestTurnSettled: false,
       }),

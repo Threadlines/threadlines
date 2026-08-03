@@ -65,6 +65,11 @@ export function SubagentInspector({
   const model = item.model ?? providerAgent?.model ?? null;
   const modelLabel = resolveSubagentModelLabel(providers, model);
   const hasModelMeta = Boolean(modelLabel ?? item.reasoningEffort);
+  // Codex's native spawn activity does not carry the prompt, but its stored
+  // child thread exposes that prompt as the provider description/preview.
+  const providerGoal = providerAgent?.description?.trim() || null;
+  const goal = details.goal ?? providerGoal;
+  const goalTitle = details.title ?? providerGoal ?? undefined;
   const metaParts = formatSubagentMetaParts(item, {
     context: details.context,
     elapsed: active
@@ -96,17 +101,17 @@ export function SubagentInspector({
                 {item.statusLabel}
               </span>
             </div>
-            {details.goal ? (
+            {goal ? (
               <button
                 type="button"
                 className="mt-1 block w-full text-left text-[12px] leading-4 text-foreground/85"
                 aria-expanded={goalExpanded}
-                title={details.title ?? details.goal}
+                title={goalTitle}
                 onClick={() => setGoalExpanded((value) => !value)}
                 data-subagent-inspector-goal="true"
               >
                 <span className={cn("block", goalExpanded ? undefined : "line-clamp-2")}>
-                  {details.goal}
+                  {goal}
                 </span>
               </button>
             ) : null}

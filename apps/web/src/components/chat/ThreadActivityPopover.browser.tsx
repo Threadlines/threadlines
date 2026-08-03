@@ -471,6 +471,10 @@ describe("ThreadActivityPopover", () => {
           },
         ],
         truncated: false,
+        agent: {
+          id: "agent-live",
+          description: "Follow the live transcript",
+        },
         offset: 0,
         totalEntries: 1,
       };
@@ -484,7 +488,7 @@ describe("ThreadActivityPopover", () => {
           turnId: null,
           label: "Live subagent",
           role: "research",
-          objective: "Follow the live transcript",
+          objective: null,
           status: "running",
           statusLabel: "Running",
           model: "gpt-5.6",
@@ -525,6 +529,7 @@ describe("ThreadActivityPopover", () => {
       await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
       await page.getByRole("button", { name: "Inspect Research transcript" }).click();
       await expect.element(page.getByText("Initial transcript output")).toBeVisible();
+      await expect.element(page.getByText("Follow the live transcript")).toBeVisible();
       await expect.element(page.getByText("Following live")).toBeVisible();
       await expect.element(page.getByText("Refreshed transcript output")).toBeVisible();
       expect(transcriptRpcMock.mock.calls.length).toBeGreaterThanOrEqual(2);

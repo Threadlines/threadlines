@@ -2739,7 +2739,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens chat changed-file diffs with the source control return affordance", async () => {
+  it("opens the whole chat turn diff with the source control return affordance", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithChangedFileSummary(),
@@ -2784,8 +2784,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
             diff: "1",
             sourceControlReturn: "1",
             diffTurnId: "turn-chat-diff",
-            diffFilePath: "apps/web/src/components/DiffPanel.tsx",
           });
+          expect(mounted.router.state.location.search).not.toHaveProperty("diffFilePath");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -8632,8 +8632,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("edits a user prompt into a new branch while preserving its attachments and skills", async () => {
+  it("edits a user prompt from a stopped stale turn while preserving attachments and skills", async () => {
     const sourceMessageId = "msg-user-edit-and-branch" as MessageId;
+    const staleTurnId = "turn-stale-edit-and-branch" as TurnId;
     const baseSnapshot = createSnapshotForTargetUser({
       targetMessageId: sourceMessageId,
       targetText: "Original prompt for branching.",
@@ -8651,6 +8652,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
         thread.id === THREAD_ID
           ? {
               ...thread,
+              latestTurn: {
+                turnId: staleTurnId,
+                state: "running",
+                requestedAt: NOW_ISO,
+                startedAt: NOW_ISO,
+                completedAt: null,
+                assistantMessageId: null,
+              },
               messages: [
                 {
                   ...sourceMessage,
@@ -8662,6 +8671,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
                   ],
                 },
               ],
+              session: thread.session
+                ? {
+                    ...thread.session,
+                    status: "stopped",
+                    activeTurnId: null,
+                  }
+                : null,
             }
           : thread,
       ),

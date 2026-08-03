@@ -204,6 +204,33 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         expect(whitespaceIgnoredDiff).not.toContain("+          <h1>Title</h1>");
       }),
     );
+
+    it.effect("restricts checkpoint diffs to literal attributed file paths", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-attributed-paths");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+        yield* writeTextFile(path.join(tmp, "README.md"), "# attributed\n");
+        yield* writeTextFile(path.join(tmp, "foreign.txt"), "unrelated session\n");
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: true,
+          filePaths: ["README.md"],
+        });
+
+        expect(diff).toContain("diff --git a/README.md b/README.md");
+        expect(diff).not.toContain("foreign.txt");
+      }),
+    );
   });
 
   describe("selective revert operations", () => {

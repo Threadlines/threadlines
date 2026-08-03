@@ -463,9 +463,6 @@ function actionDisabledReason(input: {
     if (status.refName === null) {
       return "Detached HEAD.";
     }
-    if (status.aheadCount > 0 && status.behindCount > 0) {
-      return "Resolve branch divergence first.";
-    }
     if (status.hasWorkingTreeChanges) {
       if (
         status.workingTree.files.some(
@@ -473,6 +470,9 @@ function actionDisabledReason(input: {
         )
       ) {
         return "Resolve merge conflicts first.";
+      }
+      if (status.aheadCount > 0 && status.behindCount > 0) {
+        return "Commit or stash changes before resolving branch divergence.";
       }
     }
     return status.behindCount > 0 ? null : "Branch is up to date.";
@@ -2462,6 +2462,7 @@ export function SourceControlPanel({
       : EMPTY_DIRECTORY_EXPANSION_OVERRIDES;
   const changedFileCount = changedFiles.length;
   const stashes = stashesQuery.data?.stashes ?? [];
+  const hasBranchDivergence = Boolean(status && status.aheadCount > 0 && status.behindCount > 0);
   const shouldProtectChangesBeforePull = Boolean(
     status?.hasWorkingTreeChanges && status.behindCount > 0 && status.aheadCount === 0,
   );
@@ -2772,7 +2773,9 @@ export function SourceControlPanel({
             ? "Updating from rewritten upstream..."
             : options?.stashLocalChanges
               ? "Stashing, pulling, and restoring..."
-              : "Pulling...",
+              : hasBranchDivergence
+                ? "Checking branch history..."
+                : "Pulling...",
           data: threadToastData,
         },
         success: (result) => {
@@ -2799,8 +2802,8 @@ export function SourceControlPanel({
                     data: threadToastData,
                   }
                 : {
-                    title: "Pull needs confirmation",
-                    description: `The history for ${result.upstreamRef} changed upstream.`,
+                    title: "Branch history needs review",
+                    description: `Review ${result.refName} against ${result.upstreamRef} before updating.`,
                     data: threadToastData,
                   };
             case "reconciled":
@@ -2926,6 +2929,7 @@ export function SourceControlPanel({
     [
       cwd,
       environmentId,
+      hasBranchDivergence,
       isParentRepositoryConfirmationRequired,
       pullMutation,
       refreshPanel,
@@ -4662,7 +4666,13 @@ export function SourceControlPanel({
             </div>
             <div className="grid grid-cols-2 gap-1.5">
               <ActionButton
-                label={shouldProtectChangesBeforePull ? "Stash & pull" : "Pull"}
+                label={
+                  hasBranchDivergence
+                    ? "Resolve"
+                    : shouldProtectChangesBeforePull
+                      ? "Stash & pull"
+                      : "Pull"
+                }
                 icon={<DownloadIcon className="size-3" />}
                 disabledReason={pullDisabledReason}
                 onClick={runPull}
@@ -5398,43 +5408,40 @@ export function SourceControlPanel({
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <TriangleAlertIcon className="size-4 text-amber-500" />
-              Upstream history changed
+              Branch histories are unrelated
             </AlertDialogTitle>
             <AlertDialogDescription>
               {activeHistoryReconciliation ? (
                 <span className="space-y-2">
                   <span className="block">
-                    Pull detected that{" "}
                     <span className="font-mono">
                       {activeHistoryReconciliation.result.upstreamRef}
                     </span>{" "}
                     no longer shares commit history with your local{" "}
                     <span className="font-mono">{activeHistoryReconciliation.result.refName}</span>.
+                    This usually means the upstream branch was force-pushed or recreated.
                   </span>
                   {activeHistoryReconciliation.result.equivalentUpstreamCommitSha ? (
                     <span className="block">
-                      Git found your current file snapshot in the rewritten upstream at{" "}
+                      Threadlines found your current file snapshot in the rewritten upstream at{" "}
                       <span className="font-mono">
                         {activeHistoryReconciliation.result.equivalentUpstreamCommitSha.slice(
                           0,
                           12,
                         )}
                       </span>
-                      . Threadlines can keep your current HEAD under a local recovery ref, then
-                      update the branch to the rewritten upstream.
+                      . It can save your local HEAD under a recovery ref, then update the branch to
+                      the rewritten upstream.
                     </span>
                   ) : (
                     <span className="block">
-                      Git could not find your current file snapshot in the rewritten upstream.
-                      Continuing will keep your current HEAD under a local recovery ref, then
-                      replace the branch with the upstream version. Review or recover the saved
-                      history if it contained local work you still need.
+                      Threadlines could not match your current file snapshot in the rewritten
+                      upstream. Continuing saves your current HEAD under a recovery ref, then
+                      replaces the local branch with the upstream version.
                     </span>
                   )}
                   <span className="block">
-                    The recovery ref preserves the old history locally and is not pushed. Do not
-                    push it. If the old history must be removed from this machine, verify the
-                    upstream and use a fresh clone.
+                    The backup stays local and is never pushed automatically.
                   </span>
                 </span>
               ) : null}
@@ -5470,7 +5477,7 @@ export function SourceControlPanel({
                 });
               }}
             >
-              Back up &amp; use upstream
+              Back up local &amp; use upstream
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

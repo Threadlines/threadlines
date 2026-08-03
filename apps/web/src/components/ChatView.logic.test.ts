@@ -43,6 +43,7 @@ import {
   resolveSendEnvMode,
   shouldConfirmTerminalKill,
   shouldOfferFailedTurnRetry,
+  shouldRenderThreadErrorBanner,
   shouldRefreshThreadDetailAfterEventLoopStall,
   shouldWriteThreadErrorToCurrentServerThread,
   THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
@@ -511,6 +512,36 @@ describe("deriveProviderAuthReconnectPrompt", () => {
         threadError: "Sandbox setup failed",
       }),
     ).toBeNull();
+  });
+});
+
+describe("shouldRenderThreadErrorBanner", () => {
+  it("hides provider authentication errors already rendered in the timeline", () => {
+    expect(
+      shouldRenderThreadErrorBanner({
+        threadError:
+          "Your access token could not be refreshed because your refresh token was revoked.",
+        hasInlineProviderAuthError: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps provider authentication errors as a fallback when no inline recovery is visible", () => {
+    expect(
+      shouldRenderThreadErrorBanner({
+        threadError: "Not logged in. Run `codex login` in a terminal, then retry.",
+        hasInlineProviderAuthError: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps unrelated thread errors visible even when the timeline contains an auth error", () => {
+    expect(
+      shouldRenderThreadErrorBanner({
+        threadError: "Could not stop the background process.",
+        hasInlineProviderAuthError: true,
+      }),
+    ).toBe(true);
   });
 });
 

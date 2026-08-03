@@ -154,15 +154,37 @@ const make = Effect.gen(function* () {
           ? preTurnCheckpointRef
           : fromCheckpointRef;
 
-      const diff = yield* checkpointStore
-        .diffCheckpoints({
-          cwd: workspaceCwd,
-          fromCheckpointRef: effectiveFromCheckpointRef,
-          toCheckpointRef: toCheckpoint.checkpointRef,
-          fallbackFromToHead: false,
-          ignoreWhitespace,
-        })
-        .pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
+      // Checkpoint refs capture the whole checkout. In a shared checkout that
+      // can include writes from other concurrent threads, while checkpoint
+      // metadata retains the paths attributed to this thread. Scope the patch
+      // to that attribution so a turn diff cannot expose unrelated changes.
+      const attributedFilePaths = [
+        ...new Set(
+          threadContext.value.checkpoints
+            .filter(
+              (checkpoint) =>
+                checkpoint.checkpointTurnCount > input.fromTurnCount &&
+                checkpoint.checkpointTurnCount <= input.toTurnCount,
+            )
+            .flatMap((checkpoint) =>
+              checkpoint.files.map((file) => file.path.replaceAll("\\", "/")),
+            ),
+        ),
+      ];
+
+      const diff =
+        attributedFilePaths.length === 0
+          ? ""
+          : yield* checkpointStore
+              .diffCheckpoints({
+                cwd: workspaceCwd,
+                fromCheckpointRef: effectiveFromCheckpointRef,
+                toCheckpointRef: toCheckpoint.checkpointRef,
+                fallbackFromToHead: false,
+                ignoreWhitespace,
+                filePaths: attributedFilePaths,
+              })
+              .pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
 
       const turnDiff = buildTurnDiffResult(input, diff);
       if (!isTurnDiffResult(turnDiff)) {

@@ -1328,6 +1328,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "checkpoint.to_ref": input.toCheckpointRef,
         "checkpoint.ignore_whitespace": input.ignoreWhitespace,
         "checkpoint.fallback_from_to_head": input.fallbackFromToHead,
+        "checkpoint.file_path_count": input.filePaths?.length,
       });
 
       let fromRevision: string = input.fromCheckpointRef;
@@ -1365,6 +1366,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
           `${fromRevision}^{commit}`,
           `${input.toCheckpointRef}^{commit}`,
+          ...(input.filePaths === undefined ? [] : ["--", ...input.filePaths.map(literalPathspec)]),
         ],
         allowNonZeroExit: true,
         maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,

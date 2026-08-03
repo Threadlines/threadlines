@@ -202,10 +202,12 @@ function makeStoredThread(input: {
   readonly parentThreadId: string;
   readonly items?: ReadonlyArray<unknown>;
   readonly startedAt?: number;
+  readonly historyMode?: "legacy" | "paginated";
 }): EffectCodexSchema.V2ThreadReadResponse["thread"] {
   return {
     id: input.id,
     parentThreadId: input.parentThreadId,
+    historyMode: input.historyMode ?? "legacy",
     source: {
       subAgent: {
         thread_spawn: {
@@ -697,6 +699,15 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
       });
       const runtime = transcriptRuntimeFactory.lastRuntime;
       assert.ok(runtime);
+      runtime.readStoredThreadMetadataImpl.mockImplementation((providerThreadId: string) =>
+        Promise.resolve(
+          makeStoredThread({
+            id: providerThreadId,
+            parentThreadId: "provider-thread-1",
+            historyMode: "paginated",
+          }),
+        ),
+      );
       runtime.readStoredThreadItemsImpl.mockImplementation((input) =>
         Promise.resolve(
           input.cursor === "page-2"
@@ -775,6 +786,61 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
           },
         ],
       ]);
+    }),
+  );
+
+  it.effect("reads the newest legacy transcript entries from stored turns", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-transcript-legacy-newest");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = transcriptRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.readStoredThreadImpl.mockImplementation((providerThreadId: string) =>
+        Promise.resolve(
+          makeStoredThread({
+            id: providerThreadId,
+            parentThreadId: "provider-thread-1",
+            items: [
+              {
+                id: "child-user-1",
+                type: "userMessage",
+                content: [{ type: "text", text: "Task" }],
+              },
+              { id: "child-answer-1", type: "agentMessage", text: "Latest answer" },
+            ],
+          }),
+        ),
+      );
+
+      const readSubagentTranscript = adapter.readSubagentTranscript;
+      assert.ok(readSubagentTranscript);
+      const result = yield* readSubagentTranscript(threadId, {
+        threadId,
+        agentId: "child-provider-thread",
+        limit: 1,
+        fromEnd: true,
+      });
+
+      assert.deepStrictEqual(result, {
+        entries: [
+          {
+            role: "assistant",
+            text: "Latest answer",
+            toolUses: [],
+          },
+        ],
+        truncated: true,
+        agent: { id: "child-provider-thread" },
+        offset: 1,
+        totalEntries: 2,
+      });
+      assert.deepStrictEqual(runtime.readStoredThreadImpl.mock.calls, [["child-provider-thread"]]);
+      assert.equal(runtime.readStoredThreadItemsImpl.mock.calls.length, 0);
     }),
   );
 

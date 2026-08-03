@@ -3855,7 +3855,7 @@ function AssistantChangedFilesSectionInner({
             size="xs"
             variant="outline"
             data-scroll-anchor-ignore
-            onClick={() => onOpenTurnDiff(turnSummary.turnId, checkpointFiles[0]?.path)}
+            onClick={() => onOpenTurnDiff(turnSummary.turnId)}
           >
             View turn diff
           </Button>

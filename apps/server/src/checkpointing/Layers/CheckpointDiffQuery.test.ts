@@ -1,4 +1,10 @@
-import { CheckpointRef, ProjectId, ThreadId, TurnId } from "@threadlines/contracts";
+import {
+  CheckpointRef,
+  type OrchestrationCheckpointFile,
+  ProjectId,
+  ThreadId,
+  TurnId,
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -26,6 +32,7 @@ function makeThreadCheckpointContext(input: {
   readonly checkpointTurnCount: number;
   readonly checkpointRef: CheckpointRef;
   readonly turnId?: TurnId;
+  readonly files?: ReadonlyArray<OrchestrationCheckpointFile>;
 }): ProjectionThreadCheckpointContext {
   return {
     threadId: input.threadId,
@@ -38,7 +45,14 @@ function makeThreadCheckpointContext(input: {
         checkpointTurnCount: input.checkpointTurnCount,
         checkpointRef: input.checkpointRef,
         status: "ready",
-        files: [],
+        files: input.files ?? [
+          {
+            path: "README.md",
+            kind: "modified",
+            additions: 1,
+            deletions: 1,
+          },
+        ],
         assistantMessageId: null,
         completedAt: "2026-01-01T00:00:00.000Z",
       },
@@ -153,6 +167,7 @@ describe("CheckpointDiffQueryLive", () => {
       readonly toCheckpointRef: CheckpointRef;
       readonly cwd: string;
       readonly ignoreWhitespace: boolean;
+      readonly filePaths: ReadonlyArray<string> | undefined;
     }> = [];
 
     const threadCheckpointContext = makeThreadCheckpointContext({
@@ -165,13 +180,14 @@ describe("CheckpointDiffQueryLive", () => {
     });
 
     const checkpointStore = makeCheckpointStoreStub({
-      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace }) =>
+      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace, filePaths }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
             fromCheckpointRef,
             toCheckpointRef,
             cwd,
             ignoreWhitespace,
+            filePaths,
           });
           return "diff patch";
         }),
@@ -223,6 +239,7 @@ describe("CheckpointDiffQueryLive", () => {
         fromCheckpointRef: expectedFromRef,
         toCheckpointRef,
         ignoreWhitespace: true,
+        filePaths: ["README.md"],
       },
     ]);
     expect(result).toEqual({
@@ -271,7 +288,14 @@ describe("CheckpointDiffQueryLive", () => {
           checkpointTurnCount: 2,
           checkpointRef: toCheckpointRef,
           status: "ready" as const,
-          files: [],
+          files: [
+            {
+              path: "src/pre-turn.ts",
+              kind: "modified",
+              additions: 1,
+              deletions: 0,
+            },
+          ],
           assistantMessageId: null,
           completedAt: "2026-01-01T00:01:00.000Z",
         },

@@ -1176,7 +1176,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.session-set": {
           const turnId = event.payload.session.activeTurnId;
           if (turnId === null || event.payload.session.status !== "running") {
-            if (event.payload.session.status === "interrupted") {
+            // A terminal session cannot still own a running turn. Treat an
+            // explicit stop the same as an interrupt so stale provider state
+            // cannot leave the thread permanently blocked after the runtime
+            // is gone. Ready sessions remain untouched because they can be a
+            // transient signal while provider events are still being ingested.
+            if (
+              event.payload.session.status === "interrupted" ||
+              event.payload.session.status === "stopped"
+            ) {
               const threadRow = yield* projectionThreadRepository.getById({
                 threadId: event.payload.threadId,
               });

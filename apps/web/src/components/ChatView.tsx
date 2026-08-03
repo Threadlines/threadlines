@@ -30,6 +30,7 @@ import {
   scopeThreadRef,
 } from "@threadlines/client-runtime";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
+import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -229,6 +230,7 @@ import {
   hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
   isScrollMetricsAtEnd,
+  shouldRenderThreadErrorBanner,
   scrollMetricsDistanceFromEnd,
   deriveTimelineScrolledFarFromEnd,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -2484,7 +2486,19 @@ export default function ChatView(props: ChatViewProps) {
   const providerStatusBannerVisible = shouldRenderProviderStatusBanner(activeProviderStatus, {
     activeTurnInProgress,
   });
-  const threadErrorBannerVisible = Boolean(activeThread?.error);
+  const hasInlineProviderAuthError = useMemo(
+    () =>
+      providerAuthReconnectPrompt !== null &&
+      (workLogEntries.some((entry) => entry.authReconnect !== undefined) ||
+        timelineMessages.some(
+          (message) => message.role === "assistant" && isProviderAuthErrorMessage(message.text),
+        )),
+    [providerAuthReconnectPrompt, timelineMessages, workLogEntries],
+  );
+  const threadErrorBannerVisible = shouldRenderThreadErrorBanner({
+    threadError: activeThread?.error,
+    hasInlineProviderAuthError,
+  });
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot =
@@ -5438,7 +5452,7 @@ export default function ChatView(props: ChatViewProps) {
       if (
         !activeThread ||
         !isServerThread ||
-        activeTurnInProgress ||
+        isWorking ||
         isSendBusy ||
         isConnecting ||
         activeEnvironmentUnavailable ||
@@ -5476,10 +5490,10 @@ export default function ChatView(props: ChatViewProps) {
     [
       activeEnvironmentUnavailable,
       activeThread,
-      activeTurnInProgress,
       isConnecting,
       isSendBusy,
       isServerThread,
+      isWorking,
       resolveInitialForkModelSelection,
     ],
   );
@@ -6165,7 +6179,7 @@ export default function ChatView(props: ChatViewProps) {
         providerStatus={activeProviderStatus}
       />
       <ThreadErrorBanner
-        error={activeThread.error}
+        error={threadErrorBannerVisible ? activeThread.error : null}
         authReconnect={providerAuthReconnectPrompt}
         usageReset={threadErrorUsageResetAction}
         retry={threadErrorRetryAction}

@@ -29,6 +29,8 @@ export interface VcsDiffCheckpointsInput {
   readonly toCheckpointRef: CheckpointRef;
   readonly fallbackFromToHead?: boolean;
   readonly ignoreWhitespace: boolean;
+  /** Repository-root-relative paths to include. Undefined includes every path. */
+  readonly filePaths?: ReadonlyArray<string>;
 }
 
 export interface VcsDeleteCheckpointRefsInput {

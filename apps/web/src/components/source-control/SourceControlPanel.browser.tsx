@@ -812,20 +812,22 @@ describe("SourceControlPanel changes", () => {
       return result;
     });
     const mounted = await renderPanel({
-      status: makeStatus({ behindCount: 1 }),
+      status: makeStatus({ aheadCount: 18, behindCount: 35 }),
       environmentApi: makeEnvironmentApi({ vcs: { pull } }),
     });
 
     try {
-      await page.getByRole("button", { name: "Pull" }).click();
+      const resolveButton = page.getByRole("button", { name: "Resolve" });
+      await expect.element(resolveButton).toBeEnabled();
+      await resolveButton.click();
 
-      await expect.element(page.getByText("Upstream history changed")).toBeInTheDocument();
+      await expect.element(page.getByText("Branch histories are unrelated")).toBeInTheDocument();
       await expect
-        .element(page.getByText(/Git found your current file snapshot/))
+        .element(page.getByText(/Threadlines found your current file snapshot/))
         .toBeInTheDocument();
       await expect.element(page.getByText(/333333333333/)).toBeInTheDocument();
 
-      await page.getByRole("button", { name: "Back up & use upstream" }).click();
+      await page.getByRole("button", { name: "Back up local & use upstream" }).click();
 
       await vi.waitFor(() => {
         expect(pull).toHaveBeenCalledTimes(2);
@@ -839,7 +841,9 @@ describe("SourceControlPanel changes", () => {
           },
         });
       });
-      await expect.element(page.getByText("Upstream history changed")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByText("Branch histories are unrelated"))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
@@ -855,24 +859,47 @@ describe("SourceControlPanel changes", () => {
       equivalentUpstreamCommitSha: null,
     }));
     const mounted = await renderPanel({
-      status: makeStatus({ behindCount: 1 }),
+      status: makeStatus({ aheadCount: 2, behindCount: 3 }),
       environmentApi: makeEnvironmentApi({ vcs: { pull } }),
     });
 
     try {
-      await page.getByRole("button", { name: "Pull" }).click();
+      await page.getByRole("button", { name: "Resolve" }).click();
 
       await expect
-        .element(page.getByText(/Git could not find your current file snapshot/))
+        .element(page.getByText(/Threadlines could not match your current file snapshot/))
         .toBeInTheDocument();
-      await expect
-        .element(page.getByText(/recovery ref preserves the old history locally/))
-        .toBeInTheDocument();
+      await expect.element(page.getByText(/backup stays local/i)).toBeInTheDocument();
 
       await page.getByRole("button", { name: "Cancel" }).click();
 
-      await expect.element(page.getByText("Upstream history changed")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByText("Branch histories are unrelated"))
+        .not.toBeInTheDocument();
       expect(pull).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("requires a clean working tree before resolving known divergence", async () => {
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "skipped_up_to_date" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+    }));
+    const mounted = await renderPanel({
+      status: makeStatus({
+        aheadCount: 1,
+        behindCount: 1,
+        hasWorkingTreeChanges: true,
+      }),
+      environmentApi: makeEnvironmentApi({ vcs: { pull } }),
+    });
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Resolve" })).toBeDisabled();
+      expect(pull).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
     }
@@ -953,9 +980,11 @@ describe("SourceControlPanel changes", () => {
       });
 
       await expect.element(page.getByRole("button", { name: "Pull" })).toBeEnabled();
-      await expect.element(page.getByText("Upstream history changed")).not.toBeInTheDocument();
       await expect
-        .element(page.getByRole("button", { name: "Back up & use upstream" }))
+        .element(page.getByText("Branch histories are unrelated"))
+        .not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Back up local & use upstream" }))
         .not.toBeInTheDocument();
       expect(pullFromFirstCheckout).toHaveBeenCalledTimes(1);
       expect(pullFromSecondCheckout).not.toHaveBeenCalled();

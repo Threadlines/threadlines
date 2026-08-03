@@ -971,6 +971,7 @@ function collectSubagentActivityRecords(
   // agent id. They arrive on their own activities, so they are collected up
   // front and merged into the record the spawning tool call builds.
   const telemetryByToolUseId = new Map<string, SubagentTelemetry>();
+  const activityTelemetryByAgentId = collectSubagentActivityTelemetry(sortedActivities);
   const taskIdByToolUseId = new Map<string, string>();
   const toolUseIdByTaskId = new Map<string, string>();
   for (const activity of sortedActivities) {
@@ -1156,9 +1157,14 @@ function collectSubagentActivityRecords(
         reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
         liveBody,
         liveBodyUpdatedAt,
-        // Claude keys task telemetry by the spawning tool call, which is also
-        // this record's id. Codex reports no task stream and stays null.
-        telemetry: telemetryByToolUseId.get(agentId) ?? previous?.telemetry ?? null,
+        // Claude supplies a dedicated task stream. Codex child work arrives as
+        // ordinary activities tagged with the child thread id, so fold those
+        // into the same compact live-step shape.
+        telemetry:
+          telemetryByToolUseId.get(agentId) ??
+          activityTelemetryByAgentId.get(agentId) ??
+          previous?.telemetry ??
+          null,
         createdAt: previous?.createdAt ?? activity.createdAt,
         updatedAt: activity.createdAt,
         resultActivityId,
@@ -1179,6 +1185,43 @@ function collectSubagentActivityRecords(
       const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
       return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
     });
+}
+
+function collectSubagentActivityTelemetry(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<string, SubagentTelemetry> {
+  const byAgentId = new Map<string, SubagentTelemetry>();
+  const attributedActivities = activities.filter((activity) => {
+    const payload = asRecord(activity.payload);
+    const data = asRecord(payload?.data);
+    return Boolean(
+      asTrimmedString(payload?.sourceAgentThreadId) ?? asTrimmedString(data?.sourceAgentThreadId),
+    );
+  });
+  for (const entry of deriveWorkLogEntries(attributedActivities)) {
+    const agentId = entry.subagentTask?.toolUseId;
+    if (!agentId) {
+      continue;
+    }
+    const runningStep =
+      entry.executionState === "running"
+        ? entry.itemType === "command_execution"
+          ? "Running command"
+          : entry.itemType === "file_change"
+            ? "Editing files"
+            : entry.itemType === "web_search"
+              ? "Searching the web"
+              : null
+        : null;
+    byAgentId.set(agentId, {
+      step: (runningStep ?? entry.label.trim()) || null,
+      lastToolName: entry.toolTitle?.trim() || null,
+      totalTokens: null,
+      toolUses: null,
+      durationMs: null,
+    });
+  }
+  return byAgentId;
 }
 
 /** Folds one task activity into the running telemetry for an agent. Counters

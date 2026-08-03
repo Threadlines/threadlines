@@ -591,7 +591,8 @@ export function projectEvent(
                         ? thread.latestTurn.assistantMessageId
                         : null,
                   }
-                : session.status === "interrupted" && thread.latestTurn?.state === "running"
+                : (session.status === "interrupted" || session.status === "stopped") &&
+                    thread.latestTurn?.state === "running"
                   ? {
                       ...thread.latestTurn,
                       state: "interrupted",
