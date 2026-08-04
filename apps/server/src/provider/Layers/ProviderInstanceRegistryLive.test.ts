@@ -70,6 +70,9 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   customModels: [],
   fallbackModel: [],
   launchArgs: "",
+  maxConcurrentSubagents: "",
+  maxSubagentsPerSession: "",
+  maxSubagentSpawnDepth: "",
   ...overrides,
 });
 
