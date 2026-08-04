@@ -291,6 +291,48 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("preserves staged and unstaged stats when one path has both", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "README.md", "# test\n\nstaged\n");
+        yield* git(cwd, ["add", "README.md"]);
+        // Restore the worktree to HEAD while leaving the staged insertion in
+        // the index. The two changes cancel in `git diff HEAD`, so this case
+        // must use the exact split fallback.
+        yield* writeTextFile(cwd, "README.md", "# test\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+        const readme = status.workingTree.files.find((file) => file.path === "README.md");
+
+        assert.equal(readme?.stagedInsertions, 2);
+        assert.equal(readme?.stagedDeletions, 0);
+        assert.equal(readme?.unstagedInsertions, 0);
+        assert.equal(readme?.unstagedDeletions, 2);
+        assert.equal(readme?.insertions, 2);
+        assert.equal(readme?.deletions, 2);
+      }),
+    );
+
+    it.effect("reports staged stats on an unborn branch", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+        yield* writeTextFile(cwd, "first.txt", "first\nsecond\n");
+        yield* git(cwd, ["add", "first.txt"]);
+
+        const status = yield* driver.statusDetails(cwd);
+        const first = status.workingTree.files.find((file) => file.path === "first.txt");
+
+        assert.equal(status.headSha, null);
+        assert.equal(first?.stagedInsertions, 2);
+        assert.equal(first?.stagedDeletions, 0);
+        assert.equal(first?.unstagedInsertions, 0);
+        assert.equal(first?.unstagedDeletions, 0);
+      }),
+    );
+
     it.effect("reports nested untracked files individually with text insertion counts", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -662,6 +704,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         });
 
         assert.equal(result.branch, current);
+      }),
+    );
+
+    it.effect("shares ref snapshots until an explicit refresh or ref mutation", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* driver.listRefs({ cwd, refresh: true });
+        yield* git(cwd, ["branch", "external-before-mutation"]);
+
+        const cached = yield* driver.listRefs({ cwd });
+        assert.isUndefined(cached.refs.find((ref) => ref.name === "external-before-mutation"));
+
+        yield* driver.createRef({ cwd, refName: "driver-created" });
+        const afterMutation = yield* driver.listRefs({ cwd });
+        assert.isDefined(afterMutation.refs.find((ref) => ref.name === "external-before-mutation"));
+        assert.isDefined(afterMutation.refs.find((ref) => ref.name === "driver-created"));
+
+        yield* git(cwd, ["branch", "external-before-refresh"]);
+        const stillCached = yield* driver.listRefs({ cwd });
+        assert.isUndefined(stillCached.refs.find((ref) => ref.name === "external-before-refresh"));
+
+        const refreshed = yield* driver.listRefs({ cwd, refresh: true });
+        assert.isDefined(refreshed.refs.find((ref) => ref.name === "external-before-refresh"));
       }),
     );
 

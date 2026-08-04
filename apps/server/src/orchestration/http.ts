@@ -2,7 +2,7 @@ import {
   ClientOrchestrationCommand,
   OrchestrationDispatchCommandError,
   OrchestrationGetSnapshotError,
-  type OrchestrationReadModel,
+  type OrchestrationProjectCatalogSnapshot,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -39,22 +39,22 @@ const authenticateOwnerSession = Effect.gen(function* () {
   return session;
 });
 
-export const orchestrationSnapshotRouteLayer = HttpRouter.add(
+export const orchestrationProjectCatalogRouteLayer = HttpRouter.add(
   "GET",
-  "/api/orchestration/snapshot",
+  "/api/orchestration/projects",
   Effect.gen(function* () {
     yield* authenticateOwnerSession;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-    const snapshot = yield* projectionSnapshotQuery.getSnapshot().pipe(
+    const snapshot = yield* projectionSnapshotQuery.getProjectCatalog().pipe(
       Effect.mapError(
         (cause) =>
           new OrchestrationGetSnapshotError({
-            message: "Failed to load orchestration snapshot.",
+            message: "Failed to load orchestration project catalog.",
             cause,
           }),
       ),
     );
-    return HttpServerResponse.jsonUnsafe(snapshot satisfies OrchestrationReadModel, {
+    return HttpServerResponse.jsonUnsafe(snapshot satisfies OrchestrationProjectCatalogSnapshot, {
       status: 200,
     });
   }).pipe(

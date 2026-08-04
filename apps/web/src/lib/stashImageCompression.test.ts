@@ -131,6 +131,40 @@ describe("compressImageForStash", () => {
     expect(close).toHaveBeenCalled();
   });
 
+  it("does not base64-expand source or encoded blobs already over budget", async () => {
+    const file = makeFile(100);
+    const sourceArrayBuffer = vi.spyOn(file, "arrayBuffer");
+    const encodedArrayBuffers: Array<ReturnType<typeof vi.fn>> = [];
+    const close = vi.fn();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 100, height: 100, close })),
+    );
+    vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        getContext() {
+          return { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn() };
+        }
+        async convertToBlob({ type }: { type: string }) {
+          const arrayBuffer = vi.fn(async () => new Uint8Array(100).buffer);
+          encodedArrayBuffers.push(arrayBuffer);
+          return { type, size: 100, arrayBuffer } as unknown as Blob;
+        }
+      },
+    );
+
+    expect(await compressImageForStash(file, 32)).toEqual({
+      ok: false,
+      reason: "too-large",
+    });
+    expect(sourceArrayBuffer).not.toHaveBeenCalled();
+    expect(encodedArrayBuffers.length).toBeGreaterThan(0);
+    expect(encodedArrayBuffers.every((arrayBuffer) => arrayBuffer.mock.calls.length === 0)).toBe(
+      true,
+    );
+  });
+
   it("reports too-large for an oversized image when the browser cannot re-encode", async () => {
     vi.stubGlobal("createImageBitmap", undefined);
     vi.stubGlobal("OffscreenCanvas", undefined);
@@ -212,8 +246,11 @@ describe("readFileForStash", () => {
   });
 
   it("reports too-large rather than lossily shrinking a file it cannot re-encode", async () => {
-    const result = await readFileForStash(makeFile(4_000_000, "application/pdf", "huge.pdf"));
+    const file = makeFile(4_000_000, "application/pdf", "huge.pdf");
+    const arrayBuffer = vi.spyOn(file, "arrayBuffer");
+    const result = await readFileForStash(file);
 
     expect(result).toEqual({ ok: false, reason: "too-large" });
+    expect(arrayBuffer).not.toHaveBeenCalled();
   });
 });

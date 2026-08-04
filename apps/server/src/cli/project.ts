@@ -1,6 +1,6 @@
 import {
   CommandId,
-  OrchestrationReadModel,
+  OrchestrationProjectCatalogSnapshot,
   ProjectId,
   type ClientOrchestrationCommand,
 } from "@threadlines/contracts";
@@ -96,8 +96,8 @@ const runLiveServerRequest = <A, E extends Error, R>(
     return yield* handle(response);
   }).pipe(withProjectCliLiveServerTimeout);
 
-const decodeOrchestrationReadModelResponse = (response: HttpClientResponse.HttpClientResponse) =>
-  HttpClientResponse.schemaBodyJson(OrchestrationReadModel)(response);
+const decodeProjectCatalogResponse = (response: HttpClientResponse.HttpClientResponse) =>
+  HttpClientResponse.schemaBodyJson(OrchestrationProjectCatalogSnapshot)(response);
 
 const readErrorMessageFromResponse = (response: HttpClientResponse.HttpClientResponse) =>
   HttpClientResponse.schemaBodyJson(OrchestrationHttpErrorResponse)(response).pipe(
@@ -136,7 +136,7 @@ const resolveProjectTitle = Effect.fn("resolveProjectTitle")(function* (
 });
 
 const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (input: {
-  readonly snapshot: OrchestrationReadModel;
+  readonly snapshot: OrchestrationProjectCatalogSnapshot;
   readonly identifier: string;
 }) {
   const trimmedIdentifier = input.identifier.trim();
@@ -180,14 +180,14 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
   } satisfies ProjectMutationTarget;
 });
 
-const fetchLiveOrchestrationSnapshot = (origin: string, bearerToken: string) =>
+const fetchLiveProjectCatalog = (origin: string, bearerToken: string) =>
   runLiveServerRequest(
-    HttpClientRequest.get(`${origin}/api/orchestration/snapshot`).pipe(
+    HttpClientRequest.get(`${origin}/api/orchestration/projects`).pipe(
       HttpClientRequest.acceptJson,
       HttpClientRequest.bearerToken(bearerToken),
     ),
     HttpClientResponse.matchStatus({
-      "2xx": decodeOrchestrationReadModelResponse,
+      "2xx": decodeProjectCatalogResponse,
       orElse: (response) =>
         readErrorMessageFromResponse(response).pipe(
           Effect.flatMap((message) => Effect.fail(new ProjectCommandError({ message }))),
@@ -218,9 +218,9 @@ const dispatchLiveOrchestrationCommand = (
     ),
   );
 
-const getOfflineSnapshot = Effect.fn("getOfflineSnapshot")(function* () {
+const getOfflineProjectCatalog = Effect.fn("getOfflineProjectCatalog")(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-  return yield* projectionSnapshotQuery.getSnapshot();
+  return yield* projectionSnapshotQuery.getProjectCatalog();
 });
 
 const tryResolveLiveProjectExecutionMode = Effect.fn("tryResolveLiveProjectExecutionMode")(
@@ -231,7 +231,7 @@ const tryResolveLiveProjectExecutionMode = Effect.fn("tryResolveLiveProjectExecu
     }
 
     const attempt = withProjectCliSessionToken(authControlPlane, (token) =>
-      fetchLiveOrchestrationSnapshot(runtimeState.value.origin, token).pipe(
+      fetchLiveProjectCatalog(runtimeState.value.origin, token).pipe(
         Effect.as({
           origin: runtimeState.value.origin,
         }),
@@ -251,7 +251,7 @@ const tryResolveLiveProjectExecutionMode = Effect.fn("tryResolveLiveProjectExecu
 const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   flags: CliAuthLocationFlags,
   run: (input: {
-    readonly snapshot: OrchestrationReadModel;
+    readonly snapshot: OrchestrationProjectCatalogSnapshot;
     readonly dispatch: (
       command: ProjectCliDispatchCommand,
     ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -273,7 +273,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     if (Option.isSome(liveMode)) {
       return yield* withProjectCliSessionToken(authControlPlane, (token) =>
         Effect.gen(function* () {
-          const snapshot = yield* fetchLiveOrchestrationSnapshot(liveMode.value.origin, token);
+          const snapshot = yield* fetchLiveProjectCatalog(liveMode.value.origin, token);
           const output = yield* run({
             snapshot,
             dispatch: (command) =>
@@ -291,7 +291,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     );
 
     return yield* Effect.gen(function* () {
-      const snapshot = yield* getOfflineSnapshot();
+      const snapshot = yield* getOfflineProjectCatalog();
       const orchestrationEngine = yield* OrchestrationEngineService;
       const output = yield* run({
         snapshot,
@@ -326,7 +326,7 @@ const projectAddCommand = Command.make("add", {
         snapshot,
         dispatch,
       }: {
-        readonly snapshot: OrchestrationReadModel;
+        readonly snapshot: OrchestrationProjectCatalogSnapshot;
         readonly dispatch: (
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -378,7 +378,7 @@ const projectRemoveCommand = Command.make("remove", {
         snapshot,
         dispatch,
       }: {
-        readonly snapshot: OrchestrationReadModel;
+        readonly snapshot: OrchestrationProjectCatalogSnapshot;
         readonly dispatch: (
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -414,7 +414,7 @@ const projectRenameCommand = Command.make("rename", {
         snapshot,
         dispatch,
       }: {
-        readonly snapshot: OrchestrationReadModel;
+        readonly snapshot: OrchestrationProjectCatalogSnapshot;
         readonly dispatch: (
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;

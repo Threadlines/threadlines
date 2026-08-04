@@ -1,0 +1,67 @@
+diff --git a/dist/BunHttpServer.d.ts b/dist/BunHttpServer.d.ts
+--- a/dist/BunHttpServer.d.ts
++++ b/dist/BunHttpServer.d.ts
+@@ -31,4 +31,5 @@ export declare const make: <R extends string>(options: ServeOptions<R> & {
+ export declare const make: <R extends string>(options: ServeOptions<R> & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined;
+ }) => Effect.Effect<{
+@@ -50,4 +51,5 @@ export declare const layerServer: <R extends string>(options: ServeOptions<R> & {
+ export declare const layerServer: <R extends string>(options: ServeOptions<R> & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined;
+ }) => Layer.Layer<Server.HttpServer>;
+@@ -64,4 +66,5 @@ export declare const layer: <R extends string>(options: ServeOptions<R> & {
+ export declare const layer: <R extends string>(options: ServeOptions<R> & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined;
+ }) => Layer.Layer<Server.HttpServer | HttpPlatform | Etag.Generator | BunServices.BunServices>;
+@@ -84,4 +87,5 @@ export declare const layerConfig: <R extends string>(options: Config.Wrap<ServeOp
+ export declare const layerConfig: <R extends string>(options: Config.Wrap<ServeOptions<R> & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined;
+ }>) => Layer.Layer<Server.HttpServer | HttpPlatform | FileSystem.FileSystem | Etag.Generator | Path.Path, ConfigError>;
+diff --git a/dist/BunHttpServer.js b/dist/BunHttpServer.js
+--- a/dist/BunHttpServer.js
++++ b/dist/BunHttpServer.js
+@@ -43,3 +43,4 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+     fetch: handlerStack[0],
+     websocket: {
++      ...options.websocket,
+       open(ws) {
+diff --git a/src/BunHttpServer.ts b/src/BunHttpServer.ts
+--- a/src/BunHttpServer.ts
++++ b/src/BunHttpServer.ts
+@@ -77,4 +77,5 @@ export const make = Effect.fnUntraced(
+     options: ServeOptions<R> & {
+       readonly disablePreemptiveShutdown?: boolean | undefined
+       readonly gracefulShutdownTimeout?: Duration.Input | undefined
++      readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined
+     }
+@@ -91,3 +92,4 @@ export const make = Effect.fnUntraced(
+       fetch: handlerStack[0],
+       websocket: {
++        ...options.websocket,
+         open(ws) {
+@@ -233,4 +235,5 @@ export const layerServer: <R extends string>(
+   options: ServeOptions<R> & {
+     readonly disablePreemptiveShutdown?: boolean | undefined
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined
++    readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined
+   }
+@@ -262,4 +265,5 @@ export const layer = <R extends string>(
+   options: ServeOptions<R> & {
+     readonly disablePreemptiveShutdown?: boolean | undefined
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined
++    readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined
+   }
+@@ -296,4 +300,5 @@ export const layerConfig = <R extends string>(
+     ServeOptions<R> & {
+       readonly disablePreemptiveShutdown?: boolean | undefined
+       readonly gracefulShutdownTimeout?: Duration.Input | undefined
++      readonly websocket?: Omit<Bun.WebSocketHandler<WebSocketContext>, "open" | "message" | "close" | "drain" | "ping" | "pong" | "data" | "binaryType"> | undefined
+     }

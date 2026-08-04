@@ -39,6 +39,7 @@ function fakeThread(messages: FakeMessage[], activities: FakeActivity[]): Orches
 
 function fakeSnapshotQuery(thread: OrchestrationThread | null): ProjectionSnapshotQueryShape {
   return {
+    getProjectCatalog: unusedProjectionQueryMethod,
     getCommandReadModel: unusedProjectionQueryMethod,
     getSnapshot: unusedProjectionQueryMethod,
     getShellSnapshot: unusedProjectionQueryMethod,
@@ -60,6 +61,7 @@ function fakeSnapshotQuery(thread: OrchestrationThread | null): ProjectionSnapsh
 
 function failingSnapshotQuery(): ProjectionSnapshotQueryShape {
   return {
+    getProjectCatalog: unusedProjectionQueryMethod,
     getCommandReadModel: unusedProjectionQueryMethod,
     getSnapshot: unusedProjectionQueryMethod,
     getShellSnapshot: unusedProjectionQueryMethod,

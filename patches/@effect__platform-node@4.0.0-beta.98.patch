@@ -1,0 +1,69 @@
+diff --git a/dist/NodeHttpServer.d.ts b/dist/NodeHttpServer.d.ts
+--- a/dist/NodeHttpServer.d.ts
++++ b/dist/NodeHttpServer.d.ts
+@@ -33,4 +33,5 @@ export declare const make: (evaluate: LazyArg<Http.Server<typeof Http.IncomingMe
+ export declare const make: (evaluate: LazyArg<Http.Server<typeof Http.IncomingMessage, typeof Http.ServerResponse>>, options: Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined;
+ }) => Effect.Effect<{
+@@ -72,4 +73,5 @@ export declare const layerServer: (evaluate: LazyArg<Http.Server<typeof Http.Inc
+ export declare const layerServer: (evaluate: LazyArg<Http.Server<typeof Http.IncomingMessage, typeof Http.ServerResponse>>, options: Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined;
+ }) => Layer.Layer<HttpServer.HttpServer, ServeError>;
+@@ -92,4 +94,5 @@ export declare const layer: (evaluate: LazyArg<Http.Server>, options: Net.ListenO
+ export declare const layer: (evaluate: LazyArg<Http.Server>, options: Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined;
+ }) => Layer.Layer<HttpServer.HttpServer | NodeServices.NodeServices | HttpPlatform.HttpPlatform | Etag.Generator, ServeError>;
+@@ -104,4 +107,5 @@ export declare const layerConfig: (evaluate: LazyArg<Http.Server>, options: Confi
+ export declare const layerConfig: (evaluate: LazyArg<Http.Server>, options: Config.Wrap<Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined;
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined;
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined;
+ }>) => Layer.Layer<HttpServer.HttpServer | NodeServices.NodeServices | HttpPlatform.HttpPlatform | Etag.Generator, ServeError | Config.ConfigError>;
+diff --git a/dist/NodeHttpServer.js b/dist/NodeHttpServer.js
+--- a/dist/NodeHttpServer.js
++++ b/dist/NodeHttpServer.js
+@@ -91,3 +91,4 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (evaluate, options)
+   const address = server.address();
+   const wss = yield* Effect.acquireRelease(Effect.sync(() => new NodeWS.WebSocketServer({
++    ...options.websocket,
+     noServer: true
+diff --git a/src/NodeHttpServer.ts b/src/NodeHttpServer.ts
+--- a/src/NodeHttpServer.ts
++++ b/src/NodeHttpServer.ts
+@@ -75,4 +75,5 @@ export const make = Effect.fnUntraced(function*(
+   options: Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined
+   }
+@@ -116,4 +117,4 @@ export const make = Effect.fnUntraced(function*(
+   const address = server.address()!
+ 
+-  const wss = yield* Effect.acquireRelease(
+-    Effect.sync(() => new NodeWS.WebSocketServer({ noServer: true })),
++  const wss = yield* Effect.acquireRelease(
++    Effect.sync(() => new NodeWS.WebSocketServer({ ...options.websocket, noServer: true })),
+@@ -400,4 +401,5 @@ export const layerServer: (
+   options: Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined
+   }
+@@ -430,4 +432,5 @@ export const layer = (
+   options: Net.ListenOptions & {
+     readonly disablePreemptiveShutdown?: boolean | undefined
+     readonly gracefulShutdownTimeout?: Duration.Input | undefined
++    readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined
+   }
+@@ -454,4 +457,5 @@ export const layerConfig = (
+     Net.ListenOptions & {
+       readonly disablePreemptiveShutdown?: boolean | undefined
+       readonly gracefulShutdownTimeout?: Duration.Input | undefined
++      readonly websocket?: Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path"> | undefined
+     }

@@ -6,6 +6,7 @@ import {
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
+  OrchestrationProjectCatalogSnapshot,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -62,6 +63,7 @@ import {
 } from "../Services/ProjectionSnapshotQuery.ts";
 
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
+const decodeProjectCatalog = Schema.decodeUnknownEffect(OrchestrationProjectCatalogSnapshot);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
@@ -70,6 +72,15 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
 );
+const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
+  projectId: ProjectionProject.fields.projectId,
+  kind: ProjectionProject.fields.kind,
+  title: ProjectionProject.fields.title,
+  workspaceRoot: ProjectionProject.fields.workspaceRoot,
+  createdAt: ProjectionProject.fields.createdAt,
+  updatedAt: ProjectionProject.fields.updatedAt,
+  deletedAt: ProjectionProject.fields.deletedAt,
+});
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
@@ -295,6 +306,59 @@ function mapThreadMessageRow(
   };
 }
 
+function mapThreadActivityRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>,
+): OrchestrationThreadActivity {
+  return {
+    id: row.activityId,
+    tone: row.tone,
+    kind: row.kind,
+    summary: row.summary,
+    payload: row.payload,
+    turnId: row.turnId,
+    ...(row.sequence !== null ? { sequence: row.sequence } : {}),
+    createdAt: row.createdAt,
+  };
+}
+
+function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "context-window.updated") {
+    return false;
+  }
+  if (typeof activity.payload !== "object" || activity.payload === null) {
+    return false;
+  }
+  const usedTokens = (activity.payload as Record<string, unknown>).usedTokens;
+  return typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens > 0;
+}
+
+/**
+ * Context-window activities are state snapshots rather than timeline entries.
+ * Keep the latest usable value per turn so initial thread snapshots do not
+ * repeatedly send superseded token telemetry. Retaining one value per turn
+ * preserves the meter when a later turn is reverted, while malformed rows
+ * remain visible and cannot shadow the last value the web client can resolve.
+ */
+function dropStaleContextWindowActivities(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  const latestIndexByTurn = new Map<string | null, number>();
+  for (let index = 0; index < activities.length; index += 1) {
+    const activity = activities[index];
+    if (activity !== undefined && isResolvableContextWindowActivity(activity)) {
+      latestIndexByTurn.set(activity.turnId, index);
+    }
+  }
+  if (latestIndexByTurn.size === 0) {
+    return activities;
+  }
+  return activities.filter(
+    (activity, index) =>
+      !isResolvableContextWindowActivity(activity) ||
+      latestIndexByTurn.get(activity.turnId) === index,
+  );
+}
+
 function mapProjectShellRow(
   row: Schema.Schema.Type<typeof ProjectionProjectDbRowSchema>,
   repositoryIdentity: OrchestrationProject["repositoryIdentity"],
@@ -382,6 +446,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_projects
+        ORDER BY created_at ASC, project_id ASC
+      `,
+  });
+
+  const listProjectCatalogRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionProjectCatalogDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          project_id AS "projectId",
+          kind,
+          title,
+          workspace_root AS "workspaceRoot",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1239,6 +1321,66 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getProjectCatalog: ProjectionSnapshotQueryShape["getProjectCatalog"] = () =>
+    sql
+      .withTransaction(
+        Effect.all([
+          listProjectCatalogRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getProjectCatalog:listProjects:query",
+                "ProjectionSnapshotQuery.getProjectCatalog:listProjects:decodeRows",
+              ),
+            ),
+          ),
+          listProjectionStateRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getProjectCatalog:listProjectionState:query",
+                "ProjectionSnapshotQuery.getProjectCatalog:listProjectionState:decodeRows",
+              ),
+            ),
+          ),
+        ]),
+      )
+      .pipe(
+        Effect.flatMap(([projectRows, stateRows]) => {
+          let updatedAt: string | null = null;
+          for (const row of projectRows) {
+            updatedAt = maxIso(updatedAt, row.updatedAt);
+          }
+          for (const row of stateRows) {
+            updatedAt = maxIso(updatedAt, row.updatedAt);
+          }
+
+          return decodeProjectCatalog({
+            snapshotSequence: computeSnapshotSequence(stateRows),
+            projects: projectRows.map((row) => ({
+              id: row.projectId,
+              kind: row.kind,
+              title: row.title,
+              workspaceRoot: row.workspaceRoot,
+              createdAt: row.createdAt,
+              updatedAt: row.updatedAt,
+              deletedAt: row.deletedAt,
+            })),
+            updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
+          }).pipe(
+            Effect.mapError(
+              toPersistenceDecodeError(
+                "ProjectionSnapshotQuery.getProjectCatalog:decodeProjectCatalog",
+              ),
+            ),
+          );
+        }),
+        Effect.mapError((error) => {
+          if (isPersistenceError(error)) {
+            return error;
+          }
+          return toPersistenceSqlError("ProjectionSnapshotQuery.getProjectCatalog:query")(error);
+        }),
+      );
+
   const getSnapshot: ProjectionSnapshotQueryShape["getSnapshot"] = () =>
     sql
       .withTransaction(
@@ -1376,16 +1518,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               for (const row of activityRows) {
                 updatedAt = maxIso(updatedAt, row.createdAt);
                 const threadActivities = activitiesByThread.get(row.threadId) ?? [];
-                threadActivities.push({
-                  id: row.activityId,
-                  tone: row.tone,
-                  kind: row.kind,
-                  summary: row.summary,
-                  payload: row.payload,
-                  turnId: row.turnId,
-                  ...(row.sequence !== null ? { sequence: row.sequence } : {}),
-                  createdAt: row.createdAt,
-                });
+                threadActivities.push(mapThreadActivityRow(row));
                 activitiesByThread.set(row.threadId, threadActivities);
               }
 
@@ -1488,7 +1621,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 deletedAt: row.deletedAt,
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
-                activities: activitiesByThread.get(row.threadId) ?? [],
+                activities: dropStaleContextWindowActivities(
+                  activitiesByThread.get(row.threadId) ?? [],
+                ),
                 checkpoints: checkpointsByThread.get(row.threadId) ?? [],
                 session: sessionsByThread.get(row.threadId) ?? null,
                 diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
@@ -2423,21 +2558,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         deletedAt: null,
         messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
-        activities: activityRows.map((row) => {
-          const activity = {
-            id: row.activityId,
-            tone: row.tone,
-            kind: row.kind,
-            summary: row.summary,
-            payload: row.payload,
-            turnId: row.turnId,
-            createdAt: row.createdAt,
-          };
-          if (row.sequence !== null) {
-            return Object.assign(activity, { sequence: row.sequence });
-          }
-          return activity;
-        }),
+        activities: dropStaleContextWindowActivities(activityRows.map(mapThreadActivityRow)),
         checkpoints: checkpointRows.map((row) => ({
           turnId: row.turnId,
           checkpointTurnCount: row.checkpointTurnCount,
@@ -2461,6 +2582,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     });
 
   return {
+    getProjectCatalog,
     getCommandReadModel,
     getSnapshot,
     getShellSnapshot,

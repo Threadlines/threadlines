@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
-import { ServerConfig } from "./config.ts";
+import { ServerConfig, shouldEnableTransferCompression } from "./config.ts";
 import {
   attachmentsRouteLayer,
   otlpTracesProxyRouteLayer,
@@ -99,7 +99,7 @@ import {
 } from "./serverRuntimeState.ts";
 import {
   orchestrationDispatchRouteLayer,
-  orchestrationSnapshotRouteLayer,
+  orchestrationProjectCatalogRouteLayer,
 } from "./orchestration/http.ts";
 import * as NetService from "@threadlines/shared/Net";
 import { disableTailscaleServe, ensureTailscaleServe } from "@threadlines/tailscale";
@@ -109,6 +109,18 @@ import { disableTailscaleServe, ensureTailscaleServe } from "@threadlines/tailsc
 // finalizer already closes the websocket gracefully. Do not add an artificial
 // drain before those finalizers get a chance to run.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
+const NODE_WEBSOCKET_COMPRESSION_OPTIONS = {
+  perMessageDeflate: {
+    concurrencyLimit: 4,
+    zlibDeflateOptions: {
+      level: 3,
+      memLevel: 7,
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024,
+    },
+  },
+} as const;
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -125,6 +137,7 @@ const PtyAdapterLive = Layer.unwrap(
 const HttpServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig;
+    const compressTransfers = shouldEnableTransferCompression(config);
     if (typeof Bun !== "undefined") {
       const BunHttpServer = yield* Effect.promise(
         () => import("@effect/platform-bun/BunHttpServer"),
@@ -132,6 +145,7 @@ const HttpServerLive = Layer.unwrap(
       return BunHttpServer.layer({
         port: config.port,
         gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        ...(compressTransfers ? { websocket: { perMessageDeflate: true } } : {}),
         ...(config.host ? { hostname: config.host } : {}),
       });
     } else {
@@ -143,6 +157,7 @@ const HttpServerLive = Layer.unwrap(
         host: config.host,
         port: config.port,
         gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        ...(compressTransfers ? { websocket: NODE_WEBSOCKET_COMPRESSION_OPTIONS } : {}),
       });
     }
   }),
@@ -352,7 +367,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   authWebSocketTokenRouteLayer,
   attachmentsRouteLayer,
   orchestrationDispatchRouteLayer,
-  orchestrationSnapshotRouteLayer,
+  orchestrationProjectCatalogRouteLayer,
   otlpTracesProxyRouteLayer,
   pluginIconRouteLayer,
   projectFaviconRouteLayer,

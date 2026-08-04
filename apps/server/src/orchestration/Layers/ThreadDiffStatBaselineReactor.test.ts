@@ -65,6 +65,7 @@ function makeSnapshotQuery(
   baselines: () => ReadonlyArray<ProjectionThreadDiffStatBaseline>,
 ): ProjectionSnapshotQueryShape {
   return {
+    getProjectCatalog: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     getShellSnapshot: () => Effect.die("unused"),

@@ -248,6 +248,8 @@ export const VcsListRefsInput = Schema.Struct({
   limit: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(GIT_LIST_BRANCHES_MAX_LIMIT)),
   ),
+  /** Force a new shared repository snapshot instead of reusing the warm one. */
+  refresh: Schema.optional(Schema.Boolean),
 });
 export type VcsListRefsInput = typeof VcsListRefsInput.Type;
 

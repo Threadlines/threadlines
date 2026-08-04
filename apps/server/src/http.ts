@@ -1,5 +1,6 @@
 import Mime from "@effect/platform-node/Mime";
 import { decodeOtlpTraceRecords } from "@threadlines/shared/observability";
+import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,7 +23,7 @@ import {
   resolveAttachmentRelativePath,
 } from "./attachmentPaths.ts";
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
-import { resolveStaticDir, ServerConfig } from "./config.ts";
+import { resolveStaticDir, ServerConfig, shouldEnableTransferCompression } from "./config.ts";
 import { BrowserTraceCollector } from "./observability/Services/BrowserTraceCollector.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
@@ -41,6 +42,125 @@ const PROJECT_FAVICON_FALLBACK_CACHE_CONTROL = "no-store";
 const FALLBACK_PROJECT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
+const STATIC_COMPRESSION_MIN_BYTES = 1_024;
+const STATIC_COMPRESSION_MAX_SOURCE_BYTES = 8 * 1024 * 1024;
+const STATIC_COMPRESSION_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+const STATIC_COMPRESSION_CACHE_MAX_ENTRIES = 64;
+const STATIC_IMMUTABLE_ASSET_PATTERN = /(?:^|\/)[^/]+-[A-Za-z0-9_-]{8,}\.[^/]+$/u;
+const STATIC_COMPRESSIBLE_CONTENT_TYPE_PATTERN =
+  /^(?:text\/|application\/(?:javascript|json|wasm|xml)|image\/svg\+xml)/u;
+
+type StaticContentEncoding = "br" | "gzip";
+
+interface StaticCompressionCacheEntry {
+  readonly data: Uint8Array;
+  readonly size: number;
+}
+
+const staticCompressionCache = new Map<string, StaticCompressionCacheEntry>();
+const pendingStaticCompressions = new Map<string, Promise<Uint8Array | null>>();
+let staticCompressionCacheBytes = 0;
+
+function acceptedStaticContentEncoding(value: string | undefined): StaticContentEncoding | null {
+  if (!value) return null;
+  const qualities = new Map<string, number>();
+  for (const part of value.toLowerCase().split(",")) {
+    const [nameRaw, ...parameters] = part.trim().split(";");
+    const name = nameRaw?.trim();
+    if (!name) continue;
+    const qualityParameter = parameters.find((parameter) => parameter.trim().startsWith("q="));
+    const parsedQuality = qualityParameter
+      ? Number.parseFloat(qualityParameter.trim().slice(2))
+      : 1;
+    qualities.set(name, Number.isFinite(parsedQuality) ? parsedQuality : 0);
+  }
+  const wildcardQuality = qualities.get("*") ?? 0;
+  const brotliQuality = qualities.get("br") ?? wildcardQuality;
+  const gzipQuality = qualities.get("gzip") ?? wildcardQuality;
+  if (brotliQuality <= 0 && gzipQuality <= 0) return null;
+  return brotliQuality >= gzipQuality ? "br" : "gzip";
+}
+
+function compressStaticData(
+  data: Uint8Array,
+  encoding: StaticContentEncoding,
+): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const callback = (error: Error | null, compressed: Buffer) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(compressed);
+      }
+    };
+    if (encoding === "br") {
+      brotliCompress(
+        data,
+        {
+          params: {
+            [zlibConstants.BROTLI_PARAM_QUALITY]: 4,
+            [zlibConstants.BROTLI_PARAM_SIZE_HINT]: data.byteLength,
+          },
+        },
+        callback,
+      );
+    } else {
+      gzip(data, { level: 6 }, callback);
+    }
+  });
+}
+
+function cacheStaticCompression(key: string, data: Uint8Array): void {
+  const existing = staticCompressionCache.get(key);
+  if (existing) {
+    staticCompressionCacheBytes -= existing.size;
+    staticCompressionCache.delete(key);
+  }
+  staticCompressionCache.set(key, { data, size: data.byteLength });
+  staticCompressionCacheBytes += data.byteLength;
+  while (
+    staticCompressionCache.size > STATIC_COMPRESSION_CACHE_MAX_ENTRIES ||
+    staticCompressionCacheBytes > STATIC_COMPRESSION_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = staticCompressionCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = staticCompressionCache.get(oldestKey);
+    staticCompressionCache.delete(oldestKey);
+    staticCompressionCacheBytes -= oldest?.size ?? 0;
+  }
+}
+
+async function getCompressedStaticData(
+  key: string,
+  data: Uint8Array,
+  encoding: StaticContentEncoding,
+): Promise<Uint8Array | null> {
+  const cached = staticCompressionCache.get(key);
+  if (cached) {
+    staticCompressionCache.delete(key);
+    staticCompressionCache.set(key, cached);
+    return cached.data;
+  }
+  const pending = pendingStaticCompressions.get(key);
+  if (pending) return pending;
+  const compression = compressStaticData(data, encoding)
+    .then((compressed) => {
+      if (compressed.byteLength >= data.byteLength) return null;
+      cacheStaticCompression(key, compressed);
+      return compressed;
+    })
+    .finally(() => pendingStaticCompressions.delete(key));
+  pendingStaticCompressions.set(key, compression);
+  return compression;
+}
+
+function staticCacheControl(filePath: string): string {
+  if (filePath.endsWith("index.html")) return "no-cache";
+  if (STATIC_IMMUTABLE_ASSET_PATTERN.test(filePath)) {
+    return "public, max-age=31536000, immutable";
+  }
+  return "public, max-age=3600";
+}
 
 export const browserApiCorsLayer = HttpRouter.cors({
   allowedMethods: [...browserApiCorsAllowedMethods],
@@ -362,6 +482,10 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.uint8Array(indexData, {
         status: 200,
         contentType: "text/html; charset=utf-8",
+        headers: {
+          "Cache-Control": "no-cache",
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
 
@@ -373,9 +497,42 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Internal Server Error", { status: 500 });
     }
 
-    return HttpServerResponse.uint8Array(data, {
+    const headers: Record<string, string> = {
+      "Cache-Control": staticCacheControl(filePath),
+      "X-Content-Type-Options": "nosniff",
+    };
+    let responseData = data;
+    if (
+      shouldEnableTransferCompression(config) &&
+      data.byteLength >= STATIC_COMPRESSION_MIN_BYTES &&
+      data.byteLength <= STATIC_COMPRESSION_MAX_SOURCE_BYTES &&
+      STATIC_COMPRESSIBLE_CONTENT_TYPE_PATTERN.test(contentType)
+    ) {
+      const encoding = acceptedStaticContentEncoding(request.headers["accept-encoding"]);
+      if (encoding) {
+        const modifiedAt = Option.match(fileInfo.mtime, {
+          onNone: () => 0,
+          onSome: (date) => date.getTime(),
+        });
+        const compressed = yield* Effect.tryPromise(() =>
+          getCompressedStaticData(
+            `${filePath}:${Number(fileInfo.size)}:${modifiedAt}:${encoding}`,
+            data,
+            encoding,
+          ),
+        ).pipe(Effect.catch(() => Effect.succeed(null)));
+        if (compressed) {
+          responseData = compressed;
+          headers["Content-Encoding"] = encoding;
+          headers.Vary = "Accept-Encoding";
+        }
+      }
+    }
+
+    return HttpServerResponse.uint8Array(responseData, {
       status: 200,
       contentType,
+      headers,
     });
   }),
 );

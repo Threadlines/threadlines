@@ -183,6 +183,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
+export const ORCHESTRATION_THREAD_RESUME_MAX_SEQUENCE_GAP = 500;
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -983,6 +984,48 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                           }),
                       ),
                     );
+                  const isThreadEvent = (event: OrchestrationEvent) =>
+                    event.aggregateKind === "thread" &&
+                    event.aggregateId === input.threadId &&
+                    isThreadDetailEvent(event);
+                  const liveStream = domainEvents.pipe(
+                    Stream.filter(
+                      (event) => event.sequence > snapshotSequence && isThreadEvent(event),
+                    ),
+                    Stream.map((event) => ({
+                      kind: "event" as const,
+                      event,
+                    })),
+                  );
+
+                  const resumeSequence = input.fromSequenceExclusive;
+                  const canResume =
+                    resumeSequence !== undefined &&
+                    resumeSequence <= snapshotSequence &&
+                    snapshotSequence - resumeSequence <=
+                      ORCHESTRATION_THREAD_RESUME_MAX_SEQUENCE_GAP;
+                  if (canResume) {
+                    const replayStream = orchestrationEngine.readEvents(resumeSequence).pipe(
+                      // The hot subscription already buffers everything after
+                      // this boundary. Keeping the persisted side bounded also
+                      // prevents duplicates if commits race the replay query.
+                      Stream.takeWhile((event) => event.sequence <= snapshotSequence),
+                      Stream.filter(isThreadEvent),
+                      Stream.map((event) => ({
+                        kind: "event" as const,
+                        event,
+                      })),
+                      Stream.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: `Failed to resume thread ${input.threadId}`,
+                            cause,
+                          }),
+                      ),
+                    );
+                    return Stream.concat(replayStream, liveStream);
+                  }
+
                   const threadDetail = yield* projectionSnapshotQuery
                     .getThreadDetailById(input.threadId)
                     .pipe(
@@ -1001,20 +1044,6 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                       cause: input.threadId,
                     });
                   }
-
-                  const liveStream = domainEvents.pipe(
-                    Stream.filter(
-                      (event) =>
-                        event.sequence > snapshotSequence &&
-                        event.aggregateKind === "thread" &&
-                        event.aggregateId === input.threadId &&
-                        isThreadDetailEvent(event),
-                    ),
-                    Stream.map((event) => ({
-                      kind: "event" as const,
-                      event,
-                    })),
-                  );
 
                   return Stream.concat(
                     Stream.make({

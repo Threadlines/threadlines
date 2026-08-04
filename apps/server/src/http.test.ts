@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { shouldEnableTransferCompression } from "./config.ts";
 import { isLoopbackHostname, resolveDevRedirectUrl } from "./http.ts";
 
 describe("http dev routing", () => {
@@ -23,5 +24,41 @@ describe("http dev routing", () => {
     expect(resolveDevRedirectUrl(devUrl, requestUrl)).toBe(
       "http://127.0.0.1:5173/pair?token=test-token",
     );
+  });
+});
+
+describe("transfer compression policy", () => {
+  it("skips local interactive traffic", () => {
+    expect(
+      shouldEnableTransferCompression({
+        host: "127.0.0.1",
+        startupPresentation: "browser",
+        tailscaleServeEnabled: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("enables remote, headless, and Tailscale traffic", () => {
+    expect(
+      shouldEnableTransferCompression({
+        host: "0.0.0.0",
+        startupPresentation: "browser",
+        tailscaleServeEnabled: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEnableTransferCompression({
+        host: "127.0.0.1",
+        startupPresentation: "headless",
+        tailscaleServeEnabled: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEnableTransferCompression({
+        host: "127.0.0.1",
+        startupPresentation: "browser",
+        tailscaleServeEnabled: true,
+      }),
+    ).toBe(true);
   });
 });

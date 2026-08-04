@@ -377,6 +377,31 @@ export const OrchestrationProject = Schema.Struct({
 });
 export type OrchestrationProject = typeof OrchestrationProject.Type;
 
+/**
+ * Narrow project metadata used by administrative project commands.
+ *
+ * Keep this independent from the full project read model so command-line
+ * project discovery never needs to hydrate thread bodies, scripts, model
+ * configuration, or repository identity.
+ */
+export const OrchestrationProjectCatalogEntry = Schema.Struct({
+  id: ProjectId,
+  kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
+  title: TrimmedNonEmptyString,
+  workspaceRoot: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  deletedAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationProjectCatalogEntry = typeof OrchestrationProjectCatalogEntry.Type;
+
+export const OrchestrationProjectCatalogSnapshot = Schema.Struct({
+  snapshotSequence: NonNegativeInt,
+  projects: Schema.Array(OrchestrationProjectCatalogEntry),
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationProjectCatalogSnapshot = typeof OrchestrationProjectCatalogSnapshot.Type;
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -817,6 +842,12 @@ export type OrchestrationShellStreamItem = typeof OrchestrationShellStreamItem.T
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  /**
+   * Last thread-event sequence already applied by the client. The server may
+   * resume with a bounded event replay; old or invalid cursors fall back to a
+   * fresh detail snapshot.
+   */
+  fromSequenceExclusive: Schema.optionalKey(NonNegativeInt),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 

@@ -50,6 +50,37 @@ const COMMIT_GRAPH_RESULT: VcsCommitGraphResult = {
 const ENVIRONMENT_A = EnvironmentId.make("environment-a");
 const ENVIRONMENT_B = EnvironmentId.make("environment-b");
 
+describe("git ref query options", () => {
+  it("refreshes the shared snapshot once and does not poll in the background", async () => {
+    const listRefs = vi.fn(async () => BRANCH_QUERY_RESULT);
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({ vcs: { listRefs } } as never);
+    const options = gitBranchSearchInfiniteQueryOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+      query: "feature",
+    });
+
+    await options.queryFn?.({ pageParam: 0 } as never);
+    await options.queryFn?.({ pageParam: 100 } as never);
+
+    expect(listRefs).toHaveBeenNthCalledWith(1, {
+      cwd: "/repo/a",
+      query: "feature",
+      cursor: 0,
+      limit: 100,
+      refresh: true,
+    });
+    expect(listRefs).toHaveBeenNthCalledWith(2, {
+      cwd: "/repo/a",
+      query: "feature",
+      cursor: 100,
+      limit: 100,
+      refresh: false,
+    });
+    expect(options.refetchInterval).toBeUndefined();
+  });
+});
+
 describe("gitMutationKeys", () => {
   it("scopes stacked action keys by cwd", () => {
     expect(gitMutationKeys.runStackedAction(ENVIRONMENT_A, "/repo/a")).not.toEqual(

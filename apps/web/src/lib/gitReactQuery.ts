@@ -21,7 +21,6 @@ import { ensureEnvironmentApi } from "../environmentApi";
 import { requireEnvironmentConnection } from "../environments/runtime";
 
 const GIT_BRANCHES_STALE_TIME_MS = 15_000;
-const GIT_BRANCHES_REFETCH_INTERVAL_MS = 120_000;
 const GIT_BRANCHES_PAGE_SIZE = 100;
 
 export const gitQueryKeys = {
@@ -155,6 +154,9 @@ export function gitBranchSearchInfiniteQueryOptions(input: {
         ...(normalizedQuery.length > 0 ? { query: normalizedQuery } : {}),
         cursor: pageParam,
         limit: GIT_BRANCHES_PAGE_SIZE,
+        // The first page refreshes the server's shared snapshot. Subsequent
+        // pages read that same snapshot so pagination stays consistent.
+        refresh: pageParam === 0,
       });
     },
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
@@ -162,7 +164,6 @@ export function gitBranchSearchInfiniteQueryOptions(input: {
     staleTime: GIT_BRANCHES_STALE_TIME_MS,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
-    refetchInterval: GIT_BRANCHES_REFETCH_INTERVAL_MS,
   });
 }
 

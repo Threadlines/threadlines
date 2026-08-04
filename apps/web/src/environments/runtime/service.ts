@@ -93,6 +93,10 @@ type EnvironmentServiceState = {
 type ThreadDetailSubscriptionEntry = {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly resumeInput: {
+    readonly threadId: ThreadId;
+    fromSequenceExclusive?: number;
+  };
   unsubscribe: () => void;
   unsubscribeConnectionListener: (() => void) | null;
   refCount: number;
@@ -397,16 +401,18 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     return false;
   }
 
-  entry.unsubscribe = connection.client.orchestration.subscribeThread(
-    { threadId: entry.threadId },
-    (item) => {
-      if (item.kind === "snapshot") {
-        useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
-        return;
-      }
-      applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
-    },
-  );
+  entry.unsubscribe = connection.client.orchestration.subscribeThread(entry.resumeInput, (item) => {
+    if (item.kind === "snapshot") {
+      useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
+      entry.resumeInput.fromSequenceExclusive = item.snapshot.snapshotSequence;
+      return;
+    }
+    applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
+    entry.resumeInput.fromSequenceExclusive = Math.max(
+      entry.resumeInput.fromSequenceExclusive ?? 0,
+      item.event.sequence,
+    );
+  });
   return true;
 }
 
@@ -572,6 +578,7 @@ function ensureWarmThreadDetailSubscription(
   const entry: ThreadDetailSubscriptionEntry = {
     environmentId,
     threadId,
+    resumeInput: { threadId },
     unsubscribe: NOOP,
     unsubscribeConnectionListener: null,
     refCount: 0,
@@ -627,6 +634,7 @@ export function retainThreadDetailSubscription(
   const entry: ThreadDetailSubscriptionEntry = {
     environmentId,
     threadId,
+    resumeInput: { threadId },
     unsubscribe: NOOP,
     unsubscribeConnectionListener: null,
     refCount: 1,
@@ -670,6 +678,7 @@ export function refreshThreadDetailSubscription(
   entry.unsubscribeConnectionListener = null;
   entry.unsubscribe();
   entry.unsubscribe = NOOP;
+  delete entry.resumeInput.fromSequenceExclusive;
   entry.lastAccessedAt = Date.now();
   if (!attachThreadDetailSubscription(entry)) {
     watchThreadDetailSubscriptionConnection(entry);

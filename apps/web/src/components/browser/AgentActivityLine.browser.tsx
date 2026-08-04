@@ -1,9 +1,39 @@
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import { AgentActivityLine, AgentApprovalLine } from "./BrowserPanel";
+import { makeBrowserTab, useBrowserPanelStore } from "../../browserPanelStore";
+import { AgentActivityLine, AgentApprovalLine, BrowserPanel } from "./BrowserPanel";
 import type { AgentActivity } from "./previewAutomationHost";
+
+const THREAD_REF = scopeThreadRef(
+  EnvironmentId.make("environment-browser-panel"),
+  ThreadId.make("thread-browser-panel"),
+);
+const THREAD_KEY = scopedThreadKey(THREAD_REF);
+
+function seedBrowserPanel(viewport: { width: number | null; height: number | null }) {
+  const tab = { ...makeBrowserTab(), viewport };
+  useBrowserPanelStore.setState({
+    browserStateByThreadKey: {
+      [THREAD_KEY]: { open: true, tabs: [tab], activeTabId: tab.id },
+    },
+    agentStateByThreadKey: {},
+    pendingApprovalByThreadKey: {},
+    deviceToolbarOpen: true,
+  });
+}
+
+function resetBrowserPanel() {
+  useBrowserPanelStore.setState({
+    browserStateByThreadKey: {},
+    agentStateByThreadKey: {},
+    pendingApprovalByThreadKey: {},
+    deviceToolbarOpen: false,
+  });
+}
 
 const activity = (overrides: Partial<AgentActivity> = {}): AgentActivity => ({
   phase: "running",
@@ -11,6 +41,54 @@ const activity = (overrides: Partial<AgentActivity> = {}): AgentActivity => ({
   detail: '"Sign in"',
   sequence: 1,
   ...overrides,
+});
+
+describe("BrowserPanel device toolbar", () => {
+  it("keeps a responsive page fluid when the toolbar opens", async () => {
+    seedBrowserPanel({ width: null, height: null });
+    const screen = await render(
+      <BrowserPanel threadRef={THREAD_REF} flexGrow={1} onClose={() => {}} />,
+    );
+
+    try {
+      await expect.element(page.getByTestId("browser-device-toolbar")).toBeVisible();
+      const preset = (await page
+        .getByTestId("browser-device-preset")
+        .element()) as HTMLSelectElement;
+      const width = (await page.getByTestId("browser-device-width").element()) as HTMLInputElement;
+      const activeTab =
+        useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs[0];
+
+      expect(preset.value).toBe("Responsive");
+      expect(width.value).toBe("");
+      expect(activeTab?.viewport).toEqual({ width: null, height: null });
+    } finally {
+      screen.unmount();
+      resetBrowserPanel();
+    }
+  });
+
+  it("labels an unnamed fixed viewport as custom and can return it to responsive", async () => {
+    seedBrowserPanel({ width: 430, height: 691 });
+    const screen = await render(
+      <BrowserPanel threadRef={THREAD_REF} flexGrow={1} onClose={() => {}} />,
+    );
+
+    try {
+      const preset = page.getByTestId("browser-device-preset");
+      await expect.element(preset).toBeVisible();
+      expect(((await preset.element()) as HTMLSelectElement).value).toBe("Custom");
+
+      await preset.selectOptions("Responsive");
+
+      const activeTab =
+        useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs[0];
+      expect(activeTab?.viewport).toEqual({ width: null, height: null });
+    } finally {
+      screen.unmount();
+      resetBrowserPanel();
+    }
+  });
 });
 
 /**

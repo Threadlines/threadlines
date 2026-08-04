@@ -269,30 +269,7 @@ export function BrowserPanel({
     return () => window.clearTimeout(timer);
   }, [activeUrl, setAgentPoint, threadRef]);
 
-  // Opening the device row on a responsive tab seeds concrete dimensions from
-  // whatever the page currently occupies. Without them there is nothing to drag
-  // and nothing to type over, so the row would open showing "auto" and do
-  // nothing until a preset was chosen.
   const viewportAreaRef = useRef<HTMLDivElement | null>(null);
-  const measurePanelViewport = useCallback((): BrowserViewport | null => {
-    const area = viewportAreaRef.current;
-    if (area === null) {
-      return null;
-    }
-    const width = Math.max(160, Math.round(area.clientWidth - 24));
-    const height = Math.max(160, Math.round(area.clientHeight - 24));
-    return { width, height };
-  }, []);
-
-  useEffect(() => {
-    if (!deviceToolbarOpen || activeTab === null || activeTab.viewport.width !== null) {
-      return;
-    }
-    const measured = measurePanelViewport();
-    if (measured !== null) {
-      setTabViewport(threadRef, activeTab.id, measured);
-    }
-  }, [activeTab, deviceToolbarOpen, measurePanelViewport, setTabViewport, threadRef]);
 
   const addressRef = useRef<HTMLInputElement | null>(null);
   const deletingRef = useRef(false);
@@ -1857,12 +1834,10 @@ function DeviceToolbar({
   onZoomChange: (factor: number) => void;
   onClose: () => void;
 }) {
-  // "Responsive" is the label for a size nobody named, which is what dragging
-  // produces; a matching preset takes precedence over it.
   const matchingPreset = BROWSER_VIEWPORT_PRESETS.find(
-    (entry) =>
-      entry.width !== null && entry.width === viewport.width && entry.height === viewport.height,
+    (entry) => entry.width === viewport.width && entry.height === viewport.height,
   );
+  const selectedMode = matchingPreset?.label ?? "Custom";
 
   return (
     <div
@@ -1873,14 +1848,19 @@ function DeviceToolbar({
         aria-label="Device"
         data-testid="browser-device-preset"
         className="min-w-0 max-w-28 shrink rounded-md border border-border bg-background px-1 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
-        value={matchingPreset?.label ?? "Responsive"}
+        value={selectedMode}
         onChange={(event) => {
           const preset = BROWSER_VIEWPORT_PRESETS.find((p) => p.label === event.target.value);
-          onViewportChange(
-            preset === undefined ? viewport : { width: preset.width, height: preset.height },
-          );
+          if (preset !== undefined) {
+            onViewportChange({ width: preset.width, height: preset.height });
+          }
         }}
       >
+        {matchingPreset === undefined ? (
+          <option value="Custom" disabled>
+            Custom
+          </option>
+        ) : null}
         {BROWSER_VIEWPORT_PRESETS.map((preset) => (
           <option key={preset.label} value={preset.label}>
             {preset.label}

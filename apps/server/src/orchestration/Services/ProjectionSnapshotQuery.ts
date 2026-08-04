@@ -10,6 +10,7 @@ import type {
   CheckpointRef,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
+  OrchestrationProjectCatalogSnapshot,
   OrchestrationProjectShell,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -81,6 +82,16 @@ export interface ProjectionThreadTurnOverlap {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  /**
+   * Read only project metadata for administrative project commands.
+   * Thread projections and project runtime configuration are deliberately
+   * excluded from this query.
+   */
+  readonly getProjectCatalog: () => Effect.Effect<
+    OrchestrationProjectCatalogSnapshot,
+    ProjectionRepositoryError
+  >;
+
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
    * orchestration engine. Thread messages are hydrated (capped to the same

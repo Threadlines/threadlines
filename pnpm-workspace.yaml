@@ -63,6 +63,8 @@ packageExtensions:
       vite: "catalog:"
 
 patchedDependencies:
+  "@effect/platform-bun@4.0.0-beta.98": patches/@effect__platform-bun@4.0.0-beta.98.patch
+  "@effect/platform-node@4.0.0-beta.98": patches/@effect__platform-node@4.0.0-beta.98.patch
   "@effect/platform-node-shared@4.0.0-beta.97": patches/@effect__platform-node-shared@4.0.0-beta.97.patch
   brace-expansion@5.0.8: patches/brace-expansion@5.0.8.patch
   effect@4.0.0-beta.97: patches/effect@4.0.0-beta.97.patch

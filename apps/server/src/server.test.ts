@@ -46,6 +46,8 @@ import {
   HttpClient,
   HttpRouter,
   HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
 } from "effect/unstable/http";
 import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
@@ -196,6 +198,25 @@ const makeDefaultOrchestrationReadModel = () => {
   };
 };
 
+const makeDefaultProjectCatalog = () => {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    snapshotSequence: 0,
+    updatedAt: now,
+    projects: [
+      {
+        id: defaultProjectId,
+        kind: "workspace" as const,
+        title: "Default Project",
+        workspaceRoot: "/tmp/default-project",
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      },
+    ],
+  };
+};
+
 const makeDefaultOrchestrationThreadShell = (
   overrides: Partial<OrchestrationThreadShell> = {},
 ): OrchestrationThreadShell => {
@@ -226,6 +247,35 @@ const makeDefaultOrchestrationThreadShell = (
     cumulativeDiffStat: null,
     diffStatBaselineTurnCount: 0,
     ...overrides,
+  };
+};
+
+const makeThreadMessageEvent = (
+  sequence: number,
+  threadId: ThreadId = defaultThreadId,
+): Extract<OrchestrationEvent, { type: "thread.message-sent" }> => {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    sequence,
+    eventId: EventId.make(`event-thread-message-${sequence}`),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    occurredAt: now,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.message-sent",
+    payload: {
+      threadId,
+      messageId: MessageId.make(`message-${sequence}`),
+      role: "assistant",
+      text: `message ${sequence}`,
+      turnId: null,
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+    },
   };
 };
 
@@ -737,6 +787,7 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mock(ProjectionSnapshotQuery)({
+          getProjectCatalog: () => Effect.succeed(makeDefaultProjectCatalog()),
           getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
           getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
           getShellSnapshot: () =>
@@ -1064,6 +1115,50 @@ const getWsServerUrl = (
   });
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect("forwards WebSocket compression options through the Node HTTP server", () =>
+    Effect.gen(function* () {
+      yield* HttpRouter.add(
+        "GET",
+        "/compressed-ws",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const socket = yield* Effect.orDie(request.upgrade);
+          yield* Effect.orDie(socket.run(() => Effect.void));
+          return HttpServerResponse.empty();
+        }),
+      ).pipe(HttpRouter.serve, Layer.build);
+
+      const server = yield* HttpServer.HttpServer;
+      const address = server.address as HttpServer.TcpAddress;
+      const socket = yield* Effect.acquireRelease(
+        Effect.callback<NodeSocket.NodeWS.WebSocket, Error>((resume) => {
+          const socket = new NodeSocket.NodeWS.WebSocket(
+            `ws://127.0.0.1:${address.port}/compressed-ws`,
+            { perMessageDeflate: true },
+          );
+          socket.once("open", () => resume(Effect.succeed(socket)));
+          socket.once("error", (error) => resume(Effect.fail(error)));
+        }),
+        (socket) => Effect.sync(() => socket.close()),
+      );
+
+      assert.include(socket.extensions, "permessage-deflate");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.unwrap(
+          Effect.promise(async () => {
+            const NodeHttp = await import("node:http");
+            return NodeHttpServer.layer(NodeHttp.createServer, {
+              port: 0,
+              websocket: { perMessageDeflate: true },
+            });
+          }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1079,6 +1174,60 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* HttpClient.get("/");
       assert.equal(response.status, 200);
       assert.include(yield* response.text, "router-static-ok");
+      assert.equal(response.headers["cache-control"], "no-cache");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("compresses and immutably caches hashed static assets for remote access", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-router-compressed-static-",
+      });
+      const assetsDir = path.join(staticDir, "assets");
+      yield* fileSystem.makeDirectory(assetsDir, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(assetsDir, "app-abcdefgh.js"),
+        `export const repeated = "${"threadlines-".repeat(1_000)}";`,
+      );
+
+      yield* buildAppUnderTest({
+        config: { staticDir, host: "0.0.0.0" },
+      });
+
+      const url = yield* getHttpServerUrl("/assets/app-abcdefgh.js");
+      const response = yield* Effect.promise(() =>
+        fetch(url, { headers: { "Accept-Encoding": "br, gzip" } }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-encoding"), "br");
+      assert.equal(response.headers.get("vary"), "Accept-Encoding");
+      assert.equal(response.headers.get("cache-control"), "public, max-age=31536000, immutable");
+      assert.include(yield* Effect.promise(() => response.text()), "threadlines-threadlines");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps loopback static responses uncompressed", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-router-loopback-static-",
+      });
+      yield* fileSystem.writeFileString(path.join(staticDir, "app.js"), "x".repeat(4_000));
+
+      yield* buildAppUnderTest({ config: { staticDir, host: "127.0.0.1" } });
+
+      const url = yield* getHttpServerUrl("/app.js");
+      const response = yield* Effect.promise(() =>
+        fetch(url, { headers: { "Accept-Encoding": "br, gzip" } }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-encoding"), null);
+      assert.equal(response.headers.get("cache-control"), "public, max-age=3600");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3584,6 +3733,65 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("resumes recent thread subscriptions and snapshots stale cursors", () =>
+    Effect.gen(function* () {
+      const replayedEvent = makeThreadMessageEvent(595);
+      const readEventCursors: number[] = [];
+      let threadDetailReads = 0;
+      const threadDetail = makeDefaultOrchestrationReadModel().threads[0]!;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: (fromSequenceExclusive) => {
+              readEventCursors.push(fromSequenceExclusive);
+              return Stream.make(replayedEvent);
+            },
+            subscribeDomainEvents: Effect.succeed(Stream.empty),
+          },
+          projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 600 }),
+            getThreadDetailById: () =>
+              Effect.sync(() => {
+                threadDetailReads += 1;
+                return Option.some(threadDetail);
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const recentItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 590,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(recentItems[0]?.kind, "event");
+      assert.equal(recentItems[0]?.kind === "event" ? recentItems[0].event.sequence : null, 595);
+      assert.deepEqual(readEventCursors, [590]);
+      assert.equal(threadDetailReads, 0);
+
+      const staleItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 99,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(staleItems[0]?.kind, "snapshot");
+      assert.equal(
+        staleItems[0]?.kind === "snapshot" ? staleItems[0].snapshot.snapshotSequence : null,
+        600,
+      );
+      assert.deepEqual(readEventCursors, [590]);
+      assert.equal(threadDetailReads, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

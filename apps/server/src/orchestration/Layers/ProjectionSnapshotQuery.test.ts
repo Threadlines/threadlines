@@ -36,6 +36,66 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("loads the project catalog without hydrating project runtime or thread data", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          kind,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-catalog',
+          'workspace',
+          'Catalog Project',
+          '/tmp/catalog-project',
+          'not valid model json',
+          'not valid scripts json',
+          '2026-02-23T00:00:00.000Z',
+          '2026-02-23T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
+        yield* sql`
+          INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+          VALUES (${projector}, 7, '2026-02-23T00:00:02.000Z')
+        `;
+      }
+
+      const catalog = yield* snapshotQuery.getProjectCatalog();
+
+      assert.deepEqual(catalog, {
+        snapshotSequence: 7,
+        projects: [
+          {
+            id: asProjectId("project-catalog"),
+            kind: "workspace",
+            title: "Catalog Project",
+            workspaceRoot: "/tmp/catalog-project",
+            createdAt: "2026-02-23T00:00:00.000Z",
+            updatedAt: "2026-02-23T00:00:01.000Z",
+            deletedAt: null,
+          },
+        ],
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      });
+    }),
+  );
+
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1038,7 +1098,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
-  it.effect("caps thread detail activities to the newest timeline rows", () =>
+  it.effect("caps timeline rows and drops superseded context-window snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -1153,6 +1213,112 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
       }
       assert.equal(snapshot.threads[0]?.activities.length, MAX_THREAD_ACTIVITIES);
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'context-old-a',
+            'thread-activity-cap',
+            'turn-a',
+            'info',
+            'context-window.updated',
+            'Old context A',
+            '{"usedTokens":100,"maxTokens":1000}',
+            1,
+            '2026-04-01T00:00:02.000Z'
+          ),
+          (
+            'runtime-between',
+            'thread-activity-cap',
+            'turn-a',
+            'info',
+            'runtime.note',
+            'Runtime note',
+            '{}',
+            2,
+            '2026-04-01T00:00:03.000Z'
+          ),
+          (
+            'context-latest-a',
+            'thread-activity-cap',
+            'turn-a',
+            'info',
+            'context-window.updated',
+            'Latest context A',
+            '{"usedTokens":200,"maxTokens":1000}',
+            3,
+            '2026-04-01T00:00:04.000Z'
+          ),
+          (
+            'context-latest-b',
+            'thread-activity-cap',
+            'turn-b',
+            'info',
+            'context-window.updated',
+            'Latest context B',
+            '{"usedTokens":300,"maxTokens":1000}',
+            4,
+            '2026-04-01T00:00:05.000Z'
+          ),
+          (
+            'context-malformed-a',
+            'thread-activity-cap',
+            'turn-a',
+            'info',
+            'context-window.updated',
+            'Malformed context A',
+            '{"usedTokens":null}',
+            5,
+            '2026-04-01T00:00:06.000Z'
+          ),
+          (
+            'context-zero-b',
+            'thread-activity-cap',
+            'turn-b',
+            'info',
+            'context-window.updated',
+            'Unresolvable context B',
+            '{"usedTokens":0}',
+            6,
+            '2026-04-01T00:00:07.000Z'
+          )
+      `;
+
+      const compactedSnapshot = yield* snapshotQuery.getSnapshot();
+      const compactedThreadDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-activity-cap"),
+      );
+      const expectedActivityIds = [
+        "runtime-between",
+        "context-latest-a",
+        "context-latest-b",
+        "context-malformed-a",
+        "context-zero-b",
+      ].map(asEventId);
+
+      assert.deepEqual(
+        compactedSnapshot.threads[0]?.activities.map((activity) => activity.id),
+        expectedActivityIds,
+      );
+      assert.equal(compactedThreadDetail._tag, "Some");
+      if (compactedThreadDetail._tag === "Some") {
+        assert.deepEqual(
+          compactedThreadDetail.value.activities.map((activity) => activity.id),
+          expectedActivityIds,
+        );
+      }
     }),
   );
 

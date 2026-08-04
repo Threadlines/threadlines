@@ -91,6 +91,7 @@ describe("CheckpointDiffQueryLive", () => {
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getProjectCatalog: () => Effect.die("unused"),
           getCommandReadModel: () =>
             Effect.die("CheckpointDiffQuery should not request the command read model"),
           getSnapshot: () =>
@@ -197,6 +198,7 @@ describe("CheckpointDiffQueryLive", () => {
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getProjectCatalog: () => Effect.die("unused"),
           getCommandReadModel: () =>
             Effect.die("CheckpointDiffQuery should not request the command read model"),
           getSnapshot: () =>
@@ -321,6 +323,7 @@ describe("CheckpointDiffQueryLive", () => {
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getProjectCatalog: () => Effect.die("unused"),
           getCommandReadModel: () =>
             Effect.die("CheckpointDiffQuery should not request the command read model"),
           getSnapshot: () =>
@@ -395,6 +398,7 @@ describe("CheckpointDiffQueryLive", () => {
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getProjectCatalog: () => Effect.die("unused"),
           getCommandReadModel: () =>
             Effect.die("CheckpointDiffQuery should not request the command read model"),
           getSnapshot: () =>
@@ -465,6 +469,7 @@ describe("CheckpointDiffQueryLive", () => {
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getProjectCatalog: () => Effect.die("unused"),
           getCommandReadModel: () =>
             Effect.die("CheckpointDiffQuery should not request the command read model"),
           getSnapshot: () =>
@@ -518,6 +523,7 @@ describe("CheckpointDiffQueryLive", () => {
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getProjectCatalog: () => Effect.die("unused"),
           getCommandReadModel: () =>
             Effect.die("CheckpointDiffQuery should not request the command read model"),
           getSnapshot: () =>

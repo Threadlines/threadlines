@@ -76,6 +76,28 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly tailscaleServePort: number;
 }
 
+const LOOPBACK_BIND_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/**
+ * Compression is worthwhile when traffic can leave the machine. Local-only
+ * browser and desktop sessions avoid the zlib CPU and memory overhead.
+ */
+export function shouldEnableTransferCompression(
+  config: Pick<ServerConfigShape, "host" | "startupPresentation" | "tailscaleServeEnabled">,
+): boolean {
+  if (config.tailscaleServeEnabled || config.startupPresentation === "headless") {
+    return true;
+  }
+  if (config.host === undefined) {
+    return true;
+  }
+  const normalizedHost = config.host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1");
+  return !LOOPBACK_BIND_HOSTNAMES.has(normalizedHost);
+}
+
 export const deriveServerPaths = Effect.fn(function* (
   baseDir: ServerConfigShape["baseDir"],
   devUrl: ServerConfigShape["devUrl"],

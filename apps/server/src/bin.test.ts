@@ -22,7 +22,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   orchestrationDispatchRouteLayer,
-  orchestrationSnapshotRouteLayer,
+  orchestrationProjectCatalogRouteLayer,
 } from "./orchestration/http.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
@@ -107,7 +107,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
   Effect.gen(function* () {
     const config = yield* makeCliTestServerConfig(baseDir);
     const routesLayer = Layer.mergeAll(
-      orchestrationSnapshotRouteLayer,
+      orchestrationProjectCatalogRouteLayer,
       orchestrationDispatchRouteLayer,
     );
     const appLayer = HttpRouter.serve(routesLayer, {

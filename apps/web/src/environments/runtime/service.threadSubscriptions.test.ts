@@ -261,6 +261,38 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("advances the mutable resume cursor after a thread snapshot", async () => {
+    const { retainThreadDetailSubscription, startEnvironmentConnectionService } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-resume");
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    const [resumeInput, listener] = mockSubscribeThread.mock.calls[0] ?? [];
+    const threadShell = makeThreadShellSnapshot({ threadId }).threads[0]!;
+
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 42,
+        thread: {
+          ...threadShell,
+          messages: [],
+          activities: [],
+          proposedPlans: [],
+          checkpoints: [],
+          deletedAt: null,
+        },
+      },
+    });
+
+    expect(resumeInput).toEqual({ threadId, fromSequenceExclusive: 42 });
+
+    release();
+    stop();
+  });
+
   it("restarts a retained thread detail subscription to request a fresh snapshot", async () => {
     const {
       refreshThreadDetailSubscription,
@@ -275,6 +307,22 @@ describe("retainThreadDetailSubscription", () => {
 
     const release = retainThreadDetailSubscription(environmentId, threadId);
     expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+    const [, listener] = mockSubscribeThread.mock.calls[0] ?? [];
+    const threadShell = makeThreadShellSnapshot({ threadId }).threads[0]!;
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 42,
+        thread: {
+          ...threadShell,
+          messages: [],
+          activities: [],
+          proposedPlans: [],
+          checkpoints: [],
+          deletedAt: null,
+        },
+      },
+    });
 
     expect(refreshThreadDetailSubscription(environmentId, threadId)).toBe(true);
     expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);

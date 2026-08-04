@@ -101,6 +101,7 @@ function makeSnapshotQuery(
     updatedAt: new Date(NOW_MS).toISOString(),
   };
   return {
+    getProjectCatalog: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     getShellSnapshot: () => Effect.succeed(shellSnapshot),
