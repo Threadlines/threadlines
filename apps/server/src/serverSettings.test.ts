@@ -127,6 +127,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         customModels: ["claude-custom"],
         fallbackModel: [],
         launchArgs: "",
+        maxConcurrentSubagents: "",
+        maxSubagentsPerSession: "",
+        maxSubagentSpawnDepth: "",
       });
       assert.deepEqual(
         next.textGenerationModelSelection,
@@ -448,6 +451,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         customModels: [],
         fallbackModel: [],
         launchArgs: "",
+        maxConcurrentSubagents: "",
+        maxSubagentsPerSession: "",
+        maxSubagentSpawnDepth: "",
       });
       assert.deepEqual(next.providers.opencode, {
         enabled: true,

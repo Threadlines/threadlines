@@ -20,7 +20,52 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const resolved = path.resolve(NodeOS.homedir());
 
         expect(yield* resolveClaudeHomePath({ homePath: "" })).toBe(resolved);
-        expect(yield* makeClaudeEnvironment({ homePath: "" })).toBe(process.env);
+        const environment = yield* makeClaudeEnvironment({ homePath: "" }, { PATH: "/bin" });
+        expect(environment.PATH).toBe("/bin");
+        expect(environment.HOME).toBeUndefined();
+      }),
+    );
+
+    it.effect("disables the CLI's interrupted-turn auto-resume unless explicitly configured", () =>
+      Effect.gen(function* () {
+        const defaulted = yield* makeClaudeEnvironment({ homePath: "" }, {});
+        expect(defaulted.CLAUDE_CODE_RESUME_INTERRUPTED_TURN).toBe("0");
+
+        const overridden = yield* makeClaudeEnvironment(
+          { homePath: "" },
+          { CLAUDE_CODE_RESUME_INTERRUPTED_TURN: "1" },
+        );
+        expect(overridden.CLAUDE_CODE_RESUME_INTERRUPTED_TURN).toBe("1");
+      }),
+    );
+
+    it.effect("forwards configured subagent limits and drops blank or invalid values", () =>
+      Effect.gen(function* () {
+        const configured = yield* makeClaudeEnvironment(
+          {
+            homePath: "",
+            maxConcurrentSubagents: "8",
+            maxSubagentsPerSession: "50",
+            maxSubagentSpawnDepth: "1",
+          },
+          { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "20" },
+        );
+        expect(configured.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe("8");
+        expect(configured.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION).toBe("50");
+        expect(configured.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe("1");
+
+        const invalid = yield* makeClaudeEnvironment(
+          {
+            homePath: "",
+            maxConcurrentSubagents: "",
+            maxSubagentsPerSession: "0",
+            maxSubagentSpawnDepth: "two",
+          },
+          {},
+        );
+        expect(invalid.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBeUndefined();
+        expect(invalid.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION).toBeUndefined();
+        expect(invalid.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBeUndefined();
       }),
     );
 

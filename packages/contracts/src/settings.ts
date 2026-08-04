@@ -289,9 +289,43 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    maxConcurrentSubagents: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Max parallel subagents",
+        description:
+          "How many subagents a session can run at once. Blank uses the Claude Code default (20).",
+        providerSettingsForm: { placeholder: "20", clearWhenEmpty: "omit" },
+      }),
+    ),
+    maxSubagentsPerSession: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Max subagents per session",
+        description:
+          "Total subagent launches allowed in one session. Blank uses the Claude Code default (200).",
+        providerSettingsForm: { placeholder: "200", clearWhenEmpty: "omit" },
+      }),
+    ),
+    maxSubagentSpawnDepth: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Subagent nesting depth",
+        description:
+          "How deep subagents can launch subagents of their own. Blank uses the Claude Code default (3).",
+        providerSettingsForm: { placeholder: "3", clearWhenEmpty: "omit" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "launchArgs",
+      "maxConcurrentSubagents",
+      "maxSubagentsPerSession",
+      "maxSubagentSpawnDepth",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -524,6 +558,9 @@ const ClaudeSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
   fallbackModel: Schema.optionalKey(Schema.Array(Schema.String)),
   launchArgs: Schema.optionalKey(TrimmedString),
+  maxConcurrentSubagents: Schema.optionalKey(TrimmedString),
+  maxSubagentsPerSession: Schema.optionalKey(TrimmedString),
+  maxSubagentSpawnDepth: Schema.optionalKey(TrimmedString),
 });
 
 const CursorSettingsPatch = Schema.Struct({

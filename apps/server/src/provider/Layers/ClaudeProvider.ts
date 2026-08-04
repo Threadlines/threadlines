@@ -348,6 +348,33 @@ function supportsClaudeOpus47(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_7_VERSION) >= 0 : false;
 }
 
+// Claude Code 2.1.219 removed Claude Opus 4.7 from fast mode; older CLIs
+// still honor the toggle, so the descriptor is dropped per version instead
+// of removed from the model card.
+const CLAUDE_OPUS_4_7_FAST_MODE_REMOVED_VERSION = "2.1.219";
+
+function claudeOpus47SupportsFastMode(version: string | null | undefined): boolean {
+  return version
+    ? compareSemverVersions(version, CLAUDE_OPUS_4_7_FAST_MODE_REMOVED_VERSION) < 0
+    : false;
+}
+
+function withoutFastModeDescriptor(model: ServerProviderModel): ServerProviderModel {
+  const capabilities = model.capabilities;
+  if (!capabilities?.optionDescriptors) {
+    return model;
+  }
+  return {
+    ...model,
+    capabilities: {
+      ...capabilities,
+      optionDescriptors: capabilities.optionDescriptors.filter(
+        (descriptor) => descriptor.id !== "fastMode",
+      ),
+    },
+  };
+}
+
 function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
@@ -368,7 +395,11 @@ function getBuiltInClaudeModelsForVersion(
       return supportsClaudeOpus47(version);
     }
     return true;
-  });
+  }).map((model) =>
+    model.slug === "claude-opus-4-7" && !claudeOpus47SupportsFastMode(version)
+      ? withoutFastModeDescriptor(model)
+      : model,
+  );
 }
 
 function formatClaudeModelUpgradeMessage(input: {

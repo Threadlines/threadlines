@@ -2913,6 +2913,135 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect("routes nested subagent text (depth 2+) to the top-level collab tool item", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate deeply",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-subagent-nested",
+        uuid: "stream-subagent-nested-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-nested-root",
+            name: "Task",
+            input: {
+              description: "Audit the release",
+              prompt: "Check migrations and indexes",
+              subagent_type: "code-reviewer",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      // Depth-1 subagent spawns its own Agent; the spawn-only message has
+      // no text, so it emits nothing but registers the nested tool_use id.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent-nested",
+        uuid: "assistant-subagent-nested-1",
+        parent_tool_use_id: "tool-task-nested-root",
+        message: {
+          id: "subagent-nested-message-1",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-task-nested-child",
+              name: "Task",
+              input: { description: "Check the indexes", prompt: "Verify index coverage" },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      // Depth-2 messages are keyed by the nested spawn id, not the
+      // top-level Task id; they must land on the top-level item. This one
+      // also spawns depth 3.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent-nested",
+        uuid: "assistant-subagent-nested-2",
+        parent_tool_use_id: "tool-task-nested-child",
+        message: {
+          id: "subagent-nested-message-2",
+          content: [
+            { type: "text", text: "Nested agent checking indexes." },
+            {
+              type: "tool_use",
+              id: "tool-task-nested-grandchild",
+              name: "Task",
+              input: { description: "Verify migrations", prompt: "Check migration order" },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      // Depth-3 chains through the ancestry recorded from depth 2.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent-nested",
+        uuid: "assistant-subagent-nested-3",
+        parent_tool_use_id: "tool-task-nested-grandchild",
+        message: {
+          id: "subagent-nested-message-3",
+          content: [{ type: "text", text: "Grandchild verifying migrations." }],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-subagent-nested",
+        uuid: "result-subagent-nested-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const liveUpdates = runtimeEvents.flatMap((event) => {
+        if (event.type !== "item.updated") {
+          return [];
+        }
+        const data = (event.payload as { data?: { subagentLiveText?: unknown } }).data;
+        return typeof data?.subagentLiveText === "string"
+          ? [{ event, liveText: data.subagentLiveText }]
+          : [];
+      });
+      assert.equal(liveUpdates.length, 2);
+      assert.equal(liveUpdates[0]?.liveText, "Nested agent checking indexes.");
+      assert.equal(liveUpdates[1]?.liveText, "Grandchild verifying migrations.");
+      for (const update of liveUpdates) {
+        assert.equal(String(update.event.itemId), "tool-task-nested-root");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("treats user-aborted Claude results as interrupted without a runtime error", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

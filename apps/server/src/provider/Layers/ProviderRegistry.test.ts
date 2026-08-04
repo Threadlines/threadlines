@@ -3030,6 +3030,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           ),
       );
 
+      it.effect("drops the Claude Opus 4.7 fast mode toggle on CLIs that removed it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          const opus47 = status.models.find((model) => model.slug === "claude-opus-4-7");
+          if (!opus47?.capabilities) {
+            assert.fail("Expected Claude Opus 4.7 capabilities for Claude Code v2.1.219.");
+          }
+          assert.strictEqual(
+            opus47.capabilities.optionDescriptors?.some(
+              (descriptor) => descriptor.id === "fastMode",
+            ),
+            false,
+          );
+          assert.strictEqual(
+            opus47.capabilities.optionDescriptors?.some((descriptor) => descriptor.id === "effort"),
+            true,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.219\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("hides Claude Sonnet 5 before the Claude Code version that exposes it", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

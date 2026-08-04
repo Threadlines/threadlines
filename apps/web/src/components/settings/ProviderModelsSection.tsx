@@ -5,7 +5,6 @@ import {
   ArrowUpIcon,
   EyeIcon,
   EyeOffIcon,
-  InfoIcon,
   PlusIcon,
   StarIcon,
   XIcon,
@@ -22,6 +21,7 @@ import { cn } from "../../lib/utils";
 import { sortModelsForProviderInstance } from "../../modelOrdering";
 import { MAX_CUSTOM_MODEL_LENGTH } from "../../modelSelection";
 import { Button } from "../ui/button";
+import { InfoPopover } from "../ui/info-popover";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -372,54 +372,40 @@ export function ProviderModelsSection({
                   {model.name}
                 </span>
                 {hasDetails ? (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          className="size-5 rounded-sm p-0 text-muted-foreground/60 hover:text-muted-foreground"
-                          aria-label={`Details for ${model.name}`}
-                        >
-                          <InfoIcon className="size-3" />
-                        </Button>
-                      }
-                    ></TooltipTrigger>
-                    <TooltipPopup side="top" className="max-w-56">
-                      <div className="space-y-1">
-                        <code className="block text-[11px] text-foreground">{model.slug}</code>
-                        {model.description ? (
-                          <p className="text-[11px] leading-snug text-muted-foreground">
-                            {model.description}
-                          </p>
-                        ) : null}
-                        {model.availabilityMessage ? (
-                          <p className="text-[11px] leading-snug text-muted-foreground">
-                            {model.availabilityMessage}
-                          </p>
-                        ) : null}
-                        {upgradeCopy ? (
-                          <p className="text-[11px] leading-snug text-muted-foreground">
-                            {upgradeCopy}
-                          </p>
-                        ) : null}
-                        {model.upgradeInfo?.model ? (
-                          <p className="text-[10px] leading-snug text-muted-foreground">
-                            Upgrade target: {model.upgradeInfo.model}
-                          </p>
-                        ) : null}
-                        {capLabels.length > 0 ? (
-                          <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                            {capLabels.map((label) => (
-                              <span key={label} className="text-[10px] text-muted-foreground">
-                                {label}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    </TooltipPopup>
-                  </Tooltip>
+                  <InfoPopover label={`Details for ${model.name}`} side="top">
+                    <div className="space-y-1">
+                      <code className="block text-[11px] text-foreground">{model.slug}</code>
+                      {model.description ? (
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          {model.description}
+                        </p>
+                      ) : null}
+                      {model.availabilityMessage ? (
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          {model.availabilityMessage}
+                        </p>
+                      ) : null}
+                      {upgradeCopy ? (
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          {upgradeCopy}
+                        </p>
+                      ) : null}
+                      {model.upgradeInfo?.model ? (
+                        <p className="text-[10px] leading-snug text-muted-foreground">
+                          Upgrade target: {model.upgradeInfo.model}
+                        </p>
+                      ) : null}
+                      {capLabels.length > 0 ? (
+                        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                          {capLabels.map((label) => (
+                            <span key={label} className="text-[10px] text-muted-foreground">
+                              {label}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </InfoPopover>
                 ) : null}
                 {isHidden ? (
                   <span className="text-[10px] text-muted-foreground">

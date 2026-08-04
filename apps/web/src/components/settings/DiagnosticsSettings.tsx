@@ -4,7 +4,6 @@ import {
   ChevronRightIcon,
   CopyIcon,
   FolderOpenIcon,
-  InfoIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
@@ -33,6 +32,7 @@ import {
 } from "../../rpc/requestLatencyPresentation";
 import { useSlowRpcAckRequests } from "../../rpc/requestLatencyState";
 import { Button } from "../ui/button";
+import { InfoPopover } from "../ui/info-popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
@@ -156,25 +156,14 @@ function StatBlock({
       <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
         <span className="min-w-0 truncate">{label}</span>
         {tooltip ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground/60 hover:text-foreground"
-                  aria-label={`${label} details`}
-                >
-                  <InfoIcon className="size-3" />
-                </button>
-              }
-            />
-            <TooltipPopup
-              side="top"
-              className="max-w-[min(300px,calc(100vw-2rem))] whitespace-normal text-left text-[11px] leading-relaxed text-wrap"
-            >
-              {tooltip}
-            </TooltipPopup>
-          </Tooltip>
+          <InfoPopover
+            label={`${label} details`}
+            side="top"
+            triggerClassName="size-4"
+            className="max-w-[min(300px,calc(100vw-2rem))] whitespace-normal text-[11px] leading-relaxed text-wrap"
+          >
+            {tooltip}
+          </InfoPopover>
         ) : null}
       </div>
       <div

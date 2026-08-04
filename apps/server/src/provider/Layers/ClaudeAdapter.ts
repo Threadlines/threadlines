@@ -333,6 +333,12 @@ interface ClaudeSessionContext {
   /** Structured final results already applied. Kept separately so a richer
    *  structured result can supersede an earlier legacy notification once. */
   readonly structuredCompletedCollabAgentItemIds: Set<string>;
+  /** Nested Agent spawn ids (tool_use blocks issued inside a subagent's own
+   *  conversation) mapped to the top-level collab tool item that owns the
+   *  popover. Depth-2+ subagent messages carry the nested spawn id as
+   *  parent_tool_use_id (Claude Code 2.1.219+); without this map they match
+   *  no known tool and their text would be dropped. Bounded FIFO. */
+  readonly subagentSpawnAncestry: Map<string, string>;
   /** Per-file +/- counts captured by the PostToolUse hook, keyed by tool_use_id.
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
@@ -1932,10 +1938,46 @@ const SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS = 2_000;
 /** Agent ids come from the client and end up in a filesystem path; anything
  *  outside this shape is rejected before it can traverse. */
 const SUBAGENT_AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** Spawn-ancestry entries kept per session; oldest evict first. Sized well
+ *  past any real session's subagent count while bounding a runaway. */
+const SUBAGENT_SPAWN_ANCESTRY_MAX_ENTRIES = 1_024;
 
 function capTranscriptText(value: string, maxChars: number): string {
   const trimmed = value.trim();
   return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+}
+
+/** Records Agent spawns found in a forwarded subagent message so the nested
+ *  agent's own forwarded messages (keyed by the spawn's tool_use id) resolve
+ *  to the top-level collab tool item. Chains transitively: a depth-3 spawn
+ *  recorded from a depth-2 message maps to the same top-level item. */
+function recordSubagentSpawns(
+  context: ClaudeSessionContext,
+  content: unknown,
+  topLevelItemId: string,
+): void {
+  if (!Array.isArray(content)) {
+    return;
+  }
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const { type, name, id } = block as { type?: unknown; name?: unknown; id?: unknown };
+    if (type !== "tool_use" || typeof name !== "string" || typeof id !== "string") {
+      continue;
+    }
+    if (classifyToolItemType(name) !== "collab_agent_tool_call") {
+      continue;
+    }
+    if (context.subagentSpawnAncestry.size >= SUBAGENT_SPAWN_ANCESTRY_MAX_ENTRIES) {
+      const oldest = context.subagentSpawnAncestry.keys().next().value;
+      if (oldest !== undefined) {
+        context.subagentSpawnAncestry.delete(oldest);
+      }
+    }
+    context.subagentSpawnAncestry.set(id, topLevelItemId);
+  }
 }
 
 /** Maps complete Claude subagent JSONL records into renderable entries, and
@@ -4763,7 +4805,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
    *  Complete assistant envelopes stream into the spawning collab tool item
    *  as live progress text; parent-attributed stream deltas and the
    *  subagent's internal user/tool-result messages are dropped — per-message
-   *  granularity keeps event volume bounded under parallel subagents. */
+   *  granularity keeps event volume bounded under parallel subagents.
+   *  Nested subagents (depth 2+) are attributed to the top-level tool item
+   *  through the spawn ancestry recorded from their parent's messages. */
   const handleSubagentForwardedMessage = Effect.fn("handleSubagentForwardedMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -4772,22 +4816,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "assistant") {
       return;
     }
+    const topLevelItemId = context.subagentSpawnAncestry.get(parentToolUseId) ?? parentToolUseId;
     // A foreground agent's Task tool is still in flight while its messages
     // stream (`collabAgentToolsByItemId` is only populated once the
     // tool_result lands); background agents are found through the launch
     // record kept for the session lifetime.
     const tool =
       Array.from(context.inFlightTools.values()).find(
-        (inFlight) => inFlight.itemId === parentToolUseId,
-      ) ?? context.collabAgentToolsByItemId.get(parentToolUseId);
+        (inFlight) => inFlight.itemId === topLevelItemId,
+      ) ?? context.collabAgentToolsByItemId.get(topLevelItemId);
     if (
       tool === undefined ||
       tool.itemType !== "collab_agent_tool_call" ||
-      context.completedCollabAgentItemIds.has(parentToolUseId) ||
-      context.structuredCompletedCollabAgentItemIds.has(parentToolUseId)
+      context.completedCollabAgentItemIds.has(topLevelItemId) ||
+      context.structuredCompletedCollabAgentItemIds.has(topLevelItemId)
     ) {
       return;
     }
+    // Register any Agent spawns this subagent issues, so messages from the
+    // nested agent (keyed by the spawn's tool_use id) route here too. Runs
+    // before the empty-text return: a spawn-only message carries no text.
+    recordSubagentSpawns(context, (message.message as { content?: unknown }).content, tool.itemId);
     const text = extractTextContent((message.message as { content?: unknown }).content)
       .trim()
       .slice(0, SUBAGENT_LIVE_TEXT_MAX_CHARS);
@@ -5684,6 +5733,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         collabAgentToolsByItemId: new Map(),
         completedCollabAgentItemIds: new Set(),
         structuredCompletedCollabAgentItemIds: new Set(),
+        subagentSpawnAncestry: new Map(),
         fileChangeStatsByToolUseId,
         tasks: new Map(),
         startedTaskIds: new Set(),
