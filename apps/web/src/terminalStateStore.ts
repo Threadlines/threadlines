@@ -275,30 +275,6 @@ function terminalEventBufferKey(threadRef: ScopedThreadRef, terminalId: string):
   return `${terminalThreadKey(threadRef)}\u0000${terminalId}`;
 }
 
-function terminalEventEntriesHaveCommandActivity(
-  entries: ReadonlyArray<TerminalEventEntry>,
-): boolean {
-  let hasCommandActivity = false;
-  for (const entry of entries) {
-    const event = entry.event;
-    if (event.type === "cleared") {
-      hasCommandActivity = false;
-      continue;
-    }
-    if (
-      (event.type === "started" || event.type === "restarted") &&
-      event.snapshot.history.length > 0
-    ) {
-      hasCommandActivity = true;
-      continue;
-    }
-    if (event.type === "activity" && (event.hasRunningSubprocess || event.command !== null)) {
-      hasCommandActivity = true;
-    }
-  }
-  return hasCommandActivity;
-}
-
 function removeTerminalKeyedEntriesForThread<T>(
   entries: Record<string, T>,
   threadKey: string,
@@ -649,56 +625,6 @@ export function selectTerminalActivityCommand(
     return null;
   }
   return terminalActivityCommandByKey[terminalEventBufferKey(threadRef, terminalId)] ?? null;
-}
-
-export function selectTerminalCommandTargetId(
-  state: {
-    terminalStateByThreadKey: Record<string, ThreadTerminalState>;
-    terminalEventEntriesByKey: Record<string, ReadonlyArray<TerminalEventEntry>>;
-    terminalSubmittedCommandByKey: Record<string, string>;
-    terminalActivityCommandByKey: Record<string, string>;
-    terminalCommandHistoryByKey: Record<string, true>;
-  },
-  threadRef: ScopedThreadRef | null | undefined,
-  preferredTerminalId: string,
-): string {
-  const fallbackTerminalId = preferredTerminalId.trim() || DEFAULT_THREAD_TERMINAL_ID;
-  if (!threadRef || threadRef.threadId.length === 0) {
-    return fallbackTerminalId;
-  }
-  if (fallbackTerminalId === DEFAULT_THREAD_TERMINAL_ID) {
-    return DEFAULT_THREAD_TERMINAL_ID;
-  }
-
-  const terminalState = selectThreadTerminalState(state.terminalStateByThreadKey, threadRef);
-  if (!terminalState.terminalIds.includes(DEFAULT_THREAD_TERMINAL_ID)) {
-    return fallbackTerminalId;
-  }
-
-  const defaultTerminalBusy =
-    terminalState.runningTerminalIds.includes(DEFAULT_THREAD_TERMINAL_ID) ||
-    state.terminalCommandHistoryByKey[
-      terminalEventBufferKey(threadRef, DEFAULT_THREAD_TERMINAL_ID)
-    ] === true ||
-    selectTerminalSubmittedCommand(
-      state.terminalSubmittedCommandByKey,
-      threadRef,
-      DEFAULT_THREAD_TERMINAL_ID,
-    ) !== null ||
-    selectTerminalActivityCommand(
-      state.terminalActivityCommandByKey,
-      threadRef,
-      DEFAULT_THREAD_TERMINAL_ID,
-    ) !== null ||
-    terminalEventEntriesHaveCommandActivity(
-      selectTerminalEventEntries(
-        state.terminalEventEntriesByKey,
-        threadRef,
-        DEFAULT_THREAD_TERMINAL_ID,
-      ),
-    );
-
-  return defaultTerminalBusy ? fallbackTerminalId : DEFAULT_THREAD_TERMINAL_ID;
 }
 
 interface TerminalStateStoreState {

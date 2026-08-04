@@ -41,6 +41,7 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
+  type ProviderAuthEvent,
   ProviderExtensionsError,
   ProviderExternalThreadError,
   ProviderRealtimeError,
@@ -105,6 +106,7 @@ import {
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
@@ -240,6 +242,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
+      const providerAuthSessions = yield* ProviderAuthSessions;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -1914,6 +1917,35 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               ),
             ),
             { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.providerAuthStart]: (input) =>
+          observeRpcEffect(WS_METHODS.providerAuthStart, providerAuthSessions.start(input), {
+            "rpc.aggregate": "providerAuth",
+          }),
+        [WS_METHODS.providerAuthWrite]: (input) =>
+          observeRpcEffect(WS_METHODS.providerAuthWrite, providerAuthSessions.write(input), {
+            "rpc.aggregate": "providerAuth",
+          }),
+        [WS_METHODS.providerAuthResize]: (input) =>
+          observeRpcEffect(WS_METHODS.providerAuthResize, providerAuthSessions.resize(input), {
+            "rpc.aggregate": "providerAuth",
+          }),
+        [WS_METHODS.providerAuthStop]: (input) =>
+          observeRpcEffect(WS_METHODS.providerAuthStop, providerAuthSessions.stop(input), {
+            "rpc.aggregate": "providerAuth",
+          }),
+        [WS_METHODS.providerAuthSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.providerAuthSubscribe,
+            Stream.callback<ProviderAuthEvent>((queue) =>
+              Effect.acquireRelease(
+                providerAuthSessions.subscribe(input.instanceId, (event) =>
+                  Queue.offer(queue, event),
+                ),
+                (unsubscribe) => Effect.sync(unsubscribe),
+              ),
+            ),
+            { "rpc.aggregate": "providerAuth" },
           ),
         [WS_METHODS.realtimeAppendAudio]: (input) =>
           observeRpcEffect(

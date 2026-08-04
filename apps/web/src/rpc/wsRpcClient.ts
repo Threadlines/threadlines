@@ -80,6 +80,14 @@ export interface WsRpcClient {
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
     readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
   };
+  /** Settings-owned provider sign-in, run in an ephemeral server-side PTY. */
+  readonly providerAuth: {
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.providerAuthStart>;
+    readonly write: RpcUnaryMethod<typeof WS_METHODS.providerAuthWrite>;
+    readonly resize: RpcUnaryMethod<typeof WS_METHODS.providerAuthResize>;
+    readonly stop: RpcUnaryMethod<typeof WS_METHODS.providerAuthStop>;
+    readonly subscribe: RpcInputStreamMethod<typeof WS_METHODS.providerAuthSubscribe>;
+  };
   readonly realtime: {
     readonly appendAudio: RpcUnaryMethod<typeof WS_METHODS.realtimeAppendAudio>;
     readonly subscribeAudio: RpcInputStreamMethod<typeof WS_METHODS.realtimeSubscribeAudio>;
@@ -360,6 +368,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.subscribe((client) => client[WS_METHODS.subscribeTerminalEvents]({}), listener, {
           ...options,
           tag: WS_METHODS.subscribeTerminalEvents,
+        }),
+    },
+    providerAuth: {
+      start: (input) => transport.request((client) => client[WS_METHODS.providerAuthStart](input)),
+      write: (input) => transport.request((client) => client[WS_METHODS.providerAuthWrite](input)),
+      resize: (input) =>
+        transport.request((client) => client[WS_METHODS.providerAuthResize](input)),
+      stop: (input) => transport.request((client) => client[WS_METHODS.providerAuthStop](input)),
+      subscribe: (input, listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.providerAuthSubscribe](input), listener, {
+          tag: WS_METHODS.providerAuthSubscribe,
+          ...options,
         }),
     },
     realtime: {

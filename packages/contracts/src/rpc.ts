@@ -171,6 +171,15 @@ import {
   ProjectWriteFileResult,
 } from "./project.ts";
 import {
+  ProviderAuthError,
+  ProviderAuthEvent,
+  ProviderAuthResizeInput,
+  ProviderAuthStartInput,
+  ProviderAuthStopInput,
+  ProviderAuthSubscribeInput,
+  ProviderAuthWriteInput,
+} from "./providerAuth.ts";
+import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalError,
@@ -283,6 +292,13 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+
+  // Provider sign-in methods (settings-owned, ephemeral PTY)
+  providerAuthStart: "providerAuth.start",
+  providerAuthWrite: "providerAuth.write",
+  providerAuthResize: "providerAuth.resize",
+  providerAuthStop: "providerAuth.stop",
+  providerAuthSubscribe: "providerAuth.subscribe",
 
   // Realtime audio methods
   realtimeAppendAudio: "realtime.appendAudio",
@@ -1028,6 +1044,36 @@ export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTermina
   stream: true,
 });
 
+export const WsProviderAuthStartRpc = Rpc.make(WS_METHODS.providerAuthStart, {
+  payload: ProviderAuthStartInput,
+  success: Schema.Void,
+  error: ProviderAuthError,
+});
+
+export const WsProviderAuthWriteRpc = Rpc.make(WS_METHODS.providerAuthWrite, {
+  payload: ProviderAuthWriteInput,
+  success: Schema.Void,
+  error: ProviderAuthError,
+});
+
+export const WsProviderAuthResizeRpc = Rpc.make(WS_METHODS.providerAuthResize, {
+  payload: ProviderAuthResizeInput,
+  success: Schema.Void,
+  error: ProviderAuthError,
+});
+
+export const WsProviderAuthStopRpc = Rpc.make(WS_METHODS.providerAuthStop, {
+  payload: ProviderAuthStopInput,
+  success: Schema.Void,
+  error: ProviderAuthError,
+});
+
+export const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
+  payload: ProviderAuthSubscribeInput,
+  success: ProviderAuthEvent,
+  stream: true,
+});
+
 export const WsRealtimeAppendAudioRpc = Rpc.make(WS_METHODS.realtimeAppendAudio, {
   payload: ProviderRealtimeAppendAudioInput,
   success: Schema.Void,
@@ -1149,6 +1195,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
   WsSubscribeTerminalEventsRpc,
+  WsProviderAuthStartRpc,
+  WsProviderAuthWriteRpc,
+  WsProviderAuthResizeRpc,
+  WsProviderAuthStopRpc,
+  WsProviderAuthSubscribeRpc,
   WsRealtimeAppendAudioRpc,
   WsRealtimeSubscribeAudioRpc,
   WsSubscribeServerConfigRpc,

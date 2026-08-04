@@ -56,6 +56,10 @@ const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
+import {
+  ProviderAuthSessions,
+  type ProviderAuthSessionsShape,
+} from "./provider/auth/ProviderAuthSessions.ts";
 import { makeRoutesLayer } from "./server.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
@@ -354,6 +358,7 @@ const buildAppUnderTest = (options?: {
     vcsStatusBroadcaster?: Partial<VcsStatusBroadcaster.VcsStatusBroadcasterShape>;
     projectSetupScriptRunner?: Partial<ProjectSetupScriptRunnerShape>;
     terminalManager?: Partial<TerminalManagerShape>;
+    providerAuthSessions?: Partial<ProviderAuthSessionsShape>;
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
@@ -722,9 +727,14 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(TerminalManager)({
-          ...options?.layers?.terminalManager,
-        }),
+        Layer.mergeAll(
+          Layer.mock(TerminalManager)({
+            ...options?.layers?.terminalManager,
+          }),
+          Layer.mock(ProviderAuthSessions)({
+            ...options?.layers?.providerAuthSessions,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(OrchestrationEngineService)({
