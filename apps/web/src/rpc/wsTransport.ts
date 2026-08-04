@@ -483,6 +483,8 @@ export class WsTransport {
     const sessionId = this.nextSessionId + 1;
     this.nextSessionId = sessionId;
     this.activeSessionId = sessionId;
+    let session: TransportSession | null = null;
+    let hasOpenedPhysicalSocket = false;
     const runtime = ManagedRuntime.make(
       Layer.mergeAll(
         createWsRpcProtocolLayer(
@@ -494,6 +496,18 @@ export class WsTransport {
               this.disposed ||
               this.intentionalCloseDepth > 0 ||
               this.lifecycleHandlers?.isCloseIntentional?.() === true,
+            onOpen: () => {
+              // The Effect RPC protocol retries physical WebSockets inside a
+              // single transport session. Once its replacement is ready,
+              // interrupt streams from the closed socket so their subscribe
+              // loops bind to the live connection. Waiting for open avoids
+              // waking every stream while the transport is still offline.
+              if (hasOpenedPhysicalSocket && session !== null) {
+                this.cancelStreamsForSession(session);
+              }
+              hasOpenedPhysicalSocket = true;
+              this.lifecycleHandlers?.onOpen?.();
+            },
             onHeartbeatPong: () => {
               this.lastHeartbeatPongAt = Date.now();
               this.lifecycleHandlers?.onHeartbeatPong?.();
@@ -514,11 +528,12 @@ export class WsTransport {
       ),
     );
     const clientScope = runtime.runSync(Scope.make());
-    return {
+    session = {
       runtime,
       clientScope,
       clientPromise: runtime.runPromise(Scope.provide(clientScope)(makeWsRpcProtocolClient)),
     };
+    return session;
   }
 
   private runStreamOnSession<TValue>(

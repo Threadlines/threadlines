@@ -6,6 +6,7 @@ export interface TerminalCommandInputState {
 export interface TerminalCommandInputResult {
   readonly state: TerminalCommandInputState;
   readonly submittedCommand: string | null;
+  readonly didSubmit: boolean;
 }
 
 const MAX_TRACKED_COMMAND_LENGTH = 2_048;
@@ -198,9 +199,11 @@ export function applyTerminalInputData(
     cursor: clampCursor(state.cursor, state.draft),
   };
   let submittedCommand: string | null = null;
+  let didSubmit = false;
 
   for (let index = 0; index < data.length; ) {
     if (data.startsWith("\r\n", index)) {
+      didSubmit = true;
       submittedCommand = normalizeSubmittedTerminalCommand(nextState.draft) ?? submittedCommand;
       nextState = createTerminalCommandInputState();
       index += 2;
@@ -212,6 +215,7 @@ export function applyTerminalInputData(
     const char = String.fromCodePoint(codePoint);
 
     if (char === "\r" || char === "\n") {
+      didSubmit = true;
       submittedCommand = normalizeSubmittedTerminalCommand(nextState.draft) ?? submittedCommand;
       nextState = createTerminalCommandInputState();
       index += char.length;
@@ -266,5 +270,5 @@ export function applyTerminalInputData(
     index += char.length;
   }
 
-  return { state: nextState, submittedCommand };
+  return { state: nextState, submittedCommand, didSubmit };
 }

@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import { resolveCommandPath } from "@threadlines/shared/shell";
 import { PtyAdapter } from "../Services/PTY.ts";
 import {
   PtySpawnError,
@@ -13,6 +14,22 @@ import {
 } from "../Services/PTY.ts";
 
 let didEnsureSpawnHelperExecutable = false;
+
+/**
+ * node-pty's Windows backend searches PATH for the shell name exactly as
+ * provided, without applying PATHEXT. Resolve bare commands ourselves so a
+ * configured `claude` or `codex` finds the installed `.exe` / `.cmd` file.
+ * Unix node-pty already performs the expected PATH lookup, so keep its input
+ * unchanged.
+ */
+export function resolveNodePtyShell(
+  shell: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32") return shell;
+  return resolveCommandPath(shell, { env, platform }) ?? shell;
+}
 
 const resolveNodePtySpawnHelperPath = Effect.gen(function* () {
   const requireForNodePty = createRequire(import.meta.url);
@@ -118,7 +135,7 @@ export const layer = Layer.effect(
         yield* ensureNodePtySpawnHelperExecutableCached;
         const ptyProcess = yield* Effect.try({
           try: () =>
-            nodePty.spawn(input.shell, input.args ?? [], {
+            nodePty.spawn(resolveNodePtyShell(input.shell, input.env), input.args ?? [], {
               cwd: input.cwd,
               cols: input.cols,
               rows: input.rows,

@@ -49,6 +49,18 @@ describe("terminalCommandTracker", () => {
     expect(result.submittedCommand).toBeNull();
   });
 
+  it("reports submissions even when shell history hides the command text", () => {
+    let state = createTerminalCommandInputState();
+    const historyNavigation = applyTerminalInputData(state, "\u001b[A");
+    state = historyNavigation.state;
+
+    expect(historyNavigation.didSubmit).toBe(false);
+    expect(applyTerminalInputData(state, "\r")).toMatchObject({
+      submittedCommand: null,
+      didSubmit: true,
+    });
+  });
+
   it("removes absolute executable paths from detected terminal activity commands", () => {
     expect(
       normalizeTerminalActivityCommand(

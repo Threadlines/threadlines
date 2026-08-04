@@ -55,6 +55,7 @@ export interface TerminalSessionState {
   hasRunningSubprocess: boolean;
   runningSubprocessCommand: string | null;
   submittedCommand: string | null;
+  subprocessPollingArmed: boolean;
   terminalCommandInputState: TerminalCommandInputState;
   runtimeEnv: Record<string, string> | null;
 }

@@ -129,6 +129,7 @@ interface TerminalSessionState {
   hasRunningSubprocess: boolean;
   runningSubprocessCommand: string | null;
   submittedCommand: string | null;
+  subprocessPollingArmed: boolean;
   terminalCommandInputState: TerminalCommandInputState;
   runtimeEnv: Record<string, string> | null;
 }
@@ -1412,6 +1413,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.hasRunningSubprocess = false;
           session.runningSubprocessCommand = null;
           session.submittedCommand = null;
+          session.subprocessPollingArmed = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
           session.status = "exited";
           session.pendingHistoryControlSequence = "";
@@ -1485,6 +1487,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.hasRunningSubprocess = false;
         session.runningSubprocessCommand = null;
         session.submittedCommand = null;
+        session.subprocessPollingArmed = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
         session.status = "exited";
         session.pendingHistoryControlSequence = "";
@@ -1582,6 +1585,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.hasRunningSubprocess = false;
         session.runningSubprocessCommand = null;
         session.submittedCommand = null;
+        session.subprocessPollingArmed = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
@@ -1665,6 +1669,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.hasRunningSubprocess = false;
           session.runningSubprocessCommand = null;
           session.submittedCommand = null;
+          session.subprocessPollingArmed = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
@@ -1728,7 +1733,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         (session): session is TerminalSessionState & { pid: number } =>
           session.status === "running" &&
           Number.isInteger(session.pid) &&
-          (session.submittedCommand !== null || session.hasRunningSubprocess),
+          session.subprocessPollingArmed,
       );
 
       if (sessionsNeedingSubprocessCheck.length === 0) {
@@ -1888,7 +1893,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         [...state.sessions.values()].some(
           (session) =>
             session.status === "running" &&
-            (session.submittedCommand !== null || session.hasRunningSubprocess),
+            session.subprocessPollingArmed,
         ),
       ),
     );
@@ -1972,6 +1977,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               hasRunningSubprocess: false,
               runningSubprocessCommand: null,
               submittedCommand: null,
+              subprocessPollingArmed: false,
               terminalCommandInputState: createTerminalCommandInputState(),
               runtimeEnv: normalizedRuntimeEnv(input.env),
             };
@@ -2085,6 +2091,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       yield* Effect.sync(() => process.write(input.data));
       const result = applyTerminalInputData(session.terminalCommandInputState, input.data);
       session.terminalCommandInputState = result.state;
+      if (result.didSubmit) {
+        // Keep checking this PTY after a submitted command even if an early
+        // process snapshot misses its child. This also covers commands recalled
+        // through shell history, whose text cannot be reconstructed here.
+        session.subprocessPollingArmed = true;
+      }
       if (result.submittedCommand !== null) {
         session.submittedCommand = result.submittedCommand;
       }
@@ -2168,6 +2180,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               hasRunningSubprocess: false,
               runningSubprocessCommand: null,
               submittedCommand: null,
+              subprocessPollingArmed: false,
               terminalCommandInputState: createTerminalCommandInputState(),
               runtimeEnv: normalizedRuntimeEnv(input.env),
             };
