@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, describe } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -1832,3 +1833,35 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
     );
   });
 });
+
+// Outside the layer-scoped suite above because it needs the real clock: the
+// retry sleeps between attempts, which the test clock would never advance past.
+it.live("waits for another process to release the index lock", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    yield* initRepoWithCommit(cwd);
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+
+    yield* writeTextFile(cwd, "locked.txt", "locked\n");
+    const lockPath = path.join(cwd, ".git", "index.lock");
+    yield* fileSystem.writeFileString(lockPath, "");
+    const release = yield* Effect.forkChild(
+      Effect.promise(() => sleepRealTime(250)).pipe(
+        Effect.andThen(fileSystem.remove(lockPath, { force: true })),
+      ),
+    );
+
+    const result = yield* driver.execute({
+      operation: "GitVcsDriver.test.indexLock",
+      cwd,
+      args: ["add", "locked.txt"],
+      timeoutMs: 10_000,
+    });
+
+    yield* Fiber.join(release);
+    assert.equal(result.exitCode, 0);
+    assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "locked.txt");
+  }).pipe(Effect.provide(TestLayer)),
+);

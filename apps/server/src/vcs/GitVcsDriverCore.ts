@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import * as Cache from "effect/Cache";
+import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -51,6 +52,23 @@ const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.minutes(2);
+/**
+ * Git refuses to touch the index while another process holds
+ * `.git/index.lock`. Our own mutations are serialized per checkout, but a
+ * terminal, an editor, or a coding agent working in the same directory is
+ * outside that mutex, and even a plain `git status` takes the lock to refresh
+ * the index. The lock is normally held for milliseconds, so the failure is a
+ * race rather than a real conflict — and surfacing it strands multi-step
+ * flows partway through (a pull that already stashed leaves the user's work
+ * in the stash). Retry for ~2s before giving up.
+ */
+const INDEX_LOCK_RETRY_DELAYS = [
+  Duration.millis(100),
+  Duration.millis(200),
+  Duration.millis(400),
+  Duration.millis(600),
+  Duration.millis(800),
+] as const;
 // Healthy single-branch fetches have been observed taking up to ~6s on
 // Windows (credential helper + network jitter), while large rewritten remotes
 // can exceed 15s. Background pollers do not block interactive reads once the
@@ -154,6 +172,29 @@ interface ExecuteGitOptions {
   maxOutputBytes?: number | undefined;
   appendTruncationMarker?: boolean | undefined;
   progress?: GitVcsDriver.ExecuteGitProgress | undefined;
+}
+
+/**
+ * Whether a git failure message is only the index lock being held elsewhere.
+ * Matched on the message rather than the exit code, which git reports as a
+ * generic failure. See `INDEX_LOCK_RETRY_DELAYS`.
+ */
+export function isIndexLockContentionMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("index.lock") && normalized.includes("file exists");
+}
+
+function isIndexLockContentionExit(
+  outcome: Exit.Exit<GitVcsDriver.ExecuteGitResult, GitCommandError>,
+): boolean {
+  return Exit.match(outcome, {
+    onFailure: (cause) =>
+      Option.match(Cause.findErrorOption(cause), {
+        onNone: () => false,
+        onSome: (error) => isIndexLockContentionMessage(error.detail),
+      }),
+    onSuccess: (result) => result.exitCode !== 0 && isIndexLockContentionMessage(result.stderr),
+  });
 }
 
 function parseBranchAb(value: string): { ahead: number; behind: number } {
@@ -1119,8 +1160,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const executeWithIndexLockRetry: GitVcsDriver.GitVcsDriverShape["execute"] = Effect.fnUntraced(
+    function* (input) {
+      // Both outcomes have to be inspected: callers that opted into
+      // `allowNonZeroExit` get the lock message back as a result, everyone
+      // else gets it as a `GitCommandError`.
+      let outcome = yield* Effect.exit(executeRaw(input));
+      for (const delay of INDEX_LOCK_RETRY_DELAYS) {
+        if (!isIndexLockContentionExit(outcome)) break;
+        yield* Effect.sleep(delay);
+        outcome = yield* Effect.exit(executeRaw(input));
+      }
+      return yield* outcome;
+    },
+  );
+
   const execute: GitVcsDriver.GitVcsDriverShape["execute"] = (input) =>
-    executeRaw(input).pipe(
+    executeWithIndexLockRetry(input).pipe(
       withMetrics({
         counter: gitCommandsTotal,
         timer: gitCommandDuration,

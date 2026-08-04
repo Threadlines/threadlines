@@ -5335,7 +5335,7 @@ export function SourceControlPanel({
             <DialogDescription>{activeStashRecovery?.detail}</DialogDescription>
           </DialogHeader>
           {activeStashRecovery ? (
-            <div className="mt-4 divide-y divide-border border-y border-border text-sm">
+            <div className="divide-y divide-border border-t border-border px-6 text-sm">
               {activeStashRecovery.conflictedPaths.length > 0 ? (
                 <div className="py-3">
                   <div className="mb-1 text-xs text-muted-foreground">Conflicted files</div>
@@ -5360,7 +5360,7 @@ export function SourceControlPanel({
               ) : null}
             </div>
           ) : null}
-          <DialogFooter className="mt-4">
+          <DialogFooter>
             <Button
               variant="outline"
               size="sm"
