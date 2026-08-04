@@ -146,6 +146,62 @@ const authAccessHarness = vi.hoisted(() => {
   };
 });
 
+const providerAuthHarness = vi.hoisted(() => {
+  type AuthEvent = {
+    readonly instanceId: string;
+    readonly createdAt: string;
+  } & (
+    | { readonly type: "command"; readonly flow: string; readonly command: string }
+    | { readonly type: "output"; readonly data: string }
+    | {
+        readonly type: "status";
+        readonly status: string;
+        readonly exitCode: number | null;
+        readonly detail: string | null;
+      }
+  );
+
+  // Like the real service, events are delivered only to subscribers of the
+  // matching instance — every mounted panel subscribes, so a broadcast would
+  // render the same output in all of them.
+  const listeners = new Set<{
+    readonly instanceId: string;
+    readonly listener: (event: AuthEvent) => void;
+  }>();
+  const startCalls: Array<{ instanceId: string; flow: string }> = [];
+
+  return {
+    startCalls,
+    reset() {
+      listeners.clear();
+      startCalls.length = 0;
+    },
+    emit(event: AuthEvent) {
+      for (const entry of listeners) {
+        if (entry.instanceId === event.instanceId) {
+          entry.listener(event);
+        }
+      }
+    },
+    client: {
+      start: (input: { instanceId: string; flow: string }) => {
+        startCalls.push({ instanceId: input.instanceId, flow: input.flow });
+        return Promise.resolve();
+      },
+      write: () => Promise.resolve(),
+      resize: () => Promise.resolve(),
+      stop: () => Promise.resolve(),
+      subscribe: (input: { instanceId: string }, listener: (event: AuthEvent) => void) => {
+        const entry = { instanceId: input.instanceId, listener };
+        listeners.add(entry);
+        return () => {
+          listeners.delete(entry);
+        };
+      },
+    },
+  };
+});
+
 const mockConnectDesktopSshEnvironment = vi.hoisted(() => vi.fn());
 
 vi.mock("../../environments/runtime", () => {
@@ -167,6 +223,7 @@ vi.mock("../../environments/runtime", () => {
         subscribeAuthAccess: (listener: Parameters<typeof authAccessHarness.subscribe>[0]) =>
           authAccessHarness.subscribe(listener),
       },
+      providerAuth: providerAuthHarness.client,
     },
     ensureBootstrapped: async () => undefined,
     reconnect: async () => undefined,
@@ -617,6 +674,7 @@ describe("GeneralSettingsPanel observability", () => {
     localStorage.clear();
     useUiStateStore.setState({ defaultAdvertisedEndpointKey: null });
     authAccessHarness.reset();
+    providerAuthHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
   });
 
@@ -1584,6 +1642,71 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("Usage verified")).toBeInTheDocument();
     await page.getByText("Advanced: headless chat token").click();
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
+  });
+
+  it("signs a provider in without leaving settings", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          auth: { status: "unauthenticated" },
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByLabelText("Toggle Claude details").click();
+    await page.getByRole("button", { name: "Reconnect" }).click();
+
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([
+        { instanceId: "claudeAgent", flow: "login" },
+      ]);
+    });
+
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      type: "command",
+      flow: "login",
+      command: "claude auth login",
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:01.000Z",
+      type: "output",
+      data: "Opening browser to complete sign-in\r\n",
+    });
+
+    await expect
+      .element(page.getByText("Finish sign-in in your browser, then come back to this page."))
+      .toBeVisible();
+    await expect.element(page.getByText("Opening browser to complete sign-in")).toBeVisible();
+
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:02.000Z",
+      type: "status",
+      status: "succeeded",
+      exitCode: 0,
+      detail: null,
+    });
+
+    await expect.element(page.getByText("Signed in", { exact: true })).toBeVisible();
   });
 
   it("opens the shared reset-credit picker from provider settings", async () => {

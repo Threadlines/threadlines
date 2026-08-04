@@ -127,6 +127,10 @@
       "types": "./src/providerAuth.ts",
       "import": "./src/providerAuth.ts"
     },
+    "./providerAuthCommands": {
+      "types": "./src/providerAuthCommands.ts",
+      "import": "./src/providerAuthCommands.ts"
+    },
     "./searchRanking": {
       "types": "./src/searchRanking.ts",
       "import": "./src/searchRanking.ts"

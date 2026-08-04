@@ -8,6 +8,7 @@ export * from "./ipc.ts";
 export * from "./previewAutomation.ts";
 export * from "./terminal.ts";
 export * from "./provider.ts";
+export * from "./providerAuth.ts";
 export * from "./providerExtensions.ts";
 export * from "./providerInstance.ts";
 export * from "./providerRuntime.ts";

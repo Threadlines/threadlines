@@ -52,6 +52,7 @@ import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
+import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
@@ -310,6 +311,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // satisfies the builder's dependency; consumed by `ProviderCommandReactorLive`.
   Layer.provideMerge(ThreadContextSeedBuilderLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
+  // Settings-owned provider sign-in. Listed before the terminal layer so it
+  // receives that layer's PTY adapter, but it keeps its own ephemeral,
+  // never-persisted sessions rather than going through TerminalManager.
+  Layer.provideMerge(ProviderAuthSessionsLive),
   Layer.provideMerge(TerminalLayerLive),
   // The browser side of the agent's tools. Holds no resources of its own --
   // it is a rendezvous between a provider turn and whichever client is showing

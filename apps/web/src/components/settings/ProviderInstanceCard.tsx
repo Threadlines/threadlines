@@ -11,7 +11,6 @@ import {
   PipetteIcon,
   PlusIcon,
   RotateCcwIcon,
-  TerminalIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -26,6 +25,17 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@threadlines/contracts";
+
+import {
+  buildClaudeAuthLoginCommand,
+  buildClaudeSetupTokenCommand,
+  buildCodexLoginCommand,
+  CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
+  CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
+  deriveClaudeLongLivedOAuthTokenState,
+  sanitizeClaudeLongLivedOAuthTokenInput,
+  upsertClaudeLongLivedOAuthTokenEnvironment,
+} from "@threadlines/shared/providerAuthCommands";
 
 import { cn } from "../../lib/utils";
 import {
@@ -44,6 +54,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ProviderConnectFlow } from "./ProviderConnectFlow";
 import type { DriverOption } from "./providerDriverMeta";
 import {
   deriveProviderSettingsFields,
@@ -69,8 +80,6 @@ const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
-const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
-const CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -81,17 +90,6 @@ const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
 
 let environmentVariableDraftId = 0;
 const nextEnvironmentVariableDraftId = () => `provider-env-${environmentVariableDraftId++}`;
-
-export interface ProviderAccountTerminalCommandRequest {
-  readonly title: string;
-  readonly command: string;
-  readonly terminalId: string;
-}
-
-function providerAccountTerminalId(driverKind: ProviderDriverKind | null): string {
-  const driverKey = driverKind ? String(driverKind).replace(/[^A-Za-z0-9_-]/g, "-") : "provider";
-  return `auth-${driverKey}`;
-}
 
 function truncateProviderUpdateOutput(value: string): string {
   const trimmed = value.trim();
@@ -199,119 +197,6 @@ export function deriveProviderModelsForDisplay(input: {
       },
   );
   return [...serverModels, ...customModels];
-}
-
-function shellWord(value: string): string {
-  if (/^[A-Za-z0-9_./~:@%+=,-]+$/u.test(value)) {
-    return value;
-  }
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-export function buildClaudeSetupTokenCommand(input: {
-  readonly binaryPath: string;
-  readonly homePath: string;
-}): string {
-  const binaryPath = input.binaryPath.trim() || "claude";
-  const homePath = input.homePath.trim();
-  const command = `${shellWord(binaryPath)} setup-token`;
-  return homePath ? `HOME=${shellWord(homePath)} ${command}` : command;
-}
-
-export function buildClaudeAuthLoginCommand(input: {
-  readonly binaryPath: string;
-  readonly homePath: string;
-}): string {
-  const binaryPath = input.binaryPath.trim() || "claude";
-  const homePath = input.homePath.trim();
-  const command = `${shellWord(binaryPath)} auth login`;
-  return homePath ? `HOME=${shellWord(homePath)} ${command}` : command;
-}
-
-export function buildCodexLoginCommand(input: {
-  readonly binaryPath: string;
-  readonly homePath: string;
-  readonly shadowHomePath: string;
-}): string {
-  const binaryPath = input.binaryPath.trim() || "codex";
-  const authHomePath = input.shadowHomePath.trim() || input.homePath.trim();
-  const command = `${shellWord(binaryPath)} login`;
-  return authHomePath ? `CODEX_HOME=${shellWord(authHomePath)} ${command}` : command;
-}
-
-export interface ClaudeLongLivedOAuthTokenState {
-  readonly configured: boolean;
-  readonly redacted: boolean;
-  readonly value: string;
-}
-
-export function deriveClaudeLongLivedOAuthTokenState(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-): ClaudeLongLivedOAuthTokenState {
-  const variable = environment.find((entry) => entry.name === CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
-  if (!variable) {
-    return { configured: false, redacted: false, value: "" };
-  }
-  const redacted = variable.valueRedacted === true;
-  const value = redacted ? "" : variable.value;
-  return {
-    configured: redacted || value.trim().length > 0,
-    redacted,
-    value,
-  };
-}
-
-export function sanitizeClaudeLongLivedOAuthTokenInput(value: string): string {
-  const trimmed = value.trim();
-  const assignmentMatch = trimmed.match(/(?:^|\s)CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+)$/u);
-  const token = assignmentMatch?.[1]?.trim() ?? trimmed;
-  return token
-    .replace(/^['"]|['"]$/g, "")
-    .replace(/\\[nr]/g, "")
-    .replace(/\s+/g, "");
-}
-
-export function upsertClaudeLongLivedOAuthTokenEnvironment(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-  token: string,
-): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
-  const trimmed = sanitizeClaudeLongLivedOAuthTokenInput(token);
-  const nextEnvironment: ProviderInstanceEnvironmentVariable[] = [];
-  let inserted = false;
-
-  for (const variable of environment) {
-    if (variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV) {
-      nextEnvironment.push(variable);
-      continue;
-    }
-    if (trimmed.length === 0 || inserted) {
-      continue;
-    }
-    nextEnvironment.push({
-      name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
-      value: trimmed,
-      sensitive: true,
-      valueRedacted: false,
-    });
-    inserted = true;
-  }
-
-  if (trimmed.length > 0 && !inserted) {
-    nextEnvironment.push({
-      name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
-      value: trimmed,
-      sensitive: true,
-      valueRedacted: false,
-    });
-  }
-
-  return nextEnvironment;
-}
-
-export function removeClaudeLongLivedOAuthTokenEnvironment(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
-  return environment.filter((variable) => variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
 }
 
 export function preferClaudeNormalSignInEnvironment(
@@ -656,53 +541,18 @@ function ProviderEnvironmentEditor(props: {
 
 function ClaudeLongLivedAuthSection(props: {
   readonly idPrefix: string;
+  readonly instanceId: ProviderInstanceId;
   readonly setupCommand: string;
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
-  readonly onRunTerminalCommand?:
-    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
-    | undefined;
-  readonly terminalCommandRequest?: ProviderAccountTerminalCommandRequest | undefined;
 }) {
   const tokenState = deriveClaudeLongLivedOAuthTokenState(props.environment);
   const tokenInputId = `${props.idPrefix}-claude-oauth-token`;
   const [tokenDraft, setTokenDraft] = useState("");
-  const [isRunningSetupCommand, setIsRunningSetupCommand] = useState(false);
   const [isExpanded, setIsExpanded] = useState(tokenState.configured);
   const sanitizedTokenDraft = sanitizeClaudeLongLivedOAuthTokenInput(tokenDraft);
   const tokenDraftHasValue = tokenDraft.trim().length > 0;
   const tokenDraftWillBeSanitized = tokenDraftHasValue && sanitizedTokenDraft !== tokenDraft.trim();
-  const { copyToClipboard, isCopied } = useCopyToClipboard<"setup-token-command">({
-    onCopy: () => {
-      toastManager.add({
-        type: "success",
-        title: "Claude token setup command copied",
-        description: "Run it in a terminal, then paste the generated token here.",
-      });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not copy Claude token setup command",
-          description: error.message,
-        }),
-      );
-    },
-  });
-  const canRunSetupCommand =
-    props.onRunTerminalCommand !== undefined && props.terminalCommandRequest !== undefined;
-  const runSetupCommand = async () => {
-    if (!props.onRunTerminalCommand || !props.terminalCommandRequest) {
-      return;
-    }
-    setIsRunningSetupCommand(true);
-    try {
-      await props.onRunTerminalCommand(props.terminalCommandRequest);
-    } finally {
-      setIsRunningSetupCommand(false);
-    }
-  };
   const saveToken = () => {
     if (sanitizedTokenDraft.length === 0) {
       toastManager.add({
@@ -746,48 +596,17 @@ function ClaudeLongLivedAuthSection(props: {
         <p className="text-xs text-muted-foreground">
           Optional for remote or headless chat. Usage still requires normal Claude sign-in.
         </p>
-        <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-foreground">Setup command</span>
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              {canRunSetupCommand ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  className="h-7 gap-1.5 px-2 text-xs"
-                  disabled={isRunningSetupCommand}
-                  onClick={() => void runSetupCommand()}
-                >
-                  {isRunningSetupCommand ? (
-                    <LoaderIcon className="size-3 animate-spin" />
-                  ) : (
-                    <TerminalIcon className="size-3" />
-                  )}
-                  {isRunningSetupCommand ? "Opening" : "Run"}
-                </Button>
-              ) : null}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1.5 px-2 text-xs"
-                onClick={() => copyToClipboard(props.setupCommand, "setup-token-command")}
-              >
-                <CopyIcon className="size-3" />
-                {isCopied ? "Copied" : "Copy"}
-              </Button>
-            </div>
-          </div>
-          <code className="block overflow-x-auto whitespace-nowrap rounded border border-border/60 bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground/85">
-            {props.setupCommand}
-          </code>
-          <p className="text-xs text-muted-foreground">
-            Finish browser authorization, then paste the token below.
-          </p>
-        </div>
+        <ProviderConnectFlow
+          instanceId={props.instanceId}
+          flow="claude-setup-token"
+          displayName="Claude"
+          actionLabel={tokenState.configured ? "Generate new token" : "Generate token"}
+          command={props.setupCommand}
+          buttonVariant={tokenState.configured ? "outline" : "default"}
+          description="Threadlines saves the token for you when it appears."
+        />
         <label className="block" htmlFor={tokenInputId}>
-          <span className="text-xs font-medium text-foreground">OAuth token</span>
+          <span className="text-xs font-medium text-foreground">Paste a token instead</span>
           <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
             <Input
               id={tokenInputId}
@@ -830,7 +649,7 @@ function ClaudeLongLivedAuthSection(props: {
             </span>
           ) : null}
         </label>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge variant={tokenState.configured ? "success" : "secondary"} size="sm">
             {tokenState.configured ? "Configured" : "Not configured"}
           </Badge>
@@ -848,93 +667,6 @@ function ClaudeLongLivedAuthSection(props: {
         </div>
       </div>
     </details>
-  );
-}
-
-function CopyableProviderCommand(props: {
-  readonly title: string;
-  readonly command: string;
-  readonly description: string;
-  readonly copiedTitle: string;
-  readonly errorTitle: string;
-  readonly runLabel?: string | undefined;
-  readonly onRunTerminalCommand?:
-    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
-    | undefined;
-  readonly terminalCommandRequest?: ProviderAccountTerminalCommandRequest | undefined;
-}) {
-  const [isRunningCommand, setIsRunningCommand] = useState(false);
-  const { copyToClipboard, isCopied } = useCopyToClipboard<"command">({
-    onCopy: () => {
-      toastManager.add({
-        type: "success",
-        title: props.copiedTitle,
-        description: "Run it in a terminal when you need to refresh this account.",
-      });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: props.errorTitle,
-          description: error.message,
-        }),
-      );
-    },
-  });
-  const canRunCommand =
-    props.onRunTerminalCommand !== undefined && props.terminalCommandRequest !== undefined;
-  const runCommand = async () => {
-    if (!props.onRunTerminalCommand || !props.terminalCommandRequest) {
-      return;
-    }
-    setIsRunningCommand(true);
-    try {
-      await props.onRunTerminalCommand(props.terminalCommandRequest);
-    } finally {
-      setIsRunningCommand(false);
-    }
-  };
-
-  return (
-    <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">{props.title}</span>
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {canRunCommand ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              className="h-7 gap-1.5 px-2 text-xs"
-              disabled={isRunningCommand}
-              onClick={() => void runCommand()}
-            >
-              {isRunningCommand ? (
-                <LoaderIcon className="size-3 animate-spin" />
-              ) : (
-                <TerminalIcon className="size-3" />
-              )}
-              {isRunningCommand ? "Opening" : (props.runLabel ?? "Run")}
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => copyToClipboard(props.command, "command")}
-          >
-            <CopyIcon className="size-3" />
-            {isCopied ? "Copied" : "Copy"}
-          </Button>
-        </div>
-      </div>
-      <code className="block overflow-x-auto whitespace-nowrap rounded border border-border/60 bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground/85">
-        {props.command}
-      </code>
-      <p className="text-xs text-muted-foreground">{props.description}</p>
-    </div>
   );
 }
 
@@ -984,10 +716,10 @@ export function claudeAuthCapabilityBadge(
 }
 
 function ProviderAccountSignInSection(props: {
+  readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind | null;
   readonly displayName: string;
   readonly liveProvider: ServerProvider | undefined;
-  readonly authEmail: string | undefined;
   readonly terminalLoginCommand: string;
   readonly idPrefix: string;
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
@@ -995,15 +727,9 @@ function ProviderAccountSignInSection(props: {
     environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
   ) => void;
   readonly claudeSetupTokenCommand?: string | undefined;
-  readonly onRunTerminalCommand?:
-    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
-    | undefined;
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
-  const authLabel = props.liveProvider?.auth.label ?? props.liveProvider?.auth.type ?? null;
-  const usageEmail = props.liveProvider?.auth.usageEmail;
-  const usageEmailForDisplay =
-    usageEmail?.trim() && usageEmail !== props.authEmail ? usageEmail : undefined;
+  const needsSignIn = authBadge.variant === "warning";
   const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
   const hasClaudeCredentialOverride =
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
@@ -1021,42 +747,34 @@ function ProviderAccountSignInSection(props: {
   return (
     <ProviderConfigurationSection
       title="Account & Sign-in"
-      description="Shows whether this provider is ready and gives the right terminal command to refresh it."
+      description="Shows whether this provider is ready and signs it back in without leaving settings."
     >
       <div className="grid gap-4">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Badge variant={authBadge.variant} size="sm">
-            {authBadge.label}
-          </Badge>
-          <ProviderAuthEmail email={props.authEmail} prefix="Account" />
-          {authLabel ? <span className="text-xs text-muted-foreground">· {authLabel}</span> : null}
-          <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
-          {claudeCapabilityBadges.map(({ kind, capability, presentation }) => (
-            <Badge key={kind} variant={presentation.variant} size="sm" title={capability.detail}>
-              {presentation.label}
-            </Badge>
-          ))}
-        </div>
-
-        <CopyableProviderCommand
-          title="Terminal sign-in"
+        <ProviderConnectFlow
+          instanceId={props.instanceId}
+          flow="login"
+          displayName={props.displayName}
+          actionLabel={needsSignIn ? "Reconnect" : "Sign in again"}
           command={props.terminalLoginCommand}
-          description={
-            isClaude
-              ? claudeLongLivedTokenConfigured
-                ? "Recommended: normal sign-in works for both chat and usage."
-                : "This sign-in works for both chat and usage."
-              : `Run this when ${props.displayName} reports that the account is signed out.`
+          buttonVariant={needsSignIn ? "default" : "ghost"}
+          description={isClaude ? "Signing in covers both chat and usage." : undefined}
+          statusRow={
+            <>
+              <Badge variant={authBadge.variant} size="sm">
+                {authBadge.label}
+              </Badge>
+              {claudeCapabilityBadges.map(({ kind, capability, presentation }) => (
+                <Badge
+                  key={kind}
+                  variant={presentation.variant}
+                  size="sm"
+                  title={capability.detail}
+                >
+                  {presentation.label}
+                </Badge>
+              ))}
+            </>
           }
-          copiedTitle={`${props.displayName} sign-in command copied`}
-          errorTitle={`Could not copy ${props.displayName} sign-in command`}
-          runLabel="Sign in"
-          onRunTerminalCommand={props.onRunTerminalCommand}
-          terminalCommandRequest={{
-            title: `${props.displayName} sign-in`,
-            command: props.terminalLoginCommand,
-            terminalId: providerAccountTerminalId(props.driverKind),
-          }}
         />
 
         {hasClaudeCredentialOverride ? (
@@ -1101,15 +819,10 @@ function ProviderAccountSignInSection(props: {
         {isClaude && props.claudeSetupTokenCommand ? (
           <ClaudeLongLivedAuthSection
             idPrefix={props.idPrefix}
+            instanceId={props.instanceId}
             setupCommand={props.claudeSetupTokenCommand}
             environment={props.environment}
             onChange={props.onEnvironmentChange}
-            onRunTerminalCommand={props.onRunTerminalCommand}
-            terminalCommandRequest={{
-              title: "Claude token setup",
-              command: props.claudeSetupTokenCommand,
-              terminalId: providerAccountTerminalId(props.driverKind),
-            }}
           />
         ) : null}
       </div>
@@ -1425,9 +1138,6 @@ interface ProviderInstanceCardProps {
   readonly isResolvingUpdateBlockers?: boolean | undefined;
   readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
-  readonly onRunTerminalCommand?:
-    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
-    | undefined;
 }
 
 /**
@@ -1476,7 +1186,6 @@ export function ProviderInstanceCard({
   isResolvingUpdateBlockers = false,
   onResetAccountUsage,
   accountUsageResetInFlight,
-  onRunTerminalCommand,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -1983,15 +1692,14 @@ export function ProviderInstanceCard({
           {activeDetailsSection === "account" && terminalLoginCommand ? (
             <div className="space-y-0">
               <ProviderAccountSignInSection
+                instanceId={instanceId}
                 driverKind={driverKind}
                 displayName={displayName}
                 liveProvider={liveProvider}
-                authEmail={authEmail}
                 terminalLoginCommand={terminalLoginCommand}
                 idPrefix={`provider-instance-${instanceId}`}
                 environment={instance.environment ?? []}
                 onEnvironmentChange={updateEnvironment}
-                onRunTerminalCommand={onRunTerminalCommand}
                 {...(driverKind === CLAUDE_DRIVER_KIND ? { claudeSetupTokenCommand } : {})}
               />
             </div>
