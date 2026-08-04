@@ -7,6 +7,7 @@ import {
   type TerminalRestartInput,
 } from "@threadlines/contracts";
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -45,6 +46,7 @@ class FakePtyProcess implements PtyProcess {
   private readonly dataListeners = new Set<(data: string) => void>();
   private readonly exitListeners = new Set<(event: PtyExitEvent) => void>();
   killed = false;
+  onWrite: ((data: string) => void) | null = null;
 
   constructor(pid: number) {
     this.pid = pid;
@@ -52,6 +54,7 @@ class FakePtyProcess implements PtyProcess {
 
   write(data: string): void {
     this.writes.push(data);
+    this.onWrite?.(data);
   }
 
   resize(cols: number, rows: number): void {
@@ -659,13 +662,175 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
-  it.effect("does not invoke subprocess polling until a terminal command is submitted", () =>
+  it.effect("tracks PowerShell commands until its prompt reports completion", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "1..24 | ForEach-Object { Start-Sleep -Seconds 5 }\r",
+      });
+
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some(
+            (event) =>
+              event.type === "activity" &&
+              event.hasRunningSubprocess === true &&
+              event.command === "1..24 | ForEach-Object { Start-Sleep -Seconds 5 }",
+          ),
+        ),
+      );
+
+      yield* Effect.sleep("100 millis");
+      expect(
+        (yield* getEvents).some(
+          (event) => event.type === "activity" && event.hasRunningSubprocess === false,
+        ),
+      ).toBe(false);
+
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+      process.emitData("\u001b]633;");
+      process.emitData("D\u0007PS C:\\repo> ");
+
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === false),
+        ),
+      );
+
+      const reopened = yield* manager.open(openInput());
+      expect(reopened.history).not.toContain("633;D");
+    }),
+  );
+
+  it.effect("ignores an in-flight subprocess result after PowerShell reports completion", () =>
+    Effect.gen(function* () {
+      const checkStarted = yield* Deferred.make<void>();
+      const checkResult = yield* Deferred.make<boolean>();
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        subprocessChecker: () =>
+          Deferred.succeed(checkStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(checkResult)),
+          ),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "Write-Output done\r",
+      });
+      yield* Deferred.await(checkStarted);
+
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === false),
+        ),
+      );
+
+      yield* Deferred.succeed(checkResult, true);
+      yield* Effect.sleep("60 millis");
+
+      const activityStates = (yield* getEvents)
+        .filter((event) => event.type === "activity")
+        .map((event) => event.hasRunningSubprocess);
+      expect(activityStates).toEqual([true, false]);
+    }),
+  );
+
+  it.effect("installs PowerShell activity before an immediate prompt marker can arrive", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+      process.onWrite = () => process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "Write-Output fast\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === false),
+        ),
+      );
+
+      const activityStates = (yield* getEvents)
+        .filter((event) => event.type === "activity")
+        .map((event) => event.hasRunningSubprocess);
+      expect(activityStates).toEqual([true, false]);
+    }),
+  );
+
+  it.effect("replays current subprocess activity to a new subscriber", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents } = yield* createManager(5, {
+        subprocessChecker: () => Effect.succeed(true),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "vp run dev:desktop\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess),
+        ),
+        "1200 millis",
+      );
+
+      const replayedEvents = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
+      const unsubscribe = yield* manager.subscribe((event) =>
+        Ref.update(replayedEvents, (events) => [...events, event]),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      expect(yield* Ref.get(replayedEvents)).toContainEqual(
+        expect.objectContaining({
+          type: "activity",
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          hasRunningSubprocess: true,
+          command: "vp run dev:desktop",
+        }),
+      );
+    }),
+  );
+
+  it.effect("keeps polling after a submitted command survives an initial false sample", () =>
     Effect.gen(function* () {
       let checks = 0;
-      const { manager } = yield* createManager(5, {
+      let hasRunningSubprocess = false;
+      const { manager, getEvents } = yield* createManager(5, {
         subprocessChecker: () => {
           checks += 1;
-          return Effect.succeed(false);
+          return Effect.succeed(hasRunningSubprocess);
         },
         subprocessPollIntervalMs: 20,
       });
@@ -680,15 +845,33 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
-        data: "vp run dev:desktop\r",
+        // Shell history recalls command text inside the PTY, so the server can
+        // observe the submission but cannot reconstruct its label.
+        data: "\u001b[A\r",
       });
       yield* waitFor(
-        Effect.sync(() => checks > 0),
+        Effect.sync(() => checks >= 2),
         "1200 millis",
       );
-      const checksAfterCommand = checks;
+
+      hasRunningSubprocess = true;
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === true),
+        ),
+        "1200 millis",
+      );
+
+      hasRunningSubprocess = false;
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && !event.hasRunningSubprocess),
+        ),
+        "1200 millis",
+      );
+      const checksAfterConfirmedIdle = checks;
       yield* Effect.sleep("80 millis");
-      assert.equal(checks, checksAfterCommand);
+      assert.equal(checks, checksAfterConfirmedIdle);
     }),
   );
 
@@ -1058,9 +1241,12 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(ptyAdapter.spawnInputs[0]).toEqual(
         expect.objectContaining({
           shell: "pwsh.exe",
-          args: ["-NoLogo"],
+          args: expect.arrayContaining(["-NoLogo", "-NoExit", "-Command"]),
         }),
       );
+      expect(ptyAdapter.spawnInputs[0]?.args?.at(-1)).toContain("633;D");
+      expect(ptyAdapter.spawnInputs[0]?.args?.at(-1)).toContain("PowerShell.OnIdle");
+      expect(ptyAdapter.spawnInputs[0]?.args?.at(-1)).toContain("__threadlinesPromptWrapper");
     }),
   );
 
@@ -1087,8 +1273,12 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         "pwsh.exe",
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       ]);
-      expect(ptyAdapter.spawnInputs[1]?.args).toEqual(["-NoLogo"]);
-      expect(ptyAdapter.spawnInputs[2]?.args).toEqual(["-NoLogo"]);
+      expect(ptyAdapter.spawnInputs[1]?.args).toEqual(
+        expect.arrayContaining(["-NoLogo", "-NoExit", "-Command"]),
+      );
+      expect(ptyAdapter.spawnInputs[2]?.args).toEqual(
+        expect.arrayContaining(["-NoLogo", "-NoExit", "-Command"]),
+      );
     }),
   );
 

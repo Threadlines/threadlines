@@ -56,6 +56,8 @@ export interface TerminalSessionState {
   runningSubprocessCommand: string | null;
   submittedCommand: string | null;
   subprocessPollingArmed: boolean;
+  consecutiveSubprocessIdlePolls: number;
+  commandCompletionMarkersEnabled: boolean;
   terminalCommandInputState: TerminalCommandInputState;
   runtimeEnv: Record<string, string> | null;
 }
@@ -117,6 +119,9 @@ export interface TerminalManagerShape {
 
   /**
    * Subscribe to terminal runtime events with a direct callback.
+   *
+   * Replays the manager's current per-terminal activity state before live
+   * events so reconnecting clients can reconstruct running indicators.
    *
    * Returns an unsubscribe function.
    */
