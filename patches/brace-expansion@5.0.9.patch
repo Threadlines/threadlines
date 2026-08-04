@@ -1,0 +1,13 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+index 869a6bee23807b9f01c18c99ab8e952b4b242f97..bfe6eab55a2a12f130f18615fed70578f24ed434 100644
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -30,6 +30,8 @@ exports.EXPANSION_MAX = 100_000;
+ // realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
+ // characters) so legitimate input is unaffected.
+ exports.EXPANSION_MAX_LENGTH = 4_000_000;
++// Preserve the callable CommonJS API expected by minimatch versions before v10.
++module.exports = Object.assign(expand, module.exports);
+ function numeric(str) {
+     return !isNaN(str) ? parseInt(str, 10) : str.charCodeAt(0);
+ }
