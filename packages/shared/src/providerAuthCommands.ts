@@ -168,8 +168,21 @@ export function deriveClaudeLongLivedOAuthTokenState(
 
 export function sanitizeClaudeLongLivedOAuthTokenInput(value: string): string {
   const trimmed = value.trim();
-  const assignmentMatch = trimmed.match(/(?:^|\s)CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+)$/u);
-  const token = assignmentMatch?.[1]?.trim() ?? trimmed;
+  // Accept pastes of the whole `export CLAUDE_CODE_OAUTH_TOKEN=<token>` line.
+  // Parsed without a regex: the obvious `\s*=\s*(.+)$` pattern is
+  // polynomially backtracking on adversarial whitespace (CodeQL
+  // js/polynomial-redos).
+  let token = trimmed;
+  const markerIndex = trimmed.lastIndexOf(CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
+  const precededOk =
+    markerIndex === 0 || (markerIndex > 0 && /\s/.test(trimmed[markerIndex - 1] ?? ""));
+  if (markerIndex !== -1 && precededOk) {
+    const rest = trimmed.slice(markerIndex + CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV.length);
+    const equalsIndex = rest.indexOf("=");
+    if (equalsIndex !== -1 && rest.slice(0, equalsIndex).trim().length === 0) {
+      token = rest.slice(equalsIndex + 1).trim();
+    }
+  }
   return token
     .replace(/^['"]|['"]$/g, "")
     .replace(/\\[nr]/g, "")

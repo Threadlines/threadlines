@@ -12,8 +12,20 @@ import {
 
 const INSTANCE = "claude" as ProviderInstanceId;
 
-function event(partial: Omit<ProviderAuthEvent, "instanceId" | "createdAt">): ProviderAuthEvent {
-  return { instanceId: INSTANCE, createdAt: "2026-08-03T00:00:00.000Z", ...partial };
+// Omit must distribute over the event union — plain Omit collapses the
+// discriminated variants into their common keys.
+type ProviderAuthEventBody = ProviderAuthEvent extends infer E
+  ? E extends ProviderAuthEvent
+    ? Omit<E, "instanceId" | "createdAt">
+    : never
+  : never;
+
+function event(partial: ProviderAuthEventBody): ProviderAuthEvent {
+  return {
+    instanceId: INSTANCE,
+    createdAt: "2026-08-03T00:00:00.000Z",
+    ...partial,
+  } as ProviderAuthEvent;
 }
 
 function replay(events: ReadonlyArray<ProviderAuthEvent>): ProviderConnectFlowState {
