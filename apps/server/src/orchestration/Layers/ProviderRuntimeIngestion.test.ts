@@ -44,7 +44,10 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
-import { SubagentWorktreeFollowerLive } from "./SubagentWorktreeFollower.ts";
+import * as Duration from "effect/Duration";
+
+import { SubagentWorktreeFollower } from "../Services/SubagentWorktreeFollower.ts";
+import { make as makeSubagentWorktreeFollower } from "./SubagentWorktreeFollower.ts";
 import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -284,7 +287,14 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderRuntimeIngestionLive.pipe(
-      Layer.provideMerge(SubagentWorktreeFollowerLive),
+      Layer.provideMerge(
+        Layer.effect(
+          SubagentWorktreeFollower,
+          // Real delay races the harness's worktree cleanup; tests fake git
+          // state directly, so only the scheduling behavior matters.
+          makeSubagentWorktreeFollower({ lingerValidationDelay: Duration.millis(25) }),
+        ),
+      ),
       Layer.provideMerge(Layer.succeed(GitWorkflowService, gitWorkflow.service)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
@@ -644,7 +654,10 @@ describe("ProviderRuntimeIngestion", () => {
       });
     }
 
-    it("follows a subagent into its worktree and stops when the subagent finishes", async () => {
+    it("keeps following a finished subagent's worktree while it still exists", async () => {
+      // The worktree surviving the task means the agent left changes behind,
+      // and the session usually keeps working there (review, fixes, commit)
+      // without ever announcing the move.
       const harness = await createClaudeHarness();
       const worktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
       harness.setRepositoryWorktrees([harness.workspaceRoot, worktree]);
@@ -654,7 +667,43 @@ describe("ProviderRuntimeIngestion", () => {
       await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === worktree);
 
       completeTask(harness, "task-a");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("100 millis"));
+      expect((await harness.readModel()).threads[0]?.effectiveCwd).toBe(worktree);
+    });
+
+    it("stops following when the finished subagent's worktree is gone", async () => {
+      // An unchanged worktree is auto-removed at task end — nothing lingers.
+      const harness = await createClaudeHarness();
+      const worktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, worktree]);
+      harness.setSubagentWorktree("toolu_a", worktree);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === worktree);
+
+      harness.setRepositoryWorktrees([harness.workspaceRoot]);
+      completeTask(harness, "task-a");
       await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
+    });
+
+    it("lets a new subagent supersede a lingering worktree", async () => {
+      const harness = await createClaudeHarness();
+      const first = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      const second = `${harness.workspaceRoot}/.claude/worktrees/agent-b`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, first, second]);
+      harness.setSubagentWorktree("toolu_a", first);
+      harness.setSubagentWorktree("toolu_b", second);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === first);
+      completeTask(harness, "task-a");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("100 millis"));
+      expect((await harness.readModel()).threads[0]?.effectiveCwd).toBe(first);
+
+      startAgentTask(harness, "task-b", "toolu_b");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === second);
     });
 
     it("ignores a subagent whose checkout the provider never reports", async () => {
