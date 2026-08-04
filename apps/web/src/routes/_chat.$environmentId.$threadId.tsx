@@ -26,7 +26,10 @@ import {
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
-import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
+import {
+  gitWorkingTreeDiffQueryOptions,
+  invalidateGitWorkingTreeDiffQueries,
+} from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   useAutoHideSourceControlSheet,
@@ -277,6 +280,9 @@ function ChatThreadRouteView() {
       if (!threadRef) {
         return;
       }
+      if (options?.workingTree && sourceControlTarget) {
+        void invalidateGitWorkingTreeDiffQueries(queryClient, sourceControlTarget);
+      }
       markDiffOpened();
       void navigate({
         to: "/$environmentId/$threadId",
@@ -290,7 +296,7 @@ function ChatThreadRouteView() {
         }),
       });
     },
-    [markDiffOpened, navigate, threadRef],
+    [markDiffOpened, navigate, queryClient, sourceControlTarget, threadRef],
   );
 
   // Warm the lazy diff chunk while source control is open: a file click is

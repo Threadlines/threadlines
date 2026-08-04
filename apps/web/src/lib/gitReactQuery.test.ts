@@ -27,7 +27,9 @@ import {
   gitPullMutationOptions,
   gitRunStackedActionMutationOptions,
   gitStashesQueryOptions,
+  gitWorkingTreeDiffQueryOptions,
   invalidateGitQueries,
+  invalidateGitWorkingTreeDiffQueries,
 } from "./gitReactQuery";
 import { ensureEnvironmentApi } from "../environmentApi";
 
@@ -364,5 +366,40 @@ describe("invalidateGitQueries", () => {
       placeholderData(COMMIT_GRAPH_RESULT, previousKeyFor(ENVIRONMENT_B, "/repo/a")),
     ).toBeUndefined();
     expect(placeholderData(COMMIT_GRAPH_RESULT, undefined)).toBeUndefined();
+  });
+});
+
+describe("invalidateGitWorkingTreeDiffQueries", () => {
+  it("invalidates every diff variant for one checkout only", async () => {
+    const queryClient = new QueryClient();
+    const targetDiffKeys = [false, true].map(
+      (ignoreWhitespace) =>
+        gitWorkingTreeDiffQueryOptions({
+          environmentId: ENVIRONMENT_A,
+          cwd: "/repo/a",
+          filePaths: null,
+          ignoreWhitespace,
+        }).queryKey,
+    );
+    const otherDiffKey = gitWorkingTreeDiffQueryOptions({
+      environmentId: ENVIRONMENT_B,
+      cwd: "/repo/b",
+      filePaths: null,
+      ignoreWhitespace: false,
+    }).queryKey;
+
+    for (const queryKey of [...targetDiffKeys, otherDiffKey]) {
+      queryClient.setQueryData(queryKey, { diff: "cached" });
+    }
+
+    await invalidateGitWorkingTreeDiffQueries(queryClient, {
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+    });
+
+    for (const queryKey of targetDiffKeys) {
+      expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
+    }
+    expect(queryClient.getQueryState(otherDiffKey)?.isInvalidated).toBe(false);
   });
 });

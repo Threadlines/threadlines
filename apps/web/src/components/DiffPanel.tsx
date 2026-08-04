@@ -28,6 +28,7 @@ import {
   gitStageChangesMutationOptions,
   gitUnstageChangesMutationOptions,
   gitWorkingTreeDiffQueryOptions,
+  invalidateGitWorkingTreeDiffQueries,
 } from "~/lib/gitReactQuery";
 import { refreshGitStatus, useGitStatus } from "~/lib/gitStatusState";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
@@ -1139,6 +1140,10 @@ export default function DiffPanel({
       ? scopeThreadRef(activeThread.environmentId, activeThread.id)
       : routeThreadRef;
     if (!targetThreadRef) return;
+    void invalidateGitWorkingTreeDiffQueries(queryClient, {
+      environmentId: activeEnvironmentId,
+      cwd: activeCwd ?? null,
+    });
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(targetThreadRef),
@@ -1643,7 +1648,12 @@ export default function DiffPanel({
                 </div>
               )
             ) : renderablePatch.kind === "files" ? (
-              fileFilterActive && displayedFiles.length === 0 ? (
+              fileFilterActive &&
+              displayedFiles.length === 0 &&
+              diffMode === "workingTree" &&
+              workingTreeDiffQuery.isFetching ? (
+                <DiffPanelLoadingState label="Refreshing working tree diff..." />
+              ) : fileFilterActive && displayedFiles.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
                   <p className="text-xs text-muted-foreground/70">
                     No changes in {selectedFilePath} anymore.

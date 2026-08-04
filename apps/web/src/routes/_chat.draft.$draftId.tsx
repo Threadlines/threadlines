@@ -15,7 +15,10 @@ import {
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
-import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
+import {
+  gitWorkingTreeDiffQueryOptions,
+  invalidateGitWorkingTreeDiffQueries,
+} from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   useAutoHideSourceControlSheet,
@@ -57,6 +60,7 @@ function LazyFileViewerOverlay() {
 
 function DraftChatThreadRouteView() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { draftId: rawDraftId } = Route.useParams();
   const search = Route.useSearch();
   const shouldUseSourceControlSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
@@ -160,6 +164,9 @@ function DraftChatThreadRouteView() {
       if (!serverThreadRef) {
         return;
       }
+      if (sourceControlTarget) {
+        void invalidateGitWorkingTreeDiffQueries(queryClient, sourceControlTarget);
+      }
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(serverThreadRef),
@@ -171,7 +178,7 @@ function DraftChatThreadRouteView() {
         }),
       });
     },
-    [navigate, serverThreadRef],
+    [navigate, queryClient, serverThreadRef, sourceControlTarget],
   );
   const handleSourceControlBranchChange = useCallback(
     (branch: string | null, worktreePath: string | null) => {
@@ -180,7 +187,6 @@ function DraftChatThreadRouteView() {
     [draftId, setDraftThreadContext],
   );
   const diffIgnoreWhitespace = useSettings((settings) => settings.diffIgnoreWhitespace);
-  const queryClient = useQueryClient();
   useEffect(() => {
     if (!sourceControlOpen) {
       return;

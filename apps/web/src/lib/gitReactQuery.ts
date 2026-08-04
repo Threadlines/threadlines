@@ -114,6 +114,23 @@ export function invalidateGitQueries(
   return queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
 }
 
+/**
+ * Invalidates every cached working-tree patch for one checkout. The source
+ * control panel preloads this query, so opening a file must refresh that
+ * snapshot before using it as a single-file filter.
+ */
+export function invalidateGitWorkingTreeDiffQueries(
+  queryClient: QueryClient,
+  input: { environmentId: EnvironmentId | null; cwd: string | null },
+) {
+  if (input.cwd === null) {
+    return Promise.resolve();
+  }
+  return queryClient.invalidateQueries({
+    queryKey: gitQueryKeys.workingTreeDiffPrefix(input.environmentId, input.cwd),
+  });
+}
+
 function invalidateGitBranchQueries(
   queryClient: QueryClient,
   environmentId: EnvironmentId | null,
