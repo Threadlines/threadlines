@@ -35,6 +35,8 @@ import { ThreadId } from "./baseSchemas.ts";
 export const PreviewAutomationOperationSchema = Schema.Literals([
   "status",
   "tabs",
+  "openTab",
+  "closeTab",
   "selectTab",
   "snapshot",
   "navigate",
@@ -55,6 +57,8 @@ export type PreviewAutomationOperation = typeof PreviewAutomationOperationSchema
 export const PREVIEW_AUTOMATION_OPERATIONS = [
   "status",
   "tabs",
+  "openTab",
+  "closeTab",
   "selectTab",
   "snapshot",
   "navigate",
@@ -194,6 +198,8 @@ export type PreviewAutomationHost = typeof PreviewAutomationHostSchema.Type;
 
 export const PreviewAutomationRequestSchema = Schema.Struct({
   requestId: Schema.String,
+  /** Opaque identity minted with the provider runtime's browser credential. */
+  agentId: Schema.String,
   operation: PreviewAutomationOperationSchema,
   /** Shaped by the operation; the host validates it against the matching input schema. */
   input: Schema.Json,
@@ -210,8 +216,29 @@ export type PreviewAutomationResponse = typeof PreviewAutomationResponseSchema.T
 
 // --- Operation inputs -------------------------------------------------------
 
+const PreviewAutomationTabTargetFields = {
+  /** Exact tab to target. Omit to use this agent session's pinned tab. */
+  tabId: Schema.optionalKey(Schema.String),
+};
+
+export const PreviewAutomationTabTargetInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+});
+
 export const PreviewAutomationNavigateInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   url: Schema.String,
+});
+
+export const PreviewAutomationOpenTabInputSchema = Schema.Struct({
+  /** Optional initial address. Omit for a blank tab. */
+  url: Schema.optionalKey(Schema.String),
+  /** Keep the user's current tab in front. Defaults to false. */
+  background: Schema.optionalKey(Schema.Boolean),
+});
+
+export const PreviewAutomationCloseTabInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
 });
 
 /**
@@ -222,6 +249,8 @@ export const PreviewAutomationNavigateInputSchema = Schema.Struct({
  * confidence, that there is nothing else.
  */
 export const PreviewAutomationTabSchema = Schema.Struct({
+  /** Stable identity accepted by every tab-targeted browser tool. */
+  id: Schema.String,
   title: Schema.String,
   url: Schema.String,
   /** The tab the user is looking at, which is the one they mean. */
@@ -234,35 +263,36 @@ export const PreviewAutomationTabsSchema = Schema.Struct({
   tabs: Schema.Array(PreviewAutomationTabSchema),
 });
 
-/**
- * Switching tabs also switches what the user is looking at.
- *
- * Deliberately: an agent acting on a tab nobody is watching can click something
- * destructive with no witness. Tying the two together keeps the rule that the
- * page the agent works on is the page in front of you -- and makes moving
- * between tabs a thing you can see it decide to do.
- */
+/** Pin the agent to another tab, optionally leaving the user's view alone. */
 export const PreviewAutomationSelectTabInputSchema = Schema.Struct({
-  /** Position in the browser_tabs listing, counting from zero. */
-  index: Schema.Finite,
+  /** Stable tab identity from browser_tabs. Prefer this over index. */
+  tabId: Schema.optionalKey(Schema.String),
+  /** Compatibility fallback: position in browser_tabs, counting from zero. */
+  index: Schema.optionalKey(Schema.Finite),
+  /** Pin the agent without changing the user's visible tab. Defaults to false. */
+  background: Schema.optionalKey(Schema.Boolean),
 });
 
 export const PreviewAutomationClickInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   target: PreviewAutomationTargetSchema,
   /** A double click is one gesture, not two calls: two calls are two clicks. */
   doubleClick: Schema.optionalKey(Schema.Boolean),
 });
 
 export const PreviewAutomationMoveInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   target: PreviewAutomationTargetSchema,
 });
 
 export const PreviewAutomationDragInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   from: PreviewAutomationTargetSchema,
   to: PreviewAutomationTargetSchema,
 });
 
 export const PreviewAutomationTypeInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   target: PreviewAutomationTargetSchema,
   text: Schema.String,
   /** Replaces what is there. Without it the text is appended. */
@@ -272,11 +302,13 @@ export const PreviewAutomationTypeInputSchema = Schema.Struct({
 });
 
 export const PreviewAutomationPressInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   key: Schema.String,
   modifiers: Schema.optionalKey(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
 });
 
 export const PreviewAutomationScrollInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   /** Positive is down and right, matching a wheel. */
   deltaX: Schema.optionalKey(Schema.Finite),
   deltaY: Schema.optionalKey(Schema.Finite),
@@ -285,11 +317,13 @@ export const PreviewAutomationScrollInputSchema = Schema.Struct({
 });
 
 export const PreviewAutomationEvaluateInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   /** Evaluated in the page. The result has to survive JSON. */
   expression: Schema.String,
 });
 
 export const PreviewAutomationWaitForInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   /** All supplied conditions have to hold at once before this returns. */
   target: Schema.optionalKey(PreviewAutomationTargetSchema),
   text: Schema.optionalKey(Schema.String),
@@ -298,20 +332,23 @@ export const PreviewAutomationWaitForInputSchema = Schema.Struct({
 });
 
 export const PreviewAutomationResizeInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   /** null for both means fill the panel and reflow with it. */
   width: Schema.NullOr(Schema.Finite),
   height: Schema.NullOr(Schema.Finite),
 });
 
 export const PreviewAutomationSetAppearanceInputSchema = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
   colorScheme: Schema.Literals(["light", "dark"]),
 });
 
-export const PreviewAutomationEmptyInputSchema = Schema.Struct({});
+export const PreviewAutomationEmptyInputSchema = PreviewAutomationTabTargetInputSchema;
 
 // --- Operation results ------------------------------------------------------
 
 export const PreviewAutomationStatusSchema = Schema.Struct({
+  tabId: Schema.String,
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,

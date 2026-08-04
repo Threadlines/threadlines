@@ -108,6 +108,8 @@ interface AttachedTab {
    * blocked -- would be reported as an opaque id instead of an address.
    */
   requestUrls: Map<string, string>;
+  controlEpoch: number;
+  expectedAgentInputs: Array<{ kind: "keyDown" | "mouseDown" | "mouseWheel"; expiresAt: number }>;
   dispose: () => void;
 }
 
@@ -785,6 +787,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       title: contents.getTitle(),
       loading: contents.isLoading(),
       attached: contents.debugger.isAttached(),
+      controlEpoch: tab?.controlEpoch ?? 0,
       console: tab?.console ?? [],
       networkFailures: tab?.networkFailures ?? [],
     };
@@ -823,6 +826,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       console: [],
       networkFailures: [],
       requestUrls: new Map(),
+      controlEpoch: 0,
+      expectedAgentInputs: [],
       dispose: () => {},
     };
 
@@ -841,6 +846,31 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       tab.console.push(entry);
       if (tab.console.length > MAX_CONSOLE_ENTRIES) tab.console.shift();
     };
+
+    const consumeExpectedAgentInput = (kind: "keyDown" | "mouseDown" | "mouseWheel") => {
+      const now = Date.now();
+      tab.expectedAgentInputs = tab.expectedAgentInputs.filter((entry) => entry.expiresAt > now);
+      const index = tab.expectedAgentInputs.findIndex((entry) => entry.kind === kind);
+      if (index < 0) return false;
+      tab.expectedAgentInputs.splice(index, 1);
+      return true;
+    };
+    const onBeforeInput = (_event: unknown, input: { type?: string }) => {
+      if (input.type === "keyDown" && !consumeExpectedAgentInput("keyDown")) {
+        tab.controlEpoch += 1;
+      }
+    };
+    const onBeforeMouse = (_event: unknown, input: { type?: string }) => {
+      const kind =
+        input.type === "mouseDown"
+          ? "mouseDown"
+          : input.type === "mouseWheel"
+            ? "mouseWheel"
+            : null;
+      if (kind !== null && !consumeExpectedAgentInput(kind)) tab.controlEpoch += 1;
+    };
+    contents.on("before-input-event", onBeforeInput);
+    contents.on("before-mouse-event", onBeforeMouse);
 
     const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => {
       if (method === "Runtime.consoleAPICalled") {
@@ -938,6 +968,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       contents.debugger.off("message", onMessage);
       contents.debugger.off("detach", onDetach);
       contents.off("destroyed", onDestroyed);
+      contents.off("before-input-event", onBeforeInput);
+      contents.off("before-mouse-event", onBeforeMouse);
     };
     attached.set(webContentsId, tab);
 
@@ -1005,6 +1037,13 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     const backendNodeId = yield* resolveTarget(contents, target);
     return yield* centerOf(contents, backendNodeId);
   });
+
+  const expectAgentInput = (
+    webContentsId: number,
+    kind: "keyDown" | "mouseDown" | "mouseWheel",
+  ) => {
+    attached.get(webContentsId)?.expectedAgentInputs.push({ kind, expiresAt: Date.now() + 1_000 });
+  };
 
   return PreviewAutomation.of({
     attach,
@@ -1370,6 +1409,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const point = yield* targetPoint(contents, input.target);
+      const clickCount = input.doubleClick === true ? 2 : 1;
+      expectAgentInput(contents.id, "mouseDown");
       // Real input events rather than element.click(): hover, focus and blur
       // fire as they would for a person, and a handler that checks isTrusted
       // behaves the same way too.
@@ -1378,14 +1419,14 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         x: point.x,
         y: point.y,
         button: "left",
-        clickCount: 1,
+        clickCount,
       });
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
         type: "mouseReleased",
         x: point.x,
         y: point.y,
         button: "left",
-        clickCount: 1,
+        clickCount,
       });
       return point;
     }),
@@ -1403,6 +1444,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       const contents = yield* resolveAttached(input.webContentsId);
       const from = yield* targetPoint(contents, input.from);
       const to = yield* targetPoint(contents, input.to);
+      expectAgentInput(contents.id, "mouseDown");
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
         type: "mousePressed",
         x: from.x,
@@ -1432,6 +1474,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const point = yield* targetPoint(contents, input.target);
+      expectAgentInput(contents.id, "mouseDown");
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
         type: "mousePressed",
         x: point.x,
@@ -1447,6 +1490,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         clickCount: 1,
       });
       if (input.clear === true) {
+        expectAgentInput(contents.id, "keyDown");
         // `commands` invokes the editing command directly, which is what a
         // modifier chord ultimately triggers. Dispatching Meta+A as a raw key
         // does not: the browser resolves shortcuts to editing commands above
@@ -1468,6 +1512,19 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         });
       }
       yield* sendCommand(contents, "Input.insertText", { text: input.text });
+      if (input.submit === true) {
+        expectAgentInput(contents.id, "keyDown");
+        const enter = toCdpKeyDefinition("Enter");
+        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          ...enter,
+        });
+        const { text: _text, ...releasedEnter } = enter;
+        yield* sendCommand(contents, "Input.dispatchKeyEvent", {
+          type: "keyUp",
+          ...releasedEnter,
+        });
+      }
       // The caret is where the agent is. Returned so the pointer travels to the
       // field it is typing into rather than sitting on the last thing clicked.
       return point;
@@ -1476,6 +1533,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       const contents = yield* resolveAttached(input.webContentsId);
       const definition = toCdpKeyDefinition(input.key);
       const modifiers = toCdpModifierBitmask(input.modifiers);
+      expectAgentInput(contents.id, "keyDown");
       yield* sendCommand(contents, "Input.dispatchKeyEvent", {
         type: "keyDown",
         ...definition,
@@ -1499,6 +1557,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
         cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
       };
+      expectAgentInput(contents.id, "mouseWheel");
       yield* sendCommand(contents, "Input.dispatchMouseEvent", {
         type: "mouseWheel",
         x: (metrics.cssVisualViewport?.clientWidth ?? 0) / 2,

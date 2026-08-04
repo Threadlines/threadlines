@@ -18,10 +18,12 @@ import * as Effect from "effect/Effect";
 
 export interface McpInvocationScope {
   readonly threadId: ThreadId;
+  /** Opaque provider-runtime identity; safe to send to the renderer. */
+  readonly agentId: string;
 }
 
 export interface McpSessionRegistryShape {
-  /** The credential for a thread, minted on first ask and stable after. */
+  /** Mint a credential for one provider runtime within a thread. */
   readonly credentialFor: (threadId: ThreadId) => Effect.Effect<string>;
   readonly resolve: (token: string) => Effect.Effect<McpInvocationScope | null>;
   /** Called when a thread's session ends; the credential stops working. */
@@ -37,23 +39,24 @@ export interface McpSessionRegistryShape {
  * has exactly one of. The credentials are secrets held in memory; there is no
  * second instance to want.
  */
-const makeRegistry = (): McpSessionRegistryShape => {
+export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
   const byToken = new Map<string, McpInvocationScope>();
-  const byThread = new Map<ThreadId, string>();
+  const byThread = new Map<ThreadId, Set<string>>();
 
   return {
     credentialFor: (threadId) =>
       Effect.sync(() => {
-        const existing = byThread.get(threadId);
-        if (existing !== undefined) {
-          return existing;
-        }
         // 32 bytes because this is the only thing standing between one agent
         // and another agent's browser, and it costs nothing to make guessing
         // hopeless rather than merely hard.
         const token = randomBytes(32).toString("base64url");
-        byThread.set(threadId, token);
-        byToken.set(token, { threadId });
+        const tokens = byThread.get(threadId) ?? new Set<string>();
+        tokens.add(token);
+        byThread.set(threadId, tokens);
+        byToken.set(token, {
+          threadId,
+          agentId: `agent-${randomBytes(12).toString("base64url")}`,
+        });
         return token;
       }),
     resolve: (token) =>
@@ -78,14 +81,16 @@ const makeRegistry = (): McpSessionRegistryShape => {
       }),
     revoke: (threadId) =>
       Effect.sync(() => {
-        const token = byThread.get(threadId);
-        if (token === undefined) {
+        const tokens = byThread.get(threadId);
+        if (tokens === undefined) {
           return;
         }
         byThread.delete(threadId);
-        byToken.delete(token);
+        for (const token of tokens) {
+          byToken.delete(token);
+        }
       }),
   };
 };
 
-export const mcpSessionRegistry: McpSessionRegistryShape = makeRegistry();
+export const mcpSessionRegistry: McpSessionRegistryShape = makeMcpSessionRegistry();

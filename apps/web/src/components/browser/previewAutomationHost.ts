@@ -32,6 +32,8 @@ import { ensureEnvironmentApi } from "../../environmentApi";
 export const PREVIEW_AUTOMATION_HOST_OPERATIONS = [
   "status",
   "tabs",
+  "openTab",
+  "closeTab",
   "selectTab",
   "snapshot",
   "navigate",
@@ -49,6 +51,8 @@ export const PREVIEW_AUTOMATION_HOST_OPERATIONS = [
 ] as const satisfies ReadonlyArray<PreviewAutomationOperation>;
 
 export interface PreviewAutomationHostTarget {
+  /** Stable browser tab identity used by the agent-facing contract. */
+  readonly tabId?: string | null;
   /** The tab the agent acts on: the one the user is looking at. Null when the
    *  panel is open but has no live tab yet. */
   readonly webContentsId: number | null;
@@ -72,13 +76,25 @@ export interface PreviewAutomationHostTarget {
   /** Every page the panel has open. Renderer state, like the viewport: the
    *  main process cannot see the tab strip. */
   readonly tabs: () => ReadonlyArray<{
+    id: string;
     title: string;
     url: string;
     active: boolean;
     agent: boolean;
   }>;
-  /** Bring a tab to the front, which is also how the agent moves to it. */
-  readonly selectTab: (index: number) => void;
+  /** Create and resolve a tab for this agent session. */
+  readonly openTab?: (input: {
+    url?: string | undefined;
+    background?: boolean | undefined;
+  }) => Promise<PreviewAutomationHostTarget>;
+  /** Close a tab and return the listing that remains. */
+  readonly closeTab?: (tabId: string | null) => Promise<void>;
+  /** Pin this agent to a tab, optionally without moving the user's view. */
+  readonly selectTab: (input: {
+    tabId?: string | undefined;
+    index?: number | undefined;
+    background?: boolean | undefined;
+  }) => Promise<PreviewAutomationHostTarget> | PreviewAutomationHostTarget | void;
   /** What the agent is doing, in words, for the line under the toolbar. */
   readonly onAgentActivity: (activity: AgentActivity) => void;
 }
@@ -106,6 +122,8 @@ export interface AgentActivity {
 const ACTIVITY_VERBS: Record<PreviewAutomationOperation, string> = {
   status: "checked",
   tabs: "looked at the tabs",
+  openTab: "opened",
+  closeTab: "closed",
   selectTab: "switched to",
   snapshot: "read the page",
   navigate: "went to",
@@ -122,6 +140,20 @@ const ACTIVITY_VERBS: Record<PreviewAutomationOperation, string> = {
   setAppearance: "restyled",
 };
 
+const CONTROLLED_OPERATIONS: ReadonlySet<PreviewAutomationOperation> = new Set([
+  "navigate",
+  "click",
+  "move",
+  "drag",
+  "type",
+  "press",
+  "scroll",
+  "evaluate",
+  "waitFor",
+  "resize",
+  "setAppearance",
+]);
+
 /** What the action was aimed at, said the way the user would say it. */
 function describeSubject(operation: PreviewAutomationOperation, input: unknown): string | null {
   const value = (input ?? {}) as Record<string, unknown>;
@@ -132,7 +164,14 @@ function describeSubject(operation: PreviewAutomationOperation, input: unknown):
     return typeof value.key === "string" ? value.key : null;
   }
   if (operation === "selectTab") {
+    if (typeof value.tabId === "string") return value.tabId;
     return typeof value.index === "number" ? `tab ${value.index + 1}` : null;
+  }
+  if (operation === "openTab") {
+    return typeof value.url === "string" ? value.url : "a new tab";
+  }
+  if (operation === "closeTab") {
+    return typeof value.tabId === "string" ? value.tabId : "its tab";
   }
   if (operation === "drag") {
     // Both ends, because "dragged" on its own says nothing about what moved.
@@ -175,20 +214,38 @@ function nameTarget(candidate: unknown): string | null {
  */
 export function createPreviewAutomationHandler(
   bridge: DesktopBridge,
-  resolveTarget: () => PreviewAutomationHostTarget,
+  resolveTarget: (request: PreviewAutomationRequest) => PreviewAutomationHostTarget,
   /** Makes a page exist before the target is read; see `prepare` on the hook. */
-  prepare?: () => Promise<void>,
+  prepare?: (request: PreviewAutomationRequest) => Promise<void>,
 ): (request: PreviewAutomationRequest) => Promise<PreviewAutomationResponse> {
   let sequence = 0;
+  const tabTails = new Map<number, Promise<void>>();
+  const serialize = async <T>(key: number | null, task: () => Promise<T>): Promise<T> => {
+    if (key === null) return task();
+    const previous = tabTails.get(key) ?? Promise.resolve();
+    let release = () => {};
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    tabTails.set(key, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (tabTails.get(key) === tail) tabTails.delete(key);
+    }
+  };
   return async (request: PreviewAutomationRequest): Promise<PreviewAutomationResponse> => {
     if (prepare !== undefined) {
       // Never fatal: whatever state preparing leaves behind, the target below
       // describes it, and a target with no page has its own answer.
-      await prepare().catch(() => undefined);
+      await prepare(request).catch(() => undefined);
     }
     let target: PreviewAutomationHostTarget;
     try {
-      target = resolveTarget();
+      target = resolveTarget(request);
     } catch (cause) {
       // A target that cannot even be read is the same conversation as a page
       // that is not there: an answer, never a rejection the broker waits out.
@@ -202,14 +259,36 @@ export function createPreviewAutomationHandler(
       target.onAgentActivity({ phase: "done", verb, detail, sequence });
       return response;
     };
-    if (target.webContentsId === null) {
+    if (
+      target.webContentsId === null &&
+      request.operation !== "openTab" &&
+      request.operation !== "tabs"
+    ) {
       return settle({
         requestId: request.requestId,
         error: "The browser panel is open but has no page loaded yet.",
       });
     }
     try {
-      const result = await dispatch(bridge, target, target.webContentsId, request);
+      const result = await serialize(target.webContentsId, async () => {
+        const controlled =
+          target.webContentsId !== null && CONTROLLED_OPERATIONS.has(request.operation);
+        const before =
+          controlled && bridge.previewStatus !== undefined
+            ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
+            : null;
+        const dispatched = await dispatch(bridge, target, target.webContentsId, request);
+        const after =
+          controlled && bridge.previewStatus !== undefined
+            ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
+            : null;
+        if (before !== null && after !== null && before.controlEpoch !== after.controlEpoch) {
+          throw new Error(
+            "The browser action was interrupted because the user took control of this tab.",
+          );
+        }
+        return dispatched;
+      });
       // The key is omitted rather than set to undefined: an operation with
       // nothing to report should send nothing, not a hole.
       return settle(
@@ -231,11 +310,12 @@ export function createPreviewAutomationHandler(
 async function dispatch(
   bridge: DesktopBridge,
   target: PreviewAutomationHostTarget,
-  webContentsId: number,
+  webContentsId: number | null,
   request: PreviewAutomationRequest,
 ): Promise<unknown> {
   const input = (request.input ?? {}) as Record<string, never>;
-  const call = <T>(
+  const callOn = <T>(
+    targetWebContentsId: number,
     method: ((...args: never[]) => Promise<T>) | undefined,
     args: unknown,
   ): Promise<T> => {
@@ -244,16 +324,23 @@ async function dispatch(
       // so this means the two drifted rather than that the user did anything.
       throw new Error(`This build cannot perform ${request.operation}.`);
     }
-    return (method as (arg: unknown) => Promise<T>)({ webContentsId, ...(args as object) });
+    return (method as (arg: unknown) => Promise<T>)({
+      webContentsId: targetWebContentsId,
+      ...(args as object),
+    });
+  };
+  const call = <T>(method: ((...args: never[]) => Promise<T>) | undefined, args: unknown) => {
+    if (webContentsId === null) throw new Error("The browser tab is not attached yet.");
+    return callOn(webContentsId, method, args);
   };
 
   switch (request.operation) {
     case "status":
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     case "snapshot": {
       const snapshot = await call(bridge.previewSnapshot, {});
       return {
-        ...toStatus(snapshot, target.viewport()),
+        ...toStatus(target.tabId ?? "", snapshot, target.viewport()),
         page: snapshot.page,
         console: snapshot.console.map((entry) => ({ level: entry.level, text: entry.text })),
         networkFailures: snapshot.networkFailures.map((failure) => ({
@@ -264,7 +351,7 @@ async function dispatch(
     }
     case "navigate":
       await target.navigate(String((input as { url?: unknown }).url ?? ""));
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     // Every action answers with where the page ended up. An action that
     // returned nothing failed MCP validation and was shown to the agent as an
     // error, which invited a retry -- and a retried click clicks twice.
@@ -273,12 +360,12 @@ async function dispatch(
       // Shown before the page is asked what changed, so the mark lands while
       // the click is still the most recent thing that happened.
       target.onAgentPoint(point);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "move": {
       const point = await call(bridge.previewMove, input);
       target.onAgentPoint(point);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "drag": {
       const gesture = await call(bridge.previewDrag, input);
@@ -287,28 +374,49 @@ async function dispatch(
       // other. Sending only the result would show the destination and lose the
       // gesture, which is the part worth seeing.
       target.onAgentPoint({ ...gesture.to, from: gesture.from });
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "tabs":
       return { tabs: target.tabs() };
+    case "openTab": {
+      if (target.openTab === undefined) throw new Error("This build cannot open browser tabs.");
+      const opened = await target.openTab(input);
+      if (opened.webContentsId === null) throw new Error("The new browser tab did not attach.");
+      return toStatus(
+        opened.tabId ?? "",
+        await callOn(opened.webContentsId, bridge.previewStatus, {}),
+        opened.viewport(),
+      );
+    }
+    case "closeTab":
+      if (target.closeTab === undefined) throw new Error("This build cannot close browser tabs.");
+      await target.closeTab(typeof input.tabId === "string" ? input.tabId : (target.tabId ?? null));
+      return { tabs: target.tabs() };
     case "selectTab": {
-      target.selectTab((input as unknown as { index: number }).index);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      const selected = await target.selectTab(input);
+      if (selected === undefined) throw new Error("The browser tab could not be selected.");
+      if (selected.webContentsId === null)
+        throw new Error("The selected browser tab did not attach.");
+      return toStatus(
+        selected.tabId ?? "",
+        await callOn(selected.webContentsId, bridge.previewStatus, {}),
+        selected.viewport(),
+      );
     }
     case "type": {
       const point = await call(bridge.previewType, input);
       target.onAgentPoint(point);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "press":
       await call(bridge.previewPress, input);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     case "scroll":
       await call(bridge.previewScroll, input);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     case "waitFor":
       await call(bridge.previewWaitFor, input);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     case "evaluate":
       // Wrapped, because an expression that returns an array or a number is a
       // perfectly good answer and used to fail validation *after* running.
@@ -325,9 +433,10 @@ async function dispatch(
     }
     case "resize":
       await call(bridge.previewSetViewport, input);
-      return toStatus(await call(bridge.previewStatus, {}), target.viewport());
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     case "setAppearance":
-      return await call(bridge.previewSetColorScheme, input);
+      await call(bridge.previewSetColorScheme, input);
+      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
   }
 }
 
@@ -340,13 +449,14 @@ async function dispatch(
  * fail on a missing key.
  */
 function toStatus(
+  tabId: string,
   status: { url: string; title: string; loading: boolean },
   size: { width: number; height: number },
-): { url: string; title: string; loading: boolean; width: number; height: number } {
+): { tabId: string; url: string; title: string; loading: boolean; width: number; height: number } {
   // The size comes from the panel rather than from here: it is the one part of
   // a page's state that neither the main process nor this module can see, and
   // a question about layout is a question about it.
-  return { url: status.url, title: status.title, loading: status.loading, ...size };
+  return { tabId, url: status.url, title: status.title, loading: status.loading, ...size };
 }
 
 /**
@@ -380,14 +490,14 @@ function describe(cause: unknown): string {
 export function usePreviewAutomationHost(input: {
   readonly threadRef: ScopedThreadRef;
   readonly enabled: boolean;
-  readonly resolveTarget: () => PreviewAutomationHostTarget;
+  readonly resolveTarget: (request: PreviewAutomationRequest) => PreviewAutomationHostTarget;
   /**
    * Run before the target is resolved, to make one exist. This is where a
    * closed panel is opened and waited for; it must settle within the broker's
    * timeout, and it may settle without succeeding -- a target with no page is
    * an answer the host already knows how to give.
    */
-  readonly prepare?: () => Promise<void>;
+  readonly prepare?: (request: PreviewAutomationRequest) => Promise<void>;
 }): void {
   const { threadRef, enabled } = input;
   // Read through a ref so a re-render that changes which tab is active does not
@@ -404,8 +514,8 @@ export function usePreviewAutomationHost(input: {
     }
     const handle = createPreviewAutomationHandler(
       bridge,
-      () => target.current(),
-      () => (prepare.current === undefined ? Promise.resolve() : prepare.current()),
+      (request) => target.current(request),
+      (request) => (prepare.current === undefined ? Promise.resolve() : prepare.current(request)),
     );
 
     const api = ensureEnvironmentApi(threadRef.environmentId);

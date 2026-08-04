@@ -13,5 +13,6 @@ export class McpInvocationContext extends Context.Service<
   McpInvocationContext,
   {
     readonly threadId: ThreadId;
+    readonly agentId: string;
   }
 >()("@threadlines/server/mcp/McpInvocationContext") {}

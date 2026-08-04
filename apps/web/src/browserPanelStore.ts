@@ -359,7 +359,7 @@ interface BrowserPanelStoreState {
   appearance: BrowserAppearance;
   setBrowserOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   toggleBrowserOpen: (threadRef: ScopedThreadRef) => void;
-  openTab: (threadRef: ScopedThreadRef) => void;
+  openTab: (threadRef: ScopedThreadRef, activate?: boolean) => string;
   /**
    * A new tab that already knows where it is going.
    *
@@ -367,7 +367,7 @@ interface BrowserPanelStoreState {
    * its source at mount: created blank and pointed afterwards, the page would
    * need an imperative load that cannot happen until the element attaches.
    */
-  openTabWithUrl: (threadRef: ScopedThreadRef, url: string) => void;
+  openTabWithUrl: (threadRef: ScopedThreadRef, url: string, activate?: boolean) => string;
   closeTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   selectTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   setTabUrl: (threadRef: ScopedThreadRef, tabId: string, url: string) => void;
@@ -451,21 +451,33 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         set((state) =>
           updateThread(state, threadRef, (current) => ({ ...current, open: !current.open })),
         ),
-      openTab: (threadRef) =>
+      openTab: (threadRef, activate = true) => {
+        const tab = makeBrowserTab();
         set((state) =>
           updateThread(state, threadRef, (current) => {
-            const tab = makeBrowserTab();
-            return { ...current, tabs: [...current.tabs, tab], activeTabId: tab.id };
+            return {
+              ...current,
+              tabs: [...current.tabs, tab],
+              activeTabId: activate ? tab.id : current.activeTabId,
+            };
           }),
-        ),
-      openTabWithUrl: (threadRef, url) =>
+        );
+        return tab.id;
+      },
+      openTabWithUrl: (threadRef, url, activate = true) => {
+        const tab = { ...makeBrowserTab(), url };
         set((state) => ({
           ...updateThread(state, threadRef, (current) => {
-            const tab = { ...makeBrowserTab(), url };
-            return { ...current, tabs: [...current.tabs, tab], activeTabId: tab.id };
+            return {
+              ...current,
+              tabs: [...current.tabs, tab],
+              activeTabId: activate ? tab.id : current.activeTabId,
+            };
           }),
           visitedUrls: rememberVisit(state.visitedUrls, url, Date.now()),
-        })),
+        }));
+        return tab.id;
+      },
       closeTab: (threadRef, tabId) =>
         set((state) =>
           updateThread(state, threadRef, (current) => {

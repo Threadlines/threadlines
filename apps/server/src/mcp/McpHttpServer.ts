@@ -125,7 +125,10 @@ const authenticate = Effect.succeed(
       return unauthorized;
     }
     return yield* handler.pipe(
-      Effect.provideService(McpInvocationContext, { threadId: scope.threadId }),
+      Effect.provideService(McpInvocationContext, {
+        threadId: scope.threadId,
+        agentId: scope.agentId,
+      }),
       Effect.map(normalizeMcpHttpResponse),
     );
   }),

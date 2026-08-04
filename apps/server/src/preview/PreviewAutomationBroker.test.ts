@@ -13,6 +13,7 @@ import {
 
 const threadId = ThreadId.make("thread-browser-a");
 const otherThreadId = ThreadId.make("thread-browser-b");
+const agentId = "agent-browser-a";
 
 /**
  * Connects a host and hands back a way to await the next request it is sent.
@@ -51,11 +52,12 @@ describe("PreviewAutomationBroker", () => {
         const { nextRequest } = yield* attachHost(broker);
 
         const call = yield* broker
-          .invoke({ threadId, operation: "click", input: { target: { ref: 3 } } })
+          .invoke({ threadId, agentId, operation: "click", input: { target: { ref: 3 } } })
           .pipe(Effect.forkChild);
 
         const request = yield* nextRequest;
         assert.strictEqual(request.operation, "click");
+        assert.strictEqual(request.agentId, agentId);
         assert.deepStrictEqual(request.input, { target: { ref: 3 } });
 
         yield* broker.respond({ requestId: request.requestId, result: { ok: true } });
@@ -70,7 +72,7 @@ describe("PreviewAutomationBroker", () => {
       Effect.gen(function* () {
         const broker = yield* make;
         const failure = yield* broker
-          .invoke({ threadId, operation: "click", input: {} })
+          .invoke({ threadId, agentId, operation: "click", input: {} })
           .pipe(Effect.flip);
         assert.strictEqual(failure._tag, "PreviewAutomationNoHostError");
       }),
@@ -86,7 +88,7 @@ describe("PreviewAutomationBroker", () => {
         // Answered immediately rather than sent and waited on: an old client that
         // silently drops the request would otherwise cost a full timeout.
         const failure = yield* broker
-          .invoke({ threadId, operation: "click", input: {} })
+          .invoke({ threadId, agentId, operation: "click", input: {} })
           .pipe(Effect.flip);
         assert.strictEqual(failure._tag, "PreviewAutomationUnsupportedError");
       }),
@@ -99,7 +101,7 @@ describe("PreviewAutomationBroker", () => {
         const broker = yield* make;
         const { nextRequest } = yield* attachHost(broker);
         const call = yield* broker
-          .invoke({ threadId, operation: "click", input: {} })
+          .invoke({ threadId, agentId, operation: "click", input: {} })
           .pipe(Effect.forkChild);
         const request = yield* nextRequest;
         yield* broker.respond({ requestId: request.requestId, error: "no element matched" });
@@ -116,7 +118,7 @@ describe("PreviewAutomationBroker", () => {
         const broker = yield* make;
         yield* attachHost(broker);
         const call = yield* broker
-          .invoke({ threadId, operation: "click", input: {}, timeoutMs: 5_000 })
+          .invoke({ threadId, agentId, operation: "click", input: {}, timeoutMs: 5_000 })
           .pipe(Effect.forkChild);
         yield* Effect.yieldNow;
 
@@ -136,7 +138,7 @@ describe("PreviewAutomationBroker", () => {
         // time out on a client that is no longer listening.
         yield* attachHost(broker);
         const call = yield* broker
-          .invoke({ threadId, operation: "click", input: {} })
+          .invoke({ threadId, agentId, operation: "click", input: {} })
           .pipe(Effect.forkChild);
         yield* Effect.yieldNow;
 
@@ -153,7 +155,7 @@ describe("PreviewAutomationBroker", () => {
         const broker = yield* make;
         const { nextRequest } = yield* attachHost(broker);
         const call = yield* broker
-          .invoke({ threadId, operation: "snapshot", input: {} })
+          .invoke({ threadId, agentId, operation: "snapshot", input: {} })
           .pipe(Effect.forkChild);
         const request = yield* nextRequest;
         yield* broker.respond({
@@ -173,7 +175,7 @@ describe("PreviewAutomationBroker", () => {
         yield* attachHost(broker);
 
         const failure = yield* broker
-          .invoke({ threadId: otherThreadId, operation: "click", input: {} })
+          .invoke({ threadId: otherThreadId, agentId, operation: "click", input: {} })
           .pipe(Effect.flip);
         assert.strictEqual(failure._tag, "PreviewAutomationNoHostError");
         assert.isTrue(yield* broker.hasHost(threadId));

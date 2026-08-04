@@ -1,7 +1,10 @@
+import { ThreadId } from "@threadlines/contracts";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
+import { makeMcpSessionRegistry } from "./McpSessionRegistry.ts";
 
 /**
  * The whole browser feature hung on this.
@@ -36,5 +39,25 @@ describe("normalizeMcpHttpResponse", () => {
     for (const status of [204, 401, 404, 500]) {
       expect(normalizeMcpHttpResponse(HttpServerResponse.empty({ status })).status).toBe(status);
     }
+  });
+});
+
+describe("McpSessionRegistry", () => {
+  it("gives simultaneous provider runtimes separate agent identities", async () => {
+    const registry = makeMcpSessionRegistry();
+    const threadId = ThreadId.make("thread-browser-runtime");
+    const firstToken = await Effect.runPromise(registry.credentialFor(threadId));
+    const secondToken = await Effect.runPromise(registry.credentialFor(threadId));
+
+    expect(secondToken).not.toBe(firstToken);
+    const first = await Effect.runPromise(registry.resolve(firstToken));
+    const second = await Effect.runPromise(registry.resolve(secondToken));
+    expect(first?.threadId).toBe(threadId);
+    expect(second?.threadId).toBe(threadId);
+    expect(second?.agentId).not.toBe(first?.agentId);
+
+    await Effect.runPromise(registry.revoke(threadId));
+    expect(await Effect.runPromise(registry.resolve(firstToken))).toBeNull();
+    expect(await Effect.runPromise(registry.resolve(secondToken))).toBeNull();
   });
 });

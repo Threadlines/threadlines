@@ -13,15 +13,19 @@
  */
 import {
   PreviewAutomationClickInputSchema,
+  PreviewAutomationCloseTabInputSchema,
   PreviewAutomationDragInputSchema,
+  PreviewAutomationEmptyInputSchema,
   PreviewAutomationErrorSchema,
   PreviewAutomationEvaluateInputSchema,
   PreviewAutomationNavigateInputSchema,
   PreviewAutomationMoveInputSchema,
+  PreviewAutomationOpenTabInputSchema,
   PreviewAutomationPressInputSchema,
   PreviewAutomationResizeInputSchema,
   PreviewAutomationScreenshotSchema,
   PreviewAutomationSelectTabInputSchema,
+  PreviewAutomationSetAppearanceInputSchema,
   PreviewAutomationScrollInputSchema,
   PreviewAutomationSnapshotSchema,
   PreviewAutomationStatusSchema,
@@ -50,6 +54,7 @@ export const BrowserSnapshotTool = readsOnly(
   Tool.make("browser_snapshot", {
     description:
       'Read the page the user has open. Returns it as an accessibility tree -- nesting, roles, accessible names and the actual text -- with a `[ref=eN]` on every node, plus the URL, title, console output and failed requests. Call this before acting. Name things by their `ref` where you can; where you cannot, `locator` takes a Playwright locator and is the only way to say something like "the delete button in the third row". Console errors are included because they are usually the answer.',
+    parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationSnapshotSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -60,6 +65,7 @@ export const BrowserScreenshotTool = readsOnly(
   Tool.make("browser_screenshot", {
     description:
       "See what the page in the Threadlines preview panel currently looks like. Use this for anything visual -- layout, spacing, colour, whether something is actually on screen -- and use browser_snapshot instead when you need to act on an element or read an error.",
+    parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationScreenshotSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -70,6 +76,7 @@ export const BrowserStatusTool = readsOnly(
   Tool.make("browser_status", {
     description:
       "Where the Threadlines preview panel is right now: its URL, title, size, and whether it is still loading. Cheap; use it to confirm a navigation landed rather than taking a whole snapshot.",
+    parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -79,17 +86,39 @@ export const BrowserStatusTool = readsOnly(
 export const BrowserTabsTool = readsOnly(
   Tool.make("browser_tabs", {
     description:
-      "Every page open in the Threadlines preview panel, with the one the user is looking at and the one your actions land on both marked. Check this before saying a page is not open: the user may be looking at a tab you are not on, and switching tabs is theirs to do, not yours.",
+      "Every page open in the Threadlines preview panel, including each stable tab id, with the user's visible tab and your pinned tab marked. Use a tab id on any browser tool to act there without changing what the user sees.",
     success: PreviewAutomationTabsSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "List tabs"),
 );
 
+export const BrowserOpenTabTool = changesThePage(
+  Tool.make("browser_open_tab", {
+    description:
+      "Create a browser tab and pin your future browser actions to it. Give a URL to load it immediately. Set background true to leave the user's visible tab alone; otherwise the new tab is brought to the front.",
+    parameters: PreviewAutomationOpenTabInputSchema,
+    success: PreviewAutomationStatusSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  }).annotate(Tool.Title, "Open a tab"),
+);
+
+export const BrowserCloseTabTool = changesThePage(
+  Tool.make("browser_close_tab", {
+    description:
+      "Close a browser tab. Omit tabId to close your pinned tab, or use a stable id from browser_tabs. Returns the remaining tabs.",
+    parameters: PreviewAutomationCloseTabInputSchema,
+    success: PreviewAutomationTabsSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  }).annotate(Tool.Title, "Close a tab"),
+);
+
 export const BrowserSelectTabTool = changesThePage(
   Tool.make("browser_select_tab", {
     description:
-      "Move to another open tab, by its position in browser_tabs. This also brings that tab to the front for the user, so they see the page you are working on. Use it when what they are asking about is not on the tab you are currently on.",
+      "Pin your future browser actions to another open tab. Prefer its stable tabId from browser_tabs. Set background true to leave the user's visible tab alone; otherwise the tab is also brought to the front.",
     parameters: PreviewAutomationSelectTabInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
@@ -211,6 +240,19 @@ export const BrowserResizeTool = changesThePage(
     .annotate(Tool.Destructive, false),
 );
 
+export const BrowserSetAppearanceTool = changesThePage(
+  Tool.make("browser_set_appearance", {
+    description:
+      "Emulate the page's preferred light or dark color scheme without changing the Threadlines app theme.",
+    parameters: PreviewAutomationSetAppearanceInputSchema,
+    success: PreviewAutomationStatusSchema,
+    failure: PreviewAutomationErrorSchema,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Set page appearance")
+    .annotate(Tool.Destructive, false),
+);
+
 /**
  * Everything except the screenshot.
  *
@@ -222,6 +264,8 @@ export const BrowserStandardToolkit = Toolkit.make(
   BrowserSnapshotTool,
   BrowserStatusTool,
   BrowserTabsTool,
+  BrowserOpenTabTool,
+  BrowserCloseTabTool,
   BrowserSelectTabTool,
   BrowserNavigateTool,
   BrowserClickTool,
@@ -233,6 +277,7 @@ export const BrowserStandardToolkit = Toolkit.make(
   BrowserWaitForTool,
   BrowserEvaluateTool,
   BrowserResizeTool,
+  BrowserSetAppearanceTool,
 );
 
 /** On its own, so it can answer with an image instead of a description of one. */

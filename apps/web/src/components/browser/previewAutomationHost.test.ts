@@ -6,7 +6,7 @@ import { createPreviewAutomationHandler, type AgentActivity } from "./previewAut
 const request = (
   operation: PreviewAutomationRequest["operation"],
   input: PreviewAutomationRequest["input"] = {},
-): PreviewAutomationRequest => ({ requestId: "r1", operation, input });
+): PreviewAutomationRequest => ({ requestId: "r1", agentId: "agent-1", operation, input });
 
 const handlerFor = (
   bridge: Partial<DesktopBridge>,
@@ -24,6 +24,55 @@ const handlerFor = (
   }));
 
 describe("createPreviewAutomationHandler", () => {
+  it("serializes actions that target the same browser tab", async () => {
+    let calls = 0;
+    let active = 0;
+    let maxActive = 0;
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const handle = handlerFor({
+      previewClick: async () => {
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        if (calls === 1) await firstGate;
+        active -= 1;
+        return { x: 10, y: 20 };
+      },
+      previewStatus: () =>
+        Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch: 0 }) as never,
+    });
+
+    const first = handle(request("click", { target: { ref: "e1" } }));
+    await Promise.resolve();
+    const second = handle(request("click", { target: { ref: "e2" } }));
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(calls).toBe(2);
+    expect(maxActive).toBe(1);
+  });
+
+  it("reports human takeover of the tab as an interrupted action", async () => {
+    let controlEpoch = 0;
+    const handle = handlerFor({
+      previewClick: () => {
+        controlEpoch += 1;
+        return Promise.resolve({ x: 10, y: 20 });
+      },
+      previewStatus: () =>
+        Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch }) as never,
+    });
+
+    const response = await handle(request("click", { target: { ref: "e1" } }));
+
+    expect(response.error).toContain("user took control");
+  });
+
   it("sends the operation's input to the bridge along with the tab it acts on", async () => {
     const seen: unknown[] = [];
     const handle = handlerFor({
@@ -148,8 +197,20 @@ describe("createPreviewAutomationHandler", () => {
         onAgentActivity: () => {},
         selectTab: () => {},
         tabs: () => [
-          { title: "Fixture", url: "http://localhost:18821/", active: false, agent: true },
-          { title: "Manuals", url: "https://example.com/", active: true, agent: false },
+          {
+            id: "tab-fixture",
+            title: "Fixture",
+            url: "http://localhost:18821/",
+            active: false,
+            agent: true,
+          },
+          {
+            id: "tab-manuals",
+            title: "Manuals",
+            url: "https://example.com/",
+            active: true,
+            agent: false,
+          },
         ],
       }),
     );
@@ -158,8 +219,20 @@ describe("createPreviewAutomationHandler", () => {
 
     expect(response.result).toEqual({
       tabs: [
-        { title: "Fixture", url: "http://localhost:18821/", active: false, agent: true },
-        { title: "Manuals", url: "https://example.com/", active: true, agent: false },
+        {
+          id: "tab-fixture",
+          title: "Fixture",
+          url: "http://localhost:18821/",
+          active: false,
+          agent: true,
+        },
+        {
+          id: "tab-manuals",
+          title: "Manuals",
+          url: "https://example.com/",
+          active: true,
+          agent: false,
+        },
       ],
     });
   });

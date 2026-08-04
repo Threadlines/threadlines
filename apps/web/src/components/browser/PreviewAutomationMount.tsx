@@ -1,12 +1,12 @@
 import { useCallback, useEffect } from "react";
-import type { ProjectId, ScopedThreadRef } from "@threadlines/contracts";
+import { scopedThreadKey } from "@threadlines/client-runtime";
+import type { PreviewAutomationRequest, ProjectId, ScopedThreadRef } from "@threadlines/contracts";
 import { isBrowserHostApproved } from "@threadlines/shared/preview";
 
 import {
   PREVIEW_WEBVIEW_WAIT_MS,
   getPreviewWebview,
   selectActiveTab,
-  selectThreadAgentState,
   selectThreadBrowserState,
   subscribePreviewWebviews,
   useBrowserPanelStore,
@@ -34,6 +34,15 @@ function attachedWebContentsId(webview: PreviewWebviewHandle): number | null {
   }
 }
 
+/** Provider-runtime-specific pins. The persisted store keeps only the most
+ * recently active agent for presentation; routing must keep every runtime's
+ * tab independent. */
+const agentTabPins = new Map<string, string>();
+
+function agentPinKey(threadRef: ScopedThreadRef, agentId: string): string {
+  return `${scopedThreadKey(threadRef)}:${agentId}`;
+}
+
 /**
  * The agent's end of the browser, mounted with the thread rather than with the
  * panel.
@@ -55,6 +64,9 @@ export function PreviewAutomationMount({
   projectId?: ProjectId | null;
 }) {
   const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
+  const openTab = useBrowserPanelStore((store) => store.openTab);
+  const openTabWithUrl = useBrowserPanelStore((store) => store.openTabWithUrl);
+  const closeTab = useBrowserPanelStore((store) => store.closeTab);
   const setAgentTab = useBrowserPanelStore((store) => store.setAgentTab);
   const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
   const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
@@ -136,93 +148,176 @@ export function PreviewAutomationMount({
    * component rendered: an operation may arrive many renders after the host
    * subscribed, and it must see the tab that exists now.
    */
-  const resolveTarget = useCallback((): PreviewAutomationHostTarget => {
-    const store = useBrowserPanelStore.getState();
-    const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
-    const agentState = selectThreadAgentState(store.agentStateByThreadKey, threadRef);
-    const activeTabId = selectActiveTab(browserState)?.id ?? "";
-    // The agent keeps the tab it pinned, as long as that tab still exists.
-    const pinned = agentState.tabId;
-    const tabId =
-      pinned !== null && browserState.tabs.some((tab) => tab.id === pinned) ? pinned : activeTabId;
-    if (tabId !== pinned) {
+  const resolveTarget = useCallback(
+    (request: PreviewAutomationRequest): PreviewAutomationHostTarget => {
+      const store = useBrowserPanelStore.getState();
+      const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
+      const activeTabId = selectActiveTab(browserState)?.id ?? "";
+      const key = agentPinKey(threadRef, request.agentId);
+      const requestedTabId =
+        typeof (request.input as { tabId?: unknown } | undefined)?.tabId === "string"
+          ? (request.input as { tabId: string }).tabId
+          : null;
+      if (requestedTabId !== null && !browserState.tabs.some((tab) => tab.id === requestedTabId)) {
+        throw new Error(`No browser tab exists with id ${requestedTabId}.`);
+      }
+      const pinned = requestedTabId ?? agentTabPins.get(key) ?? null;
+      const tabId =
+        pinned !== null && browserState.tabs.some((tab) => tab.id === pinned)
+          ? pinned
+          : activeTabId;
+      if (tabId !== "") agentTabPins.set(key, tabId);
       setAgentTab(threadRef, tabId === "" ? null : tabId);
-    }
-    const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
+      const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
 
-    return {
-      webContentsId: webview === null ? null : attachedWebContentsId(webview),
-      onAgentPoint: (point) => setAgentPoint(threadRef, point),
-      onAgentActivity: (activity) => setAgentActivity(threadRef, activity),
-      selectTab: (index) => {
-        const chosen = browserState.tabs[index];
-        if (chosen === undefined) {
-          return;
-        }
-        // Move the pin with the view, or the agent would keep acting on the tab
-        // it was pinned to while showing you another.
-        setAgentTab(threadRef, chosen.id);
-        selectTab(threadRef, chosen.id);
-      },
-      tabs: () =>
-        browserState.tabs.map((entry) => ({
-          title: entry.title ?? "",
-          url: entry.url ?? "",
-          active: entry.id === activeTabId,
-          agent: entry.id === tabId,
-        })),
-      viewport: () => {
-        const rect = webview?.getBoundingClientRect();
-        return { width: Math.round(rect?.width ?? 0), height: Math.round(rect?.height ?? 0) };
-      },
-      // The address belongs to the element, so this is the one operation the
-      // main process cannot do on the agent's behalf.
-      navigate: async (url) => {
-        const normalized = normalizePreviewUrl(url);
-        if (normalized === null) {
-          throw new Error(`${JSON.stringify(url)} is not a URL this browser can open.`);
-        }
-        if (tabId === "") {
-          throw new Error("The browser panel has no tab to navigate.");
-        }
-        // Refused here rather than in the main process, because this is the one
-        // navigation we can stop before it happens and answer in words the
-        // agent can act on. The user's own navigations do not come through here.
-        const host = new URL(normalized).hostname;
-        if (!isBrowserHostApproved(host, approvedDomains)) {
-          setPendingBrowserApproval(threadRef, {
-            host,
-            url: normalized,
-            source: "agent",
-            fromHost: null,
-            tabId: null,
-          });
-          throw new Error(
-            `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel; once they do, navigate again.`,
-          );
-        }
-        setTabUrl(threadRef, tabId, normalized);
-        await getPreviewWebview(threadRef, tabId)
-          ?.loadURL(normalized)
-          .catch((cause: unknown) => {
-            // A page that immediately redirects aborts the load it interrupts,
-            // which is a successful navigation wearing an error.
-            if (!String(cause).includes("ERR_ABORTED")) {
-              throw cause;
+      const waitForTab = async (nextTabId: string): Promise<PreviewAutomationHostTarget> => {
+        await waitForPreviewWebview<PreviewWebviewHandle>({
+          resolve: () => {
+            const candidate = getPreviewWebview(threadRef, nextTabId);
+            return candidate !== null && attachedWebContentsId(candidate) !== null
+              ? candidate
+              : null;
+          },
+          subscribe: subscribePreviewWebviews,
+          timeoutMs: PREVIEW_WEBVIEW_WAIT_MS,
+        });
+        return resolveTarget({
+          ...request,
+          input: { ...(request.input as object), tabId: nextTabId },
+        });
+      };
+
+      return {
+        tabId: tabId === "" ? null : tabId,
+        webContentsId: webview === null ? null : attachedWebContentsId(webview),
+        onAgentPoint: (point) => setAgentPoint(threadRef, point),
+        onAgentActivity: (activity) => setAgentActivity(threadRef, activity),
+        openTab: async (input) => {
+          const normalized = input.url === undefined ? null : normalizePreviewUrl(input.url);
+          if (input.url !== undefined && normalized === null) {
+            throw new Error(`${JSON.stringify(input.url)} is not a URL this browser can open.`);
+          }
+          if (normalized !== null) {
+            const host = new URL(normalized).hostname;
+            if (!isBrowserHostApproved(host, approvedDomains)) {
+              const openedId = openTab(threadRef, input.background !== true);
+              agentTabPins.set(key, openedId);
+              setAgentTab(threadRef, openedId);
+              setPendingBrowserApproval(threadRef, {
+                host,
+                url: normalized,
+                source: "agent",
+                fromHost: null,
+                tabId: openedId,
+              });
+              throw new Error(
+                `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel.`,
+              );
             }
-          });
-      },
-    };
-  }, [
-    approvedDomains,
-    selectTab,
-    setAgentActivity,
-    setAgentPoint,
-    setAgentTab,
-    setPendingBrowserApproval,
-    setTabUrl,
-    threadRef,
-  ]);
+          }
+          const activate = input.background !== true;
+          const openedId =
+            normalized === null
+              ? openTab(threadRef, activate)
+              : openTabWithUrl(threadRef, normalized, activate);
+          agentTabPins.set(key, openedId);
+          setAgentTab(threadRef, openedId);
+          return waitForTab(openedId);
+        },
+        closeTab: async (closingTabId) => {
+          if (closingTabId === null || !browserState.tabs.some((tab) => tab.id === closingTabId)) {
+            throw new Error("The browser tab to close does not exist.");
+          }
+          closeTab(threadRef, closingTabId);
+          if (agentTabPins.get(key) === closingTabId) agentTabPins.delete(key);
+          if (tabId === closingTabId) setAgentTab(threadRef, null);
+        },
+        selectTab: async (input) => {
+          const chosen =
+            input.tabId !== undefined
+              ? browserState.tabs.find((entry) => entry.id === input.tabId)
+              : input.index !== undefined
+                ? browserState.tabs[input.index]
+                : undefined;
+          if (chosen === undefined) {
+            throw new Error("The browser tab to select does not exist.");
+          }
+          agentTabPins.set(key, chosen.id);
+          setAgentTab(threadRef, chosen.id);
+          if (input.background !== true) selectTab(threadRef, chosen.id);
+          return waitForTab(chosen.id);
+        },
+        tabs: () => {
+          const current = selectThreadBrowserState(
+            useBrowserPanelStore.getState().browserStateByThreadKey,
+            threadRef,
+          );
+          const currentPin = agentTabPins.get(key) ?? null;
+          return current.tabs.map((entry) => ({
+            id: entry.id,
+            title: entry.title ?? "",
+            url: entry.url ?? "",
+            active: entry.id === current.activeTabId,
+            agent: entry.id === currentPin,
+          }));
+        },
+        viewport: () => {
+          const rect = webview?.getBoundingClientRect();
+          return { width: Math.round(rect?.width ?? 0), height: Math.round(rect?.height ?? 0) };
+        },
+        // The address belongs to the element, so this is the one operation the
+        // main process cannot do on the agent's behalf.
+        navigate: async (url) => {
+          const normalized = normalizePreviewUrl(url);
+          if (normalized === null) {
+            throw new Error(`${JSON.stringify(url)} is not a URL this browser can open.`);
+          }
+          if (tabId === "") {
+            throw new Error("The browser panel has no tab to navigate.");
+          }
+          // Refused here rather than in the main process, because this is the one
+          // navigation we can stop before it happens and answer in words the
+          // agent can act on. The user's own navigations do not come through here.
+          const host = new URL(normalized).hostname;
+          if (!isBrowserHostApproved(host, approvedDomains)) {
+            setPendingBrowserApproval(threadRef, {
+              host,
+              url: normalized,
+              source: "agent",
+              fromHost: null,
+              tabId,
+            });
+            throw new Error(
+              `${host} is outside this project's approved sites. The user has been asked to allow it in the browser panel; once they do, navigate again.`,
+            );
+          }
+          setTabUrl(threadRef, tabId, normalized);
+          await getPreviewWebview(threadRef, tabId)
+            ?.loadURL(normalized)
+            .catch((cause: unknown) => {
+              // A page that immediately redirects aborts the load it interrupts,
+              // which is a successful navigation wearing an error.
+              if (!String(cause).includes("ERR_ABORTED")) {
+                throw cause;
+              }
+            });
+        },
+      };
+    },
+    [
+      approvedDomains,
+      closeTab,
+      openTab,
+      openTabWithUrl,
+      selectTab,
+      setAgentActivity,
+      setAgentPoint,
+      setAgentTab,
+      setPendingBrowserApproval,
+      setTabUrl,
+      threadRef,
+    ],
+  );
 
   /**
    * Opens the panel for an arriving operation and waits for it to have a page.
@@ -231,34 +326,40 @@ export function PreviewAutomationMount({
    * the first look, which is the common case and stays exactly as fast as it
    * was.
    */
-  const prepare = useCallback(async (): Promise<void> => {
-    const store = useBrowserPanelStore.getState();
-    const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
-    if (!browserState.open) {
-      setBrowserOpen(threadRef, true);
-    }
-    await waitForPreviewWebview<PreviewWebviewHandle>({
-      resolve: () => {
-        const current = useBrowserPanelStore.getState();
-        const state = selectThreadBrowserState(current.browserStateByThreadKey, threadRef);
-        const agent = selectThreadAgentState(current.agentStateByThreadKey, threadRef);
-        const activeTabId = selectActiveTab(state)?.id ?? "";
-        const pinned = agent.tabId;
-        const tabId =
-          pinned !== null && state.tabs.some((tab) => tab.id === pinned) ? pinned : activeTabId;
-        const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
-        // Attached, not merely registered: the element registers at mount, and
-        // an operation dispatched in the gap before the guest attaches finds a
-        // webview that cannot answer anything yet.
-        return webview !== null && attachedWebContentsId(webview) !== null ? webview : null;
-      },
-      subscribe: subscribePreviewWebviews,
-      timeoutMs: PREVIEW_WEBVIEW_WAIT_MS,
-    });
-    // A timeout is not handled here: the host answers a missing page with the
-    // error it has always used for one, so a panel that never came up reads the
-    // same as a panel with nothing loaded.
-  }, [setBrowserOpen, threadRef]);
+  const prepare = useCallback(
+    async (request: PreviewAutomationRequest): Promise<void> => {
+      const store = useBrowserPanelStore.getState();
+      const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
+      if (!browserState.open) {
+        setBrowserOpen(threadRef, true);
+      }
+      await waitForPreviewWebview<PreviewWebviewHandle>({
+        resolve: () => {
+          const current = useBrowserPanelStore.getState();
+          const state = selectThreadBrowserState(current.browserStateByThreadKey, threadRef);
+          const activeTabId = selectActiveTab(state)?.id ?? "";
+          const requested = (request.input as { tabId?: unknown } | undefined)?.tabId;
+          const pinned =
+            typeof requested === "string"
+              ? requested
+              : (agentTabPins.get(agentPinKey(threadRef, request.agentId)) ?? null);
+          const tabId =
+            pinned !== null && state.tabs.some((tab) => tab.id === pinned) ? pinned : activeTabId;
+          const webview = tabId === "" ? null : getPreviewWebview(threadRef, tabId);
+          // Attached, not merely registered: the element registers at mount, and
+          // an operation dispatched in the gap before the guest attaches finds a
+          // webview that cannot answer anything yet.
+          return webview !== null && attachedWebContentsId(webview) !== null ? webview : null;
+        },
+        subscribe: subscribePreviewWebviews,
+        timeoutMs: PREVIEW_WEBVIEW_WAIT_MS,
+      });
+      // A timeout is not handled here: the host answers a missing page with the
+      // error it has always used for one, so a panel that never came up reads the
+      // same as a panel with nothing loaded.
+    },
+    [setBrowserOpen, threadRef],
+  );
 
   // Not the module-level `isElectron` snapshot: the bridge is what this needs,
   // the host already refuses to connect without one, and reading it at effect

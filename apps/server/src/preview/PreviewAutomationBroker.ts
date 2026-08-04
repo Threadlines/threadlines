@@ -51,6 +51,7 @@ export const PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES = 512_000;
 
 export interface PreviewAutomationInvokeInput {
   readonly threadId: ThreadId;
+  readonly agentId: string;
   readonly operation: PreviewAutomationOperation;
   readonly input: unknown;
   readonly timeoutMs?: number | undefined;
@@ -213,6 +214,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const timeoutMs = input.timeoutMs ?? PREVIEW_AUTOMATION_DEFAULT_TIMEOUT_MS;
     const result = yield* Queue.offer(connection.queue, {
       requestId,
+      agentId: input.agentId,
       operation: input.operation,
       input: input.input as PreviewAutomationRequest["input"],
     }).pipe(

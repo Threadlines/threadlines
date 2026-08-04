@@ -518,6 +518,7 @@ export type DesktopPreviewRevealInput = typeof DesktopPreviewRevealInputSchema.T
 export const DesktopPreviewClickInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   target: PreviewAutomationTargetSchema,
+  doubleClick: Schema.optionalKey(Schema.Boolean),
 });
 export type DesktopPreviewClickInput = typeof DesktopPreviewClickInputSchema.Type;
 
@@ -547,6 +548,8 @@ export const DesktopPreviewTypeInputSchema = Schema.Struct({
   text: Schema.String,
   /** Replace what is already in the field rather than appending to it. */
   clear: Schema.optional(Schema.Boolean),
+  /** Press Enter after inserting the text. */
+  submit: Schema.optionalKey(Schema.Boolean),
 });
 export type DesktopPreviewTypeInput = typeof DesktopPreviewTypeInputSchema.Type;
 
@@ -580,6 +583,8 @@ export const DesktopPreviewStatusSchema = Schema.Struct({
   title: Schema.String,
   loading: Schema.Boolean,
   attached: Schema.Boolean,
+  /** Increments whenever human input reaches this guest tab. */
+  controlEpoch: Schema.Finite,
   /** Console output since the page last navigated, oldest first. */
   console: Schema.Array(DesktopPreviewConsoleEntrySchema),
   /** Requests that failed or returned >= 400 since the page last navigated. */

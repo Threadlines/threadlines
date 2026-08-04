@@ -1,12 +1,21 @@
-import { describe, expect, it } from "vite-plus/test";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   makeBrowserTab,
   nextActiveTabId,
+  selectThreadBrowserState,
   steppedZoom,
+  useBrowserPanelStore,
   waitForPreviewWebview,
   type BrowserTab,
 } from "./browserPanelStore";
+
+const THREAD_REF = scopeThreadRef(
+  EnvironmentId.make("environment-browser-store"),
+  ThreadId.make("thread-browser-store"),
+);
 
 function tabs(count: number): BrowserTab[] {
   return Array.from({ length: count }, () => makeBrowserTab());
@@ -35,6 +44,25 @@ describe("nextActiveTabId", () => {
     const [only] = tabs(1) as [BrowserTab];
 
     expect(nextActiveTabId([only], only.id, only.id)).toBeNull();
+  });
+});
+
+describe("background tabs", () => {
+  beforeEach(() => {
+    useBrowserPanelStore.setState({ browserStateByThreadKey: {} });
+  });
+
+  it("creates a live tab without changing the user's active tab", () => {
+    const store = useBrowserPanelStore.getState();
+    const original = selectThreadBrowserState(store.browserStateByThreadKey, THREAD_REF);
+    const openedId = store.openTabWithUrl(THREAD_REF, "http://localhost:5173/", false);
+    const next = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+
+    expect(next.activeTabId).toBe(original.activeTabId);
+    expect(next.tabs.find((tab) => tab.id === openedId)?.url).toBe("http://localhost:5173/");
   });
 });
 

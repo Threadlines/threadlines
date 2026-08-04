@@ -18,15 +18,17 @@ const forward =
   (operation: PreviewAutomationOperation) =>
   (input: unknown): Effect.Effect<never, never, never> =>
     Effect.gen(function* () {
-      const { threadId } = yield* McpInvocationContext;
+      const { threadId, agentId } = yield* McpInvocationContext;
       const broker = yield* PreviewAutomationBroker;
-      return yield* broker.invoke({ threadId, operation, input });
+      return yield* broker.invoke({ threadId, agentId, operation, input });
     }) as Effect.Effect<never, never, never>;
 
 export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_snapshot: forward("snapshot"),
   browser_status: forward("status"),
   browser_tabs: forward("tabs"),
+  browser_open_tab: forward("openTab"),
+  browser_close_tab: forward("closeTab"),
   browser_select_tab: forward("selectTab"),
   browser_navigate: forward("navigate"),
   browser_click: forward("click"),
@@ -38,6 +40,7 @@ export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_wait_for: forward("waitFor"),
   browser_evaluate: forward("evaluate"),
   browser_resize: forward("resize"),
+  browser_set_appearance: forward("setAppearance"),
 });
 
 /** The screenshot's handler, built separately so the manual registration in
