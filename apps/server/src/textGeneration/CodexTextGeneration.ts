@@ -8,7 +8,12 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { DEFAULT_MODEL, type CodexSettings, type ModelSelection } from "@threadlines/contracts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT,
+  DEFAULT_MODEL,
+  type CodexSettings,
+  type ModelSelection,
+} from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";
 
@@ -37,7 +42,6 @@ import {
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { resolveCodexCliServiceTier } from "../codexServiceTier.ts";
 
-const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "medium";
 const CODEX_DEFAULT_TIMEOUT_MS = 180_000;
 // Identical commit prompts have been observed taking 11s-42s wall time
 // (server-side queue variance), so 60s left too little tail headroom.
@@ -230,7 +234,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }) {
       const reasoningEffort =
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
-        CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT;
+        DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier = resolveCodexCliServiceTier(modelSelection);
       const command = ChildProcess.make(
         codexConfig.binaryPath || "codex",

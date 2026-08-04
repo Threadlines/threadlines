@@ -1776,6 +1776,40 @@ describe("GeneralSettingsPanel observability", () => {
     });
   });
 
+  it("keeps model details open when the info icon is clicked", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createClaudeProvider()],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByLabelText("Toggle Claude details").click();
+    await page.getByRole("button", { name: "Models" }).click();
+
+    // The details panel used to be a tooltip, which closed on press and could
+    // only be reopened by leaving and re-entering the icon.
+    await page.getByRole("button", { name: "Details for Claude Sonnet 4.6" }).click();
+    await expect.element(page.getByText("claude-sonnet-4-6")).toBeVisible();
+
+    await page.getByRole("button", { name: "Details for Claude Sonnet 4.6" }).click();
+    await expect.element(page.getByText("claude-sonnet-4-6")).not.toBeInTheDocument();
+  });
+
   it("runs one-click provider updates from the provider card", async () => {
     const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
       providers: [createOutdatedProvider("codex")],

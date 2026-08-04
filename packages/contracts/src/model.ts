@@ -150,7 +150,25 @@ const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
  * `isDefault` by the active Codex instance.
  */
 export const DEFAULT_MODEL = "gpt-5.6-sol";
-export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
+
+/**
+ * Default model for generated text (thread titles, branch names, commit
+ * messages, PR copy). These are short, structured, latency-sensitive calls, so
+ * the default is a small fast model rather than the agent default.
+ */
+export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.6-luna";
+
+/**
+ * Reasoning effort applied to text generation when the selection carries no
+ * explicit choice. Shared with the Codex text generation runner so the value
+ * the settings UI shows is the value the CLI is invoked with.
+ */
+export const DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT = "medium";
+
+/** Default option selections paired with `DEFAULT_GIT_TEXT_GENERATION_MODEL`. */
+export const DEFAULT_GIT_TEXT_GENERATION_OPTIONS: ReadonlyArray<ProviderOptionSelection> = [
+  { id: "reasoningEffort", value: DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT },
+];
 
 export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {
   [CODEX_DRIVER_KIND]: DEFAULT_MODEL,
