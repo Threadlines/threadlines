@@ -134,6 +134,9 @@ function createBaseServerConfig(): ServerConfig {
           customModels: [],
           fallbackModel: [],
           launchArgs: "",
+          maxConcurrentSubagents: "",
+          maxSubagentsPerSession: "",
+          maxSubagentSpawnDepth: "",
         },
         cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },
         opencode: {
