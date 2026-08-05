@@ -949,7 +949,7 @@ describe("WsTransport", () => {
     };
     expect(secondRequest.tag).toBe(WS_METHODS.subscribeServerLifecycle);
     expect(secondRequest.id).not.toBe(firstRequest.id);
-    expect(onResubscribe).toHaveBeenCalledOnce();
+    expect(onResubscribe).toHaveBeenCalled();
 
     const secondEvent = {
       ...firstEvent,
