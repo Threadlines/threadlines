@@ -8,6 +8,7 @@ import * as NetService from "@threadlines/shared/Net";
 import packageJson from "../package.json" with { type: "json" };
 import { authCommand } from "./cli/auth.ts";
 import { sharedServerCommandFlags } from "./cli/config.ts";
+import { assertSingleEffectRuntime } from "./cli/effectRuntimeCheck.ts";
 import { projectCommand } from "./cli/project.ts";
 import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 
@@ -20,6 +21,7 @@ export const cli = Command.make("threadlines", { ...sharedServerCommandFlags }).
 );
 
 if (import.meta.main) {
+  assertSingleEffectRuntime();
   Command.run(cli, { version: packageJson.version }).pipe(
     Effect.scoped,
     Effect.provide(CliRuntimeLayer),

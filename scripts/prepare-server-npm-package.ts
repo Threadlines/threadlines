@@ -21,6 +21,7 @@ const SERVER_NPM_RUNTIME_DEPENDENCIES = new Set([
   "@anthropic-ai/claude-agent-sdk",
   "@effect/platform-bun",
   "@effect/platform-node",
+  "@effect/platform-node-shared",
   "@effect/sql-sqlite-bun",
   "effect",
   "node-pty",
