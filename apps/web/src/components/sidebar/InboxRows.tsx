@@ -249,12 +249,11 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
   });
-  // Every live row asks, not just the ones with a pinned branch: a thread
-  // created without one is still working in a checkout, and that checkout's
-  // ref is the branch the row should name.
+  // Only rows with a pinned branch ask: the git status feeds the change
+  // request badge alone, and that badge never renders without a pinned branch.
   const gitStatus = useGitStatus({
     environmentId: thread.environmentId,
-    cwd: gitCwd,
+    cwd: thread.branch !== null ? gitCwd : null,
   });
   // The +/- is the thread's own running total, summed by the server across the
   // turns it has taken -- not the checkout's working tree, which several
@@ -263,13 +262,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // a file yet stays quiet rather than claiming a clean tree.
   const diffStat = thread.cumulativeDiffStat;
   const showDiffStat = diffStat !== null && (diffStat.additions > 0 || diffStat.deletions > 0);
-  // The row names only the branch the thread pinned: a checkout's current ref
-  // is shared by every thread in it, so printing it on each row says nothing
-  // about the thread. The resolved branch still drives the change request,
-  // which does belong to the checkout the thread works in, and the hover card
-  // is where the current ref gets its say.
-  const resolvedBranch = thread.branch ?? gitStatus.data?.refName ?? null;
-  const pr = resolveThreadPr(resolvedBranch, gitStatus.data);
+  // Both the branch name and the change request badge key off the branch the
+  // thread pinned, never the checkout's current ref: a checkout is shared by
+  // every thread in it, so its ref (and that ref's change request) says
+  // nothing about this thread. The hover card is where the current ref gets
+  // its say.
+  const pr = resolveThreadPr(thread.branch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
