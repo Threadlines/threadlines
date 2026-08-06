@@ -11,7 +11,7 @@ catalog:
   "@effect/openapi-generator": 4.0.0-beta.98
   "@effect/platform-bun": 4.0.0-beta.98
   "@effect/platform-node": 4.0.0-beta.98
-  "@effect/platform-node-shared": 4.0.0-beta.97
+  "@effect/platform-node-shared": 4.0.0-beta.98
   "@effect/sql-sqlite-bun": 4.0.0-beta.97
   "@effect/tsgo": 0.13.2
   "@effect/vitest": 4.0.0-beta.97
@@ -21,7 +21,7 @@ catalog:
   "@types/node": ^24.10.13
   "@typescript/native-preview": 7.0.0-dev.20260707.2
   "@vitest/browser-playwright": 4.1.10
-  effect: 4.0.0-beta.97
+  effect: 4.0.0-beta.98
   typescript: ^7.0.2
   vite: npm:@voidzero-dev/vite-plus-core@0.2.4
   vite-plus: 0.2.4
@@ -67,9 +67,9 @@ packageExtensions:
 patchedDependencies:
   "@effect/platform-bun@4.0.0-beta.98": patches/@effect__platform-bun@4.0.0-beta.98.patch
   "@effect/platform-node@4.0.0-beta.98": patches/@effect__platform-node@4.0.0-beta.98.patch
-  "@effect/platform-node-shared@4.0.0-beta.97": patches/@effect__platform-node-shared@4.0.0-beta.97.patch
+  "@effect/platform-node-shared@4.0.0-beta.98": patches/@effect__platform-node-shared@4.0.0-beta.98.patch
   brace-expansion@5.0.9: patches/brace-expansion@5.0.9.patch
-  effect@4.0.0-beta.97: patches/effect@4.0.0-beta.97.patch
+  effect@4.0.0-beta.98: patches/effect@4.0.0-beta.98.patch
   lexical@0.47.0: patches/lexical@0.47.0.patch
 
 peerDependencyRules:

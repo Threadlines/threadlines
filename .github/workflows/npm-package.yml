@@ -78,6 +78,46 @@ jobs:
           npm pack --dry-run 2>&1 | tee /tmp/npm-pack-dry-run.log
           grep -q "dist/client/index.html" /tmp/npm-pack-dry-run.log
 
+      # Install the packed tarball the way a real `npx @threadlines/server` user
+      # would (fresh tree, registry-resolved transitive deps) and require it to
+      # boot. Catches what the tarball grep cannot: dependency skew like the
+      # 0.3.1 release, where a peer range resolved to a second copy of effect
+      # and the server exited 1 before printing anything.
+      - name: Smoke test packed artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_dir="$GITHUB_WORKSPACE/release/npm-server"
+          tarball="$(cd "$pack_dir" && npm pack --silent)"
+          smoke_dir="$(mktemp -d)"
+          cd "$smoke_dir"
+          npm install --no-audit --no-fund --loglevel=error "$pack_dir/$tarball"
+          effect_copies="$(find node_modules -path '*node_modules/effect/package.json' | wc -l)"
+          if [ "$effect_copies" -ne 1 ]; then
+            echo "Expected exactly one installed copy of effect, found $effect_copies:"
+            find node_modules -path '*node_modules/effect/package.json'
+            exit 1
+          fi
+          node node_modules/@threadlines/server/dist/bin.mjs --port 7777 --no-browser --base-dir "$smoke_dir/home" > server.log 2>&1 &
+          server_pid=$!
+          for _ in $(seq 1 30); do
+            if grep -q "Listening on http" server.log; then
+              echo "Server booted."
+              kill "$server_pid" || true
+              exit 0
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "Server process exited before becoming ready. Log:"
+              cat server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Server did not become ready within 30s. Log:"
+          cat server.log
+          kill "$server_pid" || true
+          exit 1
+
   publish:
     name: Publish package
     needs: pack

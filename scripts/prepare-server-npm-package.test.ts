@@ -17,6 +17,7 @@ it("creates publishable server package metadata", () => {
       dependencies: {
         "@anthropic-ai/claude-agent-sdk": "^0.3.190",
         "@effect/platform-node": "catalog:",
+        "@effect/platform-node-shared": "catalog:",
         "@threadlines/shared": "workspace:*",
         "@opencode-ai/sdk": "^1.3.15",
         "@pierre/diffs": "catalog:",
@@ -32,6 +33,7 @@ it("creates publishable server package metadata", () => {
     },
     {
       "@effect/platform-node": "4.0.0-beta.59",
+      "@effect/platform-node-shared": "4.0.0-beta.59",
       effect: "4.0.0-beta.59",
       typescript: "^5.7.3",
     },
@@ -43,6 +45,7 @@ it("creates publishable server package metadata", () => {
     dependencies: {
       "@anthropic-ai/claude-agent-sdk": "^0.3.190",
       "@effect/platform-node": "4.0.0-beta.59",
+      "@effect/platform-node-shared": "4.0.0-beta.59",
       effect: "4.0.0-beta.59",
       "node-pty": "^1.1.0",
     },
