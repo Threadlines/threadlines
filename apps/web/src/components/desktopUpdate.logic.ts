@@ -146,6 +146,19 @@ export function discriminatingVersionLabel(target: string, current: string): str
   return `${compactVersionLabel(target)}-nightly`;
 }
 
+/**
+ * Chip variant of `discriminatingVersionLabel`. The sidebar chip is a fixed
+ * 68px box that fits about eleven characters, so "v0.3.3-nightly" would
+ * ellipsize into exactly the part that mattered. The feed only ever serves
+ * the selected channel, so on the chip a cross-base target can drop the
+ * channel suffix: on the nightly track "v0.3.3" can only mean a nightly, and
+ * the popout row plus tooltip still spell it out.
+ */
+export function discriminatingChipVersionLabel(target: string, current: string): string {
+  const label = discriminatingVersionLabel(target, current);
+  return label.endsWith("-nightly") ? compactVersionLabel(target) : label;
+}
+
 function getSidebarDesktopUpdateTagTooltip(input: {
   readonly action: DesktopUpdateButtonAction;
   readonly isDownloading: boolean;
@@ -200,7 +213,7 @@ export function getSidebarDesktopUpdateTagPresentation(
   // "ready to restart" reads as the incoming release, not the running one.
   const targetVersion = state.downloadedVersion ?? state.availableVersion;
   const targetLabel = targetVersion
-    ? discriminatingVersionLabel(targetVersion, state.currentVersion ?? appVersion)
+    ? discriminatingChipVersionLabel(targetVersion, state.currentVersion ?? appVersion)
     : null;
   const downloadPercent = typeof state.downloadPercent === "number" ? state.downloadPercent : null;
   const progressPercent = isDownloaded

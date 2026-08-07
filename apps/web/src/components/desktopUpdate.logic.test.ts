@@ -3,6 +3,7 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@threadlines
 
 import {
   canCheckForUpdate,
+  discriminatingChipVersionLabel,
   discriminatingVersionLabel,
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
@@ -264,6 +265,17 @@ describe("discriminatingVersionLabel", () => {
     expect(discriminatingVersionLabel("0.3.2-nightly.20260807.222", "0.3.1")).toBe(
       "v0.3.2-nightly",
     );
+  });
+
+  it("drops the channel suffix on the chip, where the feed already implies it", () => {
+    // "v0.3.3-nightly" is 14 characters and the chip fits about eleven; the
+    // popout row and tooltip keep the explicit channel.
+    expect(
+      discriminatingChipVersionLabel("0.3.3-nightly.20260808.230", "0.3.2-nightly.20260807.221"),
+    ).toBe("v0.3.3");
+    expect(
+      discriminatingChipVersionLabel("0.3.2-nightly.20260807.222", "0.3.2-nightly.20260807.221"),
+    ).toBe(".222");
   });
 });
 
