@@ -6,12 +6,28 @@ export function riseDelay(delay: string): React.CSSProperties {
 
 /* Decorative thread graph: branches draw themselves in, commits surface
    left-to-right, and the one still-open branch ends on a live accent node. */
-export function ThreadlinesFigure() {
+export function ThreadlinesFigure({
+  /**
+   * Two-thirds scale with tighter margins, for surfaces that put content
+   * under the figure (the setup card) rather than existing around it.
+   */
+  compact = false,
+}: {
+  compact?: boolean;
+} = {}) {
   return (
-    <div aria-hidden="true" className="no-thread-rise relative mb-7" style={riseDelay("0.05s")}>
+    <div
+      aria-hidden="true"
+      className={compact ? "no-thread-rise relative mb-4" : "no-thread-rise relative mb-7"}
+      style={riseDelay("0.05s")}
+    >
       <div className="pointer-events-none absolute -inset-x-14 -inset-y-8 rounded-full bg-primary-graph/[0.05] blur-2xl dark:bg-primary-graph/[0.07]" />
       <svg
-        className="relative h-auto w-[300px] sm:w-[336px] lg:w-[384px]"
+        className={
+          compact
+            ? "relative h-auto w-[200px] sm:w-[224px]"
+            : "relative h-auto w-[300px] sm:w-[336px] lg:w-[384px]"
+        }
         fill="none"
         viewBox="0 0 360 120"
       >

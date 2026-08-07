@@ -14,6 +14,7 @@ import {
   deriveFirstRunProviderRows,
   dismissFirstRunSetup,
   FIRST_RUN_SETUP_DISMISSALS_STORAGE_KEY,
+  groupFirstRunProviderRows,
   isFirstRunSetupDismissed,
   shouldShowFirstRunSetupCard,
   type FirstRunSetupProvider,
@@ -161,6 +162,34 @@ describe("deriveFirstRunProviderRows", () => {
     const rows = deriveFirstRunProviderRows([{ ...signedInCodex, enabled: false }, missingClaude]);
 
     expect(rows.map((row) => row.name)).toEqual(["Claude"]);
+  });
+
+  it("orders rows by actionability: sign-in, install, then ready", () => {
+    // Settings order is Claude-first here, but the checklist leads with the
+    // provider that is one browser window from working.
+    const rows = deriveFirstRunProviderRows([missingClaude, signedInCodex, signedOutCodex]);
+
+    expect(rows.map((row) => row.state)).toEqual(["needsSignIn", "notInstalled", "ready"]);
+  });
+
+  it("collapses providers past the visible cap into an overflow group", () => {
+    const rows = deriveFirstRunProviderRows([
+      signedOutCodex,
+      missingClaude,
+      provider({ instanceId: "cursor", driver: "cursor", displayName: "Cursor", installed: false }),
+      provider({ instanceId: "opencode", driver: "opencode", displayName: "OpenCode" }),
+    ]);
+    const groups = groupFirstRunProviderRows(rows);
+
+    expect(groups.visible).toHaveLength(3);
+    // Priority puts the ready OpenCode row last, so it is the one collapsed.
+    expect(groups.overflow?.map((row) => row.name)).toEqual(["OpenCode"]);
+  });
+
+  it("keeps every row visible while at or under the cap", () => {
+    const rows = deriveFirstRunProviderRows([signedOutCodex, missingClaude]);
+
+    expect(groupFirstRunProviderRows(rows)).toEqual({ visible: rows, overflow: null });
   });
 });
 

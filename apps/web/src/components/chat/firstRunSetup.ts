@@ -216,9 +216,47 @@ function firstSentence(value: string | null | undefined): string | null {
 }
 
 /**
- * One row per enabled provider instance, in the order the caller supplied
- * (settings order). Disabled instances are left out: the user turned them off,
- * so they are not part of getting started.
+ * The card is a checklist, so rows are ordered by how close the provider is
+ * to working: sign-in is one browser window away, an install is a bigger
+ * ask, and a ready provider is just confirmation. Within a state, the
+ * caller's (settings) order is kept.
+ */
+const PROVIDER_ROW_STATE_PRIORITY: Record<FirstRunProviderRowState, number> = {
+  needsSignIn: 0,
+  notInstalled: 1,
+  ready: 2,
+};
+
+/** The card never grows past this many provider rows; the rest collapse. */
+export const MAX_VISIBLE_FIRST_RUN_PROVIDER_ROWS = 3;
+
+export interface FirstRunProviderRowGroups {
+  readonly visible: ReadonlyArray<FirstRunProviderRow>;
+  /**
+   * Providers past the cap, least actionable last. Present only when there
+   * are more providers than visible rows; the card renders them as a single
+   * "More agents" row pointing at Settings so the checklist stays a
+   * checklist no matter how many drivers a build ships.
+   */
+  readonly overflow: ReadonlyArray<FirstRunProviderRow> | null;
+}
+
+export function groupFirstRunProviderRows(
+  rows: ReadonlyArray<FirstRunProviderRow>,
+): FirstRunProviderRowGroups {
+  if (rows.length <= MAX_VISIBLE_FIRST_RUN_PROVIDER_ROWS) {
+    return { visible: rows, overflow: null };
+  }
+  return {
+    visible: rows.slice(0, MAX_VISIBLE_FIRST_RUN_PROVIDER_ROWS),
+    overflow: rows.slice(MAX_VISIBLE_FIRST_RUN_PROVIDER_ROWS),
+  };
+}
+
+/**
+ * One row per enabled provider instance, ordered by actionability (see
+ * `PROVIDER_ROW_STATE_PRIORITY`). Disabled instances are left out: the user
+ * turned them off, so they are not part of getting started.
  */
 export function deriveFirstRunProviderRows(
   providers: ReadonlyArray<FirstRunSetupProvider>,
@@ -240,7 +278,11 @@ export function deriveFirstRunProviderRows(
             ? (providerAuthReconnectCommand(provider.driverKind) ?? null)
             : null,
       } satisfies FirstRunProviderRow;
-    });
+    })
+    .toSorted(
+      (left, right) =>
+        PROVIDER_ROW_STATE_PRIORITY[left.state] - PROVIDER_ROW_STATE_PRIORITY[right.state],
+    );
 }
 
 export type FirstRunProjectRowState = "ready" | "missing";

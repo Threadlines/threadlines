@@ -27,6 +27,7 @@ import {
   deriveFirstRunProjectRow,
   deriveFirstRunProviderRows,
   dismissFirstRunSetup,
+  groupFirstRunProviderRows,
   isFirstRunSetupDismissed,
   type FirstRunProviderRow,
   type FirstRunSetupProvider,
@@ -88,7 +89,7 @@ function SetupRow({
 }) {
   return (
     <li
-      className="flex items-center gap-3 border-b border-border py-4"
+      className="flex items-center gap-3 border-b border-border py-3.5"
       data-testid="first-run-setup-row"
       data-row-id={rowId}
       data-row-state={state}
@@ -169,6 +170,7 @@ export function FirstRunSetupCard({
   onStart,
 }: FirstRunSetupCardProps) {
   const providerRows = useMemo(() => deriveFirstRunProviderRows(providers), [providers]);
+  const providerRowGroups = useMemo(() => groupFirstRunProviderRows(providerRows), [providerRows]);
   const projectRow = useMemo(
     () => deriveFirstRunProjectRow({ projectName, projectCwd, isOnlyWorkspaceProject }),
     [isOnlyWorkspaceProject, projectCwd, projectName],
@@ -185,8 +187,11 @@ export function FirstRunSetupCard({
     );
 
   return (
-    <div className="flex w-full max-w-140 flex-col items-center" data-testid="first-run-setup-card">
-      <ThreadlinesFigure />
+    <div
+      className="flex w-full max-w-140 flex-col items-center pb-10"
+      data-testid="first-run-setup-card"
+    >
+      <ThreadlinesFigure compact />
       <h2
         className="no-thread-rise text-[19px] font-semibold tracking-tight text-foreground"
         style={riseDelay("0.16s")}
@@ -200,8 +205,8 @@ export function FirstRunSetupCard({
         Connect a coding agent and pick a folder. Rows update live as you go.
       </p>
 
-      <ul className="no-thread-rise mt-7 w-full border-t border-border" style={riseDelay("0.32s")}>
-        {providerRows.map((row) => (
+      <ul className="no-thread-rise mt-6 w-full border-t border-border" style={riseDelay("0.32s")}>
+        {providerRowGroups.visible.map((row) => (
           <SetupRow
             key={row.instanceId}
             rowId={String(row.instanceId)}
@@ -213,6 +218,27 @@ export function FirstRunSetupCard({
             action={providerRowAction(row, onSignIn)}
           />
         ))}
+        {providerRowGroups.overflow ? (
+          <SetupRow
+            rowId="more-agents"
+            state="overflow"
+            dotClassName="bg-muted-foreground/55"
+            name="More agents"
+            description={`${providerRowGroups.overflow
+              .map((row) => row.name)
+              .join(", ")} · set up from Settings`}
+            action={
+              <Button
+                size="xs"
+                variant="outline"
+                aria-label="Open provider settings for more agents"
+                render={<Link to="/settings/providers" />}
+              >
+                Open Settings
+              </Button>
+            }
+          />
+        ) : null}
         <SetupRow
           rowId="project"
           state={projectRow.state}
