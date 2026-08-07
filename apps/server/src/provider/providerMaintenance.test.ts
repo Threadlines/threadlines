@@ -18,7 +18,8 @@ import {
 } from "./providerMaintenance.ts";
 
 const driver = (value: string) => ProviderDriverKind.make(value);
-const noManualUpdate = {
+const noInstallOrManualUpdate = {
+  install: null,
   manualUpdateCommand: null,
   advisoryMessage: null,
 } as const;
@@ -30,6 +31,25 @@ const makeTempDir = Effect.fn("makeTempDir")(function* (name: string) {
   const id = yield* randomUUIDv4;
   return path.join(os.tmpdir(), `${name}-${id}`);
 });
+
+const WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+
+/**
+ * Put an executable named `name` in `dir` for the platform the test is
+ * actually running on, so PATH lookups behave the way they would in
+ * production. Returns the directory, for use as a PATH entry.
+ */
+function writeCommandShim(dir: string, name: string): string {
+  mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    writeFileSync(path.join(dir, `${name}.cmd`), "@echo off\r\n");
+    return dir;
+  }
+  const commandPath = path.join(dir, name);
+  writeFileSync(commandPath, "#!/bin/sh\n");
+  chmodSync(commandPath, 0o755);
+  return dir;
+}
 
 function linkPackageCommand(input: {
   readonly packageBinDir: string;
@@ -177,7 +197,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "static-tool",
       },
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 
@@ -212,7 +232,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "vite-plus-global",
           },
-          ...noManualUpdate,
+          ...noInstallOrManualUpdate,
         });
       }),
   );
@@ -247,7 +267,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "bun-global",
           },
-          ...noManualUpdate,
+          ...noInstallOrManualUpdate,
         });
       }),
   );
@@ -283,7 +303,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "pnpm-global",
           },
-          ...noManualUpdate,
+          ...noInstallOrManualUpdate,
         });
       }),
   );
@@ -316,7 +336,7 @@ describe("providerMaintenance", () => {
 
         environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
       },
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 
@@ -363,7 +383,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 
@@ -398,7 +418,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "native-package-tool-native",
           },
-          ...noManualUpdate,
+          ...noInstallOrManualUpdate,
         });
       }),
   );
@@ -431,6 +451,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "native-package-tool-installer-win32",
       },
+      install: null,
       manualUpdateCommand: null,
       advisoryMessage:
         "Run the native-package-tool Windows installer instead of native-package-tool update.",
@@ -456,7 +477,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "native-package-tool-native",
       },
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 
@@ -517,9 +538,86 @@ describe("providerMaintenance", () => {
 
             lockKey: "scoped-package-tool-native",
           },
-          ...noManualUpdate,
+          ...noInstallOrManualUpdate,
         });
       }),
+  );
+
+  it.effect("derives an npm global install for a provider CLI that resolves nowhere on PATH", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-npm-install-capabilities");
+      const npmBinDir = writeCommandShim(path.join(tempDir, "npm-bin"), "npm");
+
+      expect(
+        packageToolUpdate.resolve({
+          binaryPath: "package-tool",
+          platform: process.platform,
+          env: { PATH: npmBinDir, PATHEXT: WINDOWS_PATHEXT },
+        }).install,
+      ).toEqual({
+        command: "npm install -g @example/package-tool@latest",
+        executable: "npm",
+        args: ["install", "-g", "@example/package-tool@latest"],
+        lockKey: "npm-global",
+      });
+    }),
+  );
+
+  it.effect("offers no install capability when npm itself is missing", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-npm-install-capabilities-missing");
+      const emptyBinDir = writeCommandShim(path.join(tempDir, "empty-bin"), "unrelated-tool");
+
+      expect(
+        packageToolUpdate.resolve({
+          binaryPath: "package-tool",
+          platform: process.platform,
+          env: { PATH: emptyBinDir, PATHEXT: WINDOWS_PATHEXT },
+        }).install,
+      ).toBeNull();
+    }),
+  );
+
+  it.effect("scopes the derived install to the configured npm prefix", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-npm-install-capabilities-prefix");
+      const npmBinDir = writeCommandShim(path.join(tempDir, "npm-bin"), "npm");
+      const npmPrefix = path.join(tempDir, "npm prefix");
+
+      expect(
+        packageToolUpdate.resolve({
+          binaryPath: "package-tool",
+          platform: process.platform,
+          env: {
+            PATH: npmBinDir,
+            PATHEXT: WINDOWS_PATHEXT,
+            NPM_CONFIG_PREFIX: npmPrefix,
+          },
+        }).install,
+      ).toEqual({
+        command: `npm --prefix "${npmPrefix}" install -g @example/package-tool@latest`,
+        executable: "npm",
+        args: ["install", "-g", "@example/package-tool@latest"],
+        lockKey: "npm-global",
+        environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
+      });
+    }),
+  );
+
+  it.effect("keeps an installed provider free of an install capability", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-npm-install-capabilities-installed");
+      const npmBinDir = writeCommandShim(path.join(tempDir, "npm-bin"), "npm");
+      writeCommandShim(npmBinDir, "package-tool");
+
+      expect(
+        packageToolUpdate.resolve({
+          binaryPath: "package-tool",
+          platform: process.platform,
+          env: { PATH: npmBinDir, PATHEXT: WINDOWS_PATHEXT },
+        }).install,
+      ).toBeNull();
+    }),
   );
 
   it("switches native-package-tool to Homebrew updates when the binary resolves through Homebrew", () => {
@@ -543,7 +641,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 
@@ -568,7 +666,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 
@@ -612,7 +710,7 @@ describe("providerMaintenance", () => {
 
           lockKey: "npm-global",
         },
-        ...noManualUpdate,
+        ...noInstallOrManualUpdate,
       });
     }),
   );
@@ -661,7 +759,7 @@ describe("providerMaintenance", () => {
 
           lockKey: "pnpm-global",
         },
-        ...noManualUpdate,
+        ...noInstallOrManualUpdate,
       });
     }),
   );
@@ -680,7 +778,7 @@ describe("providerMaintenance", () => {
       provider: driver("packageTool"),
       packageName: "@example/package-tool",
       update: null,
-      ...noManualUpdate,
+      ...noInstallOrManualUpdate,
     });
   });
 });

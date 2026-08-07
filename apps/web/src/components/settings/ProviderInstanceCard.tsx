@@ -68,12 +68,15 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageDashboard } from "../ProviderUsageDashboard";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
+  firstSentenceOf,
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
   getProviderSummary,
   getProviderVersionLabel,
   type ProviderStatusKey,
 } from "./providerStatus";
+import { deriveProviderInstallView } from "./providerInstall";
+import { ProviderInstallAction } from "./ProviderInstallAction";
 
 const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
 const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
@@ -1216,6 +1219,12 @@ export function ProviderInstanceCard({
     : null;
   const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
+  const providerInstallView = deriveProviderInstallView(liveProvider);
+  // With an Install button on the row, the detail keeps its diagnosis and
+  // drops the manual install recipe: never both at once.
+  const summaryDetail = providerInstallView
+    ? firstSentenceOf(summary.detail)
+    : (summary.detail ?? null);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const providerUpdateState = liveProvider?.updateState ?? null;
@@ -1478,9 +1487,9 @@ export function ProviderInstanceCard({
           <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
         </>
       )}
-      {summary.detail ? (
+      {summaryDetail ? (
         <span>
-          - <LinkifiedText text={summary.detail} />
+          - <LinkifiedText text={summaryDetail} />
         </span>
       ) : null}
     </p>
@@ -1660,7 +1669,16 @@ export function ProviderInstanceCard({
               />
             ) : null}
           </div>
-          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+          <div className="flex w-full min-w-0 shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+            {providerInstallView && driverKind ? (
+              <ProviderInstallAction
+                instanceId={instanceId}
+                driverKind={driverKind}
+                displayName={displayName}
+                view={providerInstallView}
+                statusClassName="max-w-64"
+              />
+            ) : null}
             <Button
               size="sm"
               variant="ghost"

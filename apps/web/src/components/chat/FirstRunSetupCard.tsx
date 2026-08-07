@@ -12,6 +12,11 @@
  * session the Providers settings panel runs and reports it in place; only a
  * run that stalls long enough to need a real terminal hands off to settings.
  *
+ * A missing CLI works the same way when the server can install it: the row
+ * runs the install and reports progress in place, then re-derives from the
+ * snapshot into the sign-in state. Rows fall back to the install guide only
+ * when there is no install to run.
+ *
  * No container: typography, spacing, and hairline dividers on the empty
  * canvas, matching the rest of the app.
  *
@@ -23,6 +28,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { ProviderInstallAction } from "../settings/ProviderInstallAction";
 import { useProviderConnectFlow } from "../settings/useProviderConnectFlow";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { Button } from "../ui/button";
@@ -145,6 +151,17 @@ function providerRowAction(row: FirstRunProviderRow): ReactNode {
   }
   if (row.state === "needsSignIn" && row.signInCommand) {
     return <ProviderSignInRowAction row={row} />;
+  }
+  if (row.install) {
+    return (
+      <ProviderInstallAction
+        instanceId={row.instanceId}
+        driverKind={row.driverKind}
+        displayName={row.name}
+        view={row.install}
+        statusClassName="max-w-56"
+      />
+    );
   }
   return (
     <Button

@@ -320,6 +320,8 @@ function createOutdatedProvider(
       checkedAt: "2026-05-04T10:00:00.000Z",
       updateCommand,
       canUpdate: true,
+      installCommand: null,
+      canInstall: false,
     },
   };
 }
@@ -340,6 +342,8 @@ function createVerifiedNativeOutdatedClaudeProvider(): ServerProvider {
       checkedAt: "2026-05-04T10:00:00.000Z",
       updateCommand: nativeUpdaterCommand,
       canUpdate: true,
+      installCommand: null,
+      canInstall: false,
     },
   };
 }
@@ -386,6 +390,42 @@ function createClaudeProvider(): ServerProvider {
     ],
     slashCommands: [],
     skills: [],
+  };
+}
+
+const CLAUDE_INSTALL_GUIDE_MESSAGE =
+  "Claude Agent CLI (`claude`) is not installed or not on PATH. Install Claude Code from https://claude.com/product/claude-code and run `claude` to sign in.";
+
+/**
+ * A Claude whose CLI is missing. `canInstall` is what the server sets when it
+ * found npm and could run the install itself; without it the card has nothing
+ * to offer but the guide.
+ */
+function createMissingClaudeProvider(options?: {
+  readonly canInstall?: boolean;
+  readonly updateState?: ServerProvider["updateState"];
+}): ServerProvider {
+  return {
+    ...createClaudeProvider(),
+    installed: false,
+    version: null,
+    status: "error",
+    auth: { status: "unknown" },
+    message: CLAUDE_INSTALL_GUIDE_MESSAGE,
+    models: [],
+    versionAdvisory: {
+      status: "unknown",
+      currentVersion: null,
+      latestVersion: null,
+      updateCommand: null,
+      canUpdate: false,
+      installCommand:
+        options?.canInstall === true ? "npm install -g @anthropic-ai/claude-code@latest" : null,
+      canInstall: options?.canInstall === true,
+      checkedAt: null,
+      message: null,
+    },
+    ...(options?.updateState ? { updateState: options.updateState } : {}),
   };
 }
 
@@ -1843,6 +1883,117 @@ describe("GeneralSettingsPanel observability", () => {
       provider: ProviderDriverKind.make("codex"),
       instanceId: ProviderInstanceId.make("codex"),
     });
+  });
+
+  it("installs a missing provider CLI from the provider card", async () => {
+    const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
+      providers: [createMissingClaudeProvider({ canInstall: true })],
+    });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateProvider,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createMissingClaudeProvider({ canInstall: true })],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    // The button replaces the manual recipe; the diagnosis sentence stays.
+    await expect
+      .element(page.getByText("Claude Agent CLI (`claude`) is not installed or not on PATH."))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("link", { name: "https://claude.com/product/claude-code" }))
+      .not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Install Claude" }).click();
+
+    expect(updateProvider).toHaveBeenCalledWith({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      action: "install",
+    });
+  });
+
+  it("reports a running provider install in place of the install button", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateProvider: vi.fn().mockResolvedValue({ providers: [] }),
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        createMissingClaudeProvider({
+          canInstall: true,
+          updateState: {
+            status: "running",
+            startedAt: "2026-05-04T10:00:00.000Z",
+            finishedAt: null,
+            message: "Installing provider.",
+            output: "added 1 package",
+          },
+        }),
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByText("Installing… added 1 package")).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Install Claude" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("keeps the install guide when the server derived no install command", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateProvider: vi.fn().mockResolvedValue({ providers: [] }),
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createMissingClaudeProvider()],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    // No derived install command: the full guide sentence and its link stay.
+    await expect
+      .element(page.getByRole("button", { name: "Install Claude" }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("link", { name: "https://claude.com/product/claude-code" }))
+      .toBeVisible();
   });
 
   it("runs verified native one-click updates for Windows Claude advisories", async () => {

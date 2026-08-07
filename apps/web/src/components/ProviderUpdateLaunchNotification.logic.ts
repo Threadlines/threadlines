@@ -464,21 +464,31 @@ function getProviderUpdateSidebarItemTone(
   }
 }
 
+/**
+ * A provider with no CLI on the machine has no update to run, so a
+ * maintenance command against it is an install. The runner writes both to the
+ * same state, and this is where the sidebar tells them apart.
+ */
+function isProviderInstallState(provider: Pick<ServerProvider, "installed">): boolean {
+  return !provider.installed;
+}
+
 function getProviderUpdateSidebarStatusLabel(
-  provider: Pick<ServerProvider, "version">,
+  provider: Pick<ServerProvider, "version" | "installed">,
   status: ProviderUpdateSidebarPillItemStatus,
 ): string {
+  const isInstalling = isProviderInstallState(provider);
   switch (status) {
     case "queued":
       return "Queued";
     case "running":
-      return "Updating";
+      return isInstalling ? "Installing" : "Updating";
     case "succeeded":
       return provider.version ? formatVersion(provider.version) : "Updated";
     case "failed":
       return "Failed";
     case "unchanged":
-      return "Needs update";
+      return isInstalling ? "Not installed" : "Needs update";
   }
 }
 
@@ -582,7 +592,9 @@ export function getProviderUpdateSidebarPillView(
       description:
         items.length > 1
           ? formatProviderUpdateSidebarItemDescription(items)
-          : `${formatProviderList(activeProviders)} update in progress.`,
+          : `${formatProviderList(activeProviders)} ${
+              activeProviders.every(isProviderInstallState) ? "install" : "update"
+            } in progress.`,
       items,
     };
   }

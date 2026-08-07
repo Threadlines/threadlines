@@ -20,7 +20,7 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 
-export type ProviderMaintenanceActionKind = "update";
+export type ProviderMaintenanceActionKind = "update" | "install";
 
 export interface ProviderRegistryShape {
   /**
@@ -73,9 +73,11 @@ export interface ProviderRegistryShape {
 
   /**
    * Apply volatile maintenance-action state to one configured instance.
-   * This state is never persisted to disk. Today only update actions are
-   * projected onto `ServerProvider.updateState`; install/auth actions can
-   * extend this action map without adding driver-scoped APIs.
+   * This state is never persisted to disk. An instance runs at most one
+   * maintenance action at a time (they share the runner's per-instance lock),
+   * so the latest action's state is the one projected onto
+   * `ServerProvider.updateState`; a later action replaces an earlier one's
+   * state rather than competing with it.
    */
   readonly setProviderMaintenanceActionState: (input: {
     readonly instanceId: ProviderInstanceId;

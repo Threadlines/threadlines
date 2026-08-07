@@ -290,6 +290,17 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
   latestVersion: Schema.NullOr(TrimmedNonEmptyString),
   updateCommand: Schema.NullOr(TrimmedNonEmptyString),
   canUpdate: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * The command Threadlines would run to install a provider whose CLI is
+   * missing, and whether it can run it without help. Derived from the same
+   * maintenance capabilities as `updateCommand` / `canUpdate`, so the two
+   * halves of "get this provider onto the machine" travel together. Both are
+   * defaulted on decode: snapshots cached by older builds omit them.
+   */
+  installCommand: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  canInstall: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   checkedAt: Schema.NullOr(IsoDateTime),
   message: Schema.NullOr(TrimmedNonEmptyString),
 });
@@ -781,9 +792,19 @@ export const ServerProviderRateLimitResetCreditConsumeResult = Schema.Struct({
 export type ServerProviderRateLimitResetCreditConsumeResult =
   typeof ServerProviderRateLimitResetCreditConsumeResult.Type;
 
+/**
+ * Which maintenance command the runner should run for the target instance.
+ * Install and update share one request, one lock, and one progress state:
+ * they are the same package-manager command with a different reason for
+ * running it. Absent means `"update"` so older clients keep working.
+ */
+export const ServerProviderMaintenanceAction = Schema.Literals(["update", "install"]);
+export type ServerProviderMaintenanceAction = typeof ServerProviderMaintenanceAction.Type;
+
 export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,
   instanceId: Schema.optionalKey(ProviderInstanceId),
+  action: Schema.optionalKey(ServerProviderMaintenanceAction),
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 

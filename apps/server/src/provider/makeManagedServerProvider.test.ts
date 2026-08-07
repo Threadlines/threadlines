@@ -41,6 +41,7 @@ const maintenanceCapabilities = {
 
     lockKey: "npm-global",
   },
+  install: null,
   manualUpdateCommand: null,
   advisoryMessage: null,
 } as const;
