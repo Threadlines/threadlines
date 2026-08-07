@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ServerProvider,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -28,6 +29,7 @@ import {
   deriveDetectedBackgroundRunLabel,
   deriveFailedTurnRetryMessageId,
   deriveProviderBackgroundRuns,
+  deriveProviderSendPreflight,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
   filterUnresolvedProviderBackgroundRuns,
@@ -2606,5 +2608,78 @@ describe("resolveRemoteBehindCount", () => {
     expect(resolveRemoteBehindCount({ isRepo: true, behindCount: 0 })).toBeNull();
     expect(resolveRemoteBehindCount({ isRepo: false, behindCount: 3 })).toBeNull();
     expect(resolveRemoteBehindCount(null)).toBeNull();
+  });
+});
+
+describe("deriveProviderSendPreflight", () => {
+  const makeProvider = (overrides: Partial<ServerProvider> = {}): ServerProvider =>
+    ({
+      auth: { status: "authenticated" },
+      checkedAt: "2026-08-01T00:00:00.000Z",
+      displayName: "Codex",
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      instanceId: ProviderInstanceId.make("codex"),
+      models: [],
+      skills: [],
+      slashCommands: [],
+      status: "ready",
+      version: "1.0.0",
+      ...overrides,
+    }) satisfies ServerProvider;
+
+  it("interrupts a send to a signed-out instance and names the login command", () => {
+    expect(
+      deriveProviderSendPreflight({
+        instanceId: ProviderInstanceId.make("codex"),
+        providers: [makeProvider({ auth: { status: "unauthenticated" }, status: "warning" })],
+      }),
+    ).toEqual({
+      reason: "notAuthenticated",
+      provider: ProviderDriverKind.make("codex"),
+      instanceId: ProviderInstanceId.make("codex"),
+      providerLabel: "Codex",
+      command: "codex login",
+    });
+  });
+
+  it("interrupts a send to an instance whose CLI is missing", () => {
+    expect(
+      deriveProviderSendPreflight({
+        instanceId: ProviderInstanceId.make("codex"),
+        providers: [
+          makeProvider({ installed: false, status: "warning", auth: { status: "unknown" } }),
+        ],
+      })?.reason,
+    ).toBe("notInstalled");
+  });
+
+  it("lets a usable instance through", () => {
+    expect(
+      deriveProviderSendPreflight({
+        instanceId: ProviderInstanceId.make("codex"),
+        providers: [makeProvider()],
+      }),
+    ).toBeNull();
+  });
+
+  it("stays out of the way when the provider snapshot cannot judge auth", () => {
+    expect(
+      deriveProviderSendPreflight({
+        instanceId: ProviderInstanceId.make("codex"),
+        providers: [makeProvider({ auth: { status: "unknown" } })],
+      }),
+    ).toBeNull();
+  });
+
+  it("never interrupts on a selection it has no snapshot for", () => {
+    expect(
+      deriveProviderSendPreflight({
+        instanceId: ProviderInstanceId.make("codex-personal"),
+        providers: [makeProvider({ auth: { status: "unauthenticated" } })],
+      }),
+    ).toBeNull();
+    expect(deriveProviderSendPreflight({ instanceId: null, providers: [] })).toBeNull();
   });
 });

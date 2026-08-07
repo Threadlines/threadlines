@@ -6,7 +6,9 @@ import {
   type ModelSelection,
   type OrchestrationThreadActivity,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ScopedThreadRef,
+  type ServerProvider,
   type ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -17,7 +19,9 @@ import {
 } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
+import { getModelPickerProviderAvailability } from "./chat/modelPickerEmptyState";
 import { isProviderUsageLimitErrorMessage } from "./ProviderRateLimitResetCredit";
+import { formatProviderDriverKindLabel } from "../providerModels";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
 import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -1461,6 +1465,53 @@ export interface ProviderAuthReconnectPrompt {
   readonly provider: ProviderDriverKind;
   readonly command: string;
   readonly message: string;
+}
+
+export interface ProviderSendPreflightPrompt {
+  readonly reason: "notInstalled" | "notAuthenticated";
+  readonly provider: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+  readonly providerLabel: string;
+  /** Terminal login command, when this provider has one. */
+  readonly command: string | null;
+}
+
+/**
+ * Decides whether a send should be interrupted before it is dispatched.
+ *
+ * A signed-out CLI still accepts the turn and then burns half a minute of
+ * reconnect attempts before surfacing a raw `401`, so when the snapshot we
+ * already hold says the selected instance cannot serve the turn, we say so up
+ * front. Provider snapshots go stale, so this only ever guides: the caller
+ * keeps a "Send anyway" path, and an `available` verdict (which includes an
+ * auth state we cannot judge) never interrupts anything.
+ */
+export function deriveProviderSendPreflight(input: {
+  readonly instanceId: ProviderInstanceId | null | undefined;
+  readonly providers: ReadonlyArray<ServerProvider>;
+}): ProviderSendPreflightPrompt | null {
+  const instanceId = input.instanceId;
+  if (!instanceId) {
+    return null;
+  }
+
+  const provider = input.providers.find((candidate) => candidate.instanceId === instanceId);
+  if (!provider) {
+    return null;
+  }
+
+  const availability = getModelPickerProviderAvailability(provider);
+  if (availability === "available") {
+    return null;
+  }
+
+  return {
+    reason: availability,
+    provider: provider.driver,
+    instanceId: provider.instanceId,
+    providerLabel: provider.displayName?.trim() || formatProviderDriverKindLabel(provider.driver),
+    command: providerAuthReconnectCommand(provider.driver) ?? null,
+  };
 }
 
 export function shouldRenderThreadErrorBanner(input: {

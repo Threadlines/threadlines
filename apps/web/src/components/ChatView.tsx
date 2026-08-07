@@ -212,6 +212,7 @@ import {
   shouldRenderProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
 import { SessionStartupNotice } from "./chat/SessionStartupNotice";
+import { ProviderSendPreflightNotice } from "./chat/ProviderReadinessNotice";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import {
@@ -226,6 +227,8 @@ import {
   deriveFailedTurnRetryMessageId,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
+  deriveProviderSendPreflight,
+  type ProviderSendPreflightPrompt,
   filterUnresolvedProviderBackgroundRuns,
   hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
@@ -2483,6 +2486,16 @@ export default function ChatView(props: ChatViewProps) {
       timelineMessages,
     ],
   );
+  // Set when a send was held back because the selected provider instance is
+  // already known to be unusable. Cleared by dismissing the notice, by "Send
+  // anyway", and by any later send that preflights clean.
+  const [providerSendPreflight, setProviderSendPreflight] =
+    useState<ProviderSendPreflightPrompt | null>(null);
+  useEffect(() => {
+    // The notice belongs to the send it interrupted, so it must not follow the
+    // user into another thread.
+    setProviderSendPreflight(null);
+  }, [activeThreadKey]);
   const providerStatusBannerVisible = shouldRenderProviderStatusBanner(activeProviderStatus, {
     activeTurnInProgress,
   });
@@ -4270,7 +4283,10 @@ export default function ChatView(props: ChatViewProps) {
     setThreadError,
   ]);
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSend = async (
+    e?: { preventDefault: () => void },
+    options?: { readonly skipProviderPreflight?: boolean },
+  ) => {
     e?.preventDefault();
     const api = readEnvironmentApi(environmentId);
     const activeSteerTurnId =
@@ -4392,6 +4408,20 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    // Hold the turn back when the snapshot already says this instance cannot
+    // serve it. The draft is untouched, so dismissing or fixing the provider
+    // returns the user to exactly what they typed.
+    if (options?.skipProviderPreflight !== true) {
+      const preflight = deriveProviderSendPreflight({
+        instanceId: ctxSelectedModelSelection.instanceId,
+        providers: providerStatuses,
+      });
+      if (preflight) {
+        setProviderSendPreflight(preflight);
+        return;
+      }
+    }
+    setProviderSendPreflight(null);
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
@@ -6194,6 +6224,21 @@ export default function ChatView(props: ChatViewProps) {
         providerLabel={activeProviderLabel}
         onRunAuthReconnect={runProviderAuthReconnect}
         onDismiss={() => setThreadError(activeThread.id, null)}
+      />
+      <ProviderSendPreflightNotice
+        prompt={providerSendPreflight}
+        onRunSignIn={(prompt) => {
+          void runProviderAuthReconnect({
+            provider: prompt.provider,
+            command: prompt.command ?? "",
+            message: `${prompt.providerLabel} is not signed in.`,
+          });
+        }}
+        onSendAnyway={() => {
+          setProviderSendPreflight(null);
+          void onSend(undefined, { skipProviderPreflight: true });
+        }}
+        onDismiss={() => setProviderSendPreflight(null)}
       />
       {threadErrorRateLimitResetCreditDialog}
       <ForkThreadDialog

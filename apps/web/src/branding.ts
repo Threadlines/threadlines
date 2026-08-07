@@ -15,6 +15,8 @@ export const HOSTED_APP_CHANNEL =
   hostedAppChannel === "latest" || hostedAppChannel === "nightly" ? hostedAppChannel : null;
 export const HOSTED_APP_CHANNEL_LABEL =
   HOSTED_APP_CHANNEL === "nightly" ? "Nightly" : HOSTED_APP_CHANNEL === "latest" ? "Latest" : null;
+/** Marketing-site download page, for surfaces that have no desktop app yet. */
+export const DESKTOP_DOWNLOAD_URL = "https://threadlines.dev/download";
 export const APP_BASE_NAME = injectedDesktopAppBranding?.baseName ?? "Threadlines";
 export const APP_STAGE_LABEL =
   injectedDesktopAppBranding?.stageLabel ??

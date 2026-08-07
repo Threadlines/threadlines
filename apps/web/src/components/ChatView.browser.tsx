@@ -3740,6 +3740,63 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("holds back a send to a signed-out provider until the user chooses Send anyway", async () => {
+    setDraftThreadWithoutWorktree();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...nextFixture.serverConfig.providers[0]!,
+              status: "warning",
+              auth: { status: "unauthenticated" },
+            },
+          ],
+        };
+      },
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+          ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+          : undefined,
+    });
+
+    const turnStartRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.turn.start",
+      );
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Explain this repo");
+      await waitForLayout();
+
+      (await waitForSendButton()).click();
+
+      const sendAnyway = await waitForButtonByText("Send anyway");
+      // The turn never left the client, and the draft survived the interruption.
+      expect(turnStartRequests()).toHaveLength(0);
+      expect(document.body.textContent).toContain("Codex sign-in required");
+      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+        "Explain this repo",
+      );
+
+      sendAnyway.click();
+
+      await vi.waitFor(
+        () => {
+          expect(turnStartRequests()).toHaveLength(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps custom provider instance ids when bootstrapping a local draft thread", async () => {
     setDraftThreadWithoutWorktree();
     const openRouterInstanceId = ProviderInstanceId.make("claude_openrouter");

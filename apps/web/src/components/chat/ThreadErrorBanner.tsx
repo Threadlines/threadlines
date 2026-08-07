@@ -3,7 +3,8 @@ import type { ProviderAuthReconnectAction } from "../../session-logic";
 import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitResetCredit";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { RefreshCwIcon, RotateCcwIcon, TerminalIcon, XIcon } from "lucide-react";
+import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
+import { DismissNoticeButton, ProviderSignInNotice } from "./ProviderReadinessNotice";
 import { CompactStatusNoticeRow } from "./statusNotice";
 
 type UsageResetAction = {
@@ -16,19 +17,6 @@ type TurnRetryAction = {
   isRetrying: boolean;
   onRetry: () => void;
 };
-
-function DismissErrorButton({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <button
-      type="button"
-      aria-label="Dismiss error"
-      className="inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"
-      onClick={onDismiss}
-    >
-      <XIcon className="size-3.5" />
-    </button>
-  );
-}
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
@@ -50,31 +38,13 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   if (!error) return null;
 
   if (authReconnect) {
-    const label = providerLabel?.trim() || "Provider";
     return (
-      <CompactStatusNoticeRow
-        tone="error"
-        title={`${label} sign-in required`}
-        message={
-          <>
-            Run <code className="font-mono text-foreground/85">{authReconnect.command}</code>,
-            complete the browser sign-in, then retry.
-          </>
-        }
+      <ProviderSignInNotice
+        providerLabel={providerLabel?.trim() || "Provider"}
+        command={authReconnect.command}
         errorText={<>Last error: {error}</>}
-        actions={
-          <>
-            <Button
-              size="xs"
-              disabled={!onRunAuthReconnect}
-              onClick={() => onRunAuthReconnect?.(authReconnect)}
-            >
-              <TerminalIcon className="size-3" />
-              Sign in in terminal
-            </Button>
-            {onDismiss ? <DismissErrorButton onDismiss={onDismiss} /> : null}
-          </>
-        }
+        onRunSignIn={onRunAuthReconnect ? () => onRunAuthReconnect(authReconnect) : undefined}
+        {...(onDismiss ? { onDismiss } : {})}
       />
     );
   }
@@ -121,7 +91,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
               </TooltipPopup>
             </Tooltip>
           ) : null}
-          {onDismiss ? <DismissErrorButton onDismiss={onDismiss} /> : null}
+          {onDismiss ? <DismissNoticeButton onDismiss={onDismiss} /> : null}
         </>
       }
     />
