@@ -114,6 +114,44 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("names artifacts with an operating system token on every platform", () =>
+    Effect.gen(function* () {
+      for (const [platform, target] of [
+        ["mac", "dmg"],
+        ["win", "nsis"],
+        ["linux", "AppImage"],
+      ] as const) {
+        const buildConfig = yield* createBuildConfig(
+          platform,
+          target,
+          "0.0.19",
+          false,
+          false,
+          undefined,
+        );
+
+        assert.equal(buildConfig.artifactName, "Threadlines-${version}-${os}-${arch}.${ext}");
+      }
+    }),
+  );
+
+  it.effect("pairs the default Windows installer with a portable zip", () =>
+    Effect.gen(function* () {
+      const nsisConfig = yield* createBuildConfig("win", "nsis", "0.0.2", false, false, undefined);
+      assert.deepStrictEqual((nsisConfig.win as Record<string, unknown>).target, ["nsis", "zip"]);
+
+      const portableConfig = yield* createBuildConfig(
+        "win",
+        "portable",
+        "0.0.2",
+        false,
+        false,
+        undefined,
+      );
+      assert.deepStrictEqual((portableConfig.win as Record<string, unknown>).target, ["portable"]);
+    }),
+  );
+
   it.effect("keeps Windows executable resource editing enabled for unsigned builds", () =>
     Effect.gen(function* () {
       const buildConfig = yield* createBuildConfig("win", "nsis", "0.0.2", false, false, undefined);
