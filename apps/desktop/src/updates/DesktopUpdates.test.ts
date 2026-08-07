@@ -480,6 +480,77 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect("replaces a downloaded update when a newer release supersedes it", () => {
+    const harness = makeHarness();
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        harness.emit("update-available", { version: "1.2.4" });
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+        assert.equal((yield* updates.getState).status, "downloaded");
+
+        // A later poll finds a newer release while the restart is postponed;
+        // the ready pill must move to it instead of advertising stale bits.
+        harness.emit("update-available", { version: "1.2.5" });
+        yield* flushCallbacks;
+
+        const state = yield* updates.getState;
+        assert.equal(state.status, "available");
+        assert.equal(state.availableVersion, "1.2.5");
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("keeps the ready pill steady when the downloaded update is still latest", () => {
+    const harness = makeHarness();
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        harness.emit("update-available", { version: "1.2.4" });
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        harness.emit("update-available", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        const state = yield* updates.getState;
+        assert.equal(state.status, "downloaded");
+        assert.equal(state.downloadedVersion, "1.2.4");
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("clears a downloaded update the feed no longer offers", () => {
+    const harness = makeHarness();
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        harness.emit("update-available", { version: "1.2.4" });
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        // The release was pulled (a failed nightly's cleaned-up draft): the
+        // stuck-forever pill from that state is the bug this guards against.
+        harness.emit("update-not-available");
+        yield* flushCallbacks;
+
+        const state = yield* updates.getState;
+        assert.equal(state.status, "up-to-date");
+        assert.isNull(state.downloadedVersion);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
   it.effect("uses a dev-only preview update state without configuring the updater", () => {
     const harness = makeHarness({
       env: {
