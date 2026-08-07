@@ -1936,12 +1936,30 @@ async function clickCommandPaletteAction(label: string): Promise<void> {
   await waitForElement(() => {
     const palette = document.querySelector('[data-testid="command-palette"]');
     if (!palette) return null;
+    const candidates = Array.from(
+      palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]'),
+    ).filter((item) =>
+      Array.from(item.querySelectorAll("span")).some(
+        (content) => content.textContent?.trim() === label,
+      ),
+    );
+    // A view transition can briefly leave an exit-animating copy of the row
+    // in the DOM with its React handlers already gone; a synthetic click on
+    // that ghost is silently lost (the source of the #117 flake). A real
+    // pointer can only hit the live copy, so emulate hit-testing: click the
+    // candidate that owns the pixels at its own center.
     const action =
-      Array.from(palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]')).find((item) =>
-        Array.from(item.querySelectorAll("span")).some(
-          (content) => content.textContent?.trim() === label,
-        ),
-      ) ?? null;
+      candidates.find((item) => {
+        const rect = item.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const hit = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        return hit !== null && item.contains(hit);
+      }) ??
+      candidates.at(-1) ??
+      null;
     if (!action) return null;
     action.click();
     return action;
