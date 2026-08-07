@@ -105,12 +105,11 @@ export function resolveModelPickerEmptyState(input: {
     };
   }
 
-  if (input.activeTabKind === "favorites") {
-    return { lines: ["No favorite models"], showSettingsAction: false };
-  }
-
   // Nothing to pick and every provider the user enabled is unusable: name
-  // each one instead of leaving them to guess which is broken.
+  // each one instead of leaving them to guess which is broken. This wins
+  // over the Favorites empty text because a cold install has no usable
+  // provider tabs at all, so Favorites is the only tab the picker can open
+  // on and its bare "No favorite models" would hide the one actionable fact.
   const enabledProviders = input.providers.filter((provider) => provider.enabled);
   const unavailableProviders = enabledProviders.filter(
     (provider) => getModelPickerProviderAvailability(provider.snapshot) !== "available",
@@ -122,6 +121,10 @@ export function resolveModelPickerEmptyState(input: {
       ),
       showSettingsAction: true,
     };
+  }
+
+  if (input.activeTabKind === "favorites") {
+    return { lines: ["No favorite models"], showSettingsAction: false };
   }
 
   return { lines: ["No models available"], showSettingsAction: false };
