@@ -12,6 +12,8 @@ import {
 import { SourceControlIcon } from "../Icons";
 
 export const DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" as const;
+/** Where pairing lives, for surfaces that need to route a user to it. */
+export const DEVICES_SETTINGS_SECTION_PATH = "/settings/connections" as const;
 export const HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" as const;
 
 export const VISIBLE_SETTINGS_SECTION_PATHS = [
@@ -49,7 +51,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
   { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
-  { label: "Devices", to: "/settings/connections", icon: SmartphoneIcon },
+  { label: "Devices", to: DEVICES_SETTINGS_SECTION_PATH, icon: SmartphoneIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
 ];

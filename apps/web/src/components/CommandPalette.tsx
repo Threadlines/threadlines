@@ -115,7 +115,9 @@ import {
   ITEM_ICON_CLASS,
   normalizeSearchText,
   RECENT_THREAD_LIMIT,
+  resolveAddProjectUnavailableGuidance,
 } from "./CommandPalette.logic";
+import { isHostedStaticApp } from "../hostedPairing";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
@@ -1272,11 +1274,26 @@ function OpenCommandPaletteDialog() {
 
     const environmentId = defaultAddProjectEnvironmentId;
     if (!environmentId) {
+      const guidance = resolveAddProjectUnavailableGuidance({
+        isHostedStatic: isHostedStaticApp(),
+      });
+      const guidanceAction = guidance.action;
       toastManager.add(
         stackedThreadToast({
-          type: "error",
-          title: "Unable to browse projects",
-          description: "No environment is available.",
+          type: guidance.type,
+          title: guidance.title,
+          description: guidance.description,
+          ...(guidanceAction
+            ? {
+                actionProps: {
+                  children: guidanceAction.label,
+                  onClick: () => {
+                    void navigate({ to: guidanceAction.to });
+                  },
+                },
+                actionVariant: "outline" as const,
+              }
+            : {}),
         }),
       );
       return;
@@ -1287,6 +1304,7 @@ function OpenCommandPaletteDialog() {
     addProjectEnvironmentGroups,
     addProjectEnvironmentOptions.length,
     defaultAddProjectEnvironmentId,
+    navigate,
     startAddProjectSourceSelection,
   ]);
 
