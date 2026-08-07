@@ -1312,9 +1312,19 @@ function OpenCommandPaletteDialog() {
     if (openIntent?.kind !== "add-project") {
       return;
     }
+    // Environments hydrate a beat after the palette can open, and this
+    // intent is one-shot: consuming it against an empty environment list
+    // turned an add-project click during startup into a dead end. Hold the
+    // intent until an environment exists (closing the palette clears it);
+    // this effect re-runs when the options arrive. Hosted-static tabs know
+    // immediately that no local environment is coming, so they proceed
+    // straight to the pairing guidance.
+    if (addProjectEnvironmentOptions.length === 0 && !isHostedStaticApp()) {
+      return;
+    }
     clearOpenIntent();
     openAddProjectFlow();
-  }, [clearOpenIntent, openAddProjectFlow, openIntent]);
+  }, [addProjectEnvironmentOptions.length, clearOpenIntent, openAddProjectFlow, openIntent]);
 
   // Sidebar "Search all N threads" hands off here: a submenu view scoped to
   // one logical project's threads, searchable with the usual palette ranking.

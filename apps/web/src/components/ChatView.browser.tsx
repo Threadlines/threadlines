@@ -1461,13 +1461,16 @@ async function waitForProductionStyles(): Promise<void> {
 
 async function waitForElement<T extends Element>(
   query: () => T | null,
-  errorMessage: string,
+  errorMessage: string | (() => string),
 ): Promise<T> {
+  // Lazy messages read the DOM at failure time, so a timeout reports what
+  // actually rendered instead of only what was expected.
+  const resolveMessage = () => (typeof errorMessage === "string" ? errorMessage : errorMessage());
   let element: T | null = null;
   await vi.waitFor(
     () => {
       element = query();
-      expect(element, errorMessage).toBeTruthy();
+      expect(element, resolveMessage()).toBeTruthy();
     },
     {
       timeout: 8_000,
@@ -1475,7 +1478,7 @@ async function waitForElement<T extends Element>(
     },
   );
   if (!element) {
-    throw new Error(errorMessage);
+    throw new Error(resolveMessage());
   }
   return element;
 }
@@ -1928,7 +1931,12 @@ async function waitForCommandPaletteShortcutLabel(): Promise<void> {
 async function waitForCommandPaletteInput(placeholder: string): Promise<HTMLInputElement> {
   return waitForElement(
     () => document.querySelector(`input[placeholder="${placeholder}"]`) as HTMLInputElement | null,
-    `Command palette input with placeholder "${placeholder}" did not render.`,
+    () => {
+      const palette = document.querySelector('[data-testid="command-palette"]');
+      const actual = palette?.querySelector("input")?.getAttribute("placeholder") ?? "<no input>";
+      const paletteState = palette ? "open" : "closed";
+      return `Command palette input with placeholder "${placeholder}" did not render (palette ${paletteState}, actual placeholder: "${actual}").`;
+    },
   );
 }
 
