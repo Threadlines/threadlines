@@ -29,7 +29,21 @@ vi.mock("../../localApi", () => ({
   })),
 }));
 
-import { ProviderStatusBanner } from "./ProviderStatusBanner";
+import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import { useProviderStatusNotice } from "./providerStatusNotice";
+
+function ProviderStatusNoticeHarness({
+  status,
+  activeTurnInProgress = false,
+  suppressed = false,
+}: {
+  status: ServerProvider | null;
+  activeTurnInProgress?: boolean;
+  suppressed?: boolean;
+}) {
+  const notice = useProviderStatusNotice({ activeTurnInProgress, status, suppressed });
+  return <ComposerNoticeDock notices={notice ? [notice] : []} />;
+}
 
 function renderWithTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({
@@ -66,22 +80,31 @@ function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
   };
 }
 
-describe("ProviderStatusBanner", () => {
+describe("provider status composer notice", () => {
   afterEach(() => {
     refreshProvidersMock.mockClear();
     document.body.innerHTML = "";
   });
 
-  it("offers compact targeted refresh and diagnostics actions for provider probe timeouts", async () => {
+  it("stays hidden while a held-send notice names the same problem", async () => {
+    // The held-send row carries the actions that fix the provider; without
+    // suppression this error-severity row would outrank it in the dock.
+    const provider = makeProvider({ status: "error", message: "Codex is unavailable." });
+    await renderWithTestRouter(<ProviderStatusNoticeHarness status={provider} suppressed />);
+
+    await expect.element(page.getByText("Codex provider status")).not.toBeInTheDocument();
+  });
+
+  it("offers targeted refresh and diagnostics actions for provider probe timeouts", async () => {
     const provider = makeProvider({
       statusReason: "provider_probe_timeout",
       message:
         "Codex status check timed out after 60 seconds. Existing sessions may still work; refresh provider status if this keeps happening.",
     });
-    const screen = await renderWithTestRouter(<ProviderStatusBanner status={provider} />);
+    const screen = await renderWithTestRouter(<ProviderStatusNoticeHarness status={provider} />);
 
     try {
-      await expect.element(page.getByText("Codex provider status:", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
       await expect
         .element(page.getByText("Codex status check timed out after 60 seconds."))
         .toBeVisible();
@@ -99,10 +122,9 @@ describe("ProviderStatusBanner", () => {
     }
   });
 
-  it("does not float provider probe warnings over an active turn", async () => {
-    const provider = makeProvider();
+  it("does not show provider probe warnings over an active turn", async () => {
     const screen = await renderWithTestRouter(
-      <ProviderStatusBanner activeTurnInProgress status={provider} />,
+      <ProviderStatusNoticeHarness activeTurnInProgress status={makeProvider()} />,
     );
 
     try {
@@ -121,12 +143,17 @@ describe("ProviderStatusBanner", () => {
       message: "Codex CLI is not authenticated.",
     });
     const screen = await renderWithTestRouter(
-      <ProviderStatusBanner activeTurnInProgress status={provider} />,
+      <ProviderStatusNoticeHarness activeTurnInProgress status={provider} />,
     );
 
     try {
       await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
       await expect.element(page.getByText("Codex CLI is not authenticated.")).toBeVisible();
+      expect(
+        document
+          .querySelector("[data-composer-notice-severity]")
+          ?.getAttribute("data-composer-notice-severity"),
+      ).toBe("error");
     } finally {
       await screen.unmount();
     }

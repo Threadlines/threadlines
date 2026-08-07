@@ -126,7 +126,7 @@ import {
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
-import { ChevronDownIcon, CornerDownRightIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
+import { ChevronDownIcon, CornerDownRightIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
@@ -208,13 +208,13 @@ import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDi
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import {
-  ProviderStatusBanner,
-  shouldRenderProviderStatusBanner,
-} from "./chat/ProviderStatusBanner";
-import { SessionStartupNotice } from "./chat/SessionStartupNotice";
-import { ProviderSendPreflightNotice } from "./chat/ProviderReadinessNotice";
-import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
-import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+  shouldShowProviderStatusNotice,
+  useProviderStatusNotice,
+} from "./chat/providerStatusNotice";
+import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
+import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
+import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
+import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   DEFAULT_SCROLL_END_TOLERANCE_PX,
@@ -233,7 +233,7 @@ import {
   hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
   isScrollMetricsAtEnd,
-  shouldRenderThreadErrorBanner,
+  shouldShowThreadErrorNotice,
   scrollMetricsDistanceFromEnd,
   deriveTimelineScrolledFarFromEnd,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -269,6 +269,7 @@ import { PreviewAutomationMount } from "./browser/PreviewAutomationMount";
 import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
+  applyProvidersUpdated,
   useServerAvailableEditors,
   useServerConfig,
   useServerKeybindings,
@@ -1687,54 +1688,41 @@ export default function ChatView(props: ChatViewProps) {
     savedEnvironmentRuntimeById,
     serverConfig?.environment.label,
   ]);
-  const infrastructureComposerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
-    const items: ComposerBannerStackItem[] = [];
+  const infrastructureComposerNotices = useMemo<ComposerNotice[]>(() => {
+    const items: ComposerNotice[] = [];
     if (activeEnvironmentUnavailableState) {
+      const isConnecting = activeEnvironmentUnavailableState.connectionState === "connecting";
+      const isReconnecting =
+        isConnecting ||
+        reconnectingEnvironmentId === activeEnvironmentUnavailableState.environmentId;
       items.push({
         id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
-        variant:
+        severity:
           activeEnvironmentUnavailableState.connectionState === "error" ? "error" : "warning",
-        icon: <WifiOffIcon />,
-        title: (
-          <>
-            {activeEnvironmentUnavailableState.label} is{" "}
-            {activeEnvironmentUnavailableState.connectionState === "connecting"
-              ? "connecting"
-              : "disconnected"}
-          </>
-        ),
-        description: "Reconnect this environment before sending messages or running actions.",
+        lead: `${activeEnvironmentUnavailableState.label} is ${isConnecting ? "connecting" : "disconnected"}.`,
+        detail: "Reconnect this environment before sending messages or running actions.",
         actions: (
-          <>
-            <Button
-              size="xs"
-              disabled={
-                activeEnvironmentUnavailableState.connectionState === "connecting" ||
-                reconnectingEnvironmentId === activeEnvironmentUnavailableState.environmentId
-              }
-              onClick={() =>
-                void handleReconnectActiveEnvironment(
-                  activeEnvironmentUnavailableState.environmentId,
-                  activeEnvironmentUnavailableState.label,
-                )
-              }
-            >
-              {activeEnvironmentUnavailableState.connectionState === "connecting" ||
-              reconnectingEnvironmentId === activeEnvironmentUnavailableState.environmentId
-                ? "Reconnecting..."
-                : "Reconnect"}
-            </Button>
-          </>
+          <Button
+            size="xs"
+            disabled={isReconnecting}
+            onClick={() =>
+              void handleReconnectActiveEnvironment(
+                activeEnvironmentUnavailableState.environmentId,
+                activeEnvironmentUnavailableState.label,
+              )
+            }
+          >
+            {isReconnecting ? "Reconnecting..." : "Reconnect"}
+          </Button>
         ),
       });
     }
     if (showVersionMismatchBanner && versionMismatch && versionMismatchDismissKey) {
       items.push({
         id: `version-mismatch:${versionMismatchDismissKey}`,
-        variant: "warning",
-        icon: <TriangleAlertIcon />,
-        title: "Client and server versions differ",
-        description: (
+        severity: "info",
+        lead: "Client and server versions differ.",
+        detail: (
           <>
             Client {versionMismatch.clientVersion} is connected to {versionMismatchServerLabel}{" "}
             {versionMismatch.serverVersion}. Sync them if RPC calls or reconnects fail.
@@ -1758,6 +1746,11 @@ export default function ChatView(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  // A send preflight has to read the freshest snapshot we hold, including one
+  // a recheck wrote moments ago inside the same event, before React has
+  // re-rendered with it.
+  const providerStatusesRef = useRef(providerStatuses);
+  providerStatusesRef.current = providerStatuses;
   const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
     () =>
       filterMaintainedProviderInstanceEntries(
@@ -2487,16 +2480,23 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   // Set when a send was held back because the selected provider instance is
-  // already known to be unusable. Cleared by dismissing the notice, by "Send
-  // anyway", and by any later send that preflights clean.
+  // already known to be unusable. Cleared by dismissing the notice, by a clean
+  // recheck, and by any later send that preflights clean.
   const [providerSendPreflight, setProviderSendPreflight] =
     useState<ProviderSendPreflightPrompt | null>(null);
+  const [providerSendPreflightRecheckFailed, setProviderSendPreflightRecheckFailed] =
+    useState(false);
+  const [isRecheckingProviderSendPreflight, setIsRecheckingProviderSendPreflight] = useState(false);
+  // The recheck runs the ordinary send path, which is rebuilt every render.
+  // Holding it behind a ref keeps the notice itself stable.
+  const confirmProviderSignedInRef = useRef<() => void>(() => {});
   useEffect(() => {
     // The notice belongs to the send it interrupted, so it must not follow the
     // user into another thread.
     setProviderSendPreflight(null);
+    setProviderSendPreflightRecheckFailed(false);
   }, [activeThreadKey]);
-  const providerStatusBannerVisible = shouldRenderProviderStatusBanner(activeProviderStatus, {
+  const providerStatusNoticeVisible = shouldShowProviderStatusNotice(activeProviderStatus, {
     activeTurnInProgress,
   });
   const hasInlineProviderAuthError = useMemo(
@@ -2508,7 +2508,7 @@ export default function ChatView(props: ChatViewProps) {
         )),
     [providerAuthReconnectPrompt, timelineMessages, workLogEntries],
   );
-  const threadErrorBannerVisible = shouldRenderThreadErrorBanner({
+  const threadErrorNoticeVisible = shouldShowThreadErrorNotice({
     threadError: activeThread?.error,
     hasInlineProviderAuthError,
   });
@@ -3498,8 +3498,6 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
-  const composerBannerItems = infrastructureComposerBannerItems;
-
   const persistProjectScripts = useCallback(
     async (input: {
       projectId: ProjectId;
@@ -3874,11 +3872,12 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [
     activeThread?.id,
-    composerBannerItems.length,
-    providerStatusBannerVisible,
+    infrastructureComposerNotices.length,
+    providerSendPreflight,
+    providerStatusNoticeVisible,
     terminalState.terminalHeight,
     terminalState.terminalOpen,
-    threadErrorBannerVisible,
+    threadErrorNoticeVisible,
   ]);
 
   useEffect(() => {
@@ -4283,10 +4282,7 @@ export default function ChatView(props: ChatViewProps) {
     setThreadError,
   ]);
 
-  const onSend = async (
-    e?: { preventDefault: () => void },
-    options?: { readonly skipProviderPreflight?: boolean },
-  ) => {
+  const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     const api = readEnvironmentApi(environmentId);
     const activeSteerTurnId =
@@ -4410,16 +4406,15 @@ export default function ChatView(props: ChatViewProps) {
     }
     // Hold the turn back when the snapshot already says this instance cannot
     // serve it. The draft is untouched, so dismissing or fixing the provider
-    // returns the user to exactly what they typed.
-    if (options?.skipProviderPreflight !== true) {
-      const preflight = deriveProviderSendPreflight({
-        instanceId: ctxSelectedModelSelection.instanceId,
-        providers: providerStatuses,
-      });
-      if (preflight) {
-        setProviderSendPreflight(preflight);
-        return;
-      }
+    // returns the user to exactly what they typed. The ref, not the render
+    // value, is what a recheck-then-send has just written to.
+    const preflight = deriveProviderSendPreflight({
+      instanceId: ctxSelectedModelSelection.instanceId,
+      providers: providerStatusesRef.current,
+    });
+    if (preflight) {
+      setProviderSendPreflight(preflight);
+      return;
     }
     setProviderSendPreflight(null);
     if (!activeProject) return;
@@ -4771,6 +4766,47 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
+  /**
+   * "I've signed in" is a claim we can check. It re-probes the provider, folds
+   * the answer into the app's snapshot, and — when the answer agrees — sends
+   * the held message down the ordinary path, gate and all. Nothing bypasses
+   * the preflight, so a user who guessed wrong gets told rather than dropped
+   * into the reconnect noise the gate exists to prevent.
+   */
+  const onConfirmProviderSignedIn = async (): Promise<void> => {
+    const prompt = providerSendPreflight;
+    if (!prompt || isRecheckingProviderSendPreflight) {
+      return;
+    }
+    setIsRecheckingProviderSendPreflight(true);
+    try {
+      const payload = await ensureLocalApi().server.refreshProviders({
+        instanceId: prompt.instanceId,
+      });
+      applyProvidersUpdated(payload);
+      providerStatusesRef.current = payload.providers;
+      const stillUnusable = deriveProviderSendPreflight({
+        instanceId: prompt.instanceId,
+        providers: payload.providers,
+      });
+      if (stillUnusable) {
+        setProviderSendPreflight(stillUnusable);
+        setProviderSendPreflightRecheckFailed(true);
+        return;
+      }
+      setProviderSendPreflight(null);
+      setProviderSendPreflightRecheckFailed(false);
+      await onSend();
+    } catch {
+      setProviderSendPreflightRecheckFailed(true);
+    } finally {
+      setIsRecheckingProviderSendPreflight(false);
+    }
+  };
+  confirmProviderSignedInRef.current = () => {
+    void onConfirmProviderSignedIn();
+  };
+
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
@@ -5116,6 +5152,88 @@ export default function ChatView(props: ChatViewProps) {
     threadErrorUsageResetAction,
     turnRetryDispatchingThreadId,
   ]);
+
+  const providerStatusNotice = useProviderStatusNotice({
+    status: activeProviderStatus,
+    activeTurnInProgress,
+    suppressed:
+      providerSendPreflight !== null &&
+      providerSendPreflight.instanceId === activeProviderStatus?.instanceId,
+  });
+  const sessionStartupNotice = useSessionStartupNotice({
+    isSessionStarting,
+    startedAt: activeWorkStartedAt,
+    suppressed: providerStatusNoticeVisible || threadErrorNoticeVisible,
+    providerStatus: activeProviderStatus,
+  });
+  const threadErrorNotice = useMemo(
+    () =>
+      buildThreadErrorNotice({
+        error: threadErrorNoticeVisible ? (activeThread?.error ?? null) : null,
+        authReconnect: providerAuthReconnectPrompt,
+        usageReset: threadErrorUsageResetAction,
+        retry: threadErrorRetryAction,
+        providerLabel: activeProviderLabel,
+        onRunAuthReconnect: runProviderAuthReconnect,
+        onDismiss: () => setThreadError(activeThread?.id ?? null, null),
+      }),
+    [
+      activeProviderLabel,
+      activeThread?.error,
+      activeThread?.id,
+      providerAuthReconnectPrompt,
+      runProviderAuthReconnect,
+      setThreadError,
+      threadErrorNoticeVisible,
+      threadErrorRetryAction,
+      threadErrorUsageResetAction,
+    ],
+  );
+  const sendPreflightNotice = useMemo(
+    () =>
+      providerSendPreflight
+        ? buildProviderSendPreflightNotice({
+            prompt: providerSendPreflight,
+            recheckFailed: providerSendPreflightRecheckFailed,
+            isRechecking: isRecheckingProviderSendPreflight,
+            onRunSignIn: (prompt) => {
+              void runProviderAuthReconnect({
+                provider: prompt.provider,
+                command: prompt.command ?? "",
+                message: `${prompt.providerLabel} is not signed in.`,
+              });
+            },
+            onConfirmSignedIn: () => confirmProviderSignedInRef.current(),
+            onDismiss: () => {
+              setProviderSendPreflight(null);
+              setProviderSendPreflightRecheckFailed(false);
+            },
+          })
+        : null,
+    [
+      isRecheckingProviderSendPreflight,
+      providerSendPreflight,
+      providerSendPreflightRecheckFailed,
+      runProviderAuthReconnect,
+    ],
+  );
+  const composerNotices = useMemo(
+    () =>
+      selectComposerNotices([
+        threadErrorNotice,
+        sendPreflightNotice,
+        providerStatusNotice,
+        sessionStartupNotice,
+        ...infrastructureComposerNotices,
+      ]),
+    [
+      infrastructureComposerNotices,
+      providerStatusNotice,
+      sendPreflightNotice,
+      sessionStartupNotice,
+      threadErrorNotice,
+    ],
+  );
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -6205,41 +6323,6 @@ export default function ChatView(props: ChatViewProps) {
         />
       </header>
 
-      {/* Error banner */}
-      <ProviderStatusBanner
-        activeTurnInProgress={activeTurnInProgress}
-        status={activeProviderStatus}
-      />
-      <SessionStartupNotice
-        isSessionStarting={isSessionStarting}
-        startedAt={activeWorkStartedAt}
-        suppressed={providerStatusBannerVisible || threadErrorBannerVisible}
-        providerStatus={activeProviderStatus}
-      />
-      <ThreadErrorBanner
-        error={threadErrorBannerVisible ? activeThread.error : null}
-        authReconnect={providerAuthReconnectPrompt}
-        usageReset={threadErrorUsageResetAction}
-        retry={threadErrorRetryAction}
-        providerLabel={activeProviderLabel}
-        onRunAuthReconnect={runProviderAuthReconnect}
-        onDismiss={() => setThreadError(activeThread.id, null)}
-      />
-      <ProviderSendPreflightNotice
-        prompt={providerSendPreflight}
-        onRunSignIn={(prompt) => {
-          void runProviderAuthReconnect({
-            provider: prompt.provider,
-            command: prompt.command ?? "",
-            message: `${prompt.providerLabel} is not signed in.`,
-          });
-        }}
-        onSendAnyway={() => {
-          setProviderSendPreflight(null);
-          void onSend(undefined, { skipProviderPreflight: true });
-        }}
-        onDismiss={() => setProviderSendPreflight(null)}
-      />
       {threadErrorRateLimitResetCreditDialog}
       <ForkThreadDialog
         state={forkDialogState}
@@ -6355,7 +6438,6 @@ export default function ChatView(props: ChatViewProps) {
           >
             <div className="relative isolate">
               <SteeringQueueIndicator messages={queuedSteeringMessages} />
-              <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
               <div className="relative z-10">
                 <ChatComposer
                   composerRef={composerRef}
@@ -6401,6 +6483,7 @@ export default function ChatView(props: ChatViewProps) {
                     isLocalDraftThread ? null : activeThread?.modelSelection
                   }
                   activeThreadActivities={activeThread?.activities}
+                  notices={composerNotices}
                   resolvedTheme={resolvedTheme}
                   settings={settings}
                   keybindings={keybindings}

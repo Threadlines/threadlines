@@ -4,7 +4,7 @@ import {
   getSessionStartupNoticeDelayMs,
   SESSION_STARTUP_SLOW_NOTICE_DELAY_MS,
   shouldShowSessionStartupNotice,
-} from "./SessionStartupNotice";
+} from "./sessionStartupNotice";
 
 const STARTED_AT_MS = Date.UTC(2026, 5, 1, 12, 0, 0);
 const STARTED_AT_ISO = new Date(STARTED_AT_MS).toISOString();

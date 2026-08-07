@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Onboarding mockup — setup card, composer notices, mobile pairing</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --panel: #12161d;
+        --panel-2: #161b23;
+        --border: #232a33;
+        --border-soft: #1b212a;
+        --fg: #e6eaf0;
+        --muted: #939ca8;
+        --faint: #6b7480;
+        --accent: #3b82f6;
+        --amber: #d9a039;
+        --red: #e5534b;
+        --green: #46a758;
+        --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+        --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: #0a0d11;
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.5;
+        padding: 48px 24px 120px;
+      }
+      .page {
+        max-width: 1080px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .intro {
+        color: var(--muted);
+        max-width: 64ch;
+        margin-top: 8px;
+        font-size: 14px;
+      }
+      h2 {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 56px 0 4px;
+      }
+      .note {
+        color: var(--muted);
+        font-size: 13px;
+        max-width: 70ch;
+        margin-bottom: 16px;
+      }
+      .annot {
+        color: var(--faint);
+        font-size: 12.5px;
+        max-width: 70ch;
+        margin-top: 10px;
+      }
+      .annot b {
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      /* ---- app frame ---- */
+      .frame {
+        border: 1px solid var(--border);
+        background: var(--bg);
+        display: flex;
+        min-height: 560px;
+        overflow: hidden;
+        border-radius: 10px;
+      }
+      .sidebar {
+        width: 200px;
+        border-right: 1px solid var(--border-soft);
+        background: var(--panel);
+        padding: 14px 12px;
+        font-size: 13px;
+        color: var(--muted);
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .wordmark {
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .wordmark svg {
+        flex-shrink: 0;
+      }
+      .search {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 5px 9px;
+        color: var(--faint);
+        font-size: 12.5px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .search span:last-child {
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .nav-item {
+        padding: 4px 6px;
+      }
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .topbar {
+        border-bottom: 1px solid var(--border-soft);
+        padding: 12px 20px;
+        font-size: 13.5px;
+        color: var(--muted);
+      }
+      .topbar b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 24px;
+      }
+
+      /* ---- setup card ---- */
+      .setup {
+        width: 100%;
+        max-width: 560px;
+      }
+      .setup h3 {
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .setup .sub {
+        color: var(--muted);
+        font-size: 13.5px;
+        margin-top: 3px;
+      }
+      .rows {
+        margin-top: 22px;
+        border-top: 1px solid var(--border);
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 15px 2px;
+        border-bottom: 1px solid var(--border);
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .dot.amber {
+        background: var(--amber);
+      }
+      .dot.red {
+        background: var(--red);
+      }
+      .dot.green {
+        background: var(--green);
+      }
+      .row-name {
+        font-weight: 600;
+        font-size: 14px;
+        width: 84px;
+        flex-shrink: 0;
+      }
+      .row-meta {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--faint);
+        margin-left: -4px;
+      }
+      .row-desc {
+        color: var(--muted);
+        font-size: 13px;
+        flex: 1;
+        min-width: 0;
+      }
+      .row-desc code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .btn {
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 4px 11px;
+        font-size: 12.5px;
+        font-weight: 500;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .btn:hover {
+        border-color: #2e3742;
+      }
+      .btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .btn.quiet {
+        border: none;
+        background: none;
+        color: var(--muted);
+        padding: 4px 6px;
+      }
+      .btn.quiet:hover {
+        color: var(--fg);
+      }
+      .setup-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 20px;
+      }
+      .footer-hint {
+        color: var(--faint);
+        font-size: 12.5px;
+      }
+
+      /* ---- composer + notice ---- */
+      .composer-zone {
+        width: 100%;
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 0 20px 20px;
+      }
+      .notice {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        border: 1px solid var(--border);
+        border-bottom: none;
+        border-radius: 10px 10px 0 0;
+        background: var(--panel);
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .notice .dot {
+        width: 7px;
+        height: 7px;
+      }
+      .notice .txt {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .notice .txt b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .notice .txt code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .notice .x {
+        color: var(--faint);
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+        padding: 2px 4px;
+      }
+      .notice .x:hover {
+        color: var(--fg);
+      }
+      .notice .more {
+        color: var(--faint);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .notice .more:hover {
+        color: var(--fg);
+      }
+      .composer {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel);
+        padding: 14px 16px 12px;
+      }
+      .composer.with-notice {
+        border-radius: 0 0 10px 10px;
+      }
+      .composer .text {
+        color: var(--fg);
+        font-size: 14px;
+        min-height: 40px;
+      }
+      .composer .text .ph {
+        color: var(--faint);
+      }
+      .composer-bar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: var(--muted);
+        font-size: 12.5px;
+        margin-top: 10px;
+      }
+      .composer-bar .spacer {
+        flex: 1;
+      }
+      .send {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 13px;
+      }
+      .stack-demo {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+        margin-top: 16px;
+      }
+      @media (max-width: 800px) {
+        .stack-demo {
+          grid-template-columns: 1fr;
+        }
+      }
+      .demo-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--faint);
+        margin-bottom: 8px;
+        font-family: var(--mono);
+      }
+
+      /* ---- phone ---- */
+      .phones {
+        display: flex;
+        gap: 28px;
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      .phone {
+        width: 320px;
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        background: var(--bg);
+        padding: 18px 18px 26px;
+      }
+      .phone .bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--border-soft);
+        margin-bottom: 26px;
+      }
+      .phone h4 {
+        font-size: 17px;
+        font-weight: 600;
+        text-align: center;
+        letter-spacing: -0.01em;
+      }
+      .phone .lead {
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
+        margin-top: 6px;
+      }
+      .steps {
+        margin: 22px 0 6px;
+        border-top: 1px solid var(--border);
+      }
+      .step {
+        display: flex;
+        gap: 12px;
+        padding: 12px 2px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .step .n {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--faint);
+        padding-top: 2px;
+      }
+      .step b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .step code {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--fg);
+      }
+      .phone .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 20px;
+      }
+      .phone .btn {
+        text-align: center;
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <h1>Onboarding mockup</h1>
+      <p class="intro">
+        Three pieces: the first-run setup card, the replacement for the stacked red notice boxes,
+        and the phone version of the never-paired screen. Dark theme. Everything is flat and
+        hairline-divided per the design system; the only color is status dots and the one primary
+        action per surface.
+      </p>
+
+      <!-- ============ 1. SETUP CARD ============ -->
+      <h2>1 · First run — the setup card</h2>
+      <p class="note">
+        Lives where the thread content normally goes, on first launch only. It is the same provider
+        status data Settings shows, but with the fix actions right on the rows. It never comes back
+        once things are green (and "Skip for now" hides it for people who know what they're doing).
+      </p>
+
+      <div class="frame">
+        <div class="sidebar">
+          <div class="wordmark">
+            <svg width="16" height="12" viewBox="0 0 20 14" fill="none">
+              <path
+                d="M1 7h5c2 0 2-4 4-4s2 8 4 8 2-4 5-4"
+                stroke="#3b82f6"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              /></svg
+            >Threadlines
+          </div>
+          <div class="search"><span>Search</span><span>Ctrl+K</span></div>
+          <div class="nav-item">General Chats</div>
+          <div class="nav-item">All projects</div>
+        </div>
+        <div class="main">
+          <div class="topbar"><b>Welcome</b></div>
+          <div class="content">
+            <div class="setup">
+              <h3>Set up Threadlines</h3>
+              <p class="sub">
+                Connect a coding agent and pick a folder. Rows update live as you go.
+              </p>
+              <div class="rows">
+                <div class="row">
+                  <span class="dot amber"></span>
+                  <span class="row-name">Codex</span>
+                  <span class="row-meta">v0.146.1</span>
+                  <span class="row-desc">Not signed in. Uses your ChatGPT account.</span>
+                  <button class="btn primary">Sign in</button>
+                </div>
+                <div class="row">
+                  <span class="dot red"></span>
+                  <span class="row-name">Claude</span>
+                  <span class="row-desc"
+                    >Not installed. Install Claude Code, then sign in with your Claude
+                    account.</span
+                  >
+                  <button class="btn">Install guide</button>
+                </div>
+                <div class="row">
+                  <span class="dot green"></span>
+                  <span class="row-name">Project</span>
+                  <span class="row-desc">B-git-project · the folder you launched from</span>
+                  <button class="btn quiet">Change</button>
+                </div>
+              </div>
+              <div class="setup-footer">
+                <span class="footer-hint">You can start once one agent is signed in.</span>
+                <span>
+                  <button class="btn quiet">Skip for now</button>
+                  <button class="btn primary" style="opacity: 0.45; cursor: default">
+                    Start first thread
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="annot">
+        <b>Behavior:</b> "Sign in" opens the in-app terminal running the login command right below
+        the row, and the dot flips amber → green live when it completes ("Start first thread"
+        enables at the same moment). "Install guide" goes to the provider page in Settings. One
+        provider green is enough; the card doesn't nag about the second. No box around the card —
+        it's typography and dividers on the empty canvas, matching the rest of the app.
+      </p>
+
+      <!-- ============ 2. NOTICES ============ -->
+      <h2>2 · Composer notices — replacing the stacked red boxes</h2>
+      <p class="note">
+        Today, provider status and errors float as translucent red boxes at the top of the chat, and
+        they stack. Instead: one slim notice row docked to the top of the composer — it shares the
+        composer's edges, so it reads as "about sending", not as chat content. A dot for severity,
+        one line of text, actions inline. Never more than one row; extra notices collapse behind a
+        count.
+      </p>
+
+      <div class="stack-demo">
+        <div>
+          <div class="demo-label">Held message — provider signed out</div>
+          <div class="composer-zone" style="padding: 0">
+            <div class="notice">
+              <span class="dot amber"></span>
+              <span class="txt"
+                ><b>Codex needs sign-in.</b> Run <code>codex login</code>, then your message
+                sends.</span
+              >
+              <button class="btn">Sign in</button>
+              <button class="btn quiet">I've signed in</button>
+              <span class="x">✕</span>
+            </div>
+            <div class="composer with-notice">
+              <div class="text">hello</div>
+              <div class="composer-bar">
+                <span>gpt-5.6-sol</span><span>Build</span><span>Full access</span
+                ><span class="spacer"></span><span class="send">↑</span>
+              </div>
+            </div>
+          </div>
+          <p class="annot">
+            <b>"I've signed in"</b> replaces "Send anyway": it re-checks the provider and sends the
+            held message automatically if the check passes; if not, the row shakes its text to
+            "Still signed out — the terminal shows where the sign-in stopped." The typed message
+            never leaves the composer either way.
+          </p>
+        </div>
+        <div>
+          <div class="demo-label">Turn error — signed-in user, same surface</div>
+          <div class="composer-zone" style="padding: 0">
+            <div class="notice">
+              <span class="dot red"></span>
+              <span class="txt"
+                ><b>Turn failed.</b> Codex hit its usage limit · resets 6:00 PM.</span
+              >
+              <button class="btn">Retry</button>
+              <span class="more">1 more ▾</span>
+              <span class="x">✕</span>
+            </div>
+            <div class="composer with-notice">
+              <div class="text"><span class="ph">Message Codex…</span></div>
+              <div class="composer-bar">
+                <span>gpt-5.6-sol</span><span>Build</span><span>Full access</span
+                ><span class="spacer"></span><span class="send">↑</span>
+              </div>
+            </div>
+          </div>
+          <p class="annot">
+            <b>Stacking:</b> when a second notice exists (say, "Codex update available"), it doesn't
+            render a second row — "1 more ▾" expands the list in place, worst severity always on
+            top. Info-level notices (updates, version skew) use a neutral dot and never show
+            unprompted while a red or amber notice is up.
+          </p>
+        </div>
+      </div>
+      <p class="annot" style="margin-top: 18px">
+        <b>Does the setup card make these redundant?</b> No — the card fixes the cold start, but
+        signed-in users still hit sign-outs, rate limits, and turn errors mid-life. This one notice
+        surface handles all of it, so the floating red containers go away everywhere, not just for
+        new users.
+      </p>
+
+      <!-- ============ 3. MOBILE ============ -->
+      <h2>3 · Phone — never paired</h2>
+      <p class="note">
+        A phone can't install the desktop app on itself, so no download button. The phone's job is
+        to receive the pairing, so the copy is the three real steps, and the QR does the work.
+        Desktop browsers keep the download button they got in the last batch.
+      </p>
+
+      <div class="phones">
+        <div class="phone">
+          <div class="bar">☰ <span>Threadlines</span></div>
+          <h4>Pair with your computer</h4>
+          <p class="lead">Threadlines runs on your computer; this phone connects to it.</p>
+          <div class="steps">
+            <div class="step">
+              <span class="n">1</span
+              ><span
+                >On your computer, install Threadlines from
+                <code>threadlines.dev/download</code></span
+              >
+            </div>
+            <div class="step">
+              <span class="n">2</span
+              ><span>In the desktop app, open <b>Settings → Devices → Add device</b></span>
+            </div>
+            <div class="step">
+              <span class="n">3</span
+              ><span>Scan the QR code it shows with this phone's camera</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn primary">I have a setup link</button>
+          </div>
+        </div>
+      </div>
+      <p class="annot">
+        <b>Notes:</b> scanning the QR opens this page with the token filled in, so most people never
+        touch the button. "I have a setup link" opens the existing paste form for people whose
+        desktop is in another room.
+      </p>
+    </div>
+  </body>
+</html>

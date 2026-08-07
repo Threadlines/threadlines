@@ -106,6 +106,8 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import type { ComposerNotice } from "./composerNotices";
+import { ComposerNoticeDock } from "./ComposerNoticeDock";
 import { ComposerPendingDrawingContexts } from "./ComposerPendingDrawingContexts";
 import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedElementContexts";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
@@ -524,6 +526,13 @@ export interface ChatComposerProps {
   // Context window
   activeThreadActivities: Thread["activities"] | undefined;
 
+  /**
+   * Active send-blocking notices, worst first. The dock renders the first one
+   * attached to the composer's top edge, so a non-empty list also squares the
+   * composer's top corners.
+   */
+  notices: ReadonlyArray<ComposerNotice>;
+
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -629,6 +638,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
     activeThreadActivities,
+    notices,
     resolvedTheme,
     settings,
     keybindings,
@@ -3072,11 +3082,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
+        <ComposerNoticeDock notices={notices} />
         <div
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
             "rounded-xl border bg-card elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
+            notices.length > 0 && "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
             environmentUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,

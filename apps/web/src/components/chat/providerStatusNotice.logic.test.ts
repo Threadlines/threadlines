@@ -6,10 +6,9 @@ import {
 } from "@threadlines/contracts";
 
 import {
-  getProviderStatusNoticeKind,
   PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS,
-  shouldRenderProviderStatusBanner,
-} from "./ProviderStatusBanner";
+  shouldShowProviderStatusNotice,
+} from "./providerStatusNotice";
 
 const CHECKED_AT_MS = Date.UTC(2026, 5, 1, 12, 0, 0);
 const CHECKED_AT_ISO = new Date(CHECKED_AT_MS).toISOString();
@@ -33,16 +32,16 @@ function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
   };
 }
 
-describe("shouldRenderProviderStatusBanner", () => {
-  it("does not render for absent, ready, or disabled provider snapshots", () => {
-    expect(shouldRenderProviderStatusBanner(null)).toBe(false);
-    expect(shouldRenderProviderStatusBanner(makeProvider({ status: "ready" }))).toBe(false);
-    expect(shouldRenderProviderStatusBanner(makeProvider({ status: "disabled" }))).toBe(false);
+describe("shouldShowProviderStatusNotice", () => {
+  it("does not show for absent, ready, or disabled provider snapshots", () => {
+    expect(shouldShowProviderStatusNotice(null)).toBe(false);
+    expect(shouldShowProviderStatusNotice(makeProvider({ status: "ready" }))).toBe(false);
+    expect(shouldShowProviderStatusNotice(makeProvider({ status: "disabled" }))).toBe(false);
   });
 
   it("suppresses warning-level provider probes while a turn is active", () => {
     expect(
-      shouldRenderProviderStatusBanner(makeProvider({ status: "warning" }), {
+      shouldShowProviderStatusNotice(makeProvider({ status: "warning" }), {
         activeTurnInProgress: true,
       }),
     ).toBe(false);
@@ -50,7 +49,7 @@ describe("shouldRenderProviderStatusBanner", () => {
 
   it("hides pending Codex probe status before the slow notice delay", () => {
     expect(
-      shouldRenderProviderStatusBanner(
+      shouldShowProviderStatusNotice(
         makeProvider({
           statusReason: "provider_probe_pending",
         }),
@@ -62,25 +61,21 @@ describe("shouldRenderProviderStatusBanner", () => {
   });
 
   it("shows pending Codex probe status after the slow notice delay", () => {
-    const provider = makeProvider({
-      statusReason: "provider_probe_pending",
-    });
-
     expect(
-      shouldRenderProviderStatusBanner(provider, {
-        nowMs: CHECKED_AT_MS + PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS,
-      }),
+      shouldShowProviderStatusNotice(
+        makeProvider({
+          statusReason: "provider_probe_pending",
+        }),
+        {
+          nowMs: CHECKED_AT_MS + PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS,
+        },
+      ),
     ).toBe(true);
-    expect(
-      getProviderStatusNoticeKind(provider, {
-        nowMs: CHECKED_AT_MS + PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS,
-      }),
-    ).toBe("compact");
   });
 
-  it("uses compact treatment for Codex probe timeouts", () => {
+  it("shows Codex probe timeouts immediately", () => {
     expect(
-      getProviderStatusNoticeKind(
+      shouldShowProviderStatusNotice(
         makeProvider({
           statusReason: "provider_probe_timeout",
         }),
@@ -88,20 +83,20 @@ describe("shouldRenderProviderStatusBanner", () => {
           nowMs: CHECKED_AT_MS,
         },
       ),
-    ).toBe("compact");
+    ).toBe(true);
   });
 
-  it("still renders warning-level provider probes while idle", () => {
+  it("still shows warning-level provider probes while idle", () => {
     expect(
-      shouldRenderProviderStatusBanner(makeProvider({ status: "warning" }), {
+      shouldShowProviderStatusNotice(makeProvider({ status: "warning" }), {
         activeTurnInProgress: false,
       }),
     ).toBe(true);
   });
 
-  it("still renders provider errors while a turn is active", () => {
+  it("still shows provider errors while a turn is active", () => {
     expect(
-      shouldRenderProviderStatusBanner(makeProvider({ status: "error" }), {
+      shouldShowProviderStatusNotice(makeProvider({ status: "error" }), {
         activeTurnInProgress: true,
       }),
     ).toBe(true);

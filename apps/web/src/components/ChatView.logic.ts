@@ -1482,9 +1482,10 @@ export interface ProviderSendPreflightPrompt {
  * A signed-out CLI still accepts the turn and then burns half a minute of
  * reconnect attempts before surfacing a raw `401`, so when the snapshot we
  * already hold says the selected instance cannot serve the turn, we say so up
- * front. Provider snapshots go stale, so this only ever guides: the caller
- * keeps a "Send anyway" path, and an `available` verdict (which includes an
- * auth state we cannot judge) never interrupts anything.
+ * front. Provider snapshots go stale, so the hold is never final: the caller
+ * offers a recheck that re-probes the provider and, on a clean answer, sends
+ * the held turn through this same gate. An `available` verdict (which includes
+ * an auth state we cannot judge) never interrupts anything.
  */
 export function deriveProviderSendPreflight(input: {
   readonly instanceId: ProviderInstanceId | null | undefined;
@@ -1514,7 +1515,7 @@ export function deriveProviderSendPreflight(input: {
   };
 }
 
-export function shouldRenderThreadErrorBanner(input: {
+export function shouldShowThreadErrorNotice(input: {
   readonly threadError: string | null | undefined;
   readonly hasInlineProviderAuthError: boolean;
 }): boolean {

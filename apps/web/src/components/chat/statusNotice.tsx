@@ -1,9 +1,8 @@
 import type { ProviderInstanceId } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useState, type ReactNode } from "react";
-import { ActivityIcon, CircleAlertIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
+import { useCallback, useState } from "react";
+import { ActivityIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
 import { ensureLocalApi } from "../../localApi";
-import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 export function useProviderStatusRefresh(instanceId: ProviderInstanceId | null): {
@@ -35,11 +34,11 @@ export function useProviderStatusRefresh(instanceId: ProviderInstanceId | null):
 }
 
 export function StatusNoticeActionButtons({
-  variant,
+  variant = "ghost",
   isRefreshing,
   onRefresh,
 }: {
-  variant: "ghost" | "outline";
+  variant?: "ghost" | "outline";
   isRefreshing: boolean;
   onRefresh: (() => void) | null;
 }) {
@@ -74,59 +73,5 @@ export function StatusNoticeActionButtons({
         <span>Diagnostics</span>
       </Button>
     </>
-  );
-}
-
-export function CompactStatusNoticeRow({
-  title,
-  message,
-  errorText,
-  actions,
-  tone = "warning",
-}: {
-  title: string;
-  message: ReactNode;
-  errorText?: ReactNode;
-  actions: ReactNode;
-  tone?: "warning" | "error";
-}) {
-  return (
-    <div className="mx-auto w-full max-w-4xl px-4 pt-2 sm:px-0">
-      <div
-        className={cn(
-          "mx-auto flex max-w-2xl flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-xs shadow-sm",
-          tone === "error"
-            ? "border-destructive/20 bg-destructive/5 shadow-destructive/5"
-            : "border-warning/20 bg-warning/5 shadow-warning/5",
-        )}
-        data-status-notice-tone={tone}
-        role={tone === "error" ? "alert" : "status"}
-      >
-        <CircleAlertIcon
-          className={cn(
-            "size-3.5 shrink-0",
-            tone === "error" ? "text-destructive" : "text-warning",
-          )}
-          aria-hidden="true"
-        />
-        <div className="min-w-0 basis-56 flex-1">
-          <div className="line-clamp-2 leading-5">
-            <span className="font-medium text-foreground">{title}: </span>
-            <span className="text-muted-foreground">{message}</span>
-          </div>
-          {errorText ? (
-            <span
-              className={cn(
-                "block truncate text-[10px] leading-4",
-                tone === "error" ? "text-destructive/60" : "text-warning-foreground/85",
-              )}
-            >
-              {errorText}
-            </span>
-          ) : null}
-        </div>
-        <div className="ml-auto flex shrink-0 items-center gap-1">{actions}</div>
-      </div>
-    </div>
   );
 }

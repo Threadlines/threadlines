@@ -29,7 +29,29 @@ vi.mock("../../localApi", () => ({
   })),
 }));
 
-import { SESSION_STARTUP_SLOW_NOTICE_DELAY_MS, SessionStartupNotice } from "./SessionStartupNotice";
+import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import {
+  SESSION_STARTUP_SLOW_NOTICE_DELAY_MS,
+  useSessionStartupNotice,
+} from "./sessionStartupNotice";
+
+function SessionStartupNoticeHarness({
+  startedAt,
+  providerStatus,
+  suppressed = false,
+}: {
+  startedAt: string | null;
+  providerStatus: ServerProvider | null;
+  suppressed?: boolean;
+}) {
+  const notice = useSessionStartupNotice({
+    isSessionStarting: true,
+    providerStatus,
+    startedAt,
+    suppressed,
+  });
+  return <ComposerNoticeDock notices={notice ? [notice] : []} />;
+}
 
 function renderWithTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({
@@ -69,7 +91,7 @@ function slowStartedAt(): string {
   return new Date(Date.now() - SESSION_STARTUP_SLOW_NOTICE_DELAY_MS - 1_000).toISOString();
 }
 
-describe("SessionStartupNotice", () => {
+describe("session startup composer notice", () => {
   afterEach(() => {
     refreshProvidersMock.mockClear();
     document.body.innerHTML = "";
@@ -78,15 +100,11 @@ describe("SessionStartupNotice", () => {
   it("offers targeted refresh and diagnostics actions once startup runs long", async () => {
     const provider = makeProvider();
     const screen = await renderWithTestRouter(
-      <SessionStartupNotice
-        isSessionStarting
-        startedAt={slowStartedAt()}
-        providerStatus={provider}
-      />,
+      <SessionStartupNoticeHarness startedAt={slowStartedAt()} providerStatus={provider} />,
     );
 
     try {
-      await expect.element(page.getByText("Turn startup:", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Turn startup", { exact: true })).toBeVisible();
       await expect
         .element(page.getByText("Preparing this turn is taking longer than usual."))
         .toBeVisible();
@@ -106,27 +124,23 @@ describe("SessionStartupNotice", () => {
 
   it("stays hidden before the slow-startup threshold", async () => {
     const screen = await renderWithTestRouter(
-      <SessionStartupNotice
-        isSessionStarting
+      <SessionStartupNoticeHarness
         startedAt={new Date().toISOString()}
         providerStatus={makeProvider()}
       />,
     );
 
     try {
-      await expect
-        .element(page.getByText("Turn startup:", { exact: true }))
-        .not.toBeInTheDocument();
+      await expect.element(page.getByText("Turn startup", { exact: true })).not.toBeInTheDocument();
       expect(refreshProvidersMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
   });
 
-  it("stays hidden while another status banner is already visible", async () => {
+  it("stays hidden while a more specific notice already explains the stall", async () => {
     const screen = await renderWithTestRouter(
-      <SessionStartupNotice
-        isSessionStarting
+      <SessionStartupNoticeHarness
         suppressed
         startedAt={slowStartedAt()}
         providerStatus={makeProvider()}
@@ -134,9 +148,7 @@ describe("SessionStartupNotice", () => {
     );
 
     try {
-      await expect
-        .element(page.getByText("Turn startup:", { exact: true }))
-        .not.toBeInTheDocument();
+      await expect.element(page.getByText("Turn startup", { exact: true })).not.toBeInTheDocument();
     } finally {
       await screen.unmount();
     }
@@ -144,11 +156,11 @@ describe("SessionStartupNotice", () => {
 
   it("omits the refresh action without a provider snapshot", async () => {
     const screen = await renderWithTestRouter(
-      <SessionStartupNotice isSessionStarting startedAt={slowStartedAt()} providerStatus={null} />,
+      <SessionStartupNoticeHarness startedAt={slowStartedAt()} providerStatus={null} />,
     );
 
     try {
-      await expect.element(page.getByText("Turn startup:", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Turn startup", { exact: true })).toBeVisible();
       await expect
         .element(page.getByRole("button", { name: "Refresh provider status" }))
         .not.toBeInTheDocument();
