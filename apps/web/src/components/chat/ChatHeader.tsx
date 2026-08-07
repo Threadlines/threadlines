@@ -16,7 +16,7 @@ import {
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Group } from "../ui/group";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
@@ -214,9 +214,14 @@ export const ChatHeader = memo(function ChatHeader({
           </button>
         ) : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (
-          <Badge variant="outline" className="shrink-0 text-[10px] leading-none text-amber-700/90">
-            No Git
-          </Badge>
+          <TooltipWrapper tooltip="This folder isn't a git repository. Chat works; source control, diffs, and refs need git. Run git init to enable them.">
+            <Badge
+              variant="outline"
+              className="shrink-0 text-[10px] leading-none text-amber-700/90"
+            >
+              No Git
+            </Badge>
+          </TooltipWrapper>
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">

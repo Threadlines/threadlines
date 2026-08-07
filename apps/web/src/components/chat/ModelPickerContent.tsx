@@ -14,9 +14,11 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
+import { Link } from "@tanstack/react-router";
 import { SearchIcon, StarIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { ModelListRow } from "./ModelListRow";
+import { resolveModelPickerEmptyState } from "./modelPickerEmptyState";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
 import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxListVirtualized } from "../ui/combobox";
 import { ModelEsque, PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
@@ -404,7 +406,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ];
   }, [favoriteModels, isLocked, providerTabs, showTabList]);
 
-  const defaultActiveTabId = activeModelIsFavorite ? "favorites" : props.activeInstanceId;
+  // Favorites only earns the opening tab when it has something to show. A
+  // fresh install has no favorites (and a stale favorite can point at an
+  // instance that is no longer ready), so falling through to the provider
+  // tab keeps the picker from opening on an empty pane.
+  const defaultActiveTabId =
+    activeModelIsFavorite && favoriteModels.length > 0 ? "favorites" : props.activeInstanceId;
   const activeTab = useMemo(() => {
     if (!showTabList) {
       return null;
@@ -471,11 +478,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     [activeTabModels, isSearching, searchGroups],
   );
 
-  const emptyMessage = isSearching
-    ? "No models match"
-    : activeTab?.kind === "favorites"
-      ? "No favorite models"
-      : "No models available";
+  const emptyState = useMemo(
+    () =>
+      resolveModelPickerEmptyState({
+        searchQuery: normalizedSearchQuery,
+        activeTabKind: activeTab?.kind ?? null,
+        providers: instanceEntries,
+      }),
+    [activeTab?.kind, instanceEntries, normalizedSearchQuery],
+  );
 
   const tabModelCountLabel = (count: number) => `${count} ${count === 1 ? "model" : "models"}`;
 
@@ -863,8 +874,21 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     })()
                   : orderedModels.map((model, modelIndex) => renderModelRow(model, modelIndex))}
               </ComboboxListVirtualized>
-              <ComboboxEmpty className="not-empty:flex not-empty:flex-1 not-empty:items-center not-empty:justify-center not-empty:p-6 empty:h-0 text-xs font-normal leading-snug">
-                {emptyMessage}
+              <ComboboxEmpty className="not-empty:flex not-empty:flex-1 not-empty:flex-col not-empty:items-center not-empty:justify-center not-empty:gap-1.5 not-empty:p-6 empty:h-0 text-xs font-normal leading-snug">
+                {emptyState.lines.map((line) => (
+                  <span key={line} className="max-w-72 text-balance">
+                    {line}
+                  </span>
+                ))}
+                {emptyState.showSettingsAction ? (
+                  <Link
+                    to="/settings/providers"
+                    className="cursor-pointer font-medium text-foreground underline-offset-2 transition-colors hover:underline focus-ring"
+                    onClick={() => props.onRequestClose?.()}
+                  >
+                    Open Settings
+                  </Link>
+                ) : null}
               </ComboboxEmpty>
             </div>
           </div>

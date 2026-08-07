@@ -113,23 +113,14 @@ const aliasedConfigWithDefault = <A>(
   );
 
 const EnvServerConfig = Config.all({
-  appVersion: Config.all({
-    threadlines: Config.nonEmptyString("THREADLINES_APP_VERSION").pipe(Config.option),
-    badcode: Config.nonEmptyString("BADCODE_APP_VERSION").pipe(Config.option),
-    legacyT3Code: Config.nonEmptyString("T3CODE_APP_VERSION").pipe(Config.option),
-    generic: Config.nonEmptyString("APP_VERSION").pipe(Config.option),
-  }).pipe(
-    Config.map(({ threadlines, badcode, legacyT3Code, generic }) =>
-      Option.getOrUndefined(
-        Option.isSome(threadlines)
-          ? threadlines
-          : Option.isSome(badcode)
-            ? badcode
-            : Option.isSome(legacyT3Code)
-              ? legacyT3Code
-              : generic,
-      ),
-    ),
+  // Only the namespaced aliases are honored. A bare `APP_VERSION` is a
+  // common ambient variable that any unrelated tool can set, and trusting
+  // it made the server misreport its own version; the desktop shell always
+  // sets `THREADLINES_APP_VERSION` alongside it.
+  appVersion: aliasedConfigOption(
+    Config.nonEmptyString("THREADLINES_APP_VERSION"),
+    Config.nonEmptyString("BADCODE_APP_VERSION"),
+    Config.nonEmptyString("T3CODE_APP_VERSION"),
   ),
   logLevel: aliasedConfigWithDefault(
     Config.logLevel("THREADLINES_LOG_LEVEL"),

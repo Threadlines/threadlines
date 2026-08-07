@@ -1,6 +1,15 @@
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
+import {
+  resolveModelPickerEmptyState,
+  type ModelPickerProviderState,
+} from "./modelPickerEmptyState";
 
 describe("buildModelPickerSearchText", () => {
   it("builds provider-agnostic search text from generic fields", () => {
@@ -127,5 +136,123 @@ describe("scoreModelPickerSearch", () => {
         "personal",
       ),
     ).not.toBeNull();
+  });
+});
+
+describe("resolveModelPickerEmptyState", () => {
+  const makeProvider = (
+    driverKind: string,
+    displayName: string,
+    overrides: Partial<ServerProvider> = {},
+  ): ModelPickerProviderState => {
+    const snapshot = {
+      driver: ProviderDriverKind.make(driverKind),
+      instanceId: ProviderInstanceId.make(driverKind),
+      displayName,
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-08-01T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+      ...overrides,
+    } satisfies ServerProvider;
+    return {
+      displayName,
+      driverKind,
+      enabled: snapshot.enabled,
+      snapshot,
+    };
+  };
+
+  const CODEX_READY = makeProvider("codex", "Codex");
+  const CLAUDE_MISSING = makeProvider("claudeAgent", "Claude", {
+    installed: false,
+    status: "warning",
+    auth: { status: "unknown" },
+  });
+  const CLAUDE_SIGNED_OUT = makeProvider("claudeAgent", "Claude", {
+    status: "warning",
+    auth: { status: "unauthenticated" },
+  });
+
+  it("explains an uninstalled provider the query names", () => {
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "Claude",
+        activeTabKind: "instance",
+        providers: [CODEX_READY, CLAUDE_MISSING],
+      }),
+    ).toEqual({
+      lines: ["Claude isn't installed. Install it and sign in from Settings."],
+      showSettingsAction: true,
+    });
+  });
+
+  it("explains a provider that is installed but signed out", () => {
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "claude",
+        activeTabKind: "instance",
+        providers: [CODEX_READY, CLAUDE_SIGNED_OUT],
+      }),
+    ).toEqual({
+      lines: ["Claude needs sign-in. Connect it from Settings."],
+      showSettingsAction: true,
+    });
+  });
+
+  it("keeps the plain no-match message when the query names no unusable provider", () => {
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "sonnet",
+        activeTabKind: "instance",
+        providers: [CODEX_READY, CLAUDE_MISSING],
+      }),
+    ).toEqual({ lines: ["No models match"], showSettingsAction: false });
+  });
+
+  it("lists every provider when none of the enabled ones are usable", () => {
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "",
+        activeTabKind: "instance",
+        providers: [
+          makeProvider("codex", "Codex", {
+            installed: false,
+            status: "warning",
+            auth: { status: "unknown" },
+            message: "CLI not detected on PATH.",
+          }),
+          CLAUDE_SIGNED_OUT,
+        ],
+      }),
+    ).toEqual({
+      lines: ["Codex · Not found", "Claude · Not authenticated"],
+      showSettingsAction: true,
+    });
+  });
+
+  it("stays generic while at least one enabled provider is usable", () => {
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "",
+        activeTabKind: "instance",
+        providers: [CODEX_READY, CLAUDE_MISSING],
+      }),
+    ).toEqual({ lines: ["No models available"], showSettingsAction: false });
+  });
+
+  it("keeps the favorites tab message provider-agnostic", () => {
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "",
+        activeTabKind: "favorites",
+        providers: [CLAUDE_MISSING],
+      }),
+    ).toEqual({ lines: ["No favorite models"], showSettingsAction: false });
   });
 });
