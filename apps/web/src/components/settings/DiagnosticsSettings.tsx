@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 
 import { ensureLocalApi } from "../../localApi";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { formatRelativeTime } from "../../timestampFormat";
@@ -296,8 +297,7 @@ function DiagnosticsTable({
 function TraceIdCell({ traceId }: { traceId: string }) {
   const [copied, setCopied] = useState(false);
   const copyTraceId = useCallback(() => {
-    void navigator.clipboard
-      ?.writeText(traceId)
+    void copyTextToClipboard(traceId)
       .then(() => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1_200);

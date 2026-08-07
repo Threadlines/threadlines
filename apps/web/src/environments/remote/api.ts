@@ -50,6 +50,13 @@ async function readRemoteAuthErrorMessage(
   return text;
 }
 
+/**
+ * Pairing runs over whatever network is between the phone and the computer, and
+ * a stalled socket there used to hang the "Add computer" dialog forever. Every
+ * auth call is small, so cap it and surface a real error instead.
+ */
+const REMOTE_AUTH_REQUEST_TIMEOUT_MS = 20_000;
+
 async function fetchRemoteJson<T>(input: {
   readonly httpBaseUrl: string;
   readonly pathname: string;
@@ -67,6 +74,9 @@ async function fetchRemoteJson<T>(input: {
         ...(input.bearerToken ? { authorization: `Bearer ${input.bearerToken}` } : {}),
       },
       ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
+      ...(typeof AbortSignal.timeout === "function"
+        ? { signal: AbortSignal.timeout(REMOTE_AUTH_REQUEST_TIMEOUT_MS) }
+        : {}),
     });
   } catch (error) {
     throw new Error(

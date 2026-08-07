@@ -103,6 +103,7 @@ import {
   refreshLocalGitStatus,
   useGitStatus,
 } from "~/lib/gitStatusState";
+import { copyTextToClipboard } from "~/lib/clipboard";
 import { cn, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useSettings } from "~/hooks/useSettings";
@@ -3334,18 +3335,7 @@ export function SourceControlPanel({
 
   const copyCommitValue = useCallback(
     (value: string, title: string, options?: CopyCommitValueOptions) => {
-      if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Failed to copy ${title.toLowerCase()}`,
-            description: "Clipboard API unavailable.",
-          }),
-        );
-        return Promise.resolve(false);
-      }
-
-      return navigator.clipboard.writeText(value).then(
+      return copyTextToClipboard(value).then(
         () => {
           if (options?.successToast !== false) {
             const description = value.length > 240 ? `${value.slice(0, 240)}...` : value;

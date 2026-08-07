@@ -159,6 +159,34 @@ describe("wsRpcClient", () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(requestWithReconnectRetry).not.toHaveBeenCalled();
   });
+
+  // A bare request is pinned to the transport session it started on. Pairing a
+  // phone swaps sessions, which orphaned this read and left "Add computer"
+  // stuck on "Adding..." while the connection itself came up fine.
+  it("reads the server config through the bounded reconnect-retrying path", () => {
+    const request = vi.fn();
+    const requestWithReconnectRetry = vi.fn(async (_execute: unknown, _options?: unknown) => ({}));
+    const transport = {
+      dispose: vi.fn(async () => undefined),
+      reconnect: vi.fn(async () => undefined),
+      request,
+      requestStream: vi.fn(),
+      requestWithReconnectRetry,
+      subscribe: vi.fn(() => () => undefined),
+    };
+
+    const client = createWsRpcClient(transport as unknown as WsTransport);
+    void client.server.getConfig();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(requestWithReconnectRetry).toHaveBeenCalledTimes(1);
+    const options = requestWithReconnectRetry.mock.calls[0]?.[1] as {
+      readonly attemptTimeoutMs: number;
+      readonly totalBudgetMs: number;
+    };
+    expect(options.attemptTimeoutMs).toBeGreaterThan(0);
+    expect(options.totalBudgetMs).toBeGreaterThan(options.attemptTimeoutMs);
+  });
 });
 
 describe("dispatchCommandRetryOptions", () => {

@@ -30,6 +30,7 @@ import {
   gitWorkingTreeDiffQueryOptions,
   invalidateGitWorkingTreeDiffQueries,
 } from "~/lib/gitReactQuery";
+import { copyTextToClipboard } from "~/lib/clipboard";
 import { refreshGitStatus, useGitStatus } from "~/lib/gitStatusState";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { cn } from "~/lib/utils";
@@ -945,15 +946,7 @@ export default function DiffPanel({
     [activeCwd],
   );
   const copyDiffFilePath = useCallback((filePath: string) => {
-    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-      toastManager.add({
-        type: "error",
-        title: "Failed to copy path",
-        description: "Clipboard API unavailable.",
-      });
-      return;
-    }
-    void navigator.clipboard.writeText(filePath).then(
+    void copyTextToClipboard(filePath).then(
       () => {
         toastManager.add({ type: "success", title: "Path copied", description: filePath });
       },

@@ -46,11 +46,10 @@ export const resolveHeadlessConnectionHost = (
   host: string | undefined,
   interfaces: NetworkInterfacesMap = networkInterfaces(),
 ): string => {
-  if (!host) {
-    return "localhost";
-  }
-
-  if (!isWildcardHost(host)) {
+  // An unset host binds every interface, exactly like an explicit wildcard.
+  // Reporting `localhost` for it printed a pairing URL only this machine could
+  // open, which is useless for the one thing `serve` exists to do: pair a phone.
+  if (host !== undefined && !isWildcardHost(host)) {
     return normalizeHost(host);
   }
 

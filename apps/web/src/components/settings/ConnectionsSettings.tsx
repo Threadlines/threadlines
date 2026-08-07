@@ -28,6 +28,7 @@ import * as DateTime from "effect/DateTime";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { isClipboardCopySupported } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
@@ -698,13 +699,12 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
       : isLoopbackHostname(window.location.hostname)
         ? null
         : currentOriginPairingUrl);
-  const revealValue = shareablePairingUrl ?? pairingLink.credential;
   const isShareableHostedAppPairingUrl =
     shareablePairingUrl !== null && isHostedAppPairingUrl(shareablePairingUrl);
-  const canCopyToClipboard =
-    typeof window !== "undefined" &&
-    window.isSecureContext &&
-    navigator.clipboard?.writeText != null;
+  // Pairing links are minted on the LAN origin (plain http), where the async
+  // Clipboard API is missing. `isClipboardCopySupported` also accepts the
+  // execCommand fallback, so the copy buttons survive there.
+  const canCopyToClipboard = isClipboardCopySupported();
 
   const { copyToClipboard } = useCopyToClipboard<"code" | "hosted-link" | "link">({
     onCopy: (kind) => {
@@ -847,6 +847,10 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           </MenuGroup>
         </>
       ) : null}
+      <MenuSeparator />
+      <MenuItem onClick={() => setIsRevealDialogOpen(true)}>
+        <span className="min-w-0 flex-1 truncate">Show link, code, and QR</span>
+      </MenuItem>
     </>
   );
 
@@ -899,49 +903,43 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           </p>
           {shareablePairingUrl === null ? (
             <p className="text-[11px] text-muted-foreground/70">
-              Copy the code and use it with this computer&apos;s connection address.
+              Open Threadlines at this computer&apos;s network address to get a link a phone can
+              scan. From localhost there is no address a phone can reach, so pair with the code
+              instead.
             </p>
           ) : null}
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
           <Dialog open={isRevealDialogOpen} onOpenChange={setIsRevealDialogOpen}>
-            {canCopyToClipboard ? (
-              <>
-                {shareablePairingUrl ? (
-                  <Group aria-label="Copy selected endpoint">
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      className="max-w-56"
-                      tooltip={`Copy link for: ${defaultEndpointCopyLabel}`}
-                      onClick={handleCopyDefaultLink}
-                    >
-                      <span className="truncate">Copy link for: {defaultEndpointCopyLabel}</span>
-                    </Button>
-                    <GroupSeparator />
-                    <Menu>
-                      <MenuTrigger
-                        render={
-                          <Button
-                            size="icon-xs"
-                            variant="outline"
-                            aria-label="Choose endpoint to copy"
-                          />
-                        }
-                      >
-                        <ChevronDownIcon className="size-3.5" />
-                      </MenuTrigger>
-                      <MenuPopup align="end" className="min-w-60">
-                        {renderGroupedCopyMenuItems()}
-                      </MenuPopup>
-                    </Menu>
-                  </Group>
-                ) : (
-                  <Button size="xs" variant="outline" onClick={handleCopyCode}>
-                    Copy code
-                  </Button>
-                )}
-              </>
+            {canCopyToClipboard && shareablePairingUrl ? (
+              <Group aria-label="Copy selected endpoint">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="max-w-56"
+                  tooltip={`Copy link for: ${defaultEndpointCopyLabel}`}
+                  onClick={handleCopyDefaultLink}
+                >
+                  <span className="truncate">Copy link for: {defaultEndpointCopyLabel}</span>
+                </Button>
+                <GroupSeparator />
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        size="icon-xs"
+                        variant="outline"
+                        aria-label="More link and code options"
+                      />
+                    }
+                  >
+                    <ChevronDownIcon className="size-3.5" />
+                  </MenuTrigger>
+                  <MenuPopup align="end" className="min-w-60">
+                    {renderGroupedCopyMenuItems()}
+                  </MenuPopup>
+                </Menu>
+              </Group>
             ) : (
               <DialogTrigger render={<Button size="xs" variant="outline" />}>
                 {shareablePairingUrl ? "Show link" : "Show code"}
@@ -949,30 +947,43 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
             )}
             <DialogPopup className="max-w-md">
               <DialogHeader>
-                <DialogTitle>
-                  {shareablePairingUrl
-                    ? isShareableHostedAppPairingUrl
-                      ? "Device link"
-                      : "Device link"
-                    : "Pairing code"}
-                </DialogTitle>
+                <DialogTitle>{shareablePairingUrl ? "Device link" : "Pairing code"}</DialogTitle>
                 <DialogDescription>
                   {shareablePairingUrl
                     ? isShareableHostedAppPairingUrl
-                      ? "Clipboard copy is unavailable here. Open or manually copy this link on your phone or tablet."
-                      : "Clipboard copy is unavailable here. Open or manually copy this link on the device you want to connect."
-                    : "Clipboard copy is unavailable here. Manually copy this code into another device."}
+                      ? "Scan the code or open this link in the browser on your phone or tablet. You can also type the pairing code by hand."
+                      : "Scan the code or open this link on the device you want to connect. You can also type the pairing code by hand."
+                    : "Enter this code on the device you want to connect."}
                 </DialogDescription>
               </DialogHeader>
               <DialogPanel className="space-y-4">
-                <Textarea
-                  readOnly
-                  value={revealValue}
-                  rows={shareablePairingUrl ? 4 : 3}
-                  className="text-xs leading-relaxed"
-                  onFocus={(event) => event.currentTarget.select()}
-                  onClick={(event) => event.currentTarget.select()}
-                />
+                {shareablePairingUrl ? (
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-foreground">
+                      Setup link
+                    </span>
+                    <Textarea
+                      readOnly
+                      value={shareablePairingUrl}
+                      rows={4}
+                      className="text-xs leading-relaxed"
+                      onFocus={(event) => event.currentTarget.select()}
+                      onClick={(event) => event.currentTarget.select()}
+                    />
+                  </label>
+                ) : null}
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-medium text-foreground">
+                    Pairing code
+                  </span>
+                  <Input
+                    readOnly
+                    value={pairingLink.credential}
+                    className="font-mono text-sm tracking-wide"
+                    onFocus={(event) => event.target.select()}
+                    onClick={(event) => event.currentTarget.select()}
+                  />
+                </label>
                 {shareablePairingUrl ? (
                   <div className="flex justify-center rounded-xl border border-border/60 bg-muted/30 p-4">
                     <QRCodeSvg
@@ -984,15 +995,26 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                     />
                   </div>
                 ) : null}
+                {canCopyToClipboard ? null : (
+                  <p className="text-xs text-muted-foreground">
+                    This browser will not let Threadlines copy for you. Select the text above to
+                    copy it by hand.
+                  </p>
+                )}
               </DialogPanel>
               <DialogFooter variant="bare">
                 <Button variant="outline" onClick={() => setIsRevealDialogOpen(false)}>
                   Done
                 </Button>
                 {canCopyToClipboard ? (
-                  <Button variant="outline" size="xs" onClick={handleCopyCode}>
-                    Copy code
-                  </Button>
+                  <>
+                    <Button variant="outline" onClick={handleCopyCode}>
+                      Copy code
+                    </Button>
+                    {shareablePairingUrl ? (
+                      <Button onClick={handleCopyDefaultLink}>Copy link</Button>
+                    ) : null}
+                  </>
                 ) : null}
               </DialogFooter>
             </DialogPopup>
@@ -1241,10 +1263,12 @@ const PairingClientsList = memo(function PairingClientsList({
         />
       ))}
 
-      {pairingLinks.length === 0 && clientSessions.length === 0 && !isLoading ? (
+      {/* An empty section with no copy at all reads as "nothing is paired",
+          which is a lie while the access snapshot is still in flight. */}
+      {pairingLinks.length === 0 && clientSessions.length === 0 ? (
         <div className={accessRowClassName(presentation)}>
           <p className="text-xs text-muted-foreground/60">
-            No phones or tablets are connected yet.
+            {isLoading ? "Loading devices..." : "No phones or tablets are connected yet."}
           </p>
         </div>
       ) : null}

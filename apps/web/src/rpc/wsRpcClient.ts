@@ -532,7 +532,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.gitApplyAuthRemediation](input)),
     },
     server: {
-      getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
+      // Pure read, and the only thing standing between "Add computer" and a
+      // closed dialog. A plain request is pinned to the transport session it
+      // started on, so a socket drop or session swap mid-pairing left it
+      // pending forever and the dialog stuck on "Adding...".
+      getConfig: () =>
+        transport.requestWithReconnectRetry((client) => client[WS_METHODS.serverGetConfig]({}), {
+          label: WS_METHODS.serverGetConfig,
+          // Tighter than the shared default: this is a small read that gates a
+          // modal, so failing loudly beats spinning.
+          attemptTimeoutMs: 10_000,
+          totalBudgetMs: 30_000,
+        }),
       refreshProviders: (input) =>
         transport.request((client) => client[WS_METHODS.serverRefreshProviders](input ?? {})),
       startProviderReview: (input) =>

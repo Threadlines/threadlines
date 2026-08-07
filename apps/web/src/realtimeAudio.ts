@@ -57,7 +57,13 @@ export class RealtimeMicCapture {
 
   static async start(onChunk: RealtimeMicChunkListener): Promise<RealtimeMicCapture> {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("This browser does not support microphone capture.");
+      // `mediaDevices` is secure-context only and there is no fallback, so a
+      // phone paired over plain http://<lan-ip> lands here. Say why.
+      throw new Error(
+        typeof window !== "undefined" && !window.isSecureContext
+          ? "Microphone capture needs a secure connection. Open Threadlines over HTTPS or on this computer to use voice."
+          : "This browser does not support microphone capture.",
+      );
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({

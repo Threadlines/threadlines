@@ -9,9 +9,40 @@ import {
   resolveListeningPort,
 } from "./startupAccess.ts";
 
-it("prefers localhost when no explicit host is configured", () => {
-  expect(resolveHeadlessConnectionHost(undefined)).toBe("localhost");
-  expect(resolveHeadlessConnectionString(undefined, 3773)).toBe("http://localhost:3773");
+const LAN_INTERFACES = {
+  en0: [
+    {
+      address: "192.168.1.42",
+      netmask: "255.255.255.0",
+      family: "IPv4" as const,
+      mac: "00:00:00:00:00:00",
+      internal: false,
+      cidr: "192.168.1.42/24",
+    },
+  ],
+  lo0: [
+    {
+      address: "127.0.0.1",
+      netmask: "255.0.0.0",
+      family: "IPv4" as const,
+      mac: "00:00:00:00:00:00",
+      internal: true,
+      cidr: "127.0.0.1/8",
+    },
+  ],
+};
+
+// An unset host binds every interface, so the advertised URL has to be one
+// another device can open. A loopback URL here is a dead pairing link.
+it("resolves an unset host to a reachable interface", () => {
+  expect(resolveHeadlessConnectionHost(undefined, LAN_INTERFACES)).toBe("192.168.1.42");
+  expect(resolveHeadlessConnectionString(undefined, 3773, LAN_INTERFACES)).toBe(
+    "http://192.168.1.42:3773",
+  );
+});
+
+it("falls back to localhost when no external interface exists", () => {
+  expect(resolveHeadlessConnectionHost(undefined, { lo0: LAN_INTERFACES.lo0 })).toBe("localhost");
 });
 
 it("keeps explicit bind hosts in the connection string", () => {
