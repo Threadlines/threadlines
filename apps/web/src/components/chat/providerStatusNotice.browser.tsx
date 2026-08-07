@@ -35,11 +35,13 @@ import { useProviderStatusNotice } from "./providerStatusNotice";
 function ProviderStatusNoticeHarness({
   status,
   activeTurnInProgress = false,
+  suppressed = false,
 }: {
   status: ServerProvider | null;
   activeTurnInProgress?: boolean;
+  suppressed?: boolean;
 }) {
-  const notice = useProviderStatusNotice({ activeTurnInProgress, status });
+  const notice = useProviderStatusNotice({ activeTurnInProgress, status, suppressed });
   return <ComposerNoticeDock notices={notice ? [notice] : []} />;
 }
 
@@ -82,6 +84,15 @@ describe("provider status composer notice", () => {
   afterEach(() => {
     refreshProvidersMock.mockClear();
     document.body.innerHTML = "";
+  });
+
+  it("stays hidden while a held-send notice names the same problem", async () => {
+    // The held-send row carries the actions that fix the provider; without
+    // suppression this error-severity row would outrank it in the dock.
+    const provider = makeProvider({ status: "error", message: "Codex is unavailable." });
+    await renderWithTestRouter(<ProviderStatusNoticeHarness status={provider} suppressed />);
+
+    await expect.element(page.getByText("Codex provider status")).not.toBeInTheDocument();
   });
 
   it("offers targeted refresh and diagnostics actions for provider probe timeouts", async () => {

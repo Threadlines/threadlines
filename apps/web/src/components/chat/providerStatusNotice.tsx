@@ -75,8 +75,14 @@ export function shouldShowProviderStatusNotice(
 export function useProviderStatusNotice(input: {
   readonly status: ServerProvider | null;
   readonly activeTurnInProgress: boolean;
+  /**
+   * True while a held-send notice is up for this same instance. That notice
+   * states the identical fact with the actions that resolve it, and severity
+   * ranking would otherwise put this vaguer row in front of it.
+   */
+  readonly suppressed?: boolean;
 }): ComposerNotice | null {
-  const { activeTurnInProgress, status } = input;
+  const { activeTurnInProgress, status, suppressed = false } = input;
   const [nowMs, setNowMs] = useState(() => Date.now());
   const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
     status?.instanceId ?? null,
@@ -105,7 +111,8 @@ export function useProviderStatusNotice(input: {
     };
   }, [activeTurnInProgress, nowMs, status]);
 
-  const visible = shouldShowProviderStatusNotice(status, { activeTurnInProgress, nowMs });
+  const visible =
+    !suppressed && shouldShowProviderStatusNotice(status, { activeTurnInProgress, nowMs });
 
   return useMemo(() => {
     if (!status || !visible) {

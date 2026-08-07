@@ -5156,6 +5156,9 @@ export default function ChatView(props: ChatViewProps) {
   const providerStatusNotice = useProviderStatusNotice({
     status: activeProviderStatus,
     activeTurnInProgress,
+    suppressed:
+      providerSendPreflight !== null &&
+      providerSendPreflight.instanceId === activeProviderStatus?.instanceId,
   });
   const sessionStartupNotice = useSessionStartupNotice({
     isSessionStarting,
