@@ -5,8 +5,12 @@
  * It is the same provider data the settings page shows, with the fix action on
  * the row instead of two clicks away, plus the folder the server bootstrapped
  * from. Rows are live: provider snapshots stream in over providers-updated
- * events, so a dot flips from amber to green while the sign-in terminal is
- * still open, and "Start first thread" enables at the same moment.
+ * events, so a dot flips from amber to green as soon as a sign-in lands, and
+ * "Start first thread" enables at the same moment.
+ *
+ * Signing in never leaves this card. The row starts the same server-side auth
+ * session the Providers settings panel runs and reports it in place; only a
+ * run that stalls long enough to need a real terminal hands off to settings.
  *
  * No container: typography, spacing, and hairline dividers on the empty
  * canvas, matching the rest of the app.
@@ -19,8 +23,14 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { useProviderConnectFlow } from "../settings/useProviderConnectFlow";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { Button } from "../ui/button";
+import {
+  ProviderSignInButton,
+  ProviderSignInInlineStatus,
+  toProviderSignInFlowView,
+} from "./providerSignIn";
 import {
   buildFirstRunSetupDismissalKey,
   canStartFirstThread,
@@ -107,29 +117,34 @@ function SetupRow({
         </span>
       ) : null}
       <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">{description}</span>
-      <span className="shrink-0">{action}</span>
+      <span className="flex min-w-0 shrink-0 items-center justify-end gap-2">{action}</span>
     </li>
   );
 }
 
-function providerRowAction(
-  row: FirstRunProviderRow,
-  onSignIn: (row: FirstRunProviderRow) => void,
-): ReactNode {
+/**
+ * The sign-in cell for one provider row. While a run is in flight the button
+ * gives way to the status line, so the row states what is happening instead of
+ * offering an action that would only restart it.
+ */
+function ProviderSignInRowAction({ row }: { row: FirstRunProviderRow }) {
+  const controller = useProviderConnectFlow({ instanceId: row.instanceId, flow: "login" });
+  const view = toProviderSignInFlowView({ instanceId: row.instanceId, controller });
+
+  return (
+    <>
+      <ProviderSignInInlineStatus view={view} className="max-w-56" />
+      <ProviderSignInButton view={view} ariaLabel={`Sign in to ${row.name}`} />
+    </>
+  );
+}
+
+function providerRowAction(row: FirstRunProviderRow): ReactNode {
   if (row.state === "ready") {
     return null;
   }
   if (row.state === "needsSignIn" && row.signInCommand) {
-    return (
-      <Button
-        size="xs"
-        aria-label={`Sign in to ${row.name}`}
-        onClick={() => onSignIn(row)}
-        tooltip={`Runs ${row.signInCommand} in this thread's terminal`}
-      >
-        Sign in
-      </Button>
-    );
+    return <ProviderSignInRowAction row={row} />;
   }
   return (
     <Button
@@ -152,7 +167,6 @@ export interface FirstRunSetupCardProps {
   readonly projectEnvironmentId: EnvironmentId | null;
   /** True when this is the workspace's only project, i.e. the launch folder. */
   readonly isOnlyWorkspaceProject: boolean;
-  readonly onSignIn: (row: FirstRunProviderRow) => void;
   readonly onChooseProject: () => void;
   readonly onSkip: () => void;
   readonly onStart: () => void;
@@ -164,7 +178,6 @@ export function FirstRunSetupCard({
   projectCwd,
   projectEnvironmentId,
   isOnlyWorkspaceProject,
-  onSignIn,
   onChooseProject,
   onSkip,
   onStart,
@@ -215,7 +228,7 @@ export function FirstRunSetupCard({
             name={row.name}
             versionLabel={row.versionLabel}
             description={row.description}
-            action={providerRowAction(row, onSignIn)}
+            action={providerRowAction(row)}
           />
         ))}
         {providerRowGroups.overflow ? (

@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
   type AutoArchiveInactiveThreadsDays,
@@ -1060,7 +1060,16 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   );
 }
 
-export function ProviderSettingsPanel() {
+export function ProviderSettingsPanel({
+  focusedInstanceId = null,
+}: {
+  /**
+   * The card to open on arrival, from the route's `?instance=`. It is how a
+   * sign-in started elsewhere in the app hands off to this page, which owns
+   * the interactive terminal those surfaces have no room for.
+   */
+  readonly focusedInstanceId?: string | null;
+} = {}) {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const serverProviders = useServerProviders();
@@ -1073,6 +1082,14 @@ export function ProviderSettingsPanel() {
     ReadonlySet<ProviderInstanceId>
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (focusedInstanceId === null) {
+      return;
+    }
+    setOpenInstanceDetails((existing) =>
+      existing[focusedInstanceId] === true ? existing : { ...existing, [focusedInstanceId]: true },
+    );
+  }, [focusedInstanceId]);
   const {
     pendingRateLimitResetCredit,
     isConsumingRateLimitResetCredit,
@@ -1423,6 +1440,7 @@ export function ProviderSettingsPanel() {
                 driverOption={driverOption}
                 liveProvider={liveProvider}
                 isExpanded={openInstanceDetails[row.instanceId] ?? false}
+                signInHandoffActive={row.instanceId === focusedInstanceId}
                 onExpandedChange={(open) =>
                   setOpenInstanceDetails((existing) => ({
                     ...existing,

@@ -3761,6 +3761,23 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  /**
+   * Push one provider-auth event down the same subscription the composer
+   * notice attaches to when it starts a sign-in.
+   */
+  function emitProviderAuthEvent(
+    event:
+      | { type: "command"; flow: string; command: string }
+      | { type: "output"; data: string }
+      | { type: "status"; status: string; exitCode: number | null; detail: string | null },
+  ) {
+    rpcHarness.emitStreamValue(WS_METHODS.providerAuthSubscribe, {
+      instanceId: "codex",
+      createdAt: new Date().toISOString(),
+      ...event,
+    });
+  }
+
   async function mountSignedOutProviderSend(options: {
     /** Providers the recheck behind "I've signed in" resolves with. */
     refreshedProviders: (signedOut: ServerProvider) => ReadonlyArray<ServerProvider>;
@@ -3784,6 +3801,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
       resolveRpc: (body) => {
         if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
           return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        // `providerAuth.start` succeeds with void; the harness's default `{}`
+        // would fail the response decode and surface as a start error.
+        if (body._tag === WS_METHODS.providerAuthStart) {
+          return null;
         }
         if (body._tag === WS_METHODS.serverRefreshProviders) {
           return {
@@ -3817,8 +3839,105 @@ describe("ChatView timeline estimator parity (full app)", () => {
       "Explain this repo",
     );
 
-    return { confirmSignedIn, mounted, turnStartRequests };
+    const providerAuthStartRequests = () =>
+      wsRequests.filter((request) => request._tag === WS_METHODS.providerAuthStart);
+
+    return { confirmSignedIn, mounted, providerAuthStartRequests, turnStartRequests };
   }
+
+  it("signs in from the held-send notice and releases the message without a second click", async () => {
+    const { mounted, providerAuthStartRequests, turnStartRequests } =
+      await mountSignedOutProviderSend({
+        refreshedProviders: (signedOut) => [
+          { ...signedOut, status: "ready", auth: { status: "authenticated" } },
+        ],
+      });
+
+    try {
+      (await waitForButtonByText("Sign in")).click();
+
+      // The login runs in the server's own PTY, never in the thread's terminal.
+      await vi.waitFor(
+        () => {
+          expect(providerAuthStartRequests()).toHaveLength(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(providerAuthStartRequests()[0]).toMatchObject({ instanceId: "codex", flow: "login" });
+
+      emitProviderAuthEvent({ type: "command", flow: "login", command: "codex login" });
+      emitProviderAuthEvent({ type: "status", status: "running", exitCode: null, detail: null });
+      emitProviderAuthEvent({ type: "output", data: "Opening browser to complete sign-in\r\n" });
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(
+            "Signing in… Opening browser to complete sign-in",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      emitProviderAuthEvent({ type: "status", status: "succeeded", exitCode: 0, detail: null });
+
+      await vi.waitFor(
+        () => {
+          expect(turnStartRequests()).toHaveLength(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      // The success recheck is not a bypass, and it fires exactly once.
+      await waitForLayout();
+      expect(turnStartRequests()).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the held message and shows the last line when the sign-in fails", async () => {
+    const { mounted, providerAuthStartRequests, turnStartRequests } =
+      await mountSignedOutProviderSend({
+        refreshedProviders: (signedOut) => [signedOut],
+      });
+
+    try {
+      (await waitForButtonByText("Sign in")).click();
+
+      await vi.waitFor(
+        () => {
+          expect(providerAuthStartRequests()).toHaveLength(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      emitProviderAuthEvent({ type: "command", flow: "login", command: "codex login" });
+      emitProviderAuthEvent({ type: "status", status: "running", exitCode: null, detail: null });
+      emitProviderAuthEvent({ type: "output", data: "error: could not reach auth.openai.com\r\n" });
+      emitProviderAuthEvent({
+        type: "status",
+        status: "failed",
+        exitCode: 1,
+        detail: "codex login exited with code 1.",
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(
+            "Sign-in failed. codex login exited with code 1.",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(turnStartRequests()).toHaveLength(0);
+      // The action comes back so the user can try again, and the draft is intact.
+      await expect.element(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+        "Explain this repo",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it("sends the held message once the recheck behind I've signed in comes back clean", async () => {
     const { confirmSignedIn, mounted, turnStartRequests } = await mountSignedOutProviderSend({
@@ -3859,7 +3978,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
       expect(turnStartRequests()).toHaveLength(0);
-      expect(document.body.textContent).toContain("The terminal shows where the sign-in stopped.");
+      expect(document.body.textContent).toContain("The last sign-in did not complete.");
       expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
         "Explain this repo",
       );

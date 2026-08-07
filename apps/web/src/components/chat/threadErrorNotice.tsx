@@ -10,6 +10,7 @@ import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitR
 import { Button } from "../ui/button";
 import type { ComposerNotice } from "./composerNotices";
 import { buildProviderSignInNotice } from "./providerReadinessNotice";
+import type { ProviderSignInFlowView } from "./providerSignIn";
 
 interface UsageResetAction {
   readonly availableCount: number;
@@ -28,7 +29,7 @@ export function buildThreadErrorNotice({
   usageReset,
   retry,
   providerLabel,
-  onRunAuthReconnect,
+  signIn,
   onDismiss,
 }: {
   error: string | null;
@@ -36,7 +37,8 @@ export function buildThreadErrorNotice({
   usageReset?: UsageResetAction | null;
   retry?: TurnRetryAction | null;
   providerLabel?: string;
-  onRunAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
+  /** Live state of the active instance's sign-in flow. */
+  signIn?: ProviderSignInFlowView | undefined;
   onDismiss?: () => void;
 }): ComposerNotice | null {
   if (!error) {
@@ -47,9 +49,8 @@ export function buildThreadErrorNotice({
     return buildProviderSignInNotice({
       id: "thread-error-auth",
       providerLabel: providerLabel?.trim() || "Provider",
-      command: authReconnect.command,
       detailSuffix: `Last error: ${error}`,
-      onRunSignIn: onRunAuthReconnect ? () => onRunAuthReconnect(authReconnect) : undefined,
+      signIn,
       ...(onDismiss ? { onDismiss } : {}),
     });
   }

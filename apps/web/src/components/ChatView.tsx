@@ -217,6 +217,8 @@ import {
 } from "./chat/providerStatusNotice";
 import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
 import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
+import { toProviderSignInFlowView } from "./chat/providerSignIn";
+import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import {
@@ -2494,6 +2496,33 @@ export default function ChatView(props: ChatViewProps) {
   // The recheck runs the ordinary send path, which is rebuilt every render.
   // Holding it behind a ref keeps the notice itself stable.
   const confirmProviderSignedInRef = useRef<() => void>(() => {});
+  // One sign-in flow serves every composer notice: the held-send row and the
+  // provider-status row are mutually suppressed, and both speak about the
+  // instance the composer would send to.
+  const composerSignInInstanceId =
+    providerSendPreflight?.instanceId ?? activeProviderStatus?.instanceId ?? null;
+  const hasHeldSendRef = useRef(false);
+  hasHeldSendRef.current = providerSendPreflight !== null;
+  const composerSignInController = useProviderConnectFlow({
+    instanceId: composerSignInInstanceId,
+    flow: "login",
+    // A held message is waiting on exactly this: re-probe and, if the provider
+    // agrees, send it. Without this the user would sign in and then still have
+    // to click "I've signed in".
+    onSucceeded: () => {
+      if (hasHeldSendRef.current) {
+        confirmProviderSignedInRef.current();
+      }
+    },
+  });
+  const composerSignInView = useMemo(
+    () =>
+      toProviderSignInFlowView({
+        instanceId: composerSignInInstanceId,
+        controller: composerSignInController,
+      }),
+    [composerSignInController, composerSignInInstanceId],
+  );
   useEffect(() => {
     // The notice belongs to the send it interrupted, so it must not follow the
     // user into another thread.
@@ -3410,14 +3439,6 @@ export default function ChatView(props: ChatViewProps) {
         projectCwd={firstRunProject?.cwd ?? null}
         projectEnvironmentId={firstRunProject?.environmentId ?? environmentId}
         isOnlyWorkspaceProject={firstRunWorkspaceProjects.length === 1}
-        onSignIn={(row) => {
-          if (!row.signInCommand) return;
-          void runProviderAuthReconnect({
-            provider: row.driverKind,
-            command: row.signInCommand,
-            message: `${row.name} is not signed in.`,
-          });
-        }}
         onChooseProject={() => useCommandPaletteStore.getState().openAddProject()}
         onSkip={dismissFirstRunSetupForEnvironment}
         onStart={() => {
@@ -3432,7 +3453,6 @@ export default function ChatView(props: ChatViewProps) {
     firstRunProject,
     firstRunWorkspaceProjects.length,
     providerInstanceEntries,
-    runProviderAuthReconnect,
     scheduleComposerFocus,
     showFirstRunSetupCard,
   ]);
@@ -5240,6 +5260,7 @@ export default function ChatView(props: ChatViewProps) {
   const providerStatusNotice = useProviderStatusNotice({
     status: activeProviderStatus,
     activeTurnInProgress,
+    signIn: composerSignInView,
     // The held-send notice and the setup card each already state this
     // provider's problem with the actions that fix it; a second ambient row
     // saying it again is the stacking noise the dock exists to end.
@@ -5262,15 +5283,15 @@ export default function ChatView(props: ChatViewProps) {
         usageReset: threadErrorUsageResetAction,
         retry: threadErrorRetryAction,
         providerLabel: activeProviderLabel,
-        onRunAuthReconnect: runProviderAuthReconnect,
+        signIn: composerSignInView,
         onDismiss: () => setThreadError(activeThread?.id ?? null, null),
       }),
     [
       activeProviderLabel,
       activeThread?.error,
       activeThread?.id,
+      composerSignInView,
       providerAuthReconnectPrompt,
-      runProviderAuthReconnect,
       setThreadError,
       threadErrorNoticeVisible,
       threadErrorRetryAction,
@@ -5284,13 +5305,7 @@ export default function ChatView(props: ChatViewProps) {
             prompt: providerSendPreflight,
             recheckFailed: providerSendPreflightRecheckFailed,
             isRechecking: isRecheckingProviderSendPreflight,
-            onRunSignIn: (prompt) => {
-              void runProviderAuthReconnect({
-                provider: prompt.provider,
-                command: prompt.command ?? "",
-                message: `${prompt.providerLabel} is not signed in.`,
-              });
-            },
+            signIn: composerSignInView,
             onConfirmSignedIn: () => confirmProviderSignedInRef.current(),
             onDismiss: () => {
               setProviderSendPreflight(null);
@@ -5299,10 +5314,10 @@ export default function ChatView(props: ChatViewProps) {
           })
         : null,
     [
+      composerSignInView,
       isRecheckingProviderSendPreflight,
       providerSendPreflight,
       providerSendPreflightRecheckFailed,
-      runProviderAuthReconnect,
     ],
   );
   const composerNotices = useMemo(

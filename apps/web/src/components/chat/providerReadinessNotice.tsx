@@ -6,54 +6,64 @@
  * advance will fail (ChatView's send preflight). Both directions have to read
  * the same, so the copy lives here once instead of being restated per surface.
  *
+ * Signing in from either notice runs the server-side auth session (see
+ * `providerSignIn`), not the thread's terminal, so the row also has to report
+ * a run in progress: the flow's own line replaces the detail while it runs.
+ *
  * @module providerReadinessNotice
  */
 import { Link } from "@tanstack/react-router";
-import { SettingsIcon, TerminalIcon } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { ProviderSendPreflightPrompt } from "../ChatView.logic";
 import { Button } from "../ui/button";
 import type { ComposerNotice } from "./composerNotices";
+import {
+  isProviderSignInInFlight,
+  providerSignInStatusText,
+  ProviderSignInButton,
+  type ProviderSignInFlowView,
+} from "./providerSignIn";
 
 export function buildProviderSignInNotice({
   id,
   severity = "error",
   providerLabel,
-  command,
-  instruction = "complete the browser sign-in, then retry",
+  instruction = "Complete the browser step and come back here.",
   detailSuffix,
   extraActions,
-  onRunSignIn,
+  signIn,
   onDismiss,
 }: {
   id: string;
   severity?: ComposerNotice["severity"];
   providerLabel: string;
-  command: string;
-  /** Clause after the command: what happens once the sign-in lands. */
+  /** What happens once the sign-in lands. */
   instruction?: string;
   detailSuffix?: string;
   extraActions?: ReactNode;
-  onRunSignIn?: (() => void) | undefined;
+  /** Live state of this instance's sign-in flow, when the surface has one. */
+  signIn?: ProviderSignInFlowView | undefined;
   onDismiss?: (() => void) | undefined;
 }): ComposerNotice {
+  const flowStatus = signIn ? providerSignInStatusText(signIn) : null;
+  const inFlight = signIn !== undefined && isProviderSignInInFlight(signIn);
+  const detail: ReactNode = flowStatus ?? (
+    <>
+      {instruction}
+      {detailSuffix ? ` ${detailSuffix}` : null}
+    </>
+  );
+
   return {
     id,
     severity,
-    lead: `${providerLabel} needs sign-in.`,
-    detail: (
-      <>
-        Run <code className="font-mono text-foreground/85">{command}</code>, {instruction}.
-        {detailSuffix ? ` ${detailSuffix}` : null}
-      </>
-    ),
+    lead: inFlight ? `Signing in to ${providerLabel}.` : `${providerLabel} needs sign-in.`,
+    detail,
     actions: (
       <>
-        <Button size="xs" disabled={!onRunSignIn} onClick={() => onRunSignIn?.()}>
-          <TerminalIcon className="size-3" />
-          Sign in
-        </Button>
+        {signIn ? <ProviderSignInButton view={signIn} /> : null}
         {extraActions}
       </>
     ),
@@ -63,9 +73,9 @@ export function buildProviderSignInNotice({
 }
 
 /**
- * Same shape for a provider whose CLI is missing. There is no terminal command
- * we can run for the user here, so the action routes to the place that lists
- * install and sign-in steps.
+ * Same shape for a provider whose CLI is missing. There is nothing to sign in
+ * to yet, so the action routes to the place that lists install and sign-in
+ * steps.
  */
 export function buildProviderNotInstalledNotice({
   id,
@@ -103,26 +113,28 @@ export function buildProviderNotInstalledNotice({
  * Shown in place of a turn we held back. Nothing is ever hard-blocked: the
  * snapshot behind the verdict can be stale, so "I've signed in" re-checks the
  * provider and, when the fresh snapshot agrees, sends the held message down
- * the ordinary path.
+ * the ordinary path. A sign-in started from this row runs that same recheck by
+ * itself once the server reports success, so the held message releases without
+ * a second click.
  */
 export function buildProviderSendPreflightNotice({
   prompt,
   recheckFailed,
   isRechecking,
-  onRunSignIn,
+  signIn,
   onConfirmSignedIn,
   onDismiss,
 }: {
   prompt: ProviderSendPreflightPrompt;
   recheckFailed: boolean;
   isRechecking: boolean;
-  onRunSignIn: (prompt: ProviderSendPreflightPrompt) => void;
+  signIn: ProviderSignInFlowView;
   onConfirmSignedIn: () => void;
   onDismiss: () => void;
 }): ComposerNotice {
   // A provider that isn't installed has nothing to sign in to yet, and one
-  // without a known login command has no terminal step we can name, so both
-  // fall back to the install-and-connect notice.
+  // without a known login command has no flow we can start, so both fall back
+  // to the install-and-connect notice.
   if (prompt.reason === "notInstalled" || !prompt.command) {
     return buildProviderNotInstalledNotice({
       id: "provider-send-preflight",
@@ -148,20 +160,19 @@ export function buildProviderSendPreflightNotice({
     id: "provider-send-preflight",
     severity: "warning",
     providerLabel: prompt.providerLabel,
-    command: prompt.command,
-    instruction: "then your message sends",
-    extraActions: confirmSignedIn,
-    onRunSignIn: () => onRunSignIn(prompt),
+    instruction: "Sign in and your held message sends by itself.",
+    extraActions: isProviderSignInInFlight(signIn) ? null : confirmSignedIn,
+    signIn,
     onDismiss,
   });
 
-  if (!recheckFailed) {
+  if (!recheckFailed || isProviderSignInInFlight(signIn)) {
     return notice;
   }
 
   return {
     ...notice,
     lead: "Still signed out.",
-    detail: "The terminal shows where the sign-in stopped.",
+    detail: providerSignInStatusText(signIn) ?? "The last sign-in did not complete.",
   };
 }

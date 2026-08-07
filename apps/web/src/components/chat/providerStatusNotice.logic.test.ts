@@ -7,6 +7,7 @@ import {
 
 import {
   PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS,
+  resolveProviderStatusNoticeActions,
   shouldShowProviderStatusNotice,
 } from "./providerStatusNotice";
 
@@ -100,5 +101,58 @@ describe("shouldShowProviderStatusNotice", () => {
         activeTurnInProgress: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveProviderStatusNoticeActions", () => {
+  it("offers only sign-in when the provider is unauthenticated", () => {
+    expect(
+      resolveProviderStatusNoticeActions(
+        makeProvider({ status: "error", auth: { status: "unauthenticated" } }),
+      ),
+    ).toEqual({ signIn: true, openSettings: false, refresh: false, diagnostics: false });
+  });
+
+  it("offers only sign-in when the chat capability is unavailable", () => {
+    expect(
+      resolveProviderStatusNoticeActions(
+        makeProvider({
+          status: "warning",
+          auth: { status: "unknown", capabilities: { chat: { status: "unavailable" } } },
+        }),
+      ),
+    ).toEqual({ signIn: true, openSettings: false, refresh: false, diagnostics: false });
+  });
+
+  it("sends a missing CLI to settings, with a refresh for an install that just landed", () => {
+    expect(
+      resolveProviderStatusNoticeActions(
+        makeProvider({ installed: false, status: "error", auth: { status: "unauthenticated" } }),
+      ),
+    ).toEqual({ signIn: false, openSettings: true, refresh: true, diagnostics: false });
+  });
+
+  it("sends a disabled instance to settings and nowhere else", () => {
+    expect(
+      resolveProviderStatusNoticeActions(makeProvider({ enabled: false, status: "error" })),
+    ).toEqual({ signIn: false, openSettings: true, refresh: false, diagnostics: false });
+  });
+
+  it("keeps refresh and diagnostics for probes and for anything it cannot name", () => {
+    const probeTimeout = makeProvider({ statusReason: "provider_probe_timeout" });
+    const cannotVerify = makeProvider({ status: "warning", auth: { status: "unknown" } });
+
+    expect(resolveProviderStatusNoticeActions(probeTimeout)).toEqual({
+      signIn: false,
+      openSettings: false,
+      refresh: true,
+      diagnostics: true,
+    });
+    expect(resolveProviderStatusNoticeActions(cannotVerify)).toEqual({
+      signIn: false,
+      openSettings: false,
+      refresh: true,
+      diagnostics: true,
+    });
   });
 });
