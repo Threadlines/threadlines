@@ -302,7 +302,7 @@ describe("provider update launch notification logic", () => {
       phase: "initial",
       type: "warning",
       title: "Updates available",
-      description: "Codex and Claude can be updated.",
+      description: "Codex v1.1.0 and Claude v2.1.197 can be updated.",
     });
   });
 
@@ -315,7 +315,9 @@ describe("provider update launch notification logic", () => {
       oneClickProviders: [],
     });
 
-    expect(view.description).toBe("Codex and Cursor can be updated from provider settings.");
+    expect(view.description).toBe(
+      "Codex v1.1.0 and Cursor v1.1.0 can be updated from provider settings.",
+    );
   });
 
   it("uses server update state for running progress", () => {
