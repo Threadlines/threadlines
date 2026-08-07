@@ -246,13 +246,34 @@ describe("resolveModelPickerEmptyState", () => {
     ).toEqual({ lines: ["No models available"], showSettingsAction: false });
   });
 
-  it("keeps the favorites tab message provider-agnostic", () => {
+  it("keeps the favorites tab message while a provider is still usable", () => {
     expect(
       resolveModelPickerEmptyState({
         searchQuery: "",
         activeTabKind: "favorites",
-        providers: [CLAUDE_MISSING],
+        providers: [CODEX_READY, CLAUDE_MISSING],
       }),
     ).toEqual({ lines: ["No favorite models"], showSettingsAction: false });
+  });
+
+  it("explains providers from the favorites tab on a cold install", () => {
+    // A cold install has no usable provider tabs, so Favorites is the only
+    // tab the picker can open on; the provider guidance must win there too.
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "",
+        activeTabKind: "favorites",
+        providers: [
+          makeProvider("codex", "Codex", {
+            status: "warning",
+            auth: { status: "unauthenticated" },
+          }),
+          CLAUDE_MISSING,
+        ],
+      }),
+    ).toEqual({
+      lines: ["Codex · Not authenticated", "Claude · Not found"],
+      showSettingsAction: true,
+    });
   });
 });
