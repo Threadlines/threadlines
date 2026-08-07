@@ -44,7 +44,11 @@ import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../../config.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderMaintenanceActionKind,
+  type ProviderRegistryShape,
+} from "../Services/ProviderRegistry.ts";
 import {
   hydrateCachedProvider,
   isCachedProviderCorrelated,
@@ -424,7 +428,13 @@ export const ProviderRegistryLive = Layer.effect(
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
     const maintenanceActionStatesRef = yield* Ref.make<
-      ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
+      ReadonlyMap<
+        ProviderInstanceId,
+        {
+          readonly action: ProviderMaintenanceActionKind;
+          readonly state: ServerProviderUpdateState;
+        }
+      >
     >(new Map());
 
     // Live-source registry — the dynamic counterpart to the boot-time
@@ -467,7 +477,7 @@ export const ProviderRegistryLive = Layer.effect(
       provider: ServerProvider,
     ) {
       const maintenanceActionStates = yield* Ref.get(maintenanceActionStatesRef);
-      const updateState = maintenanceActionStates.get(provider.instanceId)?.update;
+      const updateState = maintenanceActionStates.get(provider.instanceId)?.state;
       if (!updateState) {
         const { updateState: _updateState, ...providerWithoutUpdateState } = provider;
         return providerWithoutUpdateState;
@@ -547,23 +557,23 @@ export const ProviderRegistryLive = Layer.effect(
     const setProviderMaintenanceActionState = Effect.fn("setProviderMaintenanceActionState")(
       function* (input: {
         readonly instanceId: ProviderInstanceId;
-        readonly action: "update";
+        readonly action: ProviderMaintenanceActionKind;
         readonly state: ServerProviderUpdateState | null;
       }) {
         yield* Ref.update(maintenanceActionStatesRef, (previous) => {
-          const previousActions = previous.get(input.instanceId);
-          const nextActions = { ...previousActions };
-          if (input.state === null || input.state.status === "idle") {
-            delete nextActions[input.action];
-          } else {
-            nextActions[input.action] = input.state;
+          const isCleared = input.state === null || input.state.status === "idle";
+          const current = previous.get(input.instanceId);
+          // Clearing only retires this action's own state; a different action
+          // that has since taken over the instance keeps reporting.
+          if (isCleared && current?.action !== input.action) {
+            return previous;
           }
 
           const next = new Map(previous);
-          if (Object.keys(nextActions).length === 0) {
+          if (isCleared || input.state === null) {
             next.delete(input.instanceId);
           } else {
-            next.set(input.instanceId, nextActions);
+            next.set(input.instanceId, { action: input.action, state: input.state });
           }
           return next;
         });

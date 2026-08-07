@@ -4,6 +4,7 @@ import {
   ServerProviderUpdateError,
   type ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderMaintenanceAction,
   type ServerProviderUpdateBlockerResolutionResult,
   type ServerProviderUpdatedPayload,
   type ServerProviderUpdateState,
@@ -70,12 +71,20 @@ export interface ProviderMaintenanceCommandResult {
 }
 
 export interface ProviderMaintenanceRunnerShape {
+  /**
+   * Run one package-manager command for the target instance. `action`
+   * selects which capability supplies the command: `"update"` (default)
+   * refreshes an installed CLI, `"install"` puts a missing one on the
+   * machine. Both share this path so they also share the lock, the captured
+   * output, the progress state, and the post-command re-probe.
+   */
   readonly updateProvider: (
     target:
       | ProviderDriverKind
       | {
           readonly provider: ProviderDriverKind;
           readonly instanceId?: ProviderInstanceId | undefined;
+          readonly action?: ServerProviderMaintenanceAction | undefined;
         },
   ) => Effect.Effect<ServerProviderUpdatedPayload, ServerProviderUpdateError>;
   readonly resolveUpdateBlockers: (
@@ -151,7 +160,7 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
             Effect.mapError(
               (cause) =>
                 new ProviderMaintenanceCommandError({
-                  message: `Failed to run update command ${input.command}: ${cause.message}`,
+                  message: `Failed to run ${input.command}: ${cause.message}`,
                   cause,
                 }),
             ),
@@ -175,7 +184,7 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
           Effect.mapError(
             (cause) =>
               new ProviderMaintenanceCommandError({
-                message: cause instanceof Error ? cause.message : "Update command failed to run.",
+                message: cause instanceof Error ? cause.message : "Provider command failed to run.",
                 cause,
               }),
           ),
@@ -366,6 +375,60 @@ function isWindowsExecutableReplaceFailure(result: ProviderMaintenanceCommandRes
   );
 }
 
+/**
+ * Install and update run the same command through the same machinery, so the
+ * only thing that varies is what we tell the user we are doing.
+ */
+interface ProviderMaintenanceActionCopy {
+  readonly running: string;
+  readonly succeeded: string;
+  readonly unverified: string;
+  readonly incomplete: string;
+  readonly timedOut: string;
+  readonly failed: string;
+  readonly unsupported: string;
+  readonly exitCode: (exitCode: number) => string;
+}
+
+const PROVIDER_MAINTENANCE_ACTION_COPY: Record<
+  ServerProviderMaintenanceAction,
+  ProviderMaintenanceActionCopy
+> = {
+  update: {
+    running: "Updating provider.",
+    succeeded: "Provider updated.",
+    unverified: "Update command completed, but Threadlines could not verify the provider version.",
+    incomplete:
+      "Update command completed, but Threadlines still detects an outdated provider version.",
+    timedOut: "Update timed out.",
+    failed: "Update command failed.",
+    unsupported: "This provider does not support one-click updates.",
+    exitCode: (exitCode) => `Update command exited with code ${exitCode}.`,
+  },
+  install: {
+    running: "Installing provider.",
+    succeeded: "Provider installed.",
+    unverified: "Install command completed, but Threadlines could not verify the provider.",
+    incomplete: "Install command completed, but Threadlines still cannot find the provider CLI.",
+    timedOut: "Install timed out.",
+    failed: "Install command failed.",
+    unsupported: "Threadlines cannot install this provider for you.",
+    exitCode: (exitCode) => `Install command exited with code ${exitCode}.`,
+  },
+};
+
+/**
+ * Did the command leave the provider in the state the user asked for? An
+ * update has to move off the outdated version; an install has to produce a
+ * CLI the probe can find.
+ */
+function isProviderMaintenanceIncomplete(
+  action: ServerProviderMaintenanceAction,
+  provider: ServerProvider,
+): boolean {
+  return action === "install" ? !provider.installed : isOutdatedProvider(provider);
+}
+
 function shouldPrepareSessionsForUpdate(input: {
   readonly provider: ProviderDriverKind;
   readonly update: ProviderMaintenanceCapabilities["update"];
@@ -380,17 +443,19 @@ function shouldPrepareSessionsForUpdate(input: {
 function failureMessage(
   provider: ProviderDriverKind,
   result: ProviderMaintenanceCommandResult,
+  action: ServerProviderMaintenanceAction = "update",
 ): string {
+  const copy = PROVIDER_MAINTENANCE_ACTION_COPY[action];
   if (result.timedOut) {
-    return "Update timed out.";
+    return copy.timedOut;
   }
   if (isWindowsExecutableReplaceFailure(result)) {
     return windowsClaudeProcessLockMessage(provider, 0);
   }
   if (result.exitCode !== null && result.exitCode !== 0) {
-    return `Update command exited with code ${result.exitCode}.`;
+    return copy.exitCode(result.exitCode);
   }
-  return "Update command failed.";
+  return copy.failed;
 }
 
 function isOutdatedProvider(provider: ServerProvider | undefined): boolean {
@@ -432,7 +497,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
     makeAlreadyRunningError: () =>
       new ServerProviderUpdateError({
         provider: ProviderDriverKind.make("unknown"),
-        reason: "An update is already running for this provider.",
+        reason: "Threadlines is already running a command for this provider.",
       }),
   });
 
@@ -574,22 +639,25 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         ? defaultInstanceIdForDriver(provider)
         : (target.instanceId ?? defaultInstanceIdForDriver(provider));
     const targetKey = `instance:${instanceId}`;
+    const action: ServerProviderMaintenanceAction =
+      typeof target === "string" ? "update" : (target.action ?? "update");
+    const copy = PROVIDER_MAINTENANCE_ACTION_COPY[action];
     const capabilities = yield* providerRegistry.getProviderMaintenanceCapabilitiesForInstance(
       instanceId,
       provider,
     );
-    const update = capabilities.update;
+    const update = action === "install" ? capabilities.install : capabilities.update;
     if (!update) {
       return yield* new ServerProviderUpdateError({
         provider,
-        reason: "This provider does not support one-click updates.",
+        reason: copy.unsupported,
       });
     }
 
     const setUpdateState = (state: ServerProviderUpdateState | null) =>
       providerRegistry.setProviderMaintenanceActionState({
         instanceId,
-        action: "update",
+        action,
         state,
       });
     const setQueuedState = setUpdateState(
@@ -597,7 +665,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         status: "queued",
         startedAt: null,
         finishedAt: null,
-        message: "Waiting for another provider update to finish.",
+        message: "Waiting for another provider command to finish.",
       }),
     ).pipe(Effect.asVoid);
 
@@ -616,7 +684,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 status: "running",
                 startedAt,
                 finishedAt: null,
-                message: "Updating provider.",
+                message: copy.running,
               }),
             );
 
@@ -651,7 +719,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                   status: "failed",
                   startedAt,
                   finishedAt,
-                  message: failureMessage(provider, result),
+                  message: failureMessage(provider, result, action),
                   output: commandOutput(result),
                 }),
               );
@@ -663,19 +731,21 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               instanceId,
             );
             const couldNotVerify = verifiedProviders.length === 0;
-            const stillOutdated =
+            const isIncomplete =
               couldNotVerify ||
-              verifiedProviders.some((verifiedProvider) => isOutdatedProvider(verifiedProvider));
+              verifiedProviders.some((verifiedProvider) =>
+                isProviderMaintenanceIncomplete(action, verifiedProvider),
+              );
             return yield* finish(
               makeUpdateState({
-                status: stillOutdated ? "unchanged" : "succeeded",
+                status: isIncomplete ? "unchanged" : "succeeded",
                 startedAt,
                 finishedAt,
                 message: couldNotVerify
-                  ? "Update command completed, but Threadlines could not verify the provider version."
-                  : stillOutdated
-                    ? "Update command completed, but Threadlines still detects an outdated provider version."
-                    : "Provider updated.",
+                  ? copy.unverified
+                  : isIncomplete
+                    ? copy.incomplete
+                    : copy.succeeded,
                 output: commandOutput(result),
               }),
             );
@@ -691,7 +761,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 status: "failed",
                 startedAt,
                 finishedAt: yield* nowIso,
-                message: failure instanceof Error ? failure.message : "Update command failed.",
+                message: failure instanceof Error ? failure.message : copy.failed,
                 output: null,
               }),
             );

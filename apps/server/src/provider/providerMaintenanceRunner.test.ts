@@ -18,7 +18,11 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { ProviderRegistry, type ProviderRegistryShape } from "./Services/ProviderRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderMaintenanceActionKind,
+  type ProviderRegistryShape,
+} from "./Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import {
   clearLatestProviderVersionCacheForTests,
@@ -176,6 +180,16 @@ function withProcessPlatform<A, E, R>(
 
 function makeRegistry(
   initialProviders: ServerProvider | ReadonlyArray<ServerProvider> = baseProvider,
+  options?: {
+    /**
+     * Stands in for a real re-probe: the runner refreshes the instance after
+     * its command finishes, and what that probe now reports is what decides
+     * whether the run succeeded.
+     */
+    readonly onRefreshInstance?: (
+      providers: ReadonlyArray<ServerProvider>,
+    ) => ReadonlyArray<ServerProvider>;
+  },
 ) {
   return Effect.gen(function* () {
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(
@@ -187,7 +201,7 @@ function makeRegistry(
       "providerMaintenanceRunner.test.setProviderMaintenanceActionState",
     )(function* (input: {
       readonly instanceId: ProviderInstanceId;
-      readonly action: "update";
+      readonly action: ProviderMaintenanceActionKind;
       readonly state: ServerProviderUpdateState | null;
     }) {
       const updateState = input.state;
@@ -214,7 +228,10 @@ function makeRegistry(
     const registry: ProviderRegistryShape = {
       getProviders: Ref.get(providersRef),
       refresh: () => Ref.get(providersRef),
-      refreshInstance: () => Ref.get(providersRef),
+      refreshInstance: () =>
+        options?.onRefreshInstance
+          ? Ref.updateAndGet(providersRef, options.onRefreshInstance)
+          : Ref.get(providersRef),
       consumeRateLimitResetCredit: () =>
         Ref.get(providersRef).pipe(
           Effect.map((providers) => ({ outcome: "nothingToReset" as const, providers })),
@@ -229,6 +246,35 @@ function makeRegistry(
       registry,
       updateStatesRef,
     };
+  });
+}
+
+const NPM_PREFIX = "C:\\Users\\Alice Smith\\AppData\\Roaming\\npm";
+const missingCodexProvider: ServerProvider = {
+  ...baseProvider,
+  installed: false,
+  version: null,
+  status: "error",
+};
+
+/**
+ * What the resolver hands back for a provider whose CLI is missing: the same
+ * npm command for both actions, differing only in why it runs.
+ */
+function codexInstallCapabilities(): ProviderMaintenanceCapabilities {
+  return makeProviderMaintenanceCapabilities({
+    provider: CODEX_DRIVER,
+    packageName: "@openai/codex",
+    updateExecutable: "npm",
+    updateArgs: ["install", "-g", "@openai/codex@latest"],
+    updateLockKey: "npm-global",
+    install: {
+      command: `npm --prefix "${NPM_PREFIX}" install -g @openai/codex@latest`,
+      executable: "npm",
+      args: ["install", "-g", "@openai/codex@latest"],
+      lockKey: "npm-global",
+      environmentPatch: { NPM_CONFIG_PREFIX: NPM_PREFIX },
+    },
   });
 }
 
@@ -298,6 +344,8 @@ describe("providerMaintenanceRunner", () => {
           latestVersion: "2.1.123",
           updateCommand: "bun i -g @anthropic-ai/claude-code@latest",
           canUpdate: true,
+          installCommand: null,
+          canInstall: false,
           checkedAt: "2026-04-30T12:00:00.000Z",
           message: "Update available.",
         },
@@ -752,6 +800,150 @@ describe("providerMaintenanceRunner", () => {
         ),
       ),
   );
+
+  it.effect("installs a missing provider in the npm prefix and records success", () => {
+    const calls: Array<{
+      environment: ChildProcess.CommandOptions["env"];
+      extendEnv: ChildProcess.CommandOptions["extendEnv"];
+    }> = [];
+    return Effect.gen(function* () {
+      const { registry, updateStatesRef } = yield* makeRegistry(missingCodexProvider, {
+        onRefreshInstance: (providers) =>
+          providers.map((provider) =>
+            provider.instanceId === CODEX_INSTANCE_ID
+              ? { ...provider, installed: true, version: "1.0.0", status: "ready" as const }
+              : provider,
+          ),
+      });
+      const runner = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: () =>
+          Effect.succeed(codexInstallCapabilities()),
+      });
+
+      const result = yield* runner.updateProvider({
+        provider: CODEX_DRIVER,
+        action: "install",
+      });
+
+      assert.deepStrictEqual(calls, [
+        {
+          environment: { NPM_CONFIG_PREFIX: NPM_PREFIX },
+          extendEnv: true,
+        },
+      ]);
+      assert.deepStrictEqual(
+        (yield* Ref.get(updateStatesRef)).map((state) => state.status),
+        ["queued", "running", "succeeded"],
+      );
+      assert.strictEqual(result.providers[0]?.installed, true);
+      assert.strictEqual(result.providers[0]?.updateState?.message, "Provider installed.");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("1.0.0"),
+          mockSpawnerLayer((_command, _args, options) => {
+            calls.push({ environment: options.env, extendEnv: options.extendEnv });
+            return { stdout: "added 1 package" };
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("reports an install that left the provider CLI missing as unchanged", () =>
+    Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(missingCodexProvider);
+      const runner = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: () =>
+          Effect.succeed(codexInstallCapabilities()),
+      });
+
+      const result = yield* runner.updateProvider({
+        provider: CODEX_DRIVER,
+        action: "install",
+      });
+
+      assert.strictEqual(result.providers[0]?.updateState?.status, "unchanged");
+      assert.include(result.providers[0]?.updateState?.message ?? "", "still cannot find");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("1.0.0"),
+          mockSpawnerLayer(() => ({ stdout: "added 1 package" })),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("queues an install behind an update holding the same package-manager lock", () => {
+    const firstStartedLatch: { resolve: () => void } = { resolve: () => {} };
+    const releaseFirstLatch: { resolve: () => void } = { resolve: () => {} };
+    const firstStarted = new Promise<void>((resolve) => {
+      firstStartedLatch.resolve = resolve;
+    });
+    const releaseFirst = new Promise<void>((resolve) => {
+      releaseFirstLatch.resolve = resolve;
+    });
+    let commandCount = 0;
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry([missingCodexProvider, baseOpenCodeProvider]);
+      const runner = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+          Effect.succeed(
+            provider === OPENCODE_DRIVER ? lifecycleFor(provider) : codexInstallCapabilities(),
+          ),
+      });
+
+      const update = yield* runner.updateProvider(OPENCODE_DRIVER).pipe(Effect.forkScoped);
+      yield* Effect.promise(() => firstStarted);
+
+      const install = yield* runner
+        .updateProvider({ provider: CODEX_DRIVER, action: "install" })
+        .pipe(Effect.forkScoped);
+      let codexUpdateStatus: string | undefined;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        codexUpdateStatus = (yield* registry.getProviders).find(
+          (provider) => provider.instanceId === CODEX_INSTANCE_ID,
+        )?.updateState?.status;
+        if (codexUpdateStatus === "queued") {
+          break;
+        }
+        yield* Effect.yieldNow;
+      }
+
+      // The install waits on the update's `npm-global` lock instead of racing
+      // it: one package-manager command runs at a time.
+      assert.strictEqual(codexUpdateStatus, "queued");
+      assert.strictEqual(commandCount, 1);
+
+      releaseFirstLatch.resolve();
+      yield* Fiber.join(update);
+      yield* Fiber.join(install);
+      assert.strictEqual(commandCount, 2);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer(() => {
+            commandCount += 1;
+            if (commandCount === 1) {
+              firstStartedLatch.resolve();
+              return {
+                stdout: "updated",
+                exitCode: Effect.promise(() => releaseFirst).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(0)),
+                ),
+              };
+            }
+            return { stdout: "added 1 package" };
+          }),
+        ),
+      ),
+    );
+  });
 
   it.effect("prevents concurrent updates for the same provider", () => {
     const startedLatch: { resolve: () => void } = { resolve: () => {} };

@@ -101,6 +101,22 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
 }
 
 /**
+ * The diagnosis sentence out of a provider status detail. Details are written
+ * for the settings page and can run to a paragraph with install URLs; a
+ * surface that offers the fix as a button keeps the diagnosis and drops the
+ * recipe, so the user is never told to go read an install guide next to a
+ * button that would do it for them.
+ */
+export function firstSentenceOf(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const match = /^.*?\.(?=\s|$)/.exec(trimmed);
+  return match ? match[0] : trimmed;
+}
+
+/**
  * Normalize a version string for display. Adds the `v` prefix when the
  * driver reported a bare version (e.g. `1.2.3`) so cards render
  * consistently regardless of driver.

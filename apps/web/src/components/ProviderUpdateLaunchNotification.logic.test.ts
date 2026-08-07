@@ -38,13 +38,14 @@ function provider(input: {
   readonly canUpdate?: boolean;
   readonly updateCommand?: string | null;
   readonly updateState?: ServerProvider["updateState"];
+  readonly installed?: boolean;
   readonly advisoryStatus?: NonNullable<ServerProvider["versionAdvisory"]>["status"];
 }): ServerProvider {
   const result: ServerProvider = {
     instanceId: input.instanceId ?? instanceId(String(input.driver)),
     driver: input.driver,
     enabled: input.enabled ?? true,
-    installed: true,
+    installed: input.installed ?? true,
     version: input.version ?? "1.0.0",
     status: "ready",
     auth: { status: "authenticated" },
@@ -58,6 +59,8 @@ function provider(input: {
       latestVersion: "latestVersion" in input ? input.latestVersion : "1.1.0",
       updateCommand: "updateCommand" in input ? input.updateCommand : "npm install -g provider",
       canUpdate: input.canUpdate ?? true,
+      installCommand: null,
+      canInstall: false,
       checkedAt,
       message: "Update available.",
     },
@@ -507,6 +510,28 @@ describe("provider update launch notification logic", () => {
         providerInstanceIds: new Set([cursor.instanceId]),
       }),
     ).toEqual([cursor]);
+  });
+
+  it("calls a run against a missing CLI an install, not an update", () => {
+    const view = getProviderUpdateSidebarPillView([
+      provider({
+        driver: driver("claudeAgent"),
+        installed: false,
+        version: null,
+        updateState: {
+          status: "running",
+          startedAt: checkedAt,
+          finishedAt: null,
+          message: "Installing provider.",
+          output: null,
+        },
+      }),
+    ]);
+
+    expect(view).toMatchObject({
+      statusChipLabel: "Installing",
+      description: "Claude install in progress.",
+    });
   });
 
   it("summarizes active provider updates for the sidebar pill", () => {

@@ -28,7 +28,9 @@ import {
   getLocalStorageItemWithLegacyKeys,
   setLocalStorageItem,
 } from "../../hooks/useLocalStorage";
+import { deriveProviderInstallView, type ProviderInstallView } from "../settings/providerInstall";
 import {
+  firstSentenceOf,
   getProviderSummary,
   getProviderVersionLabel,
   PROVIDER_STATUS_STYLES,
@@ -156,6 +158,13 @@ export interface FirstRunProviderRow {
    * the install guide instead of offering a sign-in that cannot run.
    */
   readonly signInCommand: string | null;
+  /**
+   * The one-click install Threadlines can run for a missing CLI, or null when
+   * it cannot (the CLI is already there, or the server found no package
+   * manager to install it with). Null is what sends the row back to the
+   * install guide, so the two are never offered together.
+   */
+  readonly install: ProviderInstallView | null;
 }
 
 const PROVIDER_ROW_DOT_CLASS_NAMES: Record<FirstRunProviderRowState, string> = {
@@ -192,28 +201,13 @@ function providerRowDescription(
   }
 
   const summary = getProviderSummary(provider.snapshot);
-  const detail = firstSentence(summary.detail);
+  const detail = firstSentenceOf(summary.detail);
   if (detail) {
     return `${summary.headline}. ${detail}`;
   }
   return state === "notInstalled"
     ? `${summary.headline}. Install ${provider.displayName}, then sign in.`
     : `${summary.headline}. Sign in to use ${provider.displayName} here.`;
-}
-
-/**
- * Row descriptions stay at roughly two rendered lines (design system), but
- * provider status details are written for the settings page and can run to a
- * paragraph with install URLs. The card keeps the diagnosis sentence; the
- * full recipe is one click away behind the row's action.
- */
-function firstSentence(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const match = /^.*?\.(?=\s|$)/.exec(trimmed);
-  return match ? match[0] : trimmed;
 }
 
 /**
@@ -278,6 +272,7 @@ export function deriveFirstRunProviderRows(
           state === "needsSignIn"
             ? (providerAuthReconnectCommand(provider.driverKind) ?? null)
             : null,
+        install: state === "notInstalled" ? deriveProviderInstallView(provider.snapshot) : null,
       } satisfies FirstRunProviderRow;
     })
     .toSorted(

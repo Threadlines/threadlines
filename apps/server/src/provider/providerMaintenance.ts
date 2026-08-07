@@ -22,6 +22,13 @@ export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  /**
+   * How Threadlines would put this provider's CLI on the machine when it is
+   * missing. There is no installed binary to inspect in that state, so this
+   * is only ever the default manager (npm global) and only when `npm` itself
+   * resolves. `null` means the UI falls back to the provider's install guide.
+   */
+  readonly install: ProviderMaintenanceCommandAction | null;
   readonly manualUpdateCommand: string | null;
   readonly advisoryMessage: string | null;
 }
@@ -98,6 +105,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateLockKey: string | null;
   readonly updateDisplayCommand?: string | null | undefined;
   readonly updateEnvironmentPatch?: Readonly<Record<string, string>> | undefined;
+  readonly install?: ProviderMaintenanceCommandAction | null | undefined;
   readonly manualUpdateCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
 }): ProviderMaintenanceCapabilities {
@@ -118,6 +126,7 @@ export function makeProviderMaintenanceCapabilities(input: {
     provider: input.provider,
     packageName: input.packageName,
     update,
+    install: input.install ?? null,
     manualUpdateCommand: input.manualUpdateCommand ?? null,
     advisoryMessage: input.advisoryMessage ?? null,
   };
@@ -140,22 +149,70 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
   });
 }
 
+/**
+ * `npm install -g <pkg>@latest`. Installing and updating an npm-managed CLI
+ * are the same command, so both capabilities are built from here and share
+ * the `npm-global` lock key that serializes them against each other.
+ */
+function makeNpmGlobalCommandAction(input: {
+  readonly packageName: string;
+  readonly prefix?: string | undefined;
+}): ProviderMaintenanceCommandAction {
+  const args = ["install", "-g", `${input.packageName}@latest`];
+  return {
+    command: input.prefix
+      ? `npm --prefix "${input.prefix}" install -g ${input.packageName}@latest`
+      : ["npm", ...args].join(" "),
+    executable: "npm",
+    args,
+    lockKey: "npm-global",
+    ...(input.prefix ? { environmentPatch: { NPM_CONFIG_PREFIX: input.prefix } } : {}),
+  };
+}
+
+/**
+ * The install command for a provider whose CLI could not be located. There is
+ * no binary whose origin we could inspect, so the manager is the default one
+ * (npm global) and the only question is whether `npm` is on the server's PATH.
+ * A configured `NPM_CONFIG_PREFIX` is carried into the command's environment
+ * patch so the install lands in the same prefix the rest of the process uses.
+ */
+function resolveNpmGlobalInstallAction(
+  definition: PackageManagedProviderMaintenanceDefinition,
+  options?: ProviderMaintenanceCapabilityResolutionOptions,
+): ProviderMaintenanceCommandAction | null {
+  const env = options?.env ?? process.env;
+  const platform = options?.platform ?? process.platform;
+  if (!resolveCommandPath("npm", { platform, env })) {
+    return null;
+  }
+  const prefix = nonEmptyString(env.NPM_CONFIG_PREFIX);
+  return makeNpmGlobalCommandAction({
+    packageName: definition.npmPackageName,
+    ...(prefix ? { prefix } : {}),
+  });
+}
+
 function makeNpmGlobalProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
-  prefix?: string,
+  options?: {
+    readonly prefix?: string | undefined;
+    readonly install?: ProviderMaintenanceCommandAction | null | undefined;
+  },
 ): ProviderMaintenanceCapabilities {
+  const update = makeNpmGlobalCommandAction({
+    packageName: definition.npmPackageName,
+    ...(options?.prefix ? { prefix: options.prefix } : {}),
+  });
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
-    updateExecutable: "npm",
-    updateArgs: ["install", "-g", `${definition.npmPackageName}@latest`],
-    updateLockKey: "npm-global",
-    ...(prefix
-      ? {
-          updateDisplayCommand: `npm --prefix "${prefix}" install -g ${definition.npmPackageName}@latest`,
-          updateEnvironmentPatch: { NPM_CONFIG_PREFIX: prefix },
-        }
-      : {}),
+    updateExecutable: update.executable,
+    updateArgs: update.args,
+    updateLockKey: update.lockKey,
+    updateDisplayCommand: update.command,
+    ...(update.environmentPatch ? { updateEnvironmentPatch: update.environmentPatch } : {}),
+    ...(options?.install ? { install: options.install } : {}),
   });
 }
 
@@ -345,7 +402,9 @@ export function resolvePackageManagedProviderMaintenance(
   const binaryPath = nonEmptyString(options?.binaryPath);
   const platform = options?.platform ?? process.platform;
   if (!binaryPath) {
-    return makeNpmGlobalProviderMaintenanceCapabilities(definition);
+    return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
+      install: resolveNpmGlobalInstallAction(definition, options),
+    });
   }
 
   const resolvedCommandPath =
@@ -395,7 +454,9 @@ export function resolvePackageManagedProviderMaintenance(
       platform,
     });
     if (windowsNpmPrefix) {
-      return makeNpmGlobalProviderMaintenanceCapabilities(definition, windowsNpmPrefix);
+      return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
+        prefix: windowsNpmPrefix,
+      });
     }
     if (commandPaths.some(isNpmGlobalCommandPath)) {
       return makeNpmGlobalProviderMaintenanceCapabilities(definition);
@@ -405,8 +466,15 @@ export function resolvePackageManagedProviderMaintenance(
     }
   }
 
+  // A bare command name that resolved nowhere: the CLI is not installed, so
+  // this is the one place an install capability is derived. A bare name that
+  // did resolve but matched no known manager falls through here too, and
+  // there is nothing to install for it.
   if (!hasPathSeparator(binaryPath)) {
-    return makeNpmGlobalProviderMaintenanceCapabilities(definition);
+    return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
+      install:
+        resolvedCommandPath === null ? resolveNpmGlobalInstallAction(definition, options) : null,
+    });
   }
 
   return makeManualOnlyProviderMaintenanceCapabilities({
@@ -514,6 +582,8 @@ export function createProviderVersionAdvisory(input: {
     latestVersion,
     updateCommand: capabilities.update?.command ?? capabilities.manualUpdateCommand,
     canUpdate: capabilities.update !== null,
+    installCommand: capabilities.install?.command ?? null,
+    canInstall: capabilities.install !== null,
     checkedAt: input.checkedAt ?? null,
     message: advisoryMessage,
   };

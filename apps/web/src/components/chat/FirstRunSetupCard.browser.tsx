@@ -41,12 +41,22 @@ const providerAuthHarness = vi.hoisted(() => {
     readonly listener: (event: AuthEvent) => void;
   }>();
   const startCalls: Array<{ instanceId: string; flow: string }> = [];
+  const installCalls: Array<{ provider: string; instanceId?: string; action?: string }> = [];
 
   return {
     startCalls,
+    installCalls,
+    // The install row calls the same server RPC the Update button uses.
+    server: {
+      updateProvider: (input: { provider: string; instanceId?: string; action?: string }) => {
+        installCalls.push(input);
+        return Promise.resolve({ providers: [] });
+      },
+    },
     reset() {
       listeners.clear();
       startCalls.length = 0;
+      installCalls.length = 0;
     },
     emit(event: AuthEvent) {
       for (const entry of listeners) {
@@ -75,7 +85,9 @@ const providerAuthHarness = vi.hoisted(() => {
 });
 
 vi.mock("../../environments/runtime", () => {
-  const primaryConnection = { client: { providerAuth: providerAuthHarness.client } } as never;
+  const primaryConnection = {
+    client: { providerAuth: providerAuthHarness.client, server: providerAuthHarness.server },
+  } as never;
   const notUsed = () => undefined as never;
   return {
     environmentUsesRelayTransport: () => false,
@@ -164,6 +176,31 @@ const MISSING_CLAUDE = buildProvider({
   version: null,
   auth: { status: "unknown" },
 });
+
+/** Same missing CLI, but the server derived an install command for it. */
+function withInstallCapability(
+  provider: FirstRunSetupProvider,
+  updateState?: ServerProvider["updateState"],
+): FirstRunSetupProvider {
+  return {
+    ...provider,
+    snapshot: {
+      ...provider.snapshot,
+      versionAdvisory: {
+        status: "unknown",
+        currentVersion: null,
+        latestVersion: null,
+        updateCommand: null,
+        canUpdate: false,
+        installCommand: "npm install -g @anthropic-ai/claude-code@latest",
+        canInstall: true,
+        checkedAt: null,
+        message: null,
+      },
+      ...(updateState ? { updateState } : {}),
+    },
+  };
+}
 
 const SIGNED_IN_CLAUDE = buildProvider({
   instanceId: "claudeAgent",
@@ -323,6 +360,48 @@ describe("FirstRunSetupCard", () => {
       .element(page.getByText("Sign-in failed. The sign-in command exited with code 1."))
       .toBeVisible();
     await expect.element(page.getByRole("button", { name: "Sign in to Codex" })).toBeVisible();
+
+    await screen.unmount();
+  });
+
+  it("installs a missing agent from the row instead of pointing at a guide", async () => {
+    const screen = await renderCard({
+      providers: [withInstallCapability(MISSING_CLAUDE)],
+      projectName: "B-git-project",
+    });
+
+    // Never both: an install the row can run replaces the guide link.
+    expect(document.querySelector<HTMLAnchorElement>('a[href="/settings/providers"]')).toBeNull();
+
+    await page.getByRole("button", { name: "Install Claude" }).click();
+
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.installCalls).toEqual([
+        { provider: "claudeAgent", instanceId: "claudeAgent", action: "install" },
+      ]);
+    });
+
+    await screen.unmount();
+  });
+
+  it("reports a live install on the row it belongs to", async () => {
+    const screen = await renderCard({
+      providers: [
+        withInstallCapability(MISSING_CLAUDE, {
+          status: "running",
+          startedAt: "2026-08-06T00:00:00.000Z",
+          finishedAt: null,
+          message: "Installing provider.",
+          output: "added 1 package",
+        }),
+      ],
+      projectName: "B-git-project",
+    });
+
+    await expect.element(page.getByText("Installing… added 1 package")).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Install Claude" }))
+      .not.toBeInTheDocument();
 
     await screen.unmount();
   });

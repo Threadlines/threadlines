@@ -29,6 +29,8 @@ function provider(overrides: {
   readonly version?: string | null;
   readonly auth?: ServerProvider["auth"];
   readonly message?: string;
+  readonly installCommand?: string;
+  readonly updateState?: ServerProvider["updateState"];
 }): FirstRunSetupProvider {
   const driverKind = ProviderDriverKind.make(overrides.driver);
   const snapshot: ServerProvider = {
@@ -45,6 +47,22 @@ function provider(overrides: {
     skills: [],
     models: [],
     ...(overrides.message ? { message: overrides.message } : {}),
+    ...(overrides.updateState ? { updateState: overrides.updateState } : {}),
+    ...(overrides.installCommand
+      ? {
+          versionAdvisory: {
+            status: "unknown" as const,
+            currentVersion: null,
+            latestVersion: null,
+            updateCommand: null,
+            canUpdate: false,
+            installCommand: overrides.installCommand,
+            canInstall: true,
+            checkedAt: null,
+            message: null,
+          },
+        }
+      : {}),
   };
   return {
     instanceId: snapshot.instanceId,
@@ -156,6 +174,37 @@ describe("deriveFirstRunProviderRows", () => {
     expect(rows[1]?.description).toContain("CLI not detected on PATH");
     expect(rows[2]?.description).toBe("Signed in · ChatGPT Plus Subscription");
     expect(new Set(rows.map((row) => row.dotClassName)).size).toBe(3);
+  });
+
+  it("offers a one-click install only when the server derived one", () => {
+    const installableClaude = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      displayName: "Claude",
+      installed: false,
+      auth: { status: "unknown" },
+      installCommand: "npm install -g @anthropic-ai/claude-code@latest",
+      updateState: {
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: null,
+        message: "Installing provider.",
+        output: null,
+      },
+    });
+
+    const [installableRow] = deriveFirstRunProviderRows([installableClaude]);
+    expect(installableRow?.install).toEqual({
+      command: "npm install -g @anthropic-ai/claude-code@latest",
+      status: "running",
+      message: "Installing provider.",
+      lastOutputLine: null,
+    });
+
+    // No derived command means no button: the row keeps the install guide.
+    expect(deriveFirstRunProviderRows([missingClaude])[0]?.install).toBeNull();
+    // An installed provider never offers an install, whatever else is true.
+    expect(deriveFirstRunProviderRows([signedOutCodex])[0]?.install).toBeNull();
   });
 
   it("leaves out instances the user disabled", () => {
