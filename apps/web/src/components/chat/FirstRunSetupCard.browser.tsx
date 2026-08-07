@@ -96,6 +96,7 @@ function renderCard(props: {
         providers={props.providers}
         projectName={props.projectName}
         projectCwd={props.projectName === null ? null : "C:/code/B-git-project"}
+        projectEnvironmentId={null}
         isOnlyWorkspaceProject
         onSignIn={props.onSignIn ?? vi.fn()}
         onChooseProject={props.onChooseProject ?? vi.fn()}

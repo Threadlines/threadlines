@@ -3389,10 +3389,16 @@ export default function ChatView(props: ChatViewProps) {
     hasUserMessagedThread,
     isDismissed: isFirstRunSetupDismissed,
   });
-  const workspaceProjectCount = useMemo(
-    () => allProjects.filter((project) => project.kind !== "general-chat").length,
+  const firstRunWorkspaceProjects = useMemo(
+    () => allProjects.filter((project) => project.kind !== "general-chat"),
     [allProjects],
   );
+  // A reloaded draft thread has no project bound yet (`activeProject` is
+  // null until the first send), but the bootstrapped workspace project is
+  // already in the project list; the card must not claim "No folder yet"
+  // while the sidebar shows one. General Chat can't be the active project
+  // here because the card never renders on General Chat drafts.
+  const firstRunProject = activeProject ?? firstRunWorkspaceProjects[0] ?? null;
   const firstRunSetupEmptyState = useMemo(() => {
     if (!showFirstRunSetupCard) {
       return undefined;
@@ -3400,9 +3406,10 @@ export default function ChatView(props: ChatViewProps) {
     return (
       <FirstRunSetupCard
         providers={providerInstanceEntries}
-        projectName={activeProject?.name ?? null}
-        projectCwd={activeProject?.cwd ?? null}
-        isOnlyWorkspaceProject={workspaceProjectCount === 1}
+        projectName={firstRunProject?.name ?? null}
+        projectCwd={firstRunProject?.cwd ?? null}
+        projectEnvironmentId={firstRunProject?.environmentId ?? environmentId}
+        isOnlyWorkspaceProject={firstRunWorkspaceProjects.length === 1}
         onSignIn={(row) => {
           if (!row.signInCommand) return;
           void runProviderAuthReconnect({
@@ -3420,14 +3427,14 @@ export default function ChatView(props: ChatViewProps) {
       />
     );
   }, [
-    activeProject?.cwd,
-    activeProject?.name,
     dismissFirstRunSetupForEnvironment,
+    environmentId,
+    firstRunProject,
+    firstRunWorkspaceProjects.length,
     providerInstanceEntries,
     runProviderAuthReconnect,
     scheduleComposerFocus,
     showFirstRunSetupCard,
-    workspaceProjectCount,
   ]);
 
   const runMcpAuthReconnect = useCallback(

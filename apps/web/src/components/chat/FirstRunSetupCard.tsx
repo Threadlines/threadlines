@@ -18,6 +18,8 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { ProjectFavicon } from "../ProjectFavicon";
+import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { Button } from "../ui/button";
 import {
   buildFirstRunSetupDismissalKey,
@@ -81,7 +83,7 @@ function SetupRow({
   dotClassName: string;
   name: string;
   versionLabel?: string | null;
-  description: string;
+  description: ReactNode;
   action: ReactNode;
 }) {
   return (
@@ -145,6 +147,8 @@ export interface FirstRunSetupCardProps {
   readonly providers: ReadonlyArray<FirstRunSetupProvider>;
   readonly projectName: string | null;
   readonly projectCwd: string | null;
+  /** Where the project lives; lets the row show its favicon like every other project selector. */
+  readonly projectEnvironmentId: EnvironmentId | null;
   /** True when this is the workspace's only project, i.e. the launch folder. */
   readonly isOnlyWorkspaceProject: boolean;
   readonly onSignIn: (row: FirstRunProviderRow) => void;
@@ -157,6 +161,7 @@ export function FirstRunSetupCard({
   providers,
   projectName,
   projectCwd,
+  projectEnvironmentId,
   isOnlyWorkspaceProject,
   onSignIn,
   onChooseProject,
@@ -169,17 +174,33 @@ export function FirstRunSetupCard({
     [isOnlyWorkspaceProject, projectCwd, projectName],
   );
   const canStart = canStartFirstThread({ providerRows, projectRow });
+  const projectDescription: ReactNode =
+    projectRow.state === "ready" && projectCwd && projectEnvironmentId ? (
+      <span className="inline-flex min-w-0 items-center gap-1.5">
+        <ProjectFavicon cwd={projectCwd} environmentId={projectEnvironmentId} />
+        <span className="min-w-0 truncate">{projectRow.description}</span>
+      </span>
+    ) : (
+      projectRow.description
+    );
 
   return (
-    <div className="w-full max-w-140" data-testid="first-run-setup-card">
-      <h2 className="text-[19px] font-semibold tracking-tight text-foreground">
+    <div className="flex w-full max-w-140 flex-col items-center" data-testid="first-run-setup-card">
+      <ThreadlinesFigure />
+      <h2
+        className="no-thread-rise text-[19px] font-semibold tracking-tight text-foreground"
+        style={riseDelay("0.16s")}
+      >
         Set up Threadlines
       </h2>
-      <p className="mt-1 text-[13.5px] text-muted-foreground">
+      <p
+        className="no-thread-rise mt-1 text-[13.5px] text-muted-foreground"
+        style={riseDelay("0.24s")}
+      >
         Connect a coding agent and pick a folder. Rows update live as you go.
       </p>
 
-      <ul className="mt-6 border-t border-border">
+      <ul className="no-thread-rise mt-7 w-full border-t border-border" style={riseDelay("0.32s")}>
         {providerRows.map((row) => (
           <SetupRow
             key={row.instanceId}
@@ -197,7 +218,7 @@ export function FirstRunSetupCard({
           state={projectRow.state}
           dotClassName={projectRow.dotClassName}
           name="Project"
-          description={projectRow.description}
+          description={projectDescription}
           action={
             projectRow.state === "ready" ? (
               <Button
@@ -217,7 +238,10 @@ export function FirstRunSetupCard({
         />
       </ul>
 
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+      <div
+        className="no-thread-rise mt-5 flex w-full flex-wrap items-center justify-between gap-3"
+        style={riseDelay("0.4s")}
+      >
         <span className="text-xs text-muted-foreground/62">
           You can start once one agent is signed in.
         </span>
