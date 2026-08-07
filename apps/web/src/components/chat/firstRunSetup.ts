@@ -191,13 +191,28 @@ function providerRowDescription(
   }
 
   const summary = getProviderSummary(provider.snapshot);
-  const detail = summary.detail?.trim();
+  const detail = firstSentence(summary.detail);
   if (detail) {
     return `${summary.headline}. ${detail}`;
   }
   return state === "notInstalled"
     ? `${summary.headline}. Install ${provider.displayName}, then sign in.`
     : `${summary.headline}. Sign in to use ${provider.displayName} here.`;
+}
+
+/**
+ * Row descriptions stay at roughly two rendered lines (design system), but
+ * provider status details are written for the settings page and can run to a
+ * paragraph with install URLs. The card keeps the diagnosis sentence; the
+ * full recipe is one click away behind the row's action.
+ */
+function firstSentence(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const match = /^.*?\.(?=\s|$)/.exec(trimmed);
+  return match ? match[0] : trimmed;
 }
 
 /**
