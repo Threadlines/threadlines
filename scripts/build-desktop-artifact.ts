@@ -823,7 +823,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_RELEASE_APP_ID,
     productName: resolveDesktopProductName(version),
-    artifactName: "Threadlines-${version}-${arch}.${ext}",
+    // The ${os} token (mac/win/linux) keeps downloads self-describing on the
+    // GitHub releases page: without it a macOS updater zip reads as
+    // "Threadlines-0.3.1-x64.zip" and Windows users grab it by mistake.
+    artifactName: "Threadlines-${version}-${os}-${arch}.${ext}",
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -903,7 +906,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       },
     ];
     const winConfig: Record<string, unknown> = {
-      target: [target],
+      // The zip is the portable, no-install Windows build. Pair it with the
+      // default nsis installer only; an explicitly requested target stays exact.
+      target: target === "nsis" ? [target, "zip"] : [target],
       icon: "icon.ico",
     };
     if (signed) {
