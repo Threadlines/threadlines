@@ -11,7 +11,10 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { createXtermSurface } from "../terminal/xtermSurface";
-import { providerConnectStatusLine } from "./providerConnectFlow.logic";
+import {
+  isProviderConnectFlowActive,
+  providerConnectStatusLine,
+} from "./providerConnectFlow.logic";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
 interface ProviderConnectTerminalProps {
@@ -107,6 +110,13 @@ export interface ProviderConnectFlowProps {
    * a healthy status ("Sign in again").
    */
   readonly buttonVariant?: "default" | "outline" | "ghost";
+  /**
+   * Open the terminal as soon as the flow is active instead of waiting out
+   * the stall threshold. Set when the user arrived via a sign-in hand-off
+   * (`?instance=`): another surface already waited the threshold out, and
+   * making them wait it out twice is the bug the hand-off exists to fix.
+   */
+  readonly autoShowTerminal?: boolean;
 }
 
 /**
@@ -126,6 +136,7 @@ export function ProviderConnectFlow({
   description,
   statusRow,
   buttonVariant = "default",
+  autoShowTerminal = false,
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -171,10 +182,10 @@ export function ProviderConnectFlow({
       setShowTerminal(false);
       return;
     }
-    if (needsTerminal) {
+    if (needsTerminal || (autoShowTerminal && isProviderConnectFlowActive(state.status))) {
       setShowTerminal(true);
     }
-  }, [needsTerminal, state.status]);
+  }, [autoShowTerminal, needsTerminal, state.status]);
 
   const startFlow = () => {
     setShowTerminal(false);

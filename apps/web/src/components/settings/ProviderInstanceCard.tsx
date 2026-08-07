@@ -728,6 +728,7 @@ function ProviderAccountSignInSection(props: {
     environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
   ) => void;
   readonly claudeSetupTokenCommand?: string | undefined;
+  readonly signInHandoffActive?: boolean;
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
@@ -757,6 +758,7 @@ function ProviderAccountSignInSection(props: {
           displayName={props.displayName}
           actionLabel={needsSignIn ? "Reconnect" : "Sign in again"}
           command={props.terminalLoginCommand}
+          autoShowTerminal={props.signInHandoffActive ?? false}
           buttonVariant={needsSignIn ? "default" : "ghost"}
           description={isClaude ? "Signing in covers both chat and usage." : undefined}
           statusRow={
@@ -1110,6 +1112,12 @@ interface ProviderInstanceCardProps {
   readonly driverOption: DriverOption | undefined;
   readonly liveProvider: ServerProvider | undefined;
   readonly isExpanded: boolean;
+  /**
+   * True when the user arrived via a sign-in hand-off (`?instance=`): the
+   * login flow's terminal opens as soon as it is active instead of waiting
+   * out the stall threshold a second time.
+   */
+  readonly signInHandoffActive?: boolean;
   readonly onExpandedChange: (open: boolean) => void;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
@@ -1171,6 +1179,7 @@ export function ProviderInstanceCard({
   driverOption,
   liveProvider,
   isExpanded,
+  signInHandoffActive = false,
   onExpandedChange,
   onUpdate,
   onDelete,
@@ -1705,6 +1714,7 @@ export function ProviderInstanceCard({
                 idPrefix={`provider-instance-${instanceId}`}
                 environment={instance.environment ?? []}
                 onEnvironmentChange={updateEnvironment}
+                signInHandoffActive={signInHandoffActive}
                 {...(driverKind === CLAUDE_DRIVER_KIND ? { claudeSetupTokenCommand } : {})}
               />
             </div>

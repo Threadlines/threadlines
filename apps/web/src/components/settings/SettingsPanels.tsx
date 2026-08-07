@@ -1440,6 +1440,7 @@ export function ProviderSettingsPanel({
                 driverOption={driverOption}
                 liveProvider={liveProvider}
                 isExpanded={openInstanceDetails[row.instanceId] ?? false}
+                signInHandoffActive={row.instanceId === focusedInstanceId}
                 onExpandedChange={(open) =>
                   setOpenInstanceDetails((existing) => ({
                     ...existing,
