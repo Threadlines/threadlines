@@ -419,6 +419,14 @@ export interface ClaudeAdapterLiveOptions {
    * state.
    */
   readonly onChatAuthStateChanged?: (status: "verified" | "unauthenticated") => Effect.Effect<void>;
+  /**
+   * Fires when a turn dies with an error the auth patterns cannot classify
+   * (the SDK's diagnostics for a stream that ended with no stop reason look
+   * nothing like a 401 even when an expired credential caused them). The
+   * driver answers by re-probing the instance so an auth-shaped death flips
+   * the snapshot in seconds instead of after the next scheduled probe.
+   */
+  readonly onUnclassifiedRuntimeError?: () => Effect.Effect<void>;
 }
 
 /**
@@ -3111,6 +3119,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* options
         .onChatAuthStateChanged("unauthenticated")
         .pipe(Effect.ignoreCause({ log: true }));
+    }
+    if (!isAuthenticationError && options?.onUnclassifiedRuntimeError) {
+      yield* options.onUnclassifiedRuntimeError().pipe(Effect.ignoreCause({ log: true }));
     }
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();

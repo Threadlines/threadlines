@@ -2400,8 +2400,12 @@ export function mapToRuntimeEvents(
   if (event.method === "error") {
     const payload = readPayload(EffectCodexSchema.V2ErrorNotification, event.payload);
     const message = payload?.error.message ?? event.message ?? "Provider runtime error";
-    const willRetry = payload?.willRetry === true;
     const errorClass = providerErrorClass(message);
+    // An expired credential cannot heal by retrying: reporting each retry as
+    // a warning kept the sign-in surface away until the app-server exhausted
+    // its whole reconnect schedule (20-30s of visible noise). An auth-shaped
+    // error is terminal on the first attempt.
+    const willRetry = payload?.willRetry === true && errorClass !== "authentication_error";
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",

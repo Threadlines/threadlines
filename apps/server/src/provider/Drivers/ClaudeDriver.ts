@@ -15,6 +15,9 @@
 import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
 import * as DateTime from "effect/DateTime";
+import * as Exit from "effect/Exit";
+import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -58,6 +61,12 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+/**
+ * Floor between re-probes triggered by unclassifiable turn errors. One probe
+ * answers the "was that an auth death?" question; a failing session that
+ * errors on every send must not turn into a probe stream.
+ */
+const UNCLASSIFIED_ERROR_PROBE_MIN_INTERVAL_MS = 15_000;
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 const CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE = "Claude sign-in expired. Sign in again, then retry.";
 
@@ -369,6 +378,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         ),
       );
 
+      // Repeated turn failures must not stack probes: one re-probe per
+      // window is enough to catch an auth-shaped death, and the snapshot's
+      // own refresh semaphore handles the rest. The probes fork into their
+      // own scope so they outlive the failing turn's fiber but not the
+      // driver instance.
+      const lastUnclassifiedErrorProbeMsRef = yield* Ref.make(0);
+      const errorProbeScope = yield* Scope.make("sequential");
+      yield* Effect.addFinalizer(() => Scope.close(errorProbeScope, Exit.void));
+
       // The adapter is built after the snapshot so mid-turn `rate_limit_event`
       // messages can be folded straight into the live provider snapshot —
       // account usage then updates in real time instead of waiting for the
@@ -395,6 +413,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           }),
         onChatAuthStateChanged: (state) =>
           snapshot.patchSnapshot((current) => patchClaudeChatAuthState(current, state)),
+        onUnclassifiedRuntimeError: () =>
+          Effect.gen(function* () {
+            const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+            const lastMs = yield* Ref.get(lastUnclassifiedErrorProbeMsRef);
+            if (nowMs - lastMs < UNCLASSIFIED_ERROR_PROBE_MIN_INTERVAL_MS) {
+              return;
+            }
+            yield* Ref.set(lastUnclassifiedErrorProbeMsRef, nowMs);
+            yield* snapshot.refresh.pipe(Effect.forkIn(errorProbeScope), Effect.asVoid);
+          }),
       });
 
       return {
