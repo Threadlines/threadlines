@@ -7,6 +7,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "test": "vp test run",
     "typecheck": "astro check"
   },
   "dependencies": {
@@ -15,6 +16,9 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   }
 }

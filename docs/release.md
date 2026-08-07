@@ -192,13 +192,14 @@ complete compact technical change list in a collapsed details section.
 
 The release assets should include:
 
-- `Threadlines-<version>-x64.exe`
-- `Threadlines-<version>-x64.exe.blockmap`
-- `Threadlines-<version>-arm64.dmg`
-- `Threadlines-<version>-arm64.zip`
-- `Threadlines-<version>-x64.dmg`
-- `Threadlines-<version>-x64.zip`
-- `Threadlines-<version>-x86_64.AppImage`
+- `Threadlines-<version>-win-x64.exe`
+- `Threadlines-<version>-win-x64.exe.blockmap`
+- `Threadlines-<version>-win-x64.zip`
+- `Threadlines-<version>-mac-arm64.dmg`
+- `Threadlines-<version>-mac-arm64.zip`
+- `Threadlines-<version>-mac-x64.dmg`
+- `Threadlines-<version>-mac-x64.zip`
+- `Threadlines-<version>-linux-x86_64.AppImage`
 - `latest.yml`
 - `latest-mac.yml`
 - `latest-linux.yml`
@@ -214,10 +215,14 @@ prereleases so updater checks can read the prerelease manifest.
 
 Download the matching asset from GitHub Releases:
 
-- Windows: `Threadlines-<version>-x64.exe`
-- Apple Silicon macOS: `Threadlines-<version>-arm64.dmg`
-- Intel macOS: `Threadlines-<version>-x64.dmg`
-- Linux x64: `Threadlines-<version>-x86_64.AppImage`
+- Windows: `Threadlines-<version>-win-x64.exe` (or
+  `Threadlines-<version>-win-x64.zip` for a portable copy that does not install)
+- Apple Silicon macOS: `Threadlines-<version>-mac-arm64.dmg`
+- Intel macOS: `Threadlines-<version>-mac-x64.dmg`
+- Linux x64: `Threadlines-<version>-linux-x86_64.AppImage`
+
+Every asset name carries its operating system, so a macOS updater zip can no
+longer be mistaken for a Windows download.
 
 Windows and macOS public release artifacts are expected to be signed. Windows may
 still show SmartScreen reputation prompts until the signing identity has enough
