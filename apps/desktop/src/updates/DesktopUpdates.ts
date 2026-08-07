@@ -623,18 +623,27 @@ const make = Effect.gen(function* () {
     if (yield* Ref.get(updateCheckInFlightRef)) return false;
 
     const state = yield* Ref.get(updateStateRef);
-    if (state.status === "downloading" || state.status === "downloaded") {
-      yield* logUpdaterInfo("skipping update check while update is active", {
+    if (state.status === "downloading") {
+      yield* logUpdaterInfo("skipping update check while a download is running", {
         reason,
-        status: state.status,
       });
       return false;
     }
 
+    // A downloaded update must not block later checks: while the user
+    // postpones the restart, the release it came from can be superseded by a
+    // newer one or pulled entirely, and a pill that can never re-check gets
+    // stuck advertising a version that no longer matters. The check runs
+    // silently in that state (no transition to "checking") so the ready pill
+    // doesn't flicker on every poll.
+    const silentCheck = state.status === "downloaded";
+
     yield* Ref.set(updateCheckInFlightRef, true);
     const checkedAt = yield* currentIsoTimestamp;
-    yield* setState(reduceDesktopUpdateStateOnCheckStart(state, checkedAt));
-    yield* logUpdaterInfo("checking for updates", { reason });
+    if (!silentCheck) {
+      yield* setState(reduceDesktopUpdateStateOnCheckStart(state, checkedAt));
+    }
+    yield* logUpdaterInfo("checking for updates", { reason, silent: silentCheck });
 
     return yield* Effect.gen(function* () {
       if (!(yield* ensurePrivateGitHubUpdateFeed())) {
@@ -767,6 +776,16 @@ const make = Effect.gen(function* () {
             return;
           }
 
+          if (state.status === "downloaded" && state.downloadedVersion === info.version) {
+            // The downloaded update is still the latest; keep the ready pill
+            // exactly as it is instead of restarting the cycle for the same
+            // bits.
+            yield* logUpdaterInfo("downloaded update is still the latest", {
+              version: info.version,
+            });
+            return;
+          }
+
           const checkedAt = yield* currentIsoTimestamp;
           yield* setState(
             reduceDesktopUpdateStateOnUpdateAvailable(state, info.version, checkedAt),
@@ -786,6 +805,14 @@ const make = Effect.gen(function* () {
   const handleUpdateNotAvailable = Effect.gen(function* () {
     const checkedAt = yield* currentIsoTimestamp;
     const state = yield* Ref.get(updateStateRef);
+    if (state.status === "downloaded") {
+      // The release the downloaded update came from is no longer offered
+      // (pulled or replaced by the running version); clearing to up-to-date
+      // retires a ready pill that would otherwise advertise it forever.
+      yield* logUpdaterInfo("downloaded update is no longer offered; clearing it", {
+        version: state.downloadedVersion,
+      });
+    }
     yield* setState(reduceDesktopUpdateStateOnNoUpdate(state, checkedAt));
     yield* Ref.set(lastLoggedDownloadMilestoneRef, -1);
     yield* logUpdaterInfo("no updates available");
