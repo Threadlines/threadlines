@@ -120,15 +120,47 @@ export function compactVersionLabel(version: string): string {
   return releaseTriple.startsWith("v") ? releaseTriple : `v${releaseTriple}`;
 }
 
+const NIGHTLY_VERSION_PATTERN = /^v?(\d+\.\d+\.\d+)-nightly\.(\d{8})\.(\d+)$/;
+
+/**
+ * Label for a target version shown beside the one already running. Stripping
+ * a nightly to its base triple made "v0.3.2 available" ambiguous on the
+ * nightly channel (stable 0.3.2? which of today's nightlies?), while the full
+ * string is too long for a chip. The nightly run number is the release
+ * workflow's run counter — monotonic across days, so it alone distinguishes
+ * any two nightlies of the same base: ".222". A different base keeps the
+ * triple plus the channel ("v0.3.3-nightly") so it can never read as a
+ * stable release; non-nightly targets keep the compact triple, which is
+ * exact for stables. Tooltips carry the full string either way.
+ */
+export function discriminatingVersionLabel(target: string, current: string): string {
+  const targetNightly = NIGHTLY_VERSION_PATTERN.exec(target);
+  if (!targetNightly) {
+    return compactVersionLabel(target);
+  }
+  const [, base, , run] = targetNightly;
+  const currentNightly = NIGHTLY_VERSION_PATTERN.exec(current);
+  if (currentNightly && currentNightly[1] === base) {
+    return `.${run}`;
+  }
+  return `${compactVersionLabel(target)}-nightly`;
+}
+
 function getSidebarDesktopUpdateTagTooltip(input: {
   readonly action: DesktopUpdateButtonAction;
   readonly isDownloading: boolean;
   readonly isError: boolean;
   readonly downloadPercent: number | null;
-  readonly targetLabel: string | null;
+  /** Full target version string: the tooltip is where ambiguity goes to die. */
+  readonly targetVersion: string | null;
 }): string {
+  const fullLabel = input.targetVersion
+    ? input.targetVersion.startsWith("v")
+      ? input.targetVersion
+      : `v${input.targetVersion}`
+    : null;
   if (input.isDownloading) {
-    const subject = input.targetLabel ? `Downloading ${input.targetLabel}` : "Downloading";
+    const subject = fullLabel ? `Downloading ${fullLabel}` : "Downloading";
     return input.downloadPercent !== null
       ? `${subject} · ${Math.floor(input.downloadPercent)}%`
       : subject;
@@ -137,9 +169,9 @@ function getSidebarDesktopUpdateTagTooltip(input: {
     return input.action === "install" ? "Install failed" : "Download failed";
   }
   if (input.action === "install") {
-    return input.targetLabel ? `Restart to install ${input.targetLabel}` : "Restart to install";
+    return fullLabel ? `Restart to install ${fullLabel}` : "Restart to install";
   }
-  return input.targetLabel ? `${input.targetLabel} available` : "Update available";
+  return fullLabel ? `${fullLabel} available` : "Update available";
 }
 
 export function getSidebarDesktopUpdateTagPresentation(
@@ -167,7 +199,9 @@ export function getSidebarDesktopUpdateTagPresentation(
   // Active states label the chip with the version the action concerns, so
   // "ready to restart" reads as the incoming release, not the running one.
   const targetVersion = state.downloadedVersion ?? state.availableVersion;
-  const targetLabel = targetVersion ? compactVersionLabel(targetVersion) : null;
+  const targetLabel = targetVersion
+    ? discriminatingVersionLabel(targetVersion, state.currentVersion ?? appVersion)
+    : null;
   const downloadPercent = typeof state.downloadPercent === "number" ? state.downloadPercent : null;
   const progressPercent = isDownloaded
     ? 100
@@ -194,7 +228,7 @@ export function getSidebarDesktopUpdateTagPresentation(
       isDownloading,
       isError,
       downloadPercent: isDownloading && downloadPercent !== null ? progressPercent : null,
-      targetLabel,
+      targetVersion: targetVersion ?? null,
     }),
   };
 }
@@ -249,7 +283,12 @@ export function getDesktopUpdateStatusLine(
     return { text: state.message ?? "Update failed", tone: "error" };
   }
   const targetVersion = state.downloadedVersion ?? state.availableVersion;
-  const targetLabel = targetVersion ? compactVersionLabel(targetVersion) : null;
+  const targetLabel =
+    targetVersion && state.currentVersion
+      ? discriminatingVersionLabel(targetVersion, state.currentVersion)
+      : targetVersion
+        ? compactVersionLabel(targetVersion)
+        : null;
   if (state.downloadedVersion || state.status === "downloaded") {
     // "restart to install" lives on the action button right below.
     return { text: `${targetLabel ?? "Update"} downloaded`, tone: "success" };

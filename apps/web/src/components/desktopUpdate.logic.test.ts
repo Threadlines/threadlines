@@ -3,6 +3,7 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@threadlines
 
 import {
   canCheckForUpdate,
+  discriminatingVersionLabel,
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
@@ -236,6 +237,36 @@ describe("desktop update UI helpers", () => {
   });
 });
 
+describe("discriminatingVersionLabel", () => {
+  it("keeps only the run suffix for a same-day nightly", () => {
+    expect(
+      discriminatingVersionLabel("0.3.2-nightly.20260807.222", "0.3.2-nightly.20260807.221"),
+    ).toBe(".222");
+  });
+
+  it("keeps only the run suffix across days too, since the counter never resets", () => {
+    expect(
+      discriminatingVersionLabel("0.3.2-nightly.20260808.225", "0.3.2-nightly.20260807.221"),
+    ).toBe(".225");
+  });
+
+  it("names the channel when a nightly's base version moved", () => {
+    expect(
+      discriminatingVersionLabel("0.3.3-nightly.20260808.1", "0.3.2-nightly.20260807.221"),
+    ).toBe("v0.3.3-nightly");
+  });
+
+  it("keeps the exact compact triple for stable targets", () => {
+    expect(discriminatingVersionLabel("0.3.3", "0.3.2-nightly.20260807.221")).toBe("v0.3.3");
+  });
+
+  it("marks a nightly target as nightly when running a stable", () => {
+    expect(discriminatingVersionLabel("0.3.2-nightly.20260807.222", "0.3.1")).toBe(
+      "v0.3.2-nightly",
+    );
+  });
+});
+
 describe("getSidebarDesktopUpdateTagPresentation", () => {
   it("shows the compact app version when no update action is available", () => {
     expect(getSidebarDesktopUpdateTagPresentation(baseState, "1.0.0")).toEqual({
@@ -368,7 +399,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     });
   });
 
-  it("compacts prerelease tails out of the target version label", () => {
+  it("compacts the chip label but keeps the full version in the tooltip", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "downloaded",
@@ -376,9 +407,28 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       downloadedVersion: "1.1.0-nightly.4",
     };
 
+    // A short prerelease tail without the dated nightly shape compacts to the
+    // triple on the chip; the tooltip always carries the exact target so a
+    // nightly can never be mistaken for the stable of the same base.
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0-nightly.2")).toMatchObject({
       label: "v1.1.0",
-      tooltip: "Restart to install v1.1.0",
+      tooltip: "Restart to install v1.1.0-nightly.4",
+    });
+  });
+
+  it("labels a same-day nightly by its run suffix", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      currentVersion: "0.3.2-nightly.20260807.221",
+      status: "available",
+      availableVersion: "0.3.2-nightly.20260807.222",
+    };
+
+    expect(
+      getSidebarDesktopUpdateTagPresentation(state, "0.3.2-nightly.20260807.221"),
+    ).toMatchObject({
+      label: ".222",
+      tooltip: "v0.3.2-nightly.20260807.222 available",
     });
   });
 });
