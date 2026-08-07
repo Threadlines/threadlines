@@ -1,13 +1,9 @@
 "use client";
 
-import type {
-  ProviderAuthEvent,
-  ProviderAuthFlow,
-  ProviderInstanceId,
-} from "@threadlines/contracts";
+import type { ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
 import type { Terminal } from "@xterm/xterm";
 import { CheckIcon, ChevronDownIcon, CopyIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -15,18 +11,8 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { createXtermSurface } from "../terminal/xtermSurface";
-import {
-  applyProviderAuthEvent,
-  initialProviderConnectFlowState,
-  isProviderConnectFlowActive,
-  providerConnectStatusLine,
-  shouldAutoExpandTerminal,
-  type ProviderConnectFlowState,
-} from "./providerConnectFlow.logic";
-
-const TERMINAL_COLS = 100;
-const TERMINAL_ROWS = 20;
-const AUTO_EXPAND_TICK_MS = 1_000;
+import { providerConnectStatusLine } from "./providerConnectFlow.logic";
+import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
 interface ProviderConnectTerminalProps {
   readonly instanceId: ProviderInstanceId;
@@ -141,17 +127,8 @@ export function ProviderConnectFlow({
   statusRow,
   buttonVariant = "default",
 }: ProviderConnectFlowProps) {
-  const [state, setState] = useState<ProviderConnectFlowState>(initialProviderConnectFlowState);
-  const [isStarting, setIsStarting] = useState(false);
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
-  const [runningForMs, setRunningForMs] = useState(0);
-  const outputBufferRef = useRef("");
-  const terminalWriteRef = useRef<((data: string) => void) | null>(null);
-  // An instance has one auth session but can render two panels (sign-in and
-  // token setup). Sessions announce their flow in the "command" event; a
-  // panel ignores sessions that belong to the other flow.
-  const sessionFlowRef = useRef<ProviderAuthFlow | null>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard<"provider-auth-command">({
     onError: (error) => {
       toastManager.add(
@@ -164,57 +141,28 @@ export function ProviderConnectFlow({
     },
   });
 
-  const handleEvent = useEffectEvent((event: ProviderAuthEvent) => {
-    if (event.type === "command") {
-      sessionFlowRef.current = event.flow;
-      if (event.flow !== flow) {
-        outputBufferRef.current = "";
-        setShowTerminal(false);
-        setState(initialProviderConnectFlowState);
-        return;
-      }
-    } else if (sessionFlowRef.current !== flow) {
-      // The server announces a session's command (and flow) before any output
-      // or status, so anything arriving unclaimed belongs to the other panel.
-      return;
-    }
-    if (event.type === "output") {
-      outputBufferRef.current = `${outputBufferRef.current}${event.data}`.slice(-64_000);
-      terminalWriteRef.current?.(event.data);
-    }
-    setState((previous) => applyProviderAuthEvent(previous, event));
+  const {
+    state,
+    isStarting,
+    isActive,
+    needsTerminal,
+    outputBufferRef,
+    terminalWriteRef,
+    start,
+    reset,
+  } = useProviderConnectFlow({
+    instanceId,
+    flow,
+    onStartError: (error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `Could not start ${displayName} sign-in`,
+          description: error instanceof Error ? error.message : "The command could not be started.",
+        }),
+      );
+    },
   });
-
-  // Subscribed for the component's whole lifetime, not just after a click:
-  // the server replays the command, buffered output, and status on attach, so
-  // a flow started before a tab switch or remount lands back on the panel.
-  useEffect(() => {
-    let cancelled = false;
-    const client = getPrimaryEnvironmentConnection().client;
-    const unsubscribe = client.providerAuth.subscribe({ instanceId }, (event) => {
-      if (cancelled) return;
-      handleEvent(event);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [instanceId]);
-
-  const isActive = isProviderConnectFlowActive(state.status);
-
-  useEffect(() => {
-    if (!isActive) {
-      setRunningForMs(0);
-      return;
-    }
-    const startedAt = Date.now();
-    const timer = window.setInterval(
-      () => setRunningForMs(Date.now() - startedAt),
-      AUTO_EXPAND_TICK_MS,
-    );
-    return () => window.clearInterval(timer);
-  }, [isActive]);
 
   useEffect(() => {
     if (state.status === "succeeded") {
@@ -223,41 +171,20 @@ export function ProviderConnectFlow({
       setShowTerminal(false);
       return;
     }
-    if (shouldAutoExpandTerminal({ status: state.status, runningForMs })) {
+    if (needsTerminal) {
       setShowTerminal(true);
     }
-  }, [runningForMs, state.status]);
+  }, [needsTerminal, state.status]);
 
   const startFlow = () => {
-    outputBufferRef.current = "";
-    setState(initialProviderConnectFlowState);
     setShowTerminal(false);
-    setIsStarting(true);
-    void getPrimaryEnvironmentConnection()
-      .client.providerAuth.start({ instanceId, flow, cols: TERMINAL_COLS, rows: TERMINAL_ROWS })
-      .catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Could not start ${displayName} sign-in`,
-            description:
-              error instanceof Error ? error.message : "The command could not be started.",
-          }),
-        );
-      })
-      .finally(() => {
-        setIsStarting(false);
-      });
+    start();
   };
 
   // Cancel and Dismiss both clear the server-side session too, so a finished
   // run doesn't replay a stale success/failure panel on the next visit.
   const dismissFlow = () => {
-    void getPrimaryEnvironmentConnection()
-      .client.providerAuth.stop({ instanceId })
-      .catch(() => {});
-    outputBufferRef.current = "";
-    setState(initialProviderConnectFlowState);
+    reset();
     setShowTerminal(false);
   };
 

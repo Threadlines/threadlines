@@ -1,13 +1,29 @@
-import { ProviderDriverKind } from "@threadlines/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@threadlines/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ComposerNotice } from "./composerNotices";
 import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import type { ProviderSignInFlowView } from "./providerSignIn";
 import { buildThreadErrorNotice } from "./threadErrorNotice";
 
 function renderNotice(notice: ComposerNotice | null): string {
   return renderToStaticMarkup(<ComposerNoticeDock notices={notice ? [notice] : []} />);
+}
+
+function idleSignIn(overrides: Partial<ProviderSignInFlowView> = {}): ProviderSignInFlowView {
+  return {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    isActive: false,
+    isStarting: false,
+    hasRun: false,
+    hasFailed: false,
+    needsTerminal: false,
+    lastLine: "",
+    failureDetail: null,
+    start: () => {},
+    ...overrides,
+  };
 }
 
 describe("buildThreadErrorNotice", () => {
@@ -15,7 +31,7 @@ describe("buildThreadErrorNotice", () => {
     expect(buildThreadErrorNotice({ error: null })).toBe(null);
   });
 
-  it("renders provider auth recovery steps and terminal action", () => {
+  it("offers the hidden sign-in flow, not a terminal command, for provider auth failures", () => {
     const markup = renderNotice(
       buildThreadErrorNotice({
         error: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
@@ -25,17 +41,41 @@ describe("buildThreadErrorNotice", () => {
           command: "claude auth login",
           message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
         },
-        onRunAuthReconnect: () => {},
+        signIn: idleSignIn(),
       }),
     );
 
     expect(markup).toContain("Claude needs sign-in.");
-    expect(markup).toContain("claude auth login");
-    expect(markup).toContain("complete the browser sign-in, then retry");
+    expect(markup).toContain("Complete the browser step and come back here.");
     expect(markup).toContain("Last error: Failed to authenticate.");
     expect(markup).toContain(">Sign in<");
+    // The command never reaches the user: Threadlines runs it for them.
+    expect(markup).not.toContain("claude auth login");
     expect(markup).toContain('data-composer-notice-severity="error"');
     expect(markup).toContain('role="alert"');
+  });
+
+  it("reports a running sign-in on the row instead of the action", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        providerLabel: "Claude",
+        authReconnect: {
+          provider: ProviderDriverKind.make("claudeAgent"),
+          command: "claude auth login",
+          message: "Failed to authenticate.",
+        },
+        signIn: idleSignIn({
+          isActive: true,
+          hasRun: true,
+          lastLine: "Opening browser to complete sign-in",
+        }),
+      }),
+    );
+
+    expect(markup).toContain("Signing in to Claude.");
+    expect(markup).toContain("Opening browser to complete sign-in");
+    expect(markup).not.toContain(">Sign in<");
   });
 
   it("renders a Codex usage reset action for usage-limit errors", () => {

@@ -37,6 +37,7 @@ import {
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 
+import { LinkifiedText } from "../../lib/linkifiedText";
 import { cn } from "../../lib/utils";
 import {
   deriveProviderAccountUsagePresentationForProvider,
@@ -1468,7 +1469,11 @@ export function ProviderInstanceCard({
           <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
         </>
       )}
-      {summary.detail ? <span>- {summary.detail}</span> : null}
+      {summary.detail ? (
+        <span>
+          - <LinkifiedText text={summary.detail} />
+        </span>
+      ) : null}
     </p>
   );
 

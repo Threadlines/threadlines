@@ -37,10 +37,17 @@ export function StatusNoticeActionButtons({
   variant = "ghost",
   isRefreshing,
   onRefresh,
+  showDiagnostics = true,
 }: {
   variant?: "ghost" | "outline";
   isRefreshing: boolean;
   onRefresh: (() => void) | null;
+  /**
+   * Diagnostics is the answer to "the server tried and something went wrong".
+   * Rows for a condition the logs cannot explain (a signed-out CLI, a missing
+   * install) turn it off rather than sending the user to read nothing.
+   */
+  showDiagnostics?: boolean;
 }) {
   const buttonClassName = variant === "ghost" ? "h-6 px-1.5" : undefined;
   return (
@@ -62,16 +69,18 @@ export function StatusNoticeActionButtons({
           <span>{isRefreshing ? "Refreshing" : "Refresh"}</span>
         </Button>
       ) : null}
-      <Button
-        size="xs"
-        variant={variant}
-        className={buttonClassName}
-        render={<Link to="/settings/diagnostics" />}
-        aria-label="Open diagnostics"
-      >
-        <ActivityIcon className="size-3" />
-        <span>Diagnostics</span>
-      </Button>
+      {showDiagnostics ? (
+        <Button
+          size="xs"
+          variant={variant}
+          className={buttonClassName}
+          render={<Link to="/settings/diagnostics" />}
+          aria-label="Open diagnostics"
+        >
+          <ActivityIcon className="size-3" />
+          <span>Diagnostics</span>
+        </Button>
+      ) : null}
     </>
   );
 }

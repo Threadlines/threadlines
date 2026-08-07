@@ -13,11 +13,107 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { page } from "vite-plus/test/browser";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+/**
+ * The sign-in row drives the real server-side auth flow, so the card needs a
+ * primary environment. This is the same shape `SettingsPanels.browser` mocks:
+ * events reach only the subscribers of the matching instance.
+ */
+const providerAuthHarness = vi.hoisted(() => {
+  type AuthEvent = {
+    readonly instanceId: string;
+    readonly createdAt: string;
+  } & (
+    | { readonly type: "command"; readonly flow: string; readonly command: string }
+    | { readonly type: "output"; readonly data: string }
+    | {
+        readonly type: "status";
+        readonly status: string;
+        readonly exitCode: number | null;
+        readonly detail: string | null;
+      }
+  );
+
+  const listeners = new Set<{
+    readonly instanceId: string;
+    readonly listener: (event: AuthEvent) => void;
+  }>();
+  const startCalls: Array<{ instanceId: string; flow: string }> = [];
+
+  return {
+    startCalls,
+    reset() {
+      listeners.clear();
+      startCalls.length = 0;
+    },
+    emit(event: AuthEvent) {
+      for (const entry of listeners) {
+        if (entry.instanceId === event.instanceId) {
+          entry.listener(event);
+        }
+      }
+    },
+    client: {
+      start: (input: { instanceId: string; flow: string }) => {
+        startCalls.push({ instanceId: input.instanceId, flow: input.flow });
+        return Promise.resolve();
+      },
+      write: () => Promise.resolve(),
+      resize: () => Promise.resolve(),
+      stop: () => Promise.resolve(),
+      subscribe: (input: { instanceId: string }, listener: (event: AuthEvent) => void) => {
+        const entry = { instanceId: input.instanceId, listener };
+        listeners.add(entry);
+        return () => {
+          listeners.delete(entry);
+        };
+      },
+    },
+  };
+});
+
+vi.mock("../../environments/runtime", () => {
+  const primaryConnection = { client: { providerAuth: providerAuthHarness.client } } as never;
+  const notUsed = () => undefined as never;
+  return {
+    environmentUsesRelayTransport: () => false,
+    getEnvironmentHttpBaseUrl: () => "http://localhost:3000",
+    getSavedEnvironmentRecord: () => null,
+    getSavedEnvironmentRuntimeState: () => null,
+    hasSavedEnvironmentRegistryHydrated: () => true,
+    listSavedEnvironmentRecords: () => [],
+    readSavedEnvironmentBearerToken: () => null,
+    resetSavedEnvironmentRegistryStoreForTests: notUsed,
+    resetSavedEnvironmentRuntimeStoreForTests: notUsed,
+    resolveEnvironmentHttpUrl: (_environmentId: unknown, path: string) =>
+      new URL(path, "http://localhost:3000").toString(),
+    waitForSavedEnvironmentRegistryHydration: async () => undefined,
+    useSavedEnvironmentRegistryStore: (selector: (state: { byId: object }) => unknown) =>
+      selector({ byId: {} }),
+    useSavedEnvironmentRuntimeStore: (selector: (state: { byId: object }) => unknown) =>
+      selector({ byId: {} }),
+    addSavedEnvironment: notUsed,
+    connectDesktopSshEnvironment: notUsed,
+    disconnectSavedEnvironment: notUsed,
+    ensureEnvironmentConnectionBootstrapped: async () => undefined,
+    getPrimaryEnvironmentConnection: () => primaryConnection,
+    markRelaySavedEnvironmentLinkExpired: notUsed,
+    readBackendEnvironmentConnection: () => primaryConnection,
+    readEnvironmentConnection: () => primaryConnection,
+    reconnectSavedEnvironment: notUsed,
+    RELAY_LINK_EXPIRED_MESSAGE: "",
+    removeSavedEnvironment: notUsed,
+    requireEnvironmentConnection: () => primaryConnection,
+    resetEnvironmentServiceForTests: notUsed,
+    startEnvironmentConnectionService: notUsed,
+    subscribeEnvironmentConnections: () => () => {},
+  };
+});
+
 import { FirstRunSetupCard } from "./FirstRunSetupCard";
-import type { FirstRunProviderRow, FirstRunSetupProvider } from "./firstRunSetup";
+import type { FirstRunSetupProvider } from "./firstRunSetup";
 
 function buildProvider(input: {
   readonly instanceId: string;
@@ -85,7 +181,6 @@ const SIGNED_IN_CLAUDE = buildProvider({
 function renderCard(props: {
   readonly providers: ReadonlyArray<FirstRunSetupProvider>;
   readonly projectName: string | null;
-  readonly onSignIn?: (row: FirstRunProviderRow) => void;
   readonly onChooseProject?: () => void;
   readonly onSkip?: () => void;
   readonly onStart?: () => void;
@@ -98,7 +193,6 @@ function renderCard(props: {
         projectCwd={props.projectName === null ? null : "C:/code/B-git-project"}
         projectEnvironmentId={null}
         isOnlyWorkspaceProject
-        onSignIn={props.onSignIn ?? vi.fn()}
         onChooseProject={props.onChooseProject ?? vi.fn()}
         onSkip={props.onSkip ?? vi.fn()}
         onStart={props.onStart ?? vi.fn()}
@@ -128,16 +222,18 @@ function rowStates(): Record<string, string> {
 }
 
 describe("FirstRunSetupCard", () => {
+  beforeEach(() => {
+    providerAuthHarness.reset();
+  });
+
   afterEach(() => {
     document.body.innerHTML = "";
   });
 
   it("gives every provider state its own dot and action, and holds the start button back", async () => {
-    const onSignIn = vi.fn();
     const screen = await renderCard({
       providers: [SIGNED_OUT_CODEX, MISSING_CLAUDE],
       projectName: "B-git-project",
-      onSignIn,
     });
 
     expect(rowStates()).toEqual({
@@ -166,14 +262,67 @@ describe("FirstRunSetupCard", () => {
       document.querySelector<HTMLAnchorElement>('a[href="/settings/providers"]')?.textContent,
     ).toContain("Install guide");
 
-    await page.getByRole("button", { name: "Sign in to Codex" }).click();
-    expect(onSignIn).toHaveBeenCalledTimes(1);
-    expect(onSignIn.mock.calls[0]?.[0]).toMatchObject({
-      name: "Codex",
-      signInCommand: "codex login",
+    await expect.element(page.getByRole("button", { name: "Start first thread" })).toBeDisabled();
+
+    await screen.unmount();
+  });
+
+  it("runs the sign-in in place and swaps the row action for its live status", async () => {
+    const screen = await renderCard({
+      providers: [SIGNED_OUT_CODEX],
+      projectName: "B-git-project",
     });
 
-    await expect.element(page.getByRole("button", { name: "Start first thread" })).toBeDisabled();
+    await page.getByRole("button", { name: "Sign in to Codex" }).click();
+
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([{ instanceId: "codex", flow: "login" }]);
+    });
+
+    providerAuthHarness.emit({
+      instanceId: "codex",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      type: "command",
+      flow: "login",
+      command: "codex login",
+    });
+    providerAuthHarness.emit({
+      instanceId: "codex",
+      createdAt: "2026-08-06T00:00:00.000Z",
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    providerAuthHarness.emit({
+      instanceId: "codex",
+      createdAt: "2026-08-06T00:00:01.000Z",
+      type: "output",
+      data: "Opening browser to complete sign-in\r\n",
+    });
+
+    await expect
+      .element(page.getByText("Signing in… Opening browser to complete sign-in"))
+      .toBeVisible();
+    // The action is gone while the run owns the row: clicking it again would
+    // only restart the flow the user is in the middle of.
+    await expect
+      .element(page.getByRole("button", { name: "Sign in to Codex" }))
+      .not.toBeInTheDocument();
+
+    providerAuthHarness.emit({
+      instanceId: "codex",
+      createdAt: "2026-08-06T00:00:05.000Z",
+      type: "status",
+      status: "failed",
+      exitCode: 1,
+      detail: "The sign-in command exited with code 1.",
+    });
+
+    await expect
+      .element(page.getByText("Sign-in failed. The sign-in command exited with code 1."))
+      .toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Sign in to Codex" })).toBeVisible();
 
     await screen.unmount();
   });

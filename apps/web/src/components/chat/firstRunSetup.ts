@@ -150,9 +150,10 @@ export interface FirstRunProviderRow {
   readonly state: FirstRunProviderRowState;
   readonly dotClassName: string;
   /**
-   * Terminal login command for this driver. Null when the driver has none, in
-   * which case the row falls back to the install guide rather than offering a
-   * sign-in that cannot run.
+   * The driver's login command. Threadlines runs it for the user in a
+   * server-side session rather than showing it, so this is really the test for
+   * "can this driver be signed in from here": null means the row falls back to
+   * the install guide instead of offering a sign-in that cannot run.
    */
   readonly signInCommand: string | null;
 }

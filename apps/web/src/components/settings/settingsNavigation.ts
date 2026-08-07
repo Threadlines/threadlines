@@ -65,6 +65,22 @@ export function settingsSectionLabelForPath(pathname: string): string | null {
 }
 
 /**
+ * `?instance=` on the providers page names the card to open on arrival. It is
+ * how a surface elsewhere in the app hands a half-finished provider sign-in
+ * over to the settings panel, which owns the interactive terminal.
+ */
+export interface ProviderSettingsSearch {
+  readonly instance?: string;
+}
+
+export function parseProviderSettingsSearch(
+  search: Record<string, unknown>,
+): ProviderSettingsSearch {
+  const instance = search["instance"];
+  return typeof instance === "string" && instance.length > 0 ? { instance } : {};
+}
+
+/**
  * Resolves where the settings `beforeLoad` guard should redirect, or null to
  * render the requested path. Mobile viewports render a full-page section
  * index at `/settings` (drill-in navigation) instead of teleporting to a

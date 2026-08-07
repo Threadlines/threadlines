@@ -30,18 +30,36 @@ vi.mock("../../localApi", () => ({
 }));
 
 import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import type { ProviderSignInFlowView } from "./providerSignIn";
 import { useProviderStatusNotice } from "./providerStatusNotice";
+
+function makeSignInView(overrides: Partial<ProviderSignInFlowView> = {}): ProviderSignInFlowView {
+  return {
+    instanceId: ProviderInstanceId.make("codex"),
+    isActive: false,
+    isStarting: false,
+    hasRun: false,
+    hasFailed: false,
+    needsTerminal: false,
+    lastLine: "",
+    failureDetail: null,
+    start: () => {},
+    ...overrides,
+  };
+}
 
 function ProviderStatusNoticeHarness({
   status,
   activeTurnInProgress = false,
   suppressed = false,
+  signIn,
 }: {
   status: ServerProvider | null;
   activeTurnInProgress?: boolean;
   suppressed?: boolean;
+  signIn?: ProviderSignInFlowView;
 }) {
-  const notice = useProviderStatusNotice({ activeTurnInProgress, status, suppressed });
+  const notice = useProviderStatusNotice({ activeTurnInProgress, status, suppressed, signIn });
   return <ComposerNoticeDock notices={notice ? [notice] : []} />;
 }
 
@@ -53,8 +71,16 @@ function renderWithTestRouter(children: ReactNode) {
     getParentRoute: () => rootRoute,
     path: "/",
   });
+  const diagnosticsRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/settings/diagnostics",
+  });
+  const providersRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/settings/providers",
+  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute]),
+    routeTree: rootRoute.addChildren([indexRoute, diagnosticsRoute, providersRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
 
@@ -117,6 +143,84 @@ describe("provider status composer notice", () => {
       await vi.waitFor(() => {
         expect(refreshProvidersMock).toHaveBeenCalledWith({ instanceId: provider.instanceId });
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("offers sign-in alone for a signed-out provider", async () => {
+    const start = vi.fn();
+    const provider = makeProvider({
+      status: "error",
+      auth: { status: "unauthenticated" },
+      message: "Codex CLI is not authenticated.",
+    });
+    const screen = await renderWithTestRouter(
+      <ProviderStatusNoticeHarness status={provider} signIn={makeSignInView({ start })} />,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Sign in" }).click();
+      expect(start).toHaveBeenCalledTimes(1);
+      // Nothing to refresh and nothing in the logs: the snapshot already knows.
+      await expect
+        .element(page.getByRole("button", { name: "Refresh provider status" }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("link", { name: "Open diagnostics" }))
+        .not.toBeInTheDocument();
+      expect(refreshProvidersMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("routes a missing CLI to provider settings and keeps a refresh", async () => {
+    const provider = makeProvider({
+      installed: false,
+      status: "error",
+      message: "Codex CLI not detected on PATH. Install it from https://codex.dev/install.",
+    });
+    const screen = await renderWithTestRouter(<ProviderStatusNoticeHarness status={provider} />);
+
+    try {
+      await expect
+        .element(page.getByRole("link", { name: "Open Settings" }))
+        .toHaveAttribute("href", "/settings/providers");
+      await expect
+        .element(page.getByRole("button", { name: "Refresh provider status" }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("link", { name: "Open diagnostics" }))
+        .not.toBeInTheDocument();
+      // The install address in the server's message is clickable, not dead text.
+      await expect
+        .element(page.getByRole("link", { name: "https://codex.dev/install" }))
+        .toHaveAttribute("href", "https://codex.dev/install");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("hands a stalled sign-in over to settings", async () => {
+    const provider = makeProvider({ status: "error", auth: { status: "unauthenticated" } });
+    const screen = await renderWithTestRouter(
+      <ProviderStatusNoticeHarness
+        status={provider}
+        signIn={makeSignInView({
+          isActive: true,
+          hasRun: true,
+          needsTerminal: true,
+          lastLine: "Paste the code from your browser:",
+        })}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Signing in to Codex.")).toBeVisible();
+      await expect
+        .element(page.getByRole("link", { name: "Open provider settings to finish signing in" }))
+        .toHaveAttribute("href", "/settings/providers?instance=codex");
     } finally {
       await screen.unmount();
     }
