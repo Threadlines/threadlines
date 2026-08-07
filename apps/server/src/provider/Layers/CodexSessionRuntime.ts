@@ -27,6 +27,7 @@ import {
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { planCliSpawn } from "../../cliSpawn.ts";
 import { normalizeModelSlug } from "@threadlines/shared/model";
+import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -1652,7 +1653,12 @@ export const makeCodexSessionRuntime = (
             return Effect.void;
           }
           const errorMessage = payload.error.message;
-          const willRetry = payload.willRetry;
+          // An expired credential cannot heal by retrying: the app-server
+          // would replay its full reconnect schedule (visible as 20-30s of
+          // "reconnecting" noise) before failing with the same 401. Treat a
+          // retrying auth error as terminal so the sign-in surface appears
+          // on the first attempt instead of the last.
+          const willRetry = payload.willRetry && !isProviderAuthErrorMessage(errorMessage);
           return updateSession(sessionRef, {
             status: willRetry ? "running" : "error",
             ...(errorMessage ? { lastError: errorMessage } : {}),
