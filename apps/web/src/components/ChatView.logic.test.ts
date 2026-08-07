@@ -45,7 +45,7 @@ import {
   resolveSendEnvMode,
   shouldConfirmTerminalKill,
   shouldOfferFailedTurnRetry,
-  shouldRenderThreadErrorBanner,
+  shouldShowThreadErrorNotice,
   shouldRefreshThreadDetailAfterEventLoopStall,
   shouldWriteThreadErrorToCurrentServerThread,
   THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
@@ -517,10 +517,10 @@ describe("deriveProviderAuthReconnectPrompt", () => {
   });
 });
 
-describe("shouldRenderThreadErrorBanner", () => {
+describe("shouldShowThreadErrorNotice", () => {
   it("hides provider authentication errors already rendered in the timeline", () => {
     expect(
-      shouldRenderThreadErrorBanner({
+      shouldShowThreadErrorNotice({
         threadError:
           "Your access token could not be refreshed because your refresh token was revoked.",
         hasInlineProviderAuthError: true,
@@ -530,7 +530,7 @@ describe("shouldRenderThreadErrorBanner", () => {
 
   it("keeps provider authentication errors as a fallback when no inline recovery is visible", () => {
     expect(
-      shouldRenderThreadErrorBanner({
+      shouldShowThreadErrorNotice({
         threadError: "Not logged in. Run `codex login` in a terminal, then retry.",
         hasInlineProviderAuthError: false,
       }),
@@ -539,7 +539,7 @@ describe("shouldRenderThreadErrorBanner", () => {
 
   it("keeps unrelated thread errors visible even when the timeline contains an auth error", () => {
     expect(
-      shouldRenderThreadErrorBanner({
+      shouldShowThreadErrorNotice({
         threadError: "Could not stop the background process.",
         hasInlineProviderAuthError: true,
       }),

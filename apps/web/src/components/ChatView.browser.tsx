@@ -16,6 +16,7 @@ import {
   ProviderInstanceId,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
+  type ServerProvider,
   type ThreadId,
   type TurnId,
   WS_METHODS,
@@ -2357,7 +2358,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps dismiss-only composer banners aligned on mobile", async () => {
+  it("docks the version mismatch notice to the composer and dismisses it on mobile", async () => {
     const mounted = await mountChatView({
       viewport: COMPACT_FOOTER_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -2376,24 +2377,44 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const banner = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll<HTMLElement>('[data-slot="alert"]')).find(
-            (element) => element.textContent?.includes("Client and server versions differ"),
-          ) ?? null,
-        "Unable to find version mismatch banner.",
+      const dock = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-composer-notice-dock="true"]'),
+        "Unable to find the composer notice dock.",
       );
-      const title = banner.querySelector<HTMLElement>('[data-slot="alert-title"]');
-      const description = banner.querySelector<HTMLElement>('[data-slot="alert-description"]');
-      const dismissButton = banner.querySelector<HTMLButtonElement>(
+      expect(dock.textContent).toContain("Client and server versions differ.");
+      // Version skew is informational, so it never claims a louder colour.
+      expect(
+        dock
+          .querySelector("[data-composer-notice-severity]")
+          ?.getAttribute("data-composer-notice-severity"),
+      ).toBe("info");
+
+      const composerSurface = document.querySelector<HTMLElement>(
+        "[data-chat-composer-mobile-collapsed]",
+      );
+      expect(composerSurface).toBeTruthy();
+      // Docked means attached: the notice sits directly on the composer's top
+      // edge, sharing its width.
+      expect(
+        Math.abs(dock.getBoundingClientRect().left - composerSurface!.getBoundingClientRect().left),
+      ).toBeLessThan(2);
+      expect(
+        Math.abs(
+          dock.getBoundingClientRect().bottom - composerSurface!.getBoundingClientRect().top,
+        ),
+      ).toBeLessThan(2);
+
+      const dismissButton = dock.querySelector<HTMLButtonElement>(
         'button[aria-label="Dismiss version mismatch warning"]',
       );
-
-      expect(title).toBeTruthy();
-      expect(description).toBeTruthy();
       expect(dismissButton).toBeTruthy();
-      expect(dismissButton!.getBoundingClientRect().top).toBeLessThan(
-        description!.getBoundingClientRect().top,
+      dismissButton!.click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-composer-notice-dock="true"]')).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();
@@ -3740,27 +3761,40 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("holds back a send to a signed-out provider until the user chooses Send anyway", async () => {
+  async function mountSignedOutProviderSend(options: {
+    /** Providers the recheck behind "I've signed in" resolves with. */
+    refreshedProviders: (signedOut: ServerProvider) => ReadonlyArray<ServerProvider>;
+  }) {
     setDraftThreadWithoutWorktree();
+    let signedOutProvider: ServerProvider | null = null;
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       configureFixture: (nextFixture) => {
+        signedOutProvider = {
+          ...nextFixture.serverConfig.providers[0]!,
+          status: "warning",
+          auth: { status: "unauthenticated" },
+        };
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
-          providers: [
-            {
-              ...nextFixture.serverConfig.providers[0]!,
-              status: "warning",
-              auth: { status: "unauthenticated" },
-            },
-          ],
+          providers: [signedOutProvider],
         };
       },
-      resolveRpc: (body) =>
-        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
-          ? { sequence: fixture.snapshot.snapshotSequence + 1 }
-          : undefined,
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        if (body._tag === WS_METHODS.serverRefreshProviders) {
+          return {
+            providers: encodeServerConfig({
+              ...fixture.serverConfig,
+              providers: options.refreshedProviders(signedOutProvider!),
+            }).providers,
+          };
+        }
+        return undefined;
+      },
     });
 
     const turnStartRequests = () =>
@@ -3770,27 +3804,64 @@ describe("ChatView timeline estimator parity (full app)", () => {
           request.type === "thread.turn.start",
       );
 
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "Explain this repo");
+    await waitForLayout();
+
+    (await waitForSendButton()).click();
+
+    const confirmSignedIn = await waitForButtonByText("I've signed in");
+    // The turn never left the client, and the draft survived the interruption.
+    expect(turnStartRequests()).toHaveLength(0);
+    expect(document.body.textContent).toContain("Codex needs sign-in.");
+    expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+      "Explain this repo",
+    );
+
+    return { confirmSignedIn, mounted, turnStartRequests };
+  }
+
+  it("sends the held message once the recheck behind I've signed in comes back clean", async () => {
+    const { confirmSignedIn, mounted, turnStartRequests } = await mountSignedOutProviderSend({
+      refreshedProviders: (signedOut) => [
+        { ...signedOut, status: "ready", auth: { status: "authenticated" } },
+      ],
+    });
+
     try {
-      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Explain this repo");
-      await waitForLayout();
-
-      (await waitForSendButton()).click();
-
-      const sendAnyway = await waitForButtonByText("Send anyway");
-      // The turn never left the client, and the draft survived the interruption.
-      expect(turnStartRequests()).toHaveLength(0);
-      expect(document.body.textContent).toContain("Codex sign-in required");
-      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
-        "Explain this repo",
-      );
-
-      sendAnyway.click();
+      confirmSignedIn.click();
 
       await vi.waitFor(
         () => {
           expect(turnStartRequests()).toHaveLength(1);
         },
         { timeout: 8_000, interval: 16 },
+      );
+      // The recheck is not a bypass: exactly one turn, through the normal gate.
+      await waitForLayout();
+      expect(turnStartRequests()).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps holding the message when the recheck still reports a signed-out provider", async () => {
+    const { confirmSignedIn, mounted, turnStartRequests } = await mountSignedOutProviderSend({
+      refreshedProviders: (signedOut) => [signedOut],
+    });
+
+    try {
+      confirmSignedIn.click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("Still signed out.");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(turnStartRequests()).toHaveLength(0);
+      expect(document.body.textContent).toContain("The terminal shows where the sign-in stopped.");
+      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+        "Explain this repo",
       );
     } finally {
       await mounted.cleanup();
@@ -8378,7 +8449,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
           const actions = document.querySelector<HTMLElement>(
             '[data-chat-composer-actions="right"]',
           );
-
           expect(footer?.dataset.chatComposerFooterCompact).toBe("true");
           expect(actions?.dataset.chatComposerPrimaryActionsCompact).toBe("true");
         },

@@ -9,8 +9,9 @@ import {
 } from "lucide-react";
 import { type ReactNode } from "react";
 
-import { APP_DISPLAY_NAME, DESKTOP_DOWNLOAD_URL } from "../branding";
+import { APP_BASE_NAME, APP_DISPLAY_NAME, DESKTOP_DOWNLOAD_URL } from "../branding";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import { DEVICES_SETTINGS_SECTION_PATH } from "./settings/settingsNavigation";
 import { Button } from "./ui/button";
@@ -27,12 +28,15 @@ function HostedStaticStatusState({
   title,
   description,
   detail,
+  body,
   action,
 }: {
   icon: ReactNode;
   title: string;
   description: string;
   detail?: string;
+  /** Full-width content between the description and the action. */
+  body?: ReactNode;
   action?: ReactNode;
 }) {
   return (
@@ -67,6 +71,7 @@ function HostedStaticStatusState({
                   {detail}
                 </p>
               ) : null}
+              {body}
               {action ? <div className="mt-6 flex justify-center">{action}</div> : null}
             </EmptyHeader>
           </div>
@@ -121,14 +126,83 @@ export function HostedStaticConnectionErrorState({
   );
 }
 
+const PAIRING_STEPS = [
+  {
+    id: "install",
+    body: (
+      <>
+        On your computer, install {APP_BASE_NAME} from{" "}
+        <a
+          className="font-mono text-foreground underline underline-offset-2"
+          href={DESKTOP_DOWNLOAD_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          threadlines.dev/download
+        </a>
+      </>
+    ),
+  },
+  {
+    id: "add-device",
+    body: (
+      <>
+        In the desktop app, open{" "}
+        <span className="font-medium text-foreground">Settings → Devices → Add device</span>
+      </>
+    ),
+  },
+  {
+    id: "scan",
+    body: <>Scan the QR code it shows with this phone&rsquo;s camera</>,
+  },
+] as const;
+
 /**
- * What a visitor who has never paired sees. The desktop app is the only place
- * that mints a setup link (Settings, then Devices, then Add device), so the
- * copy names that path rather than implying this browser can start pairing on
- * its own, and the two actions cover both halves of the setup: get the app,
- * then bring the link back here.
+ * What a phone that has never paired sees.
+ *
+ * A phone cannot install the desktop app on itself, so there is no download
+ * button here: its job is to receive a pairing, and the three steps name where
+ * that pairing is minted. Scanning the QR code opens this page with the token
+ * already filled in, so the one action is for people whose computer is in
+ * another room.
  */
-export function HostedStaticOnboardingState() {
+function HostedStaticPhoneOnboardingState() {
+  return (
+    <HostedStaticStatusState
+      icon={<SmartphoneIcon className="size-5" />}
+      title="Pair with your computer"
+      description={`${APP_BASE_NAME} runs on your computer; this phone connects to it.`}
+      body={
+        <ol className="mt-6 border-t border-border text-left">
+          {PAIRING_STEPS.map((step, index) => (
+            <li
+              key={step.id}
+              className="flex gap-3 border-b border-border py-3 text-sm text-muted-foreground"
+            >
+              <span className="pt-0.5 font-mono text-xs text-muted-foreground/62">{index + 1}</span>
+              <span className="min-w-0">{step.body}</span>
+            </li>
+          ))}
+        </ol>
+      }
+      action={
+        <Button size="sm" render={<Link to={DEVICES_SETTINGS_SECTION_PATH} />}>
+          I have a setup link
+        </Button>
+      }
+    />
+  );
+}
+
+/**
+ * The same cold start on a computer, where installing the desktop app is
+ * something this browser's machine can actually do. The desktop app is the
+ * only place that mints a setup link (Settings, then Devices, then Add
+ * device), so the copy names that path rather than implying this browser can
+ * start pairing on its own.
+ */
+function HostedStaticDesktopOnboardingState() {
   return (
     <HostedStaticStatusState
       icon={<MonitorIcon className="size-5" />}
@@ -153,5 +227,14 @@ export function HostedStaticOnboardingState() {
         </div>
       }
     />
+  );
+}
+
+export function HostedStaticOnboardingState() {
+  const isPhoneViewport = useMediaQuery("max-sm");
+  return isPhoneViewport ? (
+    <HostedStaticPhoneOnboardingState />
+  ) : (
+    <HostedStaticDesktopOnboardingState />
   );
 }

@@ -29,7 +29,19 @@ vi.mock("../../localApi", () => ({
   })),
 }));
 
-import { SESSION_STARTUP_SLOW_NOTICE_DELAY_MS, SessionStartupNotice } from "./SessionStartupNotice";
+import { ComposerNoticeDock } from "./ComposerNoticeDock";
+import { useProviderStatusNotice } from "./providerStatusNotice";
+
+function ProviderStatusNoticeHarness({
+  status,
+  activeTurnInProgress = false,
+}: {
+  status: ServerProvider | null;
+  activeTurnInProgress?: boolean;
+}) {
+  const notice = useProviderStatusNotice({ activeTurnInProgress, status });
+  return <ComposerNoticeDock notices={notice ? [notice] : []} />;
+}
 
 function renderWithTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({
@@ -59,36 +71,31 @@ function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
     models: [],
     slashCommands: [],
     skills: [],
-    status: "ready",
+    status: "warning",
     version: null,
+    message: "Codex provider has limited availability.",
     ...overrides,
   };
 }
 
-function slowStartedAt(): string {
-  return new Date(Date.now() - SESSION_STARTUP_SLOW_NOTICE_DELAY_MS - 1_000).toISOString();
-}
-
-describe("SessionStartupNotice", () => {
+describe("provider status composer notice", () => {
   afterEach(() => {
     refreshProvidersMock.mockClear();
     document.body.innerHTML = "";
   });
 
-  it("offers targeted refresh and diagnostics actions once startup runs long", async () => {
-    const provider = makeProvider();
-    const screen = await renderWithTestRouter(
-      <SessionStartupNotice
-        isSessionStarting
-        startedAt={slowStartedAt()}
-        providerStatus={provider}
-      />,
-    );
+  it("offers targeted refresh and diagnostics actions for provider probe timeouts", async () => {
+    const provider = makeProvider({
+      statusReason: "provider_probe_timeout",
+      message:
+        "Codex status check timed out after 60 seconds. Existing sessions may still work; refresh provider status if this keeps happening.",
+    });
+    const screen = await renderWithTestRouter(<ProviderStatusNoticeHarness status={provider} />);
 
     try {
-      await expect.element(page.getByText("Turn startup:", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
       await expect
-        .element(page.getByText("Preparing this turn is taking longer than usual."))
+        .element(page.getByText("Codex status check timed out after 60 seconds."))
         .toBeVisible();
       await expect
         .element(page.getByRole("link", { name: "Open diagnostics" }))
@@ -104,18 +111,14 @@ describe("SessionStartupNotice", () => {
     }
   });
 
-  it("stays hidden before the slow-startup threshold", async () => {
+  it("does not show provider probe warnings over an active turn", async () => {
     const screen = await renderWithTestRouter(
-      <SessionStartupNotice
-        isSessionStarting
-        startedAt={new Date().toISOString()}
-        providerStatus={makeProvider()}
-      />,
+      <ProviderStatusNoticeHarness activeTurnInProgress status={makeProvider()} />,
     );
 
     try {
       await expect
-        .element(page.getByText("Turn startup:", { exact: true }))
+        .element(page.getByText("Codex provider status", { exact: true }))
         .not.toBeInTheDocument();
       expect(refreshProvidersMock).not.toHaveBeenCalled();
     } finally {
@@ -123,36 +126,23 @@ describe("SessionStartupNotice", () => {
     }
   });
 
-  it("stays hidden while another status banner is already visible", async () => {
+  it("still shows provider errors during an active turn", async () => {
+    const provider = makeProvider({
+      status: "error",
+      message: "Codex CLI is not authenticated.",
+    });
     const screen = await renderWithTestRouter(
-      <SessionStartupNotice
-        isSessionStarting
-        suppressed
-        startedAt={slowStartedAt()}
-        providerStatus={makeProvider()}
-      />,
+      <ProviderStatusNoticeHarness activeTurnInProgress status={provider} />,
     );
 
     try {
-      await expect
-        .element(page.getByText("Turn startup:", { exact: true }))
-        .not.toBeInTheDocument();
-    } finally {
-      await screen.unmount();
-    }
-  });
-
-  it("omits the refresh action without a provider snapshot", async () => {
-    const screen = await renderWithTestRouter(
-      <SessionStartupNotice isSessionStarting startedAt={slowStartedAt()} providerStatus={null} />,
-    );
-
-    try {
-      await expect.element(page.getByText("Turn startup:", { exact: true })).toBeVisible();
-      await expect
-        .element(page.getByRole("button", { name: "Refresh provider status" }))
-        .not.toBeInTheDocument();
-      await expect.element(page.getByRole("link", { name: "Open diagnostics" })).toBeVisible();
+      await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Codex CLI is not authenticated.")).toBeVisible();
+      expect(
+        document
+          .querySelector("[data-composer-notice-severity]")
+          ?.getAttribute("data-composer-notice-severity"),
+      ).toBe("error");
     } finally {
       await screen.unmount();
     }

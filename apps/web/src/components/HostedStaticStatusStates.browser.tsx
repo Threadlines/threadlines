@@ -9,11 +9,14 @@ import {
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { page } from "vite-plus/test/browser";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { HostedStaticOnboardingState } from "./HostedStaticStatusStates";
 import { SidebarProvider } from "./ui/sidebar";
+
+const DESKTOP_VIEWPORT = { height: 900, width: 1280 };
+const PHONE_VIEWPORT = { height: 844, width: 390 };
 
 function renderWithTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({
@@ -33,7 +36,13 @@ function renderWithTestRouter(children: ReactNode) {
 }
 
 describe("HostedStaticOnboardingState", () => {
-  it("offers a download and a route to pairing instead of dead-ending", async () => {
+  afterEach(async () => {
+    await page.viewport(DESKTOP_VIEWPORT.width, DESKTOP_VIEWPORT.height);
+    document.body.innerHTML = "";
+  });
+
+  it("offers a download and a route to pairing on a desktop browser", async () => {
+    await page.viewport(DESKTOP_VIEWPORT.width, DESKTOP_VIEWPORT.height);
     renderWithTestRouter(<HostedStaticOnboardingState />);
 
     await expect
@@ -42,5 +51,28 @@ describe("HostedStaticOnboardingState", () => {
     await expect
       .element(page.getByRole("link", { name: "Pair this browser" }))
       .toHaveAttribute("href", "/settings/connections");
+  });
+
+  it("walks a phone through pairing instead of offering it a desktop download", async () => {
+    await page.viewport(PHONE_VIEWPORT.width, PHONE_VIEWPORT.height);
+    renderWithTestRouter(<HostedStaticOnboardingState />);
+
+    await expect.element(page.getByText("Pair with your computer")).toBeVisible();
+    await expect
+      .element(page.getByText("Threadlines runs on your computer; this phone connects to it."))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("link", { name: "threadlines.dev/download" }))
+      .toHaveAttribute("href", "https://threadlines.dev/download");
+    await expect.element(page.getByText("Settings → Devices → Add device")).toBeVisible();
+    await expect
+      .element(page.getByText("Scan the QR code it shows with this phone’s camera"))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("link", { name: "I have a setup link" }))
+      .toHaveAttribute("href", "/settings/connections");
+    await expect
+      .element(page.getByRole("link", { name: "Download the desktop app" }))
+      .not.toBeInTheDocument();
   });
 });

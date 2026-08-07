@@ -1,10 +1,13 @@
+/**
+ * The composer notice for a turn whose startup is running long.
+ *
+ * @module sessionStartupNotice
+ */
 import type { ServerProvider } from "@threadlines/contracts";
-import { memo, useEffect, useState } from "react";
-import {
-  CompactStatusNoticeRow,
-  StatusNoticeActionButtons,
-  useProviderStatusRefresh,
-} from "./statusNotice";
+import { useEffect, useMemo, useState } from "react";
+
+import type { ComposerNotice } from "./composerNotices";
+import { StatusNoticeActionButtons, useProviderStatusRefresh } from "./statusNotice";
 
 export const SESSION_STARTUP_SLOW_NOTICE_DELAY_MS = 30_000;
 
@@ -35,17 +38,19 @@ export function shouldShowSessionStartupNotice(input: {
   return getSessionStartupNoticeDelayMs(input) === 0;
 }
 
-export const SessionStartupNotice = memo(function SessionStartupNotice({
-  isSessionStarting,
-  startedAt,
-  suppressed = false,
-  providerStatus,
-}: {
-  isSessionStarting: boolean;
-  startedAt: string | null;
-  suppressed?: boolean;
-  providerStatus: ServerProvider | null;
-}) {
+/**
+ * `suppressed` stays even though the dock could rank this notice below the
+ * others: a provider-status or turn-error row already names the reason startup
+ * is stuck, so adding "1 more" for a vaguer restatement of it only makes the
+ * user open the stack to learn nothing.
+ */
+export function useSessionStartupNotice(input: {
+  readonly isSessionStarting: boolean;
+  readonly startedAt: string | null;
+  readonly suppressed: boolean;
+  readonly providerStatus: ServerProvider | null;
+}): ComposerNotice | null {
+  const { isSessionStarting, providerStatus, startedAt, suppressed } = input;
   const [nowMs, setNowMs] = useState(() => Date.now());
   const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
     providerStatus?.instanceId ?? null,
@@ -71,22 +76,27 @@ export const SessionStartupNotice = memo(function SessionStartupNotice({
     };
   }, [isSessionStarting, nowMs, startedAt, suppressed]);
 
-  if (suppressed || !shouldShowSessionStartupNotice({ isSessionStarting, nowMs, startedAt })) {
-    return null;
-  }
+  const visible =
+    !suppressed && shouldShowSessionStartupNotice({ isSessionStarting, nowMs, startedAt });
 
-  return (
-    <CompactStatusNoticeRow
-      title="Turn startup"
-      message={SESSION_STARTUP_SLOW_MESSAGE}
-      errorText={refreshError}
-      actions={
+  return useMemo(() => {
+    if (!visible) {
+      return null;
+    }
+    return {
+      id: "session-startup",
+      severity: "warning",
+      lead: "Turn startup",
+      detail: refreshError
+        ? `${SESSION_STARTUP_SLOW_MESSAGE} ${refreshError}`
+        : SESSION_STARTUP_SLOW_MESSAGE,
+      actions: (
         <StatusNoticeActionButtons
           variant="ghost"
           isRefreshing={isRefreshing}
           onRefresh={providerStatus ? refreshProvider : null}
         />
-      }
-    />
-  );
-});
+      ),
+    } satisfies ComposerNotice;
+  }, [isRefreshing, providerStatus, refreshError, refreshProvider, visible]);
+}
