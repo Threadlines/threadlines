@@ -89,6 +89,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import {
+  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
   selectWorkspaceProjectsAcrossEnvironments,
@@ -193,6 +194,9 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
 import { DraftEmptyState } from "./chat/DraftEmptyState";
+import { FirstRunSetupCard, useFirstRunSetupDismissal } from "./chat/FirstRunSetupCard";
+import { shouldShowFirstRunSetupCard } from "./chat/firstRunSetup";
+import { isHostedStaticApp } from "../hostedPairing";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { DesktopPreviewPickedElement } from "@threadlines/contracts";
@@ -3359,6 +3363,80 @@ export default function ChatView(props: ChatViewProps) {
     [activeProviderDriver, activeProviderLabel, providerAuthReconnectPrompt, runProjectScript],
   );
 
+  // --- First-run setup card -------------------------------------------------
+  // A cold install has no threads and no guidance, so the draft thread's empty
+  // state becomes the setup checklist until the user sends something or skips.
+  // Hosted phone/browser sessions are excluded: they have their own pairing
+  // states and no local provider they could sign in to from here.
+  const isHostedStaticSurface = useMemo(() => isHostedStaticApp(), []);
+  const { isDismissed: isFirstRunSetupDismissed, dismiss: dismissFirstRunSetupForEnvironment } =
+    useFirstRunSetupDismissal(draftThread?.environmentId ?? environmentId);
+  const hasUserMessagedThread = useStore((state) => {
+    const environmentState = selectEnvironmentState(state, environmentId);
+    return environmentState.threadIds.some(
+      (candidateThreadId) =>
+        environmentState.sidebarThreadSummaryById[candidateThreadId]?.latestUserMessageAt != null,
+    );
+  });
+  const isEnvironmentBootstrapComplete = useStore(
+    (state) => selectEnvironmentState(state, environmentId).bootstrapComplete,
+  );
+  const showFirstRunSetupCard = shouldShowFirstRunSetupCard({
+    isHostedStatic: isHostedStaticSurface,
+    isDraftThread: isLocalDraftThread && draftThread !== undefined,
+    isGeneralChat: isGeneralChatThread,
+    bootstrapComplete: isEnvironmentBootstrapComplete,
+    hasUserMessagedThread,
+    isDismissed: isFirstRunSetupDismissed,
+  });
+  const firstRunWorkspaceProjects = useMemo(
+    () => allProjects.filter((project) => project.kind !== "general-chat"),
+    [allProjects],
+  );
+  // A reloaded draft thread has no project bound yet (`activeProject` is
+  // null until the first send), but the bootstrapped workspace project is
+  // already in the project list; the card must not claim "No folder yet"
+  // while the sidebar shows one. General Chat can't be the active project
+  // here because the card never renders on General Chat drafts.
+  const firstRunProject = activeProject ?? firstRunWorkspaceProjects[0] ?? null;
+  const firstRunSetupEmptyState = useMemo(() => {
+    if (!showFirstRunSetupCard) {
+      return undefined;
+    }
+    return (
+      <FirstRunSetupCard
+        providers={providerInstanceEntries}
+        projectName={firstRunProject?.name ?? null}
+        projectCwd={firstRunProject?.cwd ?? null}
+        projectEnvironmentId={firstRunProject?.environmentId ?? environmentId}
+        isOnlyWorkspaceProject={firstRunWorkspaceProjects.length === 1}
+        onSignIn={(row) => {
+          if (!row.signInCommand) return;
+          void runProviderAuthReconnect({
+            provider: row.driverKind,
+            command: row.signInCommand,
+            message: `${row.name} is not signed in.`,
+          });
+        }}
+        onChooseProject={() => useCommandPaletteStore.getState().openAddProject()}
+        onSkip={dismissFirstRunSetupForEnvironment}
+        onStart={() => {
+          dismissFirstRunSetupForEnvironment();
+          scheduleComposerFocus();
+        }}
+      />
+    );
+  }, [
+    dismissFirstRunSetupForEnvironment,
+    environmentId,
+    firstRunProject,
+    firstRunWorkspaceProjects.length,
+    providerInstanceEntries,
+    runProviderAuthReconnect,
+    scheduleComposerFocus,
+    showFirstRunSetupCard,
+  ]);
+
   const runMcpAuthReconnect = useCallback(
     async (action: McpAuthReconnectAction) => {
       if (action.provider !== CODEX_PROVIDER_DRIVER) {
@@ -4436,6 +4514,12 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
+    // Sending is completing setup: the card has served its purpose and must
+    // not reappear behind the conversation the user just started.
+    if (showFirstRunSetupCard) {
+      dismissFirstRunSetupForEnvironment();
+    }
+
     sendInFlightRef.current = true;
     if (!isSteeringFollowUp) {
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
@@ -5156,9 +5240,13 @@ export default function ChatView(props: ChatViewProps) {
   const providerStatusNotice = useProviderStatusNotice({
     status: activeProviderStatus,
     activeTurnInProgress,
+    // The held-send notice and the setup card each already state this
+    // provider's problem with the actions that fix it; a second ambient row
+    // saying it again is the stacking noise the dock exists to end.
     suppressed:
-      providerSendPreflight !== null &&
-      providerSendPreflight.instanceId === activeProviderStatus?.instanceId,
+      showFirstRunSetupCard ||
+      (providerSendPreflight !== null &&
+        providerSendPreflight.instanceId === activeProviderStatus?.instanceId),
   });
   const sessionStartupNotice = useSessionStartupNotice({
     isSessionStarting,
@@ -6368,7 +6456,7 @@ export default function ChatView(props: ChatViewProps) {
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
-              emptyState={draftTimelineEmptyState}
+              emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
               isWorking={isWorking}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}

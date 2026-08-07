@@ -235,6 +235,22 @@ export function formatProviderList(providers: ReadonlyArray<Pick<ServerProvider,
   return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
 }
 
+/**
+ * Like `formatProviderList` but with each provider's target version, so the
+ * multi-provider update card says what it will install without growing past
+ * one line: "Claude v2.1.230 and Codex v0.146.1".
+ */
+export function formatProviderUpdateList(providers: ReadonlyArray<ProviderUpdateCandidate>) {
+  const names = providers.map(
+    (provider) =>
+      `${getProviderDisplayName(provider)} ${formatVersion(provider.versionAdvisory.latestVersion)}`,
+  );
+  if (names.length <= 2) {
+    return names.join(" and ");
+  }
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
 export function getProviderUpdateInitialToastView(input: {
   readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
   readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
@@ -247,9 +263,9 @@ export function getProviderUpdateInitialToastView(input: {
     description:
       input.oneClickProviders.length > 0
         ? hasMultipleProviders
-          ? `${formatProviderList(input.updateProviders)} can be updated.`
+          ? `${formatProviderUpdateList(input.updateProviders)} can be updated.`
           : "Install the update now or review provider settings."
-        : `${formatProviderList(input.updateProviders)} can be updated from provider settings.`,
+        : `${formatProviderUpdateList(input.updateProviders)} can be updated from provider settings.`,
   };
 }
 
