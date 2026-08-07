@@ -785,6 +785,11 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       const productionServer = yield* resolveWith({});
       expect(productionServer.appVersion).toBe(packageJson.version);
+
+      // A bare APP_VERSION belongs to whatever tool happens to set it, so the
+      // server must ignore it rather than report someone else's version.
+      const genericVersion = yield* resolveWith({ APP_VERSION: "6.6.6" });
+      expect(genericVersion.appVersion).toBe(packageJson.version);
     }),
   );
 });

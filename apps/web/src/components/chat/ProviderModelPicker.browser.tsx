@@ -5,6 +5,14 @@ import {
 } from "@threadlines/contracts";
 import { EnvironmentId } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -238,6 +246,26 @@ function buildCodexProvider(models: ServerProvider["models"]): ServerProvider {
   };
 }
 
+/**
+ * The picker's empty state links to provider settings, so the component
+ * needs a router in context. Mount every case through the same throwaway
+ * memory router rather than special-casing one test.
+ */
+function renderWithTestRouter(children: ReactNode, container: HTMLElement) {
+  const rootRoute = createRootRoute({ component: () => children });
+  const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
+  const providersRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/settings/providers",
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([indexRoute, providersRoute]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+
+  return render(<RouterProvider router={router} />, { container });
+}
+
 async function mountPicker(props: {
   activeInstanceId?: ProviderInstanceId;
   model: string;
@@ -261,7 +289,7 @@ async function mountPicker(props: {
     activeInstanceId,
     props.model,
   );
-  const screen = await render(
+  const screen = await renderWithTestRouter(
     <ProviderModelPicker
       activeInstanceId={activeInstanceId}
       model={props.model}
@@ -272,7 +300,7 @@ async function mountPicker(props: {
       triggerVariant={props.triggerVariant}
       onInstanceModelChange={onInstanceModelChange}
     />,
-    { container: host },
+    host,
   );
 
   return {
@@ -1516,6 +1544,80 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("explains an uninstalled provider instead of a bare no-match message", async () => {
+    const providers: ReadonlyArray<ServerProvider> = [
+      TEST_PROVIDERS[0]!,
+      {
+        ...TEST_PROVIDERS[1]!,
+        installed: false,
+        status: "warning",
+        auth: { status: "unknown" },
+        models: [],
+      },
+    ];
+
+    const mounted = await mountPicker({
+      model: "gpt-5-codex",
+      lockedProvider: null,
+      providers,
+    });
+
+    try {
+      await openModelPicker();
+      await fillModelPickerSearch("claude");
+
+      await vi.waitFor(() => {
+        expect(getModelPickerListText()).toContain(
+          "Claude isn't installed. Install it and sign in from Settings.",
+        );
+        expect(
+          document.querySelector<HTMLAnchorElement>('a[href="/settings/providers"]'),
+        ).not.toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a provider tab when a favorited model is no longer selectable", async () => {
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        favorites: [{ provider: "claudeAgent", model: "claude-opus-4-6" }],
+      }),
+    );
+    const providers: ReadonlyArray<ServerProvider> = [
+      TEST_PROVIDERS[0]!,
+      {
+        ...TEST_PROVIDERS[1]!,
+        installed: false,
+        status: "warning",
+        auth: { status: "unknown" },
+      },
+    ];
+
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+      providers,
+    });
+
+    try {
+      await openModelPicker();
+
+      await vi.waitFor(() => {
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex"]);
+        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
+        expect(getModelPickerListText()).not.toContain("No favorite models");
+      });
+    } finally {
+      await mounted.cleanup();
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 
