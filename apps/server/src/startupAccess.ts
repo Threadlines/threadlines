@@ -76,6 +76,31 @@ export const resolveHeadlessConnectionString = (
   return `http://${formatHostForUrl(connectionHost)}:${port}`;
 };
 
+/**
+ * The URL a starting server advertises (boot-log pairing URL and browser-open
+ * target). An explicit non-wildcard host is advertised verbatim. A wildcard
+ * bind exists so other devices can connect, so browser-mode servers advertise
+ * a reachable interface instead of localhost, which only reaches this
+ * machine; the desktop shell keeps localhost — its wildcard rebinds are for
+ * nearby devices whose URLs come from the Devices dialog, not this log line.
+ */
+export const resolveAdvertisedServerUrl = (
+  input: {
+    readonly host: string | undefined;
+    readonly port: number;
+    readonly mode: string;
+  },
+  interfaces: NetworkInterfacesMap = networkInterfaces(),
+): string => {
+  if (input.host && !isWildcardHost(input.host)) {
+    return `http://${formatHostForUrl(input.host)}:${input.port}`;
+  }
+  if (input.mode === "desktop") {
+    return `http://localhost:${input.port}`;
+  }
+  return resolveHeadlessConnectionString(input.host, input.port, interfaces);
+};
+
 export const resolveListeningPort = (address: unknown, fallbackPort: number): number => {
   if (
     typeof address === "object" &&

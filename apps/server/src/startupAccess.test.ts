@@ -4,6 +4,7 @@ import {
   buildPairingUrl,
   formatHeadlessServeOutput,
   renderTerminalQrCode,
+  resolveAdvertisedServerUrl,
   resolveHeadlessConnectionHost,
   resolveHeadlessConnectionString,
   resolveListeningPort,
@@ -48,6 +49,23 @@ it("falls back to localhost when no external interface exists", () => {
 it("keeps explicit bind hosts in the connection string", () => {
   expect(resolveHeadlessConnectionString("127.0.0.1", 3773)).toBe("http://127.0.0.1:3773");
   expect(resolveHeadlessConnectionString("::1", 3773)).toBe("http://[::1]:3773");
+});
+
+// The boot log's pairing URL uses the same rule as headless serve: a wildcard
+// bind advertises an address other devices can open, not localhost.
+it("advertises a reachable interface for wildcard binds in browser mode", () => {
+  expect(
+    resolveAdvertisedServerUrl({ host: "0.0.0.0", port: 8266, mode: "web" }, LAN_INTERFACES),
+  ).toBe("http://192.168.1.42:8266");
+});
+
+it("advertises explicit hosts verbatim and keeps desktop wildcard binds on localhost", () => {
+  expect(
+    resolveAdvertisedServerUrl({ host: "127.0.0.1", port: 8266, mode: "web" }, LAN_INTERFACES),
+  ).toBe("http://127.0.0.1:8266");
+  expect(
+    resolveAdvertisedServerUrl({ host: "0.0.0.0", port: 8266, mode: "desktop" }, LAN_INTERFACES),
+  ).toBe("http://localhost:8266");
 });
 
 it("resolves wildcard hosts to a concrete external interface when one is available", () => {
