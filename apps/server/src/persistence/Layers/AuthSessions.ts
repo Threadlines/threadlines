@@ -19,7 +19,6 @@ import {
   GetAuthSessionByIdInput,
   ListActiveAuthSessionsInput,
   RevokeAuthSessionInput,
-  RevokeOtherAuthSessionsInput,
   SetAuthSessionLastConnectedAtInput,
 } from "../Services/AuthSessions.ts";
 
@@ -184,19 +183,6 @@ const makeAuthSessionRepository = Effect.gen(function* () {
       `,
   });
 
-  const revokeOtherSessionRows = SqlSchema.findAll({
-    Request: RevokeOtherAuthSessionsInput,
-    Result: Schema.Struct({ sessionId: AuthSessionId }),
-    execute: ({ currentSessionId, revokedAt }) =>
-      sql`
-        UPDATE auth_sessions
-        SET revoked_at = ${revokedAt}
-        WHERE session_id <> ${currentSessionId}
-          AND revoked_at IS NULL
-        RETURNING session_id AS "sessionId"
-      `,
-  });
-
   const create: AuthSessionRepositoryShape["create"] = (input) =>
     createSessionRow(input).pipe(
       Effect.mapError(
@@ -245,17 +231,6 @@ const makeAuthSessionRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.length > 0),
     );
 
-  const revokeAllExcept: AuthSessionRepositoryShape["revokeAllExcept"] = (input) =>
-    revokeOtherSessionRows(input).pipe(
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "AuthSessionRepository.revokeAllExcept:query",
-          "AuthSessionRepository.revokeAllExcept:decodeRows",
-        ),
-      ),
-      Effect.map((rows) => rows.map((row) => row.sessionId)),
-    );
-
   const setLastConnectedAt: AuthSessionRepositoryShape["setLastConnectedAt"] = (input) =>
     setLastConnectedAtRow(input).pipe(
       Effect.mapError(
@@ -271,7 +246,6 @@ const makeAuthSessionRepository = Effect.gen(function* () {
     getById,
     listActive,
     revoke,
-    revokeAllExcept,
     setLastConnectedAt,
   } satisfies AuthSessionRepositoryShape;
 });

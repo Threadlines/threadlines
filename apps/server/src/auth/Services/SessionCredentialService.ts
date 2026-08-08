@@ -94,9 +94,6 @@ export interface SessionCredentialServiceShape {
     sessionId: AuthSessionId,
   ) => Effect.Effect<void, SessionCredentialError, Scope.Scope>;
   readonly revoke: (sessionId: AuthSessionId) => Effect.Effect<boolean, SessionCredentialError>;
-  readonly revokeAllExcept: (
-    sessionId: AuthSessionId,
-  ) => Effect.Effect<number, SessionCredentialError>;
   readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
   readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
 }

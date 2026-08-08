@@ -146,13 +146,6 @@ export const makeAuthControlPlane = Effect.gen(function* () {
       .revoke(sessionId)
       .pipe(Effect.mapError(toAuthControlPlaneError("Failed to revoke session.")));
 
-  const revokeOtherSessionsExcept: AuthControlPlaneShape["revokeOtherSessionsExcept"] = (
-    sessionId,
-  ) =>
-    sessions
-      .revokeAllExcept(sessionId)
-      .pipe(Effect.mapError(toAuthControlPlaneError("Failed to revoke other sessions.")));
-
   return {
     createPairingLink,
     listPairingLinks,
@@ -160,7 +153,6 @@ export const makeAuthControlPlane = Effect.gen(function* () {
     issueSession,
     listSessions,
     revokeSession,
-    revokeOtherSessionsExcept,
   } satisfies AuthControlPlaneShape;
 });
 

@@ -503,33 +503,6 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       return revoked;
     }).pipe(Effect.mapError(toSessionCredentialError("Failed to revoke session.")));
 
-  const revokeAllExcept: SessionCredentialServiceShape["revokeAllExcept"] = (sessionId) =>
-    Effect.gen(function* () {
-      const revokedAt = yield* DateTime.now;
-      const revokedSessionIds = yield* authSessions.revokeAllExcept({
-        currentSessionId: sessionId,
-        revokedAt,
-      });
-      if (revokedSessionIds.length > 0) {
-        yield* Ref.update(connectedSessionsRef, (current) => {
-          const next = new Map(current);
-          for (const revokedSessionId of revokedSessionIds) {
-            next.delete(revokedSessionId);
-          }
-          return next;
-        });
-        yield* Effect.forEach(
-          revokedSessionIds,
-          (revokedSessionId) => emitRemoved(revokedSessionId),
-          {
-            concurrency: "unbounded",
-            discard: true,
-          },
-        );
-      }
-      return revokedSessionIds.length;
-    }).pipe(Effect.mapError(toSessionCredentialError("Failed to revoke other sessions.")));
-
   return {
     cookieName,
     issue,
@@ -542,7 +515,6 @@ export const makeSessionCredentialService = Effect.gen(function* () {
     },
     awaitRevoked,
     revoke,
-    revokeAllExcept,
     markConnected,
     markDisconnected,
   } satisfies SessionCredentialServiceShape;

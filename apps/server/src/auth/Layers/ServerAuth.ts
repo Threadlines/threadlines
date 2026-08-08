@@ -14,6 +14,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import { ServerConfig } from "../../config.ts";
 import { isLoopbackHost } from "../../startupAccess.ts";
+import { isInternalClientSession } from "../utils.ts";
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
@@ -416,12 +417,16 @@ export const makeServerAuth = Effect.gen(function* () {
           }),
       ),
       Effect.map((clientSessions) =>
-        clientSessions.map(
-          (clientSession): AuthClientSession => ({
-            ...clientSession,
-            current: clientSession.sessionId === currentSessionId,
-          }),
-        ),
+        clientSessions
+          .map(
+            (clientSession): AuthClientSession => ({
+              ...clientSession,
+              current: clientSession.sessionId === currentSessionId,
+            }),
+          )
+          .filter(
+            (clientSession) => clientSession.current || !isInternalClientSession(clientSession),
+          ),
       ),
     );
 
@@ -450,7 +455,21 @@ export const makeServerAuth = Effect.gen(function* () {
   const revokeOtherClientSessions: ServerAuthShape["revokeOtherClientSessions"] = (
     currentSessionId,
   ) =>
-    authControlPlane.revokeOtherSessionsExcept(currentSessionId).pipe(
+    authControlPlane.listSessions().pipe(
+      // Revoke exactly what the device list shows: internal machine-to-machine
+      // sessions are skipped so removing other devices does not drop live
+      // phone-link bridges.
+      Effect.map((clientSessions) =>
+        clientSessions.filter(
+          (clientSession) =>
+            clientSession.sessionId !== currentSessionId && !isInternalClientSession(clientSession),
+        ),
+      ),
+      Effect.flatMap((targets) =>
+        Effect.forEach(targets, (target) => authControlPlane.revokeSession(target.sessionId), {
+          discard: true,
+        }).pipe(Effect.as(targets.length)),
+      ),
       Effect.mapError(
         (cause) =>
           new AuthError({

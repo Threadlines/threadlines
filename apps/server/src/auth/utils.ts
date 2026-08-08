@@ -1,8 +1,29 @@
-import type { AuthClientMetadata, AuthClientMetadataDeviceType } from "@threadlines/contracts";
+import type {
+  AuthClientMetadata,
+  AuthClientMetadataDeviceType,
+  ServerAuthSessionMethod,
+} from "@threadlines/contracts";
 import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as Crypto from "node:crypto";
 
 const SESSION_COOKIE_NAME = "threadlines_session";
+
+export const DESKTOP_BOOTSTRAP_SUBJECT = "desktop-bootstrap";
+
+/**
+ * The desktop shell signs into its own backend with the desktop bootstrap
+ * token: a cookie session for the renderer window, and bearer sessions for
+ * machine-to-machine bridges such as the phone-link relay. The bearer ones are
+ * plumbing rather than devices the user paired, so device-list surfaces hide
+ * them — except the caller's own session, which callers must keep visible so
+ * every viewer can see how they themselves are connected.
+ */
+export function isInternalClientSession(session: {
+  readonly subject: string;
+  readonly method: ServerAuthSessionMethod;
+}): boolean {
+  return session.subject === DESKTOP_BOOTSTRAP_SUBJECT && session.method === "bearer-session-token";
+}
 
 export function resolveSessionCookieName(input: {
   readonly mode: "web" | "desktop";
