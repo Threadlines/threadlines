@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 export type SessionRole = "owner" | "client";
@@ -77,6 +78,21 @@ export interface SessionCredentialServiceShape {
     SessionCredentialError
   >;
   readonly streamChanges: Stream.Stream<SessionCredentialChange>;
+  /**
+   * Resolves once `sessionId` is no longer usable, and resolves immediately when
+   * it is already revoked or unknown.
+   *
+   * Callers that hold a live connection for a session (the websocket route) need
+   * to drop it the instant the owner revokes access. `streamChanges` cannot
+   * carry that invariant on its own: `Stream.fromPubSub` subscribes when the
+   * stream starts running, so a revocation published between "read the session"
+   * and "start consuming" is lost and the connection stays open forever. This
+   * subscribes first and only then re-reads the session, so neither ordering
+   * drops the signal.
+   */
+  readonly awaitRevoked: (
+    sessionId: AuthSessionId,
+  ) => Effect.Effect<void, SessionCredentialError, Scope.Scope>;
   readonly revoke: (sessionId: AuthSessionId) => Effect.Effect<boolean, SessionCredentialError>;
   readonly revokeAllExcept: (
     sessionId: AuthSessionId,

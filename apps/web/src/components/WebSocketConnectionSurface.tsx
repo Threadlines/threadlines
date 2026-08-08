@@ -10,6 +10,13 @@ import {
 } from "../rpc/wsConnectionState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
+import {
+  isPrimaryAccessRemoved,
+  probePrimaryAccess,
+  setPrimaryAccessRemoved,
+  usePrimaryAccessRemoved,
+} from "../environments/primary";
+import { AccessRemovedState } from "./ConnectionStatusStates";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
 const RECONNECT_TOAST_GRACE_MS = 10_000;
@@ -108,6 +115,16 @@ export function shouldRestartStalledReconnect(
   );
 }
 
+/**
+ * A dropped socket is worth an access probe only once the browser believes it
+ * has a network and the session had genuinely connected before: probing while
+ * offline just answers "unknown", and probing a session that never connected
+ * would race the pairing handshake.
+ */
+export function shouldProbeAccessRemoval(status: WsConnectionStatus): boolean {
+  return status.online && status.hasConnected && getWsConnectionUiState(status) === "reconnecting";
+}
+
 export function shouldShowReconnectIssueToast(status: WsConnectionStatus, nowMs: number): boolean {
   const disconnectedAtMs = parseConnectionMomentMs(status.disconnectedAt);
   return (
@@ -120,6 +137,7 @@ export function shouldShowReconnectIssueToast(status: WsConnectionStatus, nowMs:
 
 export function WebSocketConnectionCoordinator() {
   const status = useWsConnectionStatus();
+  const accessRemoved = usePrimaryAccessRemoved();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const lastForcedReconnectAtRef = useRef(0);
   const toastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
@@ -129,6 +147,10 @@ export function WebSocketConnectionCoordinator() {
   const previousDisconnectedAtRef = useRef<string | null>(status.disconnectedAt);
 
   const runReconnect = useEffectEvent((showFailureToast: boolean) => {
+    // Nothing on this device can restore a revoked session, so stop knocking.
+    if (isPrimaryAccessRemoved()) {
+      return;
+    }
     if (toastResetTimerRef.current !== null) {
       window.clearTimeout(toastResetTimerRef.current);
       toastResetTimerRef.current = null;
@@ -195,6 +217,36 @@ export function WebSocketConnectionCoordinator() {
   }, []);
 
   useEffect(() => {
+    if (!shouldProbeAccessRemoval(status)) {
+      return;
+    }
+
+    let cancelled = false;
+    void probePrimaryAccess().then((outcome) => {
+      if (cancelled || outcome !== "removed") {
+        return;
+      }
+      setPrimaryAccessRemoved(true);
+      // The socket can never come back, and its subscriptions retry forever, so
+      // tear the connection down instead of leaving it grinding behind the
+      // access-removed surface.
+      void getPrimaryEnvironmentConnection()
+        .dispose()
+        .catch(() => undefined);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [status.disconnectedAt, status.hasConnected, status.online, status.reconnectAttemptCount]);
+
+  useEffect(() => {
+    if (status.phase === "connected") {
+      setPrimaryAccessRemoved(false);
+    }
+  }, [status.phase]);
+
+  useEffect(() => {
     if (status.reconnectPhase !== "waiting" || status.nextRetryAt === null) {
       return;
     }
@@ -245,8 +297,11 @@ export function WebSocketConnectionCoordinator() {
     const uiState = getWsConnectionUiState(status);
     const previousUiState = previousUiStateRef.current;
     const previousDisconnectedAt = previousDisconnectedAtRef.current;
-    const shouldShowReconnectToast = shouldShowReconnectIssueToast(status, nowMs);
-    const shouldShowOfflineToast = uiState === "offline" && status.disconnectedAt !== null;
+    // The access-removed surface already explains the disconnect; a reconnect
+    // countdown on top of it would promise a recovery that cannot happen.
+    const shouldShowReconnectToast = !accessRemoved && shouldShowReconnectIssueToast(status, nowMs);
+    const shouldShowOfflineToast =
+      !accessRemoved && uiState === "offline" && status.disconnectedAt !== null;
 
     if (
       toastResetTimerRef.current !== null &&
@@ -329,7 +384,7 @@ export function WebSocketConnectionCoordinator() {
 
     previousUiStateRef.current = uiState;
     previousDisconnectedAtRef.current = status.disconnectedAt;
-  }, [nowMs, status]);
+  }, [accessRemoved, nowMs, status]);
 
   useEffect(() => {
     return () => {
@@ -343,5 +398,6 @@ export function WebSocketConnectionCoordinator() {
 }
 
 export function WebSocketConnectionSurface({ children }: { readonly children: ReactNode }) {
-  return children;
+  const accessRemoved = usePrimaryAccessRemoved();
+  return accessRemoved ? <AccessRemovedState /> : children;
 }

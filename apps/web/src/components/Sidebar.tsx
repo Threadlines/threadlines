@@ -35,6 +35,7 @@ import {
   reopenThreadByKey,
 } from "../lib/threadInboxSync";
 import {
+  selectBootstrapCompleteForActiveEnvironment,
   selectProjectByRef,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -524,6 +525,10 @@ export default function Sidebar() {
     [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
   );
   const hasWorkspaceProjects = sidebarProjects.some((project) => project.kind !== "general-chat");
+  // Until the first workspace snapshot arrives an empty list means "not loaded",
+  // not "nothing here" — a paired phone would otherwise be told it has no
+  // projects for the second before its projects appear.
+  const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
 
   const entries = useMemo<InboxEntry[]>(
     () =>
@@ -1389,9 +1394,13 @@ export default function Sidebar() {
                   {liveEntries.length === 0 ? (
                     <div className="flex flex-col items-start gap-1.5 px-3 py-2">
                       <span className="text-[11px] text-muted-foreground/60">
-                        {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
+                        {!bootstrapComplete
+                          ? "Loading projects"
+                          : hasWorkspaceProjects
+                            ? "No threads yet"
+                            : "No projects yet"}
                       </span>
-                      {hasWorkspaceProjects ? null : (
+                      {hasWorkspaceProjects || !bootstrapComplete ? null : (
                         <button
                           type="button"
                           data-testid="inbox-empty-add-project"

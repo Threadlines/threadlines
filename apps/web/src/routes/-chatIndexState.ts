@@ -18,6 +18,35 @@ export type HostedStaticIndexState =
     }
   | { readonly kind: "ready" };
 
+export type ChatIndexState =
+  | HostedStaticIndexState
+  /** A directly paired browser waiting on its own first workspace snapshot. */
+  | { readonly kind: "workspace-loading" };
+
+/**
+ * Which surface `/` shows, for both ways of reaching this app: the hosted phone
+ * app (which depends on a saved desktop) and a browser paired straight to a
+ * computer.
+ *
+ * The shared rule is that an empty project list only means "nothing here" once
+ * a workspace snapshot has actually arrived. Before that, showing the cold-start
+ * empty state tells a device that just finished pairing to start its first
+ * thread, a second before its existing projects and threads appear.
+ */
+export function deriveChatIndexState(
+  input: {
+    readonly hostedStatic: boolean;
+    /** Whether the primary environment has applied a shell snapshot. */
+    readonly bootstrapComplete: boolean;
+  } & Parameters<typeof deriveHostedStaticIndexState>[0],
+): ChatIndexState {
+  if (input.hostedStatic) {
+    return deriveHostedStaticIndexState(input);
+  }
+
+  return input.bootstrapComplete ? { kind: "ready" } : { kind: "workspace-loading" };
+}
+
 export function deriveHostedStaticIndexState(input: {
   readonly savedEnvironments: ReadonlyArray<HostedStaticSavedEnvironment>;
   readonly savedEnvironmentRuntimeById: Record<string, SavedEnvironmentRuntimeState | undefined>;

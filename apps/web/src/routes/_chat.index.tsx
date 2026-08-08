@@ -7,15 +7,20 @@ import {
   HostedStaticConnectionErrorState,
   HostedStaticLoadingState,
   HostedStaticOnboardingState,
-} from "../components/HostedStaticStatusStates";
+  WorkspaceLoadingState,
+} from "../components/ConnectionStatusStates";
 import { NoActiveThreadState } from "../components/NoActiveThreadState";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { selectProjectsAcrossEnvironments, useStore } from "../store";
+import {
+  selectBootstrapCompleteForActiveEnvironment,
+  selectProjectsAcrossEnvironments,
+  useStore,
+} from "../store";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { deriveHostedStaticIndexState } from "./-hostedStaticIndexState";
+import { deriveChatIndexState } from "./-chatIndexState";
 
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
@@ -25,33 +30,31 @@ function ChatIndexRouteView() {
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const environmentStateById = useStore((state) => state.environmentStateById);
   const projectCount = useStore((state) => selectProjectsAcrossEnvironments(state).length);
+  const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
 
-  if (authGateState.status === "hosted-static") {
-    const hostedStaticState = deriveHostedStaticIndexState({
-      savedEnvironments,
-      savedEnvironmentRuntimeById,
-      environmentStateById,
-      projectCount,
-    });
+  const indexState = deriveChatIndexState({
+    hostedStatic: authGateState.status === "hosted-static",
+    bootstrapComplete,
+    savedEnvironments,
+    savedEnvironmentRuntimeById,
+    environmentStateById,
+    projectCount,
+  });
 
-    switch (hostedStaticState.kind) {
-      case "unpaired":
-        return <HostedStaticOnboardingState />;
-      case "loading":
-        return <HostedStaticLoadingState label={hostedStaticState.label} />;
-      case "connection-error":
-        return (
-          <HostedStaticConnectionErrorState
-            label={hostedStaticState.label}
-            message={hostedStaticState.message}
-          />
-        );
-      case "ready":
-        break;
-    }
+  switch (indexState.kind) {
+    case "unpaired":
+      return <HostedStaticOnboardingState />;
+    case "loading":
+      return <HostedStaticLoadingState label={indexState.label} />;
+    case "workspace-loading":
+      return <WorkspaceLoadingState />;
+    case "connection-error":
+      return (
+        <HostedStaticConnectionErrorState label={indexState.label} message={indexState.message} />
+      );
+    case "ready":
+      return <DefaultProjectDraftRedirect />;
   }
-
-  return <DefaultProjectDraftRedirect />;
 }
 
 function DefaultProjectDraftRedirect() {

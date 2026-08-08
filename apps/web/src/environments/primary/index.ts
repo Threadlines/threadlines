@@ -33,3 +33,11 @@ export {
 } from "./auth";
 
 export { resolvePrimaryEnvironmentHttpUrl, isLoopbackHostname } from "./target";
+
+export {
+  isPrimaryAccessRemoved,
+  probePrimaryAccess,
+  setPrimaryAccessRemoved,
+  usePrimaryAccessRemoved,
+  type PrimaryAccessProbeOutcome,
+} from "./accessRemoval";

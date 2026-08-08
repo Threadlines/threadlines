@@ -32,6 +32,7 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -1107,6 +1108,19 @@ const assertBrowserApiCorsHeaders = (headers: Headers) => {
 };
 const crossOriginClientOrigin = "http://remote-client.test:3773";
 
+/**
+ * Suites here run on the test clock, so `Effect.sleep`/`Effect.timeout` never
+ * advance on their own. Assertions about real sockets closing need wall-clock
+ * time instead.
+ */
+const wallClockSleep = (durationMs: number) =>
+  Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, durationMs);
+      }),
+  );
+
 const getWsServerUrl = (
   pathname = "",
   options?: { authenticated?: boolean; credential?: string },
@@ -1899,6 +1913,93 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(revokeResponse.status, 200);
       assert.equal(pairedClientPairingResponse.status, 401);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("closes the live websocket of a revoked paired client session", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        config: {
+          host: "0.0.0.0",
+        },
+        // The default lifecycle mock completes immediately, which would make the
+        // subscription below end for reasons unrelated to revocation.
+        layers: {
+          serverLifecycleEvents: {
+            stream: Stream.never,
+          },
+        },
+      });
+
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: {
+          cookie: ownerCookie,
+        },
+      });
+      const pairingBody = (yield* pairingResponse.json) as {
+        readonly credential: string;
+      };
+      const pairedSessionCookie = yield* getAuthenticatedSessionCookieHeader(
+        pairingBody.credential,
+      );
+      const pairedWsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        pairedSessionCookie,
+      );
+
+      const { exitBeforeRevoke, exitAfterRevoke } = yield* Effect.scoped(
+        withWsRpcClient(pairedWsUrl, (client) =>
+          Effect.gen(function* () {
+            // One request first so the socket is actually open and registered as
+            // connected before the owner revokes it.
+            yield* client[WS_METHODS.serverGetConfig]({});
+            // The lifecycle stream never completes on its own, so it only ends
+            // here because the server dropped this session's socket.
+            const lifecycle = yield* Effect.forkChild(
+              Stream.runDrain(client[WS_METHODS.subscribeServerLifecycle]({})),
+            );
+            const clientsResponse = yield* HttpClient.get("/api/auth/clients", {
+              headers: {
+                cookie: ownerCookie,
+              },
+            });
+            const clients = (yield* clientsResponse.json) as ReadonlyArray<{
+              readonly sessionId: string;
+              readonly current: boolean;
+              readonly connected: boolean;
+            }>;
+            const pairedClient = clients.find((entry) => !entry.current);
+            assert.isDefined(pairedClient);
+            assert.isTrue(pairedClient?.connected);
+
+            yield* wallClockSleep(500);
+            const beforeRevoke = lifecycle.pollUnsafe();
+
+            yield* HttpClient.post("/api/auth/clients/revoke", {
+              headers: {
+                cookie: ownerCookie,
+                "content-type": "application/json",
+              },
+              body: HttpBody.text(
+                JSON.stringify({ sessionId: pairedClient?.sessionId }),
+                "application/json",
+              ),
+            });
+
+            return {
+              exitBeforeRevoke: beforeRevoke,
+              exitAfterRevoke: yield* Effect.raceFirst(
+                Fiber.await(lifecycle).pipe(Effect.as(true)),
+                wallClockSleep(10_000).pipe(Effect.as(false)),
+              ),
+            };
+          }),
+        ),
+      );
+
+      assert.isUndefined(exitBeforeRevoke, "the paired session stream ended before it was revoked");
+      assertTrue(exitAfterRevoke, "revoked session websocket stayed open");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

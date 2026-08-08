@@ -6,7 +6,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react
 
 import ChatView from "../components/ChatView";
 import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
-import { HostedStaticLoadingState } from "../components/HostedStaticStatusStates";
+import { HostedStaticLoadingState } from "../components/ConnectionStatusStates";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
