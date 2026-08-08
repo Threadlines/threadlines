@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 
 import { ServerConfig } from "../../config.ts";
+import { DESKTOP_BOOTSTRAP_SUBJECT } from "../utils.ts";
 import { AuthPairingLinkRepositoryLive } from "../../persistence/Layers/AuthPairingLinks.ts";
 import { AuthPairingLinkRepository } from "../../persistence/Services/AuthPairingLinks.ts";
 import {
@@ -89,7 +90,7 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
     yield* seedGrant(config.desktopBootstrapToken, {
       method: "desktop-bootstrap",
       role: "owner",
-      subject: "desktop-bootstrap",
+      subject: DESKTOP_BOOTSTRAP_SUBJECT,
       expiresAt: DESKTOP_BOOTSTRAP_EXPIRES_AT,
       remainingUses: "unbounded",
     });

@@ -143,6 +143,7 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { isInternalClientSession } from "./auth/utils.ts";
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -2068,7 +2069,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               const revisionRef = yield* Ref.make(1);
               const accessChanges: Stream.Stream<
                 BootstrapCredentialChange | SessionCredentialChange
-              > = Stream.merge(bootstrapCredentials.streamChanges, sessions.streamChanges);
+              > = Stream.merge(bootstrapCredentials.streamChanges, sessions.streamChanges).pipe(
+                // Same visibility rule as ServerAuth.listClientSessions: internal
+                // machine-to-machine sessions never reach device-list subscribers.
+                Stream.filter(
+                  (change) =>
+                    change.type !== "clientUpserted" ||
+                    change.clientSession.sessionId === currentSessionId ||
+                    !isInternalClientSession(change.clientSession),
+                ),
+              );
 
               const liveEvents: Stream.Stream<AuthAccessStreamEvent> = accessChanges.pipe(
                 Stream.mapEffect((change) =>

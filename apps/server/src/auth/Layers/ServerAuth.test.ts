@@ -343,4 +343,41 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       ),
     ),
   );
+
+  it.effect("hides internal desktop bearer sessions from the device list", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+
+      const rendererExchange = yield* serverAuth.exchangeBootstrapCredential(
+        "desktop-bootstrap-token",
+        requestMetadata,
+      );
+      const rendererSession = yield* serverAuth.authenticateHttpRequest(
+        makeCookieRequest(rendererExchange.sessionToken),
+      );
+      const bridgeExchange = yield* serverAuth.exchangeBootstrapCredentialForBearerSession(
+        "desktop-bootstrap-token",
+        { deviceType: "desktop", ipAddress: "127.0.0.1" },
+      );
+      const bridgeSession = yield* serverAuth.authenticateHttpRequest(
+        makeAuthRequest({
+          headers: { authorization: `Bearer ${bridgeExchange.sessionToken}` },
+        }),
+      );
+
+      const rendererView = yield* serverAuth.listClientSessions(rendererSession.sessionId);
+      const bridgeView = yield* serverAuth.listClientSessions(bridgeSession.sessionId);
+
+      expect(rendererView.map((entry) => entry.sessionId)).toEqual([rendererSession.sessionId]);
+      expect(bridgeView.find((entry) => entry.sessionId === bridgeSession.sessionId)?.current).toBe(
+        true,
+      );
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
+  );
 });

@@ -14,6 +14,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import { ServerConfig } from "../../config.ts";
 import { isLoopbackHost } from "../../startupAccess.ts";
+import { isInternalClientSession } from "../utils.ts";
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
@@ -416,12 +417,16 @@ export const makeServerAuth = Effect.gen(function* () {
           }),
       ),
       Effect.map((clientSessions) =>
-        clientSessions.map(
-          (clientSession): AuthClientSession => ({
-            ...clientSession,
-            current: clientSession.sessionId === currentSessionId,
-          }),
-        ),
+        clientSessions
+          .map(
+            (clientSession): AuthClientSession => ({
+              ...clientSession,
+              current: clientSession.sessionId === currentSessionId,
+            }),
+          )
+          .filter(
+            (clientSession) => clientSession.current || !isInternalClientSession(clientSession),
+          ),
       ),
     );
 
