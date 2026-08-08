@@ -147,10 +147,8 @@ import {
   type RuntimeModeOption,
 } from "../../runtimeModeOptions";
 import {
-  deriveProviderInstanceEntries,
-  filterMaintainedProviderInstanceEntries,
+  deriveDisplayProviderInstanceEntries,
   resolveProviderDriverKindForInstanceSelection,
-  sortProviderInstanceEntries,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
@@ -814,10 +812,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // configured instance (default built-in + any custom `providerInstances.*`),
   // sorted default-first per driver kind for a stable picker order.
   const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
-    () =>
-      filterMaintainedProviderInstanceEntries(
-        sortProviderInstanceEntries(deriveProviderInstanceEntries(providerStatuses)),
-      ),
+    () => deriveDisplayProviderInstanceEntries(providerStatuses),
     [providerStatuses],
   );
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;

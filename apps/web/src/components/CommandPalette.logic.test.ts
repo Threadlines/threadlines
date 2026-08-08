@@ -123,6 +123,34 @@ describe("buildThreadActionItems", () => {
     ]);
   });
 
+  it("finds an item by its visible title even when the title is not a search term", () => {
+    const group: CommandPaletteGroup = {
+      value: "actions",
+      label: "Actions",
+      items: [
+        {
+          kind: "action",
+          value: "action:go-home",
+          searchTerms: ["home", "landing", "start", "threads"],
+          title: "Go to Home",
+          icon: null,
+          run: async () => undefined,
+        },
+      ],
+    };
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [group],
+      query: "Go to Home",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.items.map((item) => item.value)).toEqual(["action:go-home"]);
+  });
+
   it("preserves thread project-name matches when there is no stronger title match", () => {
     const group: CommandPaletteGroup = {
       value: "threads-search",

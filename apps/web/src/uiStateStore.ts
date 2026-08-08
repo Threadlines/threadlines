@@ -1,5 +1,4 @@
 import { Debouncer } from "@tanstack/react-pacer";
-import type { ScopedThreadRef } from "@threadlines/contracts";
 import { create } from "zustand";
 
 export const PERSISTED_STATE_KEY = "threadlines:ui-state:v1";
@@ -86,12 +85,7 @@ export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
 }
 
-export interface UiNavigationState {
-  lastChatThreadRef: ScopedThreadRef | null;
-}
-
-export interface UiState
-  extends UiProjectState, UiThreadState, UiInboxState, UiEndpointState, UiNavigationState {}
+export interface UiState extends UiProjectState, UiThreadState, UiInboxState, UiEndpointState {}
 
 export interface SyncProjectInput {
   /** Physical project key (env + cwd). Used for manual sort order. */
@@ -118,7 +112,6 @@ const initialState: UiState = {
   doneThreadOverlays: {},
   inboxProjectScopeKey: null,
   defaultAdvertisedEndpointKey: null,
-  lastChatThreadRef: null,
 };
 
 const persistedCollapsedProjectCwds = new Set<string>();
@@ -801,20 +794,6 @@ export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | nu
   };
 }
 
-export function setLastChatThreadRef(state: UiState, threadRef: ScopedThreadRef | null): UiState {
-  const nextThreadRef = threadRef ? { ...threadRef } : null;
-  if (
-    state.lastChatThreadRef?.environmentId === nextThreadRef?.environmentId &&
-    state.lastChatThreadRef?.threadId === nextThreadRef?.threadId
-  ) {
-    return state;
-  }
-  return {
-    ...state,
-    lastChatThreadRef: nextThreadRef,
-  };
-}
-
 export function toggleProject(state: UiState, projectId: string): UiState {
   const expanded = state.projectExpandedById[projectId] ?? true;
   return {
@@ -898,7 +877,6 @@ interface UiStateStore extends UiState {
     defaultExpanded: boolean,
   ) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
-  setLastChatThreadRef: (threadRef: ScopedThreadRef | null) => void;
   toggleProject: (projectId: string) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   reorderProjects: (
@@ -930,7 +908,6 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     ),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
-  setLastChatThreadRef: (threadRef) => set((state) => setLastChatThreadRef(state, threadRef)),
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),

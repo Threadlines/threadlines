@@ -19,6 +19,7 @@ import {
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateCandidate,
   providerUpdateNotificationKey,
+  shouldOpenProviderUpdatePrompt,
   type ProviderUpdateCandidate,
 } from "./ProviderUpdateLaunchNotification.logic";
 
@@ -236,6 +237,35 @@ describe("provider update launch notification logic", () => {
     expect(providerUpdateNotificationKey([nextPublishedVersion])).not.toBe(
       providerUpdateNotificationKey([first]),
     );
+  });
+
+  describe("shouldOpenProviderUpdatePrompt", () => {
+    const OPENABLE = {
+      notificationKey: "codex:1.1.0",
+      isDismissed: false,
+      isAlreadySeen: false,
+      hasActiveToast: false,
+      isFirstRunSetupPending: false,
+    } as const;
+
+    it("opens on launch when there is an update nobody has been told about", () => {
+      expect(shouldOpenProviderUpdatePrompt(OPENABLE)).toBe(true);
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, notificationKey: null })).toBe(false);
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isDismissed: true })).toBe(false);
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isAlreadySeen: true })).toBe(false);
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, hasActiveToast: true })).toBe(false);
+    });
+
+    it("waits while first-run setup is on screen, then opens once setup is done", () => {
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isFirstRunSetupPending: true })).toBe(
+        false,
+      );
+      // Deferred, not dropped: the same key still opens once setup is
+      // completed or skipped, because nothing marked it seen while it waited.
+      expect(shouldOpenProviderUpdatePrompt({ ...OPENABLE, isFirstRunSetupPending: false })).toBe(
+        true,
+      );
+    });
   });
 
   it("tracks updated provider snapshots by instance instead of collapsing to a sibling driver", () => {

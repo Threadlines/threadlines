@@ -42,7 +42,6 @@ import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { cn } from "~/lib/utils";
-import { useUiStateStore } from "../uiStateStore";
 import {
   SourceControlPanel,
   type SourceControlProjectTarget,
@@ -100,7 +99,6 @@ function ChatThreadRouteView() {
   const savedEnvironmentLabel = useSavedEnvironmentRegistryStore((state) =>
     threadRef ? (state.byId[threadRef.environmentId]?.label ?? null) : null,
   );
-  const setLastChatThreadRef = useUiStateStore((state) => state.setLastChatThreadRef);
   const search = Route.useSearch();
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const bootstrapComplete = useStore(
@@ -172,10 +170,6 @@ function ChatThreadRouteView() {
   const diffIgnoreWhitespace = useSettings((settings) => settings.diffIgnoreWhitespace);
   const queryClient = useQueryClient();
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
-
-  useEffect(() => {
-    setLastChatThreadRef(threadRef);
-  }, [setLastChatThreadRef, threadRef]);
 
   // Register the workspace context so chat file chips, diff rows, and the
   // terminal affordance can open the internal file viewer from anywhere in

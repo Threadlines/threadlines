@@ -255,7 +255,12 @@ function rankCommandPaletteItemMatch(
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem,
   query: ParsedSearchQuery,
 ): number {
-  const terms = item.searchTerms.filter((term) => term.length > 0);
+  // The visible title is always searchable, and outranks the hidden
+  // searchTerms: typing exactly what an item says on screen must find it.
+  // Titles can be arbitrary nodes; only plain-string ones can be ranked.
+  const terms = [typeof item.title === "string" ? item.title : "", ...item.searchTerms].filter(
+    (term) => term.length > 0,
+  );
   let bestRank = Number.NEGATIVE_INFINITY;
 
   for (const [index, field] of terms.entries()) {
