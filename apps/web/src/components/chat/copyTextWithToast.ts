@@ -1,3 +1,5 @@
+import { copyTextToClipboard } from "~/lib/clipboard";
+
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
 /**
@@ -8,18 +10,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
  * that says nothing reads as the menu item being broken.
  */
 export function copyTextWithToast(value: string, title: string): void {
-  if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: `Failed to copy ${title.toLowerCase()}`,
-        description: "Clipboard API unavailable.",
-      }),
-    );
-    return;
-  }
-
-  void navigator.clipboard.writeText(value).then(
+  void copyTextToClipboard(value).then(
     () => {
       toastManager.add({
         type: "success",

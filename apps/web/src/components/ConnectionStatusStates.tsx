@@ -19,17 +19,20 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
 
 /**
- * Full-content status surfaces for hosted (phone) sessions, where the app has
- * no local backend and every route depends on the relay bootstrap. Routes
- * render these instead of nothing while that bootstrap is pending or failed.
+ * Full-content status surfaces for sessions that cannot show the app yet: the
+ * hosted (phone) app waiting on its relay bootstrap, a freshly paired browser
+ * waiting on its first workspace snapshot, and a device whose access was taken
+ * away. Routes render these instead of an empty shell that reads as "you have
+ * nothing here".
  */
-function HostedStaticStatusState({
+function ConnectionStatusState({
   icon,
   title,
   description,
   detail,
   body,
   action,
+  chrome = "sidebar-inset",
 }: {
   icon: ReactNode;
   title: string;
@@ -38,18 +41,27 @@ function HostedStaticStatusState({
   /** Full-width content between the description and the action. */
   body?: ReactNode;
   action?: ReactNode;
+  /**
+   * `sidebar-inset` is for states a route renders inside the app shell, where
+   * the sidebar is still there to navigate away to. `standalone` is for states
+   * that replace the whole app, which have no sidebar to open and must not
+   * depend on one being mounted.
+   */
+  chrome?: "sidebar-inset" | "standalone";
 }) {
+  const Shell = chrome === "standalone" ? StandaloneShell : SidebarInsetShell;
+
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+    <Shell>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
         <header
           className={cn(
             "border-b border-border px-3 py-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 sm:py-3",
-            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+            chrome === "sidebar-inset" && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >
           <div className="flex items-center gap-2">
-            <SidebarOpenTrigger className="size-7 shrink-0" />
+            {chrome === "sidebar-inset" ? <SidebarOpenTrigger className="size-7 shrink-0" /> : null}
             <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
               {APP_DISPLAY_NAME}
             </span>
@@ -77,13 +89,29 @@ function HostedStaticStatusState({
           </div>
         </Empty>
       </div>
+    </Shell>
+  );
+}
+
+function SidebarInsetShell({ children }: { children: ReactNode }) {
+  return (
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+      {children}
     </SidebarInset>
+  );
+}
+
+function StandaloneShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden overscroll-y-none bg-background text-foreground">
+      {children}
+    </div>
   );
 }
 
 export function HostedStaticLoadingState({ label }: { label: string | null }) {
   return (
-    <HostedStaticStatusState
+    <ConnectionStatusState
       icon={<LoaderCircleIcon className="size-5 animate-spin" />}
       title="Loading your desktop"
       description={
@@ -96,6 +124,46 @@ export function HostedStaticLoadingState({ label }: { label: string | null }) {
   );
 }
 
+/**
+ * What a browser paired directly to a computer sees between "the socket is up"
+ * and "the first workspace snapshot arrived". Without it the index route falls
+ * straight through to the cold-start empty state, so a phone that just scanned
+ * a QR code is told it has no projects a second before its projects appear.
+ */
+export function WorkspaceLoadingState() {
+  return (
+    <ConnectionStatusState
+      icon={<LoaderCircleIcon className="size-5 animate-spin" />}
+      title="Loading your workspace"
+      description="Connected. Loading projects and threads."
+      detail="This takes a moment after pairing, while the first workspace snapshot arrives."
+    />
+  );
+}
+
+/**
+ * What a device sees once the computer revokes its access. The socket is gone
+ * for good, so this replaces the app shell rather than sitting behind a
+ * reconnect spinner that can never succeed.
+ */
+export function AccessRemovedState() {
+  return (
+    <ConnectionStatusState
+      chrome="standalone"
+      icon={<WifiOffIcon className="size-5" />}
+      title="Access removed"
+      description="This device was disconnected from the computer. Pair again to reconnect."
+      detail="On the computer, open Settings, then Devices, then Add device to create a new setup link."
+      action={
+        <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+          <RefreshCwIcon className="size-3.5" />
+          Reload
+        </Button>
+      }
+    />
+  );
+}
+
 export function HostedStaticConnectionErrorState({
   label,
   message,
@@ -104,7 +172,7 @@ export function HostedStaticConnectionErrorState({
   message: string | null;
 }) {
   return (
-    <HostedStaticStatusState
+    <ConnectionStatusState
       icon={<WifiOffIcon className="size-5" />}
       title="Could not load your desktop"
       description={
@@ -169,7 +237,7 @@ const PAIRING_STEPS = [
  */
 function HostedStaticPhoneOnboardingState() {
   return (
-    <HostedStaticStatusState
+    <ConnectionStatusState
       icon={<SmartphoneIcon className="size-5" />}
       title="Pair with your computer"
       description={`${APP_BASE_NAME} runs on your computer; this phone connects to it.`}
@@ -204,7 +272,7 @@ function HostedStaticPhoneOnboardingState() {
  */
 function HostedStaticDesktopOnboardingState() {
   return (
-    <HostedStaticStatusState
+    <ConnectionStatusState
       icon={<MonitorIcon className="size-5" />}
       title="Open the desktop app to get started"
       description="Threadlines runs on your computer. Install the desktop app there, then pair this browser so it can reach your projects and threads."

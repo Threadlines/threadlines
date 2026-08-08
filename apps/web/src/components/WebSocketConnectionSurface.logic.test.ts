@@ -4,6 +4,7 @@ import type { WsConnectionStatus } from "../rpc/wsConnectionState";
 import { describeSlowRpcAckToast, formatSlowRpcTagLabel } from "../rpc/requestLatencyPresentation";
 import {
   shouldAutoReconnect,
+  shouldProbeAccessRemoval,
   shouldRestartStalledReconnect,
   shouldShowReconnectIssueToast,
 } from "./WebSocketConnectionSurface";
@@ -158,6 +159,51 @@ describe("WebSocketConnectionSurface.logic", () => {
         new Date("2026-04-03T20:00:10.000Z").getTime(),
       ),
     ).toBe(true);
+  });
+
+  it("asks whether access was removed when an established socket drops", () => {
+    expect(
+      shouldProbeAccessRemoval(
+        makeStatus({
+          disconnectedAt: "2026-04-03T20:00:00.000Z",
+          hasConnected: true,
+          online: true,
+          phase: "disconnected",
+          reconnectAttemptCount: 1,
+          reconnectPhase: "waiting",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not ask about access while the browser reports no network", () => {
+    expect(
+      shouldProbeAccessRemoval(
+        makeStatus({
+          disconnectedAt: "2026-04-03T20:00:00.000Z",
+          hasConnected: true,
+          online: false,
+          phase: "disconnected",
+          reconnectAttemptCount: 1,
+          reconnectPhase: "waiting",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not ask about access for a session that never connected", () => {
+    expect(
+      shouldProbeAccessRemoval(
+        makeStatus({
+          disconnectedAt: "2026-04-03T20:00:00.000Z",
+          hasConnected: false,
+          online: true,
+          phase: "disconnected",
+          reconnectAttemptCount: 1,
+          reconnectPhase: "waiting",
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("formats slow RPC method tags for user-facing summaries", () => {

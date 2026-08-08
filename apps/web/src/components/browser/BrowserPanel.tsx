@@ -52,6 +52,7 @@ import {
 } from "../../browserPanelStore";
 import { isElectron } from "../../env";
 import { useTheme } from "../../hooks/useTheme";
+import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import {
   Menu,
@@ -854,7 +855,7 @@ export function BrowserPanel({
               disabled={activeUrl === null}
               onClick={() => {
                 if (activeUrl !== null) {
-                  void navigator.clipboard.writeText(activeUrl).catch(() => {});
+                  void copyTextToClipboard(activeUrl).catch(() => {});
                 }
               }}
             >

@@ -12,7 +12,7 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import { HostedStaticOnboardingState } from "./HostedStaticStatusStates";
+import { HostedStaticOnboardingState } from "./ConnectionStatusStates";
 import { SidebarProvider } from "./ui/sidebar";
 
 const DESKTOP_VIEWPORT = { height: 900, width: 1280 };

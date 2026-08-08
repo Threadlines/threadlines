@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { SavedEnvironmentRuntimeState } from "../environments/runtime";
 import type { EnvironmentState } from "../store";
-import { deriveHostedStaticIndexState } from "./-hostedStaticIndexState";
+import { deriveChatIndexState, deriveHostedStaticIndexState } from "./-chatIndexState";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -120,5 +120,42 @@ describe("deriveHostedStaticIndexState", () => {
         projectCount: 1,
       }),
     ).toEqual({ kind: "ready" });
+  });
+});
+
+describe("deriveChatIndexState", () => {
+  const directlyPairedInput = {
+    hostedStatic: false,
+    savedEnvironments: [],
+    savedEnvironmentRuntimeById: {},
+    environmentStateById: {},
+    projectCount: 0,
+  } as const;
+
+  it("waits for the first workspace snapshot instead of showing a directly paired device an empty app", () => {
+    expect(deriveChatIndexState({ ...directlyPairedInput, bootstrapComplete: false })).toEqual({
+      kind: "workspace-loading",
+    });
+  });
+
+  it("shows the normal app to a directly paired device once its snapshot arrives, even with no projects", () => {
+    expect(deriveChatIndexState({ ...directlyPairedInput, bootstrapComplete: true })).toEqual({
+      kind: "ready",
+    });
+  });
+
+  it("keeps using the saved-desktop rules for the hosted app", () => {
+    expect(
+      deriveChatIndexState({
+        hostedStatic: true,
+        // The hosted app has no primary environment of its own, so its snapshot
+        // flag must not decide anything here.
+        bootstrapComplete: true,
+        savedEnvironments: [],
+        savedEnvironmentRuntimeById: {},
+        environmentStateById: {},
+        projectCount: 0,
+      }),
+    ).toEqual({ kind: "unpaired" });
   });
 });

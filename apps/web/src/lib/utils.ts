@@ -1,8 +1,7 @@
 import { CommandId, MessageId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { type CxOptions, cx } from "class-variance-authority";
 import { twMerge } from "tailwind-merge";
-import { randomUUIDv4 } from "@threadlines/shared/uuid";
-import * as Effect from "effect/Effect";
+import { randomUUIDv4Sync } from "@threadlines/shared/uuid";
 import { DraftId } from "../composerDraftStore";
 
 export function cn(...inputs: CxOptions) {
@@ -21,12 +20,12 @@ export function isLinuxPlatform(platform: string): boolean {
   return /linux/i.test(platform);
 }
 
-export function randomUUID(): string {
-  if (typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return Effect.runSync(randomUUIDv4);
-}
+/**
+ * Single UUID entry point for the web bundle. `crypto.randomUUID` is missing in
+ * insecure contexts (a phone paired over plain `http://<lan-ip>`), so every
+ * call site goes through the shared helper's `getRandomValues` fallback.
+ */
+export const randomUUID = randomUUIDv4Sync;
 
 export const newCommandId = (): CommandId => CommandId.make(randomUUID());
 

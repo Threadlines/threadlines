@@ -52,7 +52,7 @@ import {
   WsRpcGroup,
 } from "@threadlines/contracts";
 import { clamp } from "effect/Number";
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
@@ -2137,12 +2137,35 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             ),
           ),
         );
+        // Revoking a device only rewrites persistence, so a phone that is
+        // already connected would keep streaming live orchestration state on
+        // its existing socket until it happened to reconnect. Racing the served
+        // socket against the revocation watcher drops the connection the moment
+        // access is taken away; `awaitRevoked` never resolves for a session that
+        // stays valid, so a healthy socket is unaffected.
+        const closeWhenRevoked = sessions.awaitRevoked(session.sessionId).pipe(
+          Effect.tap(() =>
+            Effect.logInfo("auth.session.revoked.closing-websocket", {
+              sessionId: session.sessionId,
+            }),
+          ),
+          Effect.as(HttpServerResponse.empty({ status: 401 })),
+          // A failing watcher must never take down a socket the owner still
+          // trusts, so log it and let the socket decide the outcome.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("auth.session.revocation-watch-failed", {
+              sessionId: session.sessionId,
+              cause,
+            }).pipe(Effect.andThen(Effect.never)),
+          ),
+        );
+
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
+          () => Effect.raceFirst(rpcWebSocketHttpEffect, closeWhenRevoked),
           () => sessions.markDisconnected(session.sessionId),
         );
-      }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
+      }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),
     ),
   ),
 );

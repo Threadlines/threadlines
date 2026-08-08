@@ -63,6 +63,7 @@ const authAccessHarness = vi.hoisted(() => {
     clientSessions: [],
   };
   let revision = 1;
+  let deferSnapshot = false;
   const listeners = new Set<(event: AuthAccessStreamEvent) => void>();
 
   const emitEvent = (event: AuthAccessStreamEvent) => {
@@ -78,10 +79,15 @@ const authAccessHarness = vi.hoisted(() => {
         clientSessions: [],
       };
       revision = 1;
+      deferSnapshot = false;
       listeners.clear();
     },
     setSnapshot(next: Snapshot) {
       snapshot = next;
+    },
+    /** Hold the first snapshot back, the way a slow or reconnecting stream does. */
+    deferSnapshot() {
+      deferSnapshot = true;
     },
     emitSnapshot() {
       emitEvent({
@@ -133,12 +139,14 @@ const authAccessHarness = vi.hoisted(() => {
     },
     subscribe(listener: (event: AuthAccessStreamEvent) => void) {
       listeners.add(listener);
-      listener({
-        version: 1,
-        revision: 1,
-        type: "snapshot",
-        payload: snapshot,
-      });
+      if (!deferSnapshot) {
+        listener({
+          version: 1,
+          revision: 1,
+          type: "snapshot",
+          payload: snapshot,
+        });
+      }
       return () => {
         listeners.delete(listener);
       };
@@ -1460,6 +1468,76 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("This Mac")).toBeInTheDocument();
     await expect.element(page.getByText("Julius iPhone")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  // An audit read the pre-snapshot section as "nothing paired" because it was
+  // rendered completely empty, and revoke stayed disabled with it.
+  it("says devices are loading until the access snapshot lands", async () => {
+    window.desktopBridge = createDesktopBridgeStub({
+      serverExposureState: {
+        mode: "network-accessible",
+        endpointUrl: "http://192.168.1.44:3773",
+        advertisedHost: "192.168.1.44",
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+      },
+    });
+    const clientSessions = [
+      makeClientSession({
+        sessionId: "session-owner",
+        subject: "desktop-bootstrap",
+        role: "owner",
+        method: "browser-session-cookie",
+        client: { label: "This Mac", deviceType: "desktop", os: "macOS", browser: "Electron" },
+        issuedAt: "2036-04-05T00:00:00.000Z",
+        expiresAt: "2036-05-05T00:00:00.000Z",
+        connected: true,
+        current: true,
+      }),
+      makeClientSession({
+        sessionId: "session-client",
+        subject: "one-time-token",
+        role: "client",
+        method: "browser-session-cookie",
+        client: {
+          label: "Julius iPhone",
+          deviceType: "mobile",
+          os: "iOS",
+          browser: "Safari",
+          ipAddress: "192.168.1.88",
+        },
+        issuedAt: "2036-04-05T00:01:00.000Z",
+        expiresAt: "2036-05-05T00:01:00.000Z",
+        connected: true,
+        current: false,
+      }),
+    ];
+    authAccessHarness.setSnapshot({ pairingLinks: [], clientSessions });
+    authAccessHarness.deferSnapshot();
+
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByText("Loading devices...")).toBeInTheDocument();
+    await expect
+      .element(page.getByText("No phones or tablets are connected yet."))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Remove other devices", exact: true }))
+      .toBeDisabled();
+
+    authAccessHarness.emitSnapshot();
+
+    await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
+    await expect.element(page.getByText("Loading devices...")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Remove other devices", exact: true }))
+      .not.toBeDisabled();
   });
 
   it("shows a disabled network access toggle with guidance in desktop builds", async () => {

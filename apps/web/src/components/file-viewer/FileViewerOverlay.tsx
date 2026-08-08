@@ -22,7 +22,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { EditorId } from "@threadlines/contracts";
 import { readLocalApi } from "../../localApi";
-import { cn, isMacPlatform } from "~/lib/utils";
+import { copyTextToClipboard } from "~/lib/clipboard";
+import { cn, isMacPlatform, randomUUID } from "~/lib/utils";
 import { usePreferredEditor } from "../../editorPreferences";
 import { useServerAvailableEditors } from "../../rpc/serverState";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -143,9 +144,14 @@ function workspaceAbsolutePath(cwd: string, path: string): string {
 }
 
 function copyRelativePathToClipboard(path: string): void {
-  void navigator.clipboard?.writeText(path).then(() => {
-    toastManager.add({ type: "success", title: "Path copied", description: path });
-  });
+  void copyTextToClipboard(path).then(
+    () => {
+      toastManager.add({ type: "success", title: "Path copied", description: path });
+    },
+    () => {
+      toastManager.add({ type: "error", title: "Failed to copy path" });
+    },
+  );
 }
 
 function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
@@ -590,7 +596,7 @@ function AddSelectionToChatFooter({
     // selection the quoted lines are serialized at send time; without one the
     // whole file is attached as an `@path` mention the agent reads itself.
     addFileSelectionContext(threadRef, {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       threadId: threadRef.threadId,
       createdAt: new Date().toISOString(),
       relativePath: activePath,

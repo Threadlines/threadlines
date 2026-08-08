@@ -107,6 +107,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
+import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
@@ -951,18 +952,7 @@ function extensionClipboardDetails(item: ExtensionItem): string {
 }
 
 function copyText(value: string, label: string) {
-  if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: `Failed to copy ${label.toLowerCase()}`,
-        description: "Clipboard API unavailable.",
-      }),
-    );
-    return;
-  }
-
-  void navigator.clipboard.writeText(value).then(
+  void copyTextToClipboard(value).then(
     () => {
       const preview = value.length > 180 ? `${value.slice(0, 177).trimEnd()}...` : value;
       toastManager.add({

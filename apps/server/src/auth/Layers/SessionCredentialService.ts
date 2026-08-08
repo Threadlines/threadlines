@@ -146,6 +146,27 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       );
     });
 
+  const awaitRevoked: SessionCredentialServiceShape["awaitRevoked"] = (sessionId) =>
+    Effect.gen(function* () {
+      // Subscribe before re-reading the row: the subscription buffers every
+      // change published from this point, so the read below can only be stale
+      // in the safe direction (a revocation it misses is one the subscription
+      // already holds).
+      const subscription = yield* PubSub.subscribe(changesPubSub);
+      const row = yield* authSessions.getById({ sessionId });
+      if (Option.isNone(row) || row.value.revokedAt !== null) {
+        return;
+      }
+
+      yield* Stream.fromSubscription(subscription).pipe(
+        Stream.filter(
+          (change) => change.type === "clientRemoved" && change.sessionId === sessionId,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    }).pipe(Effect.mapError(toSessionCredentialError("Failed to watch session revocation.")));
+
   const markConnected: SessionCredentialServiceShape["markConnected"] = (sessionId) =>
     Ref.modify(connectedSessionsRef, (current) => {
       const next = new Map(current);
@@ -519,6 +540,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
+    awaitRevoked,
     revoke,
     revokeAllExcept,
     markConnected,

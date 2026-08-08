@@ -42,9 +42,8 @@ import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { SleepInhibitor } from "./power/Services/SleepInhibitor.ts";
 import {
   formatHeadlessServeOutput,
-  formatHostForUrl,
-  isWildcardHost,
   issueHeadlessServeAccessInfo,
+  resolveAdvertisedServerUrl,
 } from "./startupAccess.ts";
 
 export class ServerRuntimeStartupError extends Data.TaggedError("ServerRuntimeStartupError")<{
@@ -253,12 +252,15 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
 const resolveStartupBrowserTarget = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const serverAuth = yield* ServerAuth;
-  const localUrl = `http://localhost:${serverConfig.port}`;
-  const bindUrl =
-    serverConfig.host && !isWildcardHost(serverConfig.host)
-      ? `http://${formatHostForUrl(serverConfig.host)}:${serverConfig.port}`
-      : localUrl;
-  const baseTarget = serverConfig.devUrl?.toString() ?? bindUrl;
+  // Dev servers keep the Vite dev URL: the client is only served there, and
+  // that harness retargets by hand anyway.
+  const baseTarget =
+    serverConfig.devUrl?.toString() ??
+    resolveAdvertisedServerUrl({
+      host: serverConfig.host,
+      port: serverConfig.port,
+      mode: serverConfig.mode,
+    });
   return yield* Effect.succeed(serverConfig.mode === "desktop" ? baseTarget : undefined).pipe(
     Effect.flatMap((target) =>
       target ? Effect.succeed(target) : serverAuth.issueStartupPairingUrl(baseTarget),
