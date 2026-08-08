@@ -56,12 +56,6 @@ export const RevokeAuthSessionInput = Schema.Struct({
 });
 export type RevokeAuthSessionInput = typeof RevokeAuthSessionInput.Type;
 
-export const RevokeOtherAuthSessionsInput = Schema.Struct({
-  currentSessionId: AuthSessionId,
-  revokedAt: Schema.DateTimeUtcFromString,
-});
-export type RevokeOtherAuthSessionsInput = typeof RevokeOtherAuthSessionsInput.Type;
-
 export const SetAuthSessionLastConnectedAtInput = Schema.Struct({
   sessionId: AuthSessionId,
   lastConnectedAt: Schema.DateTimeUtcFromString,
@@ -81,9 +75,6 @@ export interface AuthSessionRepositoryShape {
   readonly revoke: (
     input: RevokeAuthSessionInput,
   ) => Effect.Effect<boolean, AuthSessionRepositoryError>;
-  readonly revokeAllExcept: (
-    input: RevokeOtherAuthSessionsInput,
-  ) => Effect.Effect<ReadonlyArray<AuthSessionId>, AuthSessionRepositoryError>;
   readonly setLastConnectedAt: (
     input: SetAuthSessionLastConnectedAtInput,
   ) => Effect.Effect<void, AuthSessionRepositoryError>;

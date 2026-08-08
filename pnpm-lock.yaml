@@ -52,6 +52,7 @@ overrides:
   brace-expansion: 5.0.9
   effect: 4.0.0-beta.98
   fast-uri: 3.1.5
+  js-yaml@4: 4.3.1
   postcss: 8.5.23
   sharp: 0.35.3
   tar: 7.5.21
@@ -437,7 +438,7 @@ importers:
         version: 4.0.0-beta.97(effect@4.0.0-beta.98(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(vitest@4.1.10)
       oxlint:
         specifier: ^1.77.0
-        version: 1.77.0(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0))
+        version: 1.77.0(oxlint-tsgolint@0.24.0)(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -4450,10 +4451,6 @@ packages:
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
-
-  js-yaml@4.3.0:
-    resolution: {integrity: sha512-1td788aAnnZ5qs7V2QIRl1owjtYpbKt749Y3xauqQgwIIGF/xXWz1wMTEBx5O3LK3lXLVuqXPdPxj2BoFHaW9Q==}
-    hasBin: true
 
   js-yaml@4.3.1:
     resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
@@ -8822,7 +8819,7 @@ snapshots:
       hosted-git-info: 4.1.0
       isbinaryfile: 5.0.7
       jiti: 2.7.0
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       json5: 2.2.3
       lazy-val: 1.0.5
       minimatch: 10.2.5
@@ -9039,7 +9036,7 @@ snapshots:
       fs-extra: 10.1.0
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       sanitize-filename: 1.6.4
       source-map-support: 0.5.21
       stat-mode: 1.0.0
@@ -9295,7 +9292,7 @@ snapshots:
       app-builder-lib: 26.15.3(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)
       builder-util: 26.15.3
       fs-extra: 10.1.0
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
     transitivePeerDependencies:
       - electron-builder-squirrel-windows
       - supports-color
@@ -9402,7 +9399,7 @@ snapshots:
     dependencies:
       builder-util-runtime: 9.7.0
       fs-extra: 10.1.0
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       lazy-val: 1.0.5
       lodash.escaperegexp: 4.1.2
       lodash.isequal: 4.5.0
@@ -10008,10 +10005,6 @@ snapshots:
   jose@6.2.8: {}
 
   js-tokens@4.0.0: {}
-
-  js-yaml@4.3.0:
-    dependencies:
-      argparse: 2.0.1
 
   js-yaml@4.3.1:
     dependencies:
@@ -10924,7 +10917,7 @@ snapshots:
       oxlint-tsgolint: 0.24.0
       vite-plus: 0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)
 
-  oxlint@1.77.0(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)):
+  oxlint@1.77.0(oxlint-tsgolint@0.24.0)(vite-plus@0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)):
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.77.0
       '@oxlint/binding-android-arm64': 1.77.0
@@ -10945,6 +10938,7 @@ snapshots:
       '@oxlint/binding-win32-arm64-msvc': 1.77.0
       '@oxlint/binding-win32-ia32-msvc': 1.77.0
       '@oxlint/binding-win32-x64-msvc': 1.77.0
+      oxlint-tsgolint: 0.24.0
       vite-plus: 0.2.4(@types/node@24.13.3)(@vitest/browser-playwright@4.1.10(@voidzero-dev/vite-plus-core@0.2.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.0))(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(playwright@1.62.1)(vitest@4.1.10))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.15.0(@types/node@24.13.3)(typescript@7.0.2))(typescript@7.0.2)(yaml@2.9.0)
 
   p-cancelable@2.1.1: {}

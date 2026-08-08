@@ -101,7 +101,7 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
     }).pipe(Effect.provide(Layer.merge(makeSessionCredentialLayer(), TestClock.layer()))),
   );
 
-  it.effect("lists active sessions, tracks connectivity, and revokes other sessions", () =>
+  it.effect("lists active sessions, tracks connectivity, and revokes sessions", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionCredentialService;
       const owner = yield* sessions.issue({
@@ -128,7 +128,7 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
 
       yield* sessions.markConnected(client.sessionId);
       const beforeRevoke = yield* sessions.listActive();
-      const revokedCount = yield* sessions.revokeAllExcept(owner.sessionId);
+      const revoked = yield* sessions.revoke(client.sessionId);
       const afterRevoke = yield* sessions.listActive();
       const revokedClient = yield* Effect.flip(sessions.verify(client.token));
 
@@ -142,7 +142,7 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
       expect(
         beforeRevoke.find((entry) => entry.sessionId === owner.sessionId)?.client.deviceType,
       ).toBe("desktop");
-      expect(revokedCount).toBe(1);
+      expect(revoked).toBe(true);
       expect(afterRevoke).toHaveLength(1);
       expect(afterRevoke[0]?.sessionId).toBe(owner.sessionId);
       expect(revokedClient.message).toContain("revoked");
