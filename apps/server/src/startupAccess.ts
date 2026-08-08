@@ -42,6 +42,16 @@ const isIpv4Family = (family: string | number): boolean => family === "IPv4" || 
 
 const isIpv6Family = (family: string | number): boolean => family === "IPv6" || family === 6;
 
+/**
+ * Adapters that exist for the host's own plumbing: their subnets are usually
+ * unreachable from other physical devices, so a pairing URL on one is a dead
+ * link for the phone it's meant for. Matched by interface name because the
+ * OS exposes nothing more structured; deprioritized rather than excluded so a
+ * machine with only virtual adapters still advertises something routable-ish.
+ */
+const VIRTUAL_INTERFACE_NAME_PATTERN =
+  /vethernet|wsl|hyper-v|docker|vmware|virtualbox|vbox|tailscale|zerotier|utun|tun[0-9]|tap[0-9]|bridge/i;
+
 export const resolveHeadlessConnectionHost = (
   host: string | undefined,
   interfaces: NetworkInterfacesMap = networkInterfaces(),
@@ -53,18 +63,22 @@ export const resolveHeadlessConnectionHost = (
     return normalizeHost(host);
   }
 
-  const interfaceEntries = Object.values(interfaces).flatMap((entries) => entries ?? []);
-  const externalIpv4 = interfaceEntries.find(
-    (entry) => !entry.internal && isIpv4Family(entry.family),
+  const interfaceEntries = Object.entries(interfaces).flatMap(
+    ([name, entries]) => entries?.map((entry) => ({ name, entry })) ?? [],
   );
-  if (externalIpv4) {
-    return externalIpv4.address;
+  const externalIpv4 = interfaceEntries.filter(
+    ({ entry }) => !entry.internal && isIpv4Family(entry.family),
+  );
+  const physicalIpv4 = externalIpv4.find(({ name }) => !VIRTUAL_INTERFACE_NAME_PATTERN.test(name));
+  const pickedIpv4 = physicalIpv4 ?? externalIpv4[0];
+  if (pickedIpv4) {
+    return pickedIpv4.entry.address;
   }
 
   const externalIpv6 = interfaceEntries.find(
-    (entry) => !entry.internal && isIpv6Family(entry.family),
+    ({ entry }) => !entry.internal && isIpv6Family(entry.family),
   );
-  return externalIpv6 ? normalizeHost(externalIpv6.address) : "localhost";
+  return externalIpv6 ? normalizeHost(externalIpv6.entry.address) : "localhost";
 };
 
 export const resolveHeadlessConnectionString = (

@@ -51,6 +51,40 @@ it("keeps explicit bind hosts in the connection string", () => {
   expect(resolveHeadlessConnectionString("::1", 3773)).toBe("http://[::1]:3773");
 });
 
+// A developer machine's first external interface is often a virtual adapter
+// (WSL, Hyper-V, Docker) whose subnet no phone can reach; the physical NIC
+// must win. Virtual-only machines still advertise their best candidate.
+it("prefers a physical interface over virtual adapters", () => {
+  const interfaces = {
+    "vEthernet (WSL (Hyper-V firewall))": [
+      {
+        address: "172.22.16.1",
+        netmask: "255.255.240.0",
+        family: "IPv4" as const,
+        mac: "00:15:5d:00:00:01",
+        internal: false,
+        cidr: "172.22.16.1/20",
+      },
+    ],
+    "Wi-Fi": [
+      {
+        address: "10.0.0.15",
+        netmask: "255.255.255.0",
+        family: "IPv4" as const,
+        mac: "aa:bb:cc:dd:ee:ff",
+        internal: false,
+        cidr: "10.0.0.15/24",
+      },
+    ],
+  };
+  expect(resolveHeadlessConnectionHost(undefined, interfaces)).toBe("10.0.0.15");
+  expect(
+    resolveHeadlessConnectionHost(undefined, {
+      "vEthernet (WSL (Hyper-V firewall))": interfaces["vEthernet (WSL (Hyper-V firewall))"],
+    }),
+  ).toBe("172.22.16.1");
+});
+
 // The boot log's pairing URL uses the same rule as headless serve: a wildcard
 // bind advertises an address other devices can open, not localhost.
 it("advertises a reachable interface for wildcard binds in browser mode", () => {
