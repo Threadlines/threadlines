@@ -455,7 +455,21 @@ export const makeServerAuth = Effect.gen(function* () {
   const revokeOtherClientSessions: ServerAuthShape["revokeOtherClientSessions"] = (
     currentSessionId,
   ) =>
-    authControlPlane.revokeOtherSessionsExcept(currentSessionId).pipe(
+    authControlPlane.listSessions().pipe(
+      // Revoke exactly what the device list shows: internal machine-to-machine
+      // sessions are skipped so removing other devices does not drop live
+      // phone-link bridges.
+      Effect.map((clientSessions) =>
+        clientSessions.filter(
+          (clientSession) =>
+            clientSession.sessionId !== currentSessionId && !isInternalClientSession(clientSession),
+        ),
+      ),
+      Effect.flatMap((targets) =>
+        Effect.forEach(targets, (target) => authControlPlane.revokeSession(target.sessionId), {
+          discard: true,
+        }).pipe(Effect.as(targets.length)),
+      ),
       Effect.mapError(
         (cause) =>
           new AuthError({

@@ -63,9 +63,6 @@ export interface AuthControlPlaneShape {
   readonly revokeSession: (
     sessionId: AuthSessionId,
   ) => Effect.Effect<boolean, AuthControlPlaneError>;
-  readonly revokeOtherSessionsExcept: (
-    sessionId: AuthSessionId,
-  ) => Effect.Effect<number, AuthControlPlaneError>;
 }
 
 export class AuthControlPlane extends Context.Service<AuthControlPlane, AuthControlPlaneShape>()(

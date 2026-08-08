@@ -1457,6 +1457,12 @@ describe("GeneralSettingsPanel observability", () => {
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
     await page.getByRole("button", { name: "Remove other devices", exact: true }).click();
+    await expect
+      .element(
+        page.getByText("1 other device will be signed out and will need a new link to reconnect."),
+      )
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Remove device", exact: true }).click();
     await expect.element(page.getByText("This Mac")).toBeInTheDocument();
     await expect.element(page.getByText("Julius iPhone")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalled();

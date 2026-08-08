@@ -1098,8 +1098,10 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
   onRevokeOtherClients,
 }: AuthorizedClientsHeaderActionProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false);
   const [pairingLabel, setPairingLabel] = useState("");
   const [isCreatingPairingLink, setIsCreatingPairingLink] = useState(false);
+  const otherDeviceCount = clientSessions.filter((clientSession) => !clientSession.current).length;
 
   const handleCreatePairingLink = useCallback(async () => {
     setIsCreatingPairingLink(true);
@@ -1126,13 +1128,35 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
       <Button
         size="xs"
         variant="destructive-outline"
-        disabled={
-          isRevokingOtherClients || clientSessions.every((clientSession) => clientSession.current)
-        }
-        onClick={() => void onRevokeOtherClients()}
+        disabled={isRevokingOtherClients || otherDeviceCount === 0}
+        onClick={() => setConfirmRemoveOpen(true)}
       >
         {isRevokingOtherClients ? "Removing..." : "Remove other devices"}
       </Button>
+      <AlertDialog open={confirmRemoveOpen} onOpenChange={setConfirmRemoveOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove other devices?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {otherDeviceCount === 1
+                ? "1 other device will be signed out and will need a new link to reconnect."
+                : `${otherDeviceCount} other devices will be signed out and will need a new link to reconnect.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmRemoveOpen(false);
+                void onRevokeOtherClients();
+              }}
+            >
+              {otherDeviceCount === 1 ? "Remove device" : "Remove devices"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <Dialog
         open={dialogOpen}
         onOpenChange={(open) => {

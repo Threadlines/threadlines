@@ -372,6 +372,18 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       expect(bridgeView.find((entry) => entry.sessionId === bridgeSession.sessionId)?.current).toBe(
         true,
       );
+
+      const pairedDevice = yield* serverAuth.issuePairingCredential({ label: "Julius iPhone" });
+      yield* serverAuth.exchangeBootstrapCredential(pairedDevice.credential, requestMetadata);
+      const revokedCount = yield* serverAuth.revokeOtherClientSessions(rendererSession.sessionId);
+      const bridgeAfterRevoke = yield* serverAuth.authenticateHttpRequest(
+        makeAuthRequest({
+          headers: { authorization: `Bearer ${bridgeExchange.sessionToken}` },
+        }),
+      );
+
+      expect(revokedCount).toBe(1);
+      expect(bridgeAfterRevoke.sessionId).toBe(bridgeSession.sessionId);
     }).pipe(
       Effect.provide(
         makeServerAuthLayer({
