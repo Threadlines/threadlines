@@ -1,8 +1,13 @@
-import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { Outlet, createFileRoute, redirect, useParams } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { recordLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
+import { resolveThreadRouteTarget } from "../threadRoutes";
+import { useStore } from "../store";
 import {
   startNewLocalThreadFromContext,
   startNewThreadFromContext,
@@ -97,10 +102,59 @@ function ChatRouteGlobalShortcuts() {
   return null;
 }
 
+/**
+ * Remembers the thread or draft on screen so the next launch can reopen it.
+ *
+ * Sits on the chat layout rather than in each route because both chat routes
+ * count and the record has to look the same either way; a draft carries its
+ * environment on the draft session instead of in the URL.
+ */
+function LastVisitedThreadRouteRecorder() {
+  const routeTarget = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteTarget(params),
+  });
+  // Kept as primitives: this component sits above the composer, so anything
+  // that changes identity per render would rewrite storage on every keystroke.
+  const routeThreadEnvironmentId =
+    routeTarget?.kind === "server" ? routeTarget.threadRef.environmentId : null;
+  const routeThreadId = routeTarget?.kind === "server" ? routeTarget.threadRef.threadId : null;
+  const routeDraftId = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
+  const draftEnvironmentId = useComposerDraftStore((store) =>
+    routeDraftId ? (store.getDraftSession(routeDraftId)?.environmentId ?? null) : null,
+  );
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+
+  useEffect(() => {
+    if (routeThreadEnvironmentId && routeThreadId) {
+      recordLastVisitedThreadRoute(routeThreadEnvironmentId, {
+        kind: "server",
+        threadRef: scopeThreadRef(routeThreadEnvironmentId, routeThreadId),
+      });
+      return;
+    }
+    if (routeDraftId) {
+      recordLastVisitedThreadRoute(draftEnvironmentId ?? activeEnvironmentId, {
+        kind: "draft",
+        draftId: routeDraftId,
+      });
+    }
+  }, [
+    activeEnvironmentId,
+    draftEnvironmentId,
+    routeDraftId,
+    routeThreadEnvironmentId,
+    routeThreadId,
+  ]);
+
+  return null;
+}
+
 function ChatRouteLayout() {
   return (
     <>
       <ChatRouteGlobalShortcuts />
+      <LastVisitedThreadRouteRecorder />
       <Outlet />
     </>
   );

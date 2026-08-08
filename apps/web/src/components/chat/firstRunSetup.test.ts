@@ -16,8 +16,11 @@ import {
   FIRST_RUN_SETUP_DISMISSALS_STORAGE_KEY,
   groupFirstRunProviderRows,
   isFirstRunSetupDismissed,
+  resetFirstRunSetupDismissalsForTests,
   shouldShowFirstRunSetupCard,
+  useFirstRunSetupDismissalStore,
   type FirstRunSetupProvider,
+  type FirstRunSetupSurface,
 } from "./firstRunSetup";
 
 function provider(overrides: {
@@ -108,10 +111,16 @@ const MISSING_PROJECT_ROW = deriveFirstRunProjectRow({
   isOnlyWorkspaceProject: false,
 });
 
-const SHOWN_INPUT = {
-  isHostedStatic: false,
+const DRAFT_SURFACE = {
+  kind: "draftThread",
   isDraftThread: true,
   isGeneralChat: false,
+} as const satisfies FirstRunSetupSurface;
+const NO_THREAD_SURFACE = { kind: "noThread" } as const satisfies FirstRunSetupSurface;
+
+const SHOWN_INPUT = {
+  surface: DRAFT_SURFACE,
+  isHostedStatic: false,
   bootstrapComplete: true,
   hasUserMessagedThread: false,
   isDismissed: false,
@@ -122,20 +131,48 @@ describe("shouldShowFirstRunSetupCard", () => {
     expect(shouldShowFirstRunSetupCard(SHOWN_INPUT)).toBe(true);
   });
 
+  it("shows on the no-thread canvas a project-less desktop launch lands on", () => {
+    expect(shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, surface: NO_THREAD_SURFACE })).toBe(true);
+  });
+
   it("hides once any thread in the environment carries a user message", () => {
     expect(shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, hasUserMessagedThread: true })).toBe(
       false,
     );
   });
 
-  it("hides once dismissed", () => {
+  it("hides once dismissed, on either canvas", () => {
     expect(shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, isDismissed: true })).toBe(false);
+    expect(
+      shouldShowFirstRunSetupCard({
+        ...SHOWN_INPUT,
+        surface: NO_THREAD_SURFACE,
+        isDismissed: true,
+      }),
+    ).toBe(false);
   });
 
   it("never renders on hosted phone surfaces, general chat, or a server thread", () => {
     expect(shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, isHostedStatic: true })).toBe(false);
-    expect(shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, isGeneralChat: true })).toBe(false);
-    expect(shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, isDraftThread: false })).toBe(false);
+    expect(
+      shouldShowFirstRunSetupCard({
+        ...SHOWN_INPUT,
+        surface: NO_THREAD_SURFACE,
+        isHostedStatic: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowFirstRunSetupCard({
+        ...SHOWN_INPUT,
+        surface: { ...DRAFT_SURFACE, isGeneralChat: true },
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowFirstRunSetupCard({
+        ...SHOWN_INPUT,
+        surface: { ...DRAFT_SURFACE, isDraftThread: false },
+      }),
+    ).toBe(false);
   });
 
   it("waits for the environment bootstrap before deciding", () => {
@@ -146,6 +183,7 @@ describe("shouldShowFirstRunSetupCard", () => {
 describe("first-run setup dismissal", () => {
   beforeEach(() => {
     removeLocalStorageItem(FIRST_RUN_SETUP_DISMISSALS_STORAGE_KEY);
+    resetFirstRunSetupDismissalsForTests();
   });
 
   it("persists per environment", () => {
@@ -158,6 +196,27 @@ describe("first-run setup dismissal", () => {
 
     expect(isFirstRunSetupDismissed(local)).toBe(true);
     expect(isFirstRunSetupDismissed(remote)).toBe(false);
+  });
+
+  it("is shared: skipping on one surface is skipping on every surface", () => {
+    const local = buildFirstRunSetupDismissalKey(EnvironmentId.make("environment-local"));
+
+    // The draft canvas, the no-thread canvas, and the update prompt all read
+    // this store, so one write has to settle it for all of them in the same
+    // tick -- not only after the next reload.
+    useFirstRunSetupDismissalStore.getState().dismiss(local);
+
+    expect(useFirstRunSetupDismissalStore.getState().dismissedKeys.has(local)).toBe(true);
+    expect(
+      shouldShowFirstRunSetupCard({ ...SHOWN_INPUT, isDismissed: isFirstRunSetupDismissed(local) }),
+    ).toBe(false);
+    expect(
+      shouldShowFirstRunSetupCard({
+        ...SHOWN_INPUT,
+        surface: NO_THREAD_SURFACE,
+        isDismissed: isFirstRunSetupDismissed(local),
+      }),
+    ).toBe(false);
   });
 });
 

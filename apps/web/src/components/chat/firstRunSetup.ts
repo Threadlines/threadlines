@@ -1,12 +1,17 @@
 /**
  * First-run setup card: what it says, when it shows, and when it stops.
  *
- * A brand-new install lands on an empty draft thread with no guidance, even
- * though the client already holds everything needed to tell the user what is
- * missing: the provider snapshots Settings renders, and the project the server
- * bootstrapped from the launch folder. This module turns those into the rows
- * the card draws, decides whether the card belongs on screen at all, and owns
- * the per-environment dismissal record.
+ * A brand-new install lands on an empty canvas with no guidance, even though
+ * the client already holds everything needed to tell the user what is missing:
+ * the provider snapshots Settings renders, and the project the server
+ * bootstrapped from the launch folder (if any). This module turns those into
+ * the rows the card draws, decides whether the card belongs on screen at all,
+ * and owns the per-environment dismissal record.
+ *
+ * Which canvas depends on how Threadlines was started: `npx` bootstraps a
+ * project from the launch folder and lands on a draft thread, while a fresh
+ * desktop launch has no project and lands on the no-active-thread surface. See
+ * `FirstRunSetupSurface`.
  *
  * Status language is borrowed from the settings page (`getProviderSummary`)
  * and the availability verdict from the model picker
@@ -23,6 +28,8 @@ import type {
 } from "@threadlines/contracts";
 import { providerAuthReconnectCommand } from "@threadlines/shared/providerAuth";
 import * as Schema from "effect/Schema";
+import { useMemo } from "react";
+import { create } from "zustand";
 
 import {
   getLocalStorageItemWithLegacyKeys,
@@ -86,46 +93,142 @@ export function isFirstRunSetupDismissed(dismissalKey: string | null | undefined
   if (!dismissalKey) {
     return false;
   }
-  return readFirstRunSetupDismissals().keys.includes(dismissalKey);
+  return (
+    useFirstRunSetupDismissalStore.getState().dismissedKeys.has(dismissalKey) ||
+    readFirstRunSetupDismissals().keys.includes(dismissalKey)
+  );
 }
+
+/**
+ * The dismissal record, live.
+ *
+ * Storage alone is not enough: the card renders on two surfaces and the
+ * provider-update prompt reads the same verdict, so "Skip for now" has to
+ * reach every one of them in the same tick. A store does that; per-component
+ * state would leave one surface showing a card the user just dismissed on
+ * another.
+ */
+interface FirstRunSetupDismissalStore {
+  readonly dismissedKeys: ReadonlySet<string>;
+  readonly dismiss: (dismissalKey: string) => void;
+}
+
+export const useFirstRunSetupDismissalStore = create<FirstRunSetupDismissalStore>((set, get) => ({
+  dismissedKeys: new Set(readFirstRunSetupDismissals().keys),
+  dismiss: (dismissalKey) => {
+    if (get().dismissedKeys.has(dismissalKey)) {
+      return;
+    }
+    const document = readFirstRunSetupDismissals();
+    if (!document.keys.includes(dismissalKey)) {
+      writeFirstRunSetupDismissals({ keys: [...document.keys, dismissalKey] });
+    }
+    set((state) => ({ dismissedKeys: new Set(state.dismissedKeys).add(dismissalKey) }));
+  },
+}));
 
 export function dismissFirstRunSetup(dismissalKey: string | null | undefined): void {
   if (!dismissalKey) {
     return;
   }
-  const document = readFirstRunSetupDismissals();
-  if (document.keys.includes(dismissalKey)) {
-    return;
-  }
-  writeFirstRunSetupDismissals({ keys: [...document.keys, dismissalKey] });
+  useFirstRunSetupDismissalStore.getState().dismiss(dismissalKey);
+}
+
+/** Test seam: forgets in-memory dismissals so a suite can start from a cold install. */
+export function resetFirstRunSetupDismissalsForTests(): void {
+  useFirstRunSetupDismissalStore.setState({
+    dismissedKeys: new Set(readFirstRunSetupDismissals().keys),
+  });
 }
 
 /**
- * The card takes over the draft thread's empty state only on a genuine cold
- * start.
- *
- * Every clause is a reason the card would be noise: a hosted phone has its own
- * pairing surface and no local provider to fix; General Chat has no project
- * row to speak of; an environment still bootstrapping has not told us whether
- * it has threads; an environment where someone has already sent a message is
- * not a first run; and a dismissal is permanent.
+ * Reads this environment's dismissal, and writes one. Every caller shares the
+ * store behind it, so skipping on one surface hides the card on all of them.
  */
-export function shouldShowFirstRunSetupCard(input: {
+export function useFirstRunSetupDismissal(environmentId: EnvironmentId | null | undefined): {
+  readonly isDismissed: boolean;
+  readonly dismiss: () => void;
+} {
+  const dismissalKey = environmentId ? buildFirstRunSetupDismissalKey(environmentId) : null;
+  const isDismissed = useFirstRunSetupDismissalStore((store) =>
+    dismissalKey === null ? false : store.dismissedKeys.has(dismissalKey),
+  );
+  const dismissKey = useFirstRunSetupDismissalStore((store) => store.dismiss);
+
+  return useMemo(
+    () => ({
+      isDismissed,
+      dismiss: () => {
+        if (dismissalKey !== null) {
+          dismissKey(dismissalKey);
+        }
+      },
+    }),
+    [dismissKey, dismissalKey, isDismissed],
+  );
+}
+
+/**
+ * The two empty canvases a cold start can land on.
+ *
+ * `npx` bootstraps a project from the launch folder, so it always lands on a
+ * draft thread. A fresh desktop launch has no project at all and lands on the
+ * no-active-thread canvas instead, which is why the card has to cover both.
+ */
+export type FirstRunSetupSurface =
+  /** The draft thread's empty state, in place of "What's next in ...?". */
+  | {
+      readonly kind: "draftThread";
+      readonly isDraftThread: boolean;
+      readonly isGeneralChat: boolean;
+    }
+  /** The no-active-thread canvas, in place of "Start your first thread". */
+  | { readonly kind: "noThread" };
+
+/**
+ * Whether this surface is a place the card belongs. A server thread is not
+ * (the user is reading a conversation), and neither is a General Chat draft,
+ * which has no project row to speak of.
+ */
+export function isFirstRunSetupSurfaceEligible(surface: FirstRunSetupSurface): boolean {
+  return surface.kind === "noThread" || (surface.isDraftThread && !surface.isGeneralChat);
+}
+
+/**
+ * Whether this environment is still in its first run, independent of which
+ * surface is on screen.
+ *
+ * Every clause is a reason setup would be noise: a hosted phone has its own
+ * pairing surface and no local provider to fix; an environment still
+ * bootstrapping has not told us whether it has threads; an environment where
+ * someone has already sent a message is not a first run; and a dismissal is
+ * permanent.
+ *
+ * Split out from `shouldShowFirstRunSetupCard` because things that must stay
+ * quiet during setup (the provider-update prompt) need the verdict without
+ * caring which canvas the card is drawn on.
+ */
+export function isFirstRunSetupPending(input: {
   readonly isHostedStatic: boolean;
-  readonly isDraftThread: boolean;
-  readonly isGeneralChat: boolean;
   readonly bootstrapComplete: boolean;
   readonly hasUserMessagedThread: boolean;
   readonly isDismissed: boolean;
 }): boolean {
   return (
-    input.isDraftThread &&
     !input.isHostedStatic &&
-    !input.isGeneralChat &&
     input.bootstrapComplete &&
     !input.hasUserMessagedThread &&
     !input.isDismissed
   );
+}
+
+/** The card takes over an eligible empty canvas on a genuine cold start. */
+export function shouldShowFirstRunSetupCard(
+  input: {
+    readonly surface: FirstRunSetupSurface;
+  } & Parameters<typeof isFirstRunSetupPending>[0],
+): boolean {
+  return isFirstRunSetupSurfaceEligible(input.surface) && isFirstRunSetupPending(input);
 }
 
 /** What the user has to do next about one provider, if anything. */

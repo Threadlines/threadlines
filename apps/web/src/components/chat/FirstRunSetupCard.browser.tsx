@@ -445,4 +445,31 @@ describe("FirstRunSetupCard", () => {
 
     await screen.unmount();
   });
+
+  it("leads with the folder row on a launch that bootstrapped no project", async () => {
+    // What a desktop cold start looks like: nothing to work in, so the amber
+    // folder row is the first thing on the checklist rather than the last.
+    const screen = await renderCard({
+      providers: [SIGNED_IN_CLAUDE, SIGNED_OUT_CODEX],
+      projectName: null,
+    });
+
+    expect(Object.keys(rowStates())).toEqual(["project", "codex", "claudeAgent"]);
+    const projectDot = document.querySelector("[data-testid='first-run-setup-dot']");
+    expect(projectDot?.getAttribute("data-row-state")).toBe("missing");
+    expect(projectDot?.className).toContain("bg-warning");
+
+    await screen.unmount();
+  });
+
+  it("puts a folder that already exists back at the end of the checklist", async () => {
+    const screen = await renderCard({
+      providers: [SIGNED_OUT_CODEX],
+      projectName: "B-git-project",
+    });
+
+    expect(Object.keys(rowStates())).toEqual(["codex", "project"]);
+
+    await screen.unmount();
+  });
 });

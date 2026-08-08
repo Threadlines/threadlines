@@ -1,10 +1,12 @@
 /**
- * The first thing a brand-new install sees, in place of the empty draft
- * thread's usual "What's next in ...?" prompt.
+ * The first thing a brand-new install sees, in place of whichever empty canvas
+ * it landed on: the draft thread's "What's next in ...?" prompt, or the
+ * no-active-thread shell a desktop launch with no project starts from.
  *
  * It is the same provider data the settings page shows, with the fix action on
  * the row instead of two clicks away, plus the folder the server bootstrapped
- * from. Rows are live: provider snapshots stream in over providers-updated
+ * from (or the amber "Choose a folder" row when there is none). Rows are live:
+ * provider snapshots stream in over providers-updated
  * events, so a dot flips from amber to green as soon as a sign-in lands, and
  * "Start first thread" enables at the same moment.
  *
@@ -24,9 +26,12 @@
  */
 import type { EnvironmentId } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 
+import { useCommandPaletteStore } from "../../commandPaletteStore";
 import { cn } from "../../lib/utils";
+import { selectWorkspaceProjectsAcrossEnvironments, useStore } from "../../store";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ProviderInstallAction } from "../settings/ProviderInstallAction";
 import { useProviderConnectFlow } from "../settings/useProviderConnectFlow";
@@ -38,53 +43,17 @@ import {
   toProviderSignInFlowView,
 } from "./providerSignIn";
 import {
-  buildFirstRunSetupDismissalKey,
   canStartFirstThread,
   deriveFirstRunProjectRow,
   deriveFirstRunProviderRows,
-  dismissFirstRunSetup,
   groupFirstRunProviderRows,
-  isFirstRunSetupDismissed,
+  isFirstRunSetupSurfaceEligible,
+  useFirstRunSetupDismissal,
   type FirstRunProviderRow,
   type FirstRunSetupProvider,
+  type FirstRunSetupSurface,
 } from "./firstRunSetup";
-
-/**
- * Reads the environment's dismissal once and re-reads it after this hook
- * writes one, so "Skip for now" hides the card in the same tick. Callers that
- * dismiss on another path (a send) go through the returned `dismiss` too,
- * which keeps the render in step with storage.
- */
-export function useFirstRunSetupDismissal(environmentId: EnvironmentId | null | undefined): {
-  readonly isDismissed: boolean;
-  readonly dismiss: () => void;
-} {
-  const dismissalKey = environmentId ? buildFirstRunSetupDismissalKey(environmentId) : null;
-  const [dismissedKeys, setDismissedKeys] = useState<ReadonlyArray<string>>(() =>
-    dismissalKey !== null && isFirstRunSetupDismissed(dismissalKey) ? [dismissalKey] : [],
-  );
-
-  const dismiss = useCallback(() => {
-    if (dismissalKey === null) {
-      return;
-    }
-    dismissFirstRunSetup(dismissalKey);
-    setDismissedKeys((current) =>
-      current.includes(dismissalKey) ? current : [...current, dismissalKey],
-    );
-  }, [dismissalKey]);
-
-  // Re-read storage when the key changes (environment switch) rather than on
-  // every render: this hook lives in the chat view's render path.
-  const isDismissed = useMemo(
-    () =>
-      dismissalKey !== null &&
-      (dismissedKeys.includes(dismissalKey) || isFirstRunSetupDismissed(dismissalKey)),
-    [dismissalKey, dismissedKeys],
-  );
-
-  return { isDismissed, dismiss };
-}
+import { useFirstRunSetupPending } from "./firstRunSetupState";
 
 function SetupRow({
   rowId,
@@ -216,6 +185,37 @@ export function FirstRunSetupCard({
       projectRow.description
     );
 
+  const projectSetupRow = (
+    <SetupRow
+      rowId="project"
+      state={projectRow.state}
+      dotClassName={projectRow.dotClassName}
+      name="Project"
+      description={projectDescription}
+      action={
+        projectRow.state === "ready" ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={onChooseProject}
+          >
+            {projectRow.actionLabel}
+          </Button>
+        ) : (
+          <Button size="xs" onClick={onChooseProject}>
+            {projectRow.actionLabel}
+          </Button>
+        )
+      }
+    />
+  );
+  // Rows are ordered by what the user has to do next, which is why the agents
+  // sort by actionability. A folder that is already there is confirmation and
+  // sits at the end; a missing one is the whole reason this canvas is empty,
+  // so it leads.
+  const projectRowLeads = projectRow.state === "missing";
+
   return (
     <div
       className="flex w-full max-w-140 flex-col items-center pb-10"
@@ -236,6 +236,7 @@ export function FirstRunSetupCard({
       </p>
 
       <ul className="no-thread-rise mt-6 w-full border-t border-border" style={riseDelay("0.32s")}>
+        {projectRowLeads ? projectSetupRow : null}
         {providerRowGroups.visible.map((row) => (
           <SetupRow
             key={row.instanceId}
@@ -269,29 +270,7 @@ export function FirstRunSetupCard({
             }
           />
         ) : null}
-        <SetupRow
-          rowId="project"
-          state={projectRow.state}
-          dotClassName={projectRow.dotClassName}
-          name="Project"
-          description={projectDescription}
-          action={
-            projectRow.state === "ready" ? (
-              <Button
-                size="xs"
-                variant="ghost"
-                className="text-muted-foreground hover:text-foreground"
-                onClick={onChooseProject}
-              >
-                {projectRow.actionLabel}
-              </Button>
-            ) : (
-              <Button size="xs" onClick={onChooseProject}>
-                {projectRow.actionLabel}
-              </Button>
-            )
-          }
-        />
+        {projectRowLeads ? null : projectSetupRow}
       </ul>
 
       <div
@@ -323,4 +302,79 @@ export function FirstRunSetupCard({
       </div>
     </div>
   );
+}
+
+/** The project a surface is already bound to, if it has one. */
+export interface FirstRunSetupActiveProject {
+  readonly name: string;
+  readonly cwd: string;
+  readonly environmentId: EnvironmentId;
+}
+
+export interface UseFirstRunSetupCardInput {
+  readonly surface: FirstRunSetupSurface;
+  /** The environment whose first run this is. */
+  readonly environmentId: EnvironmentId | null | undefined;
+  /** Provider instances for that environment, in the order Settings lists them. */
+  readonly providers: ReadonlyArray<FirstRunSetupProvider>;
+  /**
+   * The project this surface already has. A reloaded draft has none bound yet,
+   * and the no-thread canvas never does; both fall back to the workspace's
+   * first project so the card cannot claim "No folder yet" while the sidebar
+   * shows one.
+   */
+  readonly activeProject: FirstRunSetupActiveProject | null;
+  /** Runs after "Start first thread" completes setup. */
+  readonly onStart: () => void;
+}
+
+export interface FirstRunSetupCardState {
+  /** True when the card owns this surface's empty state. */
+  readonly isVisible: boolean;
+  /** The card, or null when it does not belong here. */
+  readonly card: ReactNode | null;
+  /** Completes setup for this environment on every surface at once. */
+  readonly dismiss: () => void;
+}
+
+/**
+ * Assembles the setup card for one surface: the gate, the environment's
+ * provider and project data, and the actions.
+ *
+ * Lives here rather than in either caller because both empty canvases -- the
+ * draft thread and the no-active-thread shell -- need the identical card under
+ * the identical gate, and a fresh desktop launch reaches only the second one.
+ */
+export function useFirstRunSetupCard(input: UseFirstRunSetupCardInput): FirstRunSetupCardState {
+  const { activeProject, environmentId, onStart, providers, surface } = input;
+  const isPending = useFirstRunSetupPending(environmentId);
+  const { dismiss } = useFirstRunSetupDismissal(environmentId);
+  const isVisible = isPending && isFirstRunSetupSurfaceEligible(surface);
+
+  const workspaceProjects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
+  const project = activeProject ?? workspaceProjects[0] ?? null;
+  const isOnlyWorkspaceProject = workspaceProjects.length === 1;
+
+  const card = useMemo(() => {
+    if (!isVisible) {
+      return null;
+    }
+    return (
+      <FirstRunSetupCard
+        providers={providers}
+        projectName={project?.name ?? null}
+        projectCwd={project?.cwd ?? null}
+        projectEnvironmentId={project?.environmentId ?? environmentId ?? null}
+        isOnlyWorkspaceProject={isOnlyWorkspaceProject}
+        onChooseProject={() => useCommandPaletteStore.getState().openAddProject()}
+        onSkip={dismiss}
+        onStart={() => {
+          dismiss();
+          onStart();
+        }}
+      />
+    );
+  }, [dismiss, environmentId, isOnlyWorkspaceProject, isVisible, onStart, project, providers]);
+
+  return { isVisible, card, dismiss };
 }

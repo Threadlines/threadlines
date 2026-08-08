@@ -89,7 +89,6 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import {
-  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
   selectWorkspaceProjectsAcrossEnvironments,
@@ -194,9 +193,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
 import { DraftEmptyState } from "./chat/DraftEmptyState";
-import { FirstRunSetupCard, useFirstRunSetupDismissal } from "./chat/FirstRunSetupCard";
-import { shouldShowFirstRunSetupCard } from "./chat/firstRunSetup";
-import { isHostedStaticApp } from "../hostedPairing";
+import { useFirstRunSetupCard } from "./chat/FirstRunSetupCard";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { DesktopPreviewPickedElement } from "@threadlines/contracts";
@@ -315,9 +312,7 @@ import {
 } from "../versionSkew";
 import { derivePlanTaskBadge, useThreadPlanCatalog } from "../planPanelState";
 import {
-  deriveProviderInstanceEntries,
-  filterMaintainedProviderInstanceEntries,
-  sortProviderInstanceEntries,
+  deriveDisplayProviderInstanceEntries,
   type ProviderInstanceEntry,
 } from "../providerInstances";
 
@@ -1758,10 +1753,7 @@ export default function ChatView(props: ChatViewProps) {
   const providerStatusesRef = useRef(providerStatuses);
   providerStatusesRef.current = providerStatuses;
   const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
-    () =>
-      filterMaintainedProviderInstanceEntries(
-        sortProviderInstanceEntries(deriveProviderInstanceEntries(providerStatuses)),
-      ),
+    () => deriveDisplayProviderInstanceEntries(providerStatuses),
     [providerStatuses],
   );
   const modelOptionsByInstance = useMemo(() => {
@@ -3395,67 +3387,31 @@ export default function ChatView(props: ChatViewProps) {
   // --- First-run setup card -------------------------------------------------
   // A cold install has no threads and no guidance, so the draft thread's empty
   // state becomes the setup checklist until the user sends something or skips.
-  // Hosted phone/browser sessions are excluded: they have their own pairing
-  // states and no local provider they could sign in to from here.
-  const isHostedStaticSurface = useMemo(() => isHostedStaticApp(), []);
-  const { isDismissed: isFirstRunSetupDismissed, dismiss: dismissFirstRunSetupForEnvironment } =
-    useFirstRunSetupDismissal(draftThread?.environmentId ?? environmentId);
-  const hasUserMessagedThread = useStore((state) => {
-    const environmentState = selectEnvironmentState(state, environmentId);
-    return environmentState.threadIds.some(
-      (candidateThreadId) =>
-        environmentState.sidebarThreadSummaryById[candidateThreadId]?.latestUserMessageAt != null,
-    );
+  // The same card renders on the no-active-thread shell (see
+  // `NoActiveThreadState`), which is where a desktop launch with no project
+  // lands; the shared hook keeps the gate and the dismissal identical there.
+  //
+  // A reloaded draft thread has no project bound yet (`activeProject` is null
+  // until the first send); the hook falls back to the workspace's first
+  // project so the card cannot claim "No folder yet" while the sidebar shows
+  // one. General Chat can't be the active project here because the card never
+  // renders on General Chat drafts.
+  const {
+    isVisible: showFirstRunSetupCard,
+    card: firstRunSetupCard,
+    dismiss: dismissFirstRunSetupForEnvironment,
+  } = useFirstRunSetupCard({
+    surface: {
+      kind: "draftThread",
+      isDraftThread: isLocalDraftThread && draftThread !== undefined,
+      isGeneralChat: isGeneralChatThread,
+    },
+    environmentId: draftThread?.environmentId ?? environmentId,
+    providers: providerInstanceEntries,
+    activeProject: activeProject ?? null,
+    onStart: scheduleComposerFocus,
   });
-  const isEnvironmentBootstrapComplete = useStore(
-    (state) => selectEnvironmentState(state, environmentId).bootstrapComplete,
-  );
-  const showFirstRunSetupCard = shouldShowFirstRunSetupCard({
-    isHostedStatic: isHostedStaticSurface,
-    isDraftThread: isLocalDraftThread && draftThread !== undefined,
-    isGeneralChat: isGeneralChatThread,
-    bootstrapComplete: isEnvironmentBootstrapComplete,
-    hasUserMessagedThread,
-    isDismissed: isFirstRunSetupDismissed,
-  });
-  const firstRunWorkspaceProjects = useMemo(
-    () => allProjects.filter((project) => project.kind !== "general-chat"),
-    [allProjects],
-  );
-  // A reloaded draft thread has no project bound yet (`activeProject` is
-  // null until the first send), but the bootstrapped workspace project is
-  // already in the project list; the card must not claim "No folder yet"
-  // while the sidebar shows one. General Chat can't be the active project
-  // here because the card never renders on General Chat drafts.
-  const firstRunProject = activeProject ?? firstRunWorkspaceProjects[0] ?? null;
-  const firstRunSetupEmptyState = useMemo(() => {
-    if (!showFirstRunSetupCard) {
-      return undefined;
-    }
-    return (
-      <FirstRunSetupCard
-        providers={providerInstanceEntries}
-        projectName={firstRunProject?.name ?? null}
-        projectCwd={firstRunProject?.cwd ?? null}
-        projectEnvironmentId={firstRunProject?.environmentId ?? environmentId}
-        isOnlyWorkspaceProject={firstRunWorkspaceProjects.length === 1}
-        onChooseProject={() => useCommandPaletteStore.getState().openAddProject()}
-        onSkip={dismissFirstRunSetupForEnvironment}
-        onStart={() => {
-          dismissFirstRunSetupForEnvironment();
-          scheduleComposerFocus();
-        }}
-      />
-    );
-  }, [
-    dismissFirstRunSetupForEnvironment,
-    environmentId,
-    firstRunProject,
-    firstRunWorkspaceProjects.length,
-    providerInstanceEntries,
-    scheduleComposerFocus,
-    showFirstRunSetupCard,
-  ]);
+  const firstRunSetupEmptyState = firstRunSetupCard ?? undefined;
 
   const runMcpAuthReconnect = useCallback(
     async (action: McpAuthReconnectAction) => {

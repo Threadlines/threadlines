@@ -17,8 +17,10 @@ import {
   getProviderUpdateRejectedToastView,
   getProviderUpdateRunningToastView,
   providerUpdateNotificationKey,
+  shouldOpenProviderUpdatePrompt,
   type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
+import { useActiveEnvironmentFirstRunSetupPending } from "./chat/firstRunSetupState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 const seenProviderUpdateNotificationKeys = new Set<string>();
@@ -163,6 +165,8 @@ export function ProviderUpdateLaunchNotification() {
   const activeToastRef = useRef<ActiveProviderUpdateToast | null>(null);
   const { dismissedNotificationKeys, dismissNotificationKey } =
     useDismissedProviderUpdateNotificationKeys();
+  // First-run setup owns the screen while it is up; this prompt waits for it.
+  const firstRunSetupPending = useActiveEnvironmentFirstRunSetupPending();
 
   const updateProviders = useMemo(() => collectProviderUpdateCandidates(providers), [providers]);
   const notificationKey = useMemo(
@@ -223,11 +227,17 @@ export function ProviderUpdateLaunchNotification() {
       activeToastRef.current = null;
     }
 
+    if (notificationKey === null) {
+      return;
+    }
     if (
-      !notificationKey ||
-      dismissedNotificationKeys.has(notificationKey) ||
-      seenProviderUpdateNotificationKeys.has(notificationKey) ||
-      activeToastRef.current
+      !shouldOpenProviderUpdatePrompt({
+        notificationKey,
+        isDismissed: dismissedNotificationKeys.has(notificationKey),
+        isAlreadySeen: seenProviderUpdateNotificationKeys.has(notificationKey),
+        hasActiveToast: activeToastRef.current !== null,
+        isFirstRunSetupPending: firstRunSetupPending,
+      })
     ) {
       return;
     }
@@ -354,6 +364,7 @@ export function ProviderUpdateLaunchNotification() {
   }, [
     dismissNotificationKey,
     dismissedNotificationKeys,
+    firstRunSetupPending,
     notificationKey,
     oneClickProviders,
     openProviderSettings,
