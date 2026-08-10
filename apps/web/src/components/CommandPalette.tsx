@@ -24,6 +24,7 @@ import {
   CornerLeftUpIcon,
   FolderIcon,
   FolderPlusIcon,
+  GaugeIcon,
   HomeIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -1614,6 +1615,17 @@ function OpenCommandPaletteDialog() {
       },
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:usage",
+    searchTerms: ["usage", "tokens", "cost", "spend", "spending", "price", "billing"],
+    title: "Open usage",
+    icon: <GaugeIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/usage" });
+    },
+  });
 
   actionItems.push({
     kind: "action",

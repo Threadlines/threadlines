@@ -117,6 +117,7 @@ import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
+import { SidebarUsageMeter } from "./sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
 import { useSettings } from "~/hooks/useSettings";
@@ -320,6 +321,9 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarUsageMeter />
+        </SidebarMenuItem>
         <SidebarMenuItem className="flex items-center gap-1.5">
           <SidebarMenuButton
             size="sm"

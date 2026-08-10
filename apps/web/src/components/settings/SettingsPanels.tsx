@@ -1,13 +1,15 @@
 import {
   ArchiveIcon,
   ArchiveX,
+  ChevronRightIcon,
   LoaderIcon,
   PlusIcon,
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
@@ -19,6 +21,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ScopedThreadRef,
+  type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
@@ -37,6 +40,11 @@ import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
+import {
+  deriveUsageWindow,
+  usageSummaryQueryOptions,
+  useUsageEnvironmentTargets,
+} from "../../lib/usageReactQuery";
 import {
   resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionState,
@@ -133,6 +141,8 @@ const MAINTAINED_PROVIDER_DRIVER_KINDS = DRIVER_OPTIONS.map((definition) => defi
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
 const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
+/** A month reads as "recently" without being a single noisy week. */
+const USAGE_SETTINGS_WINDOW_DAYS: UsageWindowDays = 30;
 
 function waitForInactiveThreadArchiveCommandSlot(): Promise<void> {
   return new Promise((resolve) =>
@@ -1060,6 +1070,55 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   );
 }
 
+/**
+ * The bridge from provider setup to what those providers have actually cost:
+ * a clickable tile in the same card family as the provider entries below it,
+ * named for its window so the figures cannot be mistaken for all-time totals.
+ */
+function ProviderUsageLinkRow() {
+  const targets = useUsageEnvironmentTargets();
+  // The same scan the usage page reads, narrowed here rather than re-fetched.
+  const usageQuery = useQuery(usageSummaryQueryOptions({ targets }));
+  const scan = usageQuery.data ?? null;
+  const merged = useMemo(
+    () => (scan ? deriveUsageWindow(scan, USAGE_SETTINGS_WINDOW_DAYS).merged : null),
+    [scan],
+  );
+
+  return (
+    <Link
+      className="group/usage-tile relative block overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 transition-colors not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] hover:border-border focus-ring dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]"
+      data-testid="settings-usage-link"
+      to="/usage"
+    >
+      <span className="flex items-center gap-3 px-5 py-3.5">
+        <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
+            Usage · Last {USAGE_SETTINGS_WINDOW_DAYS} days
+          </span>
+          {/* One typeface AND one color: mixing brightness on a line of small
+              mono type erodes the dim glyphs' anti-aliased bottom edge, so the
+              muted words read a pixel higher than the numbers beside them. The
+              caps label above carries the hierarchy instead. */}
+          {merged ? (
+            <span className="min-w-0 truncate font-mono text-[13px] text-foreground/90 tabular-nums">
+              {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground/55">Reading provider transcripts…</span>
+          )}
+        </span>
+        {/* Bottom-aligned, not centered: the affordance sits level with the
+            figures line rather than floating between the two left rows. */}
+        <span className="flex shrink-0 items-center gap-1 self-end pb-px text-xs text-muted-foreground transition-colors group-hover/usage-tile:text-foreground">
+          View usage
+          <ChevronRightIcon className="size-3.5" />
+        </span>
+      </span>
+    </Link>
+  );
+}
+
 export function ProviderSettingsPanel({
   focusedInstanceId = null,
 }: {
@@ -1387,6 +1446,7 @@ export function ProviderSettingsPanel({
             Account, usage, and configuration apply to the paired computer. Favorites and model
             ordering are saved on this device.
           </p>
+          <ProviderUsageLinkRow />
           {rows.map((row) => {
             const driverOption = getDriverOption(row.driver);
             const liveProvider = serverProviders.find(

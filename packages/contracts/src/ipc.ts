@@ -52,6 +52,7 @@ import type {
   VcsStatusResult,
 } from "./git.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
+import type { UsageSummary, UsageSummaryInput } from "./usage.ts";
 import type {
   ProjectFaviconInput,
   ProjectFaviconResult,
@@ -1177,6 +1178,14 @@ export interface EnvironmentApi {
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
+  };
+  /**
+   * Token/cost reporting for this environment's provider transcripts. Optional
+   * so a client can still talk to a server predating the usage scan; callers
+   * treat its absence the same way they treat an unreachable environment.
+   */
+  usage?: {
+    summary: (input: UsageSummaryInput) => Promise<UsageSummary>;
   };
   sourceControl: {
     lookupRepository: (

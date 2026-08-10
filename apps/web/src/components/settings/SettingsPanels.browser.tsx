@@ -17,12 +17,13 @@ import {
   type ServerProvider,
   type SourceControlDiscoveryResult,
 } from "@threadlines/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { page } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -40,6 +41,23 @@ import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
 
+/**
+ * The app-wide providers these panels are always mounted under. Settings rows
+ * read cached data (usage, updates), so a bare render would crash on the
+ * missing query client rather than on anything the test is about.
+ */
+function TestAppProviders({ children }: { children: ReactNode }) {
+  const [queryClient] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AppAtomRegistryProvider>{children}</AppAtomRegistryProvider>
+    </QueryClientProvider>
+  );
+}
+
 function renderWithTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({
     component: () => children,
@@ -52,7 +70,6 @@ function renderWithTestRouter(children: ReactNode) {
     routeTree: rootRoute.addChildren([indexRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
-
   return render(<RouterProvider router={router} />);
 }
 
@@ -787,10 +804,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Connect your phone or tablet")).toBeInTheDocument();
@@ -835,10 +852,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Create link", exact: true }).click();
@@ -875,10 +892,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await vi.waitFor(() => {
@@ -915,10 +932,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Create link", exact: true }).click();
@@ -964,10 +981,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Create link", exact: true }).click();
@@ -1001,10 +1018,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Create link", exact: true }).click();
@@ -1075,10 +1092,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect
@@ -1168,10 +1185,10 @@ describe("GeneralSettingsPanel observability", () => {
     });
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("http://192.168.86.39:3773/")).toBeInTheDocument();
@@ -1194,9 +1211,9 @@ describe("GeneralSettingsPanel observability", () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
     mounted = await renderWithTestRouter(
-      <AppAtomRegistryProvider>
+      <TestAppProviders>
         <GeneralSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("About")).toBeInTheDocument();
@@ -1217,9 +1234,9 @@ describe("GeneralSettingsPanel observability", () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
     mounted = await renderWithTestRouter(
-      <AppAtomRegistryProvider>
+      <TestAppProviders>
         <GeneralSettingsPanel surface="phone" />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect
@@ -1252,9 +1269,9 @@ describe("GeneralSettingsPanel observability", () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
     mounted = await renderWithTestRouter(
-      <AppAtomRegistryProvider>
+      <TestAppProviders>
         <GeneralSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     const analyticsSwitch = page.getByRole("switch", {
@@ -1364,10 +1381,10 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Connected devices")).toBeInTheDocument();
@@ -1457,10 +1474,10 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
@@ -1523,10 +1540,10 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Loading devices...")).toBeInTheDocument();
@@ -1552,10 +1569,10 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     const networkAccessToggle = page.getByLabelText("Allow phone and tablet access");
@@ -1606,10 +1623,10 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ConnectionsSettings />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Add computer", exact: true }).click();
@@ -1699,10 +1716,10 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <DiagnosticsSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     const openLogsButton = page.getByLabelText("Open logs folder");
@@ -1714,10 +1731,10 @@ describe("GeneralSettingsPanel observability", () => {
   it("shows Claude configuration fields in provider settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByLabelText("Toggle Claude details").click();
@@ -1754,10 +1771,10 @@ describe("GeneralSettingsPanel observability", () => {
       ],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText(/Credential configured · Claude Max/)).toBeInTheDocument();
@@ -1779,10 +1796,10 @@ describe("GeneralSettingsPanel observability", () => {
       ],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByLabelText("Toggle Claude details").click();
@@ -1839,10 +1856,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createCodexProviderWithResetCredits()],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByLabelText("Choose a reset credit for Codex usage").click();
@@ -1874,10 +1891,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createClaudeProvider()],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByLabelText("Toggle Claude details").click();
@@ -1916,10 +1933,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createClaudeProvider()],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByLabelText("Toggle Claude details").click();
@@ -1953,10 +1970,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createOutdatedProvider("codex")],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Update available — view details" }).click();
@@ -1988,10 +2005,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createMissingClaudeProvider({ canInstall: true })],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     // The button replaces the manual recipe; the diagnosis sentence stays.
@@ -2037,10 +2054,10 @@ describe("GeneralSettingsPanel observability", () => {
       ],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Installing… added 1 package")).toBeVisible();
@@ -2065,10 +2082,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createMissingClaudeProvider()],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     // No derived install command: the full guide sentence and its link stay.
@@ -2099,10 +2116,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createVerifiedNativeOutdatedClaudeProvider()],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Update available — view details" }).click();
@@ -2158,10 +2175,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [provider],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Update available — view details" }).click();
@@ -2192,10 +2209,10 @@ describe("GeneralSettingsPanel observability", () => {
       providers: [createOutdatedProvider("codex", longUpdateCommand)],
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <ProviderSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await page.getByRole("button", { name: "Update available — view details" }).click();
@@ -2264,10 +2281,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
   it("shows skeleton sections while the first source control scan is pending", async () => {
     setSourceControlDiscoveryStub(() => new Promise(() => {}));
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Version Control")).toBeInTheDocument();
@@ -2284,10 +2301,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
       sourceControlProviders: [],
     }));
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByText("Nothing detected yet")).toBeInTheDocument();
@@ -2318,10 +2335,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
       sourceControlProviders: [],
     }));
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByRole("switch", { name: "Git availability" })).toBeDisabled();
@@ -2364,10 +2381,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
       ],
     }));
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect
@@ -2396,10 +2413,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
       sourceControlProviders: [],
     }));
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     const toggle = page.getByRole("button", { name: "Toggle Git details" });
@@ -2437,10 +2454,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
       };
     });
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByRole("switch", { name: "Git availability" })).toBeDisabled();
@@ -2451,10 +2468,10 @@ describe("SourceControlSettingsPanel discovery states", () => {
     mounted = null;
     document.body.innerHTML = "";
 
-    mounted = await render(
-      <AppAtomRegistryProvider>
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
         <SourceControlSettingsPanel />
-      </AppAtomRegistryProvider>,
+      </TestAppProviders>,
     );
 
     await expect.element(page.getByRole("switch", { name: "Git availability" })).toBeDisabled();

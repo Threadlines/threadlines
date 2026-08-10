@@ -1,0 +1,155 @@
+// @effect-diagnostics globalDate:off -- Usage windows are calendar days in the viewer's zone, derived from wall-clock "now" via Intl.
+/**
+ * Display formatting and window construction for the usage page.
+ *
+ * Costs formatted here are API list-price equivalents, not billed spend; the
+ * surrounding UI copy has to say so.
+ *
+ * @module usageFormat
+ */
+import { UsageDay, type UsageSummaryInput, type UsageWindowDays } from "@threadlines/contracts";
+
+const CURRENCY = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const INTEGER = new Intl.NumberFormat("en-US");
+
+const DAY_MS = 86_400_000;
+
+export function formatUsd(value: number): string {
+  return CURRENCY.format(value);
+}
+
+export function formatCount(value: number): string {
+  return INTEGER.format(Math.round(value));
+}
+
+/**
+ * Compacts a token count to three significant figures with a unit suffix, so
+ * columns of numbers line up at a glance (`19.9B`, `76.7M`, `804K`).
+ */
+export function formatTokens(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1e12) return `${trim(value / 1e12)}T`;
+  if (abs >= 1e9) return `${trim(value / 1e9)}B`;
+  if (abs >= 1e6) return `${trim(value / 1e6)}M`;
+  if (abs >= 1e3) return `${trim(value / 1e3)}K`;
+  return INTEGER.format(Math.round(value));
+}
+
+function trim(value: number): string {
+  const abs = Math.abs(value);
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
+  return value.toFixed(digits).replace(/\.0+$/, "");
+}
+
+/**
+ * {@link formatTokens} without trailing zeros ("2.4M", never "2.40M"), for
+ * one-off figures like the sidebar meter. Tables keep the padded form so
+ * fraction digits line up.
+ */
+export function formatTokensCompact(value: number): string {
+  return formatTokens(value)
+    .replace(/(\.\d*?)0+(?=[A-Z]?$)/, "$1")
+    .replace(/\.(?=[A-Z]?$)/, "");
+}
+
+export function formatPercent(share: number, digits = 1): string {
+  return `${(share * 100).toFixed(digits)}%`;
+}
+
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+/** `2026-08-07` to `Aug 7`. */
+export function formatDayShort(day: string): string {
+  const [year, month, dayOfMonth] = day.split("-").map((part) => Number(part));
+  if (year === undefined || month === undefined || dayOfMonth === undefined) return day;
+  return `${MONTHS[month - 1] ?? ""} ${dayOfMonth}`;
+}
+
+/** Inclusive day list between two `YYYY-MM-DD` bounds. */
+export function enumerateDays(sinceDay: string, untilDay: string): readonly string[] {
+  const days: string[] = [];
+  const start = Date.parse(`${sinceDay}T00:00:00Z`);
+  const end = Date.parse(`${untilDay}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return days;
+
+  for (let cursor = start; cursor <= end; cursor += DAY_MS) {
+    days.push(new Date(cursor).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/**
+ * Inclusive first day of a window of `windowDays` ending on `untilDay`.
+ *
+ * The page fetches one long window and narrows it on the client, so the shorter
+ * selections have to be anchored to the day the scan actually ended on rather
+ * than to a fresh "now" that may already have rolled over.
+ */
+export function windowStartDay(untilDay: string, windowDays: number): string {
+  const [year = 0, month = 1, dayOfMonth = 1] = untilDay
+    .split("-")
+    .map((part) => Number.parseInt(part, 10));
+  // Calendar arithmetic in UTC, where every day is the same length.
+  const start = new Date(Date.UTC(year, month - 1, dayOfMonth - (windowDays - 1)));
+  return start.toISOString().slice(0, 10);
+}
+
+/**
+ * The window the page requests for a 7/30/90-day selection, expressed in the
+ * viewer's own time zone so days line up with what they actually experienced.
+ *
+ * The zone travels with the request rather than being inferred server-side: the
+ * machine holding the transcripts is often not the machine looking at them.
+ */
+export function makeUsageWindow(windowDays: UsageWindowDays, now = new Date()): UsageSummaryInput {
+  return buildUsageWindow(windowDays, now);
+}
+
+/**
+ * Today alone, for the compact live figure in the sidebar footer.
+ *
+ * Separate from {@link makeUsageWindow} because one day is not one of the
+ * windows the page offers, and widening that function's type would invite
+ * arbitrary windows the scan cache is not sized for.
+ */
+export function makeTodayUsageWindow(now = new Date()): UsageSummaryInput {
+  return buildUsageWindow(1, now);
+}
+
+function buildUsageWindow(windowDays: number, now: Date): UsageSummaryInput {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const format = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const untilDay = format.format(now);
+  // Subtracting fixed milliseconds from `now` lands on the wrong calendar day
+  // around a DST transition. Only "today" needs the zone; the window start is
+  // pure calendar arithmetic on that day, done in UTC where days are uniform.
+  return {
+    sinceDay: UsageDay.make(windowStartDay(untilDay, windowDays)),
+    untilDay: UsageDay.make(untilDay),
+    timeZone,
+  };
+}

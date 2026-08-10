@@ -68,6 +68,9 @@ const rpcClientMock = {
   filesystem: {
     browse: vi.fn(),
   },
+  usage: {
+    summary: vi.fn(),
+  },
   sourceControl: {
     lookupRepository: vi.fn(),
     listRepositories: vi.fn(),

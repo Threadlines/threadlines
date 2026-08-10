@@ -582,10 +582,19 @@ function ClaudeLongLivedAuthSection(props: {
   return (
     <details
       className="group border-t border-border/50 pt-4"
+      // React alone drives `open`: the summary click below prevents the
+      // native toggle. Letting the browser toggle first creates a race where a
+      // render committed before the onToggle state update re-applies the stale
+      // `open` and snaps the section shut (a CI-only flake on loaded runners).
       open={isExpanded}
-      onToggle={(event) => setIsExpanded(event.currentTarget.open)}
     >
-      <summary className="cursor-pointer list-none text-xs font-semibold text-foreground marker:hidden">
+      <summary
+        className="cursor-pointer list-none text-xs font-semibold text-foreground marker:hidden"
+        onClick={(event) => {
+          event.preventDefault();
+          setIsExpanded((expanded) => !expanded);
+        }}
+      >
         <span className="inline-flex items-center gap-1.5">
           <ChevronDownIcon className="size-3 transition-transform group-open:rotate-180" />
           Advanced: headless chat token
