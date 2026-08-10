@@ -1,0 +1,136 @@
+name: Docker Image
+
+run-name: Docker image ${{ inputs.version || github.event.release.tag_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm @threadlines/server version to package, for example 0.3.3."
+        required: true
+        type: string
+      tag_latest:
+        description: "Also move the :latest tag to this version."
+        required: false
+        type: boolean
+        default: true
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-image-${{ inputs.version || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build, smoke, publish
+    # Nightlies are not published to npm, so only stable releases build images.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      IMAGE: ghcr.io/threadlines/threadlines
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve version
+        id: meta
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          TAG_LATEST: ${{ inputs.tag_latest }}
+        run: |
+          set -euo pipefail
+          version="${DISPATCH_VERSION:-${RELEASE_TAG#v}}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Docker images build from plain stable versions, got '${version}'."
+            exit 1
+          fi
+          tag_latest="${TAG_LATEST:-true}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_latest=$tag_latest" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the npm package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        # The GitHub release and the npm publish are separate lanes of the
+        # same cut; whichever lands second, the image build waits rather than
+        # failing on ordering.
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if npm view "@threadlines/server@${VERSION}" version > /dev/null 2>&1; then
+              echo "npm has ${VERSION}"
+              exit 0
+            fi
+            echo "npm does not have ${VERSION} yet (attempt ${attempt}/60)"
+            sleep 10
+          done
+          echo "::error::@threadlines/server@${VERSION} never appeared on npm."
+          exit 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build amd64 for smoke test
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: docker
+          load: true
+          tags: threadlines-smoke:candidate
+          build-args: |
+            THREADLINES_VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Boot smoke
+        # A broken image must never publish: it has to come up, answer HTTP,
+        # print a pairing URL, and carry working agent CLIs.
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 3773:3773 threadlines-smoke:candidate
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3773/api/auth/session > /dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "::error::Server never answered on 3773."
+              docker logs smoke
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs smoke | grep -q "pairingUrl" || {
+            echo "::error::Boot log printed no pairing URL."
+            docker logs smoke
+            exit 1
+          }
+          docker exec smoke claude --version
+          docker exec smoke codex --version
+          docker exec smoke git --version
+          docker rm -f smoke
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: docker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.tag_latest == 'true' && format('{0}:latest', env.IMAGE) || '' }}
+          build-args: |
+            THREADLINES_VERSION=${{ steps.meta.outputs.version }}
