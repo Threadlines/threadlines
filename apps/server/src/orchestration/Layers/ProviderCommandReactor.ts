@@ -86,6 +86,7 @@ type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.runtime-mode-set"
+      | "thread.meta-updated"
       | "thread.turn-start-requested"
       | "thread.follow-up-submitted"
       | "thread.turn-interrupt-requested"
@@ -1960,6 +1961,79 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Session statuses in which a queued checkout switch can apply right away:
+   * the runtime is alive but owns no in-flight turn whose files a restart
+   * would swap out from under it.
+   */
+  const idleSessionStatuses: ReadonlySet<OrchestrationSession["status"]> = new Set([
+    "idle",
+    "ready",
+    "interrupted",
+  ]);
+
+  /**
+   * A queued checkout switch normally applies when the next turn is
+   * dispatched. When the session is already idle with no background tasks
+   * left, waiting for the user's next message just leaves every surface
+   * pointed at the old checkout, so cycle the session now instead. Only a
+   * live, projected-and-bound session is moved — a thread without a running
+   * runtime keeps lazy semantics (its next turn starts in the right place).
+   */
+  const maybeApplyQueuedCheckoutSwitch = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    occurredAt: string,
+  ) {
+    const thread = yield* resolveThread(threadId);
+    const session = thread?.session;
+    if (!thread || !session || !idleSessionStatuses.has(session.status)) {
+      return;
+    }
+    if (session.activeTurnId !== null || (session.pendingBackgroundTaskCount ?? 0) > 0) {
+      return;
+    }
+    // The projected checkoutCwd is rewritten on every (re)bind; null means we
+    // never learned where the runtime runs, so leave the switch to the next
+    // turn dispatch rather than guessing.
+    const sessionCheckoutCwd = session.checkoutCwd ?? undefined;
+    if (sessionCheckoutCwd === undefined) {
+      return;
+    }
+    const project = yield* resolveProject(thread.projectId);
+    if (!project || project.kind === "general-chat") {
+      return;
+    }
+    const targetCwd = resolveThreadWorkspaceCwd({ thread, projects: [project] });
+    if (!targetCwd || isSameWorkspaceCwd(targetCwd, sessionCheckoutCwd)) {
+      return;
+    }
+    const activeSession = (yield* providerService.listSessions()).find(
+      (candidate) => candidate.threadId === threadId,
+    );
+    if (!activeSession || isSameWorkspaceCwd(targetCwd, activeSession.cwd)) {
+      return;
+    }
+    yield* Effect.logInfo("provider command reactor applying queued checkout switch on idle", {
+      threadId,
+      fromCwd: sessionCheckoutCwd,
+      toCwd: targetCwd,
+    });
+    const cachedModelSelection = threadModelSelections.get(threadId);
+    yield* ensureSessionForThread(
+      threadId,
+      occurredAt,
+      cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("provider command reactor failed to apply queued checkout switch", {
+          threadId,
+          toCwd: targetCwd,
+          detail: String(error),
+        }),
+      ),
+    );
+  });
+
+  /**
    * Pending approval / user-input prompts are answered through the live
    * provider session; once that session stops (explicit stop, inactivity
    * reap, startup reconcile after a server restart) the provider-side
@@ -1971,6 +2045,16 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
   ) {
     if (event.payload.session.status !== "stopped") {
+      // Cheap payload precheck; the apply path re-validates against the
+      // freshly projected thread before touching the session.
+      const session = event.payload.session;
+      if (
+        idleSessionStatuses.has(session.status) &&
+        session.activeTurnId === null &&
+        (session.pendingBackgroundTaskCount ?? 0) === 0
+      ) {
+        yield* maybeApplyQueuedCheckoutSwitch(event.payload.threadId, event.occurredAt);
+      }
       return;
     }
     const thread = yield* resolveThread(event.payload.threadId);
@@ -2023,6 +2107,15 @@ const make = Effect.gen(function* () {
           event.occurredAt,
           cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
         );
+        return;
+      }
+      case "thread.meta-updated": {
+        // Only a checkout retarget can queue a switch; title/model updates
+        // (which fire constantly, e.g. auto-titling) never need this.
+        if (event.payload.worktreePath === undefined) {
+          return;
+        }
+        yield* maybeApplyQueuedCheckoutSwitch(event.payload.threadId, event.occurredAt);
         return;
       }
       case "thread.turn-start-requested":
@@ -2088,6 +2181,7 @@ const make = Effect.gen(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.meta-updated" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.follow-up-submitted" ||
         event.type === "thread.turn-interrupt-requested" ||

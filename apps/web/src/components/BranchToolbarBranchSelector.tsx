@@ -28,6 +28,7 @@ import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeS
 import {
   deriveLocalBranchNameFromRemoteRef,
   hasActiveThreadTurn,
+  queuedCheckoutSwitchToast,
   resolveActiveWorktreePath,
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
@@ -334,6 +335,19 @@ export function BranchToolbarBranchSelector({
     });
   };
 
+  // A pick that leaves the live session in a different checkout is queued, not
+  // applied; the chip near the composer is easy to miss, so say it out loud.
+  const announceQueuedCheckoutSwitch = (nextWorktreePath: string | null) => {
+    const queued = queuedCheckoutSwitchToast({
+      session: serverSession,
+      activeProjectCwd,
+      nextWorktreePath,
+    });
+    if (queued) {
+      toastManager.add(stackedThreadToast({ type: "info", ...queued }));
+    }
+  };
+
   const runSwitchRef = (refName: VcsRef, checkoutCwd: string, nextWorktreePath: string | null) => {
     const api = readEnvironmentApi(environmentId);
     if (!api) return;
@@ -354,6 +368,7 @@ export function BranchToolbarBranchSelector({
           : selectedBranchName;
         setOptimisticBranch(nextBranchName);
         setThreadBranch(nextBranchName, nextWorktreePath);
+        announceQueuedCheckoutSwitch(nextWorktreePath);
       } catch (error) {
         setOptimisticBranch(previousBranch);
         toastManager.add(
@@ -414,6 +429,7 @@ export function BranchToolbarBranchSelector({
 
     if (selectionTarget.reuseExistingWorktree) {
       setThreadBranch(refName.name, selectionTarget.nextWorktreePath);
+      announceQueuedCheckoutSwitch(selectionTarget.nextWorktreePath);
       setIsBranchMenuOpen(false);
       onComposerFocusRequest?.();
       return;

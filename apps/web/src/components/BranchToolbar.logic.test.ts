@@ -13,6 +13,7 @@ import {
   resolveBranchToolbarValue,
   resolveLockedWorkspaceLabel,
   resolvePendingCheckoutSwitch,
+  queuedCheckoutSwitchToast,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 
@@ -475,6 +476,71 @@ describe("resolvePendingCheckoutSwitch", () => {
         sessionStatus: null,
         activeProjectCwd: "/repo",
         activeWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("queuedCheckoutSwitchToast", () => {
+  it("announces a switch queued behind a running background task", () => {
+    const toast = queuedCheckoutSwitchToast({
+      session: {
+        orchestrationStatus: "running",
+        checkoutCwd: "/repo",
+        pendingBackgroundTaskCount: 1,
+      },
+      activeProjectCwd: "/repo",
+      nextWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+    });
+    expect(toast?.title).toBe("Checkout switch queued");
+    expect(toast?.description).toContain("background task");
+    expect(toast?.description).toContain("feature-a");
+  });
+
+  it("announces a switch queued behind the running turn", () => {
+    const toast = queuedCheckoutSwitchToast({
+      session: {
+        orchestrationStatus: "running",
+        checkoutCwd: "/repo",
+        pendingBackgroundTaskCount: 0,
+      },
+      activeProjectCwd: "/repo",
+      nextWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+    });
+    expect(toast?.description).toContain("current turn");
+  });
+
+  it("stays quiet when the session is idle: the server applies the switch right away", () => {
+    expect(
+      queuedCheckoutSwitchToast({
+        session: {
+          orchestrationStatus: "ready",
+          checkoutCwd: "/repo",
+          pendingBackgroundTaskCount: 0,
+        },
+        activeProjectCwd: "/repo",
+        nextWorktreePath: "/repo/.threadlines/worktrees/feature-a",
+      }),
+    ).toBeNull();
+  });
+
+  it("stays quiet when the pick does not move the session", () => {
+    expect(
+      queuedCheckoutSwitchToast({
+        session: {
+          orchestrationStatus: "running",
+          checkoutCwd: "/repo",
+          pendingBackgroundTaskCount: 0,
+        },
+        activeProjectCwd: "/repo",
+        nextWorktreePath: null,
+      }),
+    ).toBeNull();
+    expect(
+      queuedCheckoutSwitchToast({
+        session: null,
+        activeProjectCwd: "/repo",
+        nextWorktreePath: "/repo/.threadlines/worktrees/feature-a",
       }),
     ).toBeNull();
   });

@@ -2196,6 +2196,154 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("applies a queued checkout switch on its own once background tasks settle", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    const settleSession = async (pendingBackgroundTaskCount: number, commandSuffix: string) => {
+      const snapshot = await harness.readModel();
+      const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;
+      if (!session) throw new Error("expected a projected session for thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-idle-apply-${commandSuffix}`),
+          threadId,
+          session: {
+            ...session,
+            status: "ready",
+            activeTurnId: null,
+            pendingBackgroundTaskCount,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-idle-apply-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-idle-apply-1"),
+          role: "user",
+          text: "first in project root",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    // The turn finished but a subagent still runs inside the session, and the
+    // user queues a checkout switch on top of it. Nothing may cycle yet.
+    await settleSession(1, "busy");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-worktree-change-idle-apply"),
+        threadId,
+        worktreePath: "/tmp/provider-project-worktree",
+      }),
+    );
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      return (
+        snapshot.threads.find((thread) => thread.id === threadId)?.worktreePath ===
+        "/tmp/provider-project-worktree"
+      );
+    });
+    expect(harness.startSession.mock.calls.length).toBe(1);
+
+    // The background task finishing is enough to apply the switch: no new
+    // user message is dispatched, the session cycles on the settle alone.
+    await settleSession(0, "settled");
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      threadId,
+      cwd: "/tmp/provider-project-worktree",
+      resumeCursor: { opaque: "resume-1" },
+    });
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    // The restarted session reports the new checkout, which clears the
+    // pending-switch chip on the client.
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      return (
+        snapshot.threads.find((thread) => thread.id === threadId)?.session?.checkoutCwd ===
+        "/tmp/provider-project-worktree"
+      );
+    });
+  });
+
+  it("applies a checkout switch immediately when the session is idle", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-idle-pick-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-idle-pick-1"),
+          role: "user",
+          text: "first in project root",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const snapshot = await harness.readModel();
+    const session = snapshot.threads.find((thread) => thread.id === threadId)?.session;
+    if (!session) throw new Error("expected a projected session for thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-idle-pick-settle"),
+        threadId,
+        session: {
+          ...session,
+          status: "ready",
+          activeTurnId: null,
+          pendingBackgroundTaskCount: 0,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    // Picking a different checkout while the session sits idle cycles it
+    // right away instead of waiting for the next message.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-worktree-change-idle-pick"),
+        threadId,
+        worktreePath: "/tmp/provider-project-worktree",
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      threadId,
+      cwd: "/tmp/provider-project-worktree",
+      resumeCursor: { opaque: "resume-1" },
+    });
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+  });
+
   it("keeps a running turn in its original checkout when a follow-up arrives after a checkout switch", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");
