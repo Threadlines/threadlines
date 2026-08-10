@@ -55,7 +55,8 @@ import {
 import { useModelPickerOpen } from "../modelPickerOpenState";
 import { useShortcutModifierState } from "../shortcutModifierState";
 import { readLocalApi } from "../localApi";
-import { useComposerDraftStore } from "../composerDraftStore";
+import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
+import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
@@ -105,6 +106,11 @@ import {
   type ThreadStatusPill,
 } from "./Sidebar.logic";
 import { InboxDoneRow, InboxThreadRow } from "./sidebar/InboxRows";
+import {
+  countVisibleDraftSessions,
+  SidebarDraftBlock,
+  type SidebarDraftProjectInfo,
+} from "./sidebar/SidebarDrafts";
 import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
@@ -581,6 +587,43 @@ export default function Sidebar() {
       ? inboxProjectScopeKey
       : null;
 
+  // Everything a draft row needs about its project, resolved once here: a
+  // draft carries a scoped project ref, and the rows want the grouped display
+  // name, the checkout the favicon comes from, and the logical key the inbox
+  // scope filters on.
+  const draftProjectInfoByScopedRef = useMemo(() => {
+    const infoByScopedRef = new Map<string, SidebarDraftProjectInfo>();
+    for (const project of projects) {
+      const projectRef = scopeProjectRef(project.environmentId, project.id);
+      const projectKey = resolveProjectKeyForRef(projectRef);
+      infoByScopedRef.set(scopedProjectKey(projectRef), {
+        projectKey,
+        displayName: sidebarProjectByKey.get(projectKey)?.displayName ?? project.name,
+        cwd: project.cwd,
+        isGeneralChat: project.kind === "general-chat",
+      });
+    }
+    return infoByScopedRef;
+  }, [projects, resolveProjectKeyForRef, sidebarProjectByKey]);
+  const routeDraftId = useParams({
+    strict: false,
+    select: (params) => {
+      const target = resolveThreadRouteTarget(params);
+      return target?.kind === "draft" ? target.draftId : null;
+    },
+  });
+  // Count-only subscription: the sidebar needs "are there draft rows" for its
+  // empty state, while SidebarDraftBlock owns the per-keystroke content
+  // subscription. Selecting a number keeps typing in a draft composer from
+  // re-rendering the whole sidebar.
+  const visibleDraftSessionCount = useComposerDraftStore((store) =>
+    countVisibleDraftSessions({
+      store,
+      projectInfoByScopedRef: draftProjectInfoByScopedRef,
+      scopedProjectKey: scopedProjectKeyValue,
+    }),
+  );
+
   const scopeOptions = useMemo(() => {
     const lastActivityMsByKey = new Map<string, number>();
     const needsYouCountByKey = new Map<string, number>();
@@ -694,6 +737,25 @@ export default function Sidebar() {
       });
     },
     [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
+  );
+
+  const navigateToDraft = useCallback(
+    (draftId: DraftId) => {
+      // Unconditional: also drops a stale selection anchor left by plain-click
+      // navigation, so a later shift-click starts fresh instead of ranging from
+      // a row that is no longer the context. (clearSelection no-ops when there
+      // is nothing to clear.)
+      clearSelection();
+      if (isMobile) {
+        setOpenMobile(false);
+      }
+      void navigate({
+        to: "/draft/$draftId",
+        params: { draftId },
+        search: preserveRightPanelSearchParamsForDraftNavigation,
+      });
+    },
+    [clearSelection, isMobile, navigate, setOpenMobile],
   );
 
   const handleThreadClick = useCallback(
@@ -1391,7 +1453,16 @@ export default function Sidebar() {
                     newThreadShortcutLabel={newThreadShortcutLabel}
                   />
 
-                  {liveEntries.length === 0 ? (
+                  {/* Unsent drafts sit above the inbox: an interrupted "new
+                      thread" is the one row you want back in one click. */}
+                  <SidebarDraftBlock
+                    projectInfoByScopedRef={draftProjectInfoByScopedRef}
+                    scopedProjectKey={scopedProjectKeyValue}
+                    routeDraftId={routeDraftId}
+                    onNavigateToDraft={navigateToDraft}
+                  />
+
+                  {liveEntries.length === 0 && visibleDraftSessionCount === 0 ? (
                     <div className="flex flex-col items-start gap-1.5 px-3 py-2">
                       <span className="text-[11px] text-muted-foreground/60">
                         {!bootstrapComplete

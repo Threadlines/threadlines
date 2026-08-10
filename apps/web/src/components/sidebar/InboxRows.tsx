@@ -38,11 +38,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
 
-const ROW_SURFACE_CLASS_NAME =
+export const ROW_SURFACE_CLASS_NAME =
   "relative w-full cursor-pointer select-none text-left outline-hidden focus-ring focus-visible:ring-inset";
 
 /** Hover and selection are colour shifts only — nothing moves under the cursor. */
-function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }): string {
+export function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }): string {
   if (input.isSelected) {
     return "bg-primary/15 dark:bg-primary/22 hover:bg-primary/19 dark:hover:bg-primary/28";
   }
@@ -83,7 +83,7 @@ const ROW_META_SLOT_CLASS_NAME =
   "relative ml-auto flex flex-none items-center gap-1.5 whitespace-nowrap";
 
 /** `relative` lifts the buttons above their own backdrop layers. */
-const ROW_ACTION_BUTTON_CLASS_NAME =
+export const ROW_ACTION_BUTTON_CLASS_NAME =
   "relative inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
 
 /**
