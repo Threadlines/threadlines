@@ -269,7 +269,11 @@ export function niceAxisMax(peak: number): number {
  */
 function monotonePoints(values: readonly number[], axisMax: number): string {
   if (values.length === 0) return "M 0 " + String(CHART_HEIGHT);
-  const stepX = values.length > 1 ? CHART_WIDTH / (values.length - 1) : 0;
+  // Day i's apex sits at the CENTER of its hover column, (i + 0.5) / N of the
+  // width -- the same mapping the tracking line uses. Mapping edge-to-edge over
+  // N-1 steps instead puts every peak a half-column off the hover line.
+  const stepX = CHART_WIDTH / values.length;
+  const xAt = (index: number) => (index + 0.5) * stepX;
   const toY = (value: number) =>
     axisMax === 0 ? CHART_HEIGHT : CHART_HEIGHT - (value / axisMax) * CHART_HEIGHT;
   const ys = values.map(toY);
@@ -279,10 +283,12 @@ function monotonePoints(values: readonly number[], axisMax: number): string {
   }
 
   const tangents = monotoneTangents(ys, stepX);
-  let path = `M 0 ${round(ys[0] ?? 0)}`;
+  // Flat half-column extensions carry the first and last day's value to the
+  // plot edges so the fill still spans the full width.
+  let path = `M 0 ${round(ys[0] ?? 0)} L ${round(xAt(0))} ${round(ys[0] ?? 0)}`;
   for (let index = 0; index < ys.length - 1; index += 1) {
-    const x0 = index * stepX;
-    const x1 = (index + 1) * stepX;
+    const x0 = xAt(index);
+    const x1 = xAt(index + 1);
     const y0 = ys[index] ?? 0;
     const y1 = ys[index + 1] ?? 0;
     const m0 = tangents[index] ?? 0;
@@ -290,6 +296,7 @@ function monotonePoints(values: readonly number[], axisMax: number): string {
     const control = stepX / 3;
     path += ` C ${round(x0 + control)} ${round(y0 + m0 * control)} ${round(x1 - control)} ${round(y1 - m1 * control)} ${round(x1)} ${round(y1)}`;
   }
+  path += ` L ${CHART_WIDTH} ${round(ys[ys.length - 1] ?? 0)}`;
   return path;
 }
 

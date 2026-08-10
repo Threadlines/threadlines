@@ -434,7 +434,7 @@ function UsageChart({
   const hoveredOnLeftHalf = hoveredCenterPercent <= 50;
   return (
     <div className="flex min-w-0 flex-col" data-testid="usage-chart">
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <h2 className="text-sm text-foreground/90">{USAGE_CHART_TITLES[mode]}</h2>
         <div className="flex-1" />
         <div className="flex items-center gap-1.5">
