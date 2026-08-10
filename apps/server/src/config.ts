@@ -63,6 +63,12 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly mode: RuntimeMode;
   readonly port: number;
   readonly host: string | undefined;
+  /**
+   * The hostname startup URLs advertise when the bind address is not the
+   * reachable one. A container binds 0.0.0.0 and its interfaces are internal,
+   * so only the operator knows what clients can actually reach.
+   */
+  readonly advertisedHost: string | undefined;
   readonly cwd: string;
   readonly baseDir: string;
   readonly staticDir: string | undefined;
@@ -194,6 +200,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
           tailscaleServePort: 443,
           port: 0,
           host: undefined,
+          advertisedHost: undefined,
           desktopBootstrapToken: undefined,
           staticDir: undefined,
           devUrl,

@@ -200,6 +200,13 @@ const EnvServerConfig = Config.all({
     Config.string("BADCODE_HOST"),
     Config.string("T3CODE_HOST"),
   ),
+  // The hostname startup URLs advertise, when the bind address is not the
+  // reachable one -- a container binds 0.0.0.0 and its interfaces are
+  // internal, so only the operator knows the address clients can reach.
+  advertisedHost: Config.string("THREADLINES_ADVERTISED_HOST").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   threadlinesHome: aliasedConfigOption(
     Config.string("THREADLINES_HOME"),
     Config.string("BADCODE_HOME"),
@@ -485,6 +492,7 @@ export const resolveServerConfig = (
       ...derivedPaths,
       serverTracePath,
       host,
+      advertisedHost: env.advertisedHost,
       staticDir,
       devUrl,
       noBrowser,

@@ -254,10 +254,12 @@ const resolveStartupBrowserTarget = Effect.gen(function* () {
   const serverAuth = yield* ServerAuth;
   // Dev servers keep the Vite dev URL: the client is only served there, and
   // that harness retargets by hand anyway.
+  // An operator-set advertised host wins outright: inside a container the
+  // resolved interfaces are internal addresses no client can reach.
   const baseTarget =
     serverConfig.devUrl?.toString() ??
     resolveAdvertisedServerUrl({
-      host: serverConfig.host,
+      host: serverConfig.advertisedHost ?? serverConfig.host,
       port: serverConfig.port,
       mode: serverConfig.mode,
     });

@@ -204,6 +204,7 @@ const makeFixture = Effect.fn("makeFixture")(function* () {
     mode: "web",
     port: 0,
     host: "127.0.0.1",
+    advertisedHost: undefined,
     cwd: root,
     baseDir: NodePath.join(root, "state"),
     ...derivedPaths,
