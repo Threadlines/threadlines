@@ -25,13 +25,17 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { ClaudeAI, OpenAI, type Icon } from "../Icons";
 import {
   buildUsageAreaChart,
+  buildUsageDayRows,
   buildUsageMachineRows,
   buildUsageStats,
   formatCostQualityFootnote,
   formatUsageDateRange,
+  USAGE_BREAKDOWN_LABELS,
+  USAGE_BREAKDOWNS,
   USAGE_CHART_MODE_LABELS,
   USAGE_CHART_MODES,
   USAGE_CHART_TITLES,
+  USAGE_HERO_LABELS,
   USAGE_MACHINE_STATE_LABELS,
   USAGE_PROVIDER_COLORS,
   USAGE_PROVIDER_LABELS,
@@ -39,6 +43,7 @@ import {
   USAGE_PROVIDER_SHORT_LABELS,
   visibleUsageModels,
   type UsageAreaChart,
+  type UsageBreakdown,
   type UsageChartMode,
   type UsageMachineRow,
   type UsageStat,
@@ -72,6 +77,7 @@ const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
 export function UsageView() {
   const [windowDays, setWindowDays] = useState<UsageWindowDays>(DEFAULT_WINDOW_DAYS);
   const [chartMode, setChartMode] = useState<UsageChartMode>("cost");
+  const [breakdown, setBreakdown] = useState<UsageBreakdown>("models");
   // One slow clock for the whole page: scan freshness is the only honest signal
   // about a warm scan, and it must not go stale on screen.
   useRelativeTimeTick(FRESHNESS_TICK_MS);
@@ -110,6 +116,7 @@ export function UsageView() {
     [scan],
   );
   const models = useMemo(() => (merged ? visibleUsageModels(merged) : []), [merged]);
+  const dayRows = useMemo(() => (merged ? buildUsageDayRows(merged) : []), [merged]);
   const stats = useMemo(() => (merged ? buildUsageStats(merged) : []), [merged]);
 
   return (
@@ -173,21 +180,33 @@ export function UsageView() {
         <>
           <div className="mt-7 grid grid-cols-1 gap-8 min-[900px]:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
             <div className="flex min-w-0 flex-col">
-              <span className={SECTION_LABEL_CLASS}>API-equivalent cost</span>
+              <span className={SECTION_LABEL_CLASS}>{USAGE_HERO_LABELS[chartMode]}</span>
               <span
                 className={cn(NUMBER_CLASS, "mt-1.5 text-[40px] leading-none text-foreground")}
                 data-testid="usage-total-cost"
               >
-                {formatUsd(merged.costUsd)}
-                <span className="text-muted-foreground/45">*</span>
+                {chartMode === "cost" ? (
+                  <>
+                    {formatUsd(merged.costUsd)}
+                    <span className="align-super text-[0.45em] text-muted-foreground/45">*</span>
+                  </>
+                ) : (
+                  formatTokensCompact(merged.totalTokens)
+                )}
               </span>
-              <p className="mt-2.5 text-xs text-muted-foreground/60">
-                * if billed at full API rates. Subscription plans bill separately.
-              </p>
+              {/* The asterisk and its footnote are the cost figure's caveat; a
+                  token count needs no disclaimer. */}
+              {chartMode === "cost" ? (
+                <p className="mt-2.5 text-xs text-muted-foreground/60">
+                  * if billed at full API rates. Subscription plans bill separately.
+                </p>
+              ) : null}
               <div className="mt-6 flex flex-col gap-4">
                 {USAGE_PROVIDER_READING_ORDER.flatMap((provider) => {
                   const totals = merged.providers.find((entry) => entry.provider === provider);
-                  return totals ? [<UsageProviderRow key={provider} totals={totals} />] : [];
+                  return totals
+                    ? [<UsageProviderRow key={provider} totals={totals} mode={chartMode} />]
+                    : [];
                 })}
               </div>
             </div>
@@ -202,10 +221,71 @@ export function UsageView() {
           </div>
 
           <section className="mt-8">
-            <h2 className={SECTION_LABEL_CLASS}>
-              Models · {formatCount(merged.sessions)} sessions
-            </h2>
-            {models.length === 0 ? (
+            <div className="flex items-baseline gap-4">
+              <h2 className={SECTION_LABEL_CLASS}>
+                {breakdown === "models" ? "Models" : "Days"} · {formatCount(merged.sessions)}{" "}
+                sessions
+              </h2>
+              <div className="flex-1" />
+              <div className="flex items-center gap-1.5">
+                {USAGE_BREAKDOWNS.map((option, index) => (
+                  <span key={option} className="flex items-center gap-1.5">
+                    {index > 0 ? <span className="text-muted-foreground/25">|</span> : null}
+                    <button
+                      type="button"
+                      aria-pressed={option === breakdown}
+                      className={cn(
+                        "cursor-pointer font-mono text-[10px] uppercase tracking-wider transition-colors",
+                        option === breakdown
+                          ? "text-foreground"
+                          : "text-muted-foreground/55 hover:text-foreground",
+                      )}
+                      data-testid={`usage-breakdown-${option}`}
+                      onClick={() => setBreakdown(option)}
+                    >
+                      {USAGE_BREAKDOWN_LABELS[option]}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+            {breakdown === "days" ? (
+              dayRows.length === 0 ? (
+                <p className="mt-2 text-sm text-muted-foreground/55">
+                  No recorded activity in this window.
+                </p>
+              ) : (
+                <div className="mt-2 flex flex-col divide-y divide-border/50">
+                  {dayRows.map((row) => (
+                    <div
+                      key={row.day}
+                      className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem] items-baseline gap-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem]"
+                      data-testid="usage-day-row"
+                    >
+                      <span className="min-w-0 truncate text-sm text-foreground/90">
+                        {row.label}
+                      </span>
+                      <span
+                        className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/70")}
+                      >
+                        {formatTokens(row.totalTokens)}
+                      </span>
+                      <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}>
+                        {formatUsd(row.costUsd)}
+                      </span>
+                      <span
+                        className={cn(
+                          NUMBER_CLASS,
+                          "hidden text-right text-xs text-muted-foreground/50 sm:block",
+                        )}
+                      >
+                        {formatPercent(row.costShare, 0)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )
+            ) : models.length === 0 ? (
               <p className="mt-2 text-sm text-muted-foreground/55">
                 No recorded activity in this window.
               </p>
@@ -275,18 +355,26 @@ export function UsageView() {
   );
 }
 
-/** Provider name, its slice of the cost, and how wide that slice is. */
+/**
+ * Provider name, its slice of the selected measure, and how wide that slice is.
+ * The row follows the page's cost|tokens mode: the leading figure and the bar
+ * show the selected measure, and the sub-line carries the other one.
+ */
 function UsageProviderRow({
   totals,
+  mode,
 }: {
   readonly totals: {
     readonly provider: UsageProviderKind;
     readonly costUsd: number;
     readonly costShare: number;
     readonly totalTokens: number;
+    readonly tokenShare: number;
   };
+  readonly mode: UsageChartMode;
 }) {
   const ProviderIcon = USAGE_PROVIDER_ICONS[totals.provider];
+  const share = mode === "cost" ? totals.costShare : totals.tokenShare;
   return (
     <div className="flex min-w-0 flex-col gap-1.5" data-testid="usage-provider-row">
       <div className="flex min-w-0 items-center gap-2">
@@ -295,20 +383,22 @@ function UsageProviderRow({
           {USAGE_PROVIDER_LABELS[totals.provider]}
         </span>
         <span className={cn(NUMBER_CLASS, "shrink-0 text-sm text-foreground")}>
-          {formatUsd(totals.costUsd)}
+          {mode === "cost" ? formatUsd(totals.costUsd) : formatTokensCompact(totals.totalTokens)}
         </span>
       </div>
       <div className="h-[3px] w-full bg-border/40">
         <div
           className="h-full"
           style={{
-            width: `${Math.max(0, Math.min(1, totals.costShare)) * 100}%`,
+            width: `${Math.max(0, Math.min(1, share)) * 100}%`,
             backgroundColor: USAGE_PROVIDER_COLORS[totals.provider],
           }}
         />
       </div>
       <span className="text-xs text-muted-foreground/55">
-        {formatPercent(totals.costShare)} of cost · {formatTokensCompact(totals.totalTokens)} tokens
+        {mode === "cost"
+          ? `${formatPercent(totals.costShare)} of cost · ${formatTokensCompact(totals.totalTokens)} tokens`
+          : `${formatPercent(totals.tokenShare)} of tokens · ${formatUsd(totals.costUsd)}`}
       </span>
     </div>
   );

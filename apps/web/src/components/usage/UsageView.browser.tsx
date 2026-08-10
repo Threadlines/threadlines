@@ -246,6 +246,60 @@ describe("UsageView", () => {
     expect(studioRow?.textContent).toContain("/Users/dev/.claude");
   });
 
+  it("switches the hero to tokens with the chart mode and the breakdown to days", async () => {
+    const summary = vi.fn(async (input: UsageSummaryInput) =>
+      summaryFor(input, (days) => {
+        const day = days[days.length - 1] ?? input.untilDay;
+        return [
+          bucket({
+            day,
+            provider: "claude",
+            model: "claude-fable-5",
+            costUsd: 12.5,
+            totalTokens: 2_000_000,
+          }),
+          bucket({
+            day,
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            costUsd: 4.5,
+            totalTokens: 400_000,
+          }),
+        ];
+      }),
+    );
+    registerEnvironments(summary);
+
+    renderWithProviders(<UsageView />);
+    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("$17.00*");
+
+    await page.getByTestId("usage-chart-mode-tokens").click();
+
+    // The whole hero follows the toggle: headline figure, label, provider rows.
+    // The cost asterisk and its footnote only make sense against dollars.
+    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("2.4M");
+    await expect.element(page.getByText("Processed tokens").first()).toBeInTheDocument();
+    expect(
+      page
+        .getByText("* if billed at full API rates. Subscription plans bill separately.")
+        .elements(),
+    ).toHaveLength(0);
+    const providerRows = page.getByTestId("usage-provider-row").elements();
+    expect(providerRows[0]?.textContent).toContain("2M");
+    expect(providerRows[0]?.textContent).toContain("83.3% of tokens · $12.50");
+
+    await page.getByTestId("usage-breakdown-days").click();
+
+    // Only the day with activity earns a row, and it carries both measures.
+    const dayRows = page.getByTestId("usage-day-row").elements();
+    expect(dayRows).toHaveLength(1);
+    expect(dayRows[0]?.textContent).toContain("$17.00");
+    expect(page.getByTestId("usage-model-row").elements()).toHaveLength(0);
+
+    await page.getByTestId("usage-breakdown-models").click();
+    expect(page.getByTestId("usage-model-row").elements()).toHaveLength(2);
+  });
+
   it("opens on 30 days and switches windows without another scan", async () => {
     const summary = vi.fn(async (input: UsageSummaryInput) =>
       summaryFor(input, (days) =>

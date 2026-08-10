@@ -57,6 +57,47 @@ export const USAGE_CHART_TITLES: Record<UsageChartMode, string> = {
   tokens: "Daily tokens",
 };
 
+/** The hero follows the chart's cost|tokens mode; these are its labels. */
+export const USAGE_HERO_LABELS: Record<UsageChartMode, string> = {
+  cost: "API-equivalent cost",
+  tokens: "Processed tokens",
+};
+
+export type UsageBreakdown = "models" | "days";
+
+export const USAGE_BREAKDOWNS: readonly UsageBreakdown[] = ["models", "days"];
+
+export const USAGE_BREAKDOWN_LABELS: Record<UsageBreakdown, string> = {
+  models: "Model",
+  days: "Day",
+};
+
+export interface UsageDayRow {
+  readonly day: string;
+  readonly label: string;
+  readonly totalTokens: number;
+  readonly costUsd: number;
+  readonly costShare: number;
+}
+
+/**
+ * The days breakdown, newest first. Days without activity are dropped: unlike
+ * the chart, where a gap is information, a table of zero rows buries the days
+ * that had something to say.
+ */
+export function buildUsageDayRows(merged: MergedUsage): readonly UsageDayRow[] {
+  return merged.daily
+    .filter((entry) => entry.totalTokens > 0 || entry.costUsd > 0)
+    .map((entry) => ({
+      day: entry.day,
+      label: formatDayShort(entry.day),
+      totalTokens: entry.totalTokens,
+      costUsd: entry.costUsd,
+      costShare: merged.costUsd === 0 ? 0 : entry.costUsd / merged.costUsd,
+    }))
+    .toReversed();
+}
+
 /**
  * Chart user units. Height matches the rendered pixel height so vertical
  * geometry is 1:1; width is nominal, since the SVG stretches horizontally to
