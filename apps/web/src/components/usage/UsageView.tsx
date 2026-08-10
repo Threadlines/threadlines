@@ -188,7 +188,9 @@ export function UsageView() {
                 {chartMode === "cost" ? (
                   <>
                     {formatUsd(merged.costUsd)}
-                    <span className="align-super text-[0.45em] text-muted-foreground/45">*</span>
+                    <span className="ml-1.5 align-super text-[0.6em] text-muted-foreground/45">
+                      *
+                    </span>
                   </>
                 ) : (
                   formatTokensCompact(merged.totalTokens)
