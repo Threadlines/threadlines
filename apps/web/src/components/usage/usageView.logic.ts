@@ -114,6 +114,12 @@ export interface UsageChartSeries {
   readonly areaPath: string;
   /** The same curve without the baseline, for the stroke on top. */
   readonly linePath: string;
+  /**
+   * Where the curve stops -- today's value, as plot percentages -- so the view
+   * can draw the "you are here" dot in HTML, immune to the SVG's horizontal
+   * stretch.
+   */
+  readonly endPoint: { readonly leftPercent: number; readonly topPercent: number };
 }
 
 export interface UsageChartGridline {
@@ -146,6 +152,11 @@ export interface UsageAreaChart {
   /** Window start, midpoint and end. Three ticks, whatever the window length. */
   readonly axisLabels: readonly string[];
   readonly columns: readonly UsageChartColumn[];
+  /**
+   * Day i's point on the x axis as a plot percentage -- where the tracking
+   * line lands. Matches the curve exactly, edge anchors included.
+   */
+  readonly dayXPercents: readonly number[];
   readonly isEmpty: boolean;
 }
 
@@ -187,12 +198,16 @@ export function buildUsageAreaChart(input: {
   for (const provider of USAGE_PROVIDER_ORDER) {
     const values = valuesByProvider.get(provider) ?? [];
     if (values.every((value) => value === 0)) continue;
-    const points = monotonePoints(values, axisMax);
+    const stroke = monotoneStroke(values, axisMax);
     series.push({
       provider,
       color: USAGE_PROVIDER_COLORS[provider],
-      areaPath: `${points} L ${CHART_WIDTH} ${CHART_HEIGHT} L 0 ${CHART_HEIGHT} Z`,
-      linePath: points,
+      areaPath: `${stroke.line} L ${stroke.endX} ${CHART_HEIGHT} L 0 ${CHART_HEIGHT} Z`,
+      linePath: stroke.line,
+      endPoint: {
+        leftPercent: (stroke.endX / CHART_WIDTH) * 100,
+        topPercent: (stroke.endY / CHART_HEIGHT) * 100,
+      },
     });
   }
 
@@ -201,7 +216,12 @@ export function buildUsageAreaChart(input: {
     viewBoxHeight: CHART_HEIGHT,
     series,
     gridlines: axisMax === 0 ? [] : buildGridlines(axisMax, input.mode),
-    axisLabels: axisTickDays(days).map((day) => formatDayShort(day).toUpperCase()),
+    // The window always ends on the current day, and "today" orients a reader
+    // faster than a date they would have to check against a calendar.
+    axisLabels: axisTickDays(days).map((day, index, ticks) =>
+      index === ticks.length - 1 ? "TODAY" : formatDayShort(day).toUpperCase(),
+    ),
+    dayXPercents: days.map((_day, index) => (chartDayX(index, days.length) / CHART_WIDTH) * 100),
     columns: days.map((day) => {
       const entry = byDay.get(day);
       const formatValue = input.mode === "cost" ? formatUsd : formatTokensCompact;
@@ -267,25 +287,35 @@ export function niceAxisMax(peak: number): number {
  * overshoots would draw days below zero and peaks the data never reached, which
  * on a spend chart is not a stylistic quibble.
  */
-function monotonePoints(values: readonly number[], axisMax: number): string {
-  if (values.length === 0) return "M 0 " + String(CHART_HEIGHT);
+interface MonotoneStroke {
+  /** The curve from the left edge to the last day's center. */
+  readonly line: string;
+  /** Where the curve stops -- "now" -- so the area fill closes straight down. */
+  readonly endX: number;
+  /** The curve's final height, for the endpoint marker. */
+  readonly endY: number;
+}
+
+function monotoneStroke(values: readonly number[], axisMax: number): MonotoneStroke {
+  if (values.length === 0) {
+    return { line: "M 0 " + String(CHART_HEIGHT), endX: CHART_WIDTH, endY: CHART_HEIGHT };
+  }
   // Day i's apex sits at the CENTER of its hover column, (i + 0.5) / N of the
   // width -- the same mapping the tracking line uses. Mapping edge-to-edge over
   // N-1 steps instead puts every peak a half-column off the hover line.
-  const stepX = CHART_WIDTH / values.length;
-  const xAt = (index: number) => (index + 0.5) * stepX;
+  const stepX = values.length > 1 ? CHART_WIDTH / (values.length - 1) : CHART_WIDTH;
+  const xAt = (index: number) => chartDayX(index, values.length);
   const toY = (value: number) =>
     axisMax === 0 ? CHART_HEIGHT : CHART_HEIGHT - (value / axisMax) * CHART_HEIGHT;
   const ys = values.map(toY);
   if (ys.length === 1) {
-    // One day: a flat segment, so the fill still has a shape to close.
-    return `M 0 ${round(ys[0] ?? CHART_HEIGHT)} L ${CHART_WIDTH} ${round(ys[0] ?? CHART_HEIGHT)}`;
+    // One day: a flat segment across the plot, so the fill has a shape at all.
+    const y = round(ys[0] ?? CHART_HEIGHT);
+    return { line: `M 0 ${y} L ${CHART_WIDTH} ${y}`, endX: CHART_WIDTH, endY: y };
   }
 
   const tangents = monotoneTangents(ys, stepX);
-  // Flat half-column extensions carry the first and last day's value to the
-  // plot edges so the fill still spans the full width.
-  let path = `M 0 ${round(ys[0] ?? 0)} L ${round(xAt(0))} ${round(ys[0] ?? 0)}`;
+  let line = `M 0 ${round(ys[0] ?? 0)}`;
   for (let index = 0; index < ys.length - 1; index += 1) {
     const x0 = xAt(index);
     const x1 = xAt(index + 1);
@@ -294,10 +324,25 @@ function monotonePoints(values: readonly number[], axisMax: number): string {
     const m0 = tangents[index] ?? 0;
     const m1 = tangents[index + 1] ?? 0;
     const control = stepX / 3;
-    path += ` C ${round(x0 + control)} ${round(y0 + m0 * control)} ${round(x1 - control)} ${round(y1 - m1 * control)} ${round(x1)} ${round(y1)}`;
+    line += ` C ${round(x0 + control)} ${round(y0 + m0 * control)} ${round(x1 - control)} ${round(y1 - m1 * control)} ${round(x1)} ${round(y1)}`;
   }
-  path += ` L ${CHART_WIDTH} ${round(ys[ys.length - 1] ?? 0)}`;
-  return path;
+  return {
+    line,
+    endX: round(xAt(ys.length - 1)),
+    endY: round(ys[ys.length - 1] ?? CHART_HEIGHT),
+  };
+}
+
+/**
+ * Where day i's point sits on the x axis: edge to edge, first day on the left
+ * border and today on the right. The tracking line and the endpoint dots read
+ * the same mapping, and every day's point falls inside its own equal-width
+ * hover column (i/(N-1) always lies within [i/N, (i+1)/N]), so the hit zones
+ * stay honest without special casing.
+ */
+function chartDayX(index: number, dayCount: number): number {
+  if (dayCount <= 1) return CHART_WIDTH;
+  return (index / (dayCount - 1)) * CHART_WIDTH;
 }
 
 function monotoneTangents(ys: readonly number[], stepX: number): readonly number[] {

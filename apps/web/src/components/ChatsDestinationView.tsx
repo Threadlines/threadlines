@@ -17,6 +17,7 @@ import {
 } from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
+import { DesktopPageTitlebar } from "./DesktopPageTitlebar";
 import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
 import { PROVIDER_OPTIONS } from "../session-logic";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
@@ -127,55 +128,59 @@ export function ChatsDestinationView() {
 
   return (
     <ThreadHoverCardProvider side="bottom">
-      <div
-        className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 py-8"
-        data-testid="chats-view"
-      >
-        <div className="mb-1 flex items-center gap-3">
-          <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
-          {newChatButton}
-        </div>
-        <p className="text-sm text-muted-foreground/70">
-          Conversations that aren&apos;t tied to a project.
-        </p>
-
-        {chats.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-            <div className="flex flex-col gap-1">
-              <p className="text-sm text-muted-foreground/70">No general chats yet</p>
-              <p className="text-xs text-muted-foreground/50">
-                Start one for anything that doesn&apos;t belong to a project.
-              </p>
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
+        <DesktopPageTitlebar label="General chats" />
+        {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
+            (like Settings); the reading column centers inside it. */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-8">
+            <div className="mb-1 flex items-center gap-3">
+              <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
+              {newChatButton}
             </div>
-            {newChatButton}
-          </div>
-        ) : (
-          <SidebarHoverCardGroup>
-            {groups.map((group) => (
-              <section key={group.id} className="mt-8 first:mt-10">
-                <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
-                  {CHAT_GROUP_LABELS[group.id]}
-                </h2>
-                <div className="flex flex-col divide-y divide-border/50">
-                  {group.chats.map((thread) => (
-                    <ChatRow
-                      key={`${thread.environmentId}:${thread.id}`}
-                      thread={thread}
-                      onOpen={() => {
-                        void navigate({
-                          to: "/$environmentId/$threadId",
-                          params: buildThreadRouteParams(
-                            scopeThreadRef(thread.environmentId, thread.id),
-                          ),
-                        });
-                      }}
-                    />
-                  ))}
+            <p className="text-sm text-muted-foreground/70">
+              Conversations that aren&apos;t tied to a project.
+            </p>
+
+            {chats.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+                <div className="flex flex-col gap-1">
+                  <p className="text-sm text-muted-foreground/70">No general chats yet</p>
+                  <p className="text-xs text-muted-foreground/50">
+                    Start one for anything that doesn&apos;t belong to a project.
+                  </p>
                 </div>
-              </section>
-            ))}
-          </SidebarHoverCardGroup>
-        )}
+                {newChatButton}
+              </div>
+            ) : (
+              <SidebarHoverCardGroup>
+                {groups.map((group) => (
+                  <section key={group.id} className="mt-8 first:mt-10">
+                    <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
+                      {CHAT_GROUP_LABELS[group.id]}
+                    </h2>
+                    <div className="flex flex-col divide-y divide-border/50">
+                      {group.chats.map((thread) => (
+                        <ChatRow
+                          key={`${thread.environmentId}:${thread.id}`}
+                          thread={thread}
+                          onOpen={() => {
+                            void navigate({
+                              to: "/$environmentId/$threadId",
+                              params: buildThreadRouteParams(
+                                scopeThreadRef(thread.environmentId, thread.id),
+                              ),
+                            });
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </SidebarHoverCardGroup>
+            )}
+          </div>
+        </div>
       </div>
     </ThreadHoverCardProvider>
   );

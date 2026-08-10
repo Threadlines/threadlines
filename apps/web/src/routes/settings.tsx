@@ -18,8 +18,8 @@ import {
   settingsSectionLabelForPath,
 } from "../components/settings/settingsNavigation";
 import { Button } from "../components/ui/button";
-import { SidebarInset, SidebarOpenTrigger } from "../components/ui/sidebar";
-import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
+import { DesktopPageTitlebar } from "../components/DesktopPageTitlebar";
+import { SidebarInset } from "../components/ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
@@ -142,25 +142,13 @@ function SettingsContentLayout() {
           </header>
         )}
 
-        {isElectron && (
-          <div
-            className={cn(
-              "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
-              ELECTRON_HEADER_HEIGHT_CLASS,
-              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-            )}
-          >
-            <SidebarOpenTrigger className="size-7 shrink-0" />
-            <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
-              Settings
-            </span>
-            {showRestoreDefaults ? (
-              <div className="ms-auto flex items-center gap-2">
-                <RestoreDefaultsButton onRestored={handleRestored} />
-              </div>
-            ) : null}
-          </div>
-        )}
+        <DesktopPageTitlebar label="Settings">
+          {showRestoreDefaults ? (
+            <div className="ms-auto flex items-center gap-2">
+              <RestoreDefaultsButton onRestored={handleRestored} />
+            </div>
+          ) : null}
+        </DesktopPageTitlebar>
 
         <div key={restoreSignal} className="min-h-0 flex flex-1 flex-col">
           <Outlet />

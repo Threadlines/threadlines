@@ -12,8 +12,9 @@ import {
 } from "@threadlines/shared/usageFormat";
 import { useQuery } from "@tanstack/react-query";
 import { RotateCwIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
 import {
@@ -22,6 +23,7 @@ import {
   useUsageEnvironmentTargets,
 } from "../../lib/usageReactQuery";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { DesktopPageTitlebar } from "../DesktopPageTitlebar";
 import { ClaudeAI, OpenAI, type Icon } from "../Icons";
 import {
   buildUsageAreaChart,
@@ -120,239 +122,266 @@ export function UsageView() {
   const stats = useMemo(() => (merged ? buildUsageStats(merged) : []), [merged]);
 
   return (
-    <div
-      className="mx-auto flex h-full w-full max-w-[1200px] flex-col overflow-y-auto px-6 py-8"
-      data-testid="usage-view"
-    >
-      {/* Wraps as a whole row on narrow screens; the range never breaks internally. */}
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h1 className="text-lg font-medium tracking-tight">Usage</h1>
-        {view ? (
-          <span
-            className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground/55")}
-            data-testid="usage-date-range"
-          >
-            {formatUsageDateRange(view.window.sinceDay, view.window.untilDay)}
-          </span>
-        ) : null}
-        <div className="flex-1" />
-        <div className="flex items-center gap-1">
-          {USAGE_WINDOW_DAY_OPTIONS.map((option) => (
-            <button
-              key={option}
-              type="button"
-              aria-pressed={option === windowDays}
-              className={cn(
-                "cursor-pointer rounded px-1.5 py-1 font-mono text-xs tabular-nums transition-colors",
-                option === windowDays
-                  ? "text-foreground"
-                  : "text-muted-foreground/55 hover:text-foreground",
-              )}
-              data-testid={`usage-window-${option}`}
-              onClick={() => setWindowDays(option)}
-            >
-              {option}d
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          aria-label="Refresh usage"
-          className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground focus-ring"
-          data-testid="usage-refresh"
-          disabled={usageQuery.isFetching}
-          onClick={() => void usageQuery.refetch()}
-        >
-          <RotateCwIcon className={cn("size-3.5", usageQuery.isFetching && "animate-spin")} />
-          Refresh
-        </button>
-      </div>
-
-      {targets.length === 0 ? (
-        <p className="mt-10 text-sm text-muted-foreground/60">
-          No computers are connected, so there is nothing to report yet.
-        </p>
-      ) : !merged || !view || !chart ? (
-        <p className="mt-10 text-sm text-muted-foreground/60">
-          {usageQuery.isError ? "Usage could not be read." : "Reading provider transcripts…"}
-        </p>
-      ) : (
-        <>
-          <div className="mt-7 grid grid-cols-1 gap-8 min-[900px]:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
-            <div className="flex min-w-0 flex-col">
-              <span className={SECTION_LABEL_CLASS}>{USAGE_HERO_LABELS[chartMode]}</span>
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="usage-view">
+      <DesktopPageTitlebar label="Usage" />
+      {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
+          (like Settings); the reading column centers inside it. */}
+      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="usage-scroll">
+        <div className="mx-auto flex min-h-full w-full max-w-[1200px] flex-col px-6 py-8">
+          {/* Wraps as a whole row on narrow screens; the range never breaks internally. */}
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h1 className="text-lg font-medium tracking-tight">Usage</h1>
+            {view ? (
               <span
-                className={cn(NUMBER_CLASS, "mt-1.5 text-[40px] leading-none text-foreground")}
-                data-testid="usage-total-cost"
+                className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground/55")}
+                data-testid="usage-date-range"
               >
-                {chartMode === "cost" ? (
-                  <>
-                    {formatUsd(merged.costUsd)}
-                    <span className="ml-1.5 align-super text-[0.6em] text-muted-foreground/45">
-                      *
-                    </span>
-                  </>
-                ) : (
-                  formatTokensCompact(merged.totalTokens)
-                )}
+                {formatUsageDateRange(view.window.sinceDay, view.window.untilDay)}
               </span>
-              {/* The asterisk and its footnote are the cost figure's caveat; a
-                  token count needs no disclaimer. */}
-              {chartMode === "cost" ? (
-                <p className="mt-2.5 text-xs text-muted-foreground/60">
-                  * if billed at full API rates. Subscription plans bill separately.
-                </p>
-              ) : null}
-              <div className="mt-6 flex flex-col gap-4">
-                {USAGE_PROVIDER_READING_ORDER.flatMap((provider) => {
-                  const totals = merged.providers.find((entry) => entry.provider === provider);
-                  return totals
-                    ? [<UsageProviderRow key={provider} totals={totals} mode={chartMode} />]
-                    : [];
-                })}
-              </div>
-            </div>
-
-            <UsageChart chart={chart} mode={chartMode} onModeChange={setChartMode} />
+            ) : null}
           </div>
 
-          <div className="mt-8 flex flex-wrap divide-x divide-border/60 border-y border-border/60 py-3.5">
-            {stats.map((stat) => (
-              <UsageStatCell key={stat.label} stat={stat} />
-            ))}
-          </div>
-
-          <section className="mt-8">
-            <div className="flex items-baseline gap-4">
-              <h2 className={SECTION_LABEL_CLASS}>
-                {breakdown === "models" ? "Models" : "Days"} · {formatCount(merged.sessions)}{" "}
-                sessions
-              </h2>
-              <div className="flex-1" />
-              <div className="flex items-center gap-1.5">
-                {USAGE_BREAKDOWNS.map((option, index) => (
-                  <span key={option} className="flex items-center gap-1.5">
-                    {index > 0 ? <span className="text-muted-foreground/25">|</span> : null}
-                    <button
-                      type="button"
-                      aria-pressed={option === breakdown}
-                      className={cn(
-                        "cursor-pointer font-mono text-[10px] uppercase tracking-wider transition-colors",
-                        option === breakdown
-                          ? "text-foreground"
-                          : "text-muted-foreground/55 hover:text-foreground",
-                      )}
-                      data-testid={`usage-breakdown-${option}`}
-                      onClick={() => setBreakdown(option)}
-                    >
-                      {USAGE_BREAKDOWN_LABELS[option]}
-                    </button>
+          {targets.length === 0 ? (
+            <p className="mt-10 text-sm text-muted-foreground/60">
+              No computers are connected, so there is nothing to report yet.
+            </p>
+          ) : !merged || !view || !chart ? (
+            <p className="mt-10 text-sm text-muted-foreground/60">
+              {usageQuery.isError ? "Usage could not be read." : "Reading provider transcripts…"}
+            </p>
+          ) : (
+            <>
+              <div className="mt-7 grid grid-cols-1 gap-8 min-[900px]:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+                <div className="flex min-w-0 flex-col">
+                  <span className={SECTION_LABEL_CLASS}>{USAGE_HERO_LABELS[chartMode]}</span>
+                  <span
+                    className={cn(NUMBER_CLASS, "mt-1.5 text-[40px] leading-none text-foreground")}
+                    data-testid="usage-total-cost"
+                  >
+                    {chartMode === "cost" ? (
+                      <>
+                        {formatUsd(merged.costUsd)}
+                        <span className="ml-1.5 align-super text-[0.6em] text-muted-foreground/45">
+                          *
+                        </span>
+                      </>
+                    ) : (
+                      formatTokensCompact(merged.totalTokens)
+                    )}
                   </span>
+                  {/* The asterisk and its footnote are the cost figure's caveat; a
+                  token count needs no disclaimer. */}
+                  {chartMode === "cost" ? (
+                    <p className="mt-2.5 text-xs text-muted-foreground/60">
+                      * if billed at full API rates. Subscription plans bill separately.
+                    </p>
+                  ) : null}
+                  <div className="mt-6 flex flex-col gap-4">
+                    {USAGE_PROVIDER_READING_ORDER.flatMap((provider) => {
+                      const totals = merged.providers.find((entry) => entry.provider === provider);
+                      return totals
+                        ? [<UsageProviderRow key={provider} totals={totals} mode={chartMode} />]
+                        : [];
+                    })}
+                  </div>
+                </div>
+
+                <UsageChart
+                  chart={chart}
+                  mode={chartMode}
+                  onModeChange={setChartMode}
+                  windowControls={
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1">
+                        {USAGE_WINDOW_DAY_OPTIONS.map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            aria-pressed={option === windowDays}
+                            className={cn(
+                              "cursor-pointer rounded px-1.5 py-1 font-mono text-xs tabular-nums transition-colors",
+                              option === windowDays
+                                ? "text-foreground"
+                                : "text-muted-foreground/55 hover:text-foreground",
+                            )}
+                            data-testid={`usage-window-${option}`}
+                            onClick={() => setWindowDays(option)}
+                          >
+                            {option}d
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Refresh usage"
+                        className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground focus-ring"
+                        data-testid="usage-refresh"
+                        disabled={usageQuery.isFetching}
+                        onClick={() => void usageQuery.refetch()}
+                      >
+                        <RotateCwIcon
+                          className={cn("size-3.5", usageQuery.isFetching && "animate-spin")}
+                        />
+                        Refresh
+                      </button>
+                    </div>
+                  }
+                />
+              </div>
+
+              {/* A gapped grid until all five cells truly fit on one line, then
+                  the single divided row. Wrapping divide-x cells collide, and
+                  the sidebar eats ~260px of any viewport breakpoint, so the
+                  one-row layout waits for a comfortably wide window. */}
+              <div className="mt-8 grid grid-cols-2 gap-x-4 gap-y-4 border-y border-border/60 py-3.5 sm:grid-cols-3 min-[1140px]:grid-cols-5 min-[1140px]:gap-0 min-[1140px]:divide-x min-[1140px]:divide-border/60">
+                {stats.map((stat) => (
+                  <UsageStatCell key={stat.label} stat={stat} />
                 ))}
               </div>
-            </div>
-            {breakdown === "days" ? (
-              dayRows.length === 0 ? (
-                <p className="mt-2 text-sm text-muted-foreground/55">
-                  No recorded activity in this window.
-                </p>
-              ) : (
-                <div className="mt-2 flex flex-col divide-y divide-border/50">
-                  {dayRows.map((row) => (
-                    <div
-                      key={row.day}
-                      className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem] items-baseline gap-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem]"
-                      data-testid="usage-day-row"
-                    >
-                      <span className="min-w-0 truncate text-sm text-foreground/90">
-                        {row.label}
+
+              <section className="mt-8">
+                <div className="flex items-baseline gap-4">
+                  <h2 className={SECTION_LABEL_CLASS}>
+                    {breakdown === "models" ? "Models" : "Days"} · {formatCount(merged.sessions)}{" "}
+                    sessions
+                  </h2>
+                  <div className="flex-1" />
+                  <div className="flex items-center gap-1.5">
+                    {USAGE_BREAKDOWNS.map((option, index) => (
+                      <span key={option} className="flex items-center gap-1.5">
+                        {index > 0 ? <span className="text-muted-foreground/25">|</span> : null}
+                        <button
+                          type="button"
+                          aria-pressed={option === breakdown}
+                          className={cn(
+                            "cursor-pointer font-mono text-[10px] uppercase tracking-wider transition-colors",
+                            option === breakdown
+                              ? "text-foreground"
+                              : "text-muted-foreground/55 hover:text-foreground",
+                          )}
+                          data-testid={`usage-breakdown-${option}`}
+                          onClick={() => setBreakdown(option)}
+                        >
+                          {USAGE_BREAKDOWN_LABELS[option]}
+                        </button>
                       </span>
-                      <span
-                        className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/70")}
-                      >
-                        {formatTokens(row.totalTokens)}
-                      </span>
-                      <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}>
-                        {formatUsd(row.costUsd)}
-                      </span>
-                      <span
-                        className={cn(
-                          NUMBER_CLASS,
-                          "hidden text-right text-xs text-muted-foreground/50 sm:block",
-                        )}
-                      >
-                        {formatPercent(row.costShare, 0)}
-                      </span>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              )
-            ) : models.length === 0 ? (
-              <p className="mt-2 text-sm text-muted-foreground/55">
-                No recorded activity in this window.
-              </p>
-            ) : (
-              <div className="mt-2 flex flex-col divide-y divide-border/50">
-                {models.map((model) => {
-                  const ProviderIcon = USAGE_PROVIDER_ICONS[model.provider];
-                  return (
-                    <div
-                      key={`${model.provider}:${model.model}`}
-                      className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem] items-baseline gap-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem]"
-                      data-testid="usage-model-row"
-                    >
-                      <span className="flex min-w-0 items-baseline gap-2">
-                        <ProviderIcon className="size-3 shrink-0 translate-y-px" />
-                        <span className="min-w-0 truncate text-sm text-foreground/90">
-                          {model.model}
-                        </span>
-                      </span>
-                      <span
-                        className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/70")}
-                      >
-                        {formatTokens(model.totalTokens)}
-                      </span>
-                      <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}>
-                        {formatUsd(model.costUsd)}
-                      </span>
-                      {/* Share is the first column to go on a phone: the model
+                {breakdown === "days" ? (
+                  dayRows.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted-foreground/55">
+                      No recorded activity in this window.
+                    </p>
+                  ) : (
+                    <div className="mt-2 flex flex-col divide-y divide-border/50">
+                      {dayRows.map((row) => (
+                        <div
+                          key={row.day}
+                          className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem] items-baseline gap-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem]"
+                          data-testid="usage-day-row"
+                        >
+                          <span className="min-w-0 truncate text-sm text-foreground/90">
+                            {row.label}
+                          </span>
+                          <span
+                            className={cn(
+                              NUMBER_CLASS,
+                              "text-right text-xs text-muted-foreground/70",
+                            )}
+                          >
+                            {formatTokens(row.totalTokens)}
+                          </span>
+                          <span
+                            className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}
+                          >
+                            {formatUsd(row.costUsd)}
+                          </span>
+                          <span
+                            className={cn(
+                              NUMBER_CLASS,
+                              "hidden text-right text-xs text-muted-foreground/50 sm:block",
+                            )}
+                          >
+                            {formatPercent(row.costShare, 0)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                ) : models.length === 0 ? (
+                  <p className="mt-2 text-sm text-muted-foreground/55">
+                    No recorded activity in this window.
+                  </p>
+                ) : (
+                  <div className="mt-2 flex flex-col divide-y divide-border/50">
+                    {models.map((model) => {
+                      const ProviderIcon = USAGE_PROVIDER_ICONS[model.provider];
+                      return (
+                        <div
+                          key={`${model.provider}:${model.model}`}
+                          className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem] items-baseline gap-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem]"
+                          data-testid="usage-model-row"
+                        >
+                          <span className="flex min-w-0 items-baseline gap-2">
+                            <ProviderIcon className="size-3 shrink-0 translate-y-px" />
+                            <span className="min-w-0 truncate text-sm text-foreground/90">
+                              {model.model}
+                            </span>
+                          </span>
+                          <span
+                            className={cn(
+                              NUMBER_CLASS,
+                              "text-right text-xs text-muted-foreground/70",
+                            )}
+                          >
+                            {formatTokens(model.totalTokens)}
+                          </span>
+                          <span
+                            className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}
+                          >
+                            {formatUsd(model.costUsd)}
+                          </span>
+                          {/* Share is the first column to go on a phone: the model
                           name is the row's point, and share is derivable from
                           cost at a glance. */}
-                      <span
-                        className={cn(
-                          NUMBER_CLASS,
-                          "hidden text-right text-xs text-muted-foreground/50 sm:block",
-                        )}
-                      >
-                        {formatPercent(model.costShare, 0)}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+                          <span
+                            className={cn(
+                              NUMBER_CLASS,
+                              "hidden text-right text-xs text-muted-foreground/50 sm:block",
+                            )}
+                          >
+                            {formatPercent(model.costShare, 0)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
 
-          <section className="mt-8">
-            <h2 className={SECTION_LABEL_CLASS}>Machines</h2>
-            <div className="mt-2 flex flex-col divide-y divide-border/50">
-              {machines.map((machine) => (
-                <UsageMachineRowView key={machine.environmentId} machine={machine} />
-              ))}
-            </div>
-            {merged.duplicateSources.length > 0 ? (
-              <p className="mt-2 text-xs text-muted-foreground/50">
-                Counted once: {merged.duplicateSources.join(", ")} is the same folder another
-                computer already reported.
+              <section className="mt-8">
+                <h2 className={SECTION_LABEL_CLASS}>Machines</h2>
+                <div className="mt-2 flex flex-col divide-y divide-border/50">
+                  {machines.map((machine) => (
+                    <UsageMachineRowView key={machine.environmentId} machine={machine} />
+                  ))}
+                </div>
+                {merged.duplicateSources.length > 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground/50">
+                    Counted once: {merged.duplicateSources.join(", ")} is the same folder another
+                    computer already reported.
+                  </p>
+                ) : null}
+              </section>
+
+              <p className="mt-8 border-t border-border/50 pt-3 text-xs text-muted-foreground/55">
+                {formatCostQualityFootnote(merged.costQuality)}
               </p>
-            ) : null}
-          </section>
-
-          <p className="mt-8 border-t border-border/50 pt-3 text-xs text-muted-foreground/55">
-            {formatCostQualityFootnote(merged.costQuality)}
-          </p>
-        </>
-      )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -417,23 +446,37 @@ function UsageChart({
   chart,
   mode,
   onModeChange,
+  windowControls,
 }: {
   readonly chart: UsageAreaChart;
   readonly mode: UsageChartMode;
   readonly onModeChange: (mode: UsageChartMode) => void;
+  /** The 7d/30d/90d picker and Refresh, docked above the chart's own header. */
+  readonly windowControls?: ReactNode;
 }) {
   // The hovered day, held as an index so a window switch under the cursor
   // cannot leave the card describing a day the chart no longer shows.
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  // Touch devices scrub instead of hovering: the finger drags the tracking
+  // line and the card pins to the top of the plot, out from under the hand.
+  const isCoarsePointer = useMediaQuery("(pointer: coarse)");
+  const scrubToClientX = (clientX: number, plot: HTMLElement) => {
+    const rect = plot.getBoundingClientRect();
+    if (rect.width <= 0 || chart.columns.length === 0) return;
+    const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    setHoveredIndex(Math.round(fraction * (chart.columns.length - 1)));
+  };
   const hoveredColumn = hoveredIndex === null ? null : (chart.columns[hoveredIndex] ?? null);
-  const hoveredCenterPercent =
-    hoveredIndex === null || chart.columns.length === 0
-      ? 0
-      : ((hoveredIndex + 0.5) / chart.columns.length) * 100;
+  // The day's true point position, so the tracking line sits on the curve's
+  // peak even for the edge-anchored first and last days.
+  const hoveredCenterPercent = hoveredIndex === null ? 0 : (chart.dayXPercents[hoveredIndex] ?? 0);
   // The card sits on whichever side has room, flipping past the midline.
   const hoveredOnLeftHalf = hoveredCenterPercent <= 50;
   return (
     <div className="flex min-w-0 flex-col" data-testid="usage-chart">
+      {/* The window picker lives with the graph it narrows, right above the
+          cost|tokens toggle rather than stranded in the page header. */}
+      {windowControls ? <div className="mb-2.5 flex justify-end">{windowControls}</div> : null}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <h2 className="text-sm text-foreground/90">{USAGE_CHART_TITLES[mode]}</h2>
         <div className="flex-1" />
@@ -514,14 +557,62 @@ function UsageChart({
             </g>
           ))}
         </svg>
-        {/* Transparent per-day columns drive the tracking line and the card. */}
-        <div className="absolute inset-0 flex" onMouseLeave={() => setHoveredIndex(null)}>
+        {/* "You are here": a dot on each line's tip marks today's running
+            figure. HTML rather than SVG so the plot's horizontal stretch
+            cannot squash it into an oval. */}
+        {chart.series.map((series) => (
+          <span
+            key={`${series.provider}-now`}
+            aria-hidden
+            className="pointer-events-none absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
+            style={{
+              left: `${series.endPoint.leftPercent}%`,
+              top: `${series.endPoint.topPercent}%`,
+              backgroundColor: series.color,
+            }}
+          />
+        ))}
+        {/* Transparent per-day columns drive the tracking line and the card
+            for a mouse. A finger scrubs instead: press and drag moves the
+            line, lifting clears it -- so the card never needs a dismiss
+            affordance on touch. touch-action keeps vertical page scrolling
+            alive; only horizontal movement is claimed. */}
+        <div
+          className="absolute inset-0 flex touch-pan-y select-none"
+          onMouseLeave={() => setHoveredIndex(null)}
+          onPointerDown={(event) => {
+            if (event.pointerType !== "touch") return;
+            try {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            } catch {
+              // A pointer that lifted mid-gesture cannot be captured; the
+              // scrub still tracks whatever move events do arrive.
+            }
+            scrubToClientX(event.clientX, event.currentTarget);
+          }}
+          onPointerMove={(event) => {
+            if (event.pointerType !== "touch") return;
+            scrubToClientX(event.clientX, event.currentTarget);
+          }}
+          onPointerUp={(event) => {
+            if (event.pointerType !== "touch") return;
+            setHoveredIndex(null);
+          }}
+          onPointerCancel={(event) => {
+            if (event.pointerType !== "touch") return;
+            setHoveredIndex(null);
+          }}
+        >
           {chart.columns.map((column, index) => (
             <div
               key={column.day}
               className="min-w-0 flex-1"
               data-testid="usage-chart-day"
-              onMouseEnter={() => setHoveredIndex(index)}
+              onMouseEnter={() => {
+                // Touch taps synthesize mouseenter after the finger lifts;
+                // honoring it would resurrect the card the pointerup cleared.
+                if (!isCoarsePointer) setHoveredIndex(index);
+              }}
             />
           ))}
         </div>
@@ -535,11 +626,16 @@ function UsageChart({
             <div
               className={cn(
                 "pointer-events-none absolute top-2 z-10 w-44 rounded-md border bg-popover px-3 py-2.5 text-popover-foreground shadow-md/5",
+                // A scrubbing finger sits on the plot, so the card pins to the
+                // top center instead of chasing the tracking line under it.
+                isCoarsePointer && "left-1/2 -translate-x-1/2",
               )}
               style={
-                hoveredOnLeftHalf
-                  ? { left: `calc(${hoveredCenterPercent}% + 10px)` }
-                  : { right: `calc(${100 - hoveredCenterPercent}% + 10px)` }
+                isCoarsePointer
+                  ? undefined
+                  : hoveredOnLeftHalf
+                    ? { left: `calc(${hoveredCenterPercent}% + 10px)` }
+                    : { right: `calc(${100 - hoveredCenterPercent}% + 10px)` }
               }
               data-testid="usage-chart-card"
             >
@@ -589,7 +685,7 @@ function UsageChart({
 function UsageStatCell({ stat }: { readonly stat: UsageStat }) {
   return (
     <div
-      className="flex min-w-0 flex-1 basis-36 flex-col gap-1 px-4 first:pl-0"
+      className="flex min-w-0 flex-col gap-1 min-[1140px]:px-4 min-[1140px]:first:pl-0"
       data-testid="usage-stat"
     >
       <span className={SECTION_LABEL_CLASS}>{stat.label}</span>
