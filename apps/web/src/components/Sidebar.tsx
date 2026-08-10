@@ -1610,21 +1610,45 @@ export default function Sidebar() {
                           />
                         ))}
                       </ul>
-                      {!doneCollapsed && nextDoneRevealCount > 0 ? (
-                        <button
-                          type="button"
-                          data-thread-selection-safe
-                          data-testid="inbox-done-show-more"
-                          className={cn(
-                            "w-full cursor-pointer px-3 pt-2 pb-3 text-left text-[11px]",
-                            "text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring",
+                      {!doneCollapsed && (nextDoneRevealCount > 0 || revealedDoneCount > 0) ? (
+                        <div className="flex items-center gap-1 px-3 pt-2 pb-3">
+                          {nextDoneRevealCount > 0 ? (
+                            <button
+                              type="button"
+                              data-thread-selection-safe
+                              data-testid="inbox-done-show-more"
+                              className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
+                              onClick={() => {
+                                setRevealedDoneCount((current) => current + DONE_REVEAL_STEP);
+                              }}
+                            >
+                              Show {nextDoneRevealCount} more…
+                            </button>
+                          ) : (
+                            <span className="min-w-0 flex-1" aria-hidden="true" />
                           )}
-                          onClick={() => {
-                            setRevealedDoneCount((current) => current + DONE_REVEAL_STEP);
-                          }}
-                        >
-                          Show {nextDoneRevealCount} more…
-                        </button>
+                          {revealedDoneCount > 0 ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <button
+                                    type="button"
+                                    data-thread-selection-safe
+                                    data-testid="inbox-done-show-fewer"
+                                    aria-label="Show fewer wrapped threads"
+                                    className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                                    onClick={() => {
+                                      setRevealedDoneCount(0);
+                                    }}
+                                  />
+                                }
+                              >
+                                <ChevronsUpIcon className="size-3.5" />
+                              </TooltipTrigger>
+                              <TooltipPopup side="top">Show fewer</TooltipPopup>
+                            </Tooltip>
+                          ) : null}
+                        </div>
                       ) : null}
                     </>
                   ) : null}

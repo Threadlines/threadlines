@@ -21,6 +21,7 @@ import {
 } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  draftSourceControlPanelStateKey,
   useAutoHideSourceControlSheet,
   useSourceControlPanelOpen,
 } from "../rightPanelLayout";
@@ -87,7 +88,10 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const rawSourceControlOpen = useSourceControlPanelOpen(search);
+  const rawSourceControlOpen = useSourceControlPanelOpen(
+    search,
+    draftSourceControlPanelStateKey(draftId),
+  );
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;

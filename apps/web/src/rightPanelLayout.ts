@@ -83,19 +83,58 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
 }
 
 /**
+ * Last explicit panel state per thread. The URL only carries explicit state
+ * until the next thread navigation drops it, so without this memory an open
+ * panel silently closes on the A -> B -> A round trip. Session-scoped on
+ * purpose: a fresh launch starts from the settings default again.
+ */
+const sourceControlPanelStateByThreadKey = new Map<string, "1" | "0">();
+
+/**
+ * Memory key for a draft route's panel state, distinct from the
+ * `environmentId:threadId` keys server threads use. The draft route and the
+ * chat header resolve the same draft through this so they agree.
+ */
+export function draftSourceControlPanelStateKey(draftId: string): string {
+  return `draft:${draftId}`;
+}
+
+export function resetSourceControlPanelStateMemoryForTests(): void {
+  sourceControlPanelStateByThreadKey.clear();
+}
+
+/**
  * Whether the source control panel is showing for the given route search
  * params. The routes and the header toggle must always agree on this, so the
  * settings default and its wide-layout gate live here instead of at call
  * sites (a per-surface `defaultOpen` is how the 0.3.0 default-closed change
  * missed the draft route and the header button).
  *
- * The default-open setting only applies on wide layouts: in sheet mode the
- * panel covers the conversation, so threads there always start closed.
+ * Explicit URL state still wins; when the URL carries none, the thread's
+ * remembered last explicit state applies before the default-open setting, so
+ * leaving a thread and returning keeps the panel the way it was left.
+ *
+ * The default-open setting and the per-thread memory only apply on wide
+ * layouts: in sheet mode the panel covers the conversation, so threads there
+ * always start closed.
  */
-export function useSourceControlPanelOpen(search: DiffRouteSearch): boolean {
+export function useSourceControlPanelOpen(
+  search: DiffRouteSearch,
+  threadPanelStateKey: string | null,
+): boolean {
   const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const defaultOpenSetting = useSettings((settings) => settings.sourceControlPanelDefaultOpen);
-  return isSourceControlPanelOpen(search, { defaultOpen: defaultOpenSetting && !sheetLayout });
+  const explicitState = search.sourceControl;
+  useEffect(() => {
+    if (threadPanelStateKey && explicitState) {
+      sourceControlPanelStateByThreadKey.set(threadPanelStateKey, explicitState);
+    }
+  }, [explicitState, threadPanelStateKey]);
+  const rememberedState = threadPanelStateKey
+    ? sourceControlPanelStateByThreadKey.get(threadPanelStateKey)
+    : undefined;
+  const defaultOpen = rememberedState !== undefined ? rememberedState === "1" : defaultOpenSetting;
+  return isSourceControlPanelOpen(search, { defaultOpen: defaultOpen && !sheetLayout });
 }
 
 export function normalizeRightPanelStoredWidth(width: number) {

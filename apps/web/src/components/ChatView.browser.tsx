@@ -72,7 +72,10 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
-import { RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH } from "../rightPanelLayout";
+import {
+  RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
+  resetSourceControlPanelStateMemoryForTests,
+} from "../rightPanelLayout";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -2166,6 +2169,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
+    resetSourceControlPanelStateMemoryForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({
       draftsByThreadKey: {},
@@ -2661,6 +2665,73 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
           expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
           expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("remembers a thread's source control panel across leaving and returning", async () => {
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-source-control-memory" as MessageId,
+      targetText: "source control memory",
+    });
+    const secondThreadId = "thread-browser-test-second" as ThreadId;
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: [
+        ...baseSnapshot.threads,
+        { ...baseSnapshot.threads[0]!, id: secondThreadId, title: "Second thread" },
+      ],
+    };
+
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      const sourceControlToggle = await waitForElement(
+        () =>
+          document.querySelector(
+            'button[aria-label="Toggle source control panel"]',
+          ) as HTMLButtonElement | null,
+        "Unable to find source control toggle.",
+      );
+      sourceControlToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
+
+      // Sidebar-style navigation carries no search params, which used to reset
+      // the panel. The other thread still starts closed; memory is per thread.
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: secondThreadId },
+      });
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.pathname).toBe(
+            `/${LOCAL_ENVIRONMENT_ID}/${secondThreadId}`,
+          );
+          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: THREAD_ID },
+      });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('h2[aria-label="Source Control"]')).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -5769,6 +5840,61 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await page.getByTestId("inbox-live-show-fewer").click();
       await expectRows(6, "Show 5 more");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reveals the wrapped tail and folds it back", async () => {
+    const doneThreadIds = Array.from(
+      { length: 13 },
+      (_, index) => `thread-wrapped-${index}` as ThreadId,
+    );
+    const snapshot = doneThreadIds.reduce(
+      (current, threadId) => addThreadToSnapshot(current, threadId),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-done-fold" as MessageId,
+        targetText: "done fold target",
+      }),
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    const expectDoneRows = async (count: number, revealLabel: string | null) => {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll('[data-testid^="done-row-"]').length).toBe(count);
+          const reveal = document.querySelector('[data-testid="inbox-done-show-more"]');
+          if (revealLabel === null) {
+            expect(reveal).toBeNull();
+          } else {
+            expect(reveal?.textContent).toContain(revealLabel);
+          }
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    };
+
+    try {
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      const doneAt = new Date().toISOString();
+      for (const threadId of doneThreadIds) {
+        markThreadDoneInTest(
+          scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId)),
+          doneAt,
+        );
+      }
+
+      // Thirteen wrapped threads, ten previewed, the rest behind the reveal.
+      await expectDoneRows(10, "Show 3 more");
+      expect(document.querySelector('[data-testid="inbox-done-show-fewer"]')).toBeNull();
+
+      await page.getByTestId("inbox-done-show-more").click();
+      // Everything is out, so only the fold-back control remains.
+      await expectDoneRows(13, null);
+
+      await page.getByTestId("inbox-done-show-fewer").click();
+      await expectDoneRows(10, "Show 3 more");
+      expect(document.querySelector('[data-testid="inbox-done-show-fewer"]')).toBeNull();
     } finally {
       await mounted.cleanup();
     }

@@ -125,7 +125,8 @@ function ChatThreadRouteView() {
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
-  const rawSourceControlOpen = useSourceControlPanelOpen(search);
+  const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
+  const rawSourceControlOpen = useSourceControlPanelOpen(search, currentThreadKey);
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
     ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)
@@ -169,7 +170,6 @@ function ChatThreadRouteView() {
   );
   const diffIgnoreWhitespace = useSettings((settings) => settings.diffIgnoreWhitespace);
   const queryClient = useQueryClient();
-  const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
 
   // Register the workspace context so chat file chips, diff rows, and the
   // terminal affordance can open the internal file viewer from anywhere in

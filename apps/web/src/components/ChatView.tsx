@@ -120,6 +120,7 @@ import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  draftSourceControlPanelStateKey,
   useChatHeaderBottomVarRef,
   useSourceControlPanelOpen,
 } from "../rightPanelLayout";
@@ -1287,7 +1288,10 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = useSourceControlPanelOpen(rawSearch);
+  const sourceControlOpen = useSourceControlPanelOpen(
+    rawSearch,
+    routeKind === "draft" && draftId ? draftSourceControlPanelStateKey(draftId) : routeThreadKey,
+  );
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.
