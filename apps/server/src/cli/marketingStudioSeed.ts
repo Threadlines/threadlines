@@ -144,6 +144,7 @@ const makeServerConfig = (input: MarketingStudioSeedInput): ServerConfigShape =>
     mode: "desktop",
     port: 0,
     host: undefined,
+    advertisedHost: undefined,
     cwd: input.cwd,
     baseDir: input.baseDir,
     staticDir: undefined,

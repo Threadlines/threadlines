@@ -40,6 +40,7 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
     tailscaleServePort: 443,
     port: 0,
     host: undefined,
+    advertisedHost: undefined,
     desktopBootstrapToken: undefined,
     staticDir: undefined,
     devUrl: undefined,

@@ -1,3 +1,19 @@
+diff --git a/dist/PubSub.js b/dist/PubSub.js
+index 5f294e781fcedc57902bf53d20cab83184fe358b..72d3b1f36b84e54a22321ab756401ad144e7c62b 100644
+--- a/dist/PubSub.js
++++ b/dist/PubSub.js
+@@ -2049,6 +2049,11 @@ const strategyCompletePollersUnsafe = (strategy, pubsub, subscribers, subscripti
+   let keepPolling = true;
+   while (keepPolling && !subscription.isEmpty()) {
+     const poller = MutableList.take(pollers);
++    // An interrupted poller leaves an undefined hole in the list; completing
++    // it would dereference undefined. Skip holes and keep draining.
++    if (poller === undefined || poller === null) {
++      continue;
++    }
+     if (poller === MutableList.Empty) {
+       removeSubscribers(subscribers, subscription, pollers);
+       if (pollers.length === 0) {
 diff --git a/dist/unstable/rpc/RpcClient.d.ts b/dist/unstable/rpc/RpcClient.d.ts
 index a70061a638faabdd663eca25cb79585fec06e03c..1af40759e2d51d1c1d2da86bd00a43fc71cfff3a 100644
 --- a/dist/unstable/rpc/RpcClient.d.ts
