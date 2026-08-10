@@ -856,8 +856,9 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       // The collapsed search input is focused on open, so keyboard nav
-      // works without clicking into it.
-      await userEvent.keyboard("{ArrowDown}");
+      // works without clicking into it. The list opens with the current
+      // model already highlighted (Base UI 1.7 initial-highlight behaviour),
+      // so the first arrow moves off it.
       await vi.waitFor(() => {
         const highlightedItem = document.querySelector<HTMLElement>(
           '[data-slot="combobox-item"][data-highlighted]',
