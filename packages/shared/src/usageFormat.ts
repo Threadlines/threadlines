@@ -98,6 +98,22 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
 }
 
 /**
+ * Inclusive first day of a window of `windowDays` ending on `untilDay`.
+ *
+ * The page fetches one long window and narrows it on the client, so the shorter
+ * selections have to be anchored to the day the scan actually ended on rather
+ * than to a fresh "now" that may already have rolled over.
+ */
+export function windowStartDay(untilDay: string, windowDays: number): string {
+  const [year = 0, month = 1, dayOfMonth = 1] = untilDay
+    .split("-")
+    .map((part) => Number.parseInt(part, 10));
+  // Calendar arithmetic in UTC, where every day is the same length.
+  const start = new Date(Date.UTC(year, month - 1, dayOfMonth - (windowDays - 1)));
+  return start.toISOString().slice(0, 10);
+}
+
+/**
  * The window the page requests for a 7/30/90-day selection, expressed in the
  * viewer's own time zone so days line up with what they actually experienced.
  *
@@ -131,12 +147,8 @@ function buildUsageWindow(windowDays: number, now: Date): UsageSummaryInput {
   // Subtracting fixed milliseconds from `now` lands on the wrong calendar day
   // around a DST transition. Only "today" needs the zone; the window start is
   // pure calendar arithmetic on that day, done in UTC where days are uniform.
-  const [year = 0, month = 1, dayOfMonth = 1] = untilDay
-    .split("-")
-    .map((part) => Number.parseInt(part, 10));
-  const start = new Date(Date.UTC(year, month - 1, dayOfMonth - (windowDays - 1)));
   return {
-    sinceDay: UsageDay.make(start.toISOString().slice(0, 10)),
+    sinceDay: UsageDay.make(windowStartDay(untilDay, windowDays)),
     untilDay: UsageDay.make(untilDay),
     timeZone,
   };

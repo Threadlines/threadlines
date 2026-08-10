@@ -1,17 +1,24 @@
 import {
   USAGE_CONTRACT_VERSION,
+  USAGE_MAX_WINDOW_DAYS,
+  UsageDay,
   type EnvironmentId,
   type UsageSummary,
   type UsageSummaryInput,
   type UsageWindowDays,
 } from "@threadlines/contracts";
-import { makeTodayUsageWindow, makeUsageWindow } from "@threadlines/shared/usageFormat";
 import {
+  makeTodayUsageWindow,
+  makeUsageWindow,
+  windowStartDay,
+} from "@threadlines/shared/usageFormat";
+import {
+  filterSummaryWindow,
   mergeUsage,
   type EnvironmentUsage,
   type MergedUsage,
 } from "@threadlines/shared/usageMerge";
-import { queryOptions } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { readEnvironmentApi } from "~/environmentApi";
@@ -118,25 +125,68 @@ function describeUsageReadFailure(reason: unknown): string {
 /**
  * The page's query. Every environment is asked in parallel and the failures are
  * kept alongside the successes, so the merge can be honest about coverage.
+ *
+ * Always the longest window the page offers, whatever the selector says. A scan
+ * is disk work measured in seconds, and every shorter selection is a subset of
+ * this one, so the 7- and 30-day views are derived rather than fetched.
  */
 export function usageSummaryQueryOptions(input: {
   readonly targets: ReadonlyArray<UsageEnvironmentTarget>;
-  readonly windowDays: UsageWindowDays;
 }) {
   const targets = normalizeTargets(input.targets);
   return queryOptions({
     queryKey: [
       "usage",
       "summary",
-      input.windowDays,
+      USAGE_MAX_WINDOW_DAYS,
       targets.map((target) => target.environmentId),
     ] as const,
     // The window is built inside the fetch rather than in the key so a session
     // left open past midnight rolls onto the new day at the next refetch.
-    queryFn: () => readUsageAcrossEnvironments(targets, makeUsageWindow(input.windowDays)),
+    queryFn: () => readUsageAcrossEnvironments(targets, makeUsageWindow(USAGE_MAX_WINDOW_DAYS)),
     enabled: targets.length > 0,
     staleTime: USAGE_STALE_TIME_MS,
+    // A refresh keeps the page on screen: the numbers move, the layout does not.
+    placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * Narrows a scanned result to the selected window, client-side.
+ *
+ * Anchored on the scan's own last day rather than on "now", so the derived
+ * window always lines up with the days the scan actually covered.
+ */
+export function deriveUsageWindow(
+  scan: UsageAcrossEnvironments,
+  windowDays: UsageWindowDays,
+): UsageAcrossEnvironments {
+  const untilDay = scan.window.untilDay;
+  const sinceDay = UsageDay.make(windowStartDay(untilDay, windowDays));
+  if (sinceDay <= scan.window.sinceDay) return scan;
+
+  const environments: UsageEnvironmentReport[] = scan.environments.map((environment) =>
+    environment.summary
+      ? { ...environment, summary: filterSummaryWindow(environment.summary, sinceDay, untilDay) }
+      : environment,
+  );
+  const contributions: EnvironmentUsage[] = environments.flatMap((environment) =>
+    environment.summary
+      ? [
+          {
+            environmentId: environment.environmentId,
+            label: environment.label,
+            summary: environment.summary,
+          },
+        ]
+      : [],
+  );
+
+  return {
+    window: { ...scan.window, sinceDay },
+    merged: mergeUsage(contributions, USAGE_CONTRACT_VERSION),
+    environments,
+  };
 }
 
 /**

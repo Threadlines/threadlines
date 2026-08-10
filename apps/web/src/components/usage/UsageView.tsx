@@ -1,8 +1,12 @@
-import { USAGE_WINDOW_DAY_OPTIONS, type UsageWindowDays } from "@threadlines/contracts";
+import {
+  USAGE_WINDOW_DAY_OPTIONS,
+  type UsageProviderKind,
+  type UsageWindowDays,
+} from "@threadlines/contracts";
 import {
   formatCount,
-  formatDayShort,
   formatTokens,
+  formatTokensCompact,
   formatUsd,
   formatPercent,
 } from "@threadlines/shared/usageFormat";
@@ -12,18 +16,32 @@ import { useMemo, useState } from "react";
 
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
-import { usageSummaryQueryOptions, useUsageEnvironmentTargets } from "../../lib/usageReactQuery";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
-  buildUsageChartBars,
+  deriveUsageWindow,
+  usageSummaryQueryOptions,
+  useUsageEnvironmentTargets,
+} from "../../lib/usageReactQuery";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { ClaudeAI, OpenAI, type Icon } from "../Icons";
+import {
+  buildUsageAreaChart,
   buildUsageMachineRows,
+  buildUsageStats,
   formatCostQualityFootnote,
-  shouldLabelUsageTick,
+  formatUsageDateRange,
+  USAGE_CHART_MODE_LABELS,
+  USAGE_CHART_MODES,
+  USAGE_CHART_TITLES,
   USAGE_MACHINE_STATE_LABELS,
-  USAGE_PROVIDER_BAR_CLASSES,
+  USAGE_PROVIDER_COLORS,
   USAGE_PROVIDER_LABELS,
-  USAGE_PROVIDER_ORDER,
+  USAGE_PROVIDER_READING_ORDER,
+  USAGE_PROVIDER_SHORT_LABELS,
+  visibleUsageModels,
+  type UsageAreaChart,
+  type UsageChartMode,
   type UsageMachineRow,
+  type UsageStat,
 } from "./usageView.logic";
 
 const SECTION_LABEL_CLASS =
@@ -31,54 +49,85 @@ const SECTION_LABEL_CLASS =
 const NUMBER_CLASS = "font-mono tabular-nums";
 /** Scan freshness is a relative label, so it needs a slow clock of its own. */
 const FRESHNESS_TICK_MS = 30_000;
+/** The window a first-time reader gets: a week is too short to see a pattern. */
+const DEFAULT_WINDOW_DAYS: UsageWindowDays = 30;
+
+/** The same glyphs the model picker draws, keyed by the usage contract's names. */
+const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
+  claude: ClaudeAI,
+  codex: OpenAI,
+};
 
 /**
  * What the provider CLIs' own transcripts say this account has spent, merged
  * across every computer Threadlines knows about.
  *
  * The figures are API list prices for the tokens, never billed spend, and the
- * page says so under the title: a subscription bills on its own terms and the
+ * page says so under the headline: a subscription bills on its own terms and the
  * transcripts carry no invoice.
+ *
+ * One scan covers the longest window on offer and the selector narrows it here,
+ * so switching between 7, 30 and 90 days is a recompute rather than a wait.
  */
 export function UsageView() {
-  const [windowDays, setWindowDays] = useState<UsageWindowDays>(7);
+  const [windowDays, setWindowDays] = useState<UsageWindowDays>(DEFAULT_WINDOW_DAYS);
+  const [chartMode, setChartMode] = useState<UsageChartMode>("cost");
   // One slow clock for the whole page: scan freshness is the only honest signal
   // about a warm scan, and it must not go stale on screen.
   useRelativeTimeTick(FRESHNESS_TICK_MS);
   const targets = useUsageEnvironmentTargets();
-  const usageQuery = useQuery(usageSummaryQueryOptions({ targets, windowDays }));
-  const data = usageQuery.data ?? null;
-  const merged = data?.merged ?? null;
+  const usageQuery = useQuery(usageSummaryQueryOptions({ targets }));
+  const scan = usageQuery.data ?? null;
 
-  const bars = useMemo(
-    () =>
-      data
-        ? buildUsageChartBars({
-            daily: data.merged.daily,
-            sinceDay: data.window.sinceDay,
-            untilDay: data.window.untilDay,
-          })
-        : [],
-    [data],
+  const view = useMemo(
+    () => (scan ? deriveUsageWindow(scan, windowDays) : null),
+    [scan, windowDays],
   );
+  const merged = view?.merged ?? null;
+
+  const chart = useMemo(
+    () =>
+      view
+        ? buildUsageAreaChart({
+            daily: view.merged.daily,
+            sinceDay: view.window.sinceDay,
+            untilDay: view.window.untilDay,
+            mode: chartMode,
+          })
+        : null,
+    [chartMode, view],
+  );
+  // The machines answered for the whole scan, not for the selected window, so
+  // they are read from the scan and never move when the selector does.
   const machines = useMemo(
     () =>
-      data
+      scan
         ? buildUsageMachineRows({
-            environments: data.environments,
-            staleEnvironments: data.merged.staleEnvironments,
+            environments: scan.environments,
+            staleEnvironments: scan.merged.staleEnvironments,
           })
         : [],
-    [data],
+    [scan],
   );
+  const models = useMemo(() => (merged ? visibleUsageModels(merged) : []), [merged]);
+  const stats = useMemo(() => (merged ? buildUsageStats(merged) : []), [merged]);
 
   return (
     <div
-      className="mx-auto flex h-full w-full max-w-3xl flex-col overflow-y-auto px-6 py-8"
+      className="mx-auto flex h-full w-full max-w-[1200px] flex-col overflow-y-auto px-6 py-8"
       data-testid="usage-view"
     >
-      <div className="flex items-center gap-3">
-        <h1 className="flex-1 text-lg font-medium tracking-tight">Usage</h1>
+      <div className="flex items-baseline gap-3">
+        <h1 className="text-lg font-medium tracking-tight">Usage</h1>
+        {view ? (
+          <span
+            className={cn(NUMBER_CLASS, "text-xs text-muted-foreground/55")}
+            data-testid="usage-date-range"
+          >
+            {formatUsageDateRange(view.window.sinceDay, view.window.untilDay)}
+          </span>
+        ) : null}
+        <div className="flex-1" />
         <div className="flex items-center gap-1">
           {USAGE_WINDOW_DAY_OPTIONS.map((option) => (
             <button
@@ -110,109 +159,87 @@ export function UsageView() {
           Refresh
         </button>
       </div>
-      <p className="text-sm text-muted-foreground/70">
-        API list-price equivalent. Subscription plans bill separately.
-      </p>
 
       {targets.length === 0 ? (
         <p className="mt-10 text-sm text-muted-foreground/60">
           No computers are connected, so there is nothing to report yet.
         </p>
-      ) : !merged || !data ? (
+      ) : !merged || !view || !chart ? (
         <p className="mt-10 text-sm text-muted-foreground/60">
           {usageQuery.isError ? "Usage could not be read." : "Reading provider transcripts…"}
         </p>
       ) : (
         <>
-          <div className="mt-7 flex flex-wrap divide-x divide-border/60 border-y border-border/60 py-3">
-            <UsageStat label="API-equivalent" value={formatUsd(merged.costUsd)} />
-            <UsageStat label="Tokens" value={formatTokens(merged.totalTokens)} />
-            <UsageStat
-              label="Cache savings"
-              value={formatUsd(merged.costQuality.cacheSavingsUsd)}
-            />
-            <UsageStat label="Sessions" value={formatCount(merged.sessions)} />
+          <div className="mt-7 grid grid-cols-1 gap-8 min-[900px]:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+            <div className="flex min-w-0 flex-col">
+              <span className={SECTION_LABEL_CLASS}>API-equivalent cost</span>
+              <span
+                className={cn(NUMBER_CLASS, "mt-1.5 text-[40px] leading-none text-foreground")}
+                data-testid="usage-total-cost"
+              >
+                {formatUsd(merged.costUsd)}
+                <span className="text-muted-foreground/45">*</span>
+              </span>
+              <p className="mt-2.5 text-xs text-muted-foreground/60">
+                * if billed at full API rates. Subscription plans bill separately.
+              </p>
+              <div className="mt-6 flex flex-col gap-4">
+                {USAGE_PROVIDER_READING_ORDER.flatMap((provider) => {
+                  const totals = merged.providers.find((entry) => entry.provider === provider);
+                  return totals ? [<UsageProviderRow key={provider} totals={totals} />] : [];
+                })}
+              </div>
+            </div>
+
+            <UsageChart chart={chart} mode={chartMode} onModeChange={setChartMode} />
+          </div>
+
+          <div className="mt-8 flex flex-wrap divide-x divide-border/60 border-y border-border/60 py-3.5">
+            {stats.map((stat) => (
+              <UsageStatCell key={stat.label} stat={stat} />
+            ))}
           </div>
 
           <section className="mt-8">
-            <div className="flex items-baseline justify-between gap-3">
-              <h2 className={SECTION_LABEL_CLASS}>Daily</h2>
-              <div className="flex items-center gap-3">
-                {USAGE_PROVIDER_ORDER.map((provider) => (
-                  <span
-                    key={provider}
-                    className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60"
-                  >
-                    <span
-                      aria-hidden
-                      className={cn("size-2 rounded-xs", USAGE_PROVIDER_BAR_CLASSES[provider])}
-                    />
-                    {USAGE_PROVIDER_LABELS[provider]}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="mt-3 flex h-[120px] items-stretch gap-px border-b border-border">
-              {bars.map((bar) => (
-                <div
-                  key={bar.day}
-                  className="flex min-w-0 flex-1 flex-col-reverse transition-colors hover:bg-muted/50"
-                  title={bar.title}
-                >
-                  {bar.segments.map((segment) => (
-                    <div
-                      key={segment.provider}
-                      className={USAGE_PROVIDER_BAR_CLASSES[segment.provider]}
-                      style={{ height: `${segment.heightPercent}%` }}
-                    />
-                  ))}
-                </div>
-              ))}
-            </div>
-            <div className="mt-1 flex gap-px">
-              {bars.map((bar, index) => (
-                <span
-                  key={bar.day}
-                  className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/45"
-                >
-                  {shouldLabelUsageTick(index, bars.length) ? formatDayShort(bar.day) : ""}
-                </span>
-              ))}
-            </div>
-          </section>
-
-          <section className="mt-8">
-            <h2 className={SECTION_LABEL_CLASS}>Models</h2>
-            {merged.models.length === 0 ? (
+            <h2 className={SECTION_LABEL_CLASS}>
+              Models · {formatCount(merged.sessions)} sessions
+            </h2>
+            {models.length === 0 ? (
               <p className="mt-2 text-sm text-muted-foreground/55">
                 No recorded activity in this window.
               </p>
             ) : (
               <div className="mt-2 flex flex-col divide-y divide-border/50">
-                {merged.models.map((model) => (
-                  <div
-                    key={`${model.provider}:${model.model}`}
-                    className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem] items-baseline gap-3 py-2.5"
-                    data-testid="usage-model-row"
-                  >
-                    <span className="min-w-0 truncate text-sm text-foreground/90">
-                      {model.model}
-                    </span>
-                    <span
-                      className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/70")}
+                {models.map((model) => {
+                  const ProviderIcon = USAGE_PROVIDER_ICONS[model.provider];
+                  return (
+                    <div
+                      key={`${model.provider}:${model.model}`}
+                      className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem] items-baseline gap-3 py-2.5"
+                      data-testid="usage-model-row"
                     >
-                      {formatTokens(model.totalTokens)}
-                    </span>
-                    <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}>
-                      {formatUsd(model.costUsd)}
-                    </span>
-                    <span
-                      className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/50")}
-                    >
-                      {formatPercent(model.costShare, 0)}
-                    </span>
-                  </div>
-                ))}
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <ProviderIcon className="size-3 shrink-0 translate-y-px" />
+                        <span className="min-w-0 truncate text-sm text-foreground/90">
+                          {model.model}
+                        </span>
+                      </span>
+                      <span
+                        className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/70")}
+                      >
+                        {formatTokens(model.totalTokens)}
+                      </span>
+                      <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}>
+                        {formatUsd(model.costUsd)}
+                      </span>
+                      <span
+                        className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/50")}
+                      >
+                        {formatPercent(model.costShare, 0)}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -241,11 +268,182 @@ export function UsageView() {
   );
 }
 
-function UsageStat({ label, value }: { readonly label: string; readonly value: string }) {
+/** Provider name, its slice of the cost, and how wide that slice is. */
+function UsageProviderRow({
+  totals,
+}: {
+  readonly totals: {
+    readonly provider: UsageProviderKind;
+    readonly costUsd: number;
+    readonly costShare: number;
+    readonly totalTokens: number;
+  };
+}) {
+  const ProviderIcon = USAGE_PROVIDER_ICONS[totals.provider];
   return (
-    <div className="flex min-w-0 flex-col gap-1 px-4 first:pl-0">
-      <span className={SECTION_LABEL_CLASS}>{label}</span>
-      <span className={cn(NUMBER_CLASS, "text-base text-foreground")}>{value}</span>
+    <div className="flex min-w-0 flex-col gap-1.5" data-testid="usage-provider-row">
+      <div className="flex min-w-0 items-center gap-2">
+        <ProviderIcon className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
+          {USAGE_PROVIDER_LABELS[totals.provider]}
+        </span>
+        <span className={cn(NUMBER_CLASS, "shrink-0 text-sm text-foreground")}>
+          {formatUsd(totals.costUsd)}
+        </span>
+      </div>
+      <div className="h-[3px] w-full bg-border/40">
+        <div
+          className="h-full"
+          style={{
+            width: `${Math.max(0, Math.min(1, totals.costShare)) * 100}%`,
+            backgroundColor: USAGE_PROVIDER_COLORS[totals.provider],
+          }}
+        />
+      </div>
+      <span className="text-xs text-muted-foreground/55">
+        {formatPercent(totals.costShare)} of cost · {formatTokensCompact(totals.totalTokens)} tokens
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Overlapping areas, one per provider, drawn from the zero baseline.
+ *
+ * The SVG carries only the curves: gridlines, labels and the hover targets are
+ * HTML, so nothing has to survive the horizontal stretch that lets the plot fill
+ * whatever width the hero gives it.
+ */
+function UsageChart({
+  chart,
+  mode,
+  onModeChange,
+}: {
+  readonly chart: UsageAreaChart;
+  readonly mode: UsageChartMode;
+  readonly onModeChange: (mode: UsageChartMode) => void;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col" data-testid="usage-chart">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h2 className="text-sm text-foreground/90">{USAGE_CHART_TITLES[mode]}</h2>
+        <div className="flex-1" />
+        <div className="flex items-center gap-1.5">
+          {USAGE_CHART_MODES.map((option, index) => (
+            <span key={option} className="flex items-center gap-1.5">
+              {index > 0 ? <span className="text-muted-foreground/25">|</span> : null}
+              <button
+                type="button"
+                aria-pressed={option === mode}
+                className={cn(
+                  "cursor-pointer font-mono text-[10px] uppercase tracking-wider transition-colors",
+                  option === mode
+                    ? "text-foreground"
+                    : "text-muted-foreground/55 hover:text-foreground",
+                )}
+                data-testid={`usage-chart-mode-${option}`}
+                onClick={() => onModeChange(option)}
+              >
+                {USAGE_CHART_MODE_LABELS[option]}
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="flex items-center gap-3">
+          {USAGE_PROVIDER_READING_ORDER.map((provider) => (
+            <span
+              key={provider}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60"
+            >
+              <span
+                aria-hidden
+                className="size-2 rounded-full"
+                style={{ backgroundColor: USAGE_PROVIDER_COLORS[provider] }}
+              />
+              {USAGE_PROVIDER_LABELS[provider]}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="relative mt-6 h-[200px] border-b border-border">
+        {chart.gridlines.map((gridline) => (
+          <div
+            key={gridline.value}
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 border-t border-border/45"
+            style={{ top: `${gridline.topPercent}%` }}
+          >
+            <span
+              className={cn(
+                NUMBER_CLASS,
+                "absolute left-0 bottom-0.5 text-[10px] text-muted-foreground/45",
+              )}
+            >
+              {gridline.label}
+            </span>
+          </div>
+        ))}
+        <svg
+          aria-hidden
+          className="absolute inset-0 size-full"
+          preserveAspectRatio="none"
+          viewBox={`0 0 ${chart.viewBoxWidth} ${chart.viewBoxHeight}`}
+        >
+          {chart.series.map((series) => (
+            <g key={series.provider}>
+              <path d={series.areaPath} fill={series.color} fillOpacity={0.18} />
+              <path
+                d={series.linePath}
+                fill="none"
+                stroke={series.color}
+                strokeWidth={1.5}
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          ))}
+        </svg>
+        {/* Transparent per-day columns: the whole tooltip system, in one attribute. */}
+        <div className="absolute inset-0 flex">
+          {chart.columns.map((column) => (
+            <div
+              key={column.day}
+              className="min-w-0 flex-1 transition-colors hover:bg-muted/40"
+              data-testid="usage-chart-day"
+              title={column.title}
+            />
+          ))}
+        </div>
+        {chart.isEmpty ? (
+          <p className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground/50">
+            No recorded activity in this window.
+          </p>
+        ) : null}
+      </div>
+      <div className="mt-1.5 flex justify-between gap-2">
+        {chart.axisLabels.map((label) => (
+          <span key={label} className={cn(SECTION_LABEL_CLASS, "text-[10px]")}>
+            {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UsageStatCell({ stat }: { readonly stat: UsageStat }) {
+  return (
+    <div
+      className="flex min-w-0 flex-1 basis-36 flex-col gap-1 px-4 first:pl-0"
+      data-testid="usage-stat"
+    >
+      <span className={SECTION_LABEL_CLASS}>{stat.label}</span>
+      <span className={cn(NUMBER_CLASS, "text-[20px] leading-tight text-foreground")}>
+        {stat.value}
+      </span>
+      {stat.context ? (
+        <span className="truncate text-xs text-muted-foreground/55">{stat.context}</span>
+      ) : null}
     </div>
   );
 }
@@ -273,7 +471,7 @@ function UsageMachineRowView({ machine }: { readonly machine: UsageMachineRow })
           className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground/55"
         >
           <span className="w-12 shrink-0 text-muted-foreground/45">
-            {USAGE_PROVIDER_LABELS[source.fingerprint.provider]}
+            {USAGE_PROVIDER_SHORT_LABELS[source.fingerprint.provider]}
           </span>
           <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
             {source.fingerprint.resolvedHomePath}

@@ -8,7 +8,7 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+import { filterSummaryWindow, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
 
 function bucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
   return {
@@ -251,5 +251,66 @@ describe("mergeUsage", () => {
 
     expect(merged.totalTokens).toBe(10);
     expect(merged.reasoningTokens).toBe(2);
+  });
+});
+
+describe("filterSummaryWindow", () => {
+  it("keeps the days on both bounds and drops the ones outside", () => {
+    const scanned = summary(
+      [
+        bucket({ day: "2026-08-04" as UsageDay }),
+        bucket({ day: "2026-08-05" as UsageDay }),
+        bucket({ day: "2026-08-07" as UsageDay }),
+        bucket({ day: "2026-08-08" as UsageDay }),
+      ],
+      [claudeSource("mac")],
+    );
+
+    const narrowed = filterSummaryWindow(
+      scanned,
+      "2026-08-05" as UsageDay,
+      "2026-08-07" as UsageDay,
+    );
+
+    expect(narrowed.buckets.map((entry) => entry.day)).toEqual(["2026-08-05", "2026-08-07"]);
+    expect(narrowed.sinceDay).toBe("2026-08-05");
+    expect(narrowed.untilDay).toBe("2026-08-07");
+  });
+
+  it("passes the scan's own sources and pricing through untouched", () => {
+    const scanned = summary([bucket()], [claudeSource("mac")]);
+
+    const narrowed = filterSummaryWindow(
+      scanned,
+      "2026-08-07" as UsageDay,
+      "2026-08-07" as UsageDay,
+    );
+
+    expect(narrowed.sources).toBe(scanned.sources);
+    expect(narrowed.pricing).toBe(scanned.pricing);
+    expect(narrowed.readAt).toBe(scanned.readAt);
+  });
+
+  it("re-merges to the totals the narrower window alone would have produced", () => {
+    const scanned = summary(
+      [
+        bucket({ day: "2026-08-01" as UsageDay, costUsd: 10 }),
+        bucket({ day: "2026-08-07" as UsageDay, costUsd: 4 }),
+      ],
+      [claudeSource("mac")],
+    );
+
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          filterSummaryWindow(scanned, "2026-08-05" as UsageDay, "2026-08-07" as UsageDay),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(4);
+    expect(merged.daily.map((entry) => entry.day)).toEqual(["2026-08-07"]);
   });
 });

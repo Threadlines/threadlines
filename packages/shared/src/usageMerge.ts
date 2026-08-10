@@ -11,10 +11,33 @@
 import type {
   EnvironmentId,
   UsageBucket,
+  UsageDay,
   UsageProviderKind,
   UsageSourceFingerprint,
   UsageSummary,
 } from "@threadlines/contracts";
+
+/**
+ * Narrows a scanned summary to a shorter day range.
+ *
+ * The page scans once for the longest window it offers and derives the 7- and
+ * 30-day views from that result, so switching windows is arithmetic rather than
+ * another disk walk. Sources, pricing and freshness describe the scan itself and
+ * pass through untouched: they do not become less true for a shorter window.
+ */
+export function filterSummaryWindow(
+  summary: UsageSummary,
+  sinceDay: UsageDay,
+  untilDay: UsageDay,
+): UsageSummary {
+  return {
+    ...summary,
+    sinceDay,
+    untilDay,
+    // `YYYY-MM-DD` days with fixed width compare correctly as strings.
+    buckets: summary.buckets.filter((bucket) => bucket.day >= sinceDay && bucket.day <= untilDay),
+  };
+}
 
 export interface EnvironmentUsage {
   readonly environmentId: EnvironmentId;

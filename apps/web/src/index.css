@@ -70,6 +70,8 @@
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
+  --color-provider-claude: var(--provider-claude);
+  --color-provider-codex: var(--provider-codex);
   --color-primary-graph: var(--primary-graph);
   --color-primary-readable: var(--primary-readable);
   --color-primary-foreground: var(--primary-foreground);
@@ -207,6 +209,13 @@
   --primary: var(--app-accent-blue);
   --primary-readable: oklch(0.488 0.217 264);
   --primary-graph: oklch(0.488 0.217 264);
+  /* The two providers charted on the usage page, and the only brand hues in the
+     app. Anthropic's terracotta reads as itself in both modes; Codex has no
+     usable brand color, so it takes a near-foreground neutral, which is also how
+     its own mark is drawn. Darkened on light, lifted on dark, so a 1.5px chart
+     stroke stays legible against either canvas. */
+  --provider-claude: #c96442;
+  --provider-codex: oklch(0.32 0 0);
   --primary-foreground: var(--color-white);
   --secondary: --alpha(var(--color-black) / 4%);
   --secondary-foreground: var(--foreground);
@@ -265,6 +274,8 @@
     --primary: var(--app-accent-blue);
     --primary-readable: oklch(0.65 0.19 264);
     --primary-graph: oklch(0.7 0.17 264);
+    --provider-claude: #e08b66;
+    --provider-codex: oklch(0.9 0 0);
     --primary-foreground: var(--color-white);
     --secondary: --alpha(var(--color-white) / 8%);
     --secondary-foreground: var(--foreground);

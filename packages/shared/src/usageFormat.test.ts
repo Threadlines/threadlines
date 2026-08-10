@@ -7,6 +7,7 @@ import {
   formatTokensCompact,
   makeTodayUsageWindow,
   makeUsageWindow,
+  windowStartDay,
 } from "./usageFormat.ts";
 
 describe("formatTokens", () => {
@@ -48,6 +49,14 @@ describe("enumerateDays", () => {
 
   it("returns nothing when the range is inverted", () => {
     expect(enumerateDays("2026-02-02", "2026-01-30")).toEqual([]);
+  });
+});
+
+describe("windowStartDay", () => {
+  it("counts the end day itself and walks back across a month boundary", () => {
+    expect(windowStartDay("2026-08-10", 30)).toBe("2026-07-12");
+    expect(windowStartDay("2026-03-03", 7)).toBe("2026-02-25");
+    expect(windowStartDay("2026-08-10", 1)).toBe("2026-08-10");
   });
 });
 

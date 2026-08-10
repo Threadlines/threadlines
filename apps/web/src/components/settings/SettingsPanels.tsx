@@ -20,6 +20,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ScopedThreadRef,
+  type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
@@ -38,7 +39,11 @@ import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
-import { usageSummaryQueryOptions, useUsageEnvironmentTargets } from "../../lib/usageReactQuery";
+import {
+  deriveUsageWindow,
+  usageSummaryQueryOptions,
+  useUsageEnvironmentTargets,
+} from "../../lib/usageReactQuery";
 import {
   resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionState,
@@ -136,7 +141,7 @@ const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
 const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
 /** A month reads as "recently" without being a single noisy week. */
-const USAGE_SETTINGS_WINDOW_DAYS = 30;
+const USAGE_SETTINGS_WINDOW_DAYS: UsageWindowDays = 30;
 
 function waitForInactiveThreadArchiveCommandSlot(): Promise<void> {
   return new Promise((resolve) =>
@@ -1070,10 +1075,13 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
  */
 function ProviderUsageLinkRow() {
   const targets = useUsageEnvironmentTargets();
-  const usageQuery = useQuery(
-    usageSummaryQueryOptions({ targets, windowDays: USAGE_SETTINGS_WINDOW_DAYS }),
+  // The same scan the usage page reads, narrowed here rather than re-fetched.
+  const usageQuery = useQuery(usageSummaryQueryOptions({ targets }));
+  const scan = usageQuery.data ?? null;
+  const merged = useMemo(
+    () => (scan ? deriveUsageWindow(scan, USAGE_SETTINGS_WINDOW_DAYS).merged : null),
+    [scan],
   );
-  const merged = usageQuery.data?.merged ?? null;
 
   return (
     <Link

@@ -14,6 +14,9 @@ import { SidebarMenuButton, useSidebar } from "../ui/sidebar";
  * a usage refetch re-renders one line of chrome instead of the whole inbox.
  * Without an answer it stays the plain label, because a wrong number in the
  * footer is worse than no number.
+ *
+ * The word "Usage" is always there: a bare token count in the footer reads as a
+ * number with no noun, and nobody guesses what it counts.
  */
 export function SidebarUsageMeter() {
   const navigate = useNavigate();
@@ -37,10 +40,9 @@ export function SidebarUsageMeter() {
       onClick={openUsage}
     >
       <GaugeIcon className="size-3.5" />
-      {totalTokens === null ? (
-        <span className="text-xs">Usage</span>
-      ) : (
-        <span className="font-mono text-xs tabular-nums">
+      <span className="flex-1 text-xs">Usage</span>
+      {totalTokens === null ? null : (
+        <span className="font-mono text-xs tabular-nums text-muted-foreground/60">
           {formatTokensCompact(totalTokens)} today
         </span>
       )}

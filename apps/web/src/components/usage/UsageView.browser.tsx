@@ -9,6 +9,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@threadlines/contracts";
+import { enumerateDays } from "@threadlines/shared/usageFormat";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,
@@ -57,6 +58,7 @@ function bucket(input: {
   readonly model: string;
   readonly costUsd: number;
   readonly totalTokens: number;
+  readonly cacheSavingsUsd?: number;
 }): UsageBucket {
   return {
     day: input.day as UsageDay,
@@ -64,7 +66,7 @@ function bucket(input: {
     model: input.model,
     totals: tokens(input.totalTokens),
     costUsd: input.costUsd,
-    cacheSavingsUsd: 1.5,
+    cacheSavingsUsd: input.cacheSavingsUsd ?? 1.5,
     costSource: "modelPriced",
     records: 4,
     unpricedRecords: 0,
@@ -94,7 +96,7 @@ function source(
 
 function summaryFor(
   input: UsageSummaryInput,
-  buckets: (day: string) => readonly UsageBucket[],
+  buckets: (days: readonly string[]) => readonly UsageBucket[],
 ): UsageSummary {
   return {
     contractVersion: USAGE_CONTRACT_VERSION,
@@ -102,7 +104,7 @@ function summaryFor(
     timeZone: input.timeZone,
     sinceDay: input.sinceDay,
     untilDay: input.untilDay,
-    buckets: buckets(input.untilDay),
+    buckets: buckets(enumerateDays(input.sinceDay, input.untilDay)),
     sources: [source("claude", "/Users/dev/.claude"), source("codex", "/Users/dev/.codex")],
     pricing: {
       status: "cached",
@@ -172,34 +174,63 @@ afterEach(() => {
 });
 
 describe("UsageView", () => {
-  it("renders merged totals, model rows, and every machine including the silent one", async () => {
+  it("renders the hero, the stat band, the priced models, and the silent machine", async () => {
     const summary = vi.fn(async (input: UsageSummaryInput) =>
-      summaryFor(input, (day) => [
-        bucket({
-          day,
-          provider: "claude",
-          model: "claude-fable-5",
-          costUsd: 12.5,
-          totalTokens: 2_000_000,
-        }),
-        bucket({
-          day,
-          provider: "codex",
-          model: "gpt-5.6-sol",
-          costUsd: 4.5,
-          totalTokens: 400_000,
-        }),
-      ]),
+      summaryFor(input, (days) => {
+        const day = days[days.length - 1] ?? input.untilDay;
+        return [
+          bucket({
+            day,
+            provider: "claude",
+            model: "claude-fable-5",
+            costUsd: 12.5,
+            totalTokens: 2_000_000,
+          }),
+          bucket({
+            day,
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            costUsd: 4.5,
+            totalTokens: 400_000,
+          }),
+          // Placeholder rows carry records but no tokens and no cost; the table
+          // has nothing to say about them.
+          bucket({
+            day,
+            provider: "codex",
+            model: "<synthetic>",
+            costUsd: 0,
+            totalTokens: 0,
+            cacheSavingsUsd: 0,
+          }),
+        ];
+      }),
     );
     registerEnvironments(summary);
 
     renderWithProviders(<UsageView />);
 
-    await expect.element(page.getByText("$17.00")).toBeInTheDocument();
-    await expect.element(page.getByText("2.40M")).toBeInTheDocument();
+    // The one display-size figure on the page, asterisked to its footnote.
+    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("$17.00*");
     await expect
-      .element(page.getByText("API list-price equivalent. Subscription plans bill separately."))
+      .element(page.getByText("* if billed at full API rates. Subscription plans bill separately."))
       .toBeInTheDocument();
+
+    const providerRows = page.getByTestId("usage-provider-row").elements();
+    expect(providerRows).toHaveLength(2);
+    expect(providerRows[0]?.textContent).toContain("Claude Code");
+    expect(providerRows[0]?.textContent).toContain("$12.50");
+    expect(providerRows[0]?.textContent).toContain("73.5% of cost · 2M tokens");
+
+    const stats = page.getByTestId("usage-stat").elements();
+    expect(stats.map((stat) => stat.textContent)).toEqual([
+      // Compact figures here: the stat band is one-off numbers, not a column.
+      "Processed tokens2.4M2.4M per active day",
+      "Cached input1.2M50.0% of observed input",
+      "Uncached input1.2M0 cache writes",
+      "Output0",
+      "Cache savings$3.000.2x the API-equivalent cost",
+    ]);
 
     const modelRows = page.getByTestId("usage-model-row").elements();
     expect(modelRows).toHaveLength(2);
@@ -215,44 +246,60 @@ describe("UsageView", () => {
     expect(studioRow?.textContent).toContain("/Users/dev/.claude");
   });
 
-  it("asks for a longer window when the day selector changes", async () => {
+  it("opens on 30 days and switches windows without another scan", async () => {
     const summary = vi.fn(async (input: UsageSummaryInput) =>
-      summaryFor(input, (day) => [
-        bucket({
-          day,
-          provider: "claude",
-          model: "claude-fable-5",
-          costUsd: 1,
-          totalTokens: 1_000,
-        }),
-      ]),
+      summaryFor(input, (days) =>
+        days.map((day) =>
+          bucket({
+            day,
+            provider: "claude",
+            model: "claude-fable-5",
+            costUsd: 1,
+            totalTokens: 1_000,
+          }),
+        ),
+      ),
     );
     registerEnvironments(summary);
 
     renderWithProviders(<UsageView />);
-    await expect.element(page.getByTestId("usage-model-row").first()).toBeInTheDocument();
-    expect(windowLengthOf(summary.mock.calls.at(-1)?.[0])).toBe(7);
-
-    await page.getByTestId("usage-window-30").click();
 
     await vi.waitFor(() => {
-      expect(windowLengthOf(summary.mock.calls.at(-1)?.[0])).toBe(30);
+      expect(page.getByTestId("usage-chart-day").elements()).toHaveLength(30);
     });
+    // One scan, and it covers the longest window the selector offers.
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(windowLengthOf(summary.mock.calls[0]?.[0])).toBe(90);
+
+    await page.getByTestId("usage-window-7").click();
+    await vi.waitFor(() => {
+      expect(page.getByTestId("usage-chart-day").elements()).toHaveLength(7);
+    });
+
+    await page.getByTestId("usage-window-90").click();
+    await vi.waitFor(() => {
+      expect(page.getByTestId("usage-chart-day").elements()).toHaveLength(90);
+    });
+
+    // Narrowing and widening are arithmetic on the scan already in hand.
+    expect(summary).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("SidebarUsageMeter", () => {
-  it("shows today's compact token total once it arrives", async () => {
+  it("names itself and carries today's compact total once it arrives", async () => {
     const summary = vi.fn(async (input: UsageSummaryInput) =>
-      summaryFor(input, (day) => [
-        bucket({
-          day,
-          provider: "claude",
-          model: "claude-fable-5",
-          costUsd: 3,
-          totalTokens: 2_400_000,
-        }),
-      ]),
+      summaryFor(input, (days) =>
+        days.map((day) =>
+          bucket({
+            day,
+            provider: "claude",
+            model: "claude-fable-5",
+            costUsd: 3,
+            totalTokens: 2_400_000,
+          }),
+        ),
+      ),
     );
     registerEnvironments(summary);
 
@@ -263,7 +310,9 @@ describe("SidebarUsageMeter", () => {
     );
 
     // Compact form: trailing zeros are table alignment, not chip copy.
-    await expect.element(page.getByTestId("sidebar-usage-meter")).toHaveTextContent("2.4M today");
+    await expect
+      .element(page.getByTestId("sidebar-usage-meter"))
+      .toHaveTextContent("Usage2.4M today");
   });
 
   it("stays the plain label when no environment answers", async () => {
