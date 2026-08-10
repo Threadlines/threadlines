@@ -1,7 +1,7 @@
 import { scopedProjectKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { ThreadId } from "@threadlines/contracts";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useEffectEvent } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import {
@@ -20,6 +20,7 @@ import {
   readLastVisitedThreadRoute,
   resolveRestorableThreadRoute,
 } from "../lastVisitedThreadRoute";
+import { isLaunchVisitConsumed, markLaunchVisitConsumed } from "../launchVisit";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectProjectsAcrossEnvironments,
@@ -66,35 +67,37 @@ function ChatIndexRouteView() {
 }
 
 /**
- * Restoring is something a launch does, not a rule about `/`. Later trips home
- * are deliberate ("Go to Home", the settings back button with no history left)
- * and must land on the home surface instead of being bounced straight back, so
- * the record is consulted once per app load.
- */
-let restoreAttempted = false;
-
-/**
  * What `/` resolves to once the workspace has loaded.
  *
- * A relaunch lands here with no route to speak of, so the last thread this
- * environment had open wins when it still exists -- otherwise this falls back
- * to the long-standing behaviour of opening a draft in the default project.
- * The record is checked against live state rather than trusted, so a thread
- * deleted elsewhere never strands the shell on a dead route.
+ * The launch visit redirects into work: the last thread or draft this
+ * environment had open when it still exists, else a fresh draft in the default
+ * project (the long-standing cold-start behaviour). Every visit after that is
+ * a navigation the user chose, and renders the home surface instead. The
+ * restore record is checked against live state rather than trusted, so a
+ * thread deleted elsewhere never strands the shell on a dead route.
  */
 function DefaultProjectDraftRedirect() {
   const navigate = useNavigate();
   const { defaultProjectRef, handleNewThread } = useHandleNewThread();
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const defaultProjectKey = defaultProjectRef ? scopedProjectKey(defaultProjectRef) : null;
+  // Captured at mount: a mount that begins after the launch moment passed --
+  // it is marked the instant any thread or draft route renders, including via
+  // the bootstrap welcome payload, which never touches this route -- is a
+  // deliberate trip home and must never redirect.
+  const [isLaunchVisit] = useState(() => !isLaunchVisitConsumed());
 
   const openLastVisitedOrDefaultDraft = useEffectEvent(() => {
-    const entry = restoreAttempted ? null : readLastVisitedThreadRoute(activeEnvironmentId);
-    if (activeEnvironmentId) {
-      // Only counts as the load-time attempt once there is an environment to
-      // read a record from; before that there was nothing to restore.
-      restoreAttempted = true;
+    if (!isLaunchVisit || isLaunchVisitConsumed()) {
+      return;
     }
+    if (!activeEnvironmentId) {
+      // Nothing to restore or redirect into yet; the effect re-runs once the
+      // environment arrives, still counting as the launch visit.
+      return;
+    }
+    markLaunchVisitConsumed();
+    const entry = readLastVisitedThreadRoute(activeEnvironmentId);
     const restored = resolveRestorableThreadRoute({
       entry,
       environmentId: activeEnvironmentId,
@@ -136,7 +139,9 @@ function DefaultProjectDraftRedirect() {
     openLastVisitedOrDefaultDraft();
   }, [activeEnvironmentId, defaultProjectKey]);
 
-  return defaultProjectRef === null ? <NoActiveThreadState /> : null;
+  // The launch visit renders nothing while its redirect resolves (unless there
+  // is no project to redirect into); a deliberate visit IS the home surface.
+  return isLaunchVisit && defaultProjectRef !== null ? null : <NoActiveThreadState />;
 }
 
 export const Route = createFileRoute("/_chat/")({

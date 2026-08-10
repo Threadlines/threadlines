@@ -1,7 +1,8 @@
 import type { EnvironmentId, EnvironmentApi } from "@threadlines/contracts";
+import { useSyncExternalStore } from "react";
 
 import type { WsRpcClient } from "./rpc/wsRpcClient";
-import { readEnvironmentConnection } from "./environments/runtime";
+import { readEnvironmentConnection, subscribeEnvironmentConnections } from "./environments/runtime";
 
 const environmentApiOverridesForTests = new Map<EnvironmentId, EnvironmentApi>();
 
@@ -113,6 +114,23 @@ export function readEnvironmentApi(environmentId: EnvironmentId): EnvironmentApi
 
   const connection = readEnvironmentConnection(environmentId);
   return connection ? createEnvironmentApi(connection.client) : undefined;
+}
+
+/**
+ * Tracks whether an environment can currently accept API calls. Saved
+ * environments are registered asynchronously during startup and can briefly
+ * disappear while an SSH or relay connection is rebuilt, so render-time
+ * consumers must not treat a missing connection as a permanent invariant
+ * violation.
+ */
+export function useEnvironmentApiAvailable(
+  environmentId: EnvironmentId | null | undefined,
+): boolean {
+  return useSyncExternalStore(
+    subscribeEnvironmentConnections,
+    () => (environmentId ? readEnvironmentApi(environmentId) !== undefined : false),
+    () => false,
+  );
 }
 
 export function ensureEnvironmentApi(environmentId: EnvironmentId): EnvironmentApi {
