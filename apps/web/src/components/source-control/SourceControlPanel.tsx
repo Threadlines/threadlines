@@ -72,7 +72,7 @@ import * as Schema from "effect/Schema";
 
 import { openInPreferredEditor } from "~/editorPreferences";
 import { openFileInActiveViewer } from "~/fileViewerStore";
-import { readEnvironmentApi } from "~/environmentApi";
+import { readEnvironmentApi, useEnvironmentApiAvailable } from "~/environmentApi";
 import {
   gitBranchSearchInfiniteQueryOptions,
   gitApplyStashMutationOptions,
@@ -2039,6 +2039,7 @@ export function SourceControlPanel({
   } | null>(null);
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
+  const environmentApiAvailable = useEnvironmentApiAvailable(environmentId);
   const currentPullTargetRef = useRef<PullRequestTarget>({ environmentId, cwd });
   currentPullTargetRef.current = { environmentId, cwd };
   const activeHistoryReconciliation =
@@ -2113,8 +2114,14 @@ export function SourceControlPanel({
     () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
     [activeThreadRef],
   );
-  const gitStatus = useGitStatus({ environmentId, cwd });
-  const status = gitStatus.data;
+  const gitStatus = useGitStatus({
+    environmentId: environmentApiAvailable ? environmentId : null,
+    cwd: environmentApiAvailable ? cwd : null,
+  });
+  // A status snapshot may be retained across reconnects. Keep it out of the
+  // render model while its API is absent, otherwise that stale `isRepo` value
+  // enables graph, stash, and branch queries against a missing connection.
+  const status = environmentApiAvailable ? gitStatus.data : null;
   const parentRepositoryRoot =
     status?.isRepo && status.repositoryRootRelation === "ancestor"
       ? (status.repositoryRoot ?? null)
@@ -2171,7 +2178,10 @@ export function SourceControlPanel({
       ? resolveCommitGraphErrorPresentation(graphQuery.error)
       : null;
   const isSourceControlRefreshing =
-    gitStatus.isPending || isManualRefreshPending || isCommitGraphRefreshing;
+    !environmentApiAvailable ||
+    gitStatus.isPending ||
+    isManualRefreshPending ||
+    isCommitGraphRefreshing;
   // The live status subscription gave up on delivering a snapshot. Saying so
   // beats an endless spinner, and the retry re-runs the same refresh the
   // toolbar button uses.
@@ -4369,7 +4379,15 @@ export function SourceControlPanel({
               </span>
             </div>
           </div>
-          {isSourceControlStatusStale ? (
+          {!environmentApiAvailable ? (
+            <div
+              role="status"
+              className="flex items-center gap-2 border-t border-border/70 py-2 text-[13px] text-muted-foreground/70"
+            >
+              <RefreshCwIcon className="size-3 animate-spin" aria-hidden />
+              <span>Connection lost. Reconnecting…</span>
+            </div>
+          ) : isSourceControlStatusStale ? (
             <div className="flex items-center gap-2 border-t border-border/70 py-2 text-[13px] text-muted-foreground/70">
               <span>{GIT_STATUS_STALE_MESSAGE}</span>
               <Button

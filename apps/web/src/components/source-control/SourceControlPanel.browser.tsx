@@ -53,6 +53,10 @@ const gitActionMock = vi.hoisted(() => ({
   toastUpdate: vi.fn(),
 }));
 
+const environmentRuntimeMock = vi.hoisted(() => ({
+  connectionListeners: new Set<() => void>(),
+}));
+
 vi.mock("~/lib/gitStatusState", () => ({
   GIT_STATUS_STALE_MESSAGE: "Source control status isn't updating.",
   useGitStatus: () => ({
@@ -105,7 +109,10 @@ vi.mock("~/environments/runtime", () => {
     resetSavedEnvironmentRuntimeStoreForTests: vi.fn(),
     resolveEnvironmentHttpUrl: vi.fn(() => null),
     startEnvironmentConnectionService: vi.fn(() => undefined),
-    subscribeEnvironmentConnections: vi.fn(() => () => undefined),
+    subscribeEnvironmentConnections: vi.fn((listener: () => void) => {
+      environmentRuntimeMock.connectionListeners.add(listener);
+      return () => environmentRuntimeMock.connectionListeners.delete(listener);
+    }),
     useSavedEnvironmentRegistryStore: vi.fn((selector: (state: unknown) => unknown) =>
       selector({}),
     ),
@@ -315,6 +322,7 @@ async function renderPanel(
   input: {
     readonly status?: VcsStatusResult;
     readonly environmentApi?: EnvironmentApi;
+    readonly registerEnvironmentApi?: boolean;
     readonly target?: SourceControlProjectTarget;
     readonly onActiveBranchChange?: (branch: string | null, worktreePath: string | null) => void;
     readonly onOpenDiff?: (filePath?: string) => void;
@@ -323,7 +331,9 @@ async function renderPanel(
   const environmentApi = input.environmentApi ?? makeEnvironmentApi();
   const target = input.target ?? TARGET;
   gitStatusMock.data = input.status ?? makeStatus();
-  __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, environmentApi);
+  if (input.registerEnvironmentApi !== false) {
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, environmentApi);
+  }
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -386,8 +396,37 @@ describe("SourceControlPanel changes", () => {
 
   afterEach(async () => {
     __resetEnvironmentApiOverridesForTests();
+    environmentRuntimeMock.connectionListeners.clear();
     Reflect.deleteProperty(window, "nativeApi");
     await __resetLocalApiForTests();
+  });
+
+  it("waits for a disconnected environment and resumes when its API returns", async () => {
+    const commitGraph = vi.fn(async () => GRAPH);
+    const environmentApi = makeEnvironmentApi({ vcs: { commitGraph } });
+    const mounted = await renderPanel({
+      environmentApi,
+      registerEnvironmentApi: false,
+    });
+
+    try {
+      await expect.element(page.getByText("Connection lost. Reconnecting…")).toBeVisible();
+      expect(commitGraph).not.toHaveBeenCalled();
+
+      __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, environmentApi);
+      flushSync(() => {
+        for (const listener of environmentRuntimeMock.connectionListeners) {
+          listener();
+        }
+      });
+
+      await vi.waitFor(() => {
+        expect(commitGraph).toHaveBeenCalledTimes(1);
+      });
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("warns about an ancestor repository and unlocks mutations only after confirmation", async () => {
