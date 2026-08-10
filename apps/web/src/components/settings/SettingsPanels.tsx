@@ -1,6 +1,7 @@
 import {
   ArchiveIcon,
   ArchiveX,
+  ChevronRightIcon,
   LoaderIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -1070,8 +1071,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 }
 
 /**
- * The bridge from provider setup to what those providers have actually cost.
- * One plain row, no chrome: it is a signpost, not a control.
+ * The bridge from provider setup to what those providers have actually cost:
+ * a clickable tile in the same card family as the provider entries below it,
+ * named for its window so the figures cannot be mistaken for all-time totals.
  */
 function ProviderUsageLinkRow() {
   const targets = useUsageEnvironmentTargets();
@@ -1085,19 +1087,35 @@ function ProviderUsageLinkRow() {
 
   return (
     <Link
-      className="flex items-baseline gap-2 px-1 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
+      className="group/usage-tile relative overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 transition-colors not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] hover:border-border focus-ring dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]"
       data-testid="settings-usage-link"
       to="/usage"
     >
-      <span className="text-foreground/80">Usage</span>
-      {merged ? (
-        <span className="min-w-0 flex-1 truncate font-mono tabular-nums text-muted-foreground/70">
-          {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
+      <span className="flex items-center gap-3 px-5 py-3.5">
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
+            Usage · Last {USAGE_SETTINGS_WINDOW_DAYS} days
+          </span>
+          {merged ? (
+            <span className="min-w-0 truncate text-sm">
+              <span className="font-mono tabular-nums text-foreground">
+                {formatTokens(merged.totalTokens)}
+              </span>
+              <span className="text-muted-foreground/70"> tokens · </span>
+              <span className="font-mono tabular-nums text-foreground">
+                {formatUsd(merged.costUsd)}
+              </span>
+              <span className="text-muted-foreground/70"> API-equivalent</span>
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground/55">Reading provider transcripts…</span>
+          )}
         </span>
-      ) : (
-        <span className="flex-1" />
-      )}
-      <span className="shrink-0">View usage</span>
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors group-hover/usage-tile:text-foreground">
+          View usage
+          <ChevronRightIcon className="size-3.5" />
+        </span>
+      </span>
     </Link>
   );
 }
