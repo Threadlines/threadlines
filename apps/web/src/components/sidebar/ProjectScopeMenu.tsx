@@ -1,5 +1,5 @@
 import {
-  ChevronDownIcon,
+  ChevronsUpDownIcon,
   EllipsisIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -473,7 +473,10 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         <Menu>
           <MenuTrigger
             data-testid="inbox-scope-trigger"
-            className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1 text-xs text-muted-foreground/80 transition-colors select-none hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+            // Dressed as an input surface at rest -- hairline border, faint
+            // fill, paired chevrons -- so it reads as a picker before hover,
+            // unlike the flat icon buttons beside it.
+            className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-1.5 text-xs text-muted-foreground/80 transition-colors select-none hover:bg-sidebar-accent/60 hover:text-foreground focus-ring dark:bg-input/32"
             // Right-clicking the trigger addresses the project you are already
             // scoped to, so the menu is not the only way in.
             onContextMenu={(event: React.MouseEvent) => {
@@ -494,7 +497,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             <span className="min-w-0 flex-1 truncate text-left">
               {scopedProject?.displayName ?? "All projects"}
             </span>
-            <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/50" />
+            <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
           </MenuTrigger>
           <MenuPopup align="start" side="bottom" className="min-w-56">
             <MenuItem

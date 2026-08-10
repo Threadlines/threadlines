@@ -60,6 +60,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
+  composerDraftHasUserContent,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThread,
   markPromotedDraftThreadByRef,
@@ -912,6 +913,107 @@ describe("composerDraftStore transcript highlight contexts", () => {
   });
 });
 
+describe("composerDraftHasUserContent", () => {
+  const draftId = DraftId.make("draft-content");
+  const threadId = ThreadId.make("thread-content");
+  const projectRef = scopeProjectRef(TEST_ENVIRONMENT_ID, ProjectId.make("project-content"));
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+    // The context setters resolve their target through the draft session, so
+    // the draft has to exist before anything can be attached to it.
+    useComposerDraftStore.getState().setProjectDraftThreadId(projectRef, draftId, { threadId });
+  });
+
+  const currentDraft = () => useComposerDraftStore.getState().getComposerDraft(draftId);
+
+  it("counts typed text and every context kind, but never settings alone", () => {
+    const store = useComposerDraftStore.getState();
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    // Ambient defaults, not work in progress: a draft carrying only a model,
+    // runtime or interaction choice is still an empty draft.
+    store.setModelSelection(draftId, modelSelection(CODEX_DRIVER, "gpt-5.1-codex"));
+    store.setRuntimeMode(draftId, "approval-required");
+    store.setInteractionMode(draftId, "plan");
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    store.setPrompt(draftId, "  \n  ");
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+    store.setPrompt(draftId, "half a thought");
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.setPrompt(draftId, "");
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    // Each chip kind stands on its own, with no prompt at all.
+    store.addAttachments(draftId, [makeImage({ id: "image-1", previewUrl: "blob:image-1" })]);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.removeAttachment(draftId, "image-1");
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    store.setTerminalContexts(draftId, [makeTerminalContext({ id: "terminal-1" })]);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.setTerminalContexts(draftId, []);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    store.setTranscriptHighlightContexts(draftId, [
+      makeTranscriptHighlightContext({ id: "highlight-1" }),
+    ]);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.setTranscriptHighlightContexts(draftId, []);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    store.addFileSelectionContext(draftId, {
+      id: "file-1",
+      threadId: draftId,
+      createdAt: "2026-03-13T12:00:00.000Z",
+      relativePath: "apps/web/src/app.tsx",
+      startLine: 12,
+      endLine: 18,
+      selectedText: "return <App />;",
+    });
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.clearFileSelectionContexts(draftId);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    store.setPickedElementContexts(draftId, [
+      {
+        id: "element-1",
+        threadId: ThreadId.make("thread-content"),
+        createdAt: "2026-03-13T12:00:00.000Z",
+        note: null,
+        styleChanges: [],
+        tagName: "button",
+        role: "button",
+        name: "Send",
+        selector: "#send",
+        text: "Send",
+        width: 64,
+        height: 24,
+        url: "http://localhost:5173/",
+      },
+    ]);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.setPickedElementContexts(draftId, []);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+
+    store.setDrawingContexts(draftId, [
+      {
+        id: "drawing-1",
+        threadId: ThreadId.make("thread-content"),
+        createdAt: "2026-03-13T12:00:00.000Z",
+        note: "this bit",
+        imageDataUrl: "data:image/png;base64,AAAA",
+        url: "http://localhost:5173/",
+        elements: [],
+      },
+    ]);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(true);
+    store.setDrawingContexts(draftId, []);
+    expect(composerDraftHasUserContent(currentDraft())).toBe(false);
+  });
+});
+
 describe("composerDraftStore project draft thread mapping", () => {
   const projectId = ProjectId.make("project-a");
   const otherProjectId = ProjectId.make("project-b");
@@ -1069,10 +1171,9 @@ describe("composerDraftStore project draft thread mapping", () => {
     }
   });
 
-  it("clears orphaned composer drafts when remapping a project to a new draft thread", () => {
+  it("clears empty composer drafts when remapping a project to a new draft thread", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });
-    store.setPrompt(draftId, "orphan me");
 
     store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
 
@@ -1080,6 +1181,39 @@ describe("composerDraftStore project draft thread mapping", () => {
       otherThreadId,
     );
     expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
+    expect(draftByKey(draftId)).toBeUndefined();
+  });
+
+  it("keeps invested composer drafts alive unmapped when remapping a project", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setPrompt(draftId, "keep me around");
+
+    store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+
+    // The mapping moved to the fresh draft...
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)?.threadId).toBe(
+      otherThreadId,
+    );
+    // ...but the invested draft survives with its content for the sidebar
+    // draft rows to surface.
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.threadId).toBe(threadId);
+    expect(draftByKey(draftId)?.prompt).toBe("keep me around");
+  });
+
+  it("clears every session for a project, including unmapped invested drafts", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setPrompt(draftId, "invested");
+    // The remap leaves the invested draft alive unmapped; project removal must
+    // still sweep it, or its sidebar row outlives the project.
+    store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+
+    store.clearProjectDraftThreadId(projectRef);
+
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThread(otherDraftId)).toBeNull();
     expect(draftByKey(draftId)).toBeUndefined();
   });
 
