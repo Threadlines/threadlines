@@ -6,6 +6,7 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { recordLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
+import { markLaunchVisitConsumed } from "../launchVisit";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useStore } from "../store";
 import {
@@ -127,6 +128,9 @@ function LastVisitedThreadRouteRecorder() {
 
   useEffect(() => {
     if (routeThreadEnvironmentId && routeThreadId) {
+      // Being on any thread means the launch already landed somewhere; a later
+      // trip to `/` is deliberate and must render the home surface.
+      markLaunchVisitConsumed();
       recordLastVisitedThreadRoute(routeThreadEnvironmentId, {
         kind: "server",
         threadRef: scopeThreadRef(routeThreadEnvironmentId, routeThreadId),
@@ -134,6 +138,7 @@ function LastVisitedThreadRouteRecorder() {
       return;
     }
     if (routeDraftId) {
+      markLaunchVisitConsumed();
       recordLastVisitedThreadRoute(draftEnvironmentId ?? activeEnvironmentId, {
         kind: "draft",
         draftId: routeDraftId,
