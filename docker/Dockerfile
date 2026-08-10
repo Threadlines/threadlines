@@ -20,6 +20,11 @@ RUN npm install -g --prefix /opt/threadlines "@threadlines/server@${THREADLINES_
 
 FROM node:22-bookworm-slim
 
+# Links the GHCR package to this repository and describes it on the registry.
+LABEL org.opencontainers.image.source="https://github.com/Threadlines/threadlines" \
+  org.opencontainers.image.description="Threadlines self-host server: orchestrate Claude Code and Codex from any device." \
+  org.opencontainers.image.licenses="MIT"
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
