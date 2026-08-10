@@ -1092,20 +1092,19 @@ function ProviderUsageLinkRow() {
       to="/usage"
     >
       <span className="flex items-center gap-3 px-5 py-3.5">
-        <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex min-w-0 flex-1 flex-col gap-1.5">
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
             Usage · Last {USAGE_SETTINGS_WINDOW_DAYS} days
           </span>
+          {/* One typeface for the whole line: mono figures beside sans words
+              put two vertical metrics on one baseline and the row reads as
+              misaligned. Emphasis comes from color alone. */}
           {merged ? (
-            <span className="min-w-0 truncate text-sm">
-              <span className="font-mono tabular-nums text-foreground">
-                {formatTokens(merged.totalTokens)}
-              </span>
-              <span className="text-muted-foreground/70"> tokens · </span>
-              <span className="font-mono tabular-nums text-foreground">
-                {formatUsd(merged.costUsd)}
-              </span>
-              <span className="text-muted-foreground/70"> API-equivalent</span>
+            <span className="min-w-0 truncate font-mono text-[13px] tabular-nums">
+              <span className="text-foreground">{formatTokens(merged.totalTokens)}</span>
+              <span className="text-muted-foreground/65"> tokens · </span>
+              <span className="text-foreground">{formatUsd(merged.costUsd)}</span>
+              <span className="text-muted-foreground/65"> API-equivalent</span>
             </span>
           ) : (
             <span className="text-sm text-muted-foreground/55">Reading provider transcripts…</span>
