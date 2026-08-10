@@ -20,6 +20,7 @@ import {
   readLastVisitedThreadRoute,
   resolveRestorableThreadRoute,
 } from "../lastVisitedThreadRoute";
+import { isLaunchVisitConsumed, markLaunchVisitConsumed } from "../launchVisit";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectProjectsAcrossEnvironments,
@@ -66,15 +67,6 @@ function ChatIndexRouteView() {
 }
 
 /**
- * Redirecting off `/` is something a launch does, not a rule about the route.
- * Later trips home are deliberate ("Go to Home", the settings back button with
- * no history left) and land on the home surface -- the pick-up-a-thread canvas
- * -- instead of being bounced into a draft, so `/` only redirects once per app
- * load.
- */
-let launchVisitConsumed = false;
-
-/**
  * What `/` resolves to once the workspace has loaded.
  *
  * The launch visit redirects into work: the last thread or draft this
@@ -89,12 +81,14 @@ function DefaultProjectDraftRedirect() {
   const { defaultProjectRef, handleNewThread } = useHandleNewThread();
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const defaultProjectKey = defaultProjectRef ? scopedProjectKey(defaultProjectRef) : null;
-  // Captured at mount: a mount that begins after the launch visit was consumed
-  // is a deliberate trip home and must never redirect.
-  const [isLaunchVisit] = useState(() => !launchVisitConsumed);
+  // Captured at mount: a mount that begins after the launch moment passed --
+  // it is marked the instant any thread or draft route renders, including via
+  // the bootstrap welcome payload, which never touches this route -- is a
+  // deliberate trip home and must never redirect.
+  const [isLaunchVisit] = useState(() => !isLaunchVisitConsumed());
 
   const openLastVisitedOrDefaultDraft = useEffectEvent(() => {
-    if (!isLaunchVisit || launchVisitConsumed) {
+    if (!isLaunchVisit || isLaunchVisitConsumed()) {
       return;
     }
     if (!activeEnvironmentId) {
@@ -102,7 +96,7 @@ function DefaultProjectDraftRedirect() {
       // environment arrives, still counting as the launch visit.
       return;
     }
-    launchVisitConsumed = true;
+    markLaunchVisitConsumed();
     const entry = readLastVisitedThreadRoute(activeEnvironmentId);
     const restored = resolveRestorableThreadRoute({
       entry,
