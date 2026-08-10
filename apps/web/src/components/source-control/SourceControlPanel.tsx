@@ -196,7 +196,11 @@ import {
   type SourceControlFileTreeNode,
   takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
-import { hasActiveThreadTurn, resolveBranchSelectionTarget } from "../BranchToolbar.logic";
+import {
+  hasActiveThreadTurn,
+  queuedCheckoutSwitchToast,
+  resolveBranchSelectionTarget,
+} from "../BranchToolbar.logic";
 import { threadWorkingCwdLabel } from "@threadlines/shared/threadCwd";
 
 export interface SourceControlProjectTarget {
@@ -1617,6 +1621,17 @@ function SourceControlBranchMenu({
         .then((result) => {
           const nextBranch = result.refName ?? ref.name;
           syncActiveThreadBranch(nextBranch, selectionTarget.nextWorktreePath);
+          // A pick that leaves the live session in a different checkout is
+          // queued, not applied; the composer chip is easy to miss, so say it
+          // out loud here too.
+          const queued = queuedCheckoutSwitchToast({
+            session: activeThreadSession,
+            activeProjectCwd: target.projectCwd,
+            nextWorktreePath: selectionTarget.nextWorktreePath,
+          });
+          if (queued) {
+            toastManager.add(stackedThreadToast({ type: "info", ...queued }));
+          }
           return nextBranch;
         });
       void toastManager.promise(promise, {
@@ -1633,6 +1648,7 @@ function SourceControlBranchMenu({
       void promise.then(refreshPanel, () => undefined);
     },
     [
+      activeThreadSession,
       checkoutMutation,
       refreshPanel,
       syncActiveThreadBranch,

@@ -446,13 +446,6 @@ export function CommandPalette({ children }: { children: ReactNode }) {
 
 function CommandPaletteDialog() {
   const open = useCommandPaletteStore((store) => store.open);
-  const setOpen = useCommandPaletteStore((store) => store.setOpen);
-
-  useEffect(() => {
-    return () => {
-      setOpen(false);
-    };
-  }, [setOpen]);
 
   if (!open) {
     return null;
@@ -464,9 +457,23 @@ function CommandPaletteDialog() {
 function OpenCommandPaletteDialog() {
   const navigate = useNavigate();
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
+  const closeIfGeneration = useCommandPaletteStore((store) => store.closeIfGeneration);
   const openIntent = useCommandPaletteStore((store) => store.openIntent);
   const clearOpenIntent = useCommandPaletteStore((store) => store.clearOpenIntent);
   const composerHandleRef = useComposerHandleContext();
+  // This component mounts once per palette session, so its mount-time
+  // generation identifies the session every deferred close below belongs to.
+  // Async flows and the unmount reset close via `closeIfGeneration`: if the
+  // user closed or reopened the palette while a request was in flight (or
+  // React deferred the unmount cleanup past a new session), the stale close
+  // is a no-op instead of slamming a palette it does not own.
+  const [sessionGeneration] = useState(() => useCommandPaletteStore.getState().openGeneration);
+
+  useEffect(() => {
+    return () => {
+      closeIfGeneration(sessionGeneration);
+    };
+  }, [closeIfGeneration, sessionGeneration]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
@@ -1414,7 +1421,7 @@ function OpenCommandPaletteDialog() {
           runtimeMode:
             activeThread?.runtimeMode ?? activeDraftThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         });
-        setOpen(false);
+        closeIfGeneration(sessionGeneration);
         await navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(
@@ -1429,11 +1436,12 @@ function OpenCommandPaletteDialog() {
       activeDraftThread?.runtimeMode,
       activeThread?.runtimeMode,
       codexSessionFlow,
+      closeIfGeneration,
       currentEnvironmentProviders,
       currentEnvironmentSettings,
       importingProviderThreadId,
       navigate,
-      setOpen,
+      sessionGeneration,
     ],
   );
 
@@ -1703,7 +1711,7 @@ function OpenCommandPaletteDialog() {
             envMode: settings.defaultThreadEnvMode,
           }).catch(() => undefined);
         }
-        setOpen(false);
+        closeIfGeneration(sessionGeneration);
         return;
       }
 
@@ -1729,7 +1737,7 @@ function OpenCommandPaletteDialog() {
         await handleNewThread(createdProjectRef, {
           envMode: settings.defaultThreadEnvMode,
         }).catch(() => undefined);
-        setOpen(false);
+        closeIfGeneration(sessionGeneration);
       } catch (error) {
         toastManager.add(
           stackedThreadToast({
@@ -1743,11 +1751,12 @@ function OpenCommandPaletteDialog() {
     [
       browseEnvironmentId,
       browseEnvironmentPlatform,
+      closeIfGeneration,
       currentProjectCwdForBrowse,
       handleNewThread,
       navigate,
       projects,
-      setOpen,
+      sessionGeneration,
       settings.defaultThreadEnvMode,
       settings.sidebarThreadSortOrder,
       threads,

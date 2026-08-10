@@ -38,11 +38,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
 
-const ROW_SURFACE_CLASS_NAME =
+export const ROW_SURFACE_CLASS_NAME =
   "relative w-full cursor-pointer select-none text-left outline-hidden focus-ring focus-visible:ring-inset";
 
 /** Hover and selection are colour shifts only — nothing moves under the cursor. */
-function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }): string {
+export function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }): string {
   if (input.isSelected) {
     return "bg-primary/15 dark:bg-primary/22 hover:bg-primary/19 dark:hover:bg-primary/28";
   }
@@ -83,7 +83,7 @@ const ROW_META_SLOT_CLASS_NAME =
   "relative ml-auto flex flex-none items-center gap-1.5 whitespace-nowrap";
 
 /** `relative` lifts the buttons above their own backdrop layers. */
-const ROW_ACTION_BUTTON_CLASS_NAME =
+export const ROW_ACTION_BUTTON_CLASS_NAME =
   "relative inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
 
 /**
@@ -287,6 +287,16 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const inFlightStartedAt = inFlightTurn
     ? (inFlightTurn.startedAt ?? inFlightTurn.requestedAt)
     : null;
+  // "Background" is a wait, not work: the turn has settled and a provider
+  // task will start the thread back up on its own. Its clock anchors to the
+  // turn's settle time -- the moment the waiting began. The pill only exists
+  // while the latest turn is settled, so completedAt is always there.
+  const isWaitingOnTasks = status?.label === "Background";
+  const liveClockStartedAt = isInFlight
+    ? inFlightStartedAt
+    : isWaitingOnTasks
+      ? (thread.latestTurn?.completedAt ?? null)
+      : null;
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
@@ -294,7 +304,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // whole, and the left cluster yields to it in a fixed order. The branch goes
   // first and goes completely -- half a branch name is worse than none, and a
   // row that is *doing* something has more to say than which ref it is on.
-  const hasStatusLabel = statusWord !== null || isInFlight;
+  const hasStatusLabel = statusWord !== null || isInFlight || isWaitingOnTasks;
   const showBranch = thread.branch !== null && !hasStatusLabel;
 
   const handleRowClick = useCallback(
@@ -447,7 +457,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 data-testid={`thread-meta-${thread.id}`}
                 className={cn(
                   "shrink-0 font-mono text-[11px] leading-none tabular-nums",
-                  statusWord !== null || isInFlight
+                  hasStatusLabel
                     ? (status?.colorClass ?? "text-muted-foreground/50")
                     : "text-muted-foreground/50",
                 )}
@@ -458,13 +468,17 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   </span>
                 ) : statusWord !== null ? (
                   statusWord
-                ) : isInFlight ? (
+                ) : isInFlight || isWaitingOnTasks ? (
                   <>
-                    {status?.label === "Starting" ? "starting" : "working"}
-                    {inFlightStartedAt ? (
+                    {isWaitingOnTasks
+                      ? "waiting"
+                      : status?.label === "Starting"
+                        ? "starting"
+                        : "working"}
+                    {liveClockStartedAt ? (
                       <>
                         {" · "}
-                        <ThreadElapsedLabel startedAt={inFlightStartedAt} />
+                        <ThreadElapsedLabel startedAt={liveClockStartedAt} />
                       </>
                     ) : null}
                   </>
