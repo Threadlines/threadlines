@@ -1110,7 +1110,9 @@ function ProviderUsageLinkRow() {
             <span className="text-sm text-muted-foreground/55">Reading provider transcripts…</span>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors group-hover/usage-tile:text-foreground">
+        {/* Bottom-aligned, not centered: the affordance sits level with the
+            figures line rather than floating between the two left rows. */}
+        <span className="flex shrink-0 items-center gap-1 self-end pb-px text-xs text-muted-foreground transition-colors group-hover/usage-tile:text-foreground">
           View usage
           <ChevronRightIcon className="size-3.5" />
         </span>
