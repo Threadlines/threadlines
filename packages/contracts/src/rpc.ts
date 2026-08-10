@@ -14,6 +14,7 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
+import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   GitActionProgressEvent,
   VcsCommitDetailsInput,
@@ -344,6 +345,9 @@ export const WS_METHODS = {
   serverReadProviderExtensionMcpResource: "server.readProviderExtensionMcpResource",
   serverGetProviderInstructionFiles: "server.getProviderInstructionFiles",
   serverWriteProviderInstructionFile: "server.writeProviderInstructionFile",
+
+  // Usage reporting methods
+  usageSummary: "usage.summary",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -687,6 +691,12 @@ export const WsSourceControlPublishRepositoryRpc = Rpc.make(
     error: SourceControlRepositoryError,
   },
 );
+
+export const WsUsageSummaryRpc = Rpc.make(WS_METHODS.usageSummary, {
+  payload: UsageSummaryInput,
+  success: UsageSummary,
+  error: UsageReadError,
+});
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
   payload: ProjectSearchEntriesInput,
@@ -1144,6 +1154,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReadProviderExtensionMcpResourceRpc,
   WsServerGetProviderInstructionFilesRpc,
   WsServerWriteProviderInstructionFileRpc,
+  WsUsageSummaryRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlListRepositoriesRpc,
   WsSourceControlCloneRepositoryRpc,

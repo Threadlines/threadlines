@@ -86,6 +86,7 @@ import {
   type ProjectionSnapshotQueryShape,
 } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadSearch, type ThreadSearchShape } from "./orchestration/Services/ThreadSearch.ts";
+import { UsageService } from "./usage/UsageService.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import {
@@ -672,6 +673,9 @@ const buildAppUnderTest = (options?: {
             search: () => Effect.succeed({ matches: [], truncated: false }),
             ...options?.layers?.threadSearch,
           }),
+          // Usage scans real provider transcript directories; the empty summary
+          // keeps the RPC surface resolvable without touching the host's files.
+          UsageService.layerTest,
         ),
       ),
       Layer.provide(

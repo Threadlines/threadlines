@@ -93,6 +93,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ThreadSearchLive } from "./orchestration/Layers/ThreadSearch.ts";
+import { UsageServiceLive } from "./usage/UsageService.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -356,6 +357,10 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
 const RuntimeServicesLive = Layer.mergeAll(
   ServerRuntimeStartupLive.pipe(Layer.provideMerge(RuntimeDependenciesLive)),
   ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive)),
+  // Usage reads provider transcripts straight off disk, so it needs only
+  // settings (for the resolved provider homes) plus the platform services and
+  // HTTP client provided further out.
+  UsageServiceLive.pipe(Layer.provide(ServerSettingsLive)),
 );
 
 export const makeRoutesLayer = Layer.mergeAll(

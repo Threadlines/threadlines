@@ -68,6 +68,7 @@ import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoales
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
+import { UsageService } from "./usage/UsageService.ts";
 import {
   observeRpcEffect,
   observeRpcStream,
@@ -233,6 +234,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
     Effect.gen(function* () {
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const threadSearch = yield* ThreadSearch;
+      const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
       const checkpointRevert = yield* CheckpointRevert;
@@ -1416,6 +1418,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.usageSummary]: (input) =>
+          observeRpcEffect(WS_METHODS.usageSummary, usage.readSummary(input), {
+            "rpc.aggregate": "usage",
+          }),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
