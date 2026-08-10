@@ -6,8 +6,9 @@ import {
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
@@ -37,6 +38,7 @@ import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
+import { usageSummaryQueryOptions, useUsageEnvironmentTargets } from "../../lib/usageReactQuery";
 import {
   resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionState,
@@ -133,6 +135,8 @@ const MAINTAINED_PROVIDER_DRIVER_KINDS = DRIVER_OPTIONS.map((definition) => defi
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
 const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
+/** A month reads as "recently" without being a single noisy week. */
+const USAGE_SETTINGS_WINDOW_DAYS = 30;
 
 function waitForInactiveThreadArchiveCommandSlot(): Promise<void> {
   return new Promise((resolve) =>
@@ -1060,6 +1064,36 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   );
 }
 
+/**
+ * The bridge from provider setup to what those providers have actually cost.
+ * One plain row, no chrome: it is a signpost, not a control.
+ */
+function ProviderUsageLinkRow() {
+  const targets = useUsageEnvironmentTargets();
+  const usageQuery = useQuery(
+    usageSummaryQueryOptions({ targets, windowDays: USAGE_SETTINGS_WINDOW_DAYS }),
+  );
+  const merged = usageQuery.data?.merged ?? null;
+
+  return (
+    <Link
+      className="flex items-baseline gap-2 px-1 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
+      data-testid="settings-usage-link"
+      to="/usage"
+    >
+      <span className="text-foreground/80">Usage</span>
+      {merged ? (
+        <span className="min-w-0 flex-1 truncate font-mono tabular-nums text-muted-foreground/70">
+          {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
+        </span>
+      ) : (
+        <span className="flex-1" />
+      )}
+      <span className="shrink-0">View usage</span>
+    </Link>
+  );
+}
+
 export function ProviderSettingsPanel({
   focusedInstanceId = null,
 }: {
@@ -1387,6 +1421,7 @@ export function ProviderSettingsPanel({
             Account, usage, and configuration apply to the paired computer. Favorites and model
             ordering are saved on this device.
           </p>
+          <ProviderUsageLinkRow />
           {rows.map((row) => {
             const driverOption = getDriverOption(row.driver);
             const liveProvider = serverProviders.find(

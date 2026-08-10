@@ -47,6 +47,17 @@ function trim(value: number): string {
   return value.toFixed(digits).replace(/\.0+$/, "");
 }
 
+/**
+ * {@link formatTokens} without trailing zeros ("2.4M", never "2.40M"), for
+ * one-off figures like the sidebar meter. Tables keep the padded form so
+ * fraction digits line up.
+ */
+export function formatTokensCompact(value: number): string {
+  return formatTokens(value)
+    .replace(/(\.\d*?)0+(?=[A-Z]?$)/, "$1")
+    .replace(/\.(?=[A-Z]?$)/, "");
+}
+
 export function formatPercent(share: number, digits = 1): string {
   return `${(share * 100).toFixed(digits)}%`;
 }
@@ -94,6 +105,21 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
  * machine holding the transcripts is often not the machine looking at them.
  */
 export function makeUsageWindow(windowDays: UsageWindowDays, now = new Date()): UsageSummaryInput {
+  return buildUsageWindow(windowDays, now);
+}
+
+/**
+ * Today alone, for the compact live figure in the sidebar footer.
+ *
+ * Separate from {@link makeUsageWindow} because one day is not one of the
+ * windows the page offers, and widening that function's type would invite
+ * arbitrary windows the scan cache is not sized for.
+ */
+export function makeTodayUsageWindow(now = new Date()): UsageSummaryInput {
+  return buildUsageWindow(1, now);
+}
+
+function buildUsageWindow(windowDays: number, now: Date): UsageSummaryInput {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const format = new Intl.DateTimeFormat("en-CA", {
     timeZone,
