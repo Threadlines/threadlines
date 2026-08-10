@@ -11,7 +11,12 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
-import { SidebarDraftBlock, type SidebarDraftProjectInfo } from "./SidebarDrafts";
+import {
+  countVisibleDraftSessions,
+  SidebarDraftBlock,
+  useFrozenOpenDraftRow,
+  type SidebarDraftProjectInfo,
+} from "./SidebarDrafts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const PROJECT_ID = ProjectId.make("project-badcode");
@@ -63,19 +68,32 @@ function renderDraftBlock(input: {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  // The route the user is on is the one prop that changes under this block, so
-  // the harness owns it — that is what freezes the open draft's row.
+  // The harness owns the route and the frozen open-draft row, the same way the
+  // sidebar does, and renders the count the sidebar's empty state gates on —
+  // the contract under test is that count and rendered rows never disagree.
   function Harness() {
     const [routeDraftId, setRouteDraftId] = useState<string | null>(input.routeDraftId ?? null);
+    const frozenOpenDraftRow = useFrozenOpenDraftRow(routeDraftId);
+    const visibleDraftSessionCount = useComposerDraftStore((store) =>
+      countVisibleDraftSessions({
+        store,
+        projectInfoByScopedRef: PROJECT_INFO,
+        scopedProjectKey: null,
+        routeDraftId,
+        frozenOpenDraftRow,
+      }),
+    );
     return (
       <QueryClientProvider client={queryClient}>
         <button type="button" data-testid="leave-draft" onClick={() => setRouteDraftId(null)}>
           Leave draft
         </button>
+        <span data-testid="visible-draft-count">{visibleDraftSessionCount}</span>
         <SidebarDraftBlock
           projectInfoByScopedRef={PROJECT_INFO}
           scopedProjectKey={null}
           routeDraftId={routeDraftId}
+          frozenOpenDraftRow={frozenOpenDraftRow}
           onNavigateToDraft={input.onNavigateToDraft ?? vi.fn()}
         />
       </QueryClientProvider>
@@ -162,16 +180,24 @@ describe("SidebarDraftBlock", () => {
     });
 
     renderDraftBlock({ routeDraftId: draftId });
+    // Let the mounted harness freeze the still-empty open draft before typing,
+    // the way the real sidebar is mounted long before a keystroke can land —
+    // React commits the first render asynchronously, so typing first would let
+    // the freeze capture the typed content.
+    await expect.element(page.getByTestId("visible-draft-count")).toHaveTextContent("0");
 
     // Typing in the draft you are looking at must not push a row into the
-    // sidebar under your cursor.
+    // sidebar under your cursor — and the count the empty state gates on must
+    // agree, or "No threads yet" vanishes with no row replacing it.
     useComposerDraftStore.getState().setPrompt(draftId, "still writing this");
     await expect.element(page.getByTestId("sidebar-draft-row")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("visible-draft-count")).toHaveTextContent("0");
 
     await page.getByTestId("leave-draft").click();
 
     await expect
       .element(page.getByTestId("sidebar-draft-preview"))
       .toHaveTextContent("still writing this");
+    await expect.element(page.getByTestId("visible-draft-count")).toHaveTextContent("1");
   });
 });

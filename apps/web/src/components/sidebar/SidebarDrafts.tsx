@@ -86,21 +86,20 @@ function draftSessionMatchesScope(input: {
  *
  * Selecting a number keeps typing in a draft composer from re-rendering the
  * whole sidebar — {@link SidebarDraftBlock} owns the per-keystroke content
- * subscription. It can overcount by one for an open draft that was never
- * navigated away from (that one renders no row), which only softens the empty
- * state.
+ * subscription. Gate order mirrors the block's row filter exactly, including
+ * the frozen-row rule for the open draft, so "No threads yet" stays up while
+ * the user types into a draft that is not showing a row yet.
  */
 export function countVisibleDraftSessions(input: {
   store: DraftSessionSlices;
   projectInfoByScopedRef: SidebarDraftProjectInfoByScopedRef;
   scopedProjectKey: string | null;
+  routeDraftId: string | null;
+  frozenOpenDraftRow: SidebarDraftRowData | null;
 }): number {
   let count = 0;
   for (const [draftKey, session] of Object.entries(input.store.draftThreadsByThreadKey)) {
     if (session.promotedTo != null) {
-      continue;
-    }
-    if (!composerDraftHasUserContent(input.store.draftsByThreadKey[draftKey])) {
       continue;
     }
     if (
@@ -109,6 +108,15 @@ export function countVisibleDraftSessions(input: {
         scopedProjectKey: input.scopedProjectKey,
       })
     ) {
+      continue;
+    }
+    if (draftKey === input.routeDraftId) {
+      if (input.frozenOpenDraftRow?.draftId === draftKey) {
+        count += 1;
+      }
+      continue;
+    }
+    if (!composerDraftHasUserContent(input.store.draftsByThreadKey[draftKey])) {
       continue;
     }
     count += 1;
@@ -146,10 +154,44 @@ function toSnippet(text: string): string {
   return text.length > SNIPPET_MAX_CHARS ? `${text.slice(0, SNIPPET_MAX_CHARS - 1)}…` : text;
 }
 
-interface SidebarDraftRowData {
+export interface SidebarDraftRowData {
   draftId: DraftId;
   session: DraftSessionState;
   composer: ComposerThreadDraftState;
+}
+
+/**
+ * The open draft's row, FROZEN at the moment the draft became the route: it
+ * stays visible (like a thread row) but never repaints while the user types. A
+ * draft that has never been navigated away from has no snapshot to freeze, so a
+ * fresh typing session shows no row at all. Captured synchronously on route
+ * change (setState-during-render derived state) so the row never flickers out
+ * for a frame between route change and capture.
+ *
+ * Owned by the sidebar, not the block, so the row count gating the empty state
+ * and the rows the block renders can never disagree.
+ */
+export function useFrozenOpenDraftRow(routeDraftId: string | null): SidebarDraftRowData | null {
+  const [frozenActive, setFrozenActive] = useState<{
+    routeDraftId: string | null;
+    row: SidebarDraftRowData | null;
+  }>({ routeDraftId: null, row: null });
+  if (frozenActive.routeDraftId === routeDraftId) {
+    return frozenActive.row;
+  }
+  let row: SidebarDraftRowData | null = null;
+  if (routeDraftId !== null) {
+    const draftId = DraftId.make(routeDraftId);
+    const store = useComposerDraftStore.getState();
+    const session = store.getDraftSession(draftId);
+    const composer = store.getComposerDraft(draftId);
+    row =
+      session && session.promotedTo == null && composer && composerDraftHasUserContent(composer)
+        ? { composer, draftId, session }
+        : null;
+  }
+  setFrozenActive({ routeDraftId, row });
+  return row;
 }
 
 /**
@@ -260,37 +302,20 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectInfoByScopedRef: SidebarDraftProjectInfoByScopedRef;
   scopedProjectKey: string | null;
   routeDraftId: string | null;
+  /** From {@link useFrozenOpenDraftRow}, owned by the sidebar. */
+  frozenOpenDraftRow: SidebarDraftRowData | null;
   onNavigateToDraft: (draftId: DraftId) => void;
 }) {
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
   const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
   const clearDraftThread = useComposerDraftStore((store) => store.clearDraftThread);
   const [pendingDiscard, setPendingDiscard] = useState<SidebarDraftRowData | null>(null);
-  // The open draft's row is FROZEN at the moment the draft became the route:
-  // it stays visible (like a thread row) but never repaints while the user
-  // types. A draft that was never navigated away from has no snapshot to
-  // freeze, so a fresh typing session shows no row at all. Captured
-  // synchronously on route change (setState-during-render derived state) so the
-  // row never flickers out for a frame between route change and capture.
-  const [frozenActive, setFrozenActive] = useState<{
-    routeDraftId: string | null;
-    row: SidebarDraftRowData | null;
-  }>({ routeDraftId: null, row: null });
-  if (frozenActive.routeDraftId !== props.routeDraftId) {
-    let row: SidebarDraftRowData | null = null;
-    if (props.routeDraftId !== null) {
-      const draftId = DraftId.make(props.routeDraftId);
-      const store = useComposerDraftStore.getState();
-      const session = store.getDraftSession(draftId);
-      const composer = store.getComposerDraft(draftId);
-      row =
-        session && session.promotedTo == null && composer && composerDraftHasUserContent(composer)
-          ? { composer, draftId, session }
-          : null;
-    }
-    setFrozenActive({ routeDraftId: props.routeDraftId, row });
-  }
-  const { projectInfoByScopedRef, routeDraftId, scopedProjectKey: scopeKey } = props;
+  const {
+    frozenOpenDraftRow,
+    projectInfoByScopedRef,
+    routeDraftId,
+    scopedProjectKey: scopeKey,
+  } = props;
   const drafts = useMemo(() => {
     const rows: SidebarDraftRowData[] = [];
     // Every non-promoted session with content gets a row, mapped or not:
@@ -312,8 +337,8 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
         // Open draft: render the frozen entry snapshot, or nothing for a draft
         // that has never been left. Gated on the LIVE session above so send and
         // discard still remove the row immediately.
-        if (frozenActive.routeDraftId === draftKey && frozenActive.row !== null) {
-          rows.push(frozenActive.row);
+        if (frozenOpenDraftRow?.draftId === draftKey) {
+          rows.push(frozenOpenDraftRow);
         }
         continue;
       }
@@ -328,7 +353,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   }, [
     draftThreadsByThreadKey,
     draftsByThreadKey,
-    frozenActive,
+    frozenOpenDraftRow,
     projectInfoByScopedRef,
     routeDraftId,
     scopeKey,

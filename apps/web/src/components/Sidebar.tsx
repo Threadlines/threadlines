@@ -109,6 +109,7 @@ import { InboxDoneRow, InboxThreadRow } from "./sidebar/InboxRows";
 import {
   countVisibleDraftSessions,
   SidebarDraftBlock,
+  useFrozenOpenDraftRow,
   type SidebarDraftProjectInfo,
 } from "./sidebar/SidebarDrafts";
 import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
@@ -612,15 +613,21 @@ export default function Sidebar() {
       return target?.kind === "draft" ? target.draftId : null;
     },
   });
+  // Only recaptured on route change, so it costs nothing per keystroke.
+  const frozenOpenDraftRow = useFrozenOpenDraftRow(routeDraftId);
   // Count-only subscription: the sidebar needs "are there draft rows" for its
   // empty state, while SidebarDraftBlock owns the per-keystroke content
   // subscription. Selecting a number keeps typing in a draft composer from
-  // re-rendering the whole sidebar.
+  // re-rendering the whole sidebar; the count matches the block's rendered
+  // rows exactly, so "No threads yet" stays up while a never-left draft is
+  // being typed (it has no row to replace the text with).
   const visibleDraftSessionCount = useComposerDraftStore((store) =>
     countVisibleDraftSessions({
       store,
       projectInfoByScopedRef: draftProjectInfoByScopedRef,
       scopedProjectKey: scopedProjectKeyValue,
+      routeDraftId,
+      frozenOpenDraftRow,
     }),
   );
 
@@ -1459,6 +1466,7 @@ export default function Sidebar() {
                     projectInfoByScopedRef={draftProjectInfoByScopedRef}
                     scopedProjectKey={scopedProjectKeyValue}
                     routeDraftId={routeDraftId}
+                    frozenOpenDraftRow={frozenOpenDraftRow}
                     onNavigateToDraft={navigateToDraft}
                   />
 
