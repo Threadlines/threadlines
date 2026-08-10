@@ -117,11 +117,12 @@ export function UsageView() {
       className="mx-auto flex h-full w-full max-w-[1200px] flex-col overflow-y-auto px-6 py-8"
       data-testid="usage-view"
     >
-      <div className="flex items-baseline gap-3">
+      {/* Wraps as a whole row on narrow screens; the range never breaks internally. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="text-lg font-medium tracking-tight">Usage</h1>
         {view ? (
           <span
-            className={cn(NUMBER_CLASS, "text-xs text-muted-foreground/55")}
+            className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground/55")}
             data-testid="usage-date-range"
           >
             {formatUsageDateRange(view.window.sinceDay, view.window.untilDay)}
@@ -215,7 +216,7 @@ export function UsageView() {
                   return (
                     <div
                       key={`${model.provider}:${model.model}`}
-                      className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem] items-baseline gap-3 py-2.5"
+                      className="grid grid-cols-[minmax(0,1fr)_4.5rem_5rem] items-baseline gap-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_3.5rem]"
                       data-testid="usage-model-row"
                     >
                       <span className="flex min-w-0 items-baseline gap-2">
@@ -232,8 +233,14 @@ export function UsageView() {
                       <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/85")}>
                         {formatUsd(model.costUsd)}
                       </span>
+                      {/* Share is the first column to go on a phone: the model
+                          name is the row's point, and share is derivable from
+                          cost at a glance. */}
                       <span
-                        className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/50")}
+                        className={cn(
+                          NUMBER_CLASS,
+                          "hidden text-right text-xs text-muted-foreground/50 sm:block",
+                        )}
                       >
                         {formatPercent(model.costShare, 0)}
                       </span>
@@ -442,7 +449,9 @@ function UsageStatCell({ stat }: { readonly stat: UsageStat }) {
         {stat.value}
       </span>
       {stat.context ? (
-        <span className="truncate text-xs text-muted-foreground/55">{stat.context}</span>
+        // Wraps on a phone, truncates on desktop where the band is one row and
+        // a two-line cell would stagger its neighbours.
+        <span className="text-xs text-muted-foreground/55 sm:truncate">{stat.context}</span>
       ) : null}
     </div>
   );
