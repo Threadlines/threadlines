@@ -187,10 +187,11 @@ export interface PendingCheckoutSwitch {
 }
 
 /**
- * A checkout switch is a property of the next turn, never a live mutation: the
- * thread's target checkout moves immediately while the running session stays
- * where it started. The server cycles the session into the new checkout when
- * the next turn is dispatched, so surface the queued switch until then.
+ * A checkout switch is never a live mutation: the thread's target checkout
+ * moves immediately while the running session stays where it started. The
+ * server cycles the session into the new checkout as soon as it is safe — the
+ * session idle with no background tasks left — or at the latest when the next
+ * turn is dispatched, so surface the queued switch until then.
  *
  * Returns null when nothing is queued (no live session, or it already runs in
  * the target checkout).
@@ -247,7 +248,50 @@ export function checkoutSwitchChipText(pending: PendingCheckoutSwitch): {
 export function checkoutSwitchExplanation(pending: PendingCheckoutSwitch): string {
   return pending.deferred
     ? `A background task is still running inside this session, so it stays in ${pending.fromLabel}. The switch to ${pending.toLabel} applies on its own once that task finishes; until then your messages run in ${pending.fromLabel}.`
-    : `This session is finishing in ${pending.fromLabel}. Your next message starts it in ${pending.toLabel}.`;
+    : `This session is finishing in ${pending.fromLabel}. It moves to ${pending.toLabel} as soon as the current turn ends.`;
+}
+
+/**
+ * Toast copy for the moment a branch pick queues a checkout switch behind a
+ * busy session. Null when nothing ends up queued, or when the session is idle:
+ * an idle session is cycled by the server right away, so there is nothing to
+ * announce.
+ */
+export function queuedCheckoutSwitchToast(input: {
+  session:
+    | {
+        readonly orchestrationStatus: OrchestrationSessionStatus;
+        readonly checkoutCwd?: string | null | undefined;
+        readonly pendingBackgroundTaskCount?: number | null | undefined;
+      }
+    | null
+    | undefined;
+  activeProjectCwd: string | null;
+  nextWorktreePath: string | null;
+}): { title: string; description: string } | null {
+  const pending = resolvePendingCheckoutSwitch({
+    sessionCheckoutCwd: input.session?.checkoutCwd,
+    sessionStatus: input.session?.orchestrationStatus,
+    pendingBackgroundTaskCount: input.session?.pendingBackgroundTaskCount,
+    activeProjectCwd: input.activeProjectCwd,
+    activeWorktreePath: resolveActiveWorktreePath(input.activeProjectCwd, input.nextWorktreePath),
+  });
+  if (!pending) {
+    return null;
+  }
+  if (pending.deferred) {
+    return {
+      title: "Checkout switch queued",
+      description: `A background task is still running in ${pending.fromLabel}. The agent moves to ${pending.toLabel} when it finishes.`,
+    };
+  }
+  if (!hasActiveThreadTurn(input.session)) {
+    return null;
+  }
+  return {
+    title: "Checkout switch queued",
+    description: `The agent moves to ${pending.toLabel} when the current turn finishes.`,
+  };
 }
 
 export function shouldIncludeBranchPickerItem(input: {
