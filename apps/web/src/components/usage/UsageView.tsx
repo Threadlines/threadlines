@@ -459,19 +459,21 @@ function UsageChart({
           ))}
         </div>
         <div className="flex items-center gap-3">
-          {USAGE_PROVIDER_READING_ORDER.map((provider) => (
-            <span
-              key={provider}
-              className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60"
-            >
+          {USAGE_PROVIDER_READING_ORDER.map((provider) => {
+            const ProviderIcon = USAGE_PROVIDER_ICONS[provider];
+            return (
               <span
-                aria-hidden
-                className="size-2 rounded-full"
-                style={{ backgroundColor: USAGE_PROVIDER_COLORS[provider] }}
-              />
-              {USAGE_PROVIDER_LABELS[provider]}
-            </span>
-          ))}
+                key={provider}
+                className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60"
+              >
+                {/* The glyphs' built-in brand fills already match the series
+                    hues, so they replace the swatch dots without a legend key
+                    being lost. */}
+                <ProviderIcon aria-hidden className="size-3 shrink-0" />
+                {USAGE_PROVIDER_LABELS[provider]}
+              </span>
+            );
+          })}
         </div>
       </div>
 

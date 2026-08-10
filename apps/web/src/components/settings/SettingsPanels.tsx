@@ -1096,15 +1096,13 @@ function ProviderUsageLinkRow() {
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none">
             Usage · Last {USAGE_SETTINGS_WINDOW_DAYS} days
           </span>
-          {/* One typeface for the whole line: mono figures beside sans words
-              put two vertical metrics on one baseline and the row reads as
-              misaligned. Emphasis comes from color alone. */}
+          {/* One typeface AND one color: mixing brightness on a line of small
+              mono type erodes the dim glyphs' anti-aliased bottom edge, so the
+              muted words read a pixel higher than the numbers beside them. The
+              caps label above carries the hierarchy instead. */}
           {merged ? (
-            <span className="min-w-0 truncate font-mono text-[13px] tabular-nums">
-              <span className="text-foreground">{formatTokens(merged.totalTokens)}</span>
-              <span className="text-muted-foreground/65"> tokens · </span>
-              <span className="text-foreground">{formatUsd(merged.costUsd)}</span>
-              <span className="text-muted-foreground/65"> API-equivalent</span>
+            <span className="min-w-0 truncate font-mono text-[13px] text-foreground/90 tabular-nums">
+              {formatTokens(merged.totalTokens)} tokens · {formatUsd(merged.costUsd)} API-equivalent
             </span>
           ) : (
             <span className="text-sm text-muted-foreground/55">Reading provider transcripts…</span>
