@@ -1087,7 +1087,7 @@ function ProviderUsageLinkRow() {
 
   return (
     <Link
-      className="group/usage-tile relative overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 transition-colors not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] hover:border-border focus-ring dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]"
+      className="group/usage-tile relative block overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 transition-colors not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] hover:border-border focus-ring dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]"
       data-testid="settings-usage-link"
       to="/usage"
     >
