@@ -123,10 +123,19 @@ export interface UsageChartGridline {
   readonly topPercent: number;
 }
 
+export interface UsageChartColumnEntry {
+  readonly provider: UsageProviderKind;
+  /** Formatted in the chart's mode, so the card needs no arithmetic. */
+  readonly valueLabel: string;
+}
+
+/** One hoverable day: everything the tracking card says about it. */
 export interface UsageChartColumn {
   readonly day: string;
-  /** Native-tooltip text; the page deliberately has no tooltip system. */
-  readonly title: string;
+  readonly label: string;
+  readonly entries: readonly UsageChartColumnEntry[];
+  readonly totalLabel: string;
+  readonly hasActivity: boolean;
 }
 
 export interface UsageAreaChart {
@@ -193,10 +202,25 @@ export function buildUsageAreaChart(input: {
     series,
     gridlines: axisMax === 0 ? [] : buildGridlines(axisMax, input.mode),
     axisLabels: axisTickDays(days).map((day) => formatDayShort(day).toUpperCase()),
-    columns: days.map((day) => ({
-      day,
-      title: describeUsageDay(day, byDay.get(day) ?? null),
-    })),
+    columns: days.map((day) => {
+      const entry = byDay.get(day);
+      const formatValue = input.mode === "cost" ? formatUsd : formatTokensCompact;
+      return {
+        day,
+        label: formatDayShort(day),
+        // Every charted provider gets a row, zeros included: the card answers
+        // "who was quiet that day" as much as "who was busy". Reading order,
+        // not paint order, so the card matches the legend and the hero.
+        entries: USAGE_PROVIDER_READING_ORDER.filter((provider) =>
+          series.some((line) => line.provider === provider),
+        ).map((provider) => ({
+          provider,
+          valueLabel: formatValue(chartValue(entry?.byProvider.get(provider), input.mode)),
+        })),
+        totalLabel: formatValue(chartValue(entry, input.mode)),
+        hasActivity: (entry?.totalTokens ?? 0) > 0,
+      };
+    }),
     isEmpty: series.length === 0,
   };
 }
@@ -286,18 +310,6 @@ function monotoneTangents(ys: readonly number[], stepX: number): readonly number
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-function describeUsageDay(day: string, entry: DailyTotals | null): string {
-  if (!entry || entry.totalTokens === 0) {
-    return `${formatDayShort(day)}: no recorded usage`;
-  }
-  const breakdown = USAGE_PROVIDER_READING_ORDER.flatMap((provider) => {
-    const totals = entry.byProvider.get(provider);
-    if (!totals || totals.totalTokens === 0) return [];
-    return [`${USAGE_PROVIDER_LABELS[provider]} ${formatTokens(totals.totalTokens)}`];
-  }).join(", ");
-  return `${formatDayShort(day)}: ${formatTokens(entry.totalTokens)} tokens, ${formatUsd(entry.costUsd)} API-equivalent (${breakdown})`;
 }
 
 /** `2026-07-12` and `2026-08-10` to `Jul 12 to Aug 10`. */

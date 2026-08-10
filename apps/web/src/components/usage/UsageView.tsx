@@ -422,6 +422,16 @@ function UsageChart({
   readonly mode: UsageChartMode;
   readonly onModeChange: (mode: UsageChartMode) => void;
 }) {
+  // The hovered day, held as an index so a window switch under the cursor
+  // cannot leave the card describing a day the chart no longer shows.
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const hoveredColumn = hoveredIndex === null ? null : (chart.columns[hoveredIndex] ?? null);
+  const hoveredCenterPercent =
+    hoveredIndex === null || chart.columns.length === 0
+      ? 0
+      : ((hoveredIndex + 0.5) / chart.columns.length) * 100;
+  // The card sits on whichever side has room, flipping past the midline.
+  const hoveredOnLeftHalf = hoveredCenterPercent <= 50;
   return (
     <div className="flex min-w-0 flex-col" data-testid="usage-chart">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -502,17 +512,61 @@ function UsageChart({
             </g>
           ))}
         </svg>
-        {/* Transparent per-day columns: the whole tooltip system, in one attribute. */}
-        <div className="absolute inset-0 flex">
-          {chart.columns.map((column) => (
+        {/* Transparent per-day columns drive the tracking line and the card. */}
+        <div className="absolute inset-0 flex" onMouseLeave={() => setHoveredIndex(null)}>
+          {chart.columns.map((column, index) => (
             <div
               key={column.day}
-              className="min-w-0 flex-1 transition-colors hover:bg-muted/40"
+              className="min-w-0 flex-1"
               data-testid="usage-chart-day"
-              title={column.title}
+              onMouseEnter={() => setHoveredIndex(index)}
             />
           ))}
         </div>
+        {hoveredColumn ? (
+          <>
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 w-px bg-foreground/25"
+              style={{ left: `${hoveredCenterPercent}%` }}
+            />
+            <div
+              className={cn(
+                "pointer-events-none absolute top-2 z-10 w-44 rounded-md border bg-popover px-3 py-2.5 text-popover-foreground shadow-md/5",
+              )}
+              style={
+                hoveredOnLeftHalf
+                  ? { left: `calc(${hoveredCenterPercent}% + 10px)` }
+                  : { right: `calc(${100 - hoveredCenterPercent}% + 10px)` }
+              }
+              data-testid="usage-chart-card"
+            >
+              <p className="text-xs text-muted-foreground/70">{hoveredColumn.label}</p>
+              <div className="mt-1.5 flex flex-col gap-1">
+                {hoveredColumn.entries.map((entry) => {
+                  const ProviderIcon = USAGE_PROVIDER_ICONS[entry.provider];
+                  return (
+                    <span key={entry.provider} className="flex items-center gap-1.5 text-xs">
+                      <ProviderIcon className="size-3 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate text-foreground/85">
+                        {USAGE_PROVIDER_LABELS[entry.provider]}
+                      </span>
+                      <span className={cn(NUMBER_CLASS, "shrink-0 text-foreground")}>
+                        {entry.valueLabel}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/60 pt-1.5 text-xs">
+                <span className="flex-1 text-muted-foreground/70">Total</span>
+                <span className={cn(NUMBER_CLASS, "text-foreground")}>
+                  {hoveredColumn.totalLabel}
+                </span>
+              </div>
+            </div>
+          </>
+        ) : null}
         {chart.isEmpty ? (
           <p className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground/50">
             No recorded activity in this window.

@@ -244,6 +244,18 @@ describe("UsageView", () => {
     expect(laptopRow?.textContent).toContain("Not reporting");
     const studioRow = machineRows.find((row) => row.textContent?.includes("Studio Mac"));
     expect(studioRow?.textContent).toContain("/Users/dev/.claude");
+
+    // Hovering a day raises the tracking card: both providers, then the total.
+    await page.getByTestId("usage-chart-day").nth(29).hover();
+    const card = page.getByTestId("usage-chart-card");
+    await expect.element(card).toBeVisible();
+    const cardText = card.element().textContent ?? "";
+    expect(cardText).toContain("Claude Code");
+    expect(cardText).toContain("$12.50");
+    expect(cardText).toContain("Codex");
+    expect(cardText).toContain("$4.50");
+    expect(cardText).toContain("Total");
+    expect(cardText).toContain("$17.00");
   });
 
   it("switches the hero to tokens with the chart mode and the breakdown to days", async () => {
