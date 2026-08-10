@@ -4,6 +4,7 @@ import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
+  composerDraftHasUserContent,
   type DraftThreadEnvMode,
   type DraftThreadState,
   useComposerDraftStore,
@@ -50,6 +51,7 @@ function useNewThreadState() {
     ): Promise<void> => {
       const {
         adoptDraftSessionForLogicalProjectKey,
+        getComposerDraft,
         getDraftSessionByLogicalProjectKey,
         getDraftSession,
         getDraftThread,
@@ -76,32 +78,48 @@ function useNewThreadState() {
       const storedDraftThread =
         getDraftSessionByLogicalProjectKey(logicalProjectKey) ??
         adoptDraftSessionForLogicalProjectKey(projectRef, logicalProjectKey);
+      // New-thread surfaces (button, hotkeys, "/" landing, palette) only ever
+      // reuse a draft the user has NOT invested in. A draft with typed text or
+      // attachments is work in progress: it stays alive where it is (reachable
+      // from the sidebar draft rows) and this request mints a fresh draft
+      // instead — the remap in the store preserves invested drafts rather than
+      // deleting them.
+      const emptyStoredDraftThread =
+        storedDraftThread &&
+        !composerDraftHasUserContent(getComposerDraft(storedDraftThread.draftId))
+          ? storedDraftThread
+          : null;
       const latestActiveDraftThread: DraftThreadState | null = currentRouteTarget
         ? currentRouteTarget.kind === "server"
           ? getDraftThread(currentRouteTarget.threadRef)
           : getDraftSession(currentRouteTarget.draftId)
         : null;
-      if (storedDraftThread) {
+      if (emptyStoredDraftThread) {
         return (async () => {
           if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
-            setDraftThreadContext(storedDraftThread.draftId, {
+            setDraftThreadContext(emptyStoredDraftThread.draftId, {
               ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
               ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
               ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
             });
           }
-          setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, storedDraftThread.draftId, {
-            threadId: storedDraftThread.threadId,
-          });
+          setLogicalProjectDraftThreadId(
+            logicalProjectKey,
+            projectRef,
+            emptyStoredDraftThread.draftId,
+            {
+              threadId: emptyStoredDraftThread.threadId,
+            },
+          );
           if (
             currentRouteTarget?.kind === "draft" &&
-            currentRouteTarget.draftId === storedDraftThread.draftId
+            currentRouteTarget.draftId === emptyStoredDraftThread.draftId
           ) {
             return;
           }
           await router.navigate({
             to: "/draft/$draftId",
-            params: { draftId: storedDraftThread.draftId },
+            params: { draftId: emptyStoredDraftThread.draftId },
             search: preserveRightPanelSearchParamsForDraftNavigation,
             replace: options?.replace ?? false,
           });
@@ -112,7 +130,10 @@ function useNewThreadState() {
         latestActiveDraftThread &&
         currentRouteTarget?.kind === "draft" &&
         latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
-        latestActiveDraftThread.promotedTo == null
+        latestActiveDraftThread.promotedTo == null &&
+        // Same content rule as above: a new-thread request while viewing an
+        // invested draft mints a fresh one instead of repurposing it.
+        !composerDraftHasUserContent(getComposerDraft(currentRouteTarget.draftId))
       ) {
         if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
           setDraftThreadContext(currentRouteTarget.draftId, {
