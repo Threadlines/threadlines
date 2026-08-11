@@ -233,6 +233,14 @@ function DraftChatThreadRouteView() {
       navigateToTab(nextTab);
     }
   }, [availableTabs, navigateToTab, panelStateKey]);
+  // A `diff=1` deep link (or a strip restored with Diff active) would otherwise
+  // leave an empty tab here, since the diff itself lives on the thread route.
+  useEffect(() => {
+    if (activeTab !== "diff") {
+      return;
+    }
+    openDiffOnThreadRoute(rightPanel.diffTarget ?? { diffMode: "workingTree" });
+  }, [activeTab, openDiffOnThreadRoute, rightPanel.diffTarget]);
   const handleSourceControlBranchChange = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       setDraftThreadContext(draftId, { branch, worktreePath });
@@ -308,7 +316,9 @@ function DraftChatThreadRouteView() {
       {...(shouldUseSourceControlSheet ? { onDismiss: hideSidebar } : {})}
     >
       {rightPanel.openTabs.includes("sourceControl") ? (
-        <div className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}>
+        <div
+          className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}
+        >
           <SourceControlPanel
             target={sourceControlTarget}
             activeThreadRef={draftThreadRef}

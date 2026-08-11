@@ -328,8 +328,12 @@ describe("AgentsPanel", () => {
     );
 
     try {
-      await expect.element(page.getByText("Working tree changes on this thread's branch.")).toBeVisible();
-      await expect.element(page.getByText("Subagents and background runs on this thread.")).toBeVisible();
+      await expect
+        .element(page.getByText("Working tree changes on this thread's branch."))
+        .toBeVisible();
+      await expect
+        .element(page.getByText("Subagents and background runs on this thread."))
+        .toBeVisible();
       // No tab is open, so no surface is mounted behind the launcher.
       expect(document.querySelector("[data-testid='never-rendered']")).toBeNull();
 

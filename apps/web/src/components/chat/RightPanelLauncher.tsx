@@ -23,9 +23,7 @@ export const RightPanelLauncher = memo(function RightPanelLauncher({
     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3" data-right-panel-launcher="true">
       <SectionLabel className="mb-2.5">Open a panel</SectionLabel>
       {availableTabs.length === 0 ? (
-        <p className="text-[12px] text-muted-foreground/60">
-          Nothing to show for this thread yet.
-        </p>
+        <p className="text-[12px] text-muted-foreground/60">Nothing to show for this thread yet.</p>
       ) : (
         <div className="grid grid-cols-2 gap-2">
           {availableTabs.map((tab) => {

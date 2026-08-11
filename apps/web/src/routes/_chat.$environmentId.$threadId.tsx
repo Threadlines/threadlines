@@ -17,11 +17,7 @@ import {
 } from "../components/DiffPanelShell";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
-import {
-  closeRightPanelSearchParams,
-  type DiffRouteSearch,
-  parseDiffRouteSearch,
-} from "../diffRouteSearch";
+import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
 import { ChatRightPanel } from "../components/ChatRightPanel";
 import { useAgentsPanelSource } from "../agentsPanelStore";
@@ -448,7 +444,9 @@ function ChatThreadRouteView() {
         </div>
       ) : null}
       {openTabs.includes("sourceControl") ? (
-        <div className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}>
+        <div
+          className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}
+        >
           <SourceControlPanel
             target={sourceControlTarget}
             activeThreadRef={threadRef}

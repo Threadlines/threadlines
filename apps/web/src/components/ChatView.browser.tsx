@@ -2727,7 +2727,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await openRightPanelSurfaceFromLauncher("sourceControl");
 
       const changesTab = await waitForElement(
-        () => document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement | null,
+        () =>
+          document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement | null,
         "Unable to find the sidebar's Changes tab.",
       );
       expect(changesTab.getAttribute("data-active")).toBe("true");
@@ -2754,7 +2755,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      (document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement).click();
+      (
+        document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
+      ).click();
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
@@ -2766,9 +2769,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // Closing the tabs one at a time empties the strip and lands back on the
       // launcher, with the sidebar still open.
       (
-        document.querySelector(
-          "[data-right-panel-close-tab='sourceControl']",
-        ) as HTMLElement
+        document.querySelector("[data-right-panel-close-tab='sourceControl']") as HTMLElement
       ).click();
       await vi.waitFor(
         () => {
