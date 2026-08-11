@@ -13,6 +13,7 @@ import {
   retargetRightPanelDiffState,
   rightPanelTabSearchParams,
   showRightPanelState,
+  type RightPanelTab,
   type RightPanelTabsState,
 } from "./rightPanelTabs";
 
@@ -29,6 +30,12 @@ function reconcileFresh(
     defaultVisible: false,
     ...input,
   });
+}
+
+/** A thread whose sidebar the URL has already settled on `tab`, which is the
+ *  state every mutation actually starts from in the app. */
+function openedOn(tab: RightPanelTab): RightPanelTabsState {
+  return reconcileFresh({ urlActiveTab: tab });
 }
 
 describe("availableRightPanelTabs", () => {
@@ -201,7 +208,7 @@ describe("reconcileRightPanelTabsState", () => {
   });
 
   it("adopts a tab the URL was navigated to from outside the strip", () => {
-    const opened = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "sourceControl");
+    const opened = openedOn("sourceControl");
     const state = reconcileRightPanelTabsState(opened, {
       urlActiveTab: "diff",
       urlClosed: false,
@@ -216,10 +223,9 @@ describe("reconcileRightPanelTabsState", () => {
   });
 
   /** The mutation and the navigation it asks for both look like "closed" in the
-   *  URL, so this is the case the acknowledgement token exists for. */
+   *  URL, so this is the case the keep-visible flag exists for. */
   it("keeps the launcher showing after the last tab is closed", () => {
-    const opened = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "agents");
-    const emptied = closeRightPanelTabState(opened, "agents");
+    const emptied = closeRightPanelTabState(openedOn("agents"), "agents");
     const state = reconcileRightPanelTabsState(emptied, {
       urlActiveTab: null,
       urlClosed: true,
@@ -228,13 +234,34 @@ describe("reconcileRightPanelTabsState", () => {
       defaultVisible: false,
     });
 
-    expect(state).toBe(emptied);
     expect(state.visible).toBe(true);
     expect(state.openTabs).toEqual([]);
   });
 
+  /** A mutation lands a render before its navigation does, so the reconcile has
+   *  to sit on its hands until the URL actually moves. */
+  it("does not undo a mutation from the URL it has not caught up to yet", () => {
+    const closed = closeRightPanelTabState(
+      focusRightPanelTabState(openedOn("sourceControl"), "agents"),
+      "sourceControl",
+    );
+    expect(closed.activeTab).toBe("agents");
+
+    const state = reconcileRightPanelTabsState(closed, {
+      // The URL still says Changes: the navigation to Agents is in flight.
+      urlActiveTab: "sourceControl",
+      urlClosed: false,
+      urlDiffTarget: {},
+      availableTabs: ALL_TABS,
+      defaultVisible: false,
+    });
+
+    expect(state.openTabs).toEqual(["agents"]);
+    expect(state.activeTab).toBe("agents");
+  });
+
   it("hides the sidebar when something else closes it", () => {
-    const opened = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "agents");
+    const opened = openedOn("agents");
     const state = reconcileRightPanelTabsState(opened, {
       urlActiveTab: null,
       urlClosed: true,
@@ -249,9 +276,7 @@ describe("reconcileRightPanelTabsState", () => {
   });
 
   it("follows the diff panel's own retargeting while the diff tab is active", () => {
-    const opened = retargetRightPanelDiffState(EMPTY_RIGHT_PANEL_TABS_STATE, {
-      diffMode: "workingTree",
-    });
+    const opened = retargetRightPanelDiffState(openedOn("diff"), { diffMode: "workingTree" });
     const state = reconcileRightPanelTabsState(opened, {
       urlActiveTab: "diff",
       urlClosed: false,
@@ -264,7 +289,7 @@ describe("reconcileRightPanelTabsState", () => {
   });
 
   it("leaves the strip alone when a navigation merely drops the panel params", () => {
-    const opened = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "sourceControl");
+    const opened = openedOn("sourceControl");
     const state = reconcileRightPanelTabsState(opened, {
       urlActiveTab: null,
       urlClosed: false,

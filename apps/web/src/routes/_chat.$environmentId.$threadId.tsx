@@ -44,7 +44,7 @@ import {
   focusRightPanelTab,
   hideRightPanel,
   isRightPanelClosedInSearch,
-  reconcileRightPanelTabs,
+  useReconciledRightPanelTabs,
   retargetRightPanelDiff,
   rightPanelDiffTargetFromSearch,
   rightPanelTabSearchParams,
@@ -286,7 +286,7 @@ function ChatThreadRouteView() {
   // The one caller that folds the URL into the thread's remembered strip. The
   // chat header renders inside this route and reads the same store, so it sees
   // the result in the same pass.
-  const rightPanel = reconcileRightPanelTabs(currentThreadKey, {
+  const rightPanel = useReconciledRightPanelTabs(currentThreadKey, {
     urlActiveTab,
     urlClosed,
     urlDiffTarget,
@@ -476,7 +476,9 @@ function ChatThreadRouteView() {
       ) : null}
     </>
   );
-  const rightPanelChrome = (
+  // Hidden means gone, not merely off-canvas: a mounted Changes tab keeps
+  // polling git, and neither layout unmounts its children on its own.
+  const rightPanelChrome = !sidebarVisible ? null : (
     <ChatRightPanel
       openTabs={openTabs}
       availableTabs={availableTabs}

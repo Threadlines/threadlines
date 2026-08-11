@@ -115,13 +115,19 @@ export interface RightPanelTabsState {
   readonly activeTab: RightPanelTab | null;
   readonly diffTarget: RightPanelDiffTarget | null;
   /**
-   * The URL's active tab as of the last change this module already accounted
-   * for. Every mutation records the value the navigation it asks its caller to
-   * perform is about to produce, which is what lets `reconcileRightPanelTabs`
-   * tell "the URL changed because we changed it" from "something else changed
-   * the URL" — the two need opposite handling when both look like `closed`.
+   * The URL's active tab as of the last reconcile pass. A mutation lands in this
+   * store one render before the navigation it asks for reaches the URL, so the
+   * reconcile has to ignore the URL until it actually changes — otherwise the
+   * stale value reads as an external navigation and undoes the mutation.
    */
-  readonly acknowledgedUrlTab: RightPanelTab | null;
+  readonly observedUrlTab: RightPanelTab | null;
+  /**
+   * Set when this store is the one that asked the URL to read as closed by
+   * emptying the strip. A closed URL normally means "hide the sidebar", but that
+   * one case means "show the launcher", and the two are indistinguishable from
+   * the URL alone. Cleared as soon as the closed URL arrives.
+   */
+  readonly keepVisibleWhenUrlCloses: boolean;
 }
 
 export const EMPTY_RIGHT_PANEL_TABS_STATE: RightPanelTabsState = {
@@ -129,7 +135,8 @@ export const EMPTY_RIGHT_PANEL_TABS_STATE: RightPanelTabsState = {
   openTabs: [],
   activeTab: null,
   diffTarget: null,
-  acknowledgedUrlTab: null,
+  observedUrlTab: null,
+  keepVisibleWhenUrlCloses: false,
 };
 
 function orderedTabs(tabs: Iterable<RightPanelTab>): ReadonlyArray<RightPanelTab> {
@@ -147,7 +154,7 @@ export function focusRightPanelTabState(
     visible: true,
     openTabs: orderedTabs([...state.openTabs, tab]),
     activeTab: tab,
-    acknowledgedUrlTab: tab,
+    keepVisibleWhenUrlCloses: false,
   };
 }
 
@@ -183,7 +190,7 @@ export function closeRightPanelTabState(
     activeTab,
     diffTarget,
     visible: true,
-    acknowledgedUrlTab: activeTab,
+    keepVisibleWhenUrlCloses: activeTab === null,
   };
 }
 
@@ -196,12 +203,12 @@ export function showRightPanelState(
   const openTabs = orderedTabs(state.openTabs.filter((tab) => availableTabs.includes(tab)));
   const activeTab =
     state.activeTab && openTabs.includes(state.activeTab) ? state.activeTab : (openTabs[0] ?? null);
-  return { ...state, visible: true, openTabs, activeTab, acknowledgedUrlTab: activeTab };
+  return { ...state, visible: true, openTabs, activeTab };
 }
 
 /** The header's panel button, hiding the sidebar. The strip is remembered. */
 export function hideRightPanelState(state: RightPanelTabsState): RightPanelTabsState {
-  return { ...state, visible: false, acknowledgedUrlTab: null };
+  return { ...state, visible: false, keepVisibleWhenUrlCloses: false };
 }
 
 /** The active tab a route search names, if any. */
@@ -294,44 +301,49 @@ export function reconcileRightPanelTabsState(
     // A deep link opens the sidebar with just the linked tab in the strip.
     if (urlActiveTab) {
       return {
+        ...EMPTY_RIGHT_PANEL_TABS_STATE,
         visible: true,
         openTabs: [urlActiveTab],
         activeTab: urlActiveTab,
         diffTarget: urlActiveTab === "diff" ? urlDiffTarget : null,
-        acknowledgedUrlTab: urlActiveTab,
+        observedUrlTab: urlActiveTab,
       };
     }
     if (!urlClosed && defaultVisible && availableTabs.includes("sourceControl")) {
       return {
+        ...EMPTY_RIGHT_PANEL_TABS_STATE,
         visible: true,
         openTabs: ["sourceControl"],
         activeTab: "sourceControl",
-        diffTarget: null,
-        acknowledgedUrlTab: null,
       };
     }
     return EMPTY_RIGHT_PANEL_TABS_STATE;
   }
 
-  if (urlActiveTab !== previous.acknowledgedUrlTab) {
+  if (urlActiveTab !== previous.observedUrlTab) {
     if (urlActiveTab) {
       const focused = focusRightPanelTabState(previous, urlActiveTab);
-      return urlActiveTab === "diff" ? { ...focused, diffTarget: urlDiffTarget } : focused;
+      return {
+        ...focused,
+        ...(urlActiveTab === "diff" ? { diffTarget: urlDiffTarget } : {}),
+        observedUrlTab: urlActiveTab,
+      };
+    }
+    // The strip emptied and asked for a closed URL, which is the launcher.
+    if (urlClosed && previous.keepVisibleWhenUrlCloses) {
+      return { ...previous, observedUrlTab: null, keepVisibleWhenUrlCloses: false };
     }
     // Someone else closed the sidebar (the command palette, a sheet auto-hide).
     if (urlClosed) {
-      return { ...previous, visible: false, acknowledgedUrlTab: null };
+      return { ...previous, visible: false, observedUrlTab: null };
     }
     // Panel params merely absent: leave the strip alone.
-    return { ...previous, acknowledgedUrlTab: null };
+    return { ...previous, observedUrlTab: null };
   }
 
   // The diff panel retargets itself as you scroll and as you pick turns, so the
   // remembered target has to follow the URL while Diff is the active tab.
-  if (
-    urlActiveTab === "diff" &&
-    !rightPanelDiffTargetsEqual(previous.diffTarget, urlDiffTarget)
-  ) {
+  if (urlActiveTab === "diff" && !rightPanelDiffTargetsEqual(previous.diffTarget, urlDiffTarget)) {
     return { ...previous, diffTarget: urlDiffTarget };
   }
 
@@ -388,20 +400,24 @@ function mutate(
 }
 
 /**
- * Reads the URL into the thread's remembered strip and returns what to render.
- * Exactly one caller per thread should do this — the route that renders the
- * sidebar — and everyone else should read `useRightPanelTabs`.
+ * Reads the URL into the thread's remembered strip, subscribes to the strip's
+ * own changes, and returns what to render. Exactly one caller per thread should
+ * do this — the route that renders the sidebar — and everyone else should read
+ * `useRightPanelTabs`.
  *
  * The commit happens during render on purpose: the chat header renders inside
  * the route and reads the same store, so deferring it would leave the header's
  * panel button a frame out of step with the panel beside it.
  */
-export function reconcileRightPanelTabs(
+export function useReconciledRightPanelTabs(
   threadKey: string | null,
   input: RightPanelReconcileInput,
 ): RightPanelTabsState {
-  const previous = threadKey ? stateByThreadKey.get(threadKey) : undefined;
-  const next = reconcileRightPanelTabsState(previous, input);
+  const stored = useSyncExternalStore(
+    subscribe,
+    useCallback(() => (threadKey ? stateByThreadKey.get(threadKey) : undefined), [threadKey]),
+  );
+  const next = reconcileRightPanelTabsState(stored, input);
   if (threadKey) {
     write(threadKey, next, true);
   }

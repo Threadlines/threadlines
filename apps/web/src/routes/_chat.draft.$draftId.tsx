@@ -15,7 +15,7 @@ import {
   focusRightPanelTab,
   hideRightPanel,
   isRightPanelClosedInSearch,
-  reconcileRightPanelTabs,
+  useReconciledRightPanelTabs,
   rightPanelDiffTargetFromSearch,
   rightPanelTabSearchParams,
   showRightPanel,
@@ -138,7 +138,7 @@ function DraftChatThreadRouteView() {
   const defaultVisible = useRightPanelDefaultVisible();
   const urlActiveTab = activeRightPanelTabFromSearch(search);
   const urlDiffTarget = useMemo(() => rightPanelDiffTargetFromSearch(search), [search]);
-  const rightPanel = reconcileRightPanelTabs(panelStateKey, {
+  const rightPanel = useReconciledRightPanelTabs(panelStateKey, {
     urlActiveTab,
     urlClosed: isRightPanelClosedInSearch(search),
     urlDiffTarget,
@@ -296,7 +296,9 @@ function DraftChatThreadRouteView() {
     return null;
   }
 
-  const rightPanelChrome = (
+  // Hidden means gone, not merely off-canvas: a mounted Changes tab keeps
+  // polling git, and neither layout unmounts its children on its own.
+  const rightPanelChrome = !sidebarVisible ? null : (
     <ChatRightPanel
       openTabs={rightPanel.openTabs}
       availableTabs={availableTabs}
