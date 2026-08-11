@@ -934,52 +934,12 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("2 subagent tasks");
   });
 
-  it("renders final subagent results as distinct timeline rows", async () => {
+  it("renders a finished subagent as a compact receipt and drops live commentary", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
-        timelineEntries={[
-          {
-            id: "subagent-result:turn-1:agent-1",
-            kind: "subagent-result",
-            createdAt: "2026-03-17T19:12:30.000Z",
-            result: {
-              id: "subagent-result:turn-1:agent-1",
-              createdAt: "2026-03-17T19:12:30.000Z",
-              turnId: TurnId.make("turn-1"),
-              agentThreadId: "agent-1",
-              label: "Reviewer subagent",
-              nickname: "Heisenberg",
-              role: "reviewer",
-              objective: "Inspect timeline rendering",
-              body: "**Finding:** subagent output is visible.",
-              model: "gpt-5.5",
-              reasoningEffort: "medium",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-subagent-result-row="true"');
-    expect(markup).toContain('data-subagent-result-body="true"');
-    expect(markup).toContain('data-subagent-result-collapsible="false"');
-    expect(markup).toContain("Heisenberg");
-    expect(markup).toContain("Reviewer subagent");
-    expect(markup).toContain("Inspect timeline rendering");
-    expect(markup).toContain("subagent output is visible");
-    expect(markup).toContain("Subagent");
-    expect(markup).toContain('data-subagent-result-meta-chip="true"');
-    expect(markup).toContain("gpt-5.5");
-    expect(markup).toContain("medium");
-  });
-
-  it("renders live subagent commentary as a flat transient row", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
+        onOpenAgentsPanel={vi.fn()}
         timelineEntries={[
           {
             id: "subagent-live:turn-1:agent-1",
@@ -999,18 +959,40 @@ describe("MessagesTimeline", () => {
               reasoningEffort: "medium",
             },
           },
+          {
+            id: "subagent-result:turn-1:agent-1",
+            kind: "subagent-result",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            result: {
+              id: "subagent-result:turn-1:agent-1",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              turnId: TurnId.make("turn-1"),
+              agentThreadId: "agent-1",
+              label: "Reviewer subagent",
+              nickname: "Heisenberg",
+              role: "reviewer",
+              objective: "Inspect timeline rendering",
+              body: "## Findings\n\n**Finding:** subagent output is visible.",
+              model: "gpt-5.5",
+              reasoningEffort: "medium",
+            },
+          },
         ]}
       />,
     );
 
-    expect(markup).toContain('data-subagent-live-row="true"');
-    expect(markup).toContain('data-subagent-live-body="true"');
+    expect(markup).toContain('data-subagent-receipt-row="true"');
+    expect(markup).toContain('data-subagent-receipt-open="true"');
     expect(markup).toContain("Heisenberg");
+    expect(markup).toContain("Findings");
     expect(markup).toContain("Subagent");
-    expect(markup).toContain("Working");
-    expect(markup).toContain("Live commentary");
-    expect(markup).toContain("tracing the Codex child events now");
-    expect(markup).not.toContain('data-subagent-result-row="true"');
+    expect(markup).toContain("gpt-5.5");
+    // The report itself stays in the rail: no card, no inlined body.
+    expect(markup).not.toContain('data-subagent-result-body="true"');
+    expect(markup).not.toContain("subagent output is visible");
+    // Nothing renders for a still-running agent.
+    expect(markup).not.toContain('data-subagent-live-row="true"');
+    expect(markup).not.toContain("tracing the Codex child events now");
   });
 
   it("labels a completed spawn operation as spawned rather than finished", async () => {
@@ -1040,42 +1022,6 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Spawned subagent");
     expect(markup).not.toContain("Finished subagent task");
-  });
-
-  it("collapses very long subagent results and keeps meta chips in the footer", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const longBody = Array.from({ length: 40 }, (_, index) => `- finding ${index}`).join("\n");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "subagent-result:turn-1:agent-long",
-            kind: "subagent-result",
-            createdAt: "2026-03-17T19:12:30.000Z",
-            result: {
-              id: "subagent-result:turn-1:agent-long",
-              createdAt: "2026-03-17T19:12:30.000Z",
-              turnId: TurnId.make("turn-1"),
-              agentThreadId: "agent-long",
-              label: "Explore subagent",
-              role: "Explore",
-              objective: "Inventory Threadlines features",
-              body: longBody,
-              model: "claude-fable-5",
-              reasoningEffort: "high",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-subagent-result-collapsible="true"');
-    expect(markup).toContain('data-subagent-result-collapsed="true"');
-    expect(markup).toContain("Show full result");
-    expect(markup).toContain('data-subagent-result-meta-chip="true"');
-    expect(markup).toContain("claude-fable-5");
-    expect(markup).toContain("high");
   });
 
   it("marks agent response bodies without changing markdown rendering", async () => {

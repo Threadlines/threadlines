@@ -1027,59 +1027,6 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("expands truncated subagent result instructions when clicking the text", async () => {
-    const longObjective = [
-      "This is a UI preview task only.",
-      "Do not edit files or run destructive commands.",
-      "Please return a concise chat-style response with markdown formatting.",
-      "Include one heading, one bullet list, one inline-code example, and one file reference.",
-      "Keep the final instruction visible only after the clamped text expands.",
-    ].join(" ");
-    const screen = await renderTimeline(
-      <div style={{ width: 360 }}>
-        <MessagesTimeline
-          {...buildProps()}
-          timelineEntries={[buildSubagentResultTimelineEntry(longObjective)]}
-        />
-      </div>,
-    );
-
-    try {
-      await vi.waitFor(() => {
-        const objective = document.querySelector<HTMLElement>(
-          "[data-subagent-result-objective='true']",
-        );
-        expect(objective).not.toBeNull();
-        expect(objective?.tagName).toBe("BUTTON");
-        expect(objective?.getAttribute("data-subagent-result-objective-truncated")).toBe("true");
-        expect(objective?.getAttribute("aria-expanded")).toBe("false");
-        expect(objective?.className).toContain("line-clamp-2");
-      });
-
-      await page.getByRole("button", { name: "Expand subagent instructions" }).click();
-
-      await vi.waitFor(() => {
-        const objective = document.querySelector<HTMLElement>(
-          "[data-subagent-result-objective='true']",
-        );
-        expect(objective?.getAttribute("data-subagent-result-objective-expanded")).toBe("true");
-        expect(objective?.className).not.toContain("line-clamp-2");
-      });
-
-      await page.getByRole("button", { name: "Collapse subagent instructions" }).click();
-
-      await vi.waitFor(() => {
-        const objective = document.querySelector<HTMLElement>(
-          "[data-subagent-result-objective='true']",
-        );
-        expect(objective?.getAttribute("data-subagent-result-objective-expanded")).toBe("false");
-        expect(objective?.className).toContain("line-clamp-2");
-      });
-    } finally {
-      await screen.unmount();
-    }
-  });
-
   it("expands assistant changed-files trees from the header when the default is collapsed", async () => {
     const turnId = TurnId.make("turn-1");
     const assistantMessageId = MessageId.make("assistant-1");
@@ -1157,11 +1104,12 @@ describe("MessagesTimeline", () => {
   });
 
   it("summarizes the turn's subagents on the activity row and opens the panel from it", async () => {
-    const onOpenPanel = vi.fn();
+    const onOpenAgentsPanel = vi.fn();
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={buildOverflowingWorkTimelineEntries()}
+        onOpenAgentsPanel={onOpenAgentsPanel}
         turnAgents={{
           subagents: [
             buildTurnSubagent("agent-1", "running"),
@@ -1171,7 +1119,6 @@ describe("MessagesTimeline", () => {
             // A different turn's agent must not be counted on this row.
             { ...buildTurnSubagent("agent-5", "running"), turnId: TurnId.make("turn-other") },
           ],
-          onOpenPanel,
         }}
       />,
     );
@@ -1183,7 +1130,69 @@ describe("MessagesTimeline", () => {
       await expect.element(summary).toBeVisible();
 
       await summary.click();
-      expect(onOpenPanel).toHaveBeenCalledTimes(1);
+      expect(onOpenAgentsPanel).toHaveBeenCalledWith(null);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders a finished subagent as a one-line receipt that drills into it", async () => {
+    const onOpenAgentsPanel = vi.fn();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildSubagentResultTimelineEntry("Review the router wiring")]}
+        onOpenAgentsPanel={onOpenAgentsPanel}
+      />,
+    );
+
+    try {
+      const receipt = page.getByRole("button", { name: "Open Reviewer transcript" });
+      await expect.element(receipt).toBeVisible();
+      // A receipt, not a card: the full report stays in the rail.
+      expect(document.querySelector("[data-subagent-result-body='true']")).toBeNull();
+      expect(document.querySelector("[data-subagent-receipt-row='true']")?.textContent).toContain(
+        "Finding: subagent output is visible.",
+      );
+
+      await receipt.click();
+      expect(onOpenAgentsPanel).toHaveBeenCalledWith("agent-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a running subagent's commentary out of the conversation", async () => {
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "subagent-live:turn-1:agent-1",
+            kind: "subagent-live" as const,
+            createdAt: MESSAGE_CREATED_AT,
+            live: {
+              id: "subagent-live:turn-1:agent-1",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: TurnId.make("turn-1"),
+              agentThreadId: "agent-1",
+              label: "Reviewer subagent",
+              role: null,
+              objective: null,
+              body: "Halfway through the router sweep.",
+              model: null,
+              reasoningEffort: null,
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByText("Halfway through the router sweep."))
+        .not.toBeInTheDocument();
+      expect(document.querySelector("[data-subagent-live-row='true']")).toBeNull();
     } finally {
       await screen.unmount();
     }
