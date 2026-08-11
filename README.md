@@ -27,15 +27,21 @@ reconstructing context across tools.
   including their live state and stop controls.
 - **Durable, provider-flexible sessions.** Resume work after restarts and switch
   between Codex and Claude Code without losing the thread or working tree.
+- **Set up in minutes.** A first-run checklist installs the agent CLIs with one
+  click and signs you in without leaving the app.
+- **Your phone is a client.** Pair it with a QR code and check on running
+  threads from anywhere, against the desktop app or a self-hosted server.
+- **One usage picture across machines.** Token and cost dashboards read the
+  agents' own transcripts on every computer you run, merged into one view.
 
 ## Installation
 
-> [!WARNING]
-> Threadlines uses locally installed coding agents. Install and authenticate at
-> least one maintained provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
+> [!NOTE]
+> Threadlines drives locally installed coding agents:
+> [Codex CLI](https://developers.openai.com/codex/cli) and
+> [Claude Code](https://claude.com/product/claude-code). If they are missing,
+> the first-run setup installs them with one click and signs you in without
+> leaving the app. Installing them yourself beforehand works too.
 
 ### Desktop app
 
