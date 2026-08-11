@@ -58,6 +58,10 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
+      /** Agent lifecycle entries this group swallowed. Never rendered and never
+       *  counted, but kept so the group still exists on a turn that did nothing
+       *  but delegate: the turn's agent tracker and its duration hang off it. */
+      agentAnchorEntries: WorkLogEntry[];
       isLive: boolean;
       liveStartedAt: string | null;
     }
@@ -280,16 +284,21 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
-      const groupedEntries = [
-        settleSupersededRunningCommandEntry(timelineEntry.entry, supersededRunningCommandEntryIds),
-      ];
+      const groupedEntries: WorkLogEntry[] = [];
+      const agentAnchorEntries: WorkLogEntry[] = [];
+      const collect = (entry: Extract<TimelineEntry, { kind: "work" }>) => {
+        const settled = settleSupersededRunningCommandEntry(
+          entry.entry,
+          supersededRunningCommandEntryIds,
+        );
+        (isAgentLifecycleEntry(entry) ? agentAnchorEntries : groupedEntries).push(settled);
+      };
+      collect(timelineEntry);
       let cursor = index + 1;
       while (cursor < visibleTimelineEntries.length) {
         const nextEntry = visibleTimelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
-        groupedEntries.push(
-          settleSupersededRunningCommandEntry(nextEntry.entry, supersededRunningCommandEntryIds),
-        );
+        collect(nextEntry);
         cursor += 1;
       }
       nextRows.push({
@@ -297,6 +306,7 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         groupedEntries,
+        agentAnchorEntries,
         isLive: false,
         liveStartedAt: null,
       });
@@ -426,8 +436,9 @@ function isSubagentAttributedEntry(entry: TimelineEntry): boolean {
  * to run an agent, and the provider's own task stream for one. None of it is
  * work the conversation should narrate — the turn's tracker row says how many
  * agents ran, each finished agent files exactly one receipt, and the Agents tab
- * owns the detail. Dropping the entries here keeps them out of the expanded
- * activity list, the action count and the receipt's summary line at once.
+ * owns the detail. So the entries never render and never count, but they are not
+ * discarded either: they stay on the row as its anchor, because a turn that only
+ * delegated still has to carry that tracker.
  *
  * Both signals are payload-level, not label text: `collab_agent_tool_call` is
  * the item type every provider's agent tool call projects under (Codex's
@@ -454,8 +465,11 @@ function deriveVisibleTimelineEntries(input: {
   readonly isWorking: boolean;
   readonly activeTurnId?: TurnId | null;
 }): TimelineEntry[] {
+  // Agent lifecycle entries stay in this pass: they still count as concrete turn
+  // activity for the provider-lifecycle row's own visibility, and the grouping
+  // step below is what parks them out of sight.
   const timelineEntries = input.timelineEntries.filter(
-    (entry) => !isSubagentAttributedEntry(entry) && !isAgentLifecycleEntry(entry),
+    (entry) => !isSubagentAttributedEntry(entry),
   );
   const visibleByIndex = Array.from({ length: timelineEntries.length }, () => true);
   let hasLaterProviderLifecycle = false;
@@ -561,6 +575,12 @@ function markLatestLiveWorkRow(
   if (!lastRow || lastRow.kind !== "work") {
     return false;
   }
+  // An anchor-only group has no step to hang the live node on — it renders as the
+  // turn's agent tracker, not as a spine — so the standalone working row still
+  // has to carry the live node at the bottom.
+  if (lastRow.groupedEntries.length === 0) {
+    return false;
+  }
   // Reasoning and other lifecycle entries arrive without a turn id, so a tail
   // work group that carries no turn association is still treated as the live
   // one rather than handed off to a detached working row.
@@ -625,7 +645,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return (
         a.isLive === (b as typeof a).isLive &&
         a.liveStartedAt === (b as typeof a).liveStartedAt &&
-        Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries)
+        Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries) &&
+        Equal.equals(a.agentAnchorEntries, (b as typeof a).agentAnchorEntries)
       );
 
     case "message": {

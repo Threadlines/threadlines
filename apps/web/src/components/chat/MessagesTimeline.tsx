@@ -40,6 +40,8 @@ import {
   formatSubagentReceiptSummary,
   selectSubagentsForTurns,
   summarizeTurnAgents,
+  type LiveAgentStatusLine,
+  type TurnAgentSummary,
 } from "./agentsPanel.logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
 import { type ChatAttachment, type TurnDiffSummary } from "../../types";
@@ -2604,7 +2606,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
-  const { workspaceRoot, turnDiffSummaryByTurnId } = use(TimelineRowCtx);
+  const { workspaceRoot, turnDiffSummaryByTurnId, onOpenAgentsPanel } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const previousIsWorkingRef = useRef(isWorking);
@@ -2612,6 +2614,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
     [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
+  // The tracker and the duration belong to everything the turn did, including the
+  // agent lifecycle rows the group parked out of sight.
+  const trackedEntries = useMemo(
+    () => [...row.groupedEntries, ...row.agentAnchorEntries],
+    [row.agentAnchorEntries, row.groupedEntries],
+  );
+  const turnAgentTracker = useTurnAgentTracker(trackedEntries);
   const isLiveActivity = isWorking && row.isLive;
 
   useEffect(() => {
@@ -2622,6 +2631,30 @@ const WorkGroupSection = memo(function WorkGroupSection({
       setIsExpanded(false);
     }
   }, [isWorking]);
+
+  // A turn that only delegated has nothing to narrate and nothing to expand, but
+  // its tracker is the one inline signal that agents are running at all, so the
+  // row survives as the tracker alone. With no tracker to show there is no row.
+  if (groupedEntries.length === 0) {
+    // The tracker is the row's whole reason to exist here, and it is only useful
+    // when it can open the panel it summarizes.
+    if (turnAgentTracker.summary === null || !onOpenAgentsPanel) {
+      return null;
+    }
+    return (
+      <div data-work-activity-receipt="true" data-work-activity-anchor="true" style={spineStyle()}>
+        <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={false}>
+          <ActivityReceipt
+            entries={groupedEntries}
+            durationEntries={trackedEntries}
+            tracker={turnAgentTracker}
+            isExpanded={false}
+            onToggle={null}
+          />
+        </SpineRow>
+      </div>
+    );
+  }
 
   if (isLiveActivity) {
     return (
@@ -2680,6 +2713,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
       <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={isExpanded}>
         <ActivityReceipt
           entries={groupedEntries}
+          durationEntries={trackedEntries}
+          tracker={turnAgentTracker}
           isExpanded={isExpanded}
           onToggle={() => setIsExpanded((value) => !value)}
         />
@@ -2780,19 +2815,16 @@ function LiveTurnElapsedTimer({ createdAt }: { createdAt: string }) {
   );
 }
 
-function ActivityReceipt({
-  entries,
-  isExpanded,
-  onToggle,
-}: {
-  entries: ReadonlyArray<TimelineWorkEntry>;
-  isExpanded: boolean;
-  onToggle: () => void;
-}) {
-  const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
-  const summary = summarizeActivityReceipt(entries);
-  const actionCount = entries.length;
-  const duration = formatActivityDuration(entries);
+interface TurnAgentTracker {
+  readonly summary: TurnAgentSummary | null;
+  readonly liveStatus: LiveAgentStatusLine | null;
+}
+
+/** The turn's agents, resolved from whichever turns this activity group covers.
+ *  Derived once by the group so the receipt and the group's own render decision
+ *  cannot disagree about whether there is a tracker to show. */
+function useTurnAgentTracker(entries: ReadonlyArray<TimelineWorkEntry>): TurnAgentTracker {
+  const { turnAgents } = use(TimelineRowCtx);
   const turnIds = useMemo(
     () =>
       new Set(
@@ -2806,16 +2838,47 @@ function ActivityReceipt({
     () => (turnAgents ? selectSubagentsForTurns(turnAgents.subagents, turnIds) : []),
     [turnAgents, turnIds],
   );
-  const agentSummary = turnAgents ? summarizeTurnAgents(turnSubagents) : null;
-  const liveAgentStatus = formatLiveAgentStatusLine(turnSubagents);
+  return {
+    summary: turnAgents ? summarizeTurnAgents(turnSubagents) : null,
+    liveStatus: formatLiveAgentStatusLine(turnSubagents),
+  };
+}
+
+function ActivityReceipt({
+  entries,
+  durationEntries,
+  tracker,
+  isExpanded,
+  onToggle,
+}: {
+  entries: ReadonlyArray<TimelineWorkEntry>;
+  /** Everything the turn did, including the agent lifecycle rows the group hides.
+   *  Only the duration reads this; the count and the summary read `entries`. */
+  durationEntries: ReadonlyArray<TimelineWorkEntry>;
+  tracker: TurnAgentTracker;
+  isExpanded: boolean;
+  /** Null when the group has nothing to expand, which drops the toggle. */
+  onToggle: (() => void) | null;
+}) {
+  const { onOpenAgentsPanel } = use(TimelineRowCtx);
+  const summary = summarizeActivityReceipt(entries);
+  const actionCount = entries.length;
+  const duration = formatActivityDuration(durationEntries);
+  const { summary: agentSummary, liveStatus: liveAgentStatus } = tracker;
 
   return (
     <div className="flex min-w-0 items-start justify-between gap-3 py-1">
       <div className="min-w-0">
         <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-5 text-muted-foreground/80">
           <span className="font-medium text-foreground/75">Activity</span>
-          <span className="text-muted-foreground/35">·</span>
-          <span>{formatActivityCount(actionCount, "action", "actions")}</span>
+          {/* A turn that only delegated took no actions of its own, and "0
+              actions" would read as if nothing happened. */}
+          {actionCount > 0 ? (
+            <>
+              <span className="text-muted-foreground/35">·</span>
+              <span>{formatActivityCount(actionCount, "action", "actions")}</span>
+            </>
+          ) : null}
           {duration ? (
             <>
               <span className="text-muted-foreground/35">·</span>
@@ -2870,16 +2933,18 @@ function ActivityReceipt({
           <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
         ) : null}
       </div>
-      <button
-        type="button"
-        className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-        aria-expanded={isExpanded}
-        aria-label={isExpanded ? "Hide activity" : "Show activity"}
-        data-activity-transcript-toggle="true"
-        onClick={onToggle}
-      >
-        {isExpanded ? "Hide activity" : "Show activity"}
-      </button>
+      {onToggle ? (
+        <button
+          type="button"
+          className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? "Hide activity" : "Show activity"}
+          data-activity-transcript-toggle="true"
+          onClick={onToggle}
+        >
+          {isExpanded ? "Hide activity" : "Show activity"}
+        </button>
+      ) : null}
     </div>
   );
 }

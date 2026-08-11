@@ -1136,6 +1136,61 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("keeps the tracker row on a turn that only delegated, with no count and nothing to expand", async () => {
+    const onOpenAgentsPanel = vi.fn();
+    // Every entry in the turn is agent lifecycle plumbing, so the conversation
+    // has nothing of the main model's to narrate. The tracker still has to be
+    // here: it is the only inline sign that two agents ran.
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={["spawnAgent", "wait"].map((tool, index) => ({
+          id: `entry-collab-${tool}`,
+          kind: "work" as const,
+          createdAt: `2026-04-13T12:00:0${index}.000Z`,
+          entry: {
+            id: `work-collab-${tool}`,
+            createdAt: `2026-04-13T12:00:0${index}.000Z`,
+            completedAt: `2026-04-13T12:00:1${index}.000Z`,
+            label: "Subagent task",
+            detail: tool,
+            tone: "tool" as const,
+            itemType: "collab_agent_tool_call" as const,
+            executionState: "completed" as const,
+            turnId: ACTIVITY_ROW_TURN_ID,
+          },
+        }))}
+        onOpenAgentsPanel={onOpenAgentsPanel}
+        turnAgents={{
+          subagents: [
+            buildTurnSubagent("agent-1", "completed"),
+            buildTurnSubagent("agent-2", "completed"),
+          ],
+        }}
+      />,
+    );
+
+    try {
+      const summary = page.getByRole("button", {
+        name: "2 subagents · 2 done. Open the agents panel.",
+      });
+      await expect.element(summary).toBeVisible();
+      await summary.click();
+      expect(onOpenAgentsPanel).toHaveBeenCalledWith(null);
+
+      const receipt = document.querySelector("[data-work-activity-receipt='true']");
+      expect(receipt).not.toBeNull();
+      expect(receipt?.getAttribute("data-work-activity-anchor")).toBe("true");
+      // No misleading count, and no lifecycle row anywhere in the chat.
+      expect(receipt?.textContent).not.toContain("actions");
+      expect(document.body.textContent).not.toContain("Subagent task");
+      // Nothing was hidden, so there is nothing to unhide.
+      expect(document.querySelector("[data-activity-transcript-toggle='true']")).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows one live agent status line under the tracker row and drops it when nothing is live", async () => {
     const onOpenAgentsPanel = vi.fn();
     const liveSubagent = (id: string, step: string, updatedAt: string) => ({
