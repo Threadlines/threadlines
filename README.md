@@ -49,6 +49,22 @@ auto-updates is verified through the updater manifest hashes.
 
 Then open a local project and start a thread with the provider you already use.
 
+### Self-host with Docker
+
+Run Threadlines on a VPS or home server and connect from any browser or your
+phone:
+
+```bash
+docker run -d --name threadlines --restart unless-stopped \
+  -p 3773:3773 \
+  -v threadlines-home:/home/threadlines \
+  -v /path/to/your/repos:/workspace \
+  ghcr.io/threadlines/threadlines:latest
+```
+
+See [docker/README.md](./docker/README.md) for the full guide, including phone
+pairing and safe remote access.
+
 ### Server CLI
 
 The npm package supports advanced CLI/server and remote-bootstrap usage:
@@ -83,21 +99,21 @@ The artifact is written to `release/`.
 
 ## Supported providers
 
-Codex and Claude Code are the maintained provider paths. Other inherited
-provider surfaces may remain visible while Threadlines narrows toward a smaller
-native desktop surface, but they are not actively supported.
+Codex and Claude Code are the actively maintained providers today. Drivers for
+other agents exist in the codebase, and support for more providers is open for
+the future as the product grows.
 
 ## Origins
 
-Threadlines began as a fork of [T3 Code](https://github.com/pingdotgg/t3code).
-It now has its own product direction, branding, desktop release pipeline,
-provider orchestration, source-control workflow, signing/notarization setup, and
-compatibility policy.
+Threadlines began as a fork of [T3 Code](https://github.com/pingdotgg/t3code)
+and has since grown its own product direction, branding, release pipeline,
+provider orchestration, and source-control workflow. Upstream remains a source
+of inspiration, and improvements flow back when they fit.
 
 The upstream Git history and MIT attribution are kept intact.
 
-See [docs/fork-separation.md](./docs/fork-separation.md) for the current origin
-and compatibility policy.
+See [docs/fork-separation.md](./docs/fork-separation.md) for the origins and
+compatibility policy.
 
 ## Configuration
 

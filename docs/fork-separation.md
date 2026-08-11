@@ -3,14 +3,17 @@
 Threadlines began as a fork of [T3 Code](https://github.com/pingdotgg/t3code).
 We keep that attribution and upstream history, while Threadlines owns the
 product direction, visible app identity, release lane, and compatibility policy.
+Upstream remains a source of inspiration, and improvements flow back where they
+fit.
 
 ## Current Direction
 
-- Threadlines is a local-first desktop app for macOS and Windows, focused on
-  Codex and Claude Code.
-- Codex and Claude are the maintained provider paths.
-- Remote, hosted-web, SSH, Tailscale, Cursor, and OpenCode surfaces are being
-  phased out unless they directly support the desktop workflow.
+- Threadlines is a workspace for coding agents that runs where you work: a
+  desktop app for macOS, Windows, and Linux, a self-hostable server (Docker,
+  VPS, homelab), a hosted web app, and phone access through device pairing.
+- Codex and Claude Code are the actively maintained providers. Drivers for
+  other agents remain in the codebase and support for more providers is open
+  for the future.
 - Compatibility should prevent old settings from disappearing during upgrades,
   but new user-facing guidance should use Threadlines names.
 
