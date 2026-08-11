@@ -1,16 +1,20 @@
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { XIcon } from "lucide-react";
-import { memo, useCallback, useMemo, useState, type CSSProperties } from "react";
+import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from "react";
 
 import type { SubagentProgressItem } from "../../session-logic";
 import { cn } from "~/lib/utils";
+import { selectAgentsPanelAgent, useSelectedAgentId } from "../../agentsPanelStore";
+import type { Icon } from "../Icons";
 import { Button } from "../ui/button";
 import { LiveNode } from "../ui/threadline";
+import { providerIconForDriverLabel } from "./providerIconUtils";
 import { SubagentInspector } from "./SubagentInspector";
 import { deriveSubagentDisplayDetails, type ThreadBackgroundRunItem } from "./threadActivity";
 import {
   buildAgentBranches,
   formatAgentsHeaderMeta,
+  hasRunningAgentActivity,
   type AgentBranch,
   type AgentBranchStatus,
 } from "./agentsPanel.logic";
@@ -20,10 +24,13 @@ export interface AgentsPanelProps {
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
-  /** Drives the trunk hue and the provenance chip, e.g. `codex`. */
+  /** Drives the trunk hue, the branch glyphs and the provenance chip, e.g. `codex`. */
   providerLabel?: string | null | undefined;
   /** Working directory, used to resolve file references in agent prose. */
   threadCwd?: string | null | undefined;
+  /** The rail's tab row, rendered in place of the panel's own title. Absent
+   *  when the rail has only this one tab, which keeps the plain title. */
+  titleSlot?: ReactNode;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onClose?: (() => void) | undefined;
@@ -70,10 +77,14 @@ function BranchNode({ status }: { status: AgentBranchStatus }) {
 
 function BranchRow({
   branch,
+  providerGlyph: ProviderGlyph,
   onSelect,
   onStop,
 }: {
   branch: AgentBranch;
+  /** The thread provider's mark, drawn ahead of a spawned agent's name. Runs
+   *  are not the provider's own work, so they keep their text tag instead. */
+  providerGlyph: Icon | null;
   onSelect: (branch: AgentBranch) => void;
   onStop: (branch: AgentBranch) => void;
 }) {
@@ -92,6 +103,14 @@ function BranchRow({
       </span>
       <span className="min-w-0">
         <span className="flex min-w-0 items-baseline gap-2">
+          {branch.kind === "subagent" && ProviderGlyph ? (
+            <span
+              className="translate-y-px shrink-0 text-muted-foreground/70"
+              data-agent-branch-provider="true"
+            >
+              <ProviderGlyph className="size-3" aria-hidden="true" />
+            </span>
+          ) : null}
           <span className="min-w-0 flex-1 truncate text-[13px] leading-5 font-medium text-foreground/90">
             {branch.name}
           </span>
@@ -193,18 +212,20 @@ export const AgentsPanel = memo(function AgentsPanel({
   backgroundRuns,
   providerLabel,
   threadCwd,
+  titleSlot,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
   onClose,
 }: AgentsPanelProps) {
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const selectedAgentId = useSelectedAgentId();
 
   const branches = useMemo(
     () => buildAgentBranches({ subagents, backgroundRuns, providerLabel }),
     [backgroundRuns, providerLabel, subagents],
   );
   const headerMeta = useMemo(() => formatAgentsHeaderMeta({ subagents }), [subagents]);
-  const anyRunning = branches.some((branch) => branch.status === "running");
+  const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
+  const anyRunning = hasRunningAgentActivity({ subagents, backgroundRuns });
   const selectedSubagent = subagents.find((item) => item.agentThreadId === selectedAgentId) ?? null;
 
   const handleSelect = useCallback(
@@ -216,7 +237,7 @@ export const AgentsPanel = memo(function AgentsPanel({
         return;
       }
       if (branch.item.agentThreadId) {
-        setSelectedAgentId(branch.item.agentThreadId);
+        selectAgentsPanelAgent(branch.item.agentThreadId);
       }
     },
     [onToggleBackgroundRunTerminal],
@@ -232,21 +253,28 @@ export const AgentsPanel = memo(function AgentsPanel({
   );
 
   const handleBack = useCallback(() => {
-    setSelectedAgentId(null);
+    selectAgentsPanelAgent(null);
   }, []);
 
-  if (selectedSubagent) {
+  const inspector = selectedSubagent ? (
+    <SubagentInspector
+      environmentId={environmentId}
+      threadId={threadId}
+      item={selectedSubagent}
+      details={deriveSubagentDisplayDetails(selectedSubagent)}
+      cwd={threadCwd ?? undefined}
+      dismissVariant="back"
+      onClose={handleBack}
+    />
+  ) : null;
+
+  // Without the rail's tab row there is nothing in the panel header worth
+  // keeping over a drill-in: the inspector's own header carries the agent's
+  // name and the way back, so it takes the whole panel as it always has.
+  if (inspector && !titleSlot) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-rail" data-agents-panel="drill-in">
-        <SubagentInspector
-          environmentId={environmentId}
-          threadId={threadId}
-          item={selectedSubagent}
-          details={deriveSubagentDisplayDetails(selectedSubagent)}
-          cwd={threadCwd ?? undefined}
-          dismissVariant="back"
-          onClose={handleBack}
-        />
+        {inspector}
       </div>
     );
   }
@@ -255,17 +283,21 @@ export const AgentsPanel = memo(function AgentsPanel({
     <section
       className="flex h-full min-h-0 flex-col bg-rail"
       aria-label="Agents"
-      data-agents-panel="tree"
+      data-agents-panel={inspector ? "drill-in" : "tree"}
     >
       <div className="drag-region shrink-0 border-b border-border">
         <div className="flex h-12 items-center gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-          {anyRunning ? <LiveNode className="size-1.5" /> : null}
-          <h2
-            aria-label="Agents"
-            className="min-w-0 truncate text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase"
-          >
-            Agents <span className="text-muted-foreground/35">·</span> this turn
-          </h2>
+          {titleSlot ?? (
+            <>
+              {anyRunning ? <LiveNode className="size-1.5" /> : null}
+              <h2
+                aria-label="Agents"
+                className="min-w-0 truncate text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase"
+              >
+                Agents <span className="text-muted-foreground/35">·</span> this turn
+              </h2>
+            </>
+          )}
           <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/55 tabular-nums">
             {headerMeta}
           </span>
@@ -277,7 +309,7 @@ export const AgentsPanel = memo(function AgentsPanel({
               variant="ghost"
               size="icon-xs"
               className="-mr-1 shrink-0"
-              aria-label="Close agents panel"
+              aria-label="Close panel"
               onClick={onClose}
             >
               <XIcon className="size-3.5" aria-hidden="true" />
@@ -286,37 +318,42 @@ export const AgentsPanel = memo(function AgentsPanel({
         </div>
       </div>
 
-      <div
-        className="min-h-0 flex-1 overflow-y-auto"
-        style={{ ["--agents-trunk"]: trunkColor(providerLabel) } as CSSProperties}
-      >
-        {branches.length === 0 ? (
-          <p
-            className="px-4 py-6 text-[12px] text-muted-foreground/55"
-            data-agents-panel-empty="true"
-          >
-            No agents on this turn.
-          </p>
-        ) : (
-          <div className="relative">
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute top-0 bottom-0 left-4 w-0.5 rounded-full"
-              style={TRUNK_STYLE}
-            />
-            <ul className="relative divide-y divide-border/60">
-              {branches.map((branch) => (
-                <BranchRow
-                  key={branch.key}
-                  branch={branch}
-                  onSelect={handleSelect}
-                  onStop={handleStop}
-                />
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
+      {inspector ? (
+        <div className="min-h-0 flex-1">{inspector}</div>
+      ) : (
+        <div
+          className="min-h-0 flex-1 overflow-y-auto"
+          style={{ ["--agents-trunk"]: trunkColor(providerLabel) } as CSSProperties}
+        >
+          {branches.length === 0 ? (
+            <p
+              className="px-4 py-6 text-[12px] text-muted-foreground/55"
+              data-agents-panel-empty="true"
+            >
+              No agents on this turn.
+            </p>
+          ) : (
+            <div className="relative">
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute top-0 bottom-0 left-4 w-0.5 rounded-full"
+                style={TRUNK_STYLE}
+              />
+              <ul className="relative divide-y divide-border/60">
+                {branches.map((branch) => (
+                  <BranchRow
+                    key={branch.key}
+                    branch={branch}
+                    providerGlyph={providerGlyph}
+                    onSelect={handleSelect}
+                    onStop={handleStop}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 });

@@ -28,13 +28,30 @@ export interface AgentsPanelSource {
 
 interface AgentsPanelStoreState {
   source: AgentsPanelSource | null;
+  /**
+   * The agent whose transcript the panel is drilled into. It lives here rather
+   * than inside the panel because the drill-in is reachable from outside it:
+   * a finished agent's receipt in the conversation opens the rail already
+   * pointed at that agent.
+   */
+  selectedAgentId: string | null;
   publishSource: (source: AgentsPanelSource | null) => void;
+  selectAgent: (agentId: string | null) => void;
 }
 
 export const useAgentsPanelStore = create<AgentsPanelStoreState>((set) => ({
   source: null,
+  selectedAgentId: null,
   publishSource: (source) => {
-    set({ source });
+    set((state) => ({
+      source,
+      // A drill-in belongs to the thread it was opened from; leaving the
+      // thread drops it rather than pointing the panel at a stale agent.
+      selectedAgentId: state.source?.threadId === source?.threadId ? state.selectedAgentId : null,
+    }));
+  },
+  selectAgent: (agentId) => {
+    set({ selectedAgentId: agentId });
   },
 }));
 
@@ -42,10 +59,18 @@ export function useAgentsPanelSource(): AgentsPanelSource | null {
   return useAgentsPanelStore((state) => state.source);
 }
 
+export function useSelectedAgentId(): string | null {
+  return useAgentsPanelStore((state) => state.selectedAgentId);
+}
+
 export function publishAgentsPanelSource(source: AgentsPanelSource | null): void {
   useAgentsPanelStore.getState().publishSource(source);
 }
 
+export function selectAgentsPanelAgent(agentId: string | null): void {
+  useAgentsPanelStore.getState().selectAgent(agentId);
+}
+
 export function resetAgentsPanelSourceForTests(): void {
-  useAgentsPanelStore.setState({ source: null });
+  useAgentsPanelStore.setState({ source: null, selectedAgentId: null });
 }

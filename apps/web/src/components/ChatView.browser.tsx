@@ -72,10 +72,7 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
-import {
-  RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
-  resetRightPanelStateMemoryForTests,
-} from "../rightPanelLayout";
+import { RIGHT_PANEL_RAIL_WIDTH, resetRightPanelStateMemoryForTests } from "../rightPanelLayout";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -2638,10 +2635,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const sourceControlToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
       expect(sourceControlToggle.disabled).toBe(false);
       expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
@@ -2673,6 +2668,135 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  /** The rail keeps source control mounted behind the Agents tab so its git
+   *  queries stay warm, so "showing" has to mean laid out, not just mounted. */
+  function visibleSourceControlPanel(): HTMLElement | null {
+    const panel = document.querySelector(
+      "[data-source-control-panel='true']",
+    ) as HTMLElement | null;
+    return panel && panel.getClientRects().length > 0 ? panel : null;
+  }
+
+  it("switches the rail between its Agents and Changes tabs", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-tabs" as MessageId,
+        targetText: "rail tabs",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+
+      // No memory yet, so the rail opens on Changes.
+      const changesTab = await waitForElement(
+        () => document.querySelector("[data-chat-rail-tab='sourceControl']") as HTMLElement | null,
+        "Unable to find the rail's Changes tab.",
+      );
+      expect(changesTab.getAttribute("aria-selected")).toBe("true");
+      expect(visibleSourceControlPanel()).not.toBeNull();
+      expect(document.querySelector("[data-agents-panel]")).toBeNull();
+
+      (document.querySelector("[data-chat-rail-tab='agents']") as HTMLElement).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ agents: "1" });
+          expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
+          // Source control stays mounted to keep its queries warm, but the
+          // Agents tab is the one on screen.
+          expect(visibleSourceControlPanel()).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      (document.querySelector("[data-chat-rail-tab='sourceControl']") as HTMLElement).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+          expect(visibleSourceControlPanel()).not.toBeNull();
+          expect(document.querySelector("[data-agents-panel]")).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Closing the rail from a tab closes the rail, rather than falling back
+      // to the tab that is not showing.
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-chat-rail-tabs='true']")).toBeNull();
+          expect(railToggle.hasAttribute("data-pressed")).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the rail's Agents tab as a sheet on phone widths", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-sheet" as MessageId,
+        targetText: "rail sheet",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+
+      const agentsTab = await waitForElement(
+        () => document.querySelector("[data-chat-rail-tab='agents']") as HTMLElement | null,
+        "Unable to find the rail's Agents tab.",
+      );
+      agentsTab.click();
+
+      const agentsPanel = await waitForElement(
+        () => document.querySelector("[data-agents-panel='tree']") as HTMLElement | null,
+        "The agents rail never opened on a phone width.",
+      );
+      // It has to be the overlay sheet, not the inline sidebar, at this width.
+      expect(agentsPanel.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+      await expect.element(page.getByText("No agents on this turn.")).toBeVisible();
+
+      // Closed and reopened, the rail comes back on Agents — the same
+      // closed-to-`agents=1` transition the activity chip performs, which is
+      // where the sheet used to fail to appear at all.
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-agents-panel]")).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ agents: "1" });
+          const reopened = document.querySelector("[data-agents-panel='tree']");
+          expect(reopened).not.toBeNull();
+          expect(reopened?.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("remembers a thread's source control panel across leaving and returning", async () => {
     const baseSnapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-source-control-memory" as MessageId,
@@ -2695,10 +2819,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const sourceControlToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
       sourceControlToggle.click();
       await vi.waitFor(
@@ -2707,7 +2829,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
-      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-source-control-panel='true']")).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
 
       // Sidebar-style navigation carries no search params, which used to reset
       // the panel. The other thread still starts closed; memory is per thread.
@@ -2720,7 +2847,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(mounted.router.state.location.pathname).toBe(
             `/${LOCAL_ENVIRONMENT_ID}/${secondThreadId}`,
           );
-          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+          expect(document.querySelector("[data-source-control-panel='true']")).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2731,7 +2858,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
       await vi.waitFor(
         () => {
-          expect(document.querySelector('h2[aria-label="Source Control"]')).not.toBeNull();
+          expect(document.querySelector("[data-source-control-panel='true']")).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2771,10 +2898,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const sourceControlToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
 
       expect(sourceControlToggle.disabled).toBe(false);
@@ -2818,10 +2943,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const sourceControlToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
 
       await vi.waitFor(
@@ -2847,11 +2970,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForLayout();
 
       expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
-      // Source control keeps the inline panel's fixed width on phones so a
-      // dismissible slice of the conversation remains visible.
-      expect(Math.round(sheetPopup?.getBoundingClientRect().width ?? 0)).toBe(
-        RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
-      );
+      // The rail overlays as a partial sheet on phones, so a dismissible slice
+      // of the conversation remains visible beside it.
+      const sheetWidth = Math.round(sheetPopup?.getBoundingClientRect().width ?? 0);
+      expect(sheetWidth).toBeLessThanOrEqual(RIGHT_PANEL_RAIL_WIDTH);
+      expect(sheetWidth).toBeLessThan(COMPACT_FOOTER_VIEWPORT.width);
     } finally {
       await mounted.cleanup();
     }

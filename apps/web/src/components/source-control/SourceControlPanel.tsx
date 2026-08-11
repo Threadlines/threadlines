@@ -231,9 +231,15 @@ interface SourceControlPanelProps {
   /**
    * Closes the containing right panel. Surfaced as an in-panel ✕ on phone
    * widths, where the sheet spans the full screen and the header toggle is
-   * easy to miss.
+   * easy to miss — and at every width once the panel is a rail tab, where the
+   * ✕ is the rail's own dismissal.
    */
   readonly onClose?: () => void;
+  /**
+   * The rail's tab row, rendered in place of the panel's own title. Absent
+   * when the panel is the whole right slot (drafts), which keeps the title.
+   */
+  readonly titleSlot?: ReactNode;
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
@@ -1989,6 +1995,7 @@ export function SourceControlPanel({
   onOpenDiff,
   onPrefetchDiff,
   onClose,
+  titleSlot,
 }: SourceControlPanelProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -4173,20 +4180,22 @@ export function SourceControlPanel({
   const sourceControlLinks = deriveSourceControlQuickLinks(status);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-rail">
+    <div className="flex h-full min-h-0 flex-col bg-rail" data-source-control-panel="true">
       <div className="drag-region shrink-0 border-b border-border">
         <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-            <h2
-              aria-label="Source Control"
-              className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70"
-              title="Source Control"
-            >
-              <span className="source-control-title-short">SC</span>
-              <span className="source-control-title-full">Source Control</span>
-            </h2>
-          </div>
+          {titleSlot ?? (
+            <div className="flex min-w-0 items-center gap-1.5">
+              <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+              <h2
+                aria-label="Source Control"
+                className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70"
+                title="Source Control"
+              >
+                <span className="source-control-title-short">SC</span>
+                <span className="source-control-title-full">Source Control</span>
+              </h2>
+            </div>
+          )}
           <div className="flex shrink-0 items-center gap-1">
             <Tooltip>
               <TooltipTrigger
@@ -4213,10 +4222,12 @@ export function SourceControlPanel({
             {onClose ? (
               <Button
                 type="button"
-                aria-label="Close source control panel"
+                aria-label={titleSlot ? "Close panel" : "Close source control panel"}
                 variant="ghost"
                 size="icon-xs"
-                className="sm:hidden"
+                // As a rail tab the ✕ is the panel's own dismissal, so it stays
+                // at every width; standalone it is the phone-only affordance.
+                className={cn(!titleSlot && "sm:hidden")}
                 onClick={onClose}
               >
                 <XIcon className="size-3.5" />

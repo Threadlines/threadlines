@@ -289,7 +289,7 @@ function DraftChatThreadRouteView() {
           routeKind="draft"
         />
       </SidebarInset>
-      <RightPanelSheet open={sourceControlOpen} onClose={closeRightPanel} size="sourceControl">
+      <RightPanelSheet open={sourceControlOpen} onClose={closeRightPanel} size="rail">
         {sourceControlPanel}
       </RightPanelSheet>
       <LazyFileViewerOverlay />

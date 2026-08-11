@@ -218,6 +218,40 @@ export function buildAgentBranches(input: {
     .map((entry) => entry.branch);
 }
 
+/**
+ * The one line a finished agent's receipt shows in the conversation: the first
+ * line of its result with the markdown that opens it stripped, so a report
+ * that starts with `## Findings` or `- Fixed the thing` reads as prose in a
+ * row that has no room for formatting.
+ */
+export function formatSubagentReceiptSummary(body: string): string | null {
+  for (const rawLine of body.split("\n")) {
+    const plain = rawLine
+      .trim()
+      .replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s+|\d+[.)]\s+)/u, "")
+      .replace(/[*_`]/gu, "")
+      .trim();
+    if (plain.length > 0) {
+      return plain;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether the rail has anything live to show right now. The panel's header
+ * node and the rail tab's node read from this so they never disagree.
+ */
+export function hasRunningAgentActivity(input: {
+  readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+}): boolean {
+  return (
+    input.subagents.some((item) => subagentBranchStatus(item.status) === "running") ||
+    input.backgroundRuns.some((run) => backgroundRunBranchStatus(run) === "running")
+  );
+}
+
 function parseTimestamp(value: string): number | null {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;

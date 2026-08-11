@@ -25,6 +25,7 @@ import {
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
+import { ChatRailTabs, type ChatRailTabDescriptor } from "../components/chat/ChatRailTabs";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -35,10 +36,13 @@ import {
 } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  rememberedRightPanelTab,
   useAgentsPanelOpen,
   useAutoHideRightPanelSheet,
   useSourceControlPanelOpen,
+  type RightPanelTab,
 } from "../rightPanelLayout";
+import { hasRunningAgentActivity } from "../components/chat/agentsPanel.logic";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
@@ -50,6 +54,14 @@ import {
   SourceControlPanel,
   type SourceControlProjectTarget,
 } from "../components/source-control/SourceControlPanel";
+
+// The rail can be opened before the chat column has published its turn state
+// (or on a thread with nothing running at all), so the agents tab renders from
+// these until a source for this thread arrives.
+const EMPTY_SUBAGENTS = [] as const;
+const EMPTY_BACKGROUND_RUNS = [] as const;
+const noopToggleTerminal = () => {};
+const noopStopRun = () => {};
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
@@ -259,6 +271,22 @@ function ChatThreadRouteView() {
       search: (previous) => closeAgentsPanelSearchParams(previous),
     });
   }, [navigate, threadRef]);
+  const openAgentsPanel = useCallback(() => {
+    if (!threadRef) {
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+      search: (previous) => ({
+        ...stripRightPanelSearchParams(previous),
+        agents: "1",
+        // Explicit, not just stripped: source control's remembered state (or
+        // its default-open setting) would otherwise reclaim the rail.
+        sourceControl: "0",
+      }),
+    });
+  }, [navigate, threadRef]);
   const sourceControlAutoHidden = useAutoHideRightPanelSheet({
     enabled: shouldUseDiffSheet,
     resetKey: currentThreadKey,
@@ -273,10 +301,16 @@ function ChatThreadRouteView() {
     blocked: diffOpen,
     onAutoHide: closeAgentsPanel,
   });
-  const agentsOpen = rawAgentsOpen && !agentsAutoHidden && agentsPanelSource !== null;
+  const agentsOpen = rawAgentsOpen && !agentsAutoHidden;
   const sourceControlOpen =
     rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatThread && !agentsOpen;
   const rightPanelOpen = diffOpen || sourceControlOpen || agentsOpen;
+  // A published source outlives the navigation for a frame or two, so the rail
+  // only trusts one that names the thread it is rendering.
+  const agentsSource =
+    agentsPanelSource && agentsPanelSource.threadId === threadRef?.threadId
+      ? agentsPanelSource
+      : null;
   // The slot's own dismissals (backdrop press, rail collapse) have to close
   // whichever panel is actually showing, or the URL and the slot disagree.
   const rightPanelCloseForLayout = useCallback(() => {
@@ -329,6 +363,41 @@ function ChatThreadRouteView() {
     },
     [markDiffOpened, navigate, queryClient, sourceControlTarget, threadRef],
   );
+
+  // Which tab the rail is showing, and which tabs it offers. General Chats
+  // have no source control at all, so there the rail is Agents alone — and a
+  // one-tab rail keeps the panel's own title instead of a tab row.
+  const activeRailTab: RightPanelTab = agentsOpen ? "agents" : "sourceControl";
+  const railTabs = useMemo<ReadonlyArray<ChatRailTabDescriptor>>(() => {
+    const agentsTab: ChatRailTabDescriptor = {
+      id: "agents",
+      label: "Agents",
+      live: agentsSource ? hasRunningAgentActivity(agentsSource) : false,
+    };
+    return isGeneralChatThread
+      ? [agentsTab]
+      : [agentsTab, { id: "sourceControl", label: "Changes" }];
+  }, [agentsSource, isGeneralChatThread]);
+  const selectRailTab = useCallback(
+    (tab: RightPanelTab) => {
+      if (tab === "agents") {
+        openAgentsPanel();
+        return;
+      }
+      openSourceControl();
+    },
+    [openAgentsPanel, openSourceControl],
+  );
+  // The rail handle (and the header toggle's route-side twin) reopens the rail
+  // the way this thread was left, falling back to Changes.
+  const openRail = useCallback(() => {
+    const remembered = rememberedRightPanelTab(currentThreadKey);
+    selectRailTab(isGeneralChatThread ? "agents" : (remembered ?? "sourceControl"));
+  }, [currentThreadKey, isGeneralChatThread, selectRailTab]);
+  const railTitleSlot =
+    railTabs.length > 1 ? (
+      <ChatRailTabs tabs={railTabs} activeTab={activeRailTab} onSelectTab={selectRailTab} />
+    ) : undefined;
 
   // Warm the lazy diff chunk while source control is open: a file click is
   // the most likely next action, and the Suspense skeleton reads as jank.
@@ -389,17 +458,20 @@ function ChatThreadRouteView() {
   const rightPanelContent =
     sourceControlOpen || diffOpen || agentsOpen ? (
       <>
-        {agentsOpen && agentsPanelSource ? (
+        {agentsOpen ? (
           <div className="flex h-full w-full min-w-0 flex-col">
             <AgentsPanel
-              environmentId={agentsPanelSource.environmentId}
-              threadId={agentsPanelSource.threadId}
-              subagents={agentsPanelSource.subagents}
-              backgroundRuns={agentsPanelSource.backgroundRuns}
-              providerLabel={agentsPanelSource.providerLabel}
-              threadCwd={agentsPanelSource.threadCwd}
-              onToggleBackgroundRunTerminal={agentsPanelSource.onToggleBackgroundRunTerminal}
-              onStopBackgroundRun={agentsPanelSource.onStopBackgroundRun}
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
+              backgroundRuns={agentsSource?.backgroundRuns ?? EMPTY_BACKGROUND_RUNS}
+              providerLabel={agentsSource?.providerLabel}
+              threadCwd={agentsSource?.threadCwd}
+              titleSlot={railTitleSlot}
+              onToggleBackgroundRunTerminal={
+                agentsSource?.onToggleBackgroundRunTerminal ?? noopToggleTerminal
+              }
+              onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
               onClose={closeAgentsPanel}
             />
           </div>
@@ -413,6 +485,7 @@ function ChatThreadRouteView() {
           <SourceControlPanel
             target={sourceControlTarget}
             activeThreadRef={threadRef}
+            titleSlot={railTitleSlot}
             onClose={closeRightPanel}
             onPrefetchDiff={prefetchWorkingTreeDiff}
             onOpenDiff={(filePath?: string) => {
@@ -453,9 +526,8 @@ function ChatThreadRouteView() {
         </SidebarInset>
         <ChatRightPanelInlineSidebar
           open={rightPanelOpen}
-          size={agentsOpen ? "agents" : "default"}
           onClose={rightPanelCloseForLayout}
-          onRequestOpen={openSourceControl}
+          onRequestOpen={openRail}
         >
           {rightPanelContent}
         </ChatRightPanelInlineSidebar>
@@ -477,7 +549,7 @@ function ChatThreadRouteView() {
       <RightPanelSheet
         open={rightPanelOpen}
         onClose={rightPanelCloseForLayout}
-        size={agentsOpen ? "agents" : sourceControlOpen && !diffOpen ? "sourceControl" : "default"}
+        size={diffOpen ? "default" : "rail"}
       >
         {rightPanelContent}
       </RightPanelSheet>

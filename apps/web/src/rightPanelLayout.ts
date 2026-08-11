@@ -21,7 +21,13 @@ const RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH = 6;
 export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH =
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH +
   (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0);
-export const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH}px`;
+// The rail is one draggable slot shared by both tabs, so it carries one width
+// and one storage key. The agents tree is the wider of the two contents (three
+// lines per branch), so it sets the default.
+export const RIGHT_PANEL_RAIL_WIDTH = 400;
+export const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${
+  RIGHT_PANEL_RAIL_WIDTH + (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0)
+}px`;
 export const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 
 // Both right-panel sheets start below the chat header (measured into
@@ -35,22 +41,10 @@ const RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME =
 // keeps the near-full 88vw sheet (disjoint `sm:max-[760px]:` so no cascade
 // ordering is relied on), and phones go full width.
 export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(42vw,28rem)] min-w-80 max-w-[28rem] sm:max-[760px]:w-[min(88vw,24rem)] sm:max-[760px]:min-w-0 max-sm:w-full max-sm:min-w-0 max-sm:max-w-none`;
-// Phones keep source control at the same fixed width as everywhere else so it
-// overlays as a partial sheet (matching the app sidebar's rendered mobile
-// width) with a slice of the conversation visible and tappable to dismiss.
-export const RIGHT_PANEL_SOURCE_CONTROL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[var(--right-panel-inline-min-width)] min-w-[var(--right-panel-inline-min-width)] max-w-[var(--right-panel-inline-min-width)]`;
-// The agents tree carries three lines per branch, so it needs more room than
-// the source control list: 400px on anything wide enough, and as much of the
-// viewport as fits below that.
-export const RIGHT_PANEL_AGENTS_WIDTH = 400;
-export const RIGHT_PANEL_AGENTS_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(92vw,var(--right-panel-agents-width))] max-w-[var(--right-panel-agents-width)]`;
-// Its own storage key: the agents tree and the source control list want
-// different widths, and sharing one key would make each resize fight the other.
-export const RIGHT_PANEL_AGENTS_INLINE_SIDEBAR_WIDTH_STORAGE_KEY =
-  "chat_right_panel_agents_sidebar_width";
-export const RIGHT_PANEL_AGENTS_INLINE_DEFAULT_WIDTH = `${
-  RIGHT_PANEL_AGENTS_WIDTH + (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0)
-}px`;
+// The rail overlays as a partial sheet: 400px where it fits, and as much of
+// the viewport as fits below that, so a slice of the conversation stays
+// visible and tappable to dismiss.
+export const RIGHT_PANEL_RAIL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(92vw,var(--right-panel-rail-width))] max-w-[var(--right-panel-rail-width)]`;
 export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";
 
@@ -98,7 +92,17 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
   }, []);
 }
 
-type RightPanelKey = "sourceControl" | "agents";
+/** The rail's two tabs. Also the key each tab's explicit URL state is filed
+ *  under, because a tab is exactly one panel. */
+export type RightPanelTab = "sourceControl" | "agents";
+
+interface RememberedRightPanelState {
+  readonly sourceControl?: "1" | "0";
+  readonly agents?: "1" | "0";
+  /** The tab the rail was last opened on, so the header's rail toggle can put
+   *  it back the way the user left it. */
+  readonly lastTab?: RightPanelTab;
+}
 
 /**
  * Last explicit state per thread, per panel. The URL only carries explicit
@@ -106,7 +110,19 @@ type RightPanelKey = "sourceControl" | "agents";
  * open panel silently closes on the A -> B -> A round trip. Session-scoped on
  * purpose: a fresh launch starts from the settings default again.
  */
-const rightPanelStateByThreadKey = new Map<string, Partial<Record<RightPanelKey, "1" | "0">>>();
+const rightPanelStateByThreadKey = new Map<string, RememberedRightPanelState>();
+
+/**
+ * Which tab the header's rail toggle should reopen for this thread. Null when
+ * the thread has never had the rail explicitly opened; callers fall back to
+ * Changes (or Agents where there is no source control).
+ */
+export function rememberedRightPanelTab(threadPanelStateKey: string | null): RightPanelTab | null {
+  if (!threadPanelStateKey) {
+    return null;
+  }
+  return rightPanelStateByThreadKey.get(threadPanelStateKey)?.lastTab ?? null;
+}
 
 /**
  * Memory key for a draft route's panel state, distinct from the
@@ -127,7 +143,7 @@ export function resetRightPanelStateMemoryForTests(): void {
  * written: a panel that merely defaulted open never poisons the memory.
  */
 function useRememberedRightPanelState(
-  panel: RightPanelKey,
+  panel: RightPanelTab,
   threadPanelStateKey: string | null,
   explicitState: "1" | "0" | undefined,
 ): "1" | "0" | undefined {
@@ -137,6 +153,9 @@ function useRememberedRightPanelState(
       rightPanelStateByThreadKey.set(threadPanelStateKey, {
         ...remembered,
         [panel]: explicitState,
+        // Only an open records the tab: closing the rail should not change
+        // which tab it reopens on.
+        ...(explicitState === "1" ? { lastTab: panel } : {}),
       });
     }
   }, [explicitState, panel, threadPanelStateKey]);

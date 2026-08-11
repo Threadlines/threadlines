@@ -123,11 +123,13 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   draftRightPanelStateKey,
+  rememberedRightPanelTab,
   useAgentsPanelOpen,
   useChatHeaderBottomVarRef,
   useSourceControlPanelOpen,
+  type RightPanelTab,
 } from "../rightPanelLayout";
-import { publishAgentsPanelSource } from "../agentsPanelStore";
+import { publishAgentsPanelSource, selectAgentsPanelAgent } from "../agentsPanelStore";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -1302,11 +1304,11 @@ export default function ChatView(props: ChatViewProps) {
   const agentsPanelOpen = useAgentsPanelOpen(rawSearch, rightPanelStateKey);
   const sourceControlOpen =
     useSourceControlPanelOpen(rawSearch, rightPanelStateKey) && !agentsPanelOpen;
-  // The diff panel is a drill-in of source control, so the header toggle
-  // treats the right panel as one unit: it stays pressed while a diff is
-  // open and pressing it closes the whole panel.
+  // The diff panel is a drill-in of the rail's Changes tab, so the header
+  // toggle treats the rail as one unit: it stays pressed while a diff is open
+  // and pressing it closes the whole rail.
   const diffPanelOpen = rawSearch.diff === "1";
-  const rightPanelEngaged = sourceControlOpen || diffPanelOpen;
+  const rightPanelEngaged = sourceControlOpen || diffPanelOpen || agentsPanelOpen;
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -2691,41 +2693,89 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThread, draftId, environmentId, navigate, routeKind, threadId]);
 
   /**
-   * The header's activity chip owns this. Opening takes the right-panel slot
-   * from source control; closing only clears the agents key, so the slot goes
-   * back to whatever source control state the thread already had.
+   * Opens the rail on one of its tabs. Opening one tab writes the other's
+   * explicit `0`, so the thread's remembered state never reclaims the slot
+   * behind the tab the user just picked.
+   */
+  const openRailTab = useCallback(
+    (tab: RightPanelTab) => {
+      if (!activeThread) {
+        return;
+      }
+      const nextSearch = (previous: Record<string, unknown>) => ({
+        ...stripRightPanelSearchParams(previous),
+        agents: tab === "agents" ? ("1" as const) : ("0" as const),
+        sourceControl: tab === "sourceControl" ? ("1" as const) : ("0" as const),
+      });
+      if (routeKind === "draft" && draftId) {
+        void navigate({
+          to: "/draft/$draftId",
+          params: buildDraftThreadRouteParams(draftId),
+          replace: true,
+          search: nextSearch,
+        });
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId,
+          threadId,
+        },
+        replace: true,
+        search: nextSearch,
+      });
+    },
+    [activeThread, draftId, environmentId, navigate, routeKind, threadId],
+  );
+
+  /**
+   * The header's activity chip owns this: it deep-links to the rail's Agents
+   * tab, and pressing it again closes the rail.
    */
   const onToggleAgentsPanel = useCallback(() => {
     if (!activeThread) {
       return;
     }
-    const nextSearch = agentsPanelOpen
-      ? (previous: Record<string, unknown>) => closeAgentsPanelSearchParams(previous)
-      : (previous: Record<string, unknown>) => ({
-          ...stripRightPanelSearchParams(previous),
-          agents: "1" as const,
+    if (agentsPanelOpen) {
+      if (routeKind === "draft" && draftId) {
+        void navigate({
+          to: "/draft/$draftId",
+          params: buildDraftThreadRouteParams(draftId),
+          replace: true,
+          search: (previous) => closeAgentsPanelSearchParams(previous),
         });
-    if (routeKind === "draft" && draftId) {
+        return;
+      }
       void navigate({
-        to: "/draft/$draftId",
-        params: buildDraftThreadRouteParams(draftId),
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId,
+          threadId,
+        },
         replace: true,
-        search: nextSearch,
+        search: (previous) => closeAgentsPanelSearchParams(previous),
       });
       return;
     }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId,
-      },
-      replace: true,
-      search: nextSearch,
-    });
-  }, [activeThread, agentsPanelOpen, draftId, environmentId, navigate, routeKind, threadId]);
+    openRailTab("agents");
+  }, [
+    activeThread,
+    agentsPanelOpen,
+    draftId,
+    environmentId,
+    navigate,
+    openRailTab,
+    routeKind,
+    threadId,
+  ]);
 
-  const onToggleSourceControl = useCallback(() => {
+  /**
+   * The header's one rail entry point. Opening puts the rail back on the tab
+   * this thread was last left on; a thread with no memory opens on Changes,
+   * and a thread with no source control at all opens on Agents.
+   */
+  const onToggleRail = useCallback(() => {
     if (!activeThread) {
       return;
     }
@@ -2733,43 +2783,20 @@ export default function ChatView(props: ChatViewProps) {
       closeRightPanelForRoute();
       return;
     }
-    if (routeKind === "draft" && draftId) {
-      void navigate({
-        to: "/draft/$draftId",
-        params: buildDraftThreadRouteParams(draftId),
-        replace: true,
-        search: (previous) => ({
-          ...stripRightPanelSearchParams(previous),
-          sourceControl: "1",
-          // Explicit, not just stripped: the agents panel's per-thread memory
-          // would otherwise reopen it and keep suppressing source control.
-          agents: "0",
-        }),
-      });
-      return;
-    }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId,
-      },
-      replace: true,
-      search: (previous) => ({
-        ...stripRightPanelSearchParams(previous),
-        sourceControl: "1",
-        agents: "0",
-      }),
-    });
+    // Drafts have no turn to show agents for, so their rail is Changes only.
+    const railHasAgentsTab = routeKind !== "draft";
+    const remembered = rememberedRightPanelTab(rightPanelStateKey);
+    const fallback: RightPanelTab = isGeneralChatThread ? "agents" : "sourceControl";
+    const tab = railHasAgentsTab ? (remembered ?? fallback) : "sourceControl";
+    openRailTab(tab);
   }, [
     activeThread,
     closeRightPanelForRoute,
-    draftId,
-    environmentId,
-    navigate,
+    isGeneralChatThread,
+    openRailTab,
     rightPanelEngaged,
+    rightPanelStateKey,
     routeKind,
-    threadId,
   ]);
 
   const envLocked = Boolean(
@@ -4300,7 +4327,7 @@ export default function ChatView(props: ChatViewProps) {
       if (command === "diff.toggle") {
         event.preventDefault();
         event.stopPropagation();
-        onToggleSourceControl();
+        onToggleRail();
         return;
       }
 
@@ -4333,7 +4360,7 @@ export default function ChatView(props: ChatViewProps) {
     runProjectScript,
     splitTerminal,
     keybindings,
-    onToggleSourceControl,
+    onToggleRail,
     toggleTerminalVisibility,
   ]);
 
@@ -6343,21 +6370,30 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, navigate],
   );
 
-  /** The turn activity row's agent summary, and the panel it opens. */
+  /** The turn activity row's agent summary. */
   const timelineTurnAgents = useMemo<TimelineTurnAgentsState | null>(() => {
     const subagents = subagentProgress?.items;
     if (!subagents || subagents.length === 0) {
       return null;
     }
-    return {
-      subagents,
-      onOpenPanel: () => {
-        if (!agentsPanelOpen) {
-          onToggleAgentsPanel();
-        }
-      },
-    };
-  }, [agentsPanelOpen, onToggleAgentsPanel, subagentProgress?.items]);
+    return { subagents };
+  }, [subagentProgress?.items]);
+
+  /**
+   * The conversation's way into the rail: the turn activity row opens the
+   * Agents tab on the turn, a finished agent's receipt opens it drilled into
+   * that agent. Selecting before navigating keeps a second receipt press
+   * working while the rail is already open.
+   */
+  const onOpenAgentsPanel = useCallback(
+    (agentThreadId: string | null) => {
+      selectAgentsPanelAgent(agentThreadId);
+      if (!agentsPanelOpen) {
+        openRailTab("agents");
+      }
+    },
+    [agentsPanelOpen, openRailTab],
+  );
 
   const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(
     () => ({
@@ -6428,8 +6464,8 @@ export default function ChatView(props: ChatViewProps) {
           terminalAvailable={activeProject !== undefined}
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
-          sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
-          sourceControlOpen={rightPanelEngaged && !isGeneralChatThread}
+          railToggleShortcutLabel={sourceControlPanelShortcutLabel}
+          railOpen={rightPanelEngaged}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}
@@ -6449,7 +6485,7 @@ export default function ChatView(props: ChatViewProps) {
           onToggleAgentsPanel={onToggleAgentsPanel}
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
-          onToggleSourceControl={onToggleSourceControl}
+          onToggleRail={onToggleRail}
           onContinueInProject={
             isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
               ? onContinueInProject
@@ -6543,6 +6579,7 @@ export default function ChatView(props: ChatViewProps) {
               planScrollTarget={planScrollTarget}
               proposedPlanState={timelineProposedPlanState}
               turnAgents={timelineTurnAgents}
+              onOpenAgentsPanel={onOpenAgentsPanel}
             />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom.

@@ -23,8 +23,8 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     terminalAvailable: true,
     terminalOpen: false,
     terminalToggleShortcutLabel: null,
-    sourceControlToggleShortcutLabel: null,
-    sourceControlOpen: false,
+    railToggleShortcutLabel: null,
+    railOpen: false,
     sourceControlAvailable: false,
     browserAvailable: true,
     browserOpen: false,
@@ -43,7 +43,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     onToggleAgentsPanel: vi.fn(),
     onOpenForkSourceThread: vi.fn(),
     onToggleTerminal: vi.fn(),
-    onToggleSourceControl: vi.fn(),
+    onToggleRail: vi.fn(),
     onToggleBrowser: vi.fn(),
     ...overrides,
   } satisfies ComponentProps<typeof ChatHeader>;
@@ -87,10 +87,10 @@ describe("ChatHeader", () => {
     expect(markup).toContain("cursor-default");
   });
 
-  it("shows the working-tree diffstat on the closed source control toggle", () => {
+  it("shows the working-tree diffstat on the closed rail toggle", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: false,
+      railOpen: false,
       workingTreeDiffStat: { insertions: 38, deletions: 12 },
     });
 
@@ -98,10 +98,10 @@ describe("ChatHeader", () => {
     expect(markup).toContain("−12");
   });
 
-  it("drops the diffstat once the panel is open and shows its own counts", () => {
+  it("drops the diffstat once the rail is open and shows its own counts", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: true,
+      railOpen: true,
       workingTreeDiffStat: { insertions: 38, deletions: 12 },
     });
 
@@ -109,20 +109,20 @@ describe("ChatHeader", () => {
     expect(markup).not.toContain("−12");
   });
 
-  it("shows the behind-remote count on the closed source control toggle", () => {
+  it("shows the behind-remote count on the closed rail toggle", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: false,
+      railOpen: false,
       remoteBehindCount: 2,
     });
 
     expect(markup).toContain("↓2");
   });
 
-  it("drops the behind-remote count once the panel is open", () => {
+  it("drops the behind-remote count once the rail is open", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: true,
+      railOpen: true,
       remoteBehindCount: 2,
     });
 

@@ -11,6 +11,7 @@ import {
   FolderOpenIcon,
   GitForkIcon,
   GlobeIcon,
+  PanelRightIcon,
   TerminalSquareIcon,
 } from "lucide-react";
 import { Badge } from "../ui/badge";
@@ -20,7 +21,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/too
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
-import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -48,23 +48,25 @@ interface ChatHeaderProps {
   terminalAvailable: boolean;
   terminalOpen: boolean;
   terminalToggleShortcutLabel: string | null;
-  sourceControlToggleShortcutLabel: string | null;
-  sourceControlOpen: boolean;
-  /** False for capability-gated threads (General Chats) even when a project name exists. */
+  railToggleShortcutLabel: string | null;
+  /** Whether the right rail is showing, on either of its tabs. */
+  railOpen: boolean;
+  /** False for capability-gated threads (General Chats) even when a project
+   *  name exists: the rail still opens, just without its Changes tab. */
   sourceControlAvailable: boolean;
   /** False where there is no project to preview, e.g. a general chat. */
   browserAvailable: boolean;
   browserOpen: boolean;
   /**
-   * Working-tree diffstat, surfaced on the closed source control toggle so the
-   * size of the pending change is legible without opening the panel. Null when
-   * the tree is clean or the status has not loaded.
+   * Working-tree diffstat, surfaced on the closed rail toggle so the size of
+   * the pending change is legible without opening the rail. Null when the tree
+   * is clean or the status has not loaded.
    */
   workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
   /**
-   * Commits the branch is behind its upstream, surfaced on the closed source
-   * control toggle as a pull-available hint. Null when there is nothing to
-   * pull or the status has not loaded.
+   * Commits the branch is behind its upstream, surfaced on the closed rail
+   * toggle as a pull-available hint. Null when there is nothing to pull or the
+   * status has not loaded.
    */
   remoteBehindCount: number | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
@@ -82,7 +84,7 @@ interface ChatHeaderProps {
   onToggleAgentsPanel: () => void;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
-  onToggleSourceControl: () => void;
+  onToggleRail: () => void;
   onToggleBrowser: () => void;
   /** Present only for General Chat threads that can continue into a project. */
   onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
@@ -125,8 +127,8 @@ export const ChatHeader = memo(function ChatHeader({
   terminalAvailable,
   terminalOpen,
   terminalToggleShortcutLabel,
-  sourceControlToggleShortcutLabel,
-  sourceControlOpen,
+  railToggleShortcutLabel,
+  railOpen,
   sourceControlAvailable,
   browserAvailable,
   browserOpen,
@@ -146,7 +148,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleAgentsPanel,
   onOpenForkSourceThread,
   onToggleTerminal,
-  onToggleSourceControl,
+  onToggleRail,
   onContinueInProject,
   continueInProjectDisabledReason,
 }: ChatHeaderProps) {
@@ -340,78 +342,72 @@ export const ChatHeader = memo(function ChatHeader({
                 <TooltipPopup side="bottom">Toggle browser preview</TooltipPopup>
               </Tooltip>
             ) : null}
-            {sourceControlAvailable || sourceControlOpen ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Toggle
-                      className={cn(
-                        "shrink-0",
-                        // With the counts alongside it, the control needs room
-                        // on both sides -- the icon otherwise sits against the
-                        // hover fill -- and less between them: the base gap is
-                        // sized for icons, not for a label that belongs to one.
-                        (workingTreeDiffStat !== null || remoteBehindCount !== null) &&
-                          !sourceControlOpen &&
-                          "gap-1 px-1.5",
-                      )}
-                      pressed={sourceControlOpen}
-                      onPressedChange={onToggleSourceControl}
-                      aria-label="Toggle source control panel"
-                      variant="outline"
-                      size="xs"
-                      disabled={!sourceControlAvailable && !sourceControlOpen}
-                    >
-                      <SourceControlIcon className="size-[11px]" />
-                      {/* Only while closed: once the panel is open it shows the
-                          per-file counts, and repeating the total is noise. */}
-                      {!sourceControlOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
-                        <span className="font-mono text-[10px] leading-none">
-                          {workingTreeDiffStat ? (
-                            <>
-                              <span className="text-success">
-                                +{workingTreeDiffStat.insertions}
-                              </span>
-                              <span className="ps-1 text-destructive">
-                                −{workingTreeDiffStat.deletions}
-                              </span>
-                            </>
-                          ) : null}
-                          {/* Deliberately hue-less: the arrow is the signal, and a
-                              third color next to the green/red counts would crowd
-                              an icon-sized control. */}
-                          {remoteBehindCount !== null ? (
-                            <span
-                              className={cn(
-                                "text-muted-foreground",
-                                workingTreeDiffStat !== null && "ps-1",
-                              )}
-                            >
-                              ↓{remoteBehindCount}
+            {/* One entry point for the whole rail: the tab row inside it picks
+                between the turn's agents and the thread's changes. */}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className={cn(
+                      "shrink-0",
+                      // With the counts alongside it, the control needs room
+                      // on both sides -- the icon otherwise sits against the
+                      // hover fill -- and less between them: the base gap is
+                      // sized for icons, not for a label that belongs to one.
+                      (workingTreeDiffStat !== null || remoteBehindCount !== null) &&
+                        !railOpen &&
+                        "gap-1 px-1.5",
+                    )}
+                    pressed={railOpen}
+                    onPressedChange={onToggleRail}
+                    aria-label="Toggle panel"
+                    variant="outline"
+                    size="xs"
+                  >
+                    <PanelRightIcon className="size-3" />
+                    {/* Only while closed: once the rail is open its Changes tab
+                        shows the per-file counts, and repeating the total is
+                        noise. */}
+                    {!railOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
+                      <span className="font-mono text-[10px] leading-none">
+                        {workingTreeDiffStat ? (
+                          <>
+                            <span className="text-success">+{workingTreeDiffStat.insertions}</span>
+                            <span className="ps-1 text-destructive">
+                              −{workingTreeDiffStat.deletions}
                             </span>
-                          ) : null}
-                        </span>
-                      ) : null}
-                    </Toggle>
-                  }
-                />
-                <TooltipPopup side="bottom">
-                  {!sourceControlAvailable && !sourceControlOpen
-                    ? "Source control is unavailable until this thread has an active project."
-                    : sourceControlToggleShortcutLabel
-                      ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
-                      : "Toggle source control panel"}
-                  {!sourceControlOpen && sourceControlAvailable && remoteBehindCount !== null ? (
-                    <div className="text-muted-foreground">
-                      {remoteBehindCount === 1
-                        ? "1 commit behind the remote."
-                        : `${remoteBehindCount} commits behind the remote.`}{" "}
-                      Pull from the source control panel.
-                    </div>
-                  ) : null}
-                </TooltipPopup>
-              </Tooltip>
-            ) : null}
+                          </>
+                        ) : null}
+                        {/* Deliberately hue-less: the arrow is the signal, and a
+                            third color next to the green/red counts would crowd
+                            an icon-sized control. */}
+                        {remoteBehindCount !== null ? (
+                          <span
+                            className={cn(
+                              "text-muted-foreground",
+                              workingTreeDiffStat !== null && "ps-1",
+                            )}
+                          >
+                            ↓{remoteBehindCount}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                  </Toggle>
+                }
+              />
+              <TooltipPopup side="bottom">
+                {railToggleShortcutLabel ? `Panel (${railToggleShortcutLabel})` : "Panel"}
+                {!railOpen && sourceControlAvailable && remoteBehindCount !== null ? (
+                  <div className="text-muted-foreground">
+                    {remoteBehindCount === 1
+                      ? "1 commit behind the remote."
+                      : `${remoteBehindCount} commits behind the remote.`}{" "}
+                    Pull from the Changes tab.
+                  </div>
+                ) : null}
+              </TooltipPopup>
+            </Tooltip>
           </Group>
         </div>
       </div>

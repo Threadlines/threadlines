@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { render } from "vitest-browser-react";
 
 import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
+import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
+import { ChatRailTabs } from "./ChatRailTabs";
 import { ThreadActivityChip } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
@@ -80,6 +82,9 @@ function renderPanel(
 
 describe("AgentsPanel", () => {
   beforeEach(() => {
+    // The drill-in selection is shared module state now, so each case starts
+    // from the tree rather than whatever the last one drilled into.
+    resetAgentsPanelSourceForTests();
     transcriptRpcMock.mockReset();
     transcriptRpcMock.mockResolvedValue({
       entries: [{ role: "assistant", text: "Walked the route files.", toolUses: [] }],
@@ -238,6 +243,60 @@ describe("AgentsPanel", () => {
 
     try {
       await expect.element(page.getByText("No agents on this turn.")).toBeVisible();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("marks a spawned agent with the thread provider's glyph but leaves runs their tag", async () => {
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+      backgroundRuns: [TERMINAL_RUN],
+      providerLabel: "claudeAgent",
+    });
+
+    try {
+      await expect.element(page.getByText("Router sweep")).toBeVisible();
+
+      const rows = [...document.querySelectorAll("[data-agent-branch='true']")];
+      const subagentRow = rows.find(
+        (row) => row.getAttribute("data-agent-branch-kind") === "subagent",
+      );
+      const runRow = rows.find((row) => row.getAttribute("data-agent-branch-kind") === "run");
+      expect(subagentRow?.querySelector("[data-agent-branch-provider='true'] svg")).not.toBeNull();
+      expect(runRow?.querySelector("[data-agent-branch-provider='true']")).toBeNull();
+      expect(runRow?.querySelector("[data-agent-branch-tag='true']")?.textContent).toBe("terminal");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps the rail's tab row above a drilled-in transcript", async () => {
+    const onSelectTab = vi.fn();
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+      titleSlot: (
+        <ChatRailTabs
+          tabs={[
+            { id: "agents", label: "Agents" },
+            { id: "sourceControl", label: "Changes" },
+          ]}
+          activeTab="agents"
+          onSelectTab={onSelectTab}
+        />
+      ),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+      expect(document.querySelector("[data-agents-panel='drill-in']")).not.toBeNull();
+
+      // The tabs stay reachable from inside the transcript.
+      const changesTab = page.getByRole("tab", { name: "Changes" });
+      await expect.element(changesTab).toBeVisible();
+      await changesTab.click();
+      expect(onSelectTab).toHaveBeenCalledWith("sourceControl");
     } finally {
       await mounted.unmount();
     }

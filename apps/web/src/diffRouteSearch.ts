@@ -108,22 +108,27 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
   } as Omit<T, RightPanelSearchKey> & ClearedRightPanelSearchParams;
 }
 
+/** Closing the rail from its Changes tab (or from the diff drill-in). Both
+ *  tabs are recorded closed so no remembered state reopens the slot. */
 export function closeRightPanelSearchParams<T extends Record<string, unknown>>(params: T) {
   return {
     ...stripRightPanelSearchParams(params),
     sourceControl: "0" as const,
+    agents: "0" as const,
   };
 }
 
 /**
- * Closing the agents panel only records that the agents panel is closed. The
- * slot then falls back to whatever source control would show on its own, which
- * is the state the thread was in before the panel was opened.
+ * Closing the rail from its Agents tab. Both tabs are recorded closed: the
+ * dismissal means "close the rail", not "fall back to the other tab", and
+ * without the explicit source control `0` the thread's remembered state (or
+ * the default-open setting) would reopen the rail on Changes straight away.
  */
 export function closeAgentsPanelSearchParams<T extends Record<string, unknown>>(params: T) {
   return {
     ...stripRightPanelSearchParams(params),
     agents: "0" as const,
+    sourceControl: "0" as const,
   };
 }
 

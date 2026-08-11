@@ -7,6 +7,19 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
   [ProviderDriverKind.make("claudeAgent")]: ClaudeAI,
 };
 
+/**
+ * The provider glyph for a raw driver label off the wire. Surfaces that carry
+ * a plain string (thread telemetry, the agents rail) go through this instead
+ * of branding the value, so an unknown driver just draws no glyph.
+ */
+export function providerIconForDriverLabel(label: string | null | undefined): Icon | null {
+  const trimmed = label?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return PROVIDER_ICON_BY_PROVIDER[trimmed as ProviderDriverKind] ?? null;
+}
+
 function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
   value: ProviderDriverKind;
   label: string;
