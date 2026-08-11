@@ -436,6 +436,7 @@ function ChatThreadRouteView() {
             backgroundRuns={agentsSource?.backgroundRuns ?? EMPTY_BACKGROUND_RUNS}
             history={agentsSource?.history ?? EMPTY_SUBAGENT_HISTORY}
             providerLabel={agentsSource?.providerLabel}
+            turnInFlight={agentsSource?.turnInFlight ?? false}
             threadCwd={agentsSource?.threadCwd}
             embedded
             onToggleBackgroundRunTerminal={

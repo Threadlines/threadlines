@@ -104,6 +104,10 @@ export interface WorkLogEntry {
   images?: ReadonlyArray<WorkLogImagePreview>;
   tone: "thinking" | "tool" | "info" | "warning" | "error";
   toolTitle?: string;
+  /** The projected activity kind this row was derived from. Every derived entry
+   *  carries one; it is optional here only so hand-built entries (tests,
+   *  synthesized summary rows) do not have to invent an activity. */
+  activityKind?: OrchestrationThreadActivity["kind"];
   itemType?: ToolLifecycleItemType;
   /** Whether a subagent tool row creates an agent or only coordinates one.
    *  Coordination calls stay in the transcript without inflating delegation
@@ -995,6 +999,82 @@ export function deriveForkContextEntries(
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+interface TurnModelSelection {
+  readonly model: string | null;
+  readonly reasoningEffort: string | null;
+}
+
+/** Effort rides in the selection's option list rather than a named field, and
+ *  the id differs by provider family (`reasoningEffort` for Codex/Claude,
+ *  `effort` for the legacy shape still stored on older threads). */
+function readSelectionReasoningEffort(options: unknown): string | null {
+  if (!Array.isArray(options)) {
+    return null;
+  }
+  for (const option of options) {
+    const record = asRecord(option);
+    const id = asTrimmedString(record?.id);
+    if (id === "reasoningEffort" || id === "effort") {
+      const value = asTrimmedString(record?.value);
+      if (value !== null) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * What each turn was dispatched with, keyed by turn.
+ *
+ * A spawned agent inherits the parent turn's model and effort unless the spawn
+ * overrode them, and only Codex's `spawnAgent` item states an override. Its
+ * other agent lifecycle items — `wait`, `sendInput`, `closeAgent`, and the
+ * `subAgentActivity` spawn rows — report `model: null`, so a Codex child would
+ * otherwise have no model or effort to show. The turn lifecycle activities
+ * carry the dispatched selection for every turn, which is exactly what the
+ * child inherited.
+ */
+function collectTurnModelSelections(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<TurnId, TurnModelSelection> {
+  const byTurnId = new Map<TurnId, TurnModelSelection>();
+  for (const activity of activities) {
+    const turnId = activity.turnId;
+    if (turnId === null || turnId === undefined) {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    if (payload === null) {
+      continue;
+    }
+    // `provider.turn.preparing` always carries the selection the app dispatched;
+    // `provider.turn.started` carries what the provider itself reported, which
+    // only some drivers populate but which is the more authoritative of the two.
+    const selection =
+      activity.kind === "provider.turn.preparing"
+        ? asRecord(payload.modelSelection)
+        : activity.kind === "provider.turn.started"
+          ? payload
+          : null;
+    if (selection === null) {
+      continue;
+    }
+    const model = asTrimmedString(selection.model);
+    const reasoningEffort =
+      readSelectionReasoningEffort(selection.options) ?? asTrimmedString(selection.effort);
+    if (model === null && reasoningEffort === null) {
+      continue;
+    }
+    const previous = byTurnId.get(turnId);
+    byTurnId.set(turnId, {
+      model: model ?? previous?.model ?? null,
+      reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
+    });
+  }
+  return byTurnId;
+}
+
 function collectSubagentActivityRecords(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   options: { latestTurnId?: TurnId | null | undefined },
@@ -1009,6 +1089,7 @@ function collectSubagentActivityRecords(
   // front and merged into the record the spawning tool call builds.
   const telemetryByToolUseId = new Map<string, SubagentTelemetry>();
   const activityTelemetryByAgentId = collectSubagentActivityTelemetry(sortedActivities);
+  const turnModelSelections = collectTurnModelSelections(sortedActivities);
   const taskIdByToolUseId = new Map<string, string>();
   const toolUseIdByTaskId = new Map<string, string>();
   for (const activity of sortedActivities) {
@@ -1173,6 +1254,11 @@ function collectSubagentActivityRecords(
             ? (asTrimmedString(data?.subagentLiveTextAt) ?? activity.createdAt)
             : (previous?.liveBodyUpdatedAt ?? null);
 
+      const turnId = activity.turnId ?? previous?.turnId ?? null;
+      // What the spawn asked for always wins; the turn's own selection is the
+      // floor for providers that only state a model when it was overridden.
+      const inherited = turnId === null ? undefined : turnModelSelections.get(turnId);
+
       byAgentId.set(agentId, {
         id: agentId,
         agentThreadId: pendingAgent ? null : agentId,
@@ -1182,7 +1268,7 @@ function collectSubagentActivityRecords(
         agentPath: pathMetadata?.agentPath ?? null,
         parentAgentPath: pathMetadata?.parentAgentPath ?? null,
         treeDepth: pathMetadata?.treeDepth ?? 0,
-        turnId: activity.turnId ?? previous?.turnId ?? null,
+        turnId,
         label,
         ...(nickname ? { nickname } : {}),
         role,
@@ -1190,8 +1276,15 @@ function collectSubagentActivityRecords(
         status,
         statusLabel: subagentProgressStatusLabel(status),
         resolvedModel: resolvedModel ?? previous?.resolvedModel ?? null,
-        model: resolvedModel ?? previous?.resolvedModel ?? model ?? previous?.model ?? null,
-        reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
+        model:
+          resolvedModel ??
+          previous?.resolvedModel ??
+          model ??
+          previous?.model ??
+          inherited?.model ??
+          null,
+        reasoningEffort:
+          reasoningEffort ?? previous?.reasoningEffort ?? inherited?.reasoningEffort ?? null,
         liveBody,
         liveBodyUpdatedAt,
         // Claude supplies a dedicated task stream. Codex child work arrives as

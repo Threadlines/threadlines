@@ -3328,6 +3328,7 @@ export default function ChatView(props: ChatViewProps) {
       backgroundRuns,
       history: subagentHistory,
       providerLabel: activeProviderDriver,
+      turnInFlight: activeTurnInProgress,
       threadCwd: gitCwd,
       onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
       onStopBackgroundRun: stopBackgroundRun,
@@ -3335,6 +3336,7 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeProviderDriver,
     activeThreadId,
+    activeTurnInProgress,
     backgroundRuns,
     environmentId,
     gitCwd,

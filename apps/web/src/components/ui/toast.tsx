@@ -655,9 +655,12 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           // Vertical positioning
           "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
           "data-[position*=bottom]:bottom-(--toast-inset)",
-          // Horizontal positioning
+          // Horizontal positioning. Right-anchored toasts sit beside the open
+          // right panel rather than on top of it: the panel publishes its width
+          // as `--right-panel-inset` (0px when closed) because this viewport is
+          // fixed to the viewport and the layout cannot push it aside.
           "data-[position*=left]:left-(--toast-inset)",
-          "data-[position*=right]:right-(--toast-inset)",
+          "data-[position*=right]:right-[calc(var(--toast-inset)+var(--right-panel-inset,0px))]",
           "data-[position*=center]:-translate-x-1/2 data-[position*=center]:left-1/2",
         )}
         data-position={position}

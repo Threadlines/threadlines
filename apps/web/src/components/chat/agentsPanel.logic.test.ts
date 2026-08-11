@@ -245,6 +245,33 @@ describe("buildAgentsPanelView", () => {
     expect(view.earlier[0]?.output).toBeNull();
   });
 
+  it("still names the model and effort for a child with no token totals", () => {
+    // Codex reports no per-child usage, so a Codex history row has to read as
+    // model, effort and age rather than dropping to just an age.
+    const view = buildAgentsPanelView({
+      subagents: [],
+      backgroundRuns: [],
+      history: [
+        historyOf(
+          buildSubagent({
+            id: "codex-child",
+            agentThreadId: "codex-child",
+            status: "completed",
+            statusLabel: "Completed",
+            model: "gpt-5.6-sol",
+            reasoningEffort: "high",
+            telemetry: null,
+            updatedAt: "2026-08-11T10:06:00.000Z",
+          }),
+          "50 .tsx files directly in apps/web/src/components.",
+        ),
+      ],
+      nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
+    });
+
+    expect(view.earlier[0]?.meta).toEqual(["gpt-5.6-sol", "high", "6m ago"]);
+  });
+
   it("orders the history newest first", () => {
     const view = buildAgentsPanelView({
       subagents: [],

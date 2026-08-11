@@ -30,6 +30,10 @@ export interface AgentsPanelProps {
   history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
   /** Drives the trunk hue, the branch glyphs and the provenance chip, e.g. `codex`. */
   providerLabel?: string | null | undefined;
+  /** Whether a turn is running right now. Only changes the empty state: a turn
+   *  that has not reached the provider yet may still spawn agents, so the panel
+   *  says it is waiting instead of saying the thread has never run one. */
+  turnInFlight?: boolean;
   /** Working directory, used to resolve file references in agent prose. */
   threadCwd?: string | null | undefined;
   /** Set when the panel renders inside the sidebar's tab strip, which already
@@ -216,6 +220,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   backgroundRuns,
   history,
   providerLabel,
+  turnInFlight = false,
   threadCwd,
   embedded = false,
   onToggleBackgroundRunTerminal,
@@ -342,8 +347,11 @@ export const AgentsPanel = memo(function AgentsPanel({
           <p
             className="px-4 py-6 text-[12px] text-muted-foreground/55"
             data-agents-panel-empty="true"
+            data-agents-panel-empty-state={turnInFlight ? "waiting" : "never-ran"}
           >
-            No agents yet. Subagents and background runs on this thread will appear here.
+            {turnInFlight
+              ? "Waiting on the turn. Agents will appear here when the model spawns them."
+              : "No agents yet. Subagents and background runs on this thread will appear here."}
           </p>
         ) : (
           <div className="relative">

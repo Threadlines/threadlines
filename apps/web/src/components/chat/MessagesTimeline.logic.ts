@@ -421,13 +421,41 @@ function isSubagentAttributedEntry(entry: TimelineEntry): boolean {
   return entry.kind === "work" && entry.entry.sourceAgentThreadId !== undefined;
 }
 
+/**
+ * Agent lifecycle plumbing: the spawn/poll/close tool calls the main model makes
+ * to run an agent, and the provider's own task stream for one. None of it is
+ * work the conversation should narrate — the turn's tracker row says how many
+ * agents ran, each finished agent files exactly one receipt, and the Agents tab
+ * owns the detail. Dropping the entries here keeps them out of the expanded
+ * activity list, the action count and the receipt's summary line at once.
+ *
+ * Both signals are payload-level, not label text: `collab_agent_tool_call` is
+ * the item type every provider's agent tool call projects under (Codex's
+ * `spawnAgent`/`wait`/`sendInput`/`closeAgent`, Claude's `Agent`/`Task`), and a
+ * task activity is only an agent's when it carries that agent's identity —
+ * Claude's background bash tasks share the activity kinds and stay.
+ */
+function isAgentLifecycleEntry(entry: TimelineEntry): boolean {
+  if (entry.kind !== "work") {
+    return false;
+  }
+  const { itemType, activityKind, subagentTask } = entry.entry;
+  if (itemType === "collab_agent_tool_call") {
+    return true;
+  }
+  return (
+    (activityKind === "task.progress" || activityKind === "task.completed") &&
+    subagentTask !== undefined
+  );
+}
+
 function deriveVisibleTimelineEntries(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly isWorking: boolean;
   readonly activeTurnId?: TurnId | null;
 }): TimelineEntry[] {
   const timelineEntries = input.timelineEntries.filter(
-    (entry) => !isSubagentAttributedEntry(entry),
+    (entry) => !isSubagentAttributedEntry(entry) && !isAgentLifecycleEntry(entry),
   );
   const visibleByIndex = Array.from({ length: timelineEntries.length }, () => true);
   let hasLaterProviderLifecycle = false;

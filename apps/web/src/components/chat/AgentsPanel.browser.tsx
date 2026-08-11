@@ -254,6 +254,29 @@ describe("AgentsPanel", () => {
 
     try {
       await expect.element(page.getByText(/No agents yet\./u)).toBeVisible();
+      expect(
+        document
+          .querySelector("[data-agents-panel-empty='true']")
+          ?.getAttribute("data-agents-panel-empty-state"),
+      ).toBe("never-ran");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("waits on an in-flight turn instead of claiming the thread never ran an agent", async () => {
+    // The turn is dispatched but the provider has not been handed off yet, so
+    // there is nothing to list and agents may still be spawned.
+    const mounted = await renderPanel({ turnInFlight: true });
+
+    try {
+      await expect.element(page.getByText(/Waiting on the turn\./u)).toBeVisible();
+      expect(document.body.textContent).not.toContain("No agents yet");
+      expect(
+        document
+          .querySelector("[data-agents-panel-empty='true']")
+          ?.getAttribute("data-agents-panel-empty-state"),
+      ).toBe("waiting");
     } finally {
       await mounted.unmount();
     }

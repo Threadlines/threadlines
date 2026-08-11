@@ -45,6 +45,43 @@ export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";
 
 export const CHAT_HEADER_BOTTOM_CSS_VAR = "--chat-header-bottom";
+export const RIGHT_PANEL_INSET_CSS_VAR = "--right-panel-inset";
+
+/**
+ * Publishes how much of the viewport's right edge the open right panel occupies
+ * as a root-level CSS variable, so body-portaled overlays can stay clear of it.
+ * `0px` while the panel is closed. Attach the returned ref to the element that
+ * holds the panel's layout slot.
+ *
+ * Same pattern (and the same reason) as {@link useChatHeaderBottomVarRef}: the
+ * toast viewport is fixed to the viewport, not to the chat column, so nothing in
+ * the layout can push it aside. The width changes on open/close, on a drag of
+ * the panel's resize handle, and on a window resize, all of which the observer
+ * catches. The variable is reset on unmount so a route without a right panel
+ * does not leave overlays inset for a panel that is gone.
+ */
+export function useRightPanelInsetVarRef(): RefCallback<HTMLElement> {
+  return useCallback((node: HTMLElement | null) => {
+    const rootStyle = document.documentElement.style;
+    if (!node || typeof ResizeObserver === "undefined") {
+      rootStyle.setProperty(RIGHT_PANEL_INSET_CSS_VAR, "0px");
+      return undefined;
+    }
+    const publish = () => {
+      rootStyle.setProperty(
+        RIGHT_PANEL_INSET_CSS_VAR,
+        `${Math.max(0, Math.round(node.getBoundingClientRect().width))}px`,
+      );
+    };
+    const observer = new ResizeObserver(publish);
+    observer.observe(node);
+    publish();
+    return () => {
+      observer.disconnect();
+      rootStyle.setProperty(RIGHT_PANEL_INSET_CSS_VAR, "0px");
+    };
+  }, []);
+}
 
 /**
  * Publishes the chat header's bottom edge (in viewport px) as a root-level CSS

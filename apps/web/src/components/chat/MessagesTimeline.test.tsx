@@ -873,65 +873,82 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("MessagesTimeline.test.tsx");
   });
 
-  it("renders subagent tool calls with delegated-work language", async () => {
+  it("keeps agent lifecycle rows out of the conversation and out of its counts", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
+    // Codex: the spawn itself, then the polls that wait on it. Neither carries a
+    // source agent thread id, which is why filtering on attribution alone left
+    // them in the chat.
+    const lifecycleEntries = (
+      [
+        ["spawn", "reviewer: Inspect timeline rendering", "delegation"],
+        ["wait", "wait", "coordination"],
+        ["send-input", "sendInput", "coordination"],
+      ] as const
+    ).map(([id, detail, operation], index) => ({
+      id: `entry-${id}`,
+      kind: "work" as const,
+      createdAt: `2026-03-17T19:12:2${index}.000Z`,
+      entry: {
+        id: `work-${id}`,
+        createdAt: `2026-03-17T19:12:2${index}.000Z`,
+        label: "Subagent task",
+        detail,
+        tone: "tool" as const,
+        itemType: "collab_agent_tool_call" as const,
+        subagentOperation: operation,
+        executionState: "completed" as const,
+      },
+    }));
+    // Claude reports the same lifecycle through its own task stream instead.
+    const taskStreamEntry = {
+      id: "entry-task-progress",
+      kind: "work" as const,
+      createdAt: "2026-03-17T19:12:23.000Z",
+      entry: {
+        id: "work-task-progress",
+        createdAt: "2026-03-17T19:12:23.000Z",
+        label: "Subagent task",
+        detail: "Reading the timeline",
+        tone: "thinking" as const,
+        activityKind: "task.progress" as const,
+        subagentTask: { subagentType: "code-reviewer", toolUseId: "toolu_spawn_1" },
+        executionState: "completed" as const,
+      },
+    };
+    // The main model's own tool calls stay, and the receipt counts only them.
+    const mainAgentEntries = ["context7", "playwright", "figma"].map((tool, index) => ({
+      id: `entry-tool-${tool}`,
+      kind: "work" as const,
+      createdAt: `2026-03-17T19:12:3${index}.000Z`,
+      entry: {
+        id: `work-tool-${tool}`,
+        createdAt: `2026-03-17T19:12:3${index}.000Z`,
+        label: `Used ${tool}`,
+        tone: "tool" as const,
+        itemType: "mcp_tool_call" as const,
+        executionState: "completed" as const,
+      },
+    }));
+
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-subagent",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-subagent",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Subagent task",
-              detail: "reviewer: Inspect timeline rendering",
-              tone: "tool",
-              itemType: "collab_agent_tool_call",
-              executionState: "completed",
-            },
-          },
-        ]}
+        timelineEntries={[...lifecycleEntries, taskStreamEntry, ...mainAgentEntries]}
       />,
     );
 
-    expect(markup).toContain("Spawned subagent");
-    expect(markup).not.toContain("Finished reviewer subagent");
-    expect(markup).toContain("Inspect timeline rendering");
-    expect(markup).toContain('data-subagent-activity-row="true"');
-    expect(markup).toContain("Subagent");
-    expect(markup).toContain("Details");
-    expect(markup).not.toContain('data-subagent-activity-details="true"');
-  });
-
-  it("does not count subagent coordination polls as delegated tasks", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={["wait", "sendInput"].map((operation, index) => ({
-          id: `entry-subagent-${operation}`,
-          kind: "work" as const,
-          createdAt: `2026-07-13T18:38:4${index}.000Z`,
-          entry: {
-            id: `work-subagent-${operation}`,
-            createdAt: `2026-07-13T18:38:4${index}.000Z`,
-            label: "Subagent task",
-            detail: operation,
-            tone: "tool" as const,
-            itemType: "collab_agent_tool_call" as const,
-            subagentOperation: "coordination" as const,
-            executionState: "completed" as const,
-          },
-        }))}
-      />,
-    );
-
-    expect(markup).toContain("Used 2 tools");
+    // Nothing about running an agent narrates itself in the chat any more.
+    expect(markup).not.toContain("Subagent task");
+    expect(markup).not.toContain("Spawned subagent");
+    expect(markup).not.toContain("Finished subagent task");
     expect(markup).not.toContain("Delegated work");
-    expect(markup).not.toContain("2 subagent tasks");
+    expect(markup).not.toContain("subagent tasks");
+    expect(markup).not.toContain("Inspect timeline rendering");
+    expect(markup).not.toContain("Reading the timeline");
+    // The summary line and the action count are recomputed from what is left.
+    expect(markup).toContain("Used 3 tools");
+    expect(markup).toContain("3 actions");
+    expect(markup).not.toContain("7 actions");
   });
 
   it("renders a finished subagent as a compact receipt and drops live commentary", async () => {
@@ -993,35 +1010,6 @@ describe("MessagesTimeline", () => {
     // Nothing renders for a still-running agent.
     expect(markup).not.toContain('data-subagent-live-row="true"');
     expect(markup).not.toContain("tracing the Codex child events now");
-  });
-
-  it("labels a completed spawn operation as spawned rather than finished", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "spawn-agent",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:20.000Z",
-            entry: {
-              id: "spawn-agent",
-              createdAt: "2026-03-17T19:12:20.000Z",
-              label: "Subagent task",
-              detail: "Audit Codex child activity",
-              tone: "tool",
-              itemType: "collab_agent_tool_call",
-              subagentOperation: "delegation",
-              executionState: "completed",
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain("Spawned subagent");
-    expect(markup).not.toContain("Finished subagent task");
   });
 
   it("marks agent response bodies without changing markdown rendering", async () => {

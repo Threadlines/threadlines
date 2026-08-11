@@ -18,6 +18,7 @@ import {
   deriveSubagentLiveEntries,
   deriveSubagentProgressState,
   deriveSubagentResultEntries,
+  deriveThreadSubagentHistory,
   deriveForkContextEntries,
   deriveTimelineEntries,
   deriveWorkLogEntries,
@@ -203,6 +204,110 @@ describe("deriveWorkLogEntries subagent operations", () => {
       expect.objectContaining({ id: "native-agent-started", subagentOperation: "delegation" }),
       expect.objectContaining({ id: "empty-wait", subagentOperation: "coordination" }),
     ]);
+  });
+});
+
+describe("deriveThreadSubagentHistory", () => {
+  /** The shape Codex actually projects: the spawn arrives as a `subAgentActivity`
+   *  item with no model or effort on it, and the polls that follow report them as
+   *  `null`. The turn's own dispatch activity is the only record of what the
+   *  child inherited. */
+  const codexSpawnActivities = (options: { readonly spawnModel?: string } = {}) => [
+    makeActivity({
+      id: "turn-preparing",
+      createdAt: "2026-08-11T19:34:36.000Z",
+      kind: "provider.turn.preparing",
+      summary: "Preparing provider turn",
+      tone: "thinking",
+      turnId: "turn-1",
+      payload: {
+        phase: "preparing",
+        modelSelection: {
+          instanceId: "codex",
+          model: "gpt-5.6-sol",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "default" },
+          ],
+        },
+      },
+    }),
+    makeActivity({
+      id: "codex-spawn",
+      createdAt: "2026-08-11T19:34:59.000Z",
+      kind: "tool.completed",
+      summary: "Subagent task",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        toolCallId: "call_spawn",
+        status: "completed",
+        data: {
+          item: {
+            id: "call_spawn",
+            type: "subAgentActivity",
+            tool: "spawnAgent",
+            kind: "started",
+            status: "inProgress",
+            agentThreadId: "codex-child-1",
+            agentPath: "/root/web_tsx_count",
+            receiverThreadIds: ["codex-child-1"],
+            agentsStates: { "codex-child-1": { status: "running", message: null } },
+            ...(options.spawnModel === undefined ? {} : { model: options.spawnModel }),
+          },
+        },
+      },
+    }),
+    makeActivity({
+      id: "codex-wait",
+      createdAt: "2026-08-11T19:36:41.000Z",
+      kind: "tool.completed",
+      summary: "Subagent task",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        toolCallId: "call_wait",
+        status: "completed",
+        data: {
+          item: {
+            id: "call_wait",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            model: null,
+            prompt: null,
+            reasoningEffort: null,
+            receiverThreadIds: ["codex-child-1"],
+            agentsStates: {
+              "codex-child-1": { status: "completed", message: "50 .tsx files." },
+            },
+          },
+        },
+      },
+    }),
+  ];
+
+  it("gives a Codex child the model and effort its turn was dispatched with", () => {
+    const history = deriveThreadSubagentHistory(codexSpawnActivities());
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.item).toMatchObject({
+      agentThreadId: "codex-child-1",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      status: "completed",
+    });
+    expect(history[0]?.resultBody).toBe("50 .tsx files.");
+  });
+
+  it("prefers a model the spawn asked for over the turn's own selection", () => {
+    const history = deriveThreadSubagentHistory(
+      codexSpawnActivities({ spawnModel: "gpt-5.5-codex" }),
+    );
+
+    expect(history[0]?.item.model).toBe("gpt-5.5-codex");
+    // Effort was not overridden, so it still comes from the turn.
+    expect(history[0]?.item.reasoningEffort).toBe("high");
   });
 });
 

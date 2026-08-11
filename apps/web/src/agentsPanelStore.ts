@@ -25,6 +25,10 @@ export interface AgentsPanelSource {
   history: ReadonlyArray<ThreadSubagentHistoryEntry>;
   /** Provider driver label, e.g. `codex`; drives the trunk hue and run chips. */
   providerLabel: string | null;
+  /** True from the moment a turn is dispatched until it settles. Lets the panel
+   *  say it is waiting rather than claim the thread has never run an agent
+   *  while the provider handoff is still in flight. */
+  turnInFlight: boolean;
   threadCwd: string | null;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
