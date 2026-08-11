@@ -410,18 +410,32 @@ export function deriveMessagesTimelineRows(input: {
   return nextRows;
 }
 
+/**
+ * A spawned agent's own tool calls are not the conversation's activity, so they
+ * never reach the chat: not as expanded rows, and not in the receipt's counts.
+ * The turn's tracker row says how many agents ran and the rail's Agents tab owns
+ * what each of them did. The entries themselves are untouched — every other
+ * reader of the work log still sees them.
+ */
+function isSubagentAttributedEntry(entry: TimelineEntry): boolean {
+  return entry.kind === "work" && entry.entry.sourceAgentThreadId !== undefined;
+}
+
 function deriveVisibleTimelineEntries(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly isWorking: boolean;
   readonly activeTurnId?: TurnId | null;
 }): TimelineEntry[] {
-  const visibleByIndex = Array.from({ length: input.timelineEntries.length }, () => true);
+  const timelineEntries = input.timelineEntries.filter(
+    (entry) => !isSubagentAttributedEntry(entry),
+  );
+  const visibleByIndex = Array.from({ length: timelineEntries.length }, () => true);
   let hasLaterProviderLifecycle = false;
   let hasLaterConcreteTurnActivity = false;
   const laterConcreteTurnIds = new Set<TurnId>();
 
-  for (let index = input.timelineEntries.length - 1; index >= 0; index -= 1) {
-    const timelineEntry = input.timelineEntries[index];
+  for (let index = timelineEntries.length - 1; index >= 0; index -= 1) {
+    const timelineEntry = timelineEntries[index];
     if (!timelineEntry) {
       continue;
     }
@@ -447,7 +461,7 @@ function deriveVisibleTimelineEntries(input: {
     }
   }
 
-  return input.timelineEntries.filter((_, index) => visibleByIndex[index]);
+  return timelineEntries.filter((_, index) => visibleByIndex[index]);
 }
 
 function shouldShowProviderLifecycleWorkEntry(

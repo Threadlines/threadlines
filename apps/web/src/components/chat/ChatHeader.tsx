@@ -27,6 +27,8 @@ import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { ThreadActivityChip, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 import type { SubagentProgressState } from "../../session-logic";
+import type { LiveAgentIndicator } from "./agentsPanel.logic";
+import { LiveNode } from "../ui/threadline";
 import { cn } from "../../lib/utils";
 
 export interface ForkHeaderContext {
@@ -69,6 +71,12 @@ interface ChatHeaderProps {
    * status has not loaded.
    */
   remoteBehindCount: number | null;
+  /**
+   * Agents running right now, surfaced on the closed rail toggle the same way
+   * the diffstat is. Null when nothing is live. While the rail is open its Agents
+   * tab carries the live node itself, so these stay closed-only.
+   */
+  liveAgents: LiveAgentIndicator | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
@@ -103,6 +111,21 @@ export function shouldShowOpenInEditor(input: {
   );
 }
 
+/** Reads the live-agent node on the closed panel button out loud. Waiting leads,
+ *  because it is the part that asks the user for something. */
+export function formatLiveAgentsTooltip(liveAgents: LiveAgentIndicator): string {
+  const { count, waitingCount } = liveAgents;
+  const running = count - waitingCount;
+  const noun = (value: number) => (value === 1 ? "agent" : "agents");
+  if (running === 0) {
+    return `${waitingCount} ${noun(waitingCount)} waiting on you.`;
+  }
+  if (waitingCount === 0) {
+    return `${running} ${noun(running)} running.`;
+  }
+  return `${running} ${noun(running)} running, ${waitingCount} waiting on you.`;
+}
+
 export function resolveContinueInProjectHeaderState(disabledReason: string | null | undefined): {
   readonly disabled: boolean;
   readonly tooltip: string;
@@ -135,6 +158,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleBrowser,
   workingTreeDiffStat,
   remoteBehindCount,
+  liveAgents,
   fileBrowserAvailable,
   taskProgress,
   subagentProgress,
@@ -354,7 +378,9 @@ export const ChatHeader = memo(function ChatHeader({
                       // on both sides -- the icon otherwise sits against the
                       // hover fill -- and less between them: the base gap is
                       // sized for icons, not for a label that belongs to one.
-                      (workingTreeDiffStat !== null || remoteBehindCount !== null) &&
+                      (workingTreeDiffStat !== null ||
+                        remoteBehindCount !== null ||
+                        liveAgents !== null) &&
                         !railOpen &&
                         "gap-1 px-1.5",
                     )}
@@ -393,11 +419,38 @@ export const ChatHeader = memo(function ChatHeader({
                         ) : null}
                       </span>
                     ) : null}
+                    {/* Typographic, like the counts beside it: a node and at most
+                        a digit. An agent waiting on the user turns it amber. */}
+                    {!railOpen && liveAgents ? (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-0.5"
+                        data-header-live-agents={liveAgents.waitingCount > 0 ? "waiting" : "running"}
+                      >
+                        {liveAgents.waitingCount > 0 ? (
+                          <span
+                            aria-hidden="true"
+                            className="block size-1.5 rounded-full bg-amber-500"
+                          />
+                        ) : (
+                          <LiveNode className="size-1.5" />
+                        )}
+                        {liveAgents.count > 1 ? (
+                          <span className="font-mono text-[10px] leading-none text-muted-foreground">
+                            {liveAgents.count}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
                   </Toggle>
                 }
               />
               <TooltipPopup side="bottom">
                 {railToggleShortcutLabel ? `Panel (${railToggleShortcutLabel})` : "Panel"}
+                {!railOpen && liveAgents ? (
+                  <div className="text-muted-foreground">
+                    {formatLiveAgentsTooltip(liveAgents)} Open the Agents tab.
+                  </div>
+                ) : null}
                 {!railOpen && sourceControlAvailable && remoteBehindCount !== null ? (
                   <div className="text-muted-foreground">
                     {remoteBehindCount === 1

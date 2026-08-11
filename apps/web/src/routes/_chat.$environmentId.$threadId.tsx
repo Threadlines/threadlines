@@ -66,6 +66,7 @@ import {
 // these until a source for this thread arrives.
 const EMPTY_SUBAGENTS = [] as const;
 const EMPTY_BACKGROUND_RUNS = [] as const;
+const EMPTY_SUBAGENT_HISTORY = [] as const;
 const noopToggleTerminal = () => {};
 const noopStopRun = () => {};
 
@@ -433,6 +434,7 @@ function ChatThreadRouteView() {
             threadId={threadRef.threadId}
             subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
             backgroundRuns={agentsSource?.backgroundRuns ?? EMPTY_BACKGROUND_RUNS}
+            history={agentsSource?.history ?? EMPTY_SUBAGENT_HISTORY}
             providerLabel={agentsSource?.providerLabel}
             threadCwd={agentsSource?.threadCwd}
             embedded

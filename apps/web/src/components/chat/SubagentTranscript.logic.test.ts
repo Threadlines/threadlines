@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildSubagentTranscriptView,
+  groupSubagentTranscriptSteps,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
   type SubagentTranscriptEntryLike,
@@ -114,6 +115,88 @@ describe("buildSubagentTranscriptView", () => {
         at: null,
       },
     ]);
+  });
+});
+
+describe("groupSubagentTranscriptSteps", () => {
+  const toolUse = (name: string) => ({ name, summary: `${name}: src/thing.ts` });
+
+  it("folds a long run of tool calls into one receipt and leaves the prose alone", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", text: "Looking for the handler.", at: "2026-08-11T10:00:00.000Z" }),
+      entry({
+        role: "assistant",
+        toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")],
+        at: "2026-08-11T10:00:05.000Z",
+      }),
+      entry({
+        role: "assistant",
+        toolUses: [toolUse("Edit"), toolUse("Bash")],
+        at: "2026-08-11T10:01:15.000Z",
+      }),
+      entry({ role: "assistant", text: "Fixed it.", at: "2026-08-11T10:02:00.000Z" }),
+    ]);
+
+    const grouped = groupSubagentTranscriptSteps(view);
+
+    expect(grouped.map((step) => step.kind)).toEqual(["item", "tool-run", "item"]);
+    const run = grouped[1];
+    expect(run?.kind === "tool-run" ? run.actionCount : null).toBe(5);
+    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe("Read ×3, Edit ×1, Bash ×1");
+    expect(run?.kind === "tool-run" ? run.durationMs : null).toBe(70_000);
+    // The rows are folded, not dropped.
+    expect(run?.kind === "tool-run" ? run.items.length : null).toBe(2);
+  });
+
+  it("leaves a run of two calls inline, where a receipt would save nothing", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", text: "Checking." }),
+      entry({ role: "assistant", toolUses: [toolUse("Read"), toolUse("Grep")] }),
+      entry({ role: "assistant", text: "Done." }),
+    ]);
+
+    expect(groupSubagentTranscriptSteps(view).map((step) => step.kind)).toEqual([
+      "item",
+      "item",
+      "item",
+    ]);
+  });
+
+  it("breaks a run at the prose between two batches", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")] }),
+      entry({ role: "assistant", text: "Halfway." }),
+      entry({ role: "assistant", toolUses: [toolUse("Edit"), toolUse("Edit"), toolUse("Edit")] }),
+    ]);
+
+    expect(groupSubagentTranscriptSteps(view).map((step) => step.kind)).toEqual([
+      "tool-run",
+      "item",
+      "tool-run",
+    ]);
+  });
+
+  it("names only the three busiest kinds and counts the rest", () => {
+    const view = buildSubagentTranscriptView([
+      entry({
+        role: "assistant",
+        toolUses: [
+          toolUse("Edit"),
+          toolUse("Edit"),
+          toolUse("Edit"),
+          toolUse("Read"),
+          toolUse("Read"),
+          toolUse("Bash"),
+          toolUse("Grep"),
+          toolUse("Glob"),
+        ],
+      }),
+    ]);
+
+    const [run] = groupSubagentTranscriptSteps(view);
+    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe(
+      "Edit ×3, Read ×2, Bash ×1, +2 more",
+    );
   });
 });
 

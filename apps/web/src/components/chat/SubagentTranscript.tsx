@@ -17,6 +17,8 @@ import {
   useState,
 } from "react";
 
+import { ChevronRightIcon } from "lucide-react";
+
 import { useSettings } from "../../hooks/useSettings";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { cn } from "~/lib/utils";
@@ -28,11 +30,15 @@ import {
   buildSubagentTranscriptView,
   formatSubagentToolLabel,
   formatSubagentToolPreview,
+  groupSubagentTranscriptSteps,
   isSameSubagentTranscriptItem,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
+  type SubagentTranscriptStep,
+  type SubagentTranscriptToolRun,
   type SubagentTranscriptViewItem,
 } from "./SubagentTranscript.logic";
+import { formatSubagentDuration } from "./subagentMeta";
 
 const TRANSCRIPT_PAGE_SIZE = 60;
 const LIVE_REFRESH_INTERVAL_MS = 1_000;
@@ -530,21 +536,21 @@ export function SubagentTranscript({
                     />
                   ) : null}
                   <div style={TRANSCRIPT_SPINE_STYLE}>
-                    {steps.map((item, itemIndex) => {
-                      const lastItem = itemIndex === steps.length - 1;
+                    {groupSubagentTranscriptSteps(steps).map((step, stepIndex, groupedSteps) => {
+                      const lastItem = stepIndex === groupedSteps.length - 1;
                       // One live terminus per surface: the newest row, and only
                       // while the agent is still working.
                       const live = follow && lastItem && !showLiveTail;
                       return (
                         <SpineRow
-                          key={`${section.agentId}:${item.id}`}
-                          node={<TranscriptSpineNode item={item} live={live} />}
-                          connectTop={itemIndex > 0}
+                          key={`${section.agentId}:${step.id}`}
+                          node={<TranscriptSpineNode step={step} live={live} />}
+                          connectTop={stepIndex > 0}
                           connectBottom={!lastItem || showLiveTail}
                           style={
                             follow
                               ? spineAccentRowStyle(
-                                  steps.length - 1 - itemIndex + (showLiveTail ? 1 : 0),
+                                  groupedSteps.length - 1 - stepIndex + (showLiveTail ? 1 : 0),
                                 )
                               : undefined
                           }
@@ -553,13 +559,24 @@ export function SubagentTranscript({
                               spine gutter stretches to the row's content box,
                               so row padding would break the line. */}
                           <div className="py-1">
-                            <TranscriptItem
-                              item={item}
-                              environmentId={environmentId}
-                              threadId={threadId}
-                              cwd={cwd}
-                              timestampFormat={timestampFormat}
-                            />
+                            {step.kind === "tool-run" ? (
+                              <ToolRunReceipt
+                                run={step}
+                                // The run the agent is still adding to stays
+                                // open: collapsing it would hide the very thing
+                                // "following live" is for.
+                                openByDefault={follow && lastItem}
+                                timestampFormat={timestampFormat}
+                              />
+                            ) : (
+                              <TranscriptItem
+                                item={step.item}
+                                environmentId={environmentId}
+                                threadId={threadId}
+                                cwd={cwd}
+                                timestampFormat={timestampFormat}
+                              />
+                            )}
                           </div>
                         </SpineRow>
                       );
@@ -716,6 +733,71 @@ const ToolGroup = memo(function ToolGroup({
     </div>
   );
 });
+
+/**
+ * A run of tool calls as one line, in the same language as the conversation's
+ * activity receipt: what happened, how much of it, how long it took, and a way
+ * to open it. Expanding renders the same rows that would have been there.
+ */
+function ToolRunReceipt({
+  run,
+  openByDefault,
+  timestampFormat,
+}: {
+  run: SubagentTranscriptToolRun;
+  openByDefault: boolean;
+  timestampFormat: TimestampFormat;
+}) {
+  // Null means "no opinion yet", so a run that opens itself because it is live
+  // still collapses when the agent moves on, while a run the reader opened by
+  // hand stays open.
+  const [overrideExpanded, setOverrideExpanded] = useState<boolean | null>(null);
+  const expanded = overrideExpanded ?? openByDefault;
+  const duration = run.durationMs === null ? null : formatSubagentDuration(run.durationMs);
+
+  return (
+    <div className="min-w-0" data-subagent-transcript-entry="tool-run">
+      <div className="flex min-w-0 items-center gap-1.5 leading-5">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors duration-150 hover:text-foreground/75"
+          aria-expanded={expanded}
+          data-subagent-transcript-tool-run-toggle="true"
+          onClick={() => setOverrideExpanded(!expanded)}
+        >
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+              expanded && "rotate-90",
+            )}
+          />
+          <span className="shrink-0 text-[11px] leading-5 text-foreground/80">
+            {run.actionCount.toLocaleString()} actions
+          </span>
+          <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
+            ·
+          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
+            {run.toolSummary}
+          </span>
+          {duration ? (
+            <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
+              {duration}
+            </span>
+          ) : null}
+        </button>
+      </div>
+      {expanded ? (
+        <div className="mt-0.5 space-y-0.5">
+          {run.items.map((item) => (
+            <ToolGroup key={item.id} item={item} timestampFormat={timestampFormat} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const ThinkingBlock = memo(function ThinkingBlock({
   item,
@@ -951,10 +1033,19 @@ const TRANSCRIPT_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties
 
 /** Settled steps are quiet dots, foldable rows are hollow rings (same family,
  *  reads as openable), and the one live row carries the halo. */
-function TranscriptSpineNode({ item, live }: { item: SubagentTranscriptViewItem; live: boolean }) {
+function TranscriptSpineNode({ step, live }: { step: SubagentTranscriptStep; live: boolean }) {
   if (live) {
     return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
   }
+  if (step.kind === "tool-run") {
+    return (
+      <span
+        aria-hidden="true"
+        className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
+      />
+    );
+  }
+  const item = step.item;
   if (item.kind === "thinking" || (item.kind === "message" && item.role !== "assistant")) {
     return (
       <span

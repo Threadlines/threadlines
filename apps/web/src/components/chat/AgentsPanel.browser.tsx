@@ -5,7 +5,11 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
+import type {
+  SubagentProgressItem,
+  SubagentProgressState,
+  ThreadSubagentHistoryEntry,
+} from "../../session-logic";
 import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
@@ -41,6 +45,13 @@ function buildSubagent(overrides: Partial<SubagentProgressItem> = {}): SubagentP
     updatedAt: "2026-08-11T10:00:30.000Z",
     ...overrides,
   };
+}
+
+function buildHistoryEntry(entry: {
+  item: SubagentProgressItem;
+  resultBody?: string | null;
+}): ThreadSubagentHistoryEntry {
+  return { item: entry.item, resultBody: entry.resultBody ?? null };
 }
 
 const TERMINAL_RUN: ThreadBackgroundRunItem = {
@@ -238,11 +249,117 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("says so when the turn has nothing running", async () => {
+  it("says so only when the thread has never run an agent", async () => {
     const mounted = await renderPanel();
 
     try {
-      await expect.element(page.getByText("No agents on this turn.")).toBeVisible();
+      await expect.element(page.getByText(/No agents yet\./u)).toBeVisible();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps finished agents listed under Earlier once the live items empty", async () => {
+    // The turn has settled, so the live source is empty and only the thread's
+    // durable history is left. This is the state the panel used to collapse in.
+    const mounted = await renderPanel({
+      subagents: [],
+      history: [
+        buildHistoryEntry({
+          item: buildSubagent({
+            id: "agent-old",
+            agentThreadId: "agent-old",
+            transcriptAgentId: "agent-old",
+            label: "Router sweep",
+            status: "completed",
+            statusLabel: "Completed",
+            model: "claude-opus-5",
+            reasoningEffort: "high",
+            updatedAt: "2026-08-11T09:00:00.000Z",
+          }),
+          resultBody: "- The route never mounted the panel.\nMore detail below.",
+        }),
+      ],
+    });
+
+    try {
+      await expect.element(page.getByText("Router sweep")).toBeVisible();
+      expect(document.querySelector("[data-agents-panel-empty='true']")).toBeNull();
+      expect(document.querySelector("[data-agents-panel-earlier='true']")?.textContent).toBe(
+        "Earlier",
+      );
+      // The report leads, with the markdown that opened it stripped.
+      await expect.element(page.getByText("The route never mounted the panel.")).toBeVisible();
+      const meta = document.querySelector("[data-agent-branch-meta='true']")?.textContent ?? "";
+      expect(meta).toContain("claude-opus-5");
+      expect(meta).toContain("high");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("orders the history newest first and drills into a history-only agent", async () => {
+    const mounted = await renderPanel({
+      subagents: [],
+      history: [
+        buildHistoryEntry({
+          item: buildSubagent({
+            id: "agent-older",
+            agentThreadId: "agent-older",
+            transcriptAgentId: "agent-older",
+            label: "Older sweep",
+            status: "completed",
+            statusLabel: "Completed",
+            updatedAt: "2026-08-11T08:00:00.000Z",
+          }),
+        }),
+        buildHistoryEntry({
+          item: buildSubagent({
+            id: "agent-newer",
+            agentThreadId: "agent-newer",
+            transcriptAgentId: "agent-newer",
+            label: "Newer sweep",
+            status: "completed",
+            statusLabel: "Completed",
+            updatedAt: "2026-08-11T09:30:00.000Z",
+          }),
+        }),
+      ],
+    });
+
+    try {
+      await expect.element(page.getByText("Newer sweep")).toBeVisible();
+      const order = [...document.querySelectorAll("[data-agent-branch='true']")]
+        .map((row) => row.textContent ?? "")
+        .join("|");
+      expect(order.indexOf("Newer sweep")).toBeLessThan(order.indexOf("Older sweep"));
+
+      // A receipt for a long-finished agent has to resolve against the history,
+      // which is the only place that agent still exists.
+      await page.getByRole("button", { name: "Open Older sweep transcript" }).click();
+      await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+      expect(document.querySelector("[data-agents-panel='drill-in']")).not.toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("lets a live agent win over its own history record", async () => {
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep", telemetry: null })],
+      history: [
+        buildHistoryEntry({
+          item: buildSubagent({ label: "Router sweep", status: "completed" }),
+          resultBody: "Done.",
+        }),
+      ],
+    });
+
+    try {
+      const rows = [...document.querySelectorAll("[data-agent-branch='true']")];
+      expect(rows.length).toBe(1);
+      expect(rows[0]?.getAttribute("data-agent-branch-status")).toBe("running");
+      expect(document.querySelector("[data-agents-panel-earlier='true']")).toBeNull();
     } finally {
       await mounted.unmount();
     }

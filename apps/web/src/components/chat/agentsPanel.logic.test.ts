@@ -6,8 +6,12 @@ import type { SubagentProgressItem } from "../../session-logic";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 import {
   buildAgentBranches,
+  buildAgentsPanelView,
+  findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
+  formatLiveAgentStatusLine,
   selectSubagentsForTurns,
+  summarizeLiveAgents,
   summarizeTurnAgents,
 } from "./agentsPanel.logic";
 
@@ -195,6 +199,222 @@ describe("buildAgentBranches", () => {
     });
 
     expect(branches.map((branch) => branch.key)).toEqual(["subagent:agent", "run:run"]);
+  });
+});
+
+describe("buildAgentsPanelView", () => {
+  const historyOf = (item: SubagentProgressItem, resultBody: string | null = null) => ({
+    item,
+    resultBody,
+  });
+
+  it("keeps finished agents listed after the live items empty", () => {
+    const view = buildAgentsPanelView({
+      subagents: [],
+      backgroundRuns: [],
+      history: [
+        historyOf(
+          buildSubagent({
+            id: "done",
+            agentThreadId: "agent-done",
+            status: "completed",
+            statusLabel: "Completed",
+            model: "claude-opus-5",
+            reasoningEffort: "high",
+            telemetry: {
+              step: null,
+              lastToolName: null,
+              totalTokens: 24_000,
+              toolUses: null,
+              durationMs: null,
+            },
+            updatedAt: "2026-08-11T10:00:00.000Z",
+          }),
+          "- The route never mounted the panel.\nMore detail below.",
+        ),
+      ],
+      nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
+    });
+
+    expect(view.hasAny).toBe(true);
+    expect(view.current).toEqual([]);
+    expect(view.earlier.map((branch) => branch.status)).toEqual(["completed"]);
+    expect(view.earlier[0]?.task).toBe("The route never mounted the panel.");
+    expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens", "12m ago"]);
+    // Nothing is streaming, so a history row has no live output line.
+    expect(view.earlier[0]?.output).toBeNull();
+  });
+
+  it("orders the history newest first", () => {
+    const view = buildAgentsPanelView({
+      subagents: [],
+      backgroundRuns: [],
+      history: [
+        historyOf(
+          buildSubagent({
+            id: "older",
+            agentThreadId: "agent-older",
+            status: "completed",
+            updatedAt: "2026-08-11T08:00:00.000Z",
+          }),
+        ),
+        historyOf(
+          buildSubagent({
+            id: "newer",
+            agentThreadId: "agent-newer",
+            status: "completed",
+            updatedAt: "2026-08-11T09:30:00.000Z",
+          }),
+        ),
+      ],
+    });
+
+    expect(view.earlier.map((branch) => branch.item.id)).toEqual(["newer", "older"]);
+  });
+
+  it("lets the live record win over its own history counterpart", () => {
+    const view = buildAgentsPanelView({
+      subagents: [buildSubagent({ id: "agent", agentThreadId: "agent-thread", status: "running" })],
+      backgroundRuns: [],
+      history: [
+        historyOf(
+          buildSubagent({ id: "agent", agentThreadId: "agent-thread", status: "completed" }),
+        ),
+      ],
+    });
+
+    expect(view.current.map((branch) => branch.status)).toEqual(["running"]);
+    expect(view.earlier).toEqual([]);
+  });
+
+  it("renders a failed history record as a failure rather than a quiet completion", () => {
+    const view = buildAgentsPanelView({
+      subagents: [],
+      backgroundRuns: [],
+      history: [
+        historyOf(
+          buildSubagent({
+            id: "boom",
+            agentThreadId: "agent-boom",
+            status: "failed",
+            statusLabel: "Failed",
+          }),
+        ),
+      ],
+    });
+
+    expect(view.earlier[0]?.status).toBe("failed");
+  });
+
+  it("reports nothing at all only for a thread that has never run an agent", () => {
+    expect(buildAgentsPanelView({ subagents: [], backgroundRuns: [] }).hasAny).toBe(false);
+  });
+});
+
+describe("findAgentsPanelSubagent", () => {
+  it("resolves an agent that exists only in the thread's history", () => {
+    const view = buildAgentsPanelView({
+      subagents: [],
+      backgroundRuns: [],
+      history: [
+        {
+          item: buildSubagent({ id: "old", agentThreadId: "agent-old", status: "completed" }),
+          resultBody: null,
+        },
+      ],
+    });
+
+    expect(findAgentsPanelSubagent(view, "agent-old")?.id).toBe("old");
+    expect(findAgentsPanelSubagent(view, "agent-missing")).toBeNull();
+    expect(findAgentsPanelSubagent(view, null)).toBeNull();
+  });
+});
+
+describe("formatLiveAgentStatusLine", () => {
+  it("names the freshest live signal and nothing else", () => {
+    const line = formatLiveAgentStatusLine([
+      buildSubagent({
+        id: "stale",
+        status: "running",
+        telemetry: {
+          step: "Reading the router",
+          lastToolName: null,
+          totalTokens: null,
+          toolUses: null,
+          durationMs: null,
+        },
+        updatedAt: "2026-08-11T10:00:00.000Z",
+      }),
+      buildSubagent({
+        id: "fresh",
+        nickname: "Agent panel tests",
+        status: "running",
+        telemetry: {
+          step: "reading AgentsPanel.browser.tsx",
+          lastToolName: null,
+          totalTokens: null,
+          toolUses: null,
+          durationMs: null,
+        },
+        updatedAt: "2026-08-11T10:00:30.000Z",
+      }),
+    ]);
+
+    expect(line).toEqual({
+      agentThreadId: "agent-thread-1",
+      name: "Agent panel tests",
+      step: "reading AgentsPanel.browser.tsx",
+    });
+  });
+
+  it("falls back to the agent's own newest prose when there is no reported step", () => {
+    const line = formatLiveAgentStatusLine([
+      buildSubagent({ status: "running", liveBody: "  Walking the\n  route files  " }),
+    ]);
+
+    expect(line?.step).toBe("Walking the");
+  });
+
+  it("says nothing once no agent is live", () => {
+    expect(
+      formatLiveAgentStatusLine([
+        buildSubagent({
+          status: "completed",
+          telemetry: {
+            step: "Reading the router",
+            lastToolName: null,
+            totalTokens: null,
+            toolUses: null,
+            durationMs: null,
+          },
+        }),
+      ]),
+    ).toBeNull();
+    expect(formatLiveAgentStatusLine([buildSubagent({ status: "running" })])).toBeNull();
+  });
+});
+
+describe("summarizeLiveAgents", () => {
+  it("counts live subagents and runs together and flags one waiting on the user", () => {
+    expect(
+      summarizeLiveAgents({
+        subagents: [
+          buildSubagent({ id: "a", status: "running" }),
+          buildSubagent({ id: "b", status: "waiting" }),
+          buildSubagent({ id: "c", status: "completed" }),
+        ],
+        backgroundRuns: [buildRun({ id: "run" })],
+      }),
+    ).toEqual({ count: 3, waitingCount: 1 });
+  });
+
+  it("says nothing when the thread is idle", () => {
+    expect(
+      summarizeLiveAgents({
+        subagents: [buildSubagent({ status: "completed" })],
+        backgroundRuns: [],
+      }),
+    ).toBeNull();
   });
 });
 

@@ -36,6 +36,7 @@ import {
   type SubagentProgressItem,
 } from "../../session-logic";
 import {
+  formatLiveAgentStatusLine,
   formatSubagentReceiptSummary,
   selectSubagentsForTurns,
   summarizeTurnAgents,
@@ -2801,9 +2802,12 @@ function ActivityReceipt({
       ),
     [entries],
   );
-  const agentSummary = turnAgents
-    ? summarizeTurnAgents(selectSubagentsForTurns(turnAgents.subagents, turnIds))
-    : null;
+  const turnSubagents = useMemo(
+    () => (turnAgents ? selectSubagentsForTurns(turnAgents.subagents, turnIds) : []),
+    [turnAgents, turnIds],
+  );
+  const agentSummary = turnAgents ? summarizeTurnAgents(turnSubagents) : null;
+  const liveAgentStatus = formatLiveAgentStatusLine(turnSubagents);
 
   return (
     <div className="flex min-w-0 items-start justify-between gap-3 py-1">
@@ -2847,6 +2851,21 @@ function ActivityReceipt({
             </>
           ) : null}
         </p>
+        {/* One line for every live agent on this turn, not one per agent: the
+            freshest signal, named. Disappears the moment nothing is live. */}
+        {liveAgentStatus && onOpenAgentsPanel ? (
+          <button
+            type="button"
+            className="block w-full min-w-0 truncate text-left text-[11px] leading-4 text-primary-readable/70 transition-colors duration-150 hover:text-primary-readable"
+            data-turn-live-agent-status="true"
+            title={`${liveAgentStatus.name}: ${liveAgentStatus.step}`}
+            onClick={() => onOpenAgentsPanel(null)}
+          >
+            <span className="text-primary-readable/85">{liveAgentStatus.name}</span>
+            <span className="px-1.5 text-muted-foreground/30">·</span>
+            <span>{liveAgentStatus.step}</span>
+          </button>
+        ) : null}
         {summary ? (
           <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
         ) : null}

@@ -143,6 +143,117 @@ function keyToolUses(
   });
 }
 
+export type SubagentTranscriptToolsItem = Extract<SubagentTranscriptViewItem, { kind: "tools" }>;
+
+/**
+ * A stretch of back-to-back tool calls, folded into one receipt. The agent's own
+ * prose is what a reader is following; twenty Read rows between two paragraphs
+ * are the machinery under it, and they push the prose off the screen.
+ */
+export interface SubagentTranscriptToolRun {
+  readonly kind: "tool-run";
+  readonly id: string;
+  readonly items: ReadonlyArray<SubagentTranscriptToolsItem>;
+  /** Total tool calls across the run, which is what the receipt counts. */
+  readonly actionCount: number;
+  /** `Read ×5, Edit ×8, Bash ×1`, busiest first, capped at three kinds. */
+  readonly toolSummary: string;
+  /** First call to last call, when the provider timestamped both. */
+  readonly durationMs: number | null;
+}
+
+export type SubagentTranscriptStep =
+  | { readonly kind: "item"; readonly id: string; readonly item: SubagentTranscriptViewItem }
+  | SubagentTranscriptToolRun;
+
+/** Below this a run is shorter than the receipt that would replace it. */
+const MIN_COLLAPSIBLE_TOOL_RUN = 3;
+const MAX_SUMMARIZED_TOOL_KINDS = 3;
+
+/**
+ * Folds each run of consecutive tool rows into one receipt, leaving prose and
+ * reasoning rows exactly where they are. A run of one or two calls renders
+ * inline: it is already as short as its own summary would be.
+ */
+export function groupSubagentTranscriptSteps(
+  steps: ReadonlyArray<SubagentTranscriptViewItem>,
+): ReadonlyArray<SubagentTranscriptStep> {
+  const grouped: Array<SubagentTranscriptStep> = [];
+  let index = 0;
+
+  while (index < steps.length) {
+    const step = steps[index];
+    if (step === undefined) {
+      index += 1;
+      continue;
+    }
+    if (step.kind !== "tools") {
+      grouped.push({ kind: "item", id: step.id, item: step });
+      index += 1;
+      continue;
+    }
+
+    const run: Array<SubagentTranscriptToolsItem> = [];
+    while (index < steps.length) {
+      const candidate = steps[index];
+      if (candidate === undefined || candidate.kind !== "tools") {
+        break;
+      }
+      run.push(candidate);
+      index += 1;
+    }
+
+    const actionCount = run.reduce((total, item) => total + item.tools.length, 0);
+    if (actionCount < MIN_COLLAPSIBLE_TOOL_RUN) {
+      for (const item of run) {
+        grouped.push({ kind: "item", id: item.id, item });
+      }
+      continue;
+    }
+    grouped.push({
+      kind: "tool-run",
+      id: `${run[0]?.id ?? String(index)}:run`,
+      items: run,
+      actionCount,
+      toolSummary: summarizeToolRunNames(run),
+      durationMs: toolRunDurationMs(run),
+    });
+  }
+
+  return grouped;
+}
+
+function summarizeToolRunNames(run: ReadonlyArray<SubagentTranscriptToolsItem>): string {
+  const counts = new Map<string, number>();
+  for (const item of run) {
+    for (const tool of item.tools) {
+      counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+    }
+  }
+  // Busiest kinds lead; insertion order breaks ties so the line is stable
+  // across refreshes rather than reshuffling equal counts.
+  const ordered = [...counts.entries()].toSorted((left, right) => right[1] - left[1]);
+  const shown = ordered.slice(0, MAX_SUMMARIZED_TOOL_KINDS);
+  const hiddenKinds = ordered.length - shown.length;
+  const parts = shown.map(([name, count]) => `${name} ×${count}`);
+  if (hiddenKinds > 0) {
+    parts.push(`+${hiddenKinds} more`);
+  }
+  return parts.join(", ");
+}
+
+function toolRunDurationMs(run: ReadonlyArray<SubagentTranscriptToolsItem>): number | null {
+  const timestamps = run
+    .map((item) => (item.at === null ? null : Date.parse(item.at)))
+    .filter((value): value is number => value !== null && !Number.isNaN(value));
+  const first = timestamps[0];
+  const last = timestamps.at(-1);
+  if (first === undefined || last === undefined || last <= first) {
+    return null;
+  }
+  return last - first;
+}
+
 /** The prompt an agent was spawned with is context, not a step it took, so it
  *  is lifted out of the thread and shown above it. Only the very first entry of
  *  the transcript qualifies: a later instruction is a mid-run message to the

@@ -6,9 +6,13 @@
  */
 import type { TurnId } from "@threadlines/contracts";
 
-import { formatSubagentDisplayName, type SubagentProgressItem } from "../../session-logic";
+import {
+  formatSubagentDisplayName,
+  type SubagentProgressItem,
+  type ThreadSubagentHistoryEntry,
+} from "../../session-logic";
 import { formatContextWindowTokens } from "../../lib/contextWindow";
-import { formatElapsedDurationLabel } from "../../timestampFormat";
+import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { formatSubagentMetaParts, formatSubagentDuration } from "./subagentMeta";
 import {
   backgroundRunCommandText,
@@ -216,6 +220,196 @@ export function buildAgentBranches(input: {
       return left.startedAtMs - right.startedAtMs;
     })
     .map((entry) => entry.branch);
+}
+
+/**
+ * The mono meta for a finished agent in the history section. The model is shown
+ * exactly as the provider stored it (`claude-opus-5`) rather than resolved to a
+ * catalog display name: history is a record of what ran, and the raw slug is
+ * the thing that was recorded. Tokens and effort only appear when known.
+ */
+function formatAgentHistoryMeta(
+  item: SubagentProgressItem,
+  nowMs: number | undefined,
+): ReadonlyArray<string> {
+  const totalTokens = item.telemetry?.totalTokens ?? null;
+  return [
+    item.model?.trim() || null,
+    item.reasoningEffort?.trim() || null,
+    totalTokens !== null && totalTokens > 0
+      ? `${formatContextWindowTokens(totalTokens)} tokens`
+      : null,
+    formatRelativeTimeLabel(item.updatedAt, nowMs ?? Date.now()),
+  ].filter((part): part is string => part !== null);
+}
+
+/**
+ * A finished agent from an earlier turn. It renders through the same row as a
+ * live branch — the dot dims itself once the status is `completed` — but its
+ * meta is a record rather than a running total, and it has no live output line.
+ */
+function historyBranch(
+  entry: ThreadSubagentHistoryEntry,
+  nowMs: number | undefined,
+): AgentSubagentBranch {
+  const { item, resultBody } = entry;
+  const details = deriveSubagentDisplayDetails(item);
+  return {
+    kind: "subagent",
+    key: `history:${item.id}`,
+    status: subagentBranchStatus(item.status),
+    name: formatSubagentDisplayName(item),
+    statusLabel: item.statusLabel,
+    meta: formatAgentHistoryMeta(item, nowMs),
+    // What the agent was asked to do is the durable fact, but what it reported
+    // back is the more useful one, so the result leads when there is one.
+    task: (resultBody === null ? null : formatSubagentReceiptSummary(resultBody)) ?? details.goal,
+    output: null,
+    tag: null,
+    depth: Math.min(Math.max(item.treeDepth ?? 0, 0), MAX_BRANCH_DEPTH),
+    item,
+    transcriptAvailable: item.agentThreadId !== null,
+  };
+}
+
+export interface AgentsPanelView {
+  /** The turn's own branches, in attention order. */
+  readonly current: ReadonlyArray<AgentBranch>;
+  /** Agents from earlier in the thread, newest first. */
+  readonly earlier: ReadonlyArray<AgentSubagentBranch>;
+  /** False only when the thread has never run an agent at all. */
+  readonly hasAny: boolean;
+}
+
+/**
+ * The panel's whole list: the live turn on top, then everything this thread has
+ * run before it. The two sources overlap — a live agent is also in the thread's
+ * history — so the live record wins, since only it carries streaming output.
+ */
+export function buildAgentsPanelView(input: {
+  readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
+  readonly providerLabel?: string | null | undefined;
+  readonly nowMs?: number | undefined;
+}): AgentsPanelView {
+  const current = buildAgentBranches(input);
+  const currentAgentKeys = new Set(input.subagents.map(subagentIdentity));
+  const earlier = (input.history ?? [])
+    .filter((entry) => !currentAgentKeys.has(subagentIdentity(entry.item)))
+    .map((entry) => historyBranch(entry, input.nowMs))
+    .toSorted(
+      (left, right) =>
+        (parseTimestamp(right.item.updatedAt) ?? 0) - (parseTimestamp(left.item.updatedAt) ?? 0),
+    );
+
+  return { current, earlier, hasAny: current.length > 0 || earlier.length > 0 };
+}
+
+/** `agentThreadId` is the id every other surface addresses an agent by; the
+ *  record id is the fallback for an agent whose thread id never arrived. */
+function subagentIdentity(item: SubagentProgressItem): string {
+  return item.agentThreadId ?? item.id;
+}
+
+/** Resolves a drill-in against both sources, so a receipt for an agent that
+ *  finished three turns ago opens its inspector just like a live one. */
+export function findAgentsPanelSubagent(
+  view: AgentsPanelView,
+  agentThreadId: string | null,
+): SubagentProgressItem | null {
+  if (agentThreadId === null) {
+    return null;
+  }
+  for (const branch of [...view.current, ...view.earlier]) {
+    if (branch.kind === "subagent" && branch.item.agentThreadId === agentThreadId) {
+      return branch.item;
+    }
+  }
+  return null;
+}
+
+export interface LiveAgentStatusLine {
+  readonly agentThreadId: string | null;
+  readonly name: string;
+  /** The freshest thing the agent has said it is doing. */
+  readonly step: string;
+}
+
+/**
+ * One line for the whole turn, no matter how many agents are running: the
+ * freshest signal any live agent has emitted, named so it is clear whose it is.
+ * A count of live agents already sits on the tracker row above; repeating a line
+ * per agent would turn the conversation into the panel.
+ */
+export function formatLiveAgentStatusLine(
+  subagents: ReadonlyArray<SubagentProgressItem>,
+): LiveAgentStatusLine | null {
+  let freshest: { readonly item: SubagentProgressItem; readonly step: string; readonly at: number } | null =
+    null;
+  for (const item of subagents) {
+    if (!isLiveAgentBranchStatus(subagentBranchStatus(item.status))) {
+      continue;
+    }
+    const step = liveAgentStep(item);
+    if (step === null) {
+      continue;
+    }
+    const at = parseTimestamp(item.updatedAt) ?? 0;
+    if (freshest === null || at >= freshest.at) {
+      freshest = { item, step, at };
+    }
+  }
+  if (freshest === null) {
+    return null;
+  }
+  return {
+    agentThreadId: freshest.item.agentThreadId,
+    name: formatSubagentDisplayName(freshest.item),
+    step: freshest.step,
+  };
+}
+
+/** The provider's reported step, else the agent's own newest prose. */
+function liveAgentStep(item: SubagentProgressItem): string | null {
+  const step = item.telemetry?.step?.trim();
+  if (step) {
+    return step;
+  }
+  const line = item.liveBody
+    ?.split("\n")
+    .map((value) => value.trim())
+    .find((value) => value.length > 0);
+  return line ? normalizeSubagentInlineText(line) : null;
+}
+
+export interface LiveAgentIndicator {
+  /** How many agents are live right now; at least 1. */
+  readonly count: number;
+  /** How many of them are blocked on the user. Any at all turns the node amber,
+   *  since that is the only state on the button that asks for something. */
+  readonly waitingCount: number;
+}
+
+/**
+ * What the closed sidebar's panel button says about agents. Null when nothing is
+ * live, because the button then has nothing to add over its diffstat.
+ */
+export function summarizeLiveAgents(input: {
+  readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+}): LiveAgentIndicator | null {
+  const statuses = [
+    ...input.subagents.map((item) => subagentBranchStatus(item.status)),
+    ...input.backgroundRuns.map(backgroundRunBranchStatus),
+  ].filter(isLiveAgentBranchStatus);
+  if (statuses.length === 0) {
+    return null;
+  }
+  return {
+    count: statuses.length,
+    waitingCount: statuses.filter((status) => status === "waiting").length,
+  };
 }
 
 /**

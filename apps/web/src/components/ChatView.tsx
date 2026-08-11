@@ -79,6 +79,7 @@ import {
   deriveSubagentProgressState,
   deriveSubagentLiveEntries,
   deriveSubagentResultEntries,
+  deriveThreadSubagentHistory,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -134,6 +135,7 @@ import {
   useChatHeaderBottomVarRef,
 } from "../rightPanelLayout";
 import { publishAgentsPanelSource, selectAgentsPanelAgent } from "../agentsPanelStore";
+import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -1957,6 +1959,13 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [activeLatestTurn?.turnId, latestTurnSettled, threadActivities],
   );
+  // The turn-scoped progress above empties when the turn settles. The panel's
+  // history section and the conversation's receipts both need the thread's whole
+  // roster, which the same activities answer without the turn filter.
+  const subagentHistory = useMemo(
+    () => deriveThreadSubagentHistory(threadActivities),
+    [threadActivities],
+  );
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -3317,6 +3326,7 @@ export default function ChatView(props: ChatViewProps) {
       threadId: activeThreadId,
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       backgroundRuns,
+      history: subagentHistory,
       providerLabel: activeProviderDriver,
       threadCwd: gitCwd,
       onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
@@ -3329,6 +3339,7 @@ export default function ChatView(props: ChatViewProps) {
     environmentId,
     gitCwd,
     stopBackgroundRun,
+    subagentHistory,
     subagentProgress?.items,
     toggleBackgroundRunTerminal,
   ]);
@@ -6338,6 +6349,16 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, navigate],
   );
 
+  /** The closed panel button's live-agent node. */
+  const headerLiveAgents = useMemo(
+    () =>
+      summarizeLiveAgents({
+        subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
+        backgroundRuns,
+      }),
+    [backgroundRuns, subagentProgress?.items],
+  );
+
   /** The turn activity row's agent summary. */
   const timelineTurnAgents = useMemo<TimelineTurnAgentsState | null>(() => {
     const subagents = subagentProgress?.items;
@@ -6440,6 +6461,7 @@ export default function ChatView(props: ChatViewProps) {
           onToggleBrowser={handleToggleBrowser}
           workingTreeDiffStat={workingTreeDiffStat}
           remoteBehindCount={remoteBehindCount}
+          liveAgents={headerLiveAgents}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}

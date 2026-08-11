@@ -113,6 +113,12 @@ export interface WorkLogEntry {
    *  the main model's. Drives the indented child-row rendering in the
    *  timeline. */
   subagentTask?: { subagentType: string | null; toolUseId: string | null };
+  /** The spawned agent this row's activity actually belongs to, as stamped by
+   *  the provider. Unlike `subagentTask` — which a parent's own Task tool rows
+   *  also carry — this is set only when the work was done BY the child, so it
+   *  is the test for "this is not the main agent's activity". The conversation
+   *  excludes these rows; the rail's Agents tab owns them. */
+  sourceAgentThreadId?: string;
   /** Provider tool call id backing this row, when the activity carried one.
    *  Lets the timeline correlate a subagent lane with its spawn row. */
   toolCallId?: string;
@@ -783,16 +789,7 @@ export function deriveSubagentProgressState(input: {
   const visibleRecords = records.filter(
     (record) => record.status !== "completed" || input.latestTurnSettled === false,
   );
-  const items = visibleRecords.map(
-    ({
-      resolvedModel: _resolvedModel,
-      liveBodyUpdatedAt: _liveBodyUpdatedAt,
-      resultActivityId: _resultActivityId,
-      resultBody: _resultBody,
-      resultCreatedAt: _resultCreatedAt,
-      ...item
-    }) => item,
-  );
+  const items = visibleRecords.map(toSubagentProgressItem);
   if (items.length === 0) {
     return null;
   }
@@ -827,6 +824,46 @@ export function deriveSubagentProgressState(input: {
     summary,
     badge,
   };
+}
+
+/** Strips the bookkeeping fields the collector carries for its own use. */
+function toSubagentProgressItem(record: InternalSubagentRecord): SubagentProgressItem {
+  const {
+    resolvedModel: _resolvedModel,
+    liveBodyUpdatedAt: _liveBodyUpdatedAt,
+    resultActivityId: _resultActivityId,
+    resultBody: _resultBody,
+    resultCreatedAt: _resultCreatedAt,
+    ...item
+  } = record;
+  return item;
+}
+
+/** One agent this thread has run, at its latest known lifecycle state. */
+export interface ThreadSubagentHistoryEntry {
+  readonly item: SubagentProgressItem;
+  /** The agent's final report, when it filed one. */
+  readonly resultBody: string | null;
+}
+
+/**
+ * Every agent the thread has ever spawned, oldest first, with no turn scoping.
+ *
+ * {@link deriveSubagentProgressState} answers "what is this turn doing", so it
+ * scopes to the latest turn and drops settled agents once that turn ends. The
+ * agents panel's history needs the other question — "what has this thread run"
+ * — which is the same collector without the visibility filter. It reads from
+ * the thread's projected activities, so it survives turn end and reload alike
+ * (bounded only by the server's `MAX_THREAD_ACTIVITIES` window, which caps
+ * every activity-derived read model equally).
+ */
+export function deriveThreadSubagentHistory(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ThreadSubagentHistoryEntry[] {
+  return collectSubagentActivityRecords(activities, {}).map((record) => ({
+    item: toSubagentProgressItem(record),
+    resultBody: record.resultBody,
+  }));
 }
 
 export function deriveSubagentResultEntries(
@@ -2076,6 +2113,7 @@ function toDerivedWorkLogEntry(
         asTrimmedString(payloadData?.sourceAgentLabel),
       toolUseId: sourceAgentThreadId,
     };
+    entry.sourceAgentThreadId = sourceAgentThreadId;
   }
   if (itemType === "collab_agent_tool_call") {
     const spawnToolUseId = extractToolCallId(payload);

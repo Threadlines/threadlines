@@ -2837,7 +2837,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "The agents tab never opened on a phone width.",
       );
       expect(agentsPanel.closest('[data-slot="sheet-popup"]')).not.toBeNull();
-      await expect.element(page.getByText("No agents on this turn.")).toBeVisible();
+      await expect.element(page.getByText(/No agents yet\./u)).toBeVisible();
 
       // Closed and reopened, the sheet comes back on Agents — the same
       // closed-to-`agents=1` transition the activity chip performs, which is

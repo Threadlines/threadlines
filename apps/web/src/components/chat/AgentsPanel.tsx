@@ -2,17 +2,18 @@ import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { XIcon } from "lucide-react";
 import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
-import type { SubagentProgressItem } from "../../session-logic";
+import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "../../session-logic";
 import { cn } from "~/lib/utils";
 import { selectAgentsPanelAgent, useSelectedAgentId } from "../../agentsPanelStore";
 import type { Icon } from "../Icons";
 import { Button } from "../ui/button";
-import { LiveNode } from "../ui/threadline";
+import { LiveNode, SectionLabel } from "../ui/threadline";
 import { providerIconForDriverLabel } from "./providerIconUtils";
 import { SubagentInspector } from "./SubagentInspector";
 import { deriveSubagentDisplayDetails, type ThreadBackgroundRunItem } from "./threadActivity";
 import {
-  buildAgentBranches,
+  buildAgentsPanelView,
+  findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
   hasRunningAgentActivity,
   type AgentBranch,
@@ -24,6 +25,9 @@ export interface AgentsPanelProps {
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Every agent the thread has run, from its durable activity projection. Keeps
+   *  the panel populated (and receipts resolvable) after the turn ends. */
+  history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
   /** Drives the trunk hue, the branch glyphs and the provenance chip, e.g. `codex`. */
   providerLabel?: string | null | undefined;
   /** Working directory, used to resolve file references in agent prose. */
@@ -210,6 +214,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   threadId,
   subagents,
   backgroundRuns,
+  history,
   providerLabel,
   threadCwd,
   embedded = false,
@@ -219,14 +224,14 @@ export const AgentsPanel = memo(function AgentsPanel({
 }: AgentsPanelProps) {
   const selectedAgentId = useSelectedAgentId();
 
-  const branches = useMemo(
-    () => buildAgentBranches({ subagents, backgroundRuns, providerLabel }),
-    [backgroundRuns, providerLabel, subagents],
+  const view = useMemo(
+    () => buildAgentsPanelView({ subagents, backgroundRuns, history, providerLabel }),
+    [backgroundRuns, history, providerLabel, subagents],
   );
   const headerMeta = useMemo(() => formatAgentsHeaderMeta({ subagents }), [subagents]);
   const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
   const anyRunning = hasRunningAgentActivity({ subagents, backgroundRuns });
-  const selectedSubagent = subagents.find((item) => item.agentThreadId === selectedAgentId) ?? null;
+  const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
 
   const handleSelect = useCallback(
     (branch: AgentBranch) => {
@@ -333,12 +338,12 @@ export const AgentsPanel = memo(function AgentsPanel({
         className="min-h-0 flex-1 overflow-y-auto"
         style={{ ["--agents-trunk"]: trunkColor(providerLabel) } as CSSProperties}
       >
-        {branches.length === 0 ? (
+        {!view.hasAny ? (
           <p
             className="px-4 py-6 text-[12px] text-muted-foreground/55"
             data-agents-panel-empty="true"
           >
-            No agents on this turn.
+            No agents yet. Subagents and background runs on this thread will appear here.
           </p>
         ) : (
           <div className="relative">
@@ -348,7 +353,7 @@ export const AgentsPanel = memo(function AgentsPanel({
               style={TRUNK_STYLE}
             />
             <ul className="relative divide-y divide-border/60">
-              {branches.map((branch) => (
+              {view.current.map((branch) => (
                 <BranchRow
                   key={branch.key}
                   branch={branch}
@@ -358,6 +363,30 @@ export const AgentsPanel = memo(function AgentsPanel({
                 />
               ))}
             </ul>
+            {view.earlier.length > 0 ? (
+              <>
+                {/* The trunk runs behind this, so the label needs the rail's own
+                    background to sit on rather than a line through its text. */}
+                <SectionLabel
+                  className="relative bg-rail py-2 pr-4 pl-4"
+                  tick={false}
+                  data-agents-panel-earlier="true"
+                >
+                  Earlier
+                </SectionLabel>
+                <ul className="relative divide-y divide-border/60 border-t border-border/60">
+                  {view.earlier.map((branch) => (
+                    <BranchRow
+                      key={branch.key}
+                      branch={branch}
+                      providerGlyph={providerGlyph}
+                      onSelect={handleSelect}
+                      onStop={handleStop}
+                    />
+                  ))}
+                </ul>
+              </>
+            ) : null}
           </div>
         )}
       </div>

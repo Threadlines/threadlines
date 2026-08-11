@@ -11,7 +11,7 @@ import { create } from "zustand";
 
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 
-import type { SubagentProgressItem } from "./session-logic";
+import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "./session-logic";
 import type { ThreadBackgroundRunItem } from "./components/chat/threadActivity";
 
 export interface AgentsPanelSource {
@@ -19,6 +19,10 @@ export interface AgentsPanelSource {
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Every agent the thread has run, live or long finished. Published alongside
+   *  the live items so the panel and the conversation's receipts resolve the
+   *  same set of agents. */
+  history: ReadonlyArray<ThreadSubagentHistoryEntry>;
   /** Provider driver label, e.g. `codex`; drives the trunk hue and run chips. */
   providerLabel: string | null;
   threadCwd: string | null;

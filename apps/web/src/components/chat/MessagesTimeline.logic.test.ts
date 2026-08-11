@@ -277,6 +277,45 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("keeps a subagent's own tool calls out of the conversation's work rows", () => {
+    const workEntry = (id: string, overrides: Partial<WorkLogEntry> = {}) => ({
+      id,
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      entry: {
+        id,
+        createdAt: "2026-01-01T00:00:00Z",
+        label: id,
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+        ...overrides,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        workEntry("main-read"),
+        workEntry("child-read", { sourceAgentThreadId: "agent-1" }),
+        workEntry("child-edit", { sourceAgentThreadId: "agent-1" }),
+        workEntry("main-edit"),
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // One group of the main agent's two rows: the receipt's "2 actions" count
+    // comes straight off this list, so excluding here excludes from the count.
+    expect(rows.length).toBe(1);
+    const [row] = rows;
+    expect(row?.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : null).toEqual([
+      "main-read",
+      "main-edit",
+    ]);
+  });
+
   it("uses the active status label for the live activity row", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],
