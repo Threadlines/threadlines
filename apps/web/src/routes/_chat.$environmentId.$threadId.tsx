@@ -296,6 +296,9 @@ function ChatThreadRouteView() {
       search: (previous) => ({
         ...stripRightPanelSearchParams(previous),
         sourceControl: "1",
+        // Explicit, not just stripped: the agents panel's per-thread memory
+        // would otherwise reopen it and keep suppressing source control.
+        agents: "0",
       }),
     });
   }, [navigate, threadRef]);

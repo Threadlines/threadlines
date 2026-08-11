@@ -270,11 +270,13 @@ export const AgentsPanel = memo(function AgentsPanel({
             {headerMeta}
           </span>
           {onClose ? (
+            // Always visible: once the turn ends the header's activity chip
+            // disappears, and this X is the only way left to close the panel.
             <Button
               type="button"
               variant="ghost"
               size="icon-xs"
-              className="-mr-1 shrink-0 sm:hidden"
+              className="-mr-1 shrink-0"
               aria-label="Close agents panel"
               onClick={onClose}
             >
