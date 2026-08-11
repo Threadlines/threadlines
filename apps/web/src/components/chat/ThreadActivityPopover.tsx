@@ -51,32 +51,20 @@ import {
   resolveSubagentModelLabel,
   SubagentModelMeta,
 } from "./subagentMeta";
+import {
+  backgroundRunCommandText,
+  backgroundRunMetaItems,
+  backgroundRunSourceLabel,
+  deriveSubagentDisplayDetails,
+  normalizeSubagentInlineText,
+  type ThreadBackgroundRunItem,
+} from "./threadActivity";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
   activeProposedPlan: LatestProposedPlanState | null;
   badge: PlanTaskBadgeState | null;
   label: string;
-}
-
-export interface ThreadBackgroundRunItem {
-  id: string;
-  source: "terminal" | "provider" | "detected";
-  providerKind?: "task" | "command" | undefined;
-  label: string;
-  command?: string | null;
-  detail: string | null;
-  cwd: string | null;
-  statusLabel: string;
-  urls: ReadonlyArray<string>;
-  pids?: ReadonlyArray<number> | undefined;
-  commandHints?: ReadonlyArray<string> | undefined;
-  terminalId: string | null;
-  terminalVisible?: boolean | undefined;
-  pid: number | null;
-  port: number | null;
-  elapsed: string | null;
-  canStop: boolean;
 }
 
 interface ThreadActivityPopoverProps {
@@ -112,13 +100,6 @@ interface ActivityTriggerState {
   ariaLabel: string;
   tooltipText: string;
   summary: string;
-}
-
-export interface SubagentDisplayDetails {
-  goal: string | null;
-  /** Where the agent is working, lifted out of the objective prose. */
-  context: string | null;
-  title: string | null;
 }
 
 const COLLAPSED_TASK_LIMIT = 3;
@@ -393,6 +374,57 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
   );
 }
 
+/**
+ * The header's activity chip. Same read as before — task, subagent and
+ * background-run counts at a glance, with the summary on hover — but pressing
+ * it now opens the agents panel instead of a popover, so the turn's
+ * orchestration gets a surface it can actually be worked in.
+ */
+export function ThreadActivityChip({
+  taskProgress,
+  subagentProgress,
+  backgroundRuns,
+  pressed,
+  onClick,
+}: {
+  taskProgress: ThreadTaskProgressState | null;
+  subagentProgress: SubagentProgressState | null;
+  backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  pressed: boolean;
+  onClick: () => void;
+}) {
+  const triggerState = deriveThreadActivityTriggerState({
+    taskProgress,
+    subagentProgress,
+    backgroundRuns,
+  });
+
+  if (!triggerState) {
+    return null;
+  }
+
+  return (
+    <TooltipWrapper tooltip={triggerState.tooltipText}>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        aria-label={triggerState.ariaLabel}
+        aria-pressed={pressed}
+        data-thread-activity-chip="true"
+        className={cn(
+          "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
+          triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
+          triggerState.mode === "mixed" && "max-w-44",
+        )}
+        onClick={onClick}
+      >
+        <TriggerContent state={triggerState} />
+      </Button>
+    </TooltipWrapper>
+  );
+}
+
 function taskStatusIcon(status: ActivePlanState["steps"][number]["status"]): ReactNode {
   if (status === "completed") {
     return (
@@ -500,100 +532,6 @@ function subagentStatusIcon(status: SubagentProgressItem["status"]): ReactNode {
       <LoaderIcon className="size-2.5 animate-spin" aria-hidden="true" />
     </span>
   );
-}
-
-export function deriveSubagentDisplayDetails(
-  item: Pick<SubagentProgressItem, "objective">,
-): SubagentDisplayDetails {
-  const rawObjective = item.objective?.trim() || null;
-  const normalizedObjective = rawObjective ? normalizeSubagentInlineText(rawObjective) : null;
-  const objectiveParts = normalizedObjective
-    ? parseSubagentDisplayObjective(normalizedObjective)
-    : null;
-  return {
-    goal: objectiveParts?.goal || normalizedObjective,
-    context: objectiveParts?.context ?? null,
-    title: rawObjective,
-  };
-}
-
-function normalizeSubagentInlineText(value: string): string {
-  return value.trim().replace(/\s+/gu, " ");
-}
-
-function parseSubagentDisplayObjective(value: string): {
-  goal: string | null;
-  context: string | null;
-} {
-  const goalMatch = /\bGoal\s*:/iu.exec(value);
-  if (goalMatch) {
-    return {
-      goal: value.slice(goalMatch.index + goalMatch[0].length).trim() || null,
-      context: subagentContextFromGoalPrefix(value.slice(0, goalMatch.index)),
-    };
-  }
-
-  return subagentObjectiveWithoutLocation(value) ?? { goal: value, context: null };
-}
-
-function subagentContextFromGoalPrefix(prefix: string): string | null {
-  const cleanedPrefix = normalizeSubagentInlineText(prefix).replace(/[.:\s]+$/u, "");
-  if (!cleanedPrefix) {
-    return null;
-  }
-
-  const locationMatch = /^(.+?)\s+in\s+(.+)$/iu.exec(cleanedPrefix);
-  if (locationMatch) {
-    const action = normalizeSubagentInlineText(locationMatch[1] ?? "");
-    const location = normalizeSubagentInlineText(locationMatch[2] ?? "");
-    if (action && looksLikeSubagentLocation(location)) {
-      return titleCaseSubagentContext(action);
-    }
-  }
-
-  return cleanedPrefix.length <= 56 ? titleCaseSubagentContext(cleanedPrefix) : null;
-}
-
-function subagentObjectiveWithoutLocation(value: string): {
-  goal: string | null;
-  context: string | null;
-} | null {
-  const locationMatch = /^(.+?)\s+in\s+(.+)$/iu.exec(value);
-  const action = normalizeSubagentInlineText(locationMatch?.[1] ?? "");
-  const remainder = normalizeSubagentInlineText(locationMatch?.[2] ?? "");
-  if (!action || !looksLikeSubagentLocation(remainder)) {
-    return null;
-  }
-
-  const boundaryMatch = /[.!?]\s+(?=\S)/u.exec(remainder);
-  if (!boundaryMatch) {
-    return null;
-  }
-
-  const goal = remainder.slice(boundaryMatch.index + boundaryMatch[0].length).trim();
-  if (!goal) {
-    return null;
-  }
-
-  return {
-    goal,
-    context: titleCaseSubagentContext(action),
-  };
-}
-
-function looksLikeSubagentLocation(value: string): boolean {
-  return (
-    /^[A-Za-z]:[\\/]/u.test(value) ||
-    value.startsWith("\\\\") ||
-    value.startsWith("/") ||
-    value.includes("\\") ||
-    value.includes("/")
-  );
-}
-
-function titleCaseSubagentContext(value: string): string {
-  const normalized = normalizeSubagentInlineText(value);
-  return normalized ? normalized[0]!.toUpperCase() + normalized.slice(1) : normalized;
 }
 
 function formatCount(count: number, singular: string, plural: string): string {
@@ -1090,38 +1028,6 @@ function SubagentSection({
   );
 }
 
-function backgroundRunFallbackDetail(run: ThreadBackgroundRunItem): string {
-  if (run.source === "terminal") {
-    return "Managed terminal";
-  }
-  if (run.source === "detected") {
-    return "Detected local process";
-  }
-  return "Provider-managed";
-}
-
-function backgroundRunCommandText(run: ThreadBackgroundRunItem): string {
-  if (run.command && run.command.trim().length > 0) {
-    return run.command;
-  }
-  const detail = run.detail ?? run.cwd ?? backgroundRunFallbackDetail(run);
-  const detectedCommandSeparator = " - ";
-  if (run.source === "detected" && detail.includes(detectedCommandSeparator)) {
-    return detail.slice(detail.indexOf(detectedCommandSeparator) + detectedCommandSeparator.length);
-  }
-  return detail;
-}
-
-export function backgroundRunSourceLabel(run: ThreadBackgroundRunItem): string {
-  if (run.source === "terminal") {
-    return run.terminalVisible ? "Active terminal" : "Terminal";
-  }
-  if (run.source === "detected") {
-    return run.port === null ? "Detected agent process" : "Detected agent preview";
-  }
-  return run.providerKind === "command" ? "Agent command" : "Agent task";
-}
-
 function isInformativeBackgroundRunCommand(commandText: string): boolean {
   return (
     commandText.includes(" ") ||
@@ -1129,14 +1035,6 @@ function isInformativeBackgroundRunCommand(commandText: string): boolean {
     commandText.includes("/") ||
     commandText.includes("\\")
   );
-}
-
-function backgroundRunMetaItems(run: ThreadBackgroundRunItem): string[] {
-  return [
-    run.pid === null ? null : `PID ${run.pid}`,
-    run.port === null ? null : `:${run.port}`,
-    run.elapsed ? `Up ${run.elapsed}` : null,
-  ].filter((item): item is string => item !== null);
 }
 
 function BackgroundRunsSection({

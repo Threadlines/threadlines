@@ -47,6 +47,7 @@ import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
+  closeAgentsPanelSearchParams,
   closeRightPanelSearchParams,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
@@ -79,6 +80,7 @@ import {
   formatElapsed,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
+  type SubagentProgressItem,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -120,10 +122,12 @@ import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-  draftSourceControlPanelStateKey,
+  draftRightPanelStateKey,
+  useAgentsPanelOpen,
   useChatHeaderBottomVarRef,
   useSourceControlPanelOpen,
 } from "../rightPanelLayout";
+import { publishAgentsPanelSource } from "../agentsPanelStore";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -192,7 +196,11 @@ import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
+import {
+  MessagesTimeline,
+  type TimelineProposedPlanState,
+  type TimelineTurnAgentsState,
+} from "./chat/MessagesTimeline";
 import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { useFirstRunSetupCard } from "./chat/FirstRunSetupCard";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
@@ -204,7 +212,7 @@ import {
   pickedElementFromPreview,
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
-import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
+import type { ThreadBackgroundRunItem } from "./chat/threadActivity";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -327,6 +335,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_SUBAGENT_ITEMS: ReadonlyArray<SubagentProgressItem> = [];
 const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_PROVIDER_DRIVER = ProviderDriverKind.make("claudeAgent");
 const LAYOUT_STICK_TO_BOTTOM_FRAME_COUNT = 4;
@@ -1288,10 +1297,11 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = useSourceControlPanelOpen(
-    rawSearch,
-    routeKind === "draft" && draftId ? draftSourceControlPanelStateKey(draftId) : routeThreadKey,
-  );
+  const rightPanelStateKey =
+    routeKind === "draft" && draftId ? draftRightPanelStateKey(draftId) : routeThreadKey;
+  const agentsPanelOpen = useAgentsPanelOpen(rawSearch, rightPanelStateKey);
+  const sourceControlOpen =
+    useSourceControlPanelOpen(rawSearch, rightPanelStateKey) && !agentsPanelOpen;
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.
@@ -2680,6 +2690,41 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [activeThread, draftId, environmentId, navigate, routeKind, threadId]);
 
+  /**
+   * The header's activity chip owns this. Opening takes the right-panel slot
+   * from source control; closing only clears the agents key, so the slot goes
+   * back to whatever source control state the thread already had.
+   */
+  const onToggleAgentsPanel = useCallback(() => {
+    if (!activeThread) {
+      return;
+    }
+    const nextSearch = agentsPanelOpen
+      ? (previous: Record<string, unknown>) => closeAgentsPanelSearchParams(previous)
+      : (previous: Record<string, unknown>) => ({
+          ...stripRightPanelSearchParams(previous),
+          agents: "1" as const,
+        });
+    if (routeKind === "draft" && draftId) {
+      void navigate({
+        to: "/draft/$draftId",
+        params: buildDraftThreadRouteParams(draftId),
+        replace: true,
+        search: nextSearch,
+      });
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: {
+        environmentId,
+        threadId,
+      },
+      replace: true,
+      search: nextSearch,
+    });
+  }, [activeThread, agentsPanelOpen, draftId, environmentId, navigate, routeKind, threadId]);
+
   const onToggleSourceControl = useCallback(() => {
     if (!activeThread) {
       return;
@@ -3249,6 +3294,36 @@ export default function ChatView(props: ChatViewProps) {
     },
     [activeThreadId, activeThreadRef, requestCloseTerminal, setThreadError],
   );
+
+  // The agents panel mounts in the route's right-panel slot, beside the chat
+  // column, so the live turn state it renders has to be published out of here.
+  useEffect(() => {
+    if (!activeThreadId) {
+      publishAgentsPanelSource(null);
+      return;
+    }
+    publishAgentsPanelSource({
+      environmentId,
+      threadId: activeThreadId,
+      subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
+      backgroundRuns,
+      providerLabel: activeProviderDriver,
+      threadCwd: gitCwd,
+      onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
+      onStopBackgroundRun: stopBackgroundRun,
+    });
+  }, [
+    activeProviderDriver,
+    activeThreadId,
+    backgroundRuns,
+    environmentId,
+    gitCwd,
+    stopBackgroundRun,
+    subagentProgress?.items,
+    toggleBackgroundRunTerminal,
+  ]);
+  useEffect(() => () => publishAgentsPanelSource(null), []);
+
   const confirmPendingTerminalKill = useCallback(() => {
     if (!pendingTerminalKill) return;
     performCloseTerminal(
@@ -6041,17 +6116,6 @@ export default function ChatView(props: ChatViewProps) {
     setPlanScrollTarget(null);
   }, [activeThread?.id]);
 
-  const onViewProposedPlan = useCallback(() => {
-    if (!sidebarProposedPlan) {
-      return;
-    }
-    const planId = sidebarProposedPlan.id;
-    setPlanScrollTarget((current) => ({
-      planId,
-      requestKey: (current?.requestKey ?? 0) + 1,
-    }));
-  }, [sidebarProposedPlan]);
-
   const onImplementProposedPlanInThread = useCallback(() => {
     if (!activeProposedPlan) {
       return;
@@ -6275,6 +6339,22 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, navigate],
   );
 
+  /** The turn activity row's agent summary, and the panel it opens. */
+  const timelineTurnAgents = useMemo<TimelineTurnAgentsState | null>(() => {
+    const subagents = subagentProgress?.items;
+    if (!subagents || subagents.length === 0) {
+      return null;
+    }
+    return {
+      subagents,
+      onOpenPanel: () => {
+        if (!agentsPanelOpen) {
+          onToggleAgentsPanel();
+        }
+      },
+    };
+  }, [agentsPanelOpen, onToggleAgentsPanel, subagentProgress?.items]);
+
   const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(
     () => ({
       activePlanId: hasActionableProposedPlan(activeProposedPlan)
@@ -6357,23 +6437,12 @@ export default function ChatView(props: ChatViewProps) {
           subagentProgress={subagentProgress}
           forkContext={forkHeaderContext}
           backgroundRuns={backgroundRuns}
+          agentsPanelOpen={agentsPanelOpen}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
-          onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
-          onStopBackgroundRun={stopBackgroundRun}
-          onViewProposedPlan={
-            taskProgressProposedPlan !== null && !isGeneralChatThread
-              ? onViewProposedPlan
-              : undefined
-          }
-          onImplementProposedPlan={
-            canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
-          }
-          onDismissProposedPlan={
-            canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
-          }
+          onToggleAgentsPanel={onToggleAgentsPanel}
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleSourceControl={onToggleSourceControl}
@@ -6469,6 +6538,7 @@ export default function ChatView(props: ChatViewProps) {
               searchTarget={timelineSearchTarget}
               planScrollTarget={planScrollTarget}
               proposedPlanState={timelineProposedPlanState}
+              turnAgents={timelineTurnAgents}
             />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom.

@@ -3,7 +3,7 @@ import type {
   ProviderSubagentTranscriptResult,
   ThreadId,
 } from "@threadlines/contracts";
-import { BotIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, BotIcon, XIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import {
@@ -16,7 +16,7 @@ import { useServerProviders } from "../../rpc/serverState";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { LiveNode } from "../ui/threadline";
-import type { SubagentDisplayDetails } from "./ThreadActivityPopover";
+import type { SubagentDisplayDetails } from "./threadActivity";
 import {
   formatSubagentMetaParts,
   resolveSubagentModelLabel,
@@ -30,6 +30,9 @@ interface SubagentInspectorProps {
   item: SubagentProgressItem;
   details: SubagentDisplayDetails;
   cwd?: string | undefined;
+  /** `back` returns to a list the inspector was drilled into (the agents
+   *  panel); `close` dismisses the surface entirely (the dialog). */
+  dismissVariant?: "close" | "back";
   onClose: () => void;
 }
 
@@ -49,6 +52,7 @@ export function SubagentInspector({
   item,
   details,
   cwd,
+  dismissVariant = "close",
   onClose,
 }: SubagentInspectorProps) {
   const [providerAgent, setProviderAgent] = useState<ProviderSubagentTranscriptResult["agent"]>();
@@ -85,9 +89,22 @@ export function SubagentInspector({
     >
       <header className="shrink-0 border-b border-border/65 px-4 py-3">
         <div className="flex min-w-0 items-start gap-2">
-          <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
-            <BotIcon className="size-3.5" aria-hidden="true" />
-          </span>
+          {dismissVariant === "back" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="-ml-1 shrink-0 text-muted-foreground/70"
+              aria-label="Back to agents"
+              onClick={onClose}
+            >
+              <ArrowLeftIcon className="size-3.5" aria-hidden="true" />
+            </Button>
+          ) : (
+            <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
+              <BotIcon className="size-3.5" aria-hidden="true" />
+            </span>
+          )}
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <h2 className="truncate text-[13px] font-medium text-foreground">{displayName}</h2>
@@ -138,16 +155,18 @@ export function SubagentInspector({
               </p>
             ) : null}
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            className="-mt-0.5 -mr-1 shrink-0 text-muted-foreground/70"
-            aria-label="Close subagent inspector"
-            onClick={onClose}
-          >
-            <XIcon className="size-3.5" aria-hidden="true" />
-          </Button>
+          {dismissVariant === "close" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="-mt-0.5 -mr-1 shrink-0 text-muted-foreground/70"
+              aria-label="Close subagent inspector"
+              onClick={onClose}
+            >
+              <XIcon className="size-3.5" aria-hidden="true" />
+            </Button>
+          ) : null}
         </div>
       </header>
 

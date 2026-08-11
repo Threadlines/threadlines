@@ -74,7 +74,7 @@ import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
-  resetSourceControlPanelStateMemoryForTests,
+  resetRightPanelStateMemoryForTests,
 } from "../rightPanelLayout";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -2169,7 +2169,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
-    resetSourceControlPanelStateMemoryForTests();
+    resetRightPanelStateMemoryForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({
       draftsByThreadKey: {},

@@ -34,7 +34,9 @@ import {
   shouldShowSubagentDisplayChip,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
+  type SubagentProgressItem,
 } from "../../session-logic";
+import { selectSubagentsForTurns, summarizeTurnAgents } from "./agentsPanel.logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
 import { type ChatAttachment, type TurnDiffSummary } from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
@@ -165,6 +167,14 @@ interface TimelineRowSharedState {
   searchTargetQuery: string;
   activeSearchTargetMessageId: MessageId | null;
   proposedPlanState: TimelineProposedPlanState | null;
+  turnAgents: TimelineTurnAgentsState | null;
+}
+
+/** The turn's spawned agents, summarized on the turn's activity row. Clicking
+ *  the summary opens the agents panel on that turn's work. */
+export interface TimelineTurnAgentsState {
+  readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  readonly onOpenPanel: () => void;
 }
 
 /** Lifecycle context for proposed-plan rows: which plan is still actionable,
@@ -585,6 +595,7 @@ interface MessagesTimelineProps {
     | null
     | undefined;
   proposedPlanState?: TimelineProposedPlanState | null | undefined;
+  turnAgents?: TimelineTurnAgentsState | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +641,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   searchTarget = null,
   planScrollTarget = null,
   proposedPlanState = null,
+  turnAgents = null,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
     () =>
@@ -1225,6 +1237,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       searchTargetQuery: searchTarget?.query ?? "",
       activeSearchTargetMessageId,
       proposedPlanState,
+      turnAgents,
     }),
     [
       timestampFormat,
@@ -1252,6 +1265,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       searchTarget?.query,
       activeSearchTargetMessageId,
       proposedPlanState,
+      turnAgents,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -2946,9 +2960,22 @@ function ActivityReceipt({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
+  const { turnAgents } = use(TimelineRowCtx);
   const summary = summarizeActivityReceipt(entries);
   const actionCount = entries.length;
   const duration = formatActivityDuration(entries);
+  const turnIds = useMemo(
+    () =>
+      new Set(
+        entries
+          .map((entry) => entry.turnId)
+          .filter((turnId): turnId is TurnId => turnId !== undefined && turnId !== null),
+      ),
+    [entries],
+  );
+  const agentSummary = turnAgents
+    ? summarizeTurnAgents(selectSubagentsForTurns(turnAgents.subagents, turnIds))
+    : null;
 
   return (
     <div className="flex min-w-0 items-start justify-between gap-3 py-1">
@@ -2961,6 +2988,34 @@ function ActivityReceipt({
             <>
               <span className="text-muted-foreground/35">·</span>
               <span>{duration}</span>
+            </>
+          ) : null}
+          {agentSummary && turnAgents ? (
+            <>
+              <span className="text-muted-foreground/35">·</span>
+              <button
+                type="button"
+                className="inline-flex min-w-0 items-center gap-1.5 transition-colors duration-150 hover:text-foreground/75"
+                aria-label={`${agentSummary.text}. Open the agents panel.`}
+                data-turn-agents-summary="true"
+                onClick={turnAgents.onOpenPanel}
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+                  {agentSummary.segments.map((segment) => (
+                    <span
+                      key={segment.id}
+                      className={cn(
+                        "block h-1 w-[22px] rounded-full",
+                        segment.status === "running" && "bg-primary-graph",
+                        segment.status === "waiting" && "bg-amber-500",
+                        segment.status === "failed" && "bg-destructive",
+                        segment.status === "completed" && "bg-muted-foreground/35",
+                      )}
+                    />
+                  ))}
+                </span>
+                <span className="truncate">{agentSummary.text}</span>
+              </button>
             </>
           ) : null}
         </p>

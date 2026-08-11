@@ -21,8 +21,8 @@ import {
 } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-  draftSourceControlPanelStateKey,
-  useAutoHideSourceControlSheet,
+  draftRightPanelStateKey,
+  useAutoHideRightPanelSheet,
   useSourceControlPanelOpen,
 } from "../rightPanelLayout";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -88,10 +88,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const rawSourceControlOpen = useSourceControlPanelOpen(
-    search,
-    draftSourceControlPanelStateKey(draftId),
-  );
+  const rawSourceControlOpen = useSourceControlPanelOpen(search, draftRightPanelStateKey(draftId));
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;
@@ -127,10 +124,10 @@ function DraftChatThreadRouteView() {
       search: (previous) => closeRightPanelSearchParams(previous),
     });
   }, [draftId, navigate]);
-  const sourceControlAutoHidden = useAutoHideSourceControlSheet({
+  const sourceControlAutoHidden = useAutoHideRightPanelSheet({
     enabled: shouldUseSourceControlSheet,
     resetKey: draftId,
-    sourceControl: search.sourceControl,
+    panelState: search.sourceControl,
     onAutoHide: closeRightPanel,
   });
   const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatDraft;
@@ -273,7 +270,7 @@ function DraftChatThreadRouteView() {
         <ChatRightPanelInlineSidebar
           open={sourceControlOpen}
           onClose={closeRightPanel}
-          onOpenSourceControl={openSourceControl}
+          onRequestOpen={openSourceControl}
         >
           {sourceControlPanel}
         </ChatRightPanelInlineSidebar>

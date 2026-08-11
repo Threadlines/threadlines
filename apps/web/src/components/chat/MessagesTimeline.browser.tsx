@@ -225,6 +225,47 @@ function buildSubagentResultTimelineEntry(objective: string) {
   };
 }
 
+const ACTIVITY_ROW_TURN_ID = TurnId.make("turn-activity");
+
+/** Enough tool rows that the work row collapses into its activity receipt,
+ *  which is the row the subagent summary extends. */
+function buildOverflowingWorkTimelineEntries() {
+  return Array.from({ length: 8 }, (_, index) => ({
+    id: `work-${index}`,
+    kind: "work" as const,
+    createdAt: `2026-04-13T12:0${index}:00.000Z`,
+    entry: {
+      id: `work-${index}`,
+      createdAt: `2026-04-13T12:0${index}:00.000Z`,
+      turnId: ACTIVITY_ROW_TURN_ID,
+      label: "command",
+      detail: `Step ${index + 1}`,
+      command: `echo step-${index + 1}`,
+      tone: "tool" as const,
+    },
+  }));
+}
+
+function buildTurnSubagent(id: string, status: "running" | "completed" | "waiting") {
+  return {
+    id,
+    agentThreadId: id,
+    transcriptAgentId: id,
+    turnId: ACTIVITY_ROW_TURN_ID,
+    label: "Subagent",
+    role: null,
+    objective: "Review the change",
+    status,
+    statusLabel: status === "waiting" ? "Needs approval" : "Running",
+    model: null,
+    reasoningEffort: null,
+    liveBody: null,
+    telemetry: null,
+    createdAt: "2026-04-13T12:00:00.000Z",
+    updatedAt: "2026-04-13T12:00:10.000Z",
+  };
+}
+
 describe("MessagesTimeline", () => {
   afterEach(() => {
     scrollToEndSpy.mockReset();
@@ -1110,6 +1151,39 @@ describe("MessagesTimeline", () => {
 
       const messageBody = document.querySelector("[data-user-message-body='true']");
       expect(messageBody?.getAttribute("data-user-message-collapsed")).toBe("true");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("summarizes the turn's subagents on the activity row and opens the panel from it", async () => {
+    const onOpenPanel = vi.fn();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={buildOverflowingWorkTimelineEntries()}
+        turnAgents={{
+          subagents: [
+            buildTurnSubagent("agent-1", "running"),
+            buildTurnSubagent("agent-2", "running"),
+            buildTurnSubagent("agent-3", "completed"),
+            buildTurnSubagent("agent-4", "waiting"),
+            // A different turn's agent must not be counted on this row.
+            { ...buildTurnSubagent("agent-5", "running"), turnId: TurnId.make("turn-other") },
+          ],
+          onOpenPanel,
+        }}
+      />,
+    );
+
+    try {
+      const summary = page.getByRole("button", {
+        name: "4 subagents · 1 done · 1 needs you. Open the agents panel.",
+      });
+      await expect.element(summary).toBeVisible();
+
+      await summary.click();
+      expect(onOpenPanel).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
     }

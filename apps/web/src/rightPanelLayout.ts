@@ -1,6 +1,10 @@
 import { type RefCallback, useCallback, useEffect, useRef } from "react";
 
-import { type DiffRouteSearch, isSourceControlPanelOpen } from "./diffRouteSearch";
+import {
+  type DiffRouteSearch,
+  isAgentsPanelOpen,
+  isSourceControlPanelOpen,
+} from "./diffRouteSearch";
 import { isElectron } from "./env";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { useSettings } from "./hooks/useSettings";
@@ -35,6 +39,18 @@ export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CL
 // overlays as a partial sheet (matching the app sidebar's rendered mobile
 // width) with a slice of the conversation visible and tappable to dismiss.
 export const RIGHT_PANEL_SOURCE_CONTROL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[var(--right-panel-inline-min-width)] min-w-[var(--right-panel-inline-min-width)] max-w-[var(--right-panel-inline-min-width)]`;
+// The agents tree carries three lines per branch, so it needs more room than
+// the source control list: 400px on anything wide enough, and as much of the
+// viewport as fits below that.
+export const RIGHT_PANEL_AGENTS_WIDTH = 400;
+export const RIGHT_PANEL_AGENTS_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(92vw,var(--right-panel-agents-width))] max-w-[var(--right-panel-agents-width)]`;
+// Its own storage key: the agents tree and the source control list want
+// different widths, and sharing one key would make each resize fight the other.
+export const RIGHT_PANEL_AGENTS_INLINE_SIDEBAR_WIDTH_STORAGE_KEY =
+  "chat_right_panel_agents_sidebar_width";
+export const RIGHT_PANEL_AGENTS_INLINE_DEFAULT_WIDTH = `${
+  RIGHT_PANEL_AGENTS_WIDTH + (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0)
+}px`;
 export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";
 
@@ -82,25 +98,52 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
   }, []);
 }
 
+type RightPanelKey = "sourceControl" | "agents";
+
 /**
- * Last explicit panel state per thread. The URL only carries explicit state
- * until the next thread navigation drops it, so without this memory an open
- * panel silently closes on the A -> B -> A round trip. Session-scoped on
+ * Last explicit state per thread, per panel. The URL only carries explicit
+ * state until the next thread navigation drops it, so without this memory an
+ * open panel silently closes on the A -> B -> A round trip. Session-scoped on
  * purpose: a fresh launch starts from the settings default again.
  */
-const sourceControlPanelStateByThreadKey = new Map<string, "1" | "0">();
+const rightPanelStateByThreadKey = new Map<string, Partial<Record<RightPanelKey, "1" | "0">>>();
 
 /**
  * Memory key for a draft route's panel state, distinct from the
  * `environmentId:threadId` keys server threads use. The draft route and the
  * chat header resolve the same draft through this so they agree.
  */
-export function draftSourceControlPanelStateKey(draftId: string): string {
+export function draftRightPanelStateKey(draftId: string): string {
   return `draft:${draftId}`;
 }
 
-export function resetSourceControlPanelStateMemoryForTests(): void {
-  sourceControlPanelStateByThreadKey.clear();
+export function resetRightPanelStateMemoryForTests(): void {
+  rightPanelStateByThreadKey.clear();
+}
+
+/**
+ * Records the panel's explicit state for the thread and reports what was last
+ * recorded, so a thread reopens the way it was left. Only explicit values are
+ * written: a panel that merely defaulted open never poisons the memory.
+ */
+function useRememberedRightPanelState(
+  panel: RightPanelKey,
+  threadPanelStateKey: string | null,
+  explicitState: "1" | "0" | undefined,
+): "1" | "0" | undefined {
+  useEffect(() => {
+    if (threadPanelStateKey && explicitState) {
+      const remembered = rightPanelStateByThreadKey.get(threadPanelStateKey) ?? {};
+      rightPanelStateByThreadKey.set(threadPanelStateKey, {
+        ...remembered,
+        [panel]: explicitState,
+      });
+    }
+  }, [explicitState, panel, threadPanelStateKey]);
+
+  return threadPanelStateKey
+    ? rightPanelStateByThreadKey.get(threadPanelStateKey)?.[panel]
+    : undefined;
 }
 
 /**
@@ -124,31 +167,53 @@ export function useSourceControlPanelOpen(
 ): boolean {
   const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const defaultOpenSetting = useSettings((settings) => settings.sourceControlPanelDefaultOpen);
-  const explicitState = search.sourceControl;
-  useEffect(() => {
-    if (threadPanelStateKey && explicitState) {
-      sourceControlPanelStateByThreadKey.set(threadPanelStateKey, explicitState);
-    }
-  }, [explicitState, threadPanelStateKey]);
-  const rememberedState = threadPanelStateKey
-    ? sourceControlPanelStateByThreadKey.get(threadPanelStateKey)
-    : undefined;
+  const rememberedState = useRememberedRightPanelState(
+    "sourceControl",
+    threadPanelStateKey,
+    search.sourceControl,
+  );
   const defaultOpen = rememberedState !== undefined ? rememberedState === "1" : defaultOpenSetting;
   return isSourceControlPanelOpen(search, { defaultOpen: defaultOpen && !sheetLayout });
+}
+
+/**
+ * Whether the agents panel is showing. Same shape as source control minus the
+ * settings default: the panel has none, so a thread only reopens it when the
+ * user left it open there. The memory is gated to wide layouts for the same
+ * reason source control's is — in sheet mode the panel covers the
+ * conversation, so threads there always start closed.
+ */
+export function useAgentsPanelOpen(
+  search: DiffRouteSearch,
+  threadPanelStateKey: string | null,
+): boolean {
+  const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const rememberedState = useRememberedRightPanelState(
+    "agents",
+    threadPanelStateKey,
+    search.agents,
+  );
+  return isAgentsPanelOpen(search, { defaultOpen: rememberedState === "1" && !sheetLayout });
 }
 
 export function normalizeRightPanelStoredWidth(width: number) {
   return width <= RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH ? null : width;
 }
 
-export function useAutoHideSourceControlSheet(input: {
+/**
+ * An explicit `=1` carried into a narrow layout (or across a thread switch)
+ * closes itself, so a sheet never lands on top of the conversation the user
+ * navigated to. Shared by both right-panel sheets.
+ */
+export function useAutoHideRightPanelSheet(input: {
   enabled: boolean;
   resetKey: string | null;
-  sourceControl: "1" | "0" | undefined;
+  /** The raw explicit URL value for the panel, not the resolved boolean. */
+  panelState: "1" | "0" | undefined;
   blocked?: boolean;
   onAutoHide: () => void;
 }): boolean {
-  const { blocked, enabled, onAutoHide, resetKey, sourceControl } = input;
+  const { blocked, enabled, onAutoHide, resetKey, panelState } = input;
   const previousRef = useRef({
     enabled: false,
     resetKey: null as string | null,
@@ -156,7 +221,7 @@ export function useAutoHideSourceControlSheet(input: {
   const shouldAutoHide =
     enabled &&
     !blocked &&
-    sourceControl === "1" &&
+    panelState === "1" &&
     (!previousRef.current.enabled || resetKey !== previousRef.current.resetKey);
 
   useEffect(() => {

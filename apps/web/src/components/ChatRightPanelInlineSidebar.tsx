@@ -3,6 +3,8 @@ import { type CSSProperties, type ReactNode, useCallback } from "react";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import {
+  RIGHT_PANEL_AGENTS_INLINE_DEFAULT_WIDTH,
+  RIGHT_PANEL_AGENTS_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
   RIGHT_PANEL_INLINE_DEFAULT_WIDTH,
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,
@@ -16,22 +18,37 @@ export { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY };
 
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
+const INLINE_WIDTH_BY_SIZE = {
+  default: {
+    defaultWidth: RIGHT_PANEL_INLINE_DEFAULT_WIDTH,
+    storageKey: RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+  },
+  agents: {
+    defaultWidth: RIGHT_PANEL_AGENTS_INLINE_DEFAULT_WIDTH,
+    storageKey: RIGHT_PANEL_AGENTS_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+  },
+} as const;
+
 export function ChatRightPanelInlineSidebar(props: {
   open: boolean;
+  size?: keyof typeof INLINE_WIDTH_BY_SIZE;
   onClose: () => void;
-  onOpenSourceControl: () => void;
+  /** Reopens the panel the slot was last showing (the rail handle asks for
+   *  this, and it must reach the route so the URL agrees). */
+  onRequestOpen: () => void;
   children: ReactNode;
 }) {
-  const { open, onClose, onOpenSourceControl } = props;
+  const { open, onClose, onRequestOpen } = props;
+  const { defaultWidth, storageKey } = INLINE_WIDTH_BY_SIZE[props.size ?? "default"];
   const onOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
-        onOpenSourceControl();
+        onRequestOpen();
         return;
       }
       onClose();
     },
-    [onClose, onOpenSourceControl],
+    [onClose, onRequestOpen],
   );
   const shouldAcceptInlineSidebarWidth = useCallback(
     ({ nextWidth, wrapper }: { nextWidth: number; wrapper: HTMLElement }) => {
@@ -85,7 +102,7 @@ export function ChatRightPanelInlineSidebar(props: {
       open={open}
       onOpenChange={onOpenChange}
       className="w-auto min-h-0 flex-none bg-transparent"
-      style={{ "--sidebar-width": RIGHT_PANEL_INLINE_DEFAULT_WIDTH } as CSSProperties}
+      style={{ "--sidebar-width": defaultWidth } as CSSProperties}
     >
       <Sidebar
         side="right"
@@ -100,7 +117,7 @@ export function ChatRightPanelInlineSidebar(props: {
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
           normalizeStoredWidth: normalizeRightPanelStoredWidth,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
-          storageKey: RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+          storageKey,
         }}
       >
         {props.children}

@@ -18,11 +18,14 @@ import {
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import {
+  closeAgentsPanelSearchParams,
   closeRightPanelSearchParams,
   type DiffRouteSearch,
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
+import { AgentsPanel } from "../components/chat/AgentsPanel";
+import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
@@ -32,7 +35,8 @@ import {
 } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-  useAutoHideSourceControlSheet,
+  useAgentsPanelOpen,
+  useAutoHideRightPanelSheet,
   useSourceControlPanelOpen,
 } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
@@ -127,6 +131,8 @@ function ChatThreadRouteView() {
   const diffOpen = search.diff === "1";
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
   const rawSourceControlOpen = useSourceControlPanelOpen(search, currentThreadKey);
+  const rawAgentsOpen = useAgentsPanelOpen(search, currentThreadKey);
+  const agentsPanelSource = useAgentsPanelSource();
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
     ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)
@@ -242,16 +248,44 @@ function ChatThreadRouteView() {
       search: (previous) => closeRightPanelSearchParams(previous),
     });
   }, [navigate, threadRef]);
-  const sourceControlAutoHidden = useAutoHideSourceControlSheet({
+  const closeAgentsPanel = useCallback(() => {
+    if (!threadRef) {
+      return;
+    }
+    void navigate({
+      replace: true,
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+      search: (previous) => closeAgentsPanelSearchParams(previous),
+    });
+  }, [navigate, threadRef]);
+  const sourceControlAutoHidden = useAutoHideRightPanelSheet({
     enabled: shouldUseDiffSheet,
     resetKey: currentThreadKey,
-    sourceControl: search.sourceControl,
+    panelState: search.sourceControl,
     blocked: diffOpen,
     onAutoHide: closeRightPanel,
   });
+  const agentsAutoHidden = useAutoHideRightPanelSheet({
+    enabled: shouldUseDiffSheet,
+    resetKey: currentThreadKey,
+    panelState: search.agents,
+    blocked: diffOpen,
+    onAutoHide: closeAgentsPanel,
+  });
+  const agentsOpen = rawAgentsOpen && !agentsAutoHidden && agentsPanelSource !== null;
   const sourceControlOpen =
-    rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatThread;
-  const rightPanelOpen = diffOpen || sourceControlOpen;
+    rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatThread && !agentsOpen;
+  const rightPanelOpen = diffOpen || sourceControlOpen || agentsOpen;
+  // The slot's own dismissals (backdrop press, rail collapse) have to close
+  // whichever panel is actually showing, or the URL and the slot disagree.
+  const rightPanelCloseForLayout = useCallback(() => {
+    if (agentsOpen) {
+      closeAgentsPanel();
+      return;
+    }
+    closeRightPanel();
+  }, [agentsOpen, closeAgentsPanel, closeRightPanel]);
   const openSourceControl = useCallback(() => {
     if (!threadRef) {
       return;
@@ -350,8 +384,23 @@ function ChatThreadRouteView() {
   // so swapping between them never drops worker pools, highlight caches, or
   // scroll state, and the return trip is instant.
   const rightPanelContent =
-    sourceControlOpen || diffOpen ? (
+    sourceControlOpen || diffOpen || agentsOpen ? (
       <>
+        {agentsOpen && agentsPanelSource ? (
+          <div className="flex h-full w-full min-w-0 flex-col">
+            <AgentsPanel
+              environmentId={agentsPanelSource.environmentId}
+              threadId={agentsPanelSource.threadId}
+              subagents={agentsPanelSource.subagents}
+              backgroundRuns={agentsPanelSource.backgroundRuns}
+              providerLabel={agentsPanelSource.providerLabel}
+              threadCwd={agentsPanelSource.threadCwd}
+              onToggleBackgroundRunTerminal={agentsPanelSource.onToggleBackgroundRunTerminal}
+              onStopBackgroundRun={agentsPanelSource.onStopBackgroundRun}
+              onClose={closeAgentsPanel}
+            />
+          </div>
+        ) : null}
         <div
           className={cn(
             "h-full w-full min-w-0 flex-col",
@@ -401,8 +450,9 @@ function ChatThreadRouteView() {
         </SidebarInset>
         <ChatRightPanelInlineSidebar
           open={rightPanelOpen}
-          onClose={closeRightPanel}
-          onOpenSourceControl={openSourceControl}
+          size={agentsOpen ? "agents" : "default"}
+          onClose={rightPanelCloseForLayout}
+          onRequestOpen={openSourceControl}
         >
           {rightPanelContent}
         </ChatRightPanelInlineSidebar>
@@ -423,8 +473,8 @@ function ChatThreadRouteView() {
       </SidebarInset>
       <RightPanelSheet
         open={rightPanelOpen}
-        onClose={closeRightPanel}
-        size={sourceControlOpen && !diffOpen ? "sourceControl" : "default"}
+        onClose={rightPanelCloseForLayout}
+        size={agentsOpen ? "agents" : sourceControlOpen && !diffOpen ? "sourceControl" : "default"}
       >
         {rightPanelContent}
       </RightPanelSheet>
