@@ -72,7 +72,8 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
-import { RIGHT_PANEL_RAIL_WIDTH, resetRightPanelStateMemoryForTests } from "../rightPanelLayout";
+import { RIGHT_PANEL_RAIL_WIDTH } from "../rightPanelLayout";
+import { resetRightPanelTabsForTests } from "../rightPanelTabs";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -2166,7 +2167,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
-    resetRightPanelStateMemoryForTests();
+    resetRightPanelTabsForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({
       draftsByThreadKey: {},

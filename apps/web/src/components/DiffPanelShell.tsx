@@ -11,8 +11,11 @@ export function DiffPanelShell(props: {
   header: ReactNode;
   children: ReactNode;
   onEscape?: (() => void) | undefined;
+  /** Set when the panel renders under the right sidebar's tab strip, which
+   *  already carries the drag region and the window-controls inset. */
+  embedded?: boolean;
 }) {
-  const { onEscape } = props;
+  const { embedded = false, onEscape } = props;
   const handleKeyDown =
     onEscape && props.mode !== "sheet"
       ? (event: KeyboardEvent<HTMLDivElement>) => {
@@ -34,8 +37,15 @@ export function DiffPanelShell(props: {
       )}
       onKeyDown={handleKeyDown}
     >
-      <div className="drag-region shrink-0 border-b border-border">
-        <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+      <div className={cn("shrink-0 border-b border-border", !embedded && "drag-region")}>
+        <div
+          className={cn(
+            "@container/source-control-title flex items-center justify-between gap-2",
+            embedded
+              ? "h-9 px-3"
+              : "h-12 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+          )}
+        >
           {props.header}
         </div>
       </div>

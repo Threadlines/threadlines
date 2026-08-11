@@ -47,12 +47,20 @@ import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
-  closeAgentsPanelSearchParams,
-  closeRightPanelSearchParams,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
-  stripRightPanelSearchParams,
 } from "../diffRouteSearch";
+import {
+  availableRightPanelTabs,
+  focusRightPanelTab,
+  hideRightPanel,
+  retargetRightPanelDiff,
+  rightPanelTabSearchParams,
+  showRightPanel,
+  useRightPanelTabs,
+  type RightPanelDiffTarget,
+  type RightPanelTab,
+} from "../rightPanelTabs";
 import {
   collapseExpandedComposerCursor,
   parseComposerGoalCommand,
@@ -123,11 +131,7 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   draftRightPanelStateKey,
-  rememberedRightPanelTab,
-  useAgentsPanelOpen,
   useChatHeaderBottomVarRef,
-  useSourceControlPanelOpen,
-  type RightPanelTab,
 } from "../rightPanelLayout";
 import { publishAgentsPanelSource, selectAgentsPanelAgent } from "../agentsPanelStore";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
@@ -1301,14 +1305,13 @@ export default function ChatView(props: ChatViewProps) {
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const rightPanelStateKey =
     routeKind === "draft" && draftId ? draftRightPanelStateKey(draftId) : routeThreadKey;
-  const agentsPanelOpen = useAgentsPanelOpen(rawSearch, rightPanelStateKey);
-  const sourceControlOpen =
-    useSourceControlPanelOpen(rawSearch, rightPanelStateKey) && !agentsPanelOpen;
-  // The diff panel is a drill-in of the rail's Changes tab, so the header
-  // toggle treats the rail as one unit: it stays pressed while a diff is open
-  // and pressing it closes the whole rail.
-  const diffPanelOpen = rawSearch.diff === "1";
-  const rightPanelEngaged = sourceControlOpen || diffPanelOpen || agentsPanelOpen;
+  // The sidebar's tab strip is owned by the route that renders it; the header
+  // reads the same store so its panel button and activity chip agree with what
+  // is on screen. The button reflects the sidebar as a whole — it stays pressed
+  // on any tab, and on the launcher.
+  const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
+  const rightPanelEngaged = rightPanelTabs.visible;
+  const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1358,6 +1361,17 @@ export default function ChatView(props: ChatViewProps) {
   // General Chat threads run in a hidden scratch workspace: source-control,
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
+  // Which surfaces this thread's sidebar offers. Resolved from the same inputs
+  // the route uses, so the header's entry points can never land on a tab the
+  // strip would refuse to show.
+  const rightPanelAvailableTabs = useMemo(
+    () =>
+      availableRightPanelTabs({
+        isGeneralChat: isGeneralChatThread,
+        isDraft: routeKind === "draft" || !isServerThread,
+      }),
+    [isGeneralChatThread, isServerThread, routeKind],
+  );
   /**
    * A picked element becomes a context attached to the message, not text in it.
    * It is the same shape as a terminal excerpt or a highlighted quote: evidence
@@ -2668,45 +2682,19 @@ export default function ChatView(props: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle", nonTerminalShortcutLabelOptions),
     [keybindings, nonTerminalShortcutLabelOptions],
   );
-  const closeRightPanelForRoute = useCallback(() => {
-    if (!activeThread) {
-      return;
-    }
-    if (routeKind === "draft" && draftId) {
-      void navigate({
-        to: "/draft/$draftId",
-        params: buildDraftThreadRouteParams(draftId),
-        replace: true,
-        search: (previous) => closeRightPanelSearchParams(previous),
-      });
-      return;
-    }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId,
-      },
-      replace: true,
-      search: (previous) => closeRightPanelSearchParams(previous),
-    });
-  }, [activeThread, draftId, environmentId, navigate, routeKind, threadId]);
-
   /**
-   * Opens the rail on one of its tabs. Opening one tab writes the other's
-   * explicit `0`, so the thread's remembered state never reclaims the slot
-   * behind the tab the user just picked.
+   * Writes the sidebar's active tab into the URL for whichever route this chat
+   * column is rendered by. A null tab is the sidebar hidden or sitting on the
+   * launcher; the strip state itself lives in the shared tab store, which the
+   * route reads back on the next render.
    */
-  const openRailTab = useCallback(
-    (tab: RightPanelTab) => {
+  const navigateToRightPanelTab = useCallback(
+    (tab: RightPanelTab | null, diffTarget?: RightPanelDiffTarget | null) => {
       if (!activeThread) {
         return;
       }
-      const nextSearch = (previous: Record<string, unknown>) => ({
-        ...stripRightPanelSearchParams(previous),
-        agents: tab === "agents" ? ("1" as const) : ("0" as const),
-        sourceControl: tab === "sourceControl" ? ("1" as const) : ("0" as const),
-      });
+      const nextSearch = (previous: Record<string, unknown>) =>
+        rightPanelTabSearchParams(previous, tab, diffTarget);
       if (routeKind === "draft" && draftId) {
         void navigate({
           to: "/draft/$draftId",
@@ -2729,74 +2717,63 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, draftId, environmentId, navigate, routeKind, threadId],
   );
 
+  const openRightPanelTab = useCallback(
+    (tab: RightPanelTab, diffTarget?: RightPanelDiffTarget | null) => {
+      if (!activeThread || !rightPanelAvailableTabs.includes(tab)) {
+        return;
+      }
+      focusRightPanelTab(rightPanelStateKey, tab);
+      navigateToRightPanelTab(tab, diffTarget);
+    },
+    [activeThread, navigateToRightPanelTab, rightPanelAvailableTabs, rightPanelStateKey],
+  );
+
   /**
-   * The header's activity chip owns this: it deep-links to the rail's Agents
-   * tab, and pressing it again closes the rail.
+   * The header's activity chip: opens or focuses the Agents tab, and pressing
+   * it while Agents is the tab on screen puts the sidebar away again.
    */
   const onToggleAgentsPanel = useCallback(() => {
     if (!activeThread) {
       return;
     }
     if (agentsPanelOpen) {
-      if (routeKind === "draft" && draftId) {
-        void navigate({
-          to: "/draft/$draftId",
-          params: buildDraftThreadRouteParams(draftId),
-          replace: true,
-          search: (previous) => closeAgentsPanelSearchParams(previous),
-        });
-        return;
-      }
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: {
-          environmentId,
-          threadId,
-        },
-        replace: true,
-        search: (previous) => closeAgentsPanelSearchParams(previous),
-      });
+      hideRightPanel(rightPanelStateKey);
+      navigateToRightPanelTab(null);
       return;
     }
-    openRailTab("agents");
+    openRightPanelTab("agents");
   }, [
     activeThread,
     agentsPanelOpen,
-    draftId,
-    environmentId,
-    navigate,
-    openRailTab,
-    routeKind,
-    threadId,
+    navigateToRightPanelTab,
+    openRightPanelTab,
+    rightPanelStateKey,
   ]);
 
   /**
-   * The header's one rail entry point. Opening puts the rail back on the tab
-   * this thread was last left on; a thread with no memory opens on Changes,
-   * and a thread with no source control at all opens on Agents.
+   * The header's one sidebar entry point: it shows and hides the sidebar
+   * itself. Showing lands on the tab this thread was left on, and on the
+   * launcher when nothing is open — never on a bare panel.
    */
   const onToggleRail = useCallback(() => {
     if (!activeThread) {
       return;
     }
     if (rightPanelEngaged) {
-      closeRightPanelForRoute();
+      hideRightPanel(rightPanelStateKey);
+      navigateToRightPanelTab(null);
       return;
     }
-    // Drafts have no turn to show agents for, so their rail is Changes only.
-    const railHasAgentsTab = routeKind !== "draft";
-    const remembered = rememberedRightPanelTab(rightPanelStateKey);
-    const fallback: RightPanelTab = isGeneralChatThread ? "agents" : "sourceControl";
-    const tab = railHasAgentsTab ? (remembered ?? fallback) : "sourceControl";
-    openRailTab(tab);
+    const { activeTab, diffTarget } = showRightPanel(rightPanelStateKey, rightPanelAvailableTabs);
+    if (activeTab !== null) {
+      navigateToRightPanelTab(activeTab, activeTab === "diff" ? diffTarget : null);
+    }
   }, [
     activeThread,
-    closeRightPanelForRoute,
-    isGeneralChatThread,
-    openRailTab,
+    navigateToRightPanelTab,
+    rightPanelAvailableTabs,
     rightPanelEngaged,
     rightPanelStateKey,
-    routeKind,
   ]);
 
   const envLocked = Boolean(
@@ -2890,13 +2867,15 @@ export default function ChatView(props: ChatViewProps) {
     // in, so a terminal opened behind it would be invisible — close the
     // panel and let the drawer take the stage.
     if (opening && shouldUseRightPanelSheet && rightPanelEngaged) {
-      closeRightPanelForRoute();
+      hideRightPanel(rightPanelStateKey);
+      navigateToRightPanelTab(null);
     }
     setTerminalOpen(opening);
   }, [
     activeThreadRef,
-    closeRightPanelForRoute,
+    navigateToRightPanelTab,
     rightPanelEngaged,
+    rightPanelStateKey,
     setTerminalOpen,
     shouldUseRightPanelSheet,
     terminalState.terminalOpen,
@@ -6308,33 +6287,22 @@ export default function ChatView(props: ChatViewProps) {
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
+  /** A "view diff" link in the conversation opens or retargets the one Diff
+   *  tab, leaving the rest of the strip alone. */
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
       if (!isServerThread) {
         return;
       }
       onDiffPanelOpen?.();
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: {
-          environmentId,
-          threadId,
-        },
-        search: (previous) => {
-          const rest = stripRightPanelSearchParams(previous);
-          return filePath
-            ? {
-                ...rest,
-                diff: "1",
-                sourceControlReturn: "1",
-                diffTurnId: turnId,
-                diffFilePath: filePath,
-              }
-            : { ...rest, diff: "1", sourceControlReturn: "1", diffTurnId: turnId };
-        },
-      });
+      const target: RightPanelDiffTarget = {
+        diffTurnId: turnId,
+        ...(filePath ? { diffFilePath: filePath } : {}),
+      };
+      retargetRightPanelDiff(rightPanelStateKey, target);
+      navigateToRightPanelTab("diff", target);
     },
-    [environmentId, isServerThread, navigate, onDiffPanelOpen, threadId],
+    [isServerThread, navigateToRightPanelTab, onDiffPanelOpen, rightPanelStateKey],
   );
   // Both the Map and the revert handler are read from refs at call-time so
   // the callback reference is fully stable and never busts context identity.
@@ -6380,19 +6348,19 @@ export default function ChatView(props: ChatViewProps) {
   }, [subagentProgress?.items]);
 
   /**
-   * The conversation's way into the rail: the turn activity row opens the
-   * Agents tab on the turn, a finished agent's receipt opens it drilled into
+   * The conversation's way into the sidebar: the turn activity row opens or
+   * focuses the Agents tab, a finished agent's receipt opens it drilled into
    * that agent. Selecting before navigating keeps a second receipt press
-   * working while the rail is already open.
+   * working while the tab is already showing.
    */
   const onOpenAgentsPanel = useCallback(
     (agentThreadId: string | null) => {
       selectAgentsPanelAgent(agentThreadId);
       if (!agentsPanelOpen) {
-        openRailTab("agents");
+        openRightPanelTab("agents");
       }
     },
-    [agentsPanelOpen, openRailTab],
+    [agentsPanelOpen, openRightPanelTab],
   );
 
   const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(

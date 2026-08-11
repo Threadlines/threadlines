@@ -8,7 +8,7 @@ import { render } from "vitest-browser-react";
 import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
 import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
-import { ChatRailTabs } from "./ChatRailTabs";
+import { ChatRightPanel } from "../ChatRightPanel";
 import { ThreadActivityChip } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
@@ -271,21 +271,30 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("keeps the rail's tab row above a drilled-in transcript", async () => {
+  it("keeps the sidebar's tab strip above a drilled-in transcript", async () => {
     const onSelectTab = vi.fn();
-    const mounted = await renderPanel({
-      subagents: [buildSubagent({ label: "Router sweep" })],
-      titleSlot: (
-        <ChatRailTabs
-          tabs={[
-            { id: "agents", label: "Agents" },
-            { id: "sourceControl", label: "Changes" },
-          ]}
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
           activeTab="agents"
           onSelectTab={onSelectTab}
-        />
-      ),
-    });
+          onCloseTab={vi.fn()}
+        >
+          <AgentsPanel
+            environmentId={ENVIRONMENT_ID}
+            threadId={THREAD_ID}
+            subagents={[buildSubagent({ label: "Router sweep" })]}
+            backgroundRuns={[]}
+            providerLabel="codex"
+            embedded
+            onToggleBackgroundRunTerminal={vi.fn()}
+            onStopBackgroundRun={vi.fn()}
+          />
+        </ChatRightPanel>
+      </main>,
+    );
 
     try {
       await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
@@ -297,6 +306,100 @@ describe("AgentsPanel", () => {
       await expect.element(changesTab).toBeVisible();
       await changesTab.click();
       expect(onSelectTab).toHaveBeenCalledWith("sourceControl");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("shows the launcher when the sidebar has no tabs open, and opens one from a tile", async () => {
+    const onSelectTab = vi.fn();
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={[]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={null}
+          onSelectTab={onSelectTab}
+          onCloseTab={vi.fn()}
+        >
+          <div data-testid="never-rendered" />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByText("Working tree changes on this thread's branch.")).toBeVisible();
+      await expect.element(page.getByText("Subagents and background runs on this thread.")).toBeVisible();
+      // No tab is open, so no surface is mounted behind the launcher.
+      expect(document.querySelector("[data-testid='never-rendered']")).toBeNull();
+
+      (document.querySelector("[data-right-panel-launcher-tile='diff']") as HTMLElement).click();
+      expect(onSelectTab).toHaveBeenCalledWith("diff");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("offers every surface in the + menu and marks the ones already open", async () => {
+    const onSelectTab = vi.fn();
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["agents"]}
+          availableTabs={["sourceControl", "agents"]}
+          activeTab="agents"
+          onSelectTab={onSelectTab}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Open panel" }).click();
+
+      const changesItem = await vi.waitFor(() => {
+        const item = document.querySelector("[data-right-panel-menu-tab='sourceControl']");
+        if (!item) throw new Error("The + menu never listed Changes.");
+        return item as HTMLElement;
+      });
+      // Diff is not a surface this thread has, so it is absent entirely.
+      expect(document.querySelector("[data-right-panel-menu-tab='diff']")).toBeNull();
+      // An already-open surface stays listed, marked, and focuses its tab.
+      expect(
+        document
+          .querySelector("[data-right-panel-menu-tab='agents']")
+          ?.getAttribute("data-right-panel-menu-tab-open"),
+      ).toBe("true");
+      expect(changesItem.getAttribute("data-right-panel-menu-tab-open")).toBeNull();
+
+      changesItem.click();
+      expect(onSelectTab).toHaveBeenCalledWith("sourceControl");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("closes a tab from its hover ✕", async () => {
+    const onCloseTab = vi.fn();
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="sourceControl"
+          onSelectTab={vi.fn()}
+          onCloseTab={onCloseTab}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Close Changes" }).click();
+      expect(onCloseTab).toHaveBeenCalledWith("sourceControl");
     } finally {
       await mounted.unmount();
     }

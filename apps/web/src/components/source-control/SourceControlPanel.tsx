@@ -230,16 +230,16 @@ interface SourceControlPanelProps {
   readonly onPrefetchDiff?: () => void;
   /**
    * Closes the containing right panel. Surfaced as an in-panel ✕ on phone
-   * widths, where the sheet spans the full screen and the header toggle is
-   * easy to miss — and at every width once the panel is a rail tab, where the
-   * ✕ is the rail's own dismissal.
+   * widths, where the sheet spans the full screen and the header toggle is easy
+   * to miss. Ignored when embedded: the tab strip owns the dismissal there.
    */
   readonly onClose?: () => void;
   /**
-   * The rail's tab row, rendered in place of the panel's own title. Absent
-   * when the panel is the whole right slot (drafts), which keeps the title.
+   * Set when the panel renders inside the sidebar's tab strip, which already
+   * carries the window chrome, the panel's name and its dismissal. The panel
+   * then leads with the repository row instead of a title row of its own.
    */
-  readonly titleSlot?: ReactNode;
+  readonly embedded?: boolean;
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
@@ -1995,7 +1995,7 @@ export function SourceControlPanel({
   onOpenDiff,
   onPrefetchDiff,
   onClose,
-  titleSlot,
+  embedded = false,
 }: SourceControlPanelProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -4179,11 +4179,74 @@ export function SourceControlPanel({
   const headerTitle = status?.refName ? `${target.name} - ${status.refName}` : target.name;
   const sourceControlLinks = deriveSourceControlQuickLinks(status);
 
+  const refreshButton = (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            aria-label={
+              isSourceControlRefreshing ? "Refreshing source control" : "Refresh source control"
+            }
+            variant="ghost"
+            size="icon-xs"
+            className="shrink-0"
+            onClick={refreshPanelFromRemote}
+          />
+        }
+      >
+        <RefreshCwIcon className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")} />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Refresh</TooltipPopup>
+    </Tooltip>
+  );
+
+  // The repository row: which checkout these changes are in, and the branch
+  // they are on. Embedded it is the panel's whole header, so it takes the
+  // refresh control with it.
+  const repositoryRow = (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-1.5 px-3",
+        embedded ? "h-9 border-b border-border" : "pt-0.5 pb-2",
+      )}
+    >
+      <span
+        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85"
+        title={headerTitle}
+      >
+        {target.name}
+      </span>
+      {target.effectiveCwd ? (
+        <TooltipWrapper
+          tooltip={`This thread's work is currently in ${target.effectiveCwd}; showing that checkout.`}
+        >
+          <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
+            <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
+            <span className="min-w-0 truncate">{threadWorkingCwdLabel(target.effectiveCwd)}</span>
+          </span>
+        </TooltipWrapper>
+      ) : null}
+      {sourceControlLinks ? <SourceControlLinksMenu links={sourceControlLinks} /> : null}
+      {status?.refName ? (
+        <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
+          <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
+            <GitBranchIcon className="size-3 shrink-0 opacity-70" />
+            <span className="min-w-0 truncate">{status.refName}</span>
+          </span>
+        </TooltipWrapper>
+      ) : null}
+      {embedded ? <span className="-mr-1 shrink-0">{refreshButton}</span> : null}
+    </div>
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail" data-source-control-panel="true">
-      <div className="drag-region shrink-0 border-b border-border">
-        <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-          {titleSlot ?? (
+      {embedded ? (
+        repositoryRow
+      ) : (
+        <div className="drag-region shrink-0 border-b border-border">
+          <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
             <div className="flex min-w-0 items-center gap-1.5">
               <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
               <h2
@@ -4195,76 +4258,25 @@ export function SourceControlPanel({
                 <span className="source-control-title-full">Source Control</span>
               </h2>
             </div>
-          )}
-          <div className="flex shrink-0 items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    aria-label={
-                      isSourceControlRefreshing
-                        ? "Refreshing source control"
-                        : "Refresh source control"
-                    }
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={refreshPanelFromRemote}
-                  />
-                }
-              >
-                <RefreshCwIcon
-                  className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")}
-                />
-              </TooltipTrigger>
-              <TooltipPopup side="top">Refresh</TooltipPopup>
-            </Tooltip>
-            {onClose ? (
-              <Button
-                type="button"
-                aria-label={titleSlot ? "Close panel" : "Close source control panel"}
-                variant="ghost"
-                size="icon-xs"
-                // As a rail tab the ✕ is the panel's own dismissal, so it stays
-                // at every width; standalone it is the phone-only affordance.
-                className={cn(!titleSlot && "sm:hidden")}
-                onClick={onClose}
-              >
-                <XIcon className="size-3.5" />
-              </Button>
-            ) : null}
+            <div className="flex shrink-0 items-center gap-1">
+              {refreshButton}
+              {onClose ? (
+                <Button
+                  type="button"
+                  aria-label="Close source control panel"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="sm:hidden"
+                  onClick={onClose}
+                >
+                  <XIcon className="size-3.5" />
+                </Button>
+              ) : null}
+            </div>
           </div>
+          {repositoryRow}
         </div>
-        <div className="flex min-w-0 items-center gap-1.5 px-3 pt-0.5 pb-2">
-          <span
-            className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85"
-            title={headerTitle}
-          >
-            {target.name}
-          </span>
-          {target.effectiveCwd ? (
-            <TooltipWrapper
-              tooltip={`This thread's work is currently in ${target.effectiveCwd}; showing that checkout.`}
-            >
-              <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
-                <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
-                <span className="min-w-0 truncate">
-                  {threadWorkingCwdLabel(target.effectiveCwd)}
-                </span>
-              </span>
-            </TooltipWrapper>
-          ) : null}
-          {sourceControlLinks ? <SourceControlLinksMenu links={sourceControlLinks} /> : null}
-          {status?.refName ? (
-            <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
-              <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
-                <GitBranchIcon className="size-3 shrink-0 opacity-70" />
-                <span className="min-w-0 truncate">{status.refName}</span>
-              </span>
-            </TooltipWrapper>
-          ) : null}
-        </div>
-      </div>
+      )}
 
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3">
         {parentRepositoryRoot ? (

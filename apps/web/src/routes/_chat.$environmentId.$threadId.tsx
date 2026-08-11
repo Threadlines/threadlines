@@ -18,14 +18,12 @@ import {
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import {
-  closeAgentsPanelSearchParams,
   closeRightPanelSearchParams,
   type DiffRouteSearch,
   parseDiffRouteSearch,
-  stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
-import { ChatRailTabs, type ChatRailTabDescriptor } from "../components/chat/ChatRailTabs";
+import { ChatRightPanel } from "../components/ChatRightPanel";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -36,12 +34,24 @@ import {
 } from "../lib/gitReactQuery";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-  rememberedRightPanelTab,
-  useAgentsPanelOpen,
   useAutoHideRightPanelSheet,
-  useSourceControlPanelOpen,
-  type RightPanelTab,
+  useRightPanelDefaultVisible,
 } from "../rightPanelLayout";
+import {
+  activeRightPanelTabFromSearch,
+  availableRightPanelTabs,
+  closeRightPanelTab,
+  focusRightPanelTab,
+  hideRightPanel,
+  isRightPanelClosedInSearch,
+  reconcileRightPanelTabs,
+  retargetRightPanelDiff,
+  rightPanelDiffTargetFromSearch,
+  rightPanelTabSearchParams,
+  showRightPanel,
+  type RightPanelDiffTarget,
+  type RightPanelTab,
+} from "../rightPanelTabs";
 import { hasRunningAgentActivity } from "../components/chat/agentsPanel.logic";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
@@ -88,19 +98,14 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
   );
 };
 
-const LazyDiffPanelWithBack = (props: {
+const LazyDiffPanel = (props: {
   mode: DiffPanelMode;
-  onBackToSourceControl: () => void;
-  onClose: () => void;
+  onBackToChanges: (() => void) | undefined;
 }) => {
   return (
     <DiffWorkerPoolProvider>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <DiffPanel
-          mode={props.mode}
-          onBackToSourceControl={props.onBackToSourceControl}
-          onClose={props.onClose}
-        />
+        <DiffPanel mode={props.mode} embedded onBackToChanges={props.onBackToChanges} />
       </Suspense>
     </DiffWorkerPoolProvider>
   );
@@ -140,10 +145,7 @@ function ChatThreadRouteView() {
   const routeThreadExists = threadExists || draftThreadExists;
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
-  const diffOpen = search.diff === "1";
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
-  const rawSourceControlOpen = useSourceControlPanelOpen(search, currentThreadKey);
-  const rawAgentsOpen = useAgentsPanelOpen(search, currentThreadKey);
   const agentsPanelSource = useAgentsPanelSource();
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
@@ -213,15 +215,16 @@ function ChatThreadRouteView() {
     };
   }, [fileViewerCwd, threadRef]);
 
+  const diffLinkedInUrl = search.diff === "1";
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
     threadKey: currentThreadKey,
-    hasOpenedDiff: diffOpen,
+    hasOpenedDiff: diffLinkedInUrl,
     warm: false,
   }));
   const hasOpenedDiff =
     diffPanelMountState.threadKey === currentThreadKey
       ? diffPanelMountState.hasOpenedDiff
-      : diffOpen;
+      : diffLinkedInUrl;
   const diffPanelWarm =
     diffPanelMountState.threadKey === currentThreadKey ? diffPanelMountState.warm : false;
   const markDiffOpened = useCallback(() => {
@@ -250,154 +253,123 @@ function ChatThreadRouteView() {
       };
     });
   }, [currentThreadKey]);
-  const closeRightPanel = useCallback(() => {
-    if (!threadRef) {
-      return;
-    }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(threadRef),
-      search: (previous) => closeRightPanelSearchParams(previous),
-    });
-  }, [navigate, threadRef]);
-  const closeAgentsPanel = useCallback(() => {
-    if (!threadRef) {
-      return;
-    }
-    void navigate({
-      replace: true,
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(threadRef),
-      search: (previous) => closeAgentsPanelSearchParams(previous),
-    });
-  }, [navigate, threadRef]);
-  const openAgentsPanel = useCallback(() => {
-    if (!threadRef) {
-      return;
-    }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(threadRef),
-      search: (previous) => ({
-        ...stripRightPanelSearchParams(previous),
-        agents: "1",
-        // Explicit, not just stripped: source control's remembered state (or
-        // its default-open setting) would otherwise reclaim the rail.
-        sourceControl: "0",
+  // Navigating the sidebar is navigating its active tab: one place writes the
+  // panel search params, for every entry point into the sidebar.
+  const navigateToTab = useCallback(
+    (tab: RightPanelTab | null, diffTarget?: RightPanelDiffTarget | null) => {
+      if (!threadRef) {
+        return;
+      }
+      void navigate({
+        replace: true,
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(threadRef),
+        search: (previous) => rightPanelTabSearchParams(previous, tab, diffTarget),
+      });
+    },
+    [navigate, threadRef],
+  );
+
+  const availableTabs = useMemo(
+    () =>
+      availableRightPanelTabs({
+        isGeneralChat: isGeneralChatThread,
+        // A thread the server has not accepted yet has no turn, so no agents.
+        isDraft: !serverThread,
       }),
-    });
-  }, [navigate, threadRef]);
-  const sourceControlAutoHidden = useAutoHideRightPanelSheet({
+    [isGeneralChatThread, serverThread],
+  );
+  const defaultVisible = useRightPanelDefaultVisible();
+  const urlActiveTab = activeRightPanelTabFromSearch(search);
+  const urlClosed = isRightPanelClosedInSearch(search);
+  const urlDiffTarget = useMemo(() => rightPanelDiffTargetFromSearch(search), [search]);
+  // The one caller that folds the URL into the thread's remembered strip. The
+  // chat header renders inside this route and reads the same store, so it sees
+  // the result in the same pass.
+  const rightPanel = reconcileRightPanelTabs(currentThreadKey, {
+    urlActiveTab,
+    urlClosed,
+    urlDiffTarget,
+    availableTabs,
+    defaultVisible,
+  });
+  const hideSidebar = useCallback(() => {
+    hideRightPanel(currentThreadKey);
+    navigateToTab(null);
+  }, [currentThreadKey, navigateToTab]);
+  // The resize handle's own reopen. Lands on the tab this thread was left on,
+  // or on the launcher when nothing is open — never on a bare panel.
+  const showSidebar = useCallback(() => {
+    const { activeTab: nextTab, diffTarget: nextDiffTarget } = showRightPanel(
+      currentThreadKey,
+      availableTabs,
+    );
+    if (nextTab !== null) {
+      navigateToTab(nextTab, nextTab === "diff" ? nextDiffTarget : null);
+    }
+  }, [availableTabs, currentThreadKey, navigateToTab]);
+  const sidebarAutoHidden = useAutoHideRightPanelSheet({
     enabled: shouldUseDiffSheet,
     resetKey: currentThreadKey,
-    panelState: search.sourceControl,
-    blocked: diffOpen,
-    onAutoHide: closeRightPanel,
+    panelState: urlActiveTab !== null ? "1" : undefined,
+    // A diff deep link is worth landing on even where it covers the
+    // conversation; the two list surfaces are not.
+    blocked: urlActiveTab === "diff",
+    onAutoHide: hideSidebar,
   });
-  const agentsAutoHidden = useAutoHideRightPanelSheet({
-    enabled: shouldUseDiffSheet,
-    resetKey: currentThreadKey,
-    panelState: search.agents,
-    blocked: diffOpen,
-    onAutoHide: closeAgentsPanel,
-  });
-  const agentsOpen = rawAgentsOpen && !agentsAutoHidden;
-  const sourceControlOpen =
-    rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatThread && !agentsOpen;
-  const rightPanelOpen = diffOpen || sourceControlOpen || agentsOpen;
+  const sidebarVisible = rightPanel.visible && !sidebarAutoHidden;
+  const openTabs = rightPanel.openTabs;
+  const activeTab = sidebarVisible ? rightPanel.activeTab : null;
+  const diffTarget = rightPanel.diffTarget;
+  const diffOpen = activeTab === "diff";
+  const sourceControlOpen = activeTab === "sourceControl";
+  const agentsOpen = activeTab === "agents";
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
   const agentsSource =
     agentsPanelSource && agentsPanelSource.threadId === threadRef?.threadId
       ? agentsPanelSource
       : null;
-  // The slot's own dismissals (backdrop press, rail collapse) have to close
-  // whichever panel is actually showing, or the URL and the slot disagree.
-  const rightPanelCloseForLayout = useCallback(() => {
-    if (agentsOpen) {
-      closeAgentsPanel();
-      return;
-    }
-    closeRightPanel();
-  }, [agentsOpen, closeAgentsPanel, closeRightPanel]);
-  const openSourceControl = useCallback(() => {
-    if (!threadRef) {
-      return;
-    }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(threadRef),
-      search: (previous) => ({
-        ...stripRightPanelSearchParams(previous),
-        sourceControl: "1",
-        // Explicit, not just stripped: the agents panel's per-thread memory
-        // would otherwise reopen it and keep suppressing source control.
-        agents: "0",
-      }),
-    });
-  }, [navigate, threadRef]);
-  const openDiff = useCallback(
-    (options?: {
-      readonly filePath?: string;
-      readonly sourceControlReturn?: boolean;
-      readonly workingTree?: boolean;
-    }) => {
-      if (!threadRef) {
-        return;
-      }
-      if (options?.workingTree && sourceControlTarget) {
+  const liveTabs = useMemo<ReadonlyArray<RightPanelTab>>(
+    () => (agentsSource && hasRunningAgentActivity(agentsSource) ? ["agents"] : []),
+    [agentsSource],
+  );
+  // Opening the Diff tab with nothing remembered means this thread's working
+  // tree, which is also the freshest thing to look at, so it gets re-read.
+  const activateDiffTab = useCallback(
+    (target: RightPanelDiffTarget | null) => {
+      const resolved: RightPanelDiffTarget = target ?? { diffMode: "workingTree" };
+      if (resolved.diffMode === "workingTree" && sourceControlTarget) {
         void invalidateGitWorkingTreeDiffQueries(queryClient, sourceControlTarget);
       }
       markDiffOpened();
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(threadRef),
-        search: (previous) => ({
-          ...stripRightPanelSearchParams(previous),
-          diff: "1",
-          ...(options?.workingTree ? { diffMode: "workingTree" } : {}),
-          ...(options?.sourceControlReturn ? { sourceControlReturn: "1" } : {}),
-          ...(options?.filePath ? { diffFilePath: options.filePath } : {}),
-        }),
-      });
+      retargetRightPanelDiff(currentThreadKey, resolved);
+      navigateToTab("diff", resolved);
     },
-    [markDiffOpened, navigate, queryClient, sourceControlTarget, threadRef],
+    [currentThreadKey, markDiffOpened, navigateToTab, queryClient, sourceControlTarget],
   );
-
-  // Which tab the rail is showing, and which tabs it offers. General Chats
-  // have no source control at all, so there the rail is Agents alone — and a
-  // one-tab rail keeps the panel's own title instead of a tab row.
-  const activeRailTab: RightPanelTab = agentsOpen ? "agents" : "sourceControl";
-  const railTabs = useMemo<ReadonlyArray<ChatRailTabDescriptor>>(() => {
-    const agentsTab: ChatRailTabDescriptor = {
-      id: "agents",
-      label: "Agents",
-      live: agentsSource ? hasRunningAgentActivity(agentsSource) : false,
-    };
-    return isGeneralChatThread
-      ? [agentsTab]
-      : [agentsTab, { id: "sourceControl", label: "Changes" }];
-  }, [agentsSource, isGeneralChatThread]);
-  const selectRailTab = useCallback(
+  const selectTab = useCallback(
     (tab: RightPanelTab) => {
-      if (tab === "agents") {
-        openAgentsPanel();
+      if (tab === "diff") {
+        activateDiffTab(diffTarget);
         return;
       }
-      openSourceControl();
+      focusRightPanelTab(currentThreadKey, tab);
+      navigateToTab(tab);
     },
-    [openAgentsPanel, openSourceControl],
+    [activateDiffTab, currentThreadKey, diffTarget, navigateToTab],
   );
-  // The rail handle (and the header toggle's route-side twin) reopens the rail
-  // the way this thread was left, falling back to Changes.
-  const openRail = useCallback(() => {
-    const remembered = rememberedRightPanelTab(currentThreadKey);
-    selectRailTab(isGeneralChatThread ? "agents" : (remembered ?? "sourceControl"));
-  }, [currentThreadKey, isGeneralChatThread, selectRailTab]);
-  const railTitleSlot =
-    railTabs.length > 1 ? (
-      <ChatRailTabs tabs={railTabs} activeTab={activeRailTab} onSelectTab={selectRailTab} />
-    ) : undefined;
+  const closeTab = useCallback(
+    (tab: RightPanelTab) => {
+      const nextTab = closeRightPanelTab(currentThreadKey, tab);
+      navigateToTab(nextTab, nextTab === "diff" ? diffTarget : null);
+    },
+    [currentThreadKey, diffTarget, navigateToTab],
+  );
+  const backToChanges = useMemo(
+    () => (availableTabs.includes("sourceControl") ? () => selectTab("sourceControl") : undefined),
+    [availableTabs, selectTab],
+  );
 
   // Warm the lazy diff chunk while source control is open: a file click is
   // the most likely next action, and the Suspense skeleton reads as jank.
@@ -451,48 +423,41 @@ function ChatThreadRouteView() {
     return null;
   }
 
-  const shouldRenderDiffContent = diffOpen || hasOpenedDiff || diffPanelWarm;
-  // Source control and the diff stay mounted side by side (display-toggled)
-  // so swapping between them never drops worker pools, highlight caches, or
-  // scroll state, and the return trip is instant.
-  const rightPanelContent =
-    sourceControlOpen || diffOpen || agentsOpen ? (
-      <>
-        {agentsOpen ? (
-          <div className="flex h-full w-full min-w-0 flex-col">
-            <AgentsPanel
-              environmentId={threadRef.environmentId}
-              threadId={threadRef.threadId}
-              subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
-              backgroundRuns={agentsSource?.backgroundRuns ?? EMPTY_BACKGROUND_RUNS}
-              providerLabel={agentsSource?.providerLabel}
-              threadCwd={agentsSource?.threadCwd}
-              titleSlot={railTitleSlot}
-              onToggleBackgroundRunTerminal={
-                agentsSource?.onToggleBackgroundRunTerminal ?? noopToggleTerminal
-              }
-              onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
-              onClose={closeAgentsPanel}
-            />
-          </div>
-        ) : null}
-        <div
-          className={cn(
-            "h-full w-full min-w-0 flex-col",
-            sourceControlOpen && !diffOpen ? "flex" : "hidden",
-          )}
-        >
+  // Every tab in the strip stays mounted, hidden rather than unmounted, so
+  // tabbing away and back never drops a list's scroll position, a worker pool
+  // or a highlight cache. The diff also mounts on hover intent over a file row,
+  // before its tab exists, so the chunk is warm by the time the click lands.
+  const shouldRenderDiffContent = openTabs.includes("diff") || hasOpenedDiff || diffPanelWarm;
+  const rightPanelContent = (
+    <>
+      {openTabs.includes("agents") ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", agentsOpen ? "flex" : "hidden")}>
+          <AgentsPanel
+            environmentId={threadRef.environmentId}
+            threadId={threadRef.threadId}
+            subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
+            backgroundRuns={agentsSource?.backgroundRuns ?? EMPTY_BACKGROUND_RUNS}
+            providerLabel={agentsSource?.providerLabel}
+            threadCwd={agentsSource?.threadCwd}
+            embedded
+            onToggleBackgroundRunTerminal={
+              agentsSource?.onToggleBackgroundRunTerminal ?? noopToggleTerminal
+            }
+            onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
+          />
+        </div>
+      ) : null}
+      {openTabs.includes("sourceControl") ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}>
           <SourceControlPanel
             target={sourceControlTarget}
             activeThreadRef={threadRef}
-            titleSlot={railTitleSlot}
-            onClose={closeRightPanel}
+            embedded
             onPrefetchDiff={prefetchWorkingTreeDiff}
             onOpenDiff={(filePath?: string) => {
-              openDiff({
-                ...(filePath ? { filePath } : {}),
-                sourceControlReturn: true,
-                workingTree: true,
+              activateDiffTab({
+                diffMode: "workingTree",
+                ...(filePath ? { diffFilePath: filePath } : {}),
               });
             }}
             {...(!serverThread && draftThread
@@ -500,17 +465,30 @@ function ChatThreadRouteView() {
               : {})}
           />
         </div>
-        {shouldRenderDiffContent ? (
-          <div className={cn("h-full w-full min-w-0 flex-col", diffOpen ? "flex" : "hidden")}>
-            <LazyDiffPanelWithBack
-              mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
-              onBackToSourceControl={openSourceControl}
-              onClose={closeRightPanel}
-            />
-          </div>
-        ) : null}
-      </>
-    ) : null;
+      ) : null}
+      {shouldRenderDiffContent ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", diffOpen ? "flex" : "hidden")}>
+          <LazyDiffPanel
+            mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
+            onBackToChanges={backToChanges}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+  const rightPanelChrome = (
+    <ChatRightPanel
+      openTabs={openTabs}
+      availableTabs={availableTabs}
+      activeTab={activeTab}
+      liveTabs={liveTabs}
+      onSelectTab={selectTab}
+      onCloseTab={closeTab}
+      {...(shouldUseDiffSheet ? { onDismiss: hideSidebar } : {})}
+    >
+      {rightPanelContent}
+    </ChatRightPanel>
+  );
 
   if (!shouldUseDiffSheet) {
     return (
@@ -520,16 +498,16 @@ function ChatThreadRouteView() {
             environmentId={threadRef.environmentId}
             threadId={threadRef.threadId}
             onDiffPanelOpen={markDiffOpened}
-            reserveTitleBarControlInset={!rightPanelOpen}
+            reserveTitleBarControlInset={!sidebarVisible}
             routeKind="server"
           />
         </SidebarInset>
         <ChatRightPanelInlineSidebar
-          open={rightPanelOpen}
-          onClose={rightPanelCloseForLayout}
-          onRequestOpen={openRail}
+          open={sidebarVisible}
+          onClose={hideSidebar}
+          onRequestOpen={showSidebar}
         >
-          {rightPanelContent}
+          {rightPanelChrome}
         </ChatRightPanelInlineSidebar>
         <LazyFileViewerOverlay />
       </>
@@ -547,11 +525,11 @@ function ChatThreadRouteView() {
         />
       </SidebarInset>
       <RightPanelSheet
-        open={rightPanelOpen}
-        onClose={rightPanelCloseForLayout}
+        open={sidebarVisible}
+        onClose={hideSidebar}
         size={diffOpen ? "default" : "rail"}
       >
-        {rightPanelContent}
+        {rightPanelChrome}
       </RightPanelSheet>
       <LazyFileViewerOverlay />
     </>
@@ -562,13 +540,7 @@ export const Route = createFileRoute("/_chat/$environmentId/$threadId")({
   validateSearch: (search) => parseDiffRouteSearch(search),
   search: {
     middlewares: [
-      retainSearchParams<DiffRouteSearch>([
-        "diff",
-        "diffMode",
-        "sourceControlReturn",
-        "diffTurnId",
-        "diffFilePath",
-      ]),
+      retainSearchParams<DiffRouteSearch>(["diff", "diffMode", "diffTurnId", "diffFilePath"]),
     ],
   },
   component: ChatThreadRouteView,

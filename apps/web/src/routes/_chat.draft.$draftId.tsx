@@ -7,11 +7,23 @@ import ChatView from "../components/ChatView";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import { parseDiffRouteSearch } from "../diffRouteSearch";
 import {
-  closeRightPanelSearchParams,
-  parseDiffRouteSearch,
-  stripRightPanelSearchParams,
-} from "../diffRouteSearch";
+  activeRightPanelTabFromSearch,
+  availableRightPanelTabs,
+  closeRightPanelTab,
+  focusRightPanelTab,
+  hideRightPanel,
+  isRightPanelClosedInSearch,
+  reconcileRightPanelTabs,
+  rightPanelDiffTargetFromSearch,
+  rightPanelTabSearchParams,
+  showRightPanel,
+  type RightPanelDiffTarget,
+  type RightPanelTab,
+} from "../rightPanelTabs";
+import { ChatRightPanel } from "../components/ChatRightPanel";
+import { cn } from "../lib/utils";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
@@ -23,7 +35,7 @@ import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   draftRightPanelStateKey,
   useAutoHideRightPanelSheet,
-  useSourceControlPanelOpen,
+  useRightPanelDefaultVisible,
 } from "../rightPanelLayout";
 import { SidebarInset } from "../components/ui/sidebar";
 import { RightPanelSheet } from "../components/RightPanelSheet";
@@ -88,7 +100,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const rawSourceControlOpen = useSourceControlPanelOpen(search, draftRightPanelStateKey(draftId));
+  const panelStateKey = draftRightPanelStateKey(draftId);
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;
@@ -117,20 +129,46 @@ function DraftChatThreadRouteView() {
       effectiveCwd: null,
     };
   }, [draftProject, draftSession, isGeneralChatDraft]);
-  const closeRightPanel = useCallback(() => {
-    void navigate({
-      to: "/draft/$draftId",
-      params: buildDraftThreadRouteParams(draftId),
-      search: (previous) => closeRightPanelSearchParams(previous),
-    });
-  }, [draftId, navigate]);
-  const sourceControlAutoHidden = useAutoHideRightPanelSheet({
+  const availableTabs = useMemo(
+    // A draft has no turn yet, so no agents: its sidebar is the two git
+    // surfaces. General Chat drafts have neither, and get the empty launcher.
+    () => availableRightPanelTabs({ isGeneralChat: isGeneralChatDraft, isDraft: true }),
+    [isGeneralChatDraft],
+  );
+  const defaultVisible = useRightPanelDefaultVisible();
+  const urlActiveTab = activeRightPanelTabFromSearch(search);
+  const urlDiffTarget = useMemo(() => rightPanelDiffTargetFromSearch(search), [search]);
+  const rightPanel = reconcileRightPanelTabs(panelStateKey, {
+    urlActiveTab,
+    urlClosed: isRightPanelClosedInSearch(search),
+    urlDiffTarget,
+    availableTabs,
+    defaultVisible,
+  });
+  const navigateToTab = useCallback(
+    (tab: RightPanelTab | null) => {
+      void navigate({
+        replace: true,
+        to: "/draft/$draftId",
+        params: buildDraftThreadRouteParams(draftId),
+        search: (previous) => rightPanelTabSearchParams(previous, tab),
+      });
+    },
+    [draftId, navigate],
+  );
+  const hideSidebar = useCallback(() => {
+    hideRightPanel(panelStateKey);
+    navigateToTab(null);
+  }, [navigateToTab, panelStateKey]);
+  const sidebarAutoHidden = useAutoHideRightPanelSheet({
     enabled: shouldUseSourceControlSheet,
     resetKey: draftId,
-    panelState: search.sourceControl,
-    onAutoHide: closeRightPanel,
+    panelState: urlActiveTab !== null ? "1" : undefined,
+    onAutoHide: hideSidebar,
   });
-  const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatDraft;
+  const sidebarVisible = rightPanel.visible && !sidebarAutoHidden;
+  const activeTab = sidebarVisible ? rightPanel.activeTab : null;
+  const sourceControlOpen = activeTab === "sourceControl";
   const fileViewerCwd = isGeneralChatDraft
     ? draftProject && draftThreadRef
       ? `${draftProject.cwd}/threads/${draftThreadRef.threadId}`
@@ -150,18 +188,14 @@ function DraftChatThreadRouteView() {
       setActiveFileViewerContext(null);
     };
   }, [draftThreadRef, fileViewerCwd]);
-  const openSourceControl = useCallback(() => {
-    void navigate({
-      to: "/draft/$draftId",
-      params: buildDraftThreadRouteParams(draftId),
-      search: (previous) => ({
-        ...stripRightPanelSearchParams(previous),
-        sourceControl: "1",
-      }),
-    });
-  }, [draftId, navigate]);
-  const openDiff = useCallback(
-    (filePath?: string) => {
+  /**
+   * The draft route has no diff panel of its own: the diff reads the thread's
+   * checkpoints and working tree through the thread route's params, so opening
+   * the Diff tab hands over to that route with the tab already active. Which is
+   * what a file row here has always done.
+   */
+  const openDiffOnThreadRoute = useCallback(
+    (target: RightPanelDiffTarget) => {
       if (!serverThreadRef) {
         return;
       }
@@ -171,16 +205,34 @@ function DraftChatThreadRouteView() {
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(serverThreadRef),
-        search: () => ({
-          diff: "1" as const,
-          diffMode: "workingTree" as const,
-          sourceControlReturn: "1" as const,
-          ...(filePath ? { diffFilePath: filePath } : {}),
-        }),
+        search: () => rightPanelTabSearchParams({}, "diff", target),
       });
     },
     [navigate, queryClient, serverThreadRef, sourceControlTarget],
   );
+  const selectTab = useCallback(
+    (tab: RightPanelTab) => {
+      if (tab === "diff") {
+        openDiffOnThreadRoute({ diffMode: "workingTree" });
+        return;
+      }
+      focusRightPanelTab(panelStateKey, tab);
+      navigateToTab(tab);
+    },
+    [navigateToTab, openDiffOnThreadRoute, panelStateKey],
+  );
+  const closeTab = useCallback(
+    (tab: RightPanelTab) => {
+      navigateToTab(closeRightPanelTab(panelStateKey, tab));
+    },
+    [navigateToTab, panelStateKey],
+  );
+  const showSidebar = useCallback(() => {
+    const { activeTab: nextTab } = showRightPanel(panelStateKey, availableTabs);
+    if (nextTab !== null) {
+      navigateToTab(nextTab);
+    }
+  }, [availableTabs, navigateToTab, panelStateKey]);
   const handleSourceControlBranchChange = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       setDraftThreadContext(draftId, { branch, worktreePath });
@@ -244,16 +296,34 @@ function DraftChatThreadRouteView() {
     return null;
   }
 
-  const sourceControlPanel = sourceControlOpen ? (
-    <SourceControlPanel
-      target={sourceControlTarget}
-      activeThreadRef={draftThreadRef}
-      onActiveBranchChange={handleSourceControlBranchChange}
-      onClose={closeRightPanel}
-      onOpenDiff={openDiff}
-      onPrefetchDiff={prefetchWorkingTreeDiff}
-    />
-  ) : null;
+  const rightPanelChrome = (
+    <ChatRightPanel
+      openTabs={rightPanel.openTabs}
+      availableTabs={availableTabs}
+      activeTab={activeTab}
+      onSelectTab={selectTab}
+      onCloseTab={closeTab}
+      {...(shouldUseSourceControlSheet ? { onDismiss: hideSidebar } : {})}
+    >
+      {rightPanel.openTabs.includes("sourceControl") ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}>
+          <SourceControlPanel
+            target={sourceControlTarget}
+            activeThreadRef={draftThreadRef}
+            embedded
+            onActiveBranchChange={handleSourceControlBranchChange}
+            onOpenDiff={(filePath?: string) => {
+              openDiffOnThreadRoute({
+                diffMode: "workingTree",
+                ...(filePath ? { diffFilePath: filePath } : {}),
+              });
+            }}
+            onPrefetchDiff={prefetchWorkingTreeDiff}
+          />
+        </div>
+      ) : null}
+    </ChatRightPanel>
+  );
 
   if (!shouldUseSourceControlSheet) {
     return (
@@ -263,16 +333,16 @@ function DraftChatThreadRouteView() {
             draftId={draftId}
             environmentId={draftSession.environmentId}
             threadId={draftSession.threadId}
-            reserveTitleBarControlInset={!sourceControlOpen}
+            reserveTitleBarControlInset={!sidebarVisible}
             routeKind="draft"
           />
         </SidebarInset>
         <ChatRightPanelInlineSidebar
-          open={sourceControlOpen}
-          onClose={closeRightPanel}
-          onRequestOpen={openSourceControl}
+          open={sidebarVisible}
+          onClose={hideSidebar}
+          onRequestOpen={showSidebar}
         >
-          {sourceControlPanel}
+          {rightPanelChrome}
         </ChatRightPanelInlineSidebar>
         <LazyFileViewerOverlay />
       </>
@@ -289,8 +359,8 @@ function DraftChatThreadRouteView() {
           routeKind="draft"
         />
       </SidebarInset>
-      <RightPanelSheet open={sourceControlOpen} onClose={closeRightPanel} size="rail">
-        {sourceControlPanel}
+      <RightPanelSheet open={sidebarVisible} onClose={hideSidebar} size="rail">
+        {rightPanelChrome}
       </RightPanelSheet>
       <LazyFileViewerOverlay />
     </>

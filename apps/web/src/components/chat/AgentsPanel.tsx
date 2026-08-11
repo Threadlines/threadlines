@@ -1,6 +1,6 @@
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { XIcon } from "lucide-react";
-import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
 import type { SubagentProgressItem } from "../../session-logic";
 import { cn } from "~/lib/utils";
@@ -28,9 +28,9 @@ export interface AgentsPanelProps {
   providerLabel?: string | null | undefined;
   /** Working directory, used to resolve file references in agent prose. */
   threadCwd?: string | null | undefined;
-  /** The rail's tab row, rendered in place of the panel's own title. Absent
-   *  when the rail has only this one tab, which keeps the plain title. */
-  titleSlot?: ReactNode;
+  /** Set when the panel renders inside the sidebar's tab strip, which already
+   *  carries the window chrome, the panel's name and its dismissal. */
+  embedded?: boolean;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onClose?: (() => void) | undefined;
@@ -212,7 +212,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   backgroundRuns,
   providerLabel,
   threadCwd,
-  titleSlot,
+  embedded = false,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
   onClose,
@@ -268,12 +268,15 @@ export const AgentsPanel = memo(function AgentsPanel({
     />
   ) : null;
 
-  // Without the rail's tab row there is nothing in the panel header worth
-  // keeping over a drill-in: the inspector's own header carries the agent's
-  // name and the way back, so it takes the whole panel as it always has.
-  if (inspector && !titleSlot) {
+  // A drill-in takes the whole panel: the inspector's own header carries the
+  // agent's name and the way back, and there is nothing in the panel header
+  // worth keeping over it.
+  if (inspector) {
     return (
-      <div className="flex h-full min-h-0 flex-col bg-rail" data-agents-panel="drill-in">
+      <div
+        className={cn("flex h-full min-h-0 flex-col bg-rail", !embedded && "drag-region")}
+        data-agents-panel="drill-in"
+      >
         {inspector}
       </div>
     );
@@ -283,77 +286,81 @@ export const AgentsPanel = memo(function AgentsPanel({
     <section
       className="flex h-full min-h-0 flex-col bg-rail"
       aria-label="Agents"
-      data-agents-panel={inspector ? "drill-in" : "tree"}
+      data-agents-panel="tree"
     >
-      <div className="drag-region shrink-0 border-b border-border">
-        <div className="flex h-12 items-center gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-          {titleSlot ?? (
-            <>
-              {anyRunning ? <LiveNode className="size-1.5" /> : null}
-              <h2
-                aria-label="Agents"
-                className="min-w-0 truncate text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase"
-              >
-                Agents <span className="text-muted-foreground/35">·</span> this turn
-              </h2>
-            </>
-          )}
-          <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/55 tabular-nums">
-            {headerMeta}
-          </span>
-          {onClose ? (
-            // Always visible: once the turn ends the header's activity chip
-            // disappears, and this X is the only way left to close the panel.
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              className="-mr-1 shrink-0"
-              aria-label="Close panel"
-              onClick={onClose}
-            >
-              <XIcon className="size-3.5" aria-hidden="true" />
-            </Button>
-          ) : null}
-        </div>
-      </div>
-
-      {inspector ? (
-        <div className="min-h-0 flex-1">{inspector}</div>
+      {/* Embedded, the strip above already names the panel and closes it, so all
+          that is left worth a row is the turn's counts — and only when there
+          are any. */}
+      {embedded ? (
+        headerMeta ? (
+          <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-4">
+            {anyRunning ? <LiveNode className="size-1.5" /> : null}
+            <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/55 tabular-nums">
+              {headerMeta}
+            </span>
+          </div>
+        ) : null
       ) : (
-        <div
-          className="min-h-0 flex-1 overflow-y-auto"
-          style={{ ["--agents-trunk"]: trunkColor(providerLabel) } as CSSProperties}
-        >
-          {branches.length === 0 ? (
-            <p
-              className="px-4 py-6 text-[12px] text-muted-foreground/55"
-              data-agents-panel-empty="true"
+        <div className="drag-region shrink-0 border-b border-border">
+          <div className="flex h-12 items-center gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+            {anyRunning ? <LiveNode className="size-1.5" /> : null}
+            <h2
+              aria-label="Agents"
+              className="min-w-0 truncate text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase"
             >
-              No agents on this turn.
-            </p>
-          ) : (
-            <div className="relative">
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute top-0 bottom-0 left-4 w-0.5 rounded-full"
-                style={TRUNK_STYLE}
-              />
-              <ul className="relative divide-y divide-border/60">
-                {branches.map((branch) => (
-                  <BranchRow
-                    key={branch.key}
-                    branch={branch}
-                    providerGlyph={providerGlyph}
-                    onSelect={handleSelect}
-                    onStop={handleStop}
-                  />
-                ))}
-              </ul>
-            </div>
-          )}
+              Agents <span className="text-muted-foreground/35">·</span> this turn
+            </h2>
+            <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/55 tabular-nums">
+              {headerMeta}
+            </span>
+            {onClose ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="-mr-1 shrink-0"
+                aria-label="Close panel"
+                onClick={onClose}
+              >
+                <XIcon className="size-3.5" aria-hidden="true" />
+              </Button>
+            ) : null}
+          </div>
         </div>
       )}
+
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        style={{ ["--agents-trunk"]: trunkColor(providerLabel) } as CSSProperties}
+      >
+        {branches.length === 0 ? (
+          <p
+            className="px-4 py-6 text-[12px] text-muted-foreground/55"
+            data-agents-panel-empty="true"
+          >
+            No agents on this turn.
+          </p>
+        ) : (
+          <div className="relative">
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute top-0 bottom-0 left-4 w-0.5 rounded-full"
+              style={TRUNK_STYLE}
+            />
+            <ul className="relative divide-y divide-border/60">
+              {branches.map((branch) => (
+                <BranchRow
+                  key={branch.key}
+                  branch={branch}
+                  providerGlyph={providerGlyph}
+                  onSelect={handleSelect}
+                  onStop={handleStop}
+                />
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </section>
   );
 });

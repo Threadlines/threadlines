@@ -1,13 +1,16 @@
 import { MessageId, TurnId } from "@threadlines/contracts";
 
+/**
+ * The right sidebar's tabs are filed under the params they have always used:
+ * `sourceControl=1` is the Changes tab, `diff=1` the Diff tab, `agents=1` the
+ * Agents tab. At most one reads as open, and that one is the active tab; an
+ * explicit `0` means the sidebar is closed.
+ */
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
   diffMode?: "workingTree" | undefined;
   sourceControl?: "1" | "0" | undefined;
-  /** The agents panel shares the right-panel slot with source control, so it
-   *  carries the same explicit open/closed tri-state. */
   agents?: "1" | "0" | undefined;
-  sourceControlReturn?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
   focusMessageId?: MessageId | undefined;
@@ -65,7 +68,6 @@ type RightPanelSearchKey =
   | "diffMode"
   | "sourceControl"
   | "agents"
-  | "sourceControlReturn"
   | "diffTurnId"
   | "diffFilePath";
 
@@ -74,14 +76,13 @@ interface ClearedRightPanelSearchParams {
   diffMode?: undefined;
   sourceControl?: undefined;
   agents?: undefined;
-  sourceControlReturn?: undefined;
   diffTurnId?: undefined;
   diffFilePath?: undefined;
 }
 
 /**
- * The right panel is one slot: opening any panel in it clears the others, so
- * every "open panel X" navigation starts from this.
+ * Only one tab is active at a time, so every "activate tab X" navigation
+ * starts by clearing the params the other tabs are filed under.
  */
 export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
   params: T,
@@ -91,7 +92,6 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     diffMode: _diffMode,
     sourceControl: _sourceControl,
     agents: _agents,
-    sourceControlReturn: _sourceControlReturn,
     diffTurnId: _diffTurnId,
     diffFilePath: _diffFilePath,
     ...rest
@@ -102,33 +102,20 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     diffMode: undefined,
     sourceControl: undefined,
     agents: undefined,
-    sourceControlReturn: undefined,
     diffTurnId: undefined,
     diffFilePath: undefined,
   } as Omit<T, RightPanelSearchKey> & ClearedRightPanelSearchParams;
 }
 
-/** Closing the rail from its Changes tab (or from the diff drill-in). Both
- *  tabs are recorded closed so no remembered state reopens the slot. */
+/**
+ * Hiding the sidebar. Both tab keys are recorded closed so neither the
+ * default-open setting nor a remembered tab reopens it behind the dismissal.
+ */
 export function closeRightPanelSearchParams<T extends Record<string, unknown>>(params: T) {
   return {
     ...stripRightPanelSearchParams(params),
     sourceControl: "0" as const,
     agents: "0" as const,
-  };
-}
-
-/**
- * Closing the rail from its Agents tab. Both tabs are recorded closed: the
- * dismissal means "close the rail", not "fall back to the other tab", and
- * without the explicit source control `0` the thread's remembered state (or
- * the default-open setting) would reopen the rail on Changes straight away.
- */
-export function closeAgentsPanelSearchParams<T extends Record<string, unknown>>(params: T) {
-  return {
-    ...stripRightPanelSearchParams(params),
-    agents: "0" as const,
-    sourceControl: "0" as const,
   };
 }
 
@@ -149,47 +136,6 @@ export function preserveRightPanelSearchParamsForDraftNavigation<T extends Recor
   };
 }
 
-/**
- * Closed unless asked for. Explicit URL state (a toggle press or a deep link)
- * always wins; `defaultOpen` only decides what a thread with no panel state
- * shows. UI code should not call this directly — `useSourceControlPanelOpen`
- * in rightPanelLayout.ts is the single place that resolves `defaultOpen` from
- * the user's setting and the layout, so every surface agrees.
- */
-export function isSourceControlPanelOpen(
-  search: DiffRouteSearch,
-  options: { defaultOpen?: boolean } = {},
-): boolean {
-  // An open agents panel holds the slot, so it also suppresses a source
-  // control panel that would otherwise open from its default.
-  if (search.diff === "1" || search.sourceControl === "0" || search.agents === "1") {
-    return false;
-  }
-  if (search.sourceControl === "1") {
-    return true;
-  }
-  return options.defaultOpen ?? false;
-}
-
-/**
- * Closed unless asked for, like source control, but with no settings default
- * behind it — the agents panel only opens when something opens it. Callers go
- * through `useAgentsPanelOpen` in rightPanelLayout.ts so the routes and the
- * header chip agree.
- */
-export function isAgentsPanelOpen(
-  search: DiffRouteSearch,
-  options: { defaultOpen?: boolean } = {},
-): boolean {
-  if (search.diff === "1" || search.agents === "0") {
-    return false;
-  }
-  if (search.agents === "1") {
-    return true;
-  }
-  return options.defaultOpen ?? false;
-}
-
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
   const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
   const diffMode = diff && search.diffMode === "workingTree" ? "workingTree" : undefined;
@@ -205,7 +151,6 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
       : !diff && isExplicitClosedValue(search.agents)
         ? "0"
         : undefined;
-  const sourceControlReturn = diff && isDiffOpenValue(search.sourceControlReturn) ? "1" : undefined;
   const diffTurnIdRaw =
     diff && diffMode !== "workingTree" ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.make(diffTurnIdRaw) : undefined;
@@ -222,7 +167,6 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(diffMode ? { diffMode } : {}),
     ...(sourceControl ? { sourceControl } : {}),
     ...(agents ? { agents } : {}),
-    ...(sourceControlReturn ? { sourceControlReturn } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
     ...(focusMessageId ? { focusMessageId } : {}),

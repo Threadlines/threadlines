@@ -1,10 +1,5 @@
 import { type RefCallback, useCallback, useEffect, useRef } from "react";
 
-import {
-  type DiffRouteSearch,
-  isAgentsPanelOpen,
-  isSourceControlPanelOpen,
-} from "./diffRouteSearch";
 import { isElectron } from "./env";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { useSettings } from "./hooks/useSettings";
@@ -13,7 +8,9 @@ export const RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 980px)";
 
 export const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
 export const RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH = 17 * 16;
-export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH = 15 * 16;
+// The legacy source control minimum, now the floor for every tab: the strip and
+// its `+` still have to fit, and the changes list was already unusable narrower.
+export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH = 17 * 16;
 // Keep in sync with --app-window-resize-edge-inset in index.css. The right
 // panel reserves this space inside its border box in Electron, so the outer
 // min width needs to include it for the visible content area to match the left.
@@ -21,10 +18,9 @@ const RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH = 6;
 export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH =
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH +
   (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0);
-// The rail is one draggable slot shared by both tabs, so it carries one width
-// and one storage key. The agents tree is the wider of the two contents (three
-// lines per branch), so it sets the default.
-export const RIGHT_PANEL_RAIL_WIDTH = 400;
+// The sidebar is one draggable slot shared by every tab, so it carries one
+// width and one storage key, and switching tabs never resizes it.
+export const RIGHT_PANEL_RAIL_WIDTH = 330;
 export const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${
   RIGHT_PANEL_RAIL_WIDTH + (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0)
 }px`;
@@ -92,40 +88,8 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
   }, []);
 }
 
-/** The rail's two tabs. Also the key each tab's explicit URL state is filed
- *  under, because a tab is exactly one panel. */
-export type RightPanelTab = "sourceControl" | "agents";
-
-interface RememberedRightPanelState {
-  readonly sourceControl?: "1" | "0";
-  readonly agents?: "1" | "0";
-  /** The tab the rail was last opened on, so the header's rail toggle can put
-   *  it back the way the user left it. */
-  readonly lastTab?: RightPanelTab;
-}
-
 /**
- * Last explicit state per thread, per panel. The URL only carries explicit
- * state until the next thread navigation drops it, so without this memory an
- * open panel silently closes on the A -> B -> A round trip. Session-scoped on
- * purpose: a fresh launch starts from the settings default again.
- */
-const rightPanelStateByThreadKey = new Map<string, RememberedRightPanelState>();
-
-/**
- * Which tab the header's rail toggle should reopen for this thread. Null when
- * the thread has never had the rail explicitly opened; callers fall back to
- * Changes (or Agents where there is no source control).
- */
-export function rememberedRightPanelTab(threadPanelStateKey: string | null): RightPanelTab | null {
-  if (!threadPanelStateKey) {
-    return null;
-  }
-  return rightPanelStateByThreadKey.get(threadPanelStateKey)?.lastTab ?? null;
-}
-
-/**
- * Memory key for a draft route's panel state, distinct from the
+ * Memory key for a draft route's sidebar state, distinct from the
  * `environmentId:threadId` keys server threads use. The draft route and the
  * chat header resolve the same draft through this so they agree.
  */
@@ -133,86 +97,15 @@ export function draftRightPanelStateKey(draftId: string): string {
   return `draft:${draftId}`;
 }
 
-export function resetRightPanelStateMemoryForTests(): void {
-  rightPanelStateByThreadKey.clear();
-}
-
 /**
- * Records the panel's explicit state for the thread and reports what was last
- * recorded, so a thread reopens the way it was left. Only explicit values are
- * written: a panel that merely defaulted open never poisons the memory.
- */
-function useRememberedRightPanelState(
-  panel: RightPanelTab,
-  threadPanelStateKey: string | null,
-  explicitState: "1" | "0" | undefined,
-): "1" | "0" | undefined {
-  useEffect(() => {
-    if (threadPanelStateKey && explicitState) {
-      const remembered = rightPanelStateByThreadKey.get(threadPanelStateKey) ?? {};
-      rightPanelStateByThreadKey.set(threadPanelStateKey, {
-        ...remembered,
-        [panel]: explicitState,
-        // Only an open records the tab: closing the rail should not change
-        // which tab it reopens on.
-        ...(explicitState === "1" ? { lastTab: panel } : {}),
-      });
-    }
-  }, [explicitState, panel, threadPanelStateKey]);
-
-  return threadPanelStateKey
-    ? rightPanelStateByThreadKey.get(threadPanelStateKey)?.[panel]
-    : undefined;
-}
-
-/**
- * Whether the source control panel is showing for the given route search
- * params. The routes and the header toggle must always agree on this, so the
- * settings default and its wide-layout gate live here instead of at call
- * sites (a per-surface `defaultOpen` is how the 0.3.0 default-closed change
- * missed the draft route and the header button).
- *
- * Explicit URL state still wins; when the URL carries none, the thread's
- * remembered last explicit state applies before the default-open setting, so
- * leaving a thread and returning keeps the panel the way it was left.
- *
- * The default-open setting and the per-thread memory only apply on wide
- * layouts: in sheet mode the panel covers the conversation, so threads there
- * always start closed.
- */
-export function useSourceControlPanelOpen(
-  search: DiffRouteSearch,
-  threadPanelStateKey: string | null,
-): boolean {
-  const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
-  const defaultOpenSetting = useSettings((settings) => settings.sourceControlPanelDefaultOpen);
-  const rememberedState = useRememberedRightPanelState(
-    "sourceControl",
-    threadPanelStateKey,
-    search.sourceControl,
-  );
-  const defaultOpen = rememberedState !== undefined ? rememberedState === "1" : defaultOpenSetting;
-  return isSourceControlPanelOpen(search, { defaultOpen: defaultOpen && !sheetLayout });
-}
-
-/**
- * Whether the agents panel is showing. Same shape as source control minus the
- * settings default: the panel has none, so a thread only reopens it when the
- * user left it open there. The memory is gated to wide layouts for the same
- * reason source control's is — in sheet mode the panel covers the
+ * Whether a thread with no sidebar state at all should open on Changes. The
+ * setting only applies on wide layouts: in sheet mode the sidebar covers the
  * conversation, so threads there always start closed.
  */
-export function useAgentsPanelOpen(
-  search: DiffRouteSearch,
-  threadPanelStateKey: string | null,
-): boolean {
+export function useRightPanelDefaultVisible(): boolean {
   const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
-  const rememberedState = useRememberedRightPanelState(
-    "agents",
-    threadPanelStateKey,
-    search.agents,
-  );
-  return isAgentsPanelOpen(search, { defaultOpen: rememberedState === "1" && !sheetLayout });
+  const defaultOpenSetting = useSettings((settings) => settings.sourceControlPanelDefaultOpen);
+  return defaultOpenSetting && !sheetLayout;
 }
 
 export function normalizeRightPanelStoredWidth(width: number) {
