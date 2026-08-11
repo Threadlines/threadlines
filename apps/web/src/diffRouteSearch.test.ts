@@ -177,7 +177,9 @@ describe("stripDiffSearchParams", () => {
 });
 
 describe("closeRightPanelSearchParams", () => {
-  it("clears retained right-panel params and marks source control closed", () => {
+  // Both tabs are recorded closed: dismissing the rail means the rail is
+  // closed, not that the other tab takes the slot.
+  it("clears retained right-panel params and marks both rail tabs closed", () => {
     expect(
       closeRightPanelSearchParams({
         diff: "1",
@@ -193,6 +195,7 @@ describe("closeRightPanelSearchParams", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: "0",
+      agents: "0",
       sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
