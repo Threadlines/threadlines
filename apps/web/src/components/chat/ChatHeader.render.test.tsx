@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { SidebarProvider } from "../ui/sidebar";
-import { ChatHeader } from "./ChatHeader";
+import { ChatHeader, formatLiveAgentsTooltip } from "./ChatHeader";
 
 const TEST_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
@@ -128,5 +128,53 @@ describe("ChatHeader", () => {
     });
 
     expect(markup).not.toContain("↓2");
+  });
+
+  it("nodes the closed rail toggle while agents are live, counting past one", () => {
+    const single = renderChatHeader({
+      railOpen: false,
+      liveAgents: { count: 1, waitingCount: 0 },
+    });
+    expect(single).toContain('data-header-live-agents="running"');
+    // One agent needs no digit; the node alone says it.
+    expect(single).not.toContain("data-header-live-agents-count");
+
+    const several = renderChatHeader({
+      railOpen: false,
+      liveAgents: { count: 2, waitingCount: 0 },
+    });
+    expect(several).toContain('data-header-live-agents="running"');
+    expect(several).toContain('data-header-live-agents-count="true"');
+    expect(several).toContain(">2<");
+  });
+
+  it("turns the node amber when an agent is waiting on the user", () => {
+    const markup = renderChatHeader({
+      railOpen: false,
+      liveAgents: { count: 3, waitingCount: 1 },
+    });
+
+    expect(markup).toContain('data-header-live-agents="waiting"');
+    expect(markup).toContain("bg-amber-500");
+  });
+
+  it("drops the live-agent node once the rail is open, where the Agents tab owns it", () => {
+    const markup = renderChatHeader({
+      railOpen: true,
+      liveAgents: { count: 2, waitingCount: 0 },
+    });
+
+    expect(markup).not.toContain("data-header-live-agents");
+  });
+});
+
+describe("formatLiveAgentsTooltip", () => {
+  it("leads with what is running and names anything waiting", () => {
+    expect(formatLiveAgentsTooltip({ count: 1, waitingCount: 0 })).toBe("1 agent running.");
+    expect(formatLiveAgentsTooltip({ count: 2, waitingCount: 0 })).toBe("2 agents running.");
+    expect(formatLiveAgentsTooltip({ count: 3, waitingCount: 1 })).toBe(
+      "2 agents running, 1 waiting on you.",
+    );
+    expect(formatLiveAgentsTooltip({ count: 1, waitingCount: 1 })).toBe("1 agent waiting on you.");
   });
 });

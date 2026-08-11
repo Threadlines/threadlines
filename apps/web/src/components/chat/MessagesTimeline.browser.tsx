@@ -1136,6 +1136,69 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("shows one live agent status line under the tracker row and drops it when nothing is live", async () => {
+    const onOpenAgentsPanel = vi.fn();
+    const liveSubagent = (id: string, step: string, updatedAt: string) => ({
+      ...buildTurnSubagent(id, "running"),
+      nickname: id === "agent-fresh" ? "Agent panel tests" : "Router sweep",
+      telemetry: {
+        step,
+        lastToolName: null,
+        totalTokens: null,
+        toolUses: null,
+        durationMs: null,
+      },
+      updatedAt,
+    });
+
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={buildOverflowingWorkTimelineEntries()}
+        onOpenAgentsPanel={onOpenAgentsPanel}
+        turnAgents={{
+          subagents: [
+            liveSubagent("agent-stale", "reading the router", "2026-04-13T12:00:10.000Z"),
+            liveSubagent(
+              "agent-fresh",
+              "reading AgentsPanel.browser.tsx",
+              "2026-04-13T12:00:40.000Z",
+            ),
+          ],
+        }}
+      />,
+    );
+
+    try {
+      // Two agents are live, but the conversation gets exactly one line: the
+      // freshest signal, named.
+      const statusLines = document.querySelectorAll("[data-turn-live-agent-status='true']");
+      expect(statusLines.length).toBe(1);
+      expect(statusLines[0]?.textContent).toContain("Agent panel tests");
+      expect(statusLines[0]?.textContent).toContain("reading AgentsPanel.browser.tsx");
+
+      (statusLines[0] as HTMLElement).click();
+      expect(onOpenAgentsPanel).toHaveBeenCalledWith(null);
+    } finally {
+      await screen.unmount();
+    }
+
+    const settled = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={buildOverflowingWorkTimelineEntries()}
+        onOpenAgentsPanel={onOpenAgentsPanel}
+        turnAgents={{ subagents: [buildTurnSubagent("agent-done", "completed")] }}
+      />,
+    );
+
+    try {
+      expect(document.querySelector("[data-turn-live-agent-status='true']")).toBeNull();
+    } finally {
+      await settled.unmount();
+    }
+  });
+
   it("renders a finished subagent as a one-line receipt that drills into it", async () => {
     const onOpenAgentsPanel = vi.fn();
     const screen = await renderTimeline(

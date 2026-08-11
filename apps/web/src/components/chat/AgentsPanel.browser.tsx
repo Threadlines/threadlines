@@ -365,6 +365,101 @@ describe("AgentsPanel", () => {
     }
   });
 
+  it("folds a long tool run in the drilled-in transcript into one receipt that opens in place", async () => {
+    const toolUse = (name: string) => ({ name, summary: `${name}: src/thing.ts` });
+    transcriptRpcMock.mockResolvedValue({
+      entries: [
+        { role: "assistant", text: "Looking for the handler.", toolUses: [] },
+        {
+          role: "assistant",
+          text: "",
+          toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read"), toolUse("Edit")],
+          at: "2026-08-11T10:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          text: "",
+          toolUses: [toolUse("Bash")],
+          at: "2026-08-11T10:01:10.000Z",
+        },
+        { role: "assistant", text: "Fixed it.", toolUses: [] },
+      ],
+      truncated: false,
+      offset: 0,
+      totalEntries: 4,
+    });
+
+    const mounted = await renderPanel({
+      subagents: [
+        buildSubagent({ label: "Router sweep", status: "completed", statusLabel: "Completed" }),
+      ],
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+
+      // The agent's prose always renders; the machinery between it does not.
+      await expect.element(page.getByText("Looking for the handler.")).toBeVisible();
+      await expect.element(page.getByText("Fixed it.")).toBeVisible();
+
+      const receipt = await vi.waitUntil(() =>
+        document.querySelector<HTMLElement>("[data-subagent-transcript-tool-run-toggle='true']"),
+      );
+      expect(receipt.textContent).toContain("5 actions");
+      expect(receipt.textContent).toContain("Read ×3");
+      expect(receipt.getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
+
+      receipt.click();
+
+      await vi.waitFor(() => {
+        expect(receipt.getAttribute("aria-expanded")).toBe("true");
+        expect(document.querySelector("[data-subagent-transcript-entry='tool']")).not.toBeNull();
+      });
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("leaves a short tool run inline rather than fronting it with a receipt", async () => {
+    transcriptRpcMock.mockResolvedValue({
+      entries: [
+        { role: "assistant", text: "Checking two things.", toolUses: [] },
+        {
+          role: "assistant",
+          text: "",
+          toolUses: [
+            { name: "Read", summary: "Read: a.ts" },
+            { name: "Grep", summary: "Grep: handler" },
+          ],
+        },
+      ],
+      truncated: false,
+      offset: 0,
+      totalEntries: 2,
+    });
+
+    const mounted = await renderPanel({
+      subagents: [
+        buildSubagent({ label: "Router sweep", status: "completed", statusLabel: "Completed" }),
+      ],
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText("Checking two things.")).toBeVisible();
+
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-subagent-transcript-entry='tool']")).not.toBeNull();
+      });
+      expect(
+        document.querySelector("[data-subagent-transcript-tool-run-toggle='true']"),
+      ).toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("marks a spawned agent with the thread provider's glyph but leaves runs their tag", async () => {
     const mounted = await renderPanel({
       subagents: [buildSubagent({ label: "Router sweep" })],

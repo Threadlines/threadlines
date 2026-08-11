@@ -424,7 +424,9 @@ export const ChatHeader = memo(function ChatHeader({
                     {!railOpen && liveAgents ? (
                       <span
                         className="inline-flex shrink-0 items-center gap-0.5"
-                        data-header-live-agents={liveAgents.waitingCount > 0 ? "waiting" : "running"}
+                        data-header-live-agents={
+                          liveAgents.waitingCount > 0 ? "waiting" : "running"
+                        }
                       >
                         {liveAgents.waitingCount > 0 ? (
                           <span
@@ -435,7 +437,10 @@ export const ChatHeader = memo(function ChatHeader({
                           <LiveNode className="size-1.5" />
                         )}
                         {liveAgents.count > 1 ? (
-                          <span className="font-mono text-[10px] leading-none text-muted-foreground">
+                          <span
+                            className="font-mono text-[10px] leading-none text-muted-foreground"
+                            data-header-live-agents-count="true"
+                          >
                             {liveAgents.count}
                           </span>
                         ) : null}

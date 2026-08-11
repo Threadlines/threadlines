@@ -123,7 +123,11 @@ describe("groupSubagentTranscriptSteps", () => {
 
   it("folds a long run of tool calls into one receipt and leaves the prose alone", () => {
     const view = buildSubagentTranscriptView([
-      entry({ role: "assistant", text: "Looking for the handler.", at: "2026-08-11T10:00:00.000Z" }),
+      entry({
+        role: "assistant",
+        text: "Looking for the handler.",
+        at: "2026-08-11T10:00:00.000Z",
+      }),
       entry({
         role: "assistant",
         toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")],

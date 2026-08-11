@@ -345,8 +345,11 @@ export interface LiveAgentStatusLine {
 export function formatLiveAgentStatusLine(
   subagents: ReadonlyArray<SubagentProgressItem>,
 ): LiveAgentStatusLine | null {
-  let freshest: { readonly item: SubagentProgressItem; readonly step: string; readonly at: number } | null =
-    null;
+  let freshest: {
+    readonly item: SubagentProgressItem;
+    readonly step: string;
+    readonly at: number;
+  } | null = null;
   for (const item of subagents) {
     if (!isLiveAgentBranchStatus(subagentBranchStatus(item.status))) {
       continue;
