@@ -413,6 +413,102 @@ describe("provider extensions inventory", () => {
     ]);
   });
 
+  it.effect("prefers an installable local plugin over its uninstalled remote mirror", () => {
+    const marketplacePath = `${process.cwd()}/.codex/plugins/openai-curated/marketplace.json`;
+    const pluginPath = `${process.cwd()}/.codex/plugins/openai-curated/posthog`;
+    const pluginListParams: unknown[] = [];
+    const peer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "plugin/list": (params) => {
+        pluginListParams.push(params);
+        const marketplaceKinds = (params as { readonly marketplaceKinds?: ReadonlyArray<string> })
+          .marketplaceKinds;
+        if (marketplaceKinds?.includes("local")) {
+          return {
+            marketplaces: [
+              {
+                name: "openai-curated",
+                path: marketplacePath,
+                plugins: [
+                  {
+                    id: "posthog@openai-curated",
+                    name: "posthog",
+                    authPolicy: "ON_INSTALL",
+                    enabled: true,
+                    installed: false,
+                    installPolicy: "AVAILABLE",
+                    localVersion: "0.1.2",
+                    source: { type: "local", path: pluginPath },
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return {
+          marketplaces: [
+            {
+              name: "openai-curated-remote",
+              plugins: [
+                {
+                  id: "posthog@openai-curated-remote",
+                  name: "posthog",
+                  authPolicy: "ON_INSTALL",
+                  enabled: true,
+                  installed: false,
+                  installPolicy: "AVAILABLE",
+                  source: { type: "remote" },
+                  version: "1.0.0",
+                },
+                {
+                  id: "remote-only@openai-curated-remote",
+                  name: "remote-only",
+                  authPolicy: "ON_USE",
+                  enabled: true,
+                  installed: false,
+                  installPolicy: "AVAILABLE",
+                  source: { type: "remote" },
+                  version: "1.0.0",
+                },
+              ],
+            },
+          ],
+        };
+      },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const result = yield* readProviderExtensionsInventory({
+        request: { cwd: process.cwd(), includeMcpServers: false, includeApps: false },
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+      const posthog = codex?.plugins.filter((plugin) => plugin.name === "posthog") ?? [];
+      const remoteOnly = codex?.plugins.find((plugin) => plugin.name === "remote-only");
+
+      assert.equal(codex?.status, "ready");
+      assert.equal(pluginListParams.length, 2);
+      assert.equal(
+        pluginListParams.some(
+          (params) =>
+            (params as { readonly marketplaceKinds?: ReadonlyArray<string> })
+              .marketplaceKinds?.[0] === "local",
+        ),
+        true,
+      );
+      assert.equal(posthog.length, 1);
+      assert.equal(posthog[0]?.id, "posthog@openai-curated");
+      assert.equal(posthog[0]?.marketplacePath, marketplacePath);
+      assert.equal(posthog[0]?.remoteMarketplaceName, undefined);
+      assert.equal(remoteOnly?.remoteMarketplaceName, "openai-curated-remote");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
   it("maps typed Codex plugin detail and sorts its component inventory", () => {
     const detail = mapCodexPluginDetail({
       appTemplates: [

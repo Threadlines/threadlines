@@ -249,6 +249,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
               threadId,
               messageId: assistantMessageId,
               turnId,
+              completesTurn: true,
               createdAt: completedAt,
             });
           }
@@ -422,6 +423,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
           ],
           ...(scenario.assistantText !== undefined ? { assistantMessageId } : {}),
           checkpointTurnCount: 1,
+          completesTurn: true,
           createdAt: completedAt,
         });
 

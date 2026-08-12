@@ -836,6 +836,7 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
         messageId: asMessageId("assistant-message-1"),
         turnId,
+        completesTurn: true,
         createdAt: "2026-01-01T00:00:03.000Z",
       }),
     );
@@ -1360,6 +1361,7 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
         messageId: asMessageId("assistant-message-native-fork"),
         turnId: asTurnId("codex-turn-3"),
+        completesTurn: true,
         createdAt: now,
       }),
     );

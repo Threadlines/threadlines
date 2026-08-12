@@ -100,6 +100,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Skeleton } from "../ui/skeleton";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
@@ -2907,6 +2908,83 @@ function InstalledStrip({
   );
 }
 
+function InstalledStripSkeleton() {
+  return (
+    <div className="flex flex-wrap gap-1.5" aria-hidden="true">
+      {["first", "second", "third", "fourth", "fifth", "sixth"].map((key) => (
+        <Skeleton key={key} className="size-9 rounded-md" />
+      ))}
+    </div>
+  );
+}
+
+function ProviderInventorySkeleton() {
+  return (
+    <div aria-hidden="true" data-testid="extensions-provider-skeleton">
+      {["first-provider", "second-provider"].map((providerKey) => (
+        <SettingsRow
+          key={providerKey}
+          title={<Skeleton className="h-3.5 w-24 rounded-full" />}
+          description={<Skeleton className="h-3 w-40 max-w-full rounded-full" />}
+          control={<Skeleton className="h-5 w-14 rounded-full" />}
+        >
+          <div className="mt-3 space-y-3 border-t border-border/50 py-3">
+            <div className="flex gap-1.5">
+              <Skeleton className="h-7 w-20 rounded-sm" />
+              <Skeleton className="h-7 w-16 rounded-sm" />
+            </div>
+            <div className="min-w-0 rounded-md border border-border/60 bg-background/35">
+              <div className="flex min-h-10 items-center justify-between border-b border-border/50 px-3 py-2">
+                <Skeleton className="h-3 w-20 rounded-full" />
+                <Skeleton className="h-2.5 w-8 rounded-full" />
+              </div>
+              <div className="grid lg:grid-cols-2">
+                {["first-row", "second-row"].map((rowKey) => (
+                  <div
+                    key={rowKey}
+                    className="flex min-h-10 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0"
+                  >
+                    <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      <Skeleton className="h-3 w-28 max-w-full rounded-full" />
+                      <Skeleton className="h-2.5 w-40 max-w-full rounded-full" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </SettingsRow>
+      ))}
+    </div>
+  );
+}
+
+function ConnectionsTableSkeleton() {
+  return (
+    <div aria-hidden="true" data-testid="extensions-connections-skeleton">
+      <div className="grid grid-cols-[minmax(0,1fr)_9rem_8rem] gap-3 border-b border-border/50 pb-1.5">
+        <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
+        <Skeleton className="h-2.5 w-10 max-w-full rounded-full" />
+        <Skeleton className="h-2.5 w-12 max-w-full rounded-full" />
+      </div>
+      {["first-connection", "second-connection"].map((rowKey) => (
+        <div
+          key={rowKey}
+          className="grid min-h-11 grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 first:border-t-0"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+            <Skeleton className="h-3 w-32 max-w-full rounded-full" />
+          </span>
+          <Skeleton className="h-3 w-20 max-w-full rounded-full" />
+          <Skeleton className="h-3 w-16 max-w-full rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface ExtensionAttentionEntry {
   readonly key: string;
   readonly title: string;
@@ -4303,6 +4381,7 @@ export function ExtensionsSettingsPanel() {
   }, [manualProviderThreadId, refresh]);
 
   const hasInventory = inventory !== null;
+  const isInitialInventoryLoading = cwd.trim().length > 0 && !hasInventory && error === null;
   const selectedItemActionKey = selectedItem ? extensionItemActionKey(selectedItem) : null;
   const selectedItemLastAction = selectedItemActionKey
     ? actionHistoryByItem[selectedItemActionKey]
@@ -4440,6 +4519,11 @@ export function ExtensionsSettingsPanel() {
 
   return (
     <SettingsPageContainer className="max-w-5xl">
+      {isInitialInventoryLoading ? (
+        <span className="sr-only" role="status">
+          Loading plugins and connections
+        </span>
+      ) : null}
       <SettingsSection
         title="Plugins"
         icon={<PlugIcon className="size-3.5" />}
@@ -4539,11 +4623,15 @@ export function ExtensionsSettingsPanel() {
               Browse catalog
             </Button>
           </div>
-          <InstalledStrip
-            items={searchedInstalledPlugins}
-            environmentId={selectedEnvironmentId}
-            onSelect={setSelectedItem}
-          />
+          {isInitialInventoryLoading ? (
+            <InstalledStripSkeleton />
+          ) : (
+            <InstalledStrip
+              items={searchedInstalledPlugins}
+              environmentId={selectedEnvironmentId}
+              onSelect={setSelectedItem}
+            />
+          )}
           <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
         </div>
       </SettingsSection>
@@ -4560,7 +4648,9 @@ export function ExtensionsSettingsPanel() {
           ) : null
         }
       >
-        {inventory?.providers.length ? (
+        {isInitialInventoryLoading ? (
+          <ProviderInventorySkeleton />
+        ) : inventory?.providers.length ? (
           inventory.providers.map((provider) => (
             <ProviderInventoryRow
               environmentId={selectedEnvironmentId}
@@ -4627,12 +4717,16 @@ export function ExtensionsSettingsPanel() {
         }
       >
         <div className="px-4 py-3.5 sm:px-5">
-          <ConnectionsTable
-            items={searchedConnections}
-            environmentId={selectedEnvironmentId}
-            isLoading={isLoading}
-            onSelect={setSelectedItem}
-          />
+          {isInitialInventoryLoading ? (
+            <ConnectionsTableSkeleton />
+          ) : (
+            <ConnectionsTable
+              items={searchedConnections}
+              environmentId={selectedEnvironmentId}
+              isLoading={isLoading}
+              onSelect={setSelectedItem}
+            />
+          )}
         </div>
       </SettingsSection>
 

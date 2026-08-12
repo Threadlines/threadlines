@@ -612,6 +612,67 @@ describe("CheckpointReactor", () => {
     ).toBe("v2\n");
   });
 
+  it("captures but does not finalize non-terminal provider diff placeholders", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-mid-diff-placeholder");
+    const createdAt = "2026-01-01T00:00:05.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-mid-diff-placeholder"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-mid-diff-placeholder"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: asCheckpointRef("provider-diff:evt-mid-diff-placeholder"),
+        status: "missing",
+        files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+        assistantMessageId: MessageId.make("assistant:mid-diff-placeholder"),
+        checkpointTurnCount: 1,
+        completesTurn: false,
+        createdAt,
+      }),
+    );
+    await harness.drain();
+
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1));
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === threadId);
+    expect(thread?.latestTurn).toMatchObject({
+      turnId,
+      state: "running",
+      completedAt: null,
+    });
+    expect(thread?.checkpoints).toEqual([
+      expect.objectContaining({
+        turnId,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+        status: "ready",
+        files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+      }),
+    ]);
+  });
+
   it("skips changed-file summaries from a shared checkout while another session is active", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,
@@ -720,6 +781,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "EXTERNAL.md", kind: "modified", additions: 1, deletions: 0 }],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt: "2026-01-01T00:02:00.000Z",
       }),
     );
@@ -795,6 +857,7 @@ describe("CheckpointReactor", () => {
         status: "missing",
         files: providerFiles,
         checkpointTurnCount: 1,
+        completesTurn: false,
         createdAt,
       }),
     );
@@ -804,7 +867,6 @@ describe("CheckpointReactor", () => {
     const thread = await waitForThread(
       harness.readModel,
       (entry) =>
-        entry.latestTurn?.turnId === "turn-shared-provider-summary" &&
         entry.checkpoints.length === 1 &&
         entry.checkpoints[0]?.status === "ready" &&
         entry.activities.some(
@@ -885,16 +947,14 @@ describe("CheckpointReactor", () => {
         status: "missing",
         files: providerFiles,
         checkpointTurnCount: 1,
+        completesTurn: false,
         createdAt,
       }),
     );
 
     await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-shared-refresh-same-path-summary" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+      (entry) => entry.checkpoints.length === 1 && entry.checkpoints[0]?.status === "ready",
     );
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\nmore\n", "utf8");
@@ -960,16 +1020,14 @@ describe("CheckpointReactor", () => {
         status: "missing",
         files: [],
         checkpointTurnCount: 1,
+        completesTurn: false,
         createdAt,
       }),
     );
 
     await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-empty-provider-summary" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+      (entry) => entry.checkpoints.length === 1 && entry.checkpoints[0]?.status === "ready",
     );
 
     harness.provider.emit({
@@ -1103,6 +1161,7 @@ describe("CheckpointReactor", () => {
         status: "missing",
         files: [],
         checkpointTurnCount: 1,
+        completesTurn: false,
         createdAt,
       }),
     );
@@ -1173,16 +1232,14 @@ describe("CheckpointReactor", () => {
         status: "missing",
         files: providerFiles,
         checkpointTurnCount: 1,
+        completesTurn: false,
         createdAt,
       }),
     );
 
     await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-refresh-summary" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+      (entry) => entry.checkpoints.length === 1 && entry.checkpoints[0]?.status === "ready",
     );
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\n", "utf8");
@@ -1663,6 +1720,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1677,6 +1735,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 2,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1784,6 +1843,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1798,6 +1858,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 2,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1854,6 +1915,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1868,6 +1930,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 2,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1962,6 +2025,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -1979,6 +2043,7 @@ describe("CheckpointReactor", () => {
           { path: "created-by-thread.txt", kind: "added", additions: 1, deletions: 0 },
         ],
         checkpointTurnCount: 2,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2077,6 +2142,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2094,6 +2160,7 @@ describe("CheckpointReactor", () => {
           { path: "created-by-thread.txt", kind: "added", additions: 1, deletions: 0 },
         ],
         checkpointTurnCount: 2,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2190,6 +2257,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "lines.txt", kind: "modified", additions: 1, deletions: 1 }],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2279,6 +2347,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "notes.md", kind: "modified", additions: 4, deletions: 0 }],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2389,6 +2458,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2406,6 +2476,7 @@ describe("CheckpointReactor", () => {
           { path: "shared.txt", kind: "modified", additions: 1, deletions: 1 },
         ],
         checkpointTurnCount: 2,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2420,6 +2491,7 @@ describe("CheckpointReactor", () => {
         status: "ready",
         files: [{ path: "shared.txt", kind: "modified", additions: 1, deletions: 0 }],
         checkpointTurnCount: 3,
+        completesTurn: true,
         createdAt,
       }),
     );
@@ -2527,6 +2599,7 @@ describe("CheckpointReactor", () => {
           status: "ready",
           files: [...files],
           checkpointTurnCount: turnCount,
+          completesTurn: true,
           createdAt,
         }),
       );
@@ -2571,6 +2644,7 @@ describe("CheckpointReactor", () => {
           status: "ready",
           files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
           checkpointTurnCount: turnCount,
+          completesTurn: true,
           createdAt,
         }),
       );

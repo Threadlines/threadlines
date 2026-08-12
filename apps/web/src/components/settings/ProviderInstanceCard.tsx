@@ -15,6 +15,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
@@ -1727,6 +1728,14 @@ export function ProviderInstanceCard({
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}
               />
+              {usagePresentation.tokenUsage?.scope === "local" ? (
+                <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                  This history is from the paired computer.{" "}
+                  <Link className="text-foreground hover:text-primary-readable" to="/usage">
+                    View all machines
+                  </Link>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

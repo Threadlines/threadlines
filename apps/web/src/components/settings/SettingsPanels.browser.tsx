@@ -418,6 +418,31 @@ function createClaudeProvider(): ServerProvider {
   };
 }
 
+function createClaudeProviderWithTokenHistory(): ServerProvider {
+  const checkedAt = new Date().toISOString();
+  return {
+    ...createClaudeProvider(),
+    checkedAt,
+    accountUsage: {
+      source: "claude-oauth-usage",
+      checkedAt,
+      limits: [],
+      tokenUsage: {
+        checkedAt,
+        scope: "local",
+        coverageStartDate: utcDateKeyAtOffset(-365),
+        coverageEndDate: utcDateKeyAtOffset(0),
+        completeLifetimeHistory: false,
+        dailyBuckets: [
+          { startDate: utcDateKeyAtOffset(-40), tokens: 1000 },
+          { startDate: utcDateKeyAtOffset(-38), tokens: 3000 },
+        ],
+        summary: { lifetimeTokens: 4000, peakDailyTokens: 3000 },
+      },
+    },
+  };
+}
+
 const CLAUDE_INSTALL_GUIDE_MESSAGE =
   "Claude Agent CLI (`claude`) is not installed or not on PATH. Install Claude Code from https://claude.com/product/claude-code and run `claude` to sign in.";
 
@@ -502,6 +527,53 @@ function createCodexProviderWithResetCredits(): ServerProvider {
         ],
       },
       limits: [],
+    },
+  };
+}
+
+function utcDateKeyAtOffset(dayOffset: number): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + dayOffset))
+    .toISOString()
+    .slice(0, 10);
+}
+
+function formatTokenActivityTestDate(dateKey: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${dateKey}T00:00:00.000Z`));
+}
+
+function createCodexProviderWithTokenHistory(): ServerProvider {
+  const checkedAt = new Date().toISOString();
+  return {
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    displayName: "Codex",
+    enabled: true,
+    installed: true,
+    version: "0.147.0",
+    status: "ready",
+    auth: { status: "authenticated", type: "chatgpt" },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    accountUsage: {
+      source: "codex-rate-limits",
+      checkedAt,
+      limits: [],
+      tokenUsage: {
+        checkedAt,
+        dailyBuckets: [
+          { startDate: utcDateKeyAtOffset(-40), tokens: 1_000 },
+          { startDate: utcDateKeyAtOffset(-38), tokens: 3_000 },
+        ],
+        summary: { lifetimeTokens: 4_000 },
+      },
     },
   };
 }
@@ -1495,7 +1567,7 @@ describe("GeneralSettingsPanel observability", () => {
 
   // An audit read the pre-snapshot section as "nothing paired" because it was
   // rendered completely empty, and revoke stayed disabled with it.
-  it("says devices are loading until the access snapshot lands", async () => {
+  it("shows a device-row skeleton until the access snapshot lands", async () => {
     window.desktopBridge = createDesktopBridgeStub({
       serverExposureState: {
         mode: "network-accessible",
@@ -1546,7 +1618,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Loading devices...")).toBeInTheDocument();
+    await expect.element(page.getByTestId("connected-devices-skeleton")).toBeInTheDocument();
     await expect
       .element(page.getByText("No phones or tablets are connected yet."))
       .not.toBeInTheDocument();
@@ -1557,7 +1629,7 @@ describe("GeneralSettingsPanel observability", () => {
     authAccessHarness.emitSnapshot();
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
-    await expect.element(page.getByText("Loading devices...")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("connected-devices-skeleton")).not.toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Remove other devices", exact: true }))
       .not.toBeDisabled();
@@ -1728,6 +1800,35 @@ describe("GeneralSettingsPanel observability", () => {
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.threadlines/logs", "cursor");
   });
 
+  it("uses native-layout skeletons while diagnostics are initially loading", async () => {
+    const pendingDiagnostics = new Promise<never>(() => {});
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        getProcessDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
+        getProcessResourceHistory: vi.fn().mockReturnValue(pendingDiagnostics),
+        getTraceDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <DiagnosticsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await expect
+      .element(page.getByText("Loading diagnostics", { exact: true }))
+      .toBeInTheDocument();
+    expect(await page.getByTestId("diagnostics-loading-skeleton").all()).toHaveLength(10);
+    await expect.element(page.getByText("Loading live processes...")).not.toBeInTheDocument();
+  });
+
   it("shows Claude configuration fields in provider settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
@@ -1870,6 +1971,77 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("in 4 days")).toBeInTheDocument();
     await expect.element(page.getByText(/^Expires /).first()).toBeInTheDocument();
     await expect.element(page.getByText("1 additional reset")).toBeInTheDocument();
+  });
+
+  it("fills a complete sparse lifetime history with zero-usage dates through today", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createCodexProviderWithTokenHistory()],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page.getByLabelText("Toggle Codex details").click();
+    await page.getByRole("button", { name: "Usage" }).click();
+
+    const beforeFirstActivity = formatTokenActivityTestDate(utcDateKeyAtOffset(-41));
+    const missingActivityDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-39));
+    const today = formatTokenActivityTestDate(utcDateKeyAtOffset(0));
+    const visibleActivityGrid = page.getByLabelText("Token history daily token activity").last();
+    await expect
+      .element(visibleActivityGrid.getByLabelText(`0 tokens on ${beforeFirstActivity}`))
+      .toBeVisible();
+    await expect
+      .element(visibleActivityGrid.getByLabelText(`0 tokens on ${missingActivityDate}`))
+      .toBeVisible();
+    await expect.element(visibleActivityGrid.getByLabelText(`0 tokens on ${today}`)).toBeVisible();
+  });
+
+  it("shows paired-computer Claude token history with an all-machines link", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createClaudeProviderWithTokenHistory()],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page.getByLabelText("Toggle Claude details").click();
+    await page.getByRole("button", { name: "Usage" }).click();
+
+    await expect.element(page.getByText("Local token activity").first()).toBeVisible();
+    await expect
+      .element(page.getByText("Observed on this computer from Claude Code history."))
+      .toBeVisible();
+    const allMachinesLink = page.getByRole("link", { name: "View all machines" });
+    await expect.element(allMachinesLink).toHaveAttribute("href", "/usage");
+    const root = document.documentElement;
+    const hadDarkClass = root.classList.contains("dark");
+    root.classList.add("dark");
+    try {
+      await allMachinesLink.hover();
+      const expectedHoverColor = getComputedStyle(root)
+        .getPropertyValue("--primary-readable")
+        .trim();
+      await vi.waitFor(() => {
+        expect(getComputedStyle(allMachinesLink.element()).color).toBe(expectedHoverColor);
+      });
+    } finally {
+      if (!hadDarkClass) root.classList.remove("dark");
+    }
+
+    const today = formatTokenActivityTestDate(utcDateKeyAtOffset(0));
+    const visibleActivityGrid = page
+      .getByLabelText("Local token activity daily token activity")
+      .last();
+    await expect.element(visibleActivityGrid.getByLabelText(`0 tokens on ${today}`)).toBeVisible();
   });
 
   it("configures Claude fallback models from the provider models list", async () => {

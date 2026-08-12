@@ -92,6 +92,7 @@ const INVENTORY_COMMAND_TIMEOUT = Duration.seconds(20);
 const CODEX_APP_SERVER_INVENTORY_TIMEOUT = Duration.seconds(20);
 const decodeCodexJson = Schema.decodeUnknownSync(Schema.Json);
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
+const CODEX_LOCAL_PLUGIN_CATALOG_TIMEOUT = Duration.seconds(5);
 /**
  * A cold `app/list` resolves the whole apps/connectors directory through the ChatGPT backend and
  * reliably takes 11-16s (measured against codex 0.145.0); the app-server only caches it in memory,
@@ -493,6 +494,97 @@ export function mapCodexPluginInventory(response: CodexSchema.V2PluginListRespon
   return {
     plugins: [...byId.values()].toSorted((left, right) => left.name.localeCompare(right.name)),
     marketplaces: marketplaces.toSorted((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function localMarketplaceNameForRemote(remoteMarketplaceName: string): string | undefined {
+  const suffix = "-remote";
+  return remoteMarketplaceName.endsWith(suffix)
+    ? optionalText(remoteMarketplaceName.slice(0, -suffix.length))
+    : undefined;
+}
+
+/**
+ * Codex's default plugin list can replace an official local marketplace entry with its remote
+ * directory mirror. Keep remote-only plugins, but prefer a matching local entry because it has a
+ * concrete marketplace path and can be read and installed without another backend lookup.
+ */
+function mergeCodexPluginCatalogResponses(
+  primary: CodexSchema.V2PluginListResponse,
+  local: CodexSchema.V2PluginListResponse,
+): CodexSchema.V2PluginListResponse {
+  const separator = "\u0000";
+  const pairKey = (marketplaceName: string, pluginName: string) =>
+    `${marketplaceName}${separator}${pluginName}`;
+  const localPlugins = new Set<string>();
+
+  for (const marketplace of local.marketplaces) {
+    if (!optionalText(marketplace.path ?? null)) continue;
+    for (const plugin of marketplace.plugins) {
+      localPlugins.add(pairKey(marketplace.name, plugin.name));
+    }
+  }
+
+  const installedRemotePlugins = new Set<string>();
+  for (const marketplace of primary.marketplaces) {
+    if (optionalText(marketplace.path ?? null)) continue;
+    const localMarketplaceName = localMarketplaceNameForRemote(marketplace.name);
+    if (!localMarketplaceName) continue;
+    for (const plugin of marketplace.plugins) {
+      const key = pairKey(localMarketplaceName, plugin.name);
+      if (plugin.installed && localPlugins.has(key)) installedRemotePlugins.add(key);
+    }
+  }
+
+  const localMarketplaces = local.marketplaces.flatMap((marketplace) => {
+    const plugins = marketplace.plugins.filter(
+      (plugin) => !installedRemotePlugins.has(pairKey(marketplace.name, plugin.name)),
+    );
+    return plugins.length > 0 || marketplace.plugins.length === 0
+      ? [{ ...marketplace, plugins }]
+      : [];
+  });
+  const localMarketplaceKeys = new Set(
+    local.marketplaces.map(
+      (marketplace) => `${marketplace.name}${separator}${marketplace.path ?? ""}`,
+    ),
+  );
+  const primaryMarketplaces = primary.marketplaces.flatMap((marketplace) => {
+    const marketplaceKey = `${marketplace.name}${separator}${marketplace.path ?? ""}`;
+    if (localMarketplaceKeys.has(marketplaceKey)) return [];
+
+    const localMarketplaceName = optionalText(marketplace.path ?? null)
+      ? undefined
+      : localMarketplaceNameForRemote(marketplace.name);
+    if (!localMarketplaceName) return [marketplace];
+
+    const plugins = marketplace.plugins.filter(
+      (plugin) => plugin.installed || !localPlugins.has(pairKey(localMarketplaceName, plugin.name)),
+    );
+    return plugins.length > 0 || marketplace.plugins.length === 0
+      ? [{ ...marketplace, plugins }]
+      : [];
+  });
+
+  const marketplaceLoadErrors = [
+    ...(local.marketplaceLoadErrors ?? []),
+    ...(primary.marketplaceLoadErrors ?? []),
+  ].filter(
+    (error, index, errors) =>
+      errors.findIndex(
+        (candidate) =>
+          candidate.marketplacePath === error.marketplacePath &&
+          candidate.message === error.message,
+      ) === index,
+  );
+  const featuredPluginIds = [
+    ...new Set([...(primary.featuredPluginIds ?? []), ...(local.featuredPluginIds ?? [])]),
+  ];
+
+  return {
+    marketplaces: [...localMarketplaces, ...primaryMarketplaces],
+    ...(featuredPluginIds.length > 0 ? { featuredPluginIds } : {}),
+    ...(marketplaceLoadErrors.length > 0 ? { marketplaceLoadErrors } : {}),
   };
 }
 
@@ -1366,12 +1458,35 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           : Effect.succeed(Result.succeed<ProviderExtensionApp[]>(freshCachedApps?.apps ?? []));
 
         const pluginsEffect = yield* Effect.cached(
-          client.request("plugin/list", { cwds: [input.cwd] }).pipe(
-            Effect.map((response) => ({
-              ...mapCodexPluginInventory(response),
-              loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
-            })),
-            collectCodexRequest("plugins"),
+          Effect.all(
+            [
+              client
+                .request("plugin/list", { cwds: [input.cwd] })
+                .pipe(collectCodexRequest("plugins")),
+              client
+                .request("plugin/list", {
+                  cwds: [input.cwd],
+                  marketplaceKinds: ["local"],
+                })
+                .pipe(collectCodexRequest("local plugins", CODEX_LOCAL_PLUGIN_CATALOG_TIMEOUT)),
+            ],
+            { concurrency: 2 },
+          ).pipe(
+            Effect.map(([primaryResult, localResult]) => {
+              let response: CodexSchema.V2PluginListResponse;
+              if (Result.isFailure(primaryResult)) {
+                if (Result.isFailure(localResult)) return Result.fail(primaryResult.failure);
+                response = localResult.success;
+              } else {
+                response = Result.isSuccess(localResult)
+                  ? mergeCodexPluginCatalogResponses(primaryResult.success, localResult.success)
+                  : primaryResult.success;
+              }
+              return Result.succeed({
+                ...mapCodexPluginInventory(response),
+                loadErrorMessage: codexMarketplaceLoadErrorMessage(response),
+              });
+            }),
           ),
         );
         const mcpPluginOwnersFiber = yield* (

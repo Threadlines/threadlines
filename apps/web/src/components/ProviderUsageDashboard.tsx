@@ -6,6 +6,7 @@ import { GaugeIcon, RotateCcwIcon } from "lucide-react";
 import {
   formatProviderTokenCount,
   type ProviderAccountTokenUsageBucketPresentation,
+  type ProviderAccountTokenUsagePresentation,
   type ProviderAccountUsagePresentation,
   type ProviderAccountUsageWindowPresentation,
 } from "../lib/providerUsage";
@@ -26,7 +27,7 @@ const TOKEN_ACTIVITY_LEGEND_LEVELS = [0, 20, 40, 65, 90] as const;
 
 interface TokenActivityCell {
   readonly dateKey: string;
-  readonly value: number;
+  readonly value: number | null;
   readonly intensityPercent: number;
   readonly tooltip: string;
 }
@@ -41,6 +42,7 @@ interface TokenActivityWeek {
 interface TokenActivityDay {
   readonly dateKey: string;
   readonly ms: number;
+  readonly reported: boolean;
   readonly dailyTokens: number;
   readonly weeklyTokens: number;
   readonly cumulativeTokens: number;
@@ -83,7 +85,16 @@ function formatMonthLabel(ms: number): string {
   }).format(new Date(ms));
 }
 
-function formatTokenActivityTooltip(mode: TokenActivityMode, ms: number, value: number): string {
+function formatTokenActivityTooltip(
+  mode: TokenActivityMode,
+  ms: number,
+  value: number | null,
+): string {
+  if (value === null) {
+    return mode === "weekly"
+      ? `Usage unavailable for week of ${formatLongDate(startOfWeekUtc(ms))}`
+      : `Usage unavailable on ${formatLongDate(ms)}`;
+  }
   const tokenLabel = formatProviderTokenCount(value) ?? "0";
   if (mode === "weekly") {
     return `${tokenLabel} tokens on week of ${formatLongDate(startOfWeekUtc(ms))}`;
@@ -98,8 +109,11 @@ function formatTokenActivityWeekTooltip(
   mode: TokenActivityMode,
   weekStartMs: number,
   weekEndMs: number,
-  value: number,
+  value: number | null,
 ): string {
+  if (value === null) {
+    return `Usage unavailable for week of ${formatLongDate(weekStartMs)}`;
+  }
   const tokenLabel = formatProviderTokenCount(value) ?? "0";
   if (mode === "weekly") {
     return `${tokenLabel} tokens on week of ${formatLongDate(weekStartMs)}`;
@@ -110,7 +124,8 @@ function formatTokenActivityWeekTooltip(
   return formatTokenActivityTooltip(mode, weekEndMs, value);
 }
 
-function tokenActivityColorClass(intensityPercent: number): string {
+function tokenActivityColorClass(intensityPercent: number, reported = true): string {
+  if (!reported) return "bg-muted/25";
   if (intensityPercent <= 0) return "bg-muted/70";
   if (intensityPercent < 15) return "bg-primary-graph/30";
   if (intensityPercent < 30) return "bg-primary-graph/45";
@@ -127,9 +142,11 @@ function scaleTokenActivityIntensity(value: number, maxValue: number): number {
 }
 
 function buildTokenActivityWeeks(
-  buckets: ReadonlyArray<ProviderAccountTokenUsageBucketPresentation>,
+  tokenUsage: ProviderAccountTokenUsagePresentation,
   mode: TokenActivityMode,
+  anchorMs: number,
 ): ReadonlyArray<TokenActivityWeek> {
+  const buckets = tokenUsage.buckets;
   const datedBuckets = buckets
     .map((bucket) => {
       const ms = parseDateKey(bucket.startDate);
@@ -145,9 +162,31 @@ function buildTokenActivityWeeks(
     );
   if (datedBuckets.length === 0) return [];
 
-  const latestMs = Math.max(...datedBuckets.map((entry) => entry.ms));
-  const endMs = endOfWeekUtc(latestMs);
+  const anchorDate = new Date(anchorMs);
+  const anchorDayMs = Date.UTC(
+    anchorDate.getUTCFullYear(),
+    anchorDate.getUTCMonth(),
+    anchorDate.getUTCDate(),
+  );
+  const endMs = endOfWeekUtc(anchorDayMs);
   const startMs = startOfWeekUtc(endMs) - 51 * 7 * DAY_MS;
+  const checkedAtMs = Date.parse(tokenUsage.checkedAt);
+  const coverageStartMs = tokenUsage.coverageStartDate
+    ? parseDateKey(tokenUsage.coverageStartDate)
+    : null;
+  const coverageEndMs = tokenUsage.coverageEndDate
+    ? parseDateKey(tokenUsage.coverageEndDate)
+    : null;
+  const reportedStartMs =
+    coverageStartMs ??
+    (tokenUsage.completeLifetimeHistory
+      ? startMs
+      : Math.min(...datedBuckets.map((entry) => entry.ms)));
+  const reportedEndMs =
+    coverageEndMs ??
+    (Number.isNaN(checkedAtMs)
+      ? Math.max(...datedBuckets.map((entry) => entry.ms))
+      : Math.min(anchorDayMs, checkedAtMs));
   const tokenByDate = new Map(
     datedBuckets.map((entry) => [entry.bucket.startDate, entry.bucket.tokens]),
   );
@@ -171,6 +210,7 @@ function buildTokenActivityWeeks(
     days.push({
       dateKey,
       ms,
+      reported: ms >= reportedStartMs && ms <= reportedEndMs,
       dailyTokens,
       weeklyTokens: weeklyTotals.get(formatDateKey(startOfWeekUtc(ms))) ?? 0,
       cumulativeTokens,
@@ -179,25 +219,30 @@ function buildTokenActivityWeeks(
 
   const maxValue = Math.max(
     0,
-    ...days.map((day) =>
-      mode === "daily"
-        ? day.dailyTokens
-        : mode === "weekly"
-          ? day.weeklyTokens
-          : day.cumulativeTokens,
-    ),
+    ...days
+      .filter((day) => day.reported)
+      .map((day) =>
+        mode === "daily"
+          ? day.dailyTokens
+          : mode === "weekly"
+            ? day.weeklyTokens
+            : day.cumulativeTokens,
+      ),
   );
   const weeks: TokenActivityWeek[] = [];
   let previousMonth = -1;
   for (let weekStartMs = startMs; weekStartMs <= endMs; weekStartMs += 7 * DAY_MS) {
     const cells: TokenActivityCell[] = [];
     const weekDays = days.slice(weeks.length * 7, weeks.length * 7 + 7);
+    const reportedWeekDays = weekDays.filter((day) => day.reported);
     const weekValue =
-      mode === "weekly"
-        ? (weekDays[0]?.weeklyTokens ?? 0)
-        : mode === "cumulative"
-          ? (weekDays[weekDays.length - 1]?.cumulativeTokens ?? 0)
-          : weekDays.reduce((sum, day) => sum + day.dailyTokens, 0);
+      reportedWeekDays.length === 0
+        ? null
+        : mode === "weekly"
+          ? (reportedWeekDays[0]?.weeklyTokens ?? 0)
+          : mode === "cumulative"
+            ? (reportedWeekDays[reportedWeekDays.length - 1]?.cumulativeTokens ?? 0)
+            : reportedWeekDays.reduce((sum, day) => sum + day.dailyTokens, 0);
     const weekTooltip = formatTokenActivityWeekTooltip(
       mode,
       weekDays[0]?.ms ?? weekStartMs,
@@ -212,8 +257,9 @@ function buildTokenActivityWeeks(
         monthLabel = formatMonthLabel(day.ms);
         previousMonth = month;
       }
-      const value =
-        mode === "daily"
+      const value = !day.reported
+        ? null
+        : mode === "daily"
           ? day.dailyTokens
           : mode === "weekly"
             ? day.dailyTokens > 0
@@ -225,7 +271,7 @@ function buildTokenActivityWeeks(
       cells.push({
         dateKey: day.dateKey,
         value,
-        intensityPercent: scaleTokenActivityIntensity(value, maxValue),
+        intensityPercent: scaleTokenActivityIntensity(value ?? 0, maxValue),
         tooltip: formatTokenActivityTooltip(mode, day.ms, value),
       });
     }
@@ -237,7 +283,7 @@ function buildTokenActivityWeeks(
     });
   }
 
-  const latestMonthLabel = formatMonthLabel(latestMs);
+  const latestMonthLabel = formatMonthLabel(anchorDayMs);
   const firstWeek = weeks[0];
   if (firstWeek?.monthLabel === latestMonthLabel) {
     weeks[0] = {
@@ -263,7 +309,7 @@ function TokenActivitySquare(props: { readonly cell: TokenActivityCell }) {
             className={cn(
               "block aspect-square w-full min-w-0 cursor-default rounded-[var(--app-radius-tiny)] transition-[filter] duration-150 ease-out",
               "hover:brightness-125",
-              tokenActivityColorClass(props.cell.intensityPercent),
+              tokenActivityColorClass(props.cell.intensityPercent, props.cell.value !== null),
             )}
           />
         }
@@ -311,7 +357,7 @@ function TokenActivityWeekColumn(props: {
                 className={cn(
                   "block aspect-square w-full min-w-0 rounded-[var(--app-radius-tiny)] transition-[filter] duration-150 ease-out",
                   "group-hover:brightness-125",
-                  tokenActivityColorClass(cell.intensityPercent),
+                  tokenActivityColorClass(cell.intensityPercent, cell.value !== null),
                 )}
               />
             ))}
@@ -425,10 +471,14 @@ export function ProviderUsageDashboard(props: {
 }) {
   const [activityMode, setActivityMode] = useState<TokenActivityMode>("daily");
   const [activityRange, setActivityRange] = useState<TokenActivityRange>("13-weeks");
+  const [activityAnchorMs] = useState(() => Date.now());
   const tokenUsage = props.usage.tokenUsage ?? null;
   const activityWeeks = useMemo(
-    () => buildTokenActivityWeeks(tokenUsage?.buckets ?? [], activityMode),
-    [activityMode, tokenUsage?.buckets],
+    () =>
+      tokenUsage === null
+        ? []
+        : buildTokenActivityWeeks(tokenUsage, activityMode, activityAnchorMs),
+    [activityAnchorMs, activityMode, tokenUsage],
   );
   const mobileActivityWeeks =
     activityRange === "13-weeks" ? activityWeeks.slice(-13) : activityWeeks;
@@ -524,7 +574,12 @@ export function ProviderUsageDashboard(props: {
       ) : null}
 
       {tokenUsage ? (
-        <section className="grid gap-4" aria-label={`${tokenUsage.label} activity`}>
+        <section
+          className="grid gap-4"
+          aria-label={
+            tokenUsage.scope === "local" ? tokenUsage.label : `${tokenUsage.label} activity`
+          }
+        >
           {tokenUsage.summary.length > 0 ? (
             <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border/70 sm:grid-cols-5">
               {tokenUsage.summary.map((entry, index) => {
@@ -556,7 +611,16 @@ export function ProviderUsageDashboard(props: {
 
           <div className="grid gap-3">
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
-              <h4 className="text-sm font-semibold text-foreground">Token activity</h4>
+              <div className="min-w-0">
+                <h4 className="text-sm font-semibold text-foreground">
+                  {tokenUsage.scope === "local" ? "Local token activity" : "Token activity"}
+                </h4>
+                {tokenUsage.scope === "local" ? (
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Observed on this computer from Claude Code history.
+                  </p>
+                ) : null}
+              </div>
               <div className="inline-flex rounded-md border border-border/70 bg-muted/20 p-0.5">
                 {(["daily", "weekly", "cumulative"] as const).map((mode) => (
                   <button

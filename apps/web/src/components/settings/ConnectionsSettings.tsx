@@ -58,6 +58,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { QRCodeSvg } from "../ui/qr-code";
 import { Spinner } from "../ui/spinner";
+import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1249,6 +1250,30 @@ type PairingClientsListProps = {
   onRevokeClientSession: (sessionId: ServerClientSessionRecord["sessionId"]) => void;
 };
 
+function ConnectedDevicesSkeleton({ presentation }: { presentation: AccessSectionPresentation }) {
+  return (
+    <div
+      className={accessRowClassName(presentation)}
+      role="status"
+      aria-label="Loading connected devices"
+      data-testid="connected-devices-skeleton"
+    >
+      <div className={ITEM_ROW_INNER_CLASSNAME} aria-hidden="true">
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex min-h-5 items-center gap-2">
+            <Skeleton className="size-2 shrink-0 rounded-full" />
+            <Skeleton className="h-3.5 w-36 max-w-full rounded-full" />
+          </div>
+          <Skeleton className="h-3 w-52 max-w-full rounded-full" />
+        </div>
+        <div className="flex w-full shrink-0 items-center sm:w-auto sm:justify-end">
+          <Skeleton className="h-7 w-20 rounded-sm" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const PairingClientsList = memo(function PairingClientsList({
   endpointUrl,
   endpoints,
@@ -1290,11 +1315,15 @@ const PairingClientsList = memo(function PairingClientsList({
       {/* An empty section with no copy at all reads as "nothing is paired",
           which is a lie while the access snapshot is still in flight. */}
       {pairingLinks.length === 0 && clientSessions.length === 0 ? (
-        <div className={accessRowClassName(presentation)}>
-          <p className="text-xs text-muted-foreground/60">
-            {isLoading ? "Loading devices..." : "No phones or tablets are connected yet."}
-          </p>
-        </div>
+        isLoading ? (
+          <ConnectedDevicesSkeleton presentation={presentation} />
+        ) : (
+          <div className={accessRowClassName(presentation)}>
+            <p className="text-xs text-muted-foreground/60">
+              No phones or tablets are connected yet.
+            </p>
+          </div>
+        )
       ) : null}
     </>
   );

@@ -142,6 +142,7 @@ let fixture: TestFixture;
 const rpcHarness = new BrowserWsRpcHarness();
 const wsRequests = rpcHarness.requests;
 let customWsRpcResolver: ((body: NormalizedWsRpcRequestBody) => unknown | undefined) | null = null;
+let suppressInitialShellSnapshot = false;
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 const encodeServerConfig = Schema.encodeSync(ServerConfigSchema);
 
@@ -2027,6 +2028,7 @@ async function mountChatView(options: {
   configureFixture?: (fixture: TestFixture) => void;
   resolveRpc?: (body: NormalizedWsRpcRequestBody) => unknown | undefined;
   initialPath?: string;
+  waitForBootstrap?: boolean;
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -2062,7 +2064,9 @@ async function mountChatView(options: {
   );
 
   await waitForWsClient();
-  await waitForAppBootstrap();
+  if (options.waitForBootstrap !== false) {
+    await waitForAppBootstrap();
+  }
   await waitForLayout();
 
   const cleanup = async () => {
@@ -2134,6 +2138,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ];
         }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
+          if (suppressInitialShellSnapshot) {
+            return [];
+          }
           return [
             {
               kind: "snapshot",
@@ -2164,6 +2171,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     document.body.innerHTML = "";
     wsRequests.length = 0;
     customWsRpcResolver = null;
+    suppressInitialShellSnapshot = false;
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
@@ -2205,7 +2213,52 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
   afterEach(() => {
     customWsRpcResolver = null;
+    suppressInitialShellSnapshot = false;
     document.body.innerHTML = "";
+  });
+
+  it("shows neutral sidebar row shapes until the first workspace snapshot arrives", async () => {
+    suppressInitialShellSnapshot = true;
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-sidebar-loading" as MessageId,
+      targetText: "sidebar loading skeleton",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      initialPath: "/usage",
+      waitForBootstrap: false,
+    });
+
+    try {
+      const loadingState = page.getByRole("status", { name: "Loading projects and threads" });
+      await expect.element(loadingState).toBeVisible();
+
+      const loadingElement = document.querySelector<HTMLElement>(
+        '[data-testid="sidebar-loading-skeleton"]',
+      );
+      expect(loadingElement).not.toBeNull();
+      expect(loadingElement?.querySelector("button, a, [role='button']")).toBeNull();
+      expect(loadingElement?.textContent?.trim()).toBe("");
+      expect(
+        loadingElement?.querySelector('[data-testid="sidebar-loading-live-rows"]')?.children.length,
+      ).toBeGreaterThan(0);
+      expect(
+        loadingElement?.querySelector('[data-testid="sidebar-loading-wrapped-rows"]')?.children
+          .length,
+      ).toBeGreaterThan(0);
+
+      suppressInitialShellSnapshot = false;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeShell, {
+        kind: "snapshot",
+        snapshot: toShellSnapshot(snapshot),
+      });
+
+      await expect.element(loadingState).not.toBeInTheDocument();
+      await expect.element(page.getByTestId("inbox-thread-list")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("renders locked single-environment mobile run context as a static workspace label", async () => {
@@ -7072,6 +7125,28 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("opens a project-scoped Codex session browser and imports the selected conversation", async () => {
+    const externalThreadsResult = {
+      data: [
+        {
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerThreadId: "native-codex-thread",
+          sessionId: "native-codex-session",
+          source: "cli" as const,
+          name: "Finish parser migration",
+          preview: "Finish the parser migration and verify its tests",
+          cwd: "/repo/project",
+          cliVersion: "0.145.0",
+          createdAt: "2026-03-01T12:00:00.000Z",
+          updatedAt: "2026-03-03T12:00:00.000Z",
+          status: "idle" as const,
+          canImport: true,
+        },
+      ],
+    };
+    let resolveExternalThreads!: (value: typeof externalThreadsResult) => void;
+    const externalThreadsPromise = new Promise<typeof externalThreadsResult>((resolve) => {
+      resolveExternalThreads = resolve;
+    });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -7099,24 +7174,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       },
       resolveRpc: (body) => {
         if (body._tag === WS_METHODS.serverListExternalProviderThreads) {
-          return {
-            data: [
-              {
-                providerInstanceId: ProviderInstanceId.make("codex"),
-                providerThreadId: "native-codex-thread",
-                sessionId: "native-codex-session",
-                source: "cli",
-                name: "Finish parser migration",
-                preview: "Finish the parser migration and verify its tests",
-                cwd: "/repo/project",
-                cliVersion: "0.145.0",
-                createdAt: "2026-03-01T12:00:00.000Z",
-                updatedAt: "2026-03-03T12:00:00.000Z",
-                status: "idle",
-                canImport: true,
-              },
-            ],
-          };
+          return externalThreadsPromise;
         }
         if (body._tag === WS_METHODS.serverImportExternalProviderThread) {
           return {
@@ -7139,8 +7197,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForCommandPaletteInput("Search other Codex conversations in Project...");
 
       await expect
+        .element(palette.getByTestId("command-palette-results-skeleton"))
+        .toBeInTheDocument();
+      resolveExternalThreads(externalThreadsResult);
+
+      await expect
         .element(palette.getByText("Finish parser migration", { exact: true }))
         .toBeInTheDocument();
+      await expect
+        .element(palette.getByTestId("command-palette-results-skeleton"))
+        .not.toBeInTheDocument();
       await expect
         .element(palette.getByText("Codex CLI · Finish the parser migration and verify its tests"))
         .toBeInTheDocument();

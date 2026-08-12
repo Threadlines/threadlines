@@ -71,6 +71,7 @@ import {
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1668,6 +1669,36 @@ function AutoArchiveCandidatePreview({
   );
 }
 
+function ArchivedThreadsSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading archived threads"
+      data-testid="archived-threads-skeleton"
+    >
+      <div aria-hidden="true">
+        {["w-40", "w-52", "w-36"].map((titleWidth, index) => (
+          <SettingsRow
+            key={titleWidth}
+            title={
+              <span className="flex min-w-0 items-center gap-2">
+                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+                <Skeleton className={`h-3.5 max-w-full rounded-full ${titleWidth}`} />
+              </span>
+            }
+            description={
+              <Skeleton
+                className={`h-3 max-w-full rounded-full ${index === 1 ? "w-64" : "w-48"}`}
+              />
+            }
+            control={<Skeleton className="h-7 w-24 rounded-sm" />}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function ArchivedThreadsPanel() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
@@ -2168,27 +2199,19 @@ export function ArchivedThreadsPanel() {
       </SettingsSection>
       {archivedGroups.length === 0 ? (
         <SettingsSection title="Archived threads">
-          <SettingsRow
-            title={
-              <span className="inline-flex items-center gap-2">
-                {isLoadingArchive ? (
-                  <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
-                ) : (
+          {isLoadingArchive ? (
+            <ArchivedThreadsSkeleton />
+          ) : (
+            <SettingsRow
+              title={
+                <span className="inline-flex items-center gap-2">
                   <ArchiveIcon className="size-3.5 text-muted-foreground" />
-                )}
-                {isLoadingArchive
-                  ? "Loading archived threads"
-                  : archiveError
-                    ? "Could not load archived threads"
-                    : "No archived threads"}
-              </span>
-            }
-            description={
-              isLoadingArchive
-                ? "Checking connected environments."
-                : (archiveError ?? "Archived threads will appear here.")
-            }
-          />
+                  {archiveError ? "Could not load archived threads" : "No archived threads"}
+                </span>
+              }
+              description={archiveError ?? "Archived threads will appear here."}
+            />
+          )}
         </SettingsSection>
       ) : (
         archivedGroups.map(({ project, threads: projectThreads }) => (

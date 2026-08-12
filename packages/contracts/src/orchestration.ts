@@ -1381,6 +1381,9 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   turnId: Schema.optional(TurnId),
+  /** True only when the authoritative provider turn (or imported historical
+   * turn) has settled. Completing one live assistant segment is non-terminal. */
+  completesTurn: Schema.Boolean,
   createdAt: IsoDateTime,
 });
 
@@ -1403,6 +1406,14 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.optional(MessageId),
   checkpointTurnCount: NonNegativeInt,
+  /**
+   * False for provider-emitted mid-turn checkpoint updates. Those events
+   * refresh changed-file metadata, but the provider turn is still running.
+   *
+   * Persisted events make this optional below for backwards-compatible replay,
+   * but every newly decided command must state the lifecycle intent.
+   */
+  completesTurn: Schema.Boolean,
   createdAt: IsoDateTime,
 });
 
@@ -1649,6 +1660,9 @@ export const ThreadMessageSentPayload = Schema.Struct({
   skills: Schema.optional(ChatSkillReferenceList),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  /** Missing means legacy behavior for events written before assistant
+   * segments carried an explicit turn-settlement decision. */
+  completesTurn: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1794,6 +1808,7 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
+  completesTurn: Schema.optional(Schema.Boolean),
 });
 
 export const ThreadTurnDiffSummaryUpdatedPayload = Schema.Struct({

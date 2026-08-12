@@ -143,25 +143,31 @@ function registerEnvironments(summary: (input: UsageSummaryInput) => Promise<Usa
   } as never);
 }
 
-function renderWithProviders(children: ReactNode) {
+function renderWithProviders(
+  children: ReactNode,
+  options?: { readonly initialEntries?: readonly string[] },
+) {
   const rootRoute = createRootRoute({ component: () => children });
   const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
+  const usageRoute = createRoute({ getParentRoute: () => rootRoute, path: "/usage" });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute]),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: rootRoute.addChildren([indexRoute, usageRoute]),
+    history: createMemoryHistory({ initialEntries: [...(options?.initialEntries ?? ["/"])] }),
   });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
+  return { ...rendered, router };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await page.viewport(1280, 720);
   resetPrimaryEnvironmentDescriptorForTests();
   resetSavedEnvironmentRegistryStoreForTests();
   __resetEnvironmentApiOverridesForTests();
@@ -174,6 +180,97 @@ afterEach(() => {
 });
 
 describe("UsageView", () => {
+  it("uses the page layout as a skeleton while usage is loading", async () => {
+    let finishSummary: (() => void) | undefined;
+    const summary = vi.fn(
+      (input: UsageSummaryInput) =>
+        new Promise<UsageSummary>((resolve) => {
+          finishSummary = () => resolve(summaryFor(input, () => []));
+        }),
+    );
+    registerEnvironments(summary);
+
+    renderWithProviders(<UsageView />);
+
+    await expect.element(page.getByRole("status", { name: "Loading usage" })).toBeInTheDocument();
+    const chartSkeleton = page.getByTestId("usage-chart-skeleton");
+    await expect.element(chartSkeleton).toBeInTheDocument();
+    const chartPlotSkeleton = page.getByTestId("usage-chart-plot-skeleton");
+    const chartDataSkeleton = page.getByTestId("usage-chart-data-skeleton");
+    expect(getComputedStyle(chartDataSkeleton.element()).clipPath).toContain("polygon");
+    expect(chartPlotSkeleton.element().querySelectorAll('[data-slot="skeleton"]')).toHaveLength(1);
+    await expect.element(page.getByText("API-equivalent cost")).toBeInTheDocument();
+    await expect.element(chartSkeleton.getByText("Claude Code")).toBeInTheDocument();
+    await expect.element(chartSkeleton.getByText("Codex")).toBeInTheDocument();
+    await expect.element(page.getByText("Reading provider transcripts…")).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(10);
+
+    finishSummary?.();
+
+    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("$0.00*");
+    await expect
+      .element(page.getByRole("status", { name: "Loading usage" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("keeps usage stats in one row without overflow, then stacks them on phones", async () => {
+    await page.viewport(657, 800);
+    const summary = vi.fn(async (input: UsageSummaryInput) =>
+      summaryFor(input, (days) => {
+        const day = days[days.length - 1] ?? input.untilDay;
+        return [
+          bucket({
+            day,
+            provider: "claude",
+            model: "claude-fable-5",
+            costUsd: 12,
+            totalTokens: 1_000_000,
+          }),
+        ];
+      }),
+    );
+    registerEnvironments(summary);
+
+    renderWithProviders(<UsageView />);
+
+    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("$12.00*");
+    const cells = page.getByTestId("usage-stat").elements();
+    expect(cells).toHaveLength(5);
+    const tops = cells.map((cell) => Math.round(cell.getBoundingClientRect().top));
+    expect(new Set(tops).size).toBe(1);
+    const band = page.getByTestId("usage-stats-band").element();
+    expect(band.scrollWidth).toBeLessThanOrEqual(band.clientWidth);
+
+    await page.viewport(390, 800);
+    await vi.waitFor(() => {
+      const mobileTops = cells.map((cell) => Math.round(cell.getBoundingClientRect().top));
+      expect(mobileTops.every((top, index) => index === 0 || top > mobileTops[index - 1]!)).toBe(
+        true,
+      );
+      expect(band.scrollWidth).toBeLessThanOrEqual(band.clientWidth);
+    });
+  });
+
+  it("shows a mobile back button that returns to the previous route", async () => {
+    await page.viewport(390, 800);
+    const summary = vi.fn(
+      async () =>
+        new Promise<UsageSummary>(() => {
+          // Keep the route stable; this test is about navigation chrome.
+        }),
+    );
+    registerEnvironments(summary);
+
+    const mounted = renderWithProviders(<UsageView />, { initialEntries: ["/", "/usage"] });
+
+    const backButton = page.getByTestId("usage-mobile-back");
+    await expect.element(backButton).toBeVisible();
+    await backButton.click();
+    await vi.waitFor(() => {
+      expect(mounted.router.state.location.pathname).toBe("/");
+    });
+  });
+
   it("renders the hero, the stat band, the priced models, and the silent machine", async () => {
     const summary = vi.fn(async (input: UsageSummaryInput) =>
       summaryFor(input, (days) => {

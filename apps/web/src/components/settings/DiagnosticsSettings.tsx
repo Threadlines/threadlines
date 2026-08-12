@@ -35,6 +35,7 @@ import { useSlowRpcAckRequests } from "../../rpc/requestLatencyState";
 import { Button } from "../ui/button";
 import { InfoPopover } from "../ui/info-popover";
 import { ScrollArea } from "../ui/scroll-area";
+import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
@@ -206,6 +207,60 @@ function StatsGrid({ children }: { children: ReactNode }) {
 
 function EmptyRows({ label }: { label: string }) {
   return <div className="px-4 py-4 text-xs text-muted-foreground sm:px-5">{label}</div>;
+}
+
+function StatsGridSkeleton({ count = 4 }: { count?: number }) {
+  return (
+    <StatsGrid>
+      {["first", "second", "third", "fourth", "fifth"].slice(0, count).map((key) => (
+        <div key={key} className="min-w-0 px-4 py-3 sm:px-5" aria-hidden="true">
+          <Skeleton className="h-3 w-20 rounded-full" />
+          <Skeleton className="mt-2 h-5 w-16 rounded-full" />
+        </div>
+      ))}
+    </StatsGrid>
+  );
+}
+
+const DIAGNOSTICS_SKELETON_ROW_WIDTHS = [
+  { id: "first", widths: ["w-8/12", "w-6/12", "w-9/12"] },
+  { id: "second", widths: ["w-10/12", "w-7/12", "w-5/12"] },
+] as const;
+
+function DiagnosticsSectionSkeleton() {
+  return (
+    <div
+      className="overflow-hidden border-t border-border/60"
+      data-testid="diagnostics-loading-skeleton"
+      aria-hidden="true"
+    >
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 border-b border-border/50 px-4 py-2.5 sm:px-5">
+        <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
+        <Skeleton className="h-2.5 w-14 max-w-full rounded-full" />
+        <Skeleton className="h-2.5 w-16 max-w-full rounded-full" />
+      </div>
+      {DIAGNOSTICS_SKELETON_ROW_WIDTHS.map((row) => (
+        <div
+          key={row.id}
+          className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 border-b border-border/40 px-4 py-3 last:border-b-0 sm:px-5"
+        >
+          {row.widths.map((width) => (
+            <Skeleton key={width} className={cn("h-3 max-w-full rounded-full", width)} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DiagnosticsChartSkeleton() {
+  return (
+    <div className="border-t border-border/60 px-4 py-3 sm:px-5" aria-hidden="true">
+      <div className="h-28 overflow-hidden rounded-sm bg-muted/10 p-2">
+        <Skeleton className="h-full w-full rounded-none opacity-60 [clip-path:polygon(0_82%,9%_68%,18%_76%,27%_42%,36%_65%,45%_54%,54%_72%,63%_34%,72%_58%,81%_24%,90%_50%,100%_18%,100%_100%,0_100%)]" />
+      </div>
+    </div>
+  );
 }
 
 function ExpandableText({
@@ -1032,6 +1087,7 @@ export function DiagnosticsSettingsPanel() {
   const slowSpansByName = data?.slowSpansByName ?? [];
   const slowTraces = data?.slowTraces ?? [];
   const isProcessInitialLoading = isProcessPending && processData === null;
+  const isResourceInitialLoading = isResourcePending && resourceData === null;
   const signalProcess = useCallback(
     (pid: number, signal: ServerProcessSignal) => {
       if (
@@ -1090,6 +1146,11 @@ export function DiagnosticsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      {isProcessInitialLoading || isResourceInitialLoading || isInitialLoading ? (
+        <span className="sr-only" role="status">
+          Loading diagnostics
+        </span>
+      ) : null}
       <SettingsSection
         title="Live Processes"
         headerAction={
@@ -1103,26 +1164,30 @@ export function DiagnosticsSettingsPanel() {
           </div>
         }
       >
-        <StatsGrid>
-          <StatBlock
-            label="Child Processes"
-            value={processData ? formatCount(processData.processCount) : "..."}
-          />
-          <StatBlock
-            label="CPU"
-            value={processData ? `${processData.totalCpuPercent.toFixed(1)}%` : "..."}
-            tooltip="Total CPU across live child processes of the current server process. The desktop shell and other parent processes are not included."
-          />
-          <StatBlock
-            label="Memory"
-            value={processData ? formatBytes(processData.totalRssBytes) : "..."}
-            tooltip="Total resident memory across live child processes of the current server process. The desktop shell and other parent processes are not included."
-          />
-          <StatBlock
-            label="Server PID"
-            value={processData ? String(processData.serverPid) : "..."}
-          />
-        </StatsGrid>
+        {isProcessInitialLoading ? (
+          <StatsGridSkeleton />
+        ) : (
+          <StatsGrid>
+            <StatBlock
+              label="Child Processes"
+              value={processData ? formatCount(processData.processCount) : "..."}
+            />
+            <StatBlock
+              label="CPU"
+              value={processData ? `${processData.totalCpuPercent.toFixed(1)}%` : "..."}
+              tooltip="Total CPU across live child processes of the current server process. The desktop shell and other parent processes are not included."
+            />
+            <StatBlock
+              label="Memory"
+              value={processData ? formatBytes(processData.totalRssBytes) : "..."}
+              tooltip="Total resident memory across live child processes of the current server process. The desktop shell and other parent processes are not included."
+            />
+            <StatBlock
+              label="Server PID"
+              value={processData ? String(processData.serverPid) : "..."}
+            />
+          </StatsGrid>
+        )}
         {processDiagnosticsError || processError ? (
           <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {processDiagnosticsError ? (
@@ -1139,16 +1204,16 @@ export function DiagnosticsSettingsPanel() {
             ) : null}
           </div>
         ) : null}
-        <ProcessDiagnosticsTable
-          processes={processData?.processes ?? []}
-          signalingPid={signalingPid}
-          onSignal={signalProcess}
-          emptyLabel={
-            isProcessInitialLoading
-              ? "Loading live processes..."
-              : "No live descendant processes found."
-          }
-        />
+        {isProcessInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
+        ) : (
+          <ProcessDiagnosticsTable
+            processes={processData?.processes ?? []}
+            signalingPid={signalingPid}
+            onSignal={signalProcess}
+            emptyLabel="No live descendant processes found."
+          />
+        )}
       </SettingsSection>
 
       <SettingsSection
@@ -1168,26 +1233,30 @@ export function DiagnosticsSettingsPanel() {
           </div>
         }
       >
-        <StatsGrid>
-          <StatBlock
-            label="CPU Time"
-            value={resourceData ? formatCpuTime(resourceData.totalCpuSecondsApprox) : "..."}
-            tooltip="Approximate active CPU time for the Threadlines server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
-          />
-          <StatBlock
-            label="Samples"
-            value={resourceData ? formatCount(resourceData.retainedSampleCount) : "..."}
-            tooltip="In-memory process samples retained by the server. This resets when the server restarts."
-          />
-          <StatBlock
-            label="Interval"
-            value={resourceData ? formatDuration(resourceData.sampleIntervalMs) : "..."}
-          />
-          <StatBlock
-            label="Processes"
-            value={resourceData ? formatCount(resourceData.topProcesses.length) : "..."}
-          />
-        </StatsGrid>
+        {isResourceInitialLoading ? (
+          <StatsGridSkeleton />
+        ) : (
+          <StatsGrid>
+            <StatBlock
+              label="CPU Time"
+              value={resourceData ? formatCpuTime(resourceData.totalCpuSecondsApprox) : "..."}
+              tooltip="Approximate active CPU time for the Threadlines server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
+            />
+            <StatBlock
+              label="Samples"
+              value={resourceData ? formatCount(resourceData.retainedSampleCount) : "..."}
+              tooltip="In-memory process samples retained by the server. This resets when the server restarts."
+            />
+            <StatBlock
+              label="Interval"
+              value={resourceData ? formatDuration(resourceData.sampleIntervalMs) : "..."}
+            />
+            <StatBlock
+              label="Processes"
+              value={resourceData ? formatCount(resourceData.topProcesses.length) : "..."}
+            />
+          </StatsGrid>
+        )}
         {processResourceError || resourceError ? (
           <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {processResourceError ? (
@@ -1204,15 +1273,20 @@ export function DiagnosticsSettingsPanel() {
             ) : null}
           </div>
         ) : null}
-        <ProcessResourceHistoryChart buckets={resourceData?.buckets ?? []} />
-        <ProcessResourceHistoryTable
-          processes={resourceData?.topProcesses ?? []}
-          emptyLabel={
-            isResourcePending && resourceData === null
-              ? "Collecting process resource samples..."
-              : "No process resource samples found for this window."
-          }
-        />
+        {isResourceInitialLoading ? (
+          <>
+            <DiagnosticsChartSkeleton />
+            <DiagnosticsSectionSkeleton />
+          </>
+        ) : (
+          <>
+            <ProcessResourceHistoryChart buckets={resourceData?.buckets ?? []} />
+            <ProcessResourceHistoryTable
+              processes={resourceData?.topProcesses ?? []}
+              emptyLabel="No process resource samples found for this window."
+            />
+          </>
+        )}
       </SettingsSection>
 
       <PendingRequestsSection />
@@ -1247,34 +1321,38 @@ export function DiagnosticsSettingsPanel() {
           </div>
         }
       >
-        <StatsGrid>
-          <StatBlock label="Spans" value={data ? formatCount(data.recordCount) : "..."} />
-          <StatBlock
-            label="Failures"
-            value={data ? formatCount(data.failureCount) : "..."}
-            tone={data && data.failureCount > 0 ? "danger" : "default"}
-          />
-          <StatBlock
-            label="Slow Spans"
-            value={data ? formatCount(data.slowSpanCount) : "..."}
-            tooltip={
-              data
-                ? `Completed operation spans with a duration of ${formatDuration(data.slowSpanThresholdMs)} or longer. Long-lived subscriptions are counted separately.`
-                : "Completed operation spans at or above the configured slow-span threshold."
-            }
-            tone={data && data.slowSpanCount > 0 ? "warning" : "default"}
-          />
-          <StatBlock
-            label="Ended Subs"
-            value={data ? formatCount(subscriptionSpanCount) : "..."}
-            tooltip="Long-lived streaming or subscription spans. These are lifetimes, not request latency."
-          />
-          <StatBlock
-            label="Parse Errors"
-            value={data ? formatCount(data.parseErrorCount) : "..."}
-            tone={data && data.parseErrorCount > 0 ? "warning" : "default"}
-          />
-        </StatsGrid>
+        {isInitialLoading ? (
+          <StatsGridSkeleton count={5} />
+        ) : (
+          <StatsGrid>
+            <StatBlock label="Spans" value={data ? formatCount(data.recordCount) : "..."} />
+            <StatBlock
+              label="Failures"
+              value={data ? formatCount(data.failureCount) : "..."}
+              tone={data && data.failureCount > 0 ? "danger" : "default"}
+            />
+            <StatBlock
+              label="Slow Spans"
+              value={data ? formatCount(data.slowSpanCount) : "..."}
+              tooltip={
+                data
+                  ? `Completed operation spans with a duration of ${formatDuration(data.slowSpanThresholdMs)} or longer. Long-lived subscriptions are counted separately.`
+                  : "Completed operation spans at or above the configured slow-span threshold."
+              }
+              tone={data && data.slowSpanCount > 0 ? "warning" : "default"}
+            />
+            <StatBlock
+              label="Ended Subs"
+              value={data ? formatCount(subscriptionSpanCount) : "..."}
+              tooltip="Long-lived streaming or subscription spans. These are lifetimes, not request latency."
+            />
+            <StatBlock
+              label="Parse Errors"
+              value={data ? formatCount(data.parseErrorCount) : "..."}
+              tone={data && data.parseErrorCount > 0 ? "warning" : "default"}
+            />
+          </StatsGrid>
+        )}
         {openLogsDirectoryError || traceDiagnosticsError || error ? (
           <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {openLogsDirectoryError ? (
@@ -1330,6 +1408,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows label={isInitialLoading ? "Loading failures..." : "No failed spans found."} />
         )}
@@ -1358,6 +1438,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows
             label={isInitialLoading ? "Loading failure groups..." : "No repeated failures found."}
@@ -1395,6 +1477,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows
             label={isInitialLoading ? "Loading slow span groups..." : "No slow span groups found."}
@@ -1432,6 +1516,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows
             label={isInitialLoading ? "Loading slow traces..." : "No slow traces found."}
@@ -1463,6 +1549,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows label={isInitialLoading ? "Loading slow spans..." : "No spans found."} />
         )}
@@ -1492,6 +1580,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows
             label={
@@ -1560,6 +1650,8 @@ export function DiagnosticsSettingsPanel() {
               </tbody>
             </table>
           </ScrollArea>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows
             label={isInitialLoading ? "Loading recent logs..." : "No warnings or errors found."}
@@ -1597,6 +1689,8 @@ export function DiagnosticsSettingsPanel() {
               </tr>
             ))}
           </DiagnosticsTable>
+        ) : isInitialLoading ? (
+          <DiagnosticsSectionSkeleton />
         ) : (
           <EmptyRows label={isInitialLoading ? "Loading span names..." : "No spans found."} />
         )}

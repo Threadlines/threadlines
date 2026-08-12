@@ -1304,6 +1304,7 @@ const make = Effect.gen(function* () {
       files: input.files,
       assistantMessageId,
       checkpointTurnCount,
+      completesTurn: false,
       createdAt: input.now,
     });
     const activity = checkpointFileChangeActivity({
@@ -1830,6 +1831,7 @@ const make = Effect.gen(function* () {
     finalDeltaCommandTag: string;
     fallbackText?: string;
     hasProjectedMessage?: boolean;
+    completesTurn?: boolean;
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
@@ -1860,6 +1862,7 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           messageId: input.messageId,
           ...(input.turnId ? { turnId: input.turnId } : {}),
+          completesTurn: input.completesTurn ?? false,
           createdAt: input.createdAt,
         });
       }
@@ -2821,6 +2824,7 @@ const make = Effect.gen(function* () {
                 commandTag: "assistant-complete-finalize",
                 finalDeltaCommandTag: "assistant-delta-finalize-fallback",
                 hasProjectedMessage: findMessageById(messages, assistantMessageId) !== undefined,
+                completesTurn: event.type === "turn.completed",
               }),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);

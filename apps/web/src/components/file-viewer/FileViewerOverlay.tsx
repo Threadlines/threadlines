@@ -98,6 +98,7 @@ import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Group } from "../ui/group";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
+import { Skeleton } from "../ui/skeleton";
 import { Toggle } from "../ui/toggle";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
@@ -320,6 +321,69 @@ const TreeRow = memo(function TreeRow({
 });
 
 const FILE_VIEWER_SEARCH_LIMIT = 60;
+const FILE_TREE_SKELETON_ROWS = [
+  { id: "root-source", depth: 0, width: "w-28" },
+  { id: "source-component", depth: 1, width: "w-36" },
+  { id: "source-lib", depth: 1, width: "w-24" },
+  { id: "root-tests", depth: 0, width: "w-32" },
+  { id: "tests-browser", depth: 1, width: "w-40" },
+  { id: "browser-first", depth: 2, width: "w-28" },
+  { id: "browser-second", depth: 2, width: "w-44" },
+  { id: "root-config", depth: 0, width: "w-24" },
+] as const;
+const FILE_CODE_SKELETON_ROWS = [
+  { id: "line-1", width: "w-8/12" },
+  { id: "line-2", width: "w-11/12" },
+  { id: "line-3", width: "w-7/12" },
+  { id: "line-4", width: "w-10/12" },
+  { id: "line-5", width: "w-9/12" },
+  { id: "line-6", width: "w-6/12" },
+  { id: "line-7", width: "w-11/12" },
+  { id: "line-8", width: "w-8/12" },
+] as const;
+
+function FileTreeSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading project files"
+      data-testid="file-viewer-tree-skeleton"
+      className="space-y-0.5 px-2 py-1"
+    >
+      {FILE_TREE_SKELETON_ROWS.map((row) => (
+        <div
+          key={row.id}
+          className="flex h-6 items-center gap-1.5 pointer-coarse:h-9"
+          style={{ paddingLeft: `${row.depth * 14}px` }}
+        >
+          <Skeleton className="size-3 shrink-0 rounded-sm" />
+          <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+          <Skeleton className={cn("h-3 rounded-full", row.width)} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FileCodeSkeleton({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-label={label}
+      data-testid="file-viewer-code-skeleton"
+      className="h-full min-w-[28rem] px-3 py-3 font-mono text-xs"
+    >
+      <div className="space-y-2">
+        {FILE_CODE_SKELETON_ROWS.map((row) => (
+          <div key={row.id} className="grid grid-cols-[2.25rem_minmax(0,1fr)] items-center gap-3">
+            <Skeleton className="h-3 w-7 rounded-full" />
+            <Skeleton className={cn("h-3 rounded-full", row.width)} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function FileViewerTree({
   context,
@@ -533,7 +597,7 @@ function FileViewerTree({
             ))
           )
         ) : entriesQuery.isPending ? (
-          <p className="px-3 py-2 text-xs text-muted-foreground/75">Loading project files...</p>
+          <FileTreeSkeleton />
         ) : entriesQuery.isError ? (
           <p className="px-3 py-2 text-xs text-muted-foreground/75">
             Unable to list project files.
@@ -926,8 +990,8 @@ function FileViewerPreview({
 
   if (fileQuery.isPending) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground/70">
-        Loading {basenameOf(activePath)}...
+      <div className="h-full overflow-auto [background:color-mix(in_srgb,var(--card)_90%,var(--background))]">
+        <FileCodeSkeleton label={`Loading ${basenameOf(activePath)}`} />
       </div>
     );
   }
@@ -1007,9 +1071,7 @@ function FileViewerPreview({
             wordWrap={wordWrap}
           />
         ) : !highlighterReady ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground/70">
-            Loading {basenameOf(activePath)}...
-          </div>
+          <FileCodeSkeleton label={`Loading ${basenameOf(activePath)}`} />
         ) : (
           <PierreFile
             key={`${context.cwd}:${activePath}`}

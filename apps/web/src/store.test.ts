@@ -1127,7 +1127,7 @@ describe("incremental orchestration updates", () => {
     );
   });
 
-  it("applies replay batches in sequence and updates session state", () => {
+  it("keeps legacy assistant completion events non-terminal while their turn is active", () => {
     const thread = makeThread({
       latestTurn: {
         turnId: TurnId.make("turn-1"),
@@ -1180,8 +1180,35 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(threadsOf(next)[0]?.session?.status).toBe("running");
-    expect(threadsOf(next)[0]?.latestTurn?.state).toBe("completed");
+    expect(threadsOf(next)[0]?.latestTurn).toMatchObject({
+      turnId: TurnId.make("turn-1"),
+      state: "running",
+      completedAt: null,
+      assistantMessageId: MessageId.make("assistant-1"),
+    });
     expect(threadsOf(next)[0]?.messages).toHaveLength(1);
+
+    const completed = applyOrchestrationEvent(
+      next,
+      makeEvent("thread.message-sent", {
+        threadId: thread.id,
+        messageId: MessageId.make("assistant-1"),
+        role: "assistant",
+        text: "done",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        completesTurn: true,
+        createdAt: "2026-02-27T00:00:03.000Z",
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(completed)[0]?.latestTurn).toMatchObject({
+      turnId: TurnId.make("turn-1"),
+      state: "completed",
+      completedAt: "2026-02-27T00:00:04.000Z",
+    });
   });
 
   it("does not regress latestTurn when an older turn diff completes late", () => {
