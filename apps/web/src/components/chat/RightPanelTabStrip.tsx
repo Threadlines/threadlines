@@ -141,9 +141,15 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
       {/* One row, shared with the window controls Windows overlays on the top of
           the panel: the strip takes titlebar height and pads itself clear of the
           min/max/close cluster. Content-sized tabs are what make that share
-          workable -- stretched ones had to divide whatever the padding left. */}
+          workable -- stretched ones had to divide whatever the padding left.
+
+          The clearance is the cluster's own width plus 4px, where the app's other
+          titlebar rows add 1em. They end in text or labelled controls that would
+          read as crowded against the buttons; this row ends in the `+`, whose own
+          padding is the breathing room, so the extra 12px only pushed it away
+          from the controls it sits beside. */}
       <div
-        className="flex h-9 items-stretch px-1.5 pt-1.5 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]"
+        className="flex h-9 items-stretch px-1.5 pt-1.5 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+0.25rem)]"
         data-right-panel-tabs-row="true"
       >
         {/* Tabs scroll rather than shrink, as the browser panel's do. Whatever
