@@ -17,6 +17,7 @@ import {
   buildMacAdaptiveIconSync,
 } from "./lib/mac-adaptive-icon.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { isTransientNetworkFailure } from "./fetch-with-network-retry.ts";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
 
@@ -31,6 +32,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -1178,7 +1180,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   }
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  yield* runCommand(
+  const electronBuilderCommand = runCommand(
     ChildProcess.make({
       cwd: stageAppDir,
       ...commandOutputOptions(options.verbose),
@@ -1235,6 +1237,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       // Windows needs shell mode to resolve .cmd shims.
       shell: process.platform === "win32",
     })`${vpBinary} exec --filter @threadlines/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+  );
+  yield* electronBuilderCommand.pipe(
+    Effect.tapError((error) =>
+      isTransientNetworkFailure(error)
+        ? Effect.logWarning(
+            "[desktop-artifact] Electron packaging hit a transient network failure; bounded retry policy active.",
+          )
+        : Effect.void,
+    ),
+    Effect.retry({
+      schedule: Schedule.spaced("2 seconds"),
+      times: 2,
+      while: isTransientNetworkFailure,
+    }),
   );
 
   const stageDistDir = path.join(stageAppDir, "dist");
