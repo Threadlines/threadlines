@@ -184,6 +184,7 @@ export function SubagentInspector({
         agentIds={transcriptAgentId === null ? [] : [transcriptAgentId]}
         follow={active}
         cwd={cwd}
+        objective={goal}
         fallbackBody={item.liveBody}
         onAgentResolved={handleAgentResolved}
         scrollable

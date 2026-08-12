@@ -305,6 +305,43 @@ export function splitSubagentTranscriptLead(
     : { lead: first, steps: items.slice(1) };
 }
 
+export interface SubagentTranscriptInstruction {
+  readonly text: string;
+  readonly at: string | null;
+  readonly label: "Instruction" | "System";
+}
+
+/**
+ * What the block above the thread shows as the instruction the agent was given.
+ *
+ * A Claude child's first stored record is its spawn prompt, so its transcript
+ * carries its own instruction. Codex spawns a child by forking the parent, and
+ * a forked child's transcript starts at its first real turn, so it carries no
+ * leading message at all: the objective the agent was spawned with stands in,
+ * being the same information from the only place that still holds it.
+ *
+ * @param atTranscriptStart False when the page starts mid-transcript, where an
+ *  instruction of any kind would be claiming a beginning that is not on screen.
+ */
+export function resolveSubagentTranscriptInstruction(
+  lead: Extract<SubagentTranscriptViewItem, { kind: "message" }> | null,
+  objective: string | null | undefined,
+  atTranscriptStart: boolean,
+): SubagentTranscriptInstruction | null {
+  if (lead) {
+    return {
+      text: lead.text,
+      at: lead.at,
+      label: lead.role === "user" ? "Instruction" : "System",
+    };
+  }
+  const trimmedObjective = objective?.trim();
+  if (!atTranscriptStart || !trimmedObjective) {
+    return null;
+  }
+  return { text: trimmedObjective, at: null, label: "Instruction" };
+}
+
 /** The provider only writes a transcript record once a message completes, so a
  *  running agent's newest words arrive on the event stream first. Show them as
  *  a tail until the transcript catches up, and drop the tail as soon as the

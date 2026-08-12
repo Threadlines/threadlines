@@ -413,6 +413,65 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  /** Prose that cites one file as a backticked path, another as a markdown link,
+   *  and a tool name that is not a file at all. */
+  const MIXED_REFERENCE_PROSE =
+    "The gutter is set in `apps/web/src/components/chat/AgentsPanel.tsx:300`, and " +
+    "[AgentsPanel.tsx](file:///repo/project/docs/AgentsPanel.tsx) documents it. " +
+    "Call `spawn_agent` to start one.";
+
+  it("renders inline-code file references as the chip a file link gets when asked", async () => {
+    const cwd = "/repo/project";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const screen = await render(
+      <ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd={cwd} compactFileReferences />,
+    );
+
+    try {
+      // Both citations went through one pre-pass, so the two namesakes carry the
+      // parent suffix that tells them apart -- the inline one included.
+      const chip = page.getByRole("link", { name: "AgentsPanel.tsx · components/chat · L300" });
+      await expect.element(chip).toBeInTheDocument();
+      await expect
+        .element(page.getByRole("link", { name: "AgentsPanel.tsx · project/docs" }))
+        .toBeInTheDocument();
+
+      // The tool name is the only thing left as inline code.
+      expect(
+        [...document.querySelectorAll(".chat-markdown code")].map((el) => el.textContent),
+      ).toEqual(["spawn_agent"]);
+
+      await chip.click();
+      await vi.waitFor(() => {
+        const state = useFileViewerStore.getState();
+        expect(state.isOpen).toBe(true);
+        expect(state.activePath).toBe("apps/web/src/components/chat/AgentsPanel.tsx");
+        expect(state.revealLine).toBe(300);
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("leaves inline-code file references as clickable code by default", async () => {
+    const screen = await render(<ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd="/repo/project" />);
+
+    try {
+      await expect
+        .element(
+          page.getByRole("button", { name: "apps/web/src/components/chat/AgentsPanel.tsx:300" }),
+        )
+        .toBeInTheDocument();
+      expect(document.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps normal web links unchanged", async () => {
     const screen = await render(
       <ChatMarkdown text="[OpenAI](https://openai.com/docs)" cwd="/repo/project" />,

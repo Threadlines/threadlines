@@ -33,9 +33,11 @@ import {
   formatSubagentToolRunActions,
   groupSubagentTranscriptSteps,
   isSameSubagentTranscriptItem,
+  resolveSubagentTranscriptInstruction,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
   subagentStepNodeOffsetPx,
+  type SubagentTranscriptInstruction,
   type SubagentTranscriptProseItem,
   type SubagentTranscriptStep,
   type SubagentTranscriptToolRun,
@@ -68,6 +70,10 @@ interface SubagentTranscriptProps {
   scrollable?: boolean;
   /** Working directory used to resolve file references in agent prose. */
   cwd?: string | undefined;
+  /** The prompt the agent was spawned with, shown as the instruction when the
+   *  transcript itself has no leading message (a forked Codex child's stored
+   *  history starts at its first real turn). */
+  objective?: string | null | undefined;
   /** Shown when the provider has no transcript yet, so a just-spawned agent
    *  still says something useful. */
   fallbackBody?: string | null;
@@ -209,6 +215,7 @@ export function SubagentTranscript({
   follow = false,
   scrollable = false,
   cwd,
+  objective,
   fallbackBody = null,
   onAgentResolved,
   className,
@@ -507,9 +514,16 @@ export function SubagentTranscript({
                 section.result.entries,
                 section.result.offset ?? 0,
               );
-              const { lead, steps } = splitSubagentTranscriptLead(
-                items,
-                section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0,
+              const atTranscriptStart =
+                section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0;
+              const { lead, steps } = splitSubagentTranscriptLead(items, atTranscriptStart);
+              // Only the first section can stand in the objective: the prop
+              // describes one agent, and repeating it under each of several
+              // would claim it as every agent's instruction.
+              const instruction = resolveSubagentTranscriptInstruction(
+                lead,
+                sectionIndex === 0 ? objective : null,
+                atTranscriptStart,
               );
               const showLiveTail =
                 follow &&
@@ -539,9 +553,9 @@ export function SubagentTranscript({
                       Agent {section.agentId}
                     </p>
                   ) : null}
-                  {lead ? (
+                  {instruction ? (
                     <TranscriptInstruction
-                      item={lead}
+                      instruction={instruction}
                       environmentId={environmentId}
                       threadId={threadId}
                       cwd={cwd}
@@ -941,6 +955,10 @@ const TranscriptMessage = memo(function TranscriptMessage({
             cwd={cwd}
             environmentId={environmentId}
             threadId={threadId}
+            // Agent prose cites files as backticked full paths, which at this
+            // width wrap mid-token. The chip is the same one the conversation
+            // gives a file link, so both surfaces show one clickable file.
+            compactFileReferences
           />
         </div>
       )}
@@ -998,13 +1016,13 @@ const INSTRUCTION_FOLD_CHARS = 220;
 /** The prompt the agent was spawned with. It sits above the thread rather than
  *  on it: it is the setup for every step below, not a step of its own. */
 const TranscriptInstruction = memo(function TranscriptInstruction({
-  item,
+  instruction,
   environmentId,
   threadId,
   cwd,
   timestampFormat,
 }: {
-  item: Extract<SubagentTranscriptViewItem, { kind: "message" }>;
+  instruction: SubagentTranscriptInstruction;
   environmentId: EnvironmentId;
   threadId: ThreadId;
   cwd: string | undefined;
@@ -1012,22 +1030,22 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
 }) {
   const [expanded, setExpanded] = useState(false);
   const foldable =
-    item.text.length > INSTRUCTION_FOLD_CHARS ||
-    item.text.split("\n").length > INSTRUCTION_COLLAPSED_LINES;
+    instruction.text.length > INSTRUCTION_FOLD_CHARS ||
+    instruction.text.split("\n").length > INSTRUCTION_COLLAPSED_LINES;
   const folded = foldable && !expanded;
 
   return (
     <div
       className="min-w-0 border-b border-border/45 pb-2.5"
       data-subagent-transcript-instruction="true"
-      data-subagent-transcript-entry={item.role}
+      data-subagent-transcript-entry={instruction.label === "System" ? "system" : "user"}
     >
       <div className="flex min-w-0 items-baseline gap-2">
         <span className="shrink-0 text-[9px] font-medium tracking-[0.12em] text-muted-foreground/45 uppercase">
-          {item.role === "user" ? "Instruction" : "System"}
+          {instruction.label}
         </span>
         <span className="flex-1" />
-        <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} />
+        <TranscriptTimestamp at={instruction.at} timestampFormat={timestampFormat} />
         {foldable ? (
           <DisclosureButton
             expanded={expanded}
@@ -1038,7 +1056,7 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
       </div>
       {folded ? (
         <p className="mt-1 line-clamp-4 text-[11.5px] leading-5 whitespace-pre-wrap wrap-break-word text-muted-foreground/70">
-          {item.text}
+          {instruction.text}
         </p>
       ) : (
         <div
@@ -1046,10 +1064,14 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
           data-subagent-transcript-message="true"
         >
           <ChatMarkdown
-            text={item.text}
+            text={instruction.text}
             cwd={cwd}
             environmentId={environmentId}
             threadId={threadId}
+            // Agent prose cites files as backticked full paths, which at this
+            // width wrap mid-token. The chip is the same one the conversation
+            // gives a file link, so both surfaces show one clickable file.
+            compactFileReferences
           />
         </div>
       )}

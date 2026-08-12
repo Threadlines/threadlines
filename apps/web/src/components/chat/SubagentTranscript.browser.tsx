@@ -50,16 +50,25 @@ const ENTRIES = [
 
 /** The drill-in's real width: the panel is 330px and the transcript keeps the
  *  panel's 12px gutter inside it. */
-function renderTranscript() {
+function renderTranscript(options?: { cwd?: string; objective?: string }) {
   return render(
     <div style={{ boxSizing: "border-box", display: "flex", height: 520, width: 330 }}>
       <SubagentTranscript
         environmentId={ENVIRONMENT_ID}
         threadId={THREAD_ID}
         agentIds={["agent-1"]}
+        cwd={options?.cwd}
+        objective={options?.objective}
         scrollable
       />
     </div>,
+  );
+}
+
+/** The text of the block above the thread, or null when there is none. */
+function instructionBlockText(): string | null {
+  return (
+    document.querySelector("[data-subagent-transcript-instruction='true']")?.textContent ?? null
   );
 }
 
@@ -152,13 +161,16 @@ describe("SubagentTranscript drill-in", () => {
     await expect.element(page.getByText("export const routes = []")).toBeVisible();
   });
 
-  it("opens a file reference in the agent's prose in the file viewer", async () => {
+  it("shows a file reference in the agent's prose as a compact chip that opens the viewer", async () => {
     transcriptRpcMock.mockResolvedValue({
       entries: [
         {
           id: "f1",
           role: "assistant",
-          text: "The gutter is set in `apps/web/src/components/chat/AgentsPanel.tsx:300`.",
+          text:
+            "The gutter is set in `apps/web/src/components/chat/AgentsPanel.tsx:300` and read " +
+            "back in `apps/web/src/components/chat/SubagentTranscript.tsx:42`. Call " +
+            "`spawn_agent` to add one.",
           toolUses: [],
           at: "2026-08-11T10:00:00.000Z",
         },
@@ -170,11 +182,32 @@ describe("SubagentTranscript drill-in", () => {
     setActiveFileViewerContext({ environmentId: ENVIRONMENT_ID, cwd: "C:/repo", threadRef: null });
 
     try {
-      renderTranscript();
-      const reference = page.getByRole("button", {
-        name: "apps/web/src/components/chat/AgentsPanel.tsx:300",
-      });
+      renderTranscript({ cwd: "C:/repo" });
+      // The chip reads as a file, not as the raw path it was written as.
+      const reference = page.getByRole("link", { name: "AgentsPanel.tsx · L300" });
       await expect.element(reference).toBeVisible();
+      await expect
+        .element(page.getByRole("link", { name: "SubagentTranscript.tsx · L42" }))
+        .toBeVisible();
+      expect(document.body.textContent).not.toContain("chat/AgentsPanel.tsx:300");
+
+      // A backticked token that is not a file is untouched.
+      const inlineCode = [...document.querySelectorAll(".chat-markdown code")];
+      expect(inlineCode.map((element) => element.textContent)).toEqual(["spawn_agent"]);
+
+      // At the panel's width the chip stays one line inside the transcript
+      // rather than breaking mid-path, and holds the 18px line box the
+      // surrounding rows are set on.
+      const scroller = document.querySelector<HTMLElement>("[data-subagent-transcript='true']")!;
+      for (const chip of document.querySelectorAll<HTMLElement>("a.chat-markdown-file-link")) {
+        const label = chip.querySelector<HTMLElement>(".chat-markdown-file-link-label")!;
+        expect(lineRectCount(label)).toBe(1);
+        expect(chip.scrollWidth).toBeLessThanOrEqual(chip.clientWidth + 1);
+        expect(chip.getBoundingClientRect().height).toBeLessThanOrEqual(18);
+        expect(chip.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right,
+        );
+      }
 
       await reference.click();
       await vi.waitFor(() => {
@@ -187,6 +220,51 @@ describe("SubagentTranscript drill-in", () => {
       setActiveFileViewerContext(null);
       useFileViewerStore.getState().close();
     }
+  });
+
+  /** A transcript that opens on the agent's own work, with no user message to
+   *  lift out of it -- the shape a forked Codex child arrives in. */
+  function mockCodexShapedTranscript() {
+    transcriptRpcMock.mockResolvedValue({
+      entries: [
+        {
+          id: "c1",
+          role: "assistant",
+          text: "Walked the route files.",
+          toolUses: [],
+          at: "2026-08-11T10:00:00.000Z",
+        },
+      ],
+      truncated: false,
+      offset: 0,
+      totalEntries: 1,
+    });
+  }
+
+  it("uses the transcript's own leading message as the instruction", async () => {
+    // ENTRIES opens with a user message: the shape a Claude child arrives in,
+    // whose first stored record is the spawn prompt.
+    renderTranscript({ objective: "Spawned to count the files." });
+    await expect.element(page.getByText("Count the direct TypeScript files.")).toBeVisible();
+
+    expect(instructionBlockText()).toContain("Count the direct TypeScript files.");
+    expect(instructionBlockText()).not.toContain("Spawned to count the files.");
+  });
+
+  it("stands in the agent's objective when the transcript has no leading message", async () => {
+    mockCodexShapedTranscript();
+    renderTranscript({ objective: "Spawned to count the files." });
+    await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+
+    expect(instructionBlockText()).toContain("Spawned to count the files.");
+  });
+
+  it("shows no instruction block without a leading message or an objective", async () => {
+    mockCodexShapedTranscript();
+    renderTranscript();
+    await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+
+    expect(instructionBlockText()).toBeNull();
   });
 
   it("wraps a long first line under the timestamp instead of into it", async () => {

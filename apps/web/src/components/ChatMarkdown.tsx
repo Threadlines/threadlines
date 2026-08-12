@@ -44,6 +44,7 @@ import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import {
   localhostUrlFromText,
+  type MarkdownFileLinkMeta,
   normalizeMarkdownLinkDestination,
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
@@ -89,6 +90,13 @@ interface ChatMarkdownProps {
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
+  /**
+   * Renders inline-code file references (`apps/web/src/App.tsx:12`) as the same
+   * compact chip a markdown file link gets, instead of clickable code showing
+   * the raw path. Opt-in because a narrow column is where the raw path stops
+   * being readable: it wraps mid-token and reads as a broken button.
+   */
+  compactFileReferences?: boolean | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -270,6 +278,14 @@ interface MarkdownFileLinkProps {
   label: string;
   theme: "light" | "dark";
   className?: string | undefined;
+  /**
+   * Set when the chip was built from an inline-code reference rather than a
+   * link. Such a reference is often a bare file name (`AgentsPanel.tsx:300`)
+   * whose real location is only known after a workspace search, so it opens
+   * through {@link openChatFileReference} and the affordances that need a
+   * settled path (copy path, reveal, open in editor) stay off.
+   */
+  chatReference?: string | undefined;
 }
 
 const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;
@@ -355,6 +371,85 @@ function normalizeMarkdownLinkHrefKey(href: string): string {
   return rewriteMarkdownFileUriHref(normalizedHref) ?? normalizedHref;
 }
 
+/**
+ * The one label a clickable file wears: name, then only as much of its parent
+ * path as it takes to tell it from its namesakes in the same document, then the
+ * position. Shared by markdown links and inline-code references so an
+ * `AgentsPanel.tsx:300` written either way reads identically.
+ */
+function buildFileLinkLabel(meta: MarkdownFileLinkMeta, parentSuffix: string | undefined): string {
+  const labelParts = [meta.basename];
+  if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
+    labelParts.push(parentSuffix);
+  }
+  if (meta.line) {
+    labelParts.push(`L${meta.line}${meta.column ? `:C${meta.column}` : ""}`);
+  }
+  return labelParts.join(" · ");
+}
+
+const BLOCK_FENCE_MARKER_REGEX = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const INLINE_CODE_RUN_PATTERN = /(`+)([^`\n]+)\1/g;
+const EMPTY_FILE_LINK_META_MAP: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
+
+/**
+ * Every inline code span in a markdown document, skipping fenced blocks.
+ *
+ * Deliberately approximate: it exists so the file-link pre-pass sees the same
+ * references the `code` renderer will, and anything it misses falls through to
+ * plain inline code rather than to a wrong label.
+ */
+function extractInlineCodeSpans(text: string): string[] {
+  const spans: string[] = [];
+  let openFence: { char: string; length: number } | null = null;
+
+  for (const line of text.split("\n")) {
+    const fenceMatch = BLOCK_FENCE_MARKER_REGEX.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]!;
+      if (openFence === null) {
+        openFence = { char: marker[0]!, length: marker.length };
+      } else if (
+        marker[0] === openFence.char &&
+        marker.length >= openFence.length &&
+        (fenceMatch[2] ?? "").trim() === ""
+      ) {
+        openFence = null;
+      }
+      continue;
+    }
+    if (openFence !== null) continue;
+
+    for (const match of line.matchAll(INLINE_CODE_RUN_PATTERN)) {
+      const span = match[2]?.trim();
+      if (span) spans.push(span);
+    }
+  }
+
+  return spans;
+}
+
+/**
+ * Resolved metadata for every inline-code file reference in a document, keyed by
+ * the span as written (which is also what {@link openChatFileReference} takes).
+ */
+function buildInlineCodeFileLinkMeta(
+  text: string,
+  cwd: string | undefined,
+): ReadonlyMap<string, MarkdownFileLinkMeta> {
+  const metaBySpan = new Map<string, MarkdownFileLinkMeta>();
+  for (const span of extractInlineCodeSpans(text)) {
+    if (metaBySpan.has(span)) continue;
+    // A dev-server address reads as a file reference too (`127.0.0.1:8080`); it
+    // is handled as an address by the renderer and must not become a chip.
+    if (localhostUrlFromText(span)) continue;
+    if (!parseChatFileReference(span)) continue;
+    const meta = resolveMarkdownFileLinkMeta(span, cwd);
+    if (meta) metaBySpan.set(span, meta);
+  }
+  return metaBySpan;
+}
+
 const MarkdownFileLink = memo(function MarkdownFileLink({
   href,
   targetPath,
@@ -366,8 +461,27 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   label,
   theme,
   className,
+  chatReference,
 }: MarkdownFileLinkProps) {
   const entryLabel = kind === "directory" ? "folder" : "file";
+
+  /** Opens an inline-code reference, resolving bare names through workspace
+   *  search. Returns false when this chip did not come from one. */
+  const openReference = useCallback(() => {
+    if (chatReference === undefined) {
+      return false;
+    }
+    void openChatFileReference(chatReference).then((opened) => {
+      if (!opened) {
+        toastManager.add({
+          type: "error",
+          title: "File not found in workspace",
+          description: chatReference,
+        });
+      }
+    });
+    return true;
+  }, [chatReference]);
 
   const handleOpenExternally = useCallback(() => {
     const api = readLocalApi();
@@ -420,6 +534,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   );
 
   const handleOpen = useCallback(() => {
+    if (openReference()) {
+      return;
+    }
     if (openInInternalViewer()) {
       return;
     }
@@ -428,10 +545,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
     handleOpenExternally();
-  }, [handleOpenExternally, handleRevealInFileManager, kind, openInInternalViewer]);
+  }, [handleOpenExternally, handleRevealInFileManager, kind, openInInternalViewer, openReference]);
 
   const handleOpenInViewer = useCallback(() => {
-    if (openInInternalViewer()) {
+    if (openReference() || openInInternalViewer()) {
       return;
     }
     toastManager.add(
@@ -441,7 +558,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         description: `${displayPath} is not available in the active project workspace.`,
       }),
     );
-  }, [displayPath, openInInternalViewer]);
+  }, [displayPath, openInInternalViewer, openReference]);
 
   const handleContextMenu = useCallback(
     async (event: ReactMouseEvent<HTMLAnchorElement>) => {
@@ -519,12 +636,23 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, className)}
             data-entry-kind={kind}
             data-workspace-scope={isInWorkspace ? "internal" : "external"}
+            data-chat-file-reference={chatReference}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
               handleOpen();
             }}
-            onContextMenu={handleContextMenu}
+            // Enter already activates a link; Space does not, and the chip is a
+            // single tab stop that reads as a button, so it fires on both.
+            onKeyDown={(event) => {
+              if (event.key === " ") {
+                event.preventDefault();
+                handleOpen();
+              }
+            }}
+            // An inline reference may be a bare name resolved by search, so the
+            // menu's path actions would copy or reveal a guess.
+            onContextMenu={chatReference === undefined ? handleContextMenu : undefined}
           >
             <VscodeEntryIcon
               pathValue={filePath}
@@ -565,11 +693,10 @@ function areMarkdownFileLinkPropsEqual(
     previous.line === next.line &&
     previous.label === next.label &&
     previous.theme === next.theme &&
-    previous.className === next.className
+    previous.className === next.className &&
+    previous.chatReference === next.chatReference
   );
 }
-
-const BLOCK_FENCE_MARKER_REGEX = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 /**
  * Splits markdown into top-level blocks at blank lines outside fenced code
@@ -627,6 +754,7 @@ function ChatMarkdownDocument({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  compactFileReferences = false,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Null unless both halves of the identity are here: a transcript rendered
@@ -652,15 +780,28 @@ function ChatMarkdownDocument({
     }
     return metaByHref;
   }, [cwd, text]);
-  const fileLinkParentSuffixByPath = useMemo(() => {
-    const filePaths = [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath);
-    return buildFileLinkParentSuffixByPath(filePaths);
-  }, [markdownFileLinkMetaByHref]);
-  const fileLinkKindByPath = useMarkdownFileLinkKinds(
-    markdownFileLinkMetaByHref,
-    environmentId,
-    cwd,
+  const inlineCodeFileLinkMetaBySpan = useMemo(
+    () =>
+      compactFileReferences ? buildInlineCodeFileLinkMeta(text, cwd) : EMPTY_FILE_LINK_META_MAP,
+    [compactFileReferences, cwd, text],
   );
+  // Links and inline references share one pre-pass, so the same file cited both
+  // ways gets the same parent-suffix disambiguation and the same resolved kind.
+  const fileLinkMetaByKey = useMemo(() => {
+    if (inlineCodeFileLinkMetaBySpan.size === 0) {
+      return markdownFileLinkMetaByHref;
+    }
+    const merged = new Map(markdownFileLinkMetaByHref);
+    for (const [span, meta] of inlineCodeFileLinkMetaBySpan) {
+      if (!merged.has(span)) merged.set(span, meta);
+    }
+    return merged;
+  }, [inlineCodeFileLinkMetaBySpan, markdownFileLinkMetaByHref]);
+  const fileLinkParentSuffixByPath = useMemo(() => {
+    const filePaths = [...fileLinkMetaByKey.values()].map((meta) => meta.filePath);
+    return buildFileLinkParentSuffixByPath(filePaths);
+  }, [fileLinkMetaByKey]);
+  const fileLinkKindByPath = useMarkdownFileLinkKinds(fileLinkMetaByKey, environmentId, cwd);
   const markdownUrlTransform = useCallback(
     (href: string) => {
       const rewrittenFileHref = rewriteMarkdownFileUriHref(href);
@@ -712,17 +853,6 @@ function ChatMarkdownDocument({
           );
         }
 
-        const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
-        const labelParts = [fileLinkMeta.basename];
-        if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
-          labelParts.push(parentSuffix);
-        }
-        if (fileLinkMeta.line) {
-          labelParts.push(
-            `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
-          );
-        }
-
         return (
           <MarkdownFileLink
             href={fileLinkMeta.href}
@@ -732,7 +862,10 @@ function ChatMarkdownDocument({
             kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
             isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
             line={fileLinkMeta.line}
-            label={labelParts.join(" · ")}
+            label={buildFileLinkLabel(
+              fileLinkMeta,
+              fileLinkParentSuffixByPath.get(fileLinkMeta.filePath),
+            )}
             theme={resolvedTheme}
             className={props.className}
           />
@@ -763,6 +896,32 @@ function ChatMarkdownDocument({
                 {renderedChildren}
               </ChatWebLink>
             </code>
+          );
+        }
+        // Opted in, this reference wears the same chip a markdown file link
+        // does: in a narrow column the raw path wraps mid-token and reads as a
+        // broken button, and one clickable-file style beats two.
+        const inlineFileReference = className || !text ? null : text.trim();
+        const inlineFileLinkMeta = inlineFileReference
+          ? inlineCodeFileLinkMetaBySpan.get(inlineFileReference)
+          : undefined;
+        if (inlineFileReference && inlineFileLinkMeta) {
+          return (
+            <MarkdownFileLink
+              href={inlineFileLinkMeta.href}
+              targetPath={inlineFileLinkMeta.targetPath}
+              displayPath={inlineFileLinkMeta.displayPath}
+              filePath={inlineFileLinkMeta.filePath}
+              kind={fileLinkKindByPath.get(inlineFileLinkMeta.filePath) ?? "file"}
+              isInWorkspace={Boolean(cwd && isPathWithinCwd(inlineFileLinkMeta.filePath, cwd))}
+              line={inlineFileLinkMeta.line}
+              label={buildFileLinkLabel(
+                inlineFileLinkMeta,
+                fileLinkParentSuffixByPath.get(inlineFileLinkMeta.filePath),
+              )}
+              theme={resolvedTheme}
+              chatReference={inlineFileReference}
+            />
           );
         }
         if (className || !text || !parseChatFileReference(text)) {
@@ -840,6 +999,7 @@ function ChatMarkdownDocument({
       diffThemeName,
       fileLinkKindByPath,
       fileLinkParentSuffixByPath,
+      inlineCodeFileLinkMetaBySpan,
       inlineContext,
       isStreaming,
       markdownFileLinkMetaByHref,
@@ -869,6 +1029,7 @@ function StreamingTailBlock({
   threadId,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  compactFileReferences,
 }: Omit<ChatMarkdownProps, "isStreaming">) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush.
@@ -882,6 +1043,7 @@ function StreamingTailBlock({
       isStreaming
       skills={skills}
       searchHighlightQuery={searchHighlightQuery}
+      compactFileReferences={compactFileReferences}
     />
   );
 }
@@ -894,6 +1056,7 @@ function ChatMarkdownBody({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  compactFileReferences,
 }: ChatMarkdownProps) {
   let body: ReactNode;
   if (isStreaming) {
@@ -913,6 +1076,7 @@ function ChatMarkdownBody({
           threadId={threadId}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
+          compactFileReferences={compactFileReferences}
         />
       ) : (
         <MemoChatMarkdownDocument
@@ -924,6 +1088,7 @@ function ChatMarkdownBody({
           isStreaming={false}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
+          compactFileReferences={compactFileReferences}
         />
       ),
     );
@@ -938,6 +1103,7 @@ function ChatMarkdownBody({
         isStreaming={false}
         skills={skills}
         searchHighlightQuery={searchHighlightQuery}
+        compactFileReferences={compactFileReferences}
       />
     );
   }
@@ -953,6 +1119,7 @@ function ChatMarkdown({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  compactFileReferences,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const canRenderVisualizations = environmentId !== undefined && threadId !== undefined;
@@ -984,6 +1151,7 @@ function ChatMarkdown({
             isStreaming={isStreaming && index === segments.length - 1}
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}
+            compactFileReferences={compactFileReferences}
           />
         );
       })}

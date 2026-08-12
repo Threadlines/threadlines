@@ -674,6 +674,30 @@ label:has(> select#reasoning-effort) select {
   font-size: 11px;
 }
 
+/* A file reference is inline code by origin, so its chip takes the same step
+   down as inline code does here: at 12px the chip outgrows the 18px line box the
+   drill-in's rows are set on, and every line carrying one gets taller than its
+   neighbours. `overflow`/`min-width` are what hold the label to one line -- a
+   path is a single unbreakable token to the chip, so without them a label too
+   wide for the panel would push out of it instead of ellipsing. */
+.chat-markdown-dense .chat-markdown .chat-markdown-file-link {
+  top: 1px;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.chat-markdown-dense .chat-markdown .chat-markdown-file-link-label {
+  min-width: 0;
+}
+
+/* The file-type glyph, not the text, is the tallest thing in the chip: left at
+   14px it alone makes the chip outgrow the line box. */
+.chat-markdown-dense .chat-markdown .chat-markdown-file-link-icon {
+  width: 12px;
+  height: 12px;
+}
+
 /* The subagent transcript floats an entry's timestamp onto the first line of the
    entry's prose. Prose wraps around it, but a block that establishes its own
    formatting context would be squeezed beside it, so a code fence or table that
