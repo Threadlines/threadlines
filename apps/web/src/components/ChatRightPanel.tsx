@@ -14,6 +14,7 @@ import type { ReactElement, ReactNode } from "react";
 
 import { Button } from "./ui/button";
 import { RightPanelLauncher } from "./chat/RightPanelLauncher";
+import type { RightPanelLauncherStates } from "./chat/rightPanelLauncherState";
 import { RightPanelTabStrip } from "./chat/RightPanelTabStrip";
 import type { RightPanelTab } from "../rightPanelTabs";
 
@@ -22,6 +23,9 @@ export function ChatRightPanel(props: {
   availableTabs: ReadonlyArray<RightPanelTab>;
   activeTab: RightPanelTab | null;
   liveTabs?: ReadonlyArray<RightPanelTab>;
+  /** What the launcher's rows report. The route composes it, because only the
+   *  route holds the thread's git status and agent state. */
+  launcherSurfaceStates?: RightPanelLauncherStates | undefined;
   onSelectTab: (tab: RightPanelTab) => void;
   onCloseTab: (tab: RightPanelTab) => void;
   /** Present in overlay mode, where the sidebar covers the conversation. */
@@ -61,6 +65,7 @@ export function ChatRightPanel(props: {
         <RightPanelLauncher
           availableTabs={props.availableTabs}
           openTabs={props.openTabs}
+          surfaceStates={props.launcherSurfaceStates}
           onOpenTab={props.onSelectTab}
         />
       ) : (

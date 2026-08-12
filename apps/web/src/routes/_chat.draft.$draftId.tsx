@@ -23,6 +23,7 @@ import {
   type RightPanelTab,
 } from "../rightPanelTabs";
 import { ChatRightPanel } from "../components/ChatRightPanel";
+import { useRightPanelLauncherStates } from "../components/chat/rightPanelLauncherState";
 import { cn } from "../lib/utils";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -56,6 +57,9 @@ import {
 } from "../threadRoutes";
 
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
+
+/** A draft has no turns at all, which is a real "none" rather than an unknown. */
+const EMPTY_TURN_DIFF_SUMMARIES = [] as const;
 
 /** Mount the heavy viewer chunk only after the first open request. */
 function LazyFileViewerOverlay() {
@@ -169,6 +173,16 @@ function DraftChatThreadRouteView() {
   const sidebarVisible = rightPanel.visible && !sidebarAutoHidden;
   const activeTab = sidebarVisible ? rightPanel.activeTab : null;
   const sourceControlOpen = activeTab === "sourceControl";
+  // A draft has no turn, so no agents surface to report on and no turn diffs
+  // behind its Diff tab: its launcher speaks for the working tree alone.
+  const launcherSurfaceStates = useRightPanelLauncherStates({
+    enabled: sidebarVisible && activeTab === null,
+    environmentId: draftSession?.environmentId ?? null,
+    cwd: sourceControlTarget?.cwd ?? null,
+    diffTarget: rightPanel.diffTarget,
+    turnDiffSummaries: EMPTY_TURN_DIFF_SUMMARIES,
+    agents: null,
+  });
   const fileViewerCwd = isGeneralChatDraft
     ? draftProject && draftThreadRef
       ? `${draftProject.cwd}/threads/${draftThreadRef.threadId}`
@@ -311,6 +325,7 @@ function DraftChatThreadRouteView() {
       openTabs={rightPanel.openTabs}
       availableTabs={availableTabs}
       activeTab={activeTab}
+      launcherSurfaceStates={launcherSurfaceStates}
       onSelectTab={selectTab}
       onCloseTab={closeTab}
       {...(shouldUseSourceControlSheet ? { onDismiss: hideSidebar } : {})}

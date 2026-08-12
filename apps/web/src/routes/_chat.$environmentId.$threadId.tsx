@@ -48,6 +48,7 @@ import {
   type RightPanelTab,
 } from "../rightPanelTabs";
 import { hasRunningAgentActivity } from "../components/chat/agentsPanel.logic";
+import { useRightPanelLauncherStates } from "../components/chat/rightPanelLauncherState";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
@@ -329,6 +330,18 @@ function ChatThreadRouteView() {
     () => (agentsSource && hasRunningAgentActivity(agentsSource) ? ["agents"] : []),
     [agentsSource],
   );
+  // What the launcher's rows say. Only assembled while the launcher is the
+  // thing on screen, since that is the only place it is read.
+  const launcherSurfaceStates = useRightPanelLauncherStates({
+    enabled: sidebarVisible && activeTab === null,
+    environmentId: threadRef?.environmentId ?? null,
+    cwd: sourceControlTarget?.cwd ?? null,
+    diffTarget,
+    // The same per-turn diffs the diff panel's mode picker lists, so a clean
+    // tree with committed turn diffs behind it never reads as nothing to review.
+    turnDiffSummaries: serverThread?.turnDiffSummaries ?? null,
+    agents: agentsSource,
+  });
   // Opening the Diff tab with nothing remembered means this thread's working
   // tree, which is also the freshest thing to look at, so it gets re-read.
   const activateDiffTab = useCallback(
@@ -475,6 +488,7 @@ function ChatThreadRouteView() {
       availableTabs={availableTabs}
       activeTab={activeTab}
       liveTabs={liveTabs}
+      launcherSurfaceStates={launcherSurfaceStates}
       onSelectTab={selectTab}
       onCloseTab={closeTab}
       {...(shouldUseDiffSheet ? { onDismiss: hideSidebar } : {})}

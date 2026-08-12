@@ -12,6 +12,7 @@ import {
   type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
 import { formatContextWindowTokens } from "../../lib/contextWindow";
+import { pluralize } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { formatSubagentMetaParts, formatSubagentDuration } from "./subagentMeta";
 import {
@@ -555,10 +556,6 @@ export function summarizeTurnAgents(
     text: parts.join(" · "),
     total: statuses.length,
   };
-}
-
-function pluralize(count: number, noun: string): string {
-  return `${count} ${count === 1 ? noun : `${noun}s`}`;
 }
 
 /**

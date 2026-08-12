@@ -8,6 +8,11 @@ export function cn(...inputs: CxOptions) {
   return twMerge(cx(inputs));
 }
 
+/** `1 agent` / `3 agents`. Naive `s`, which is all the UI's counted nouns need. */
+export function pluralize(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
 export function isMacPlatform(platform: string): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform);
 }

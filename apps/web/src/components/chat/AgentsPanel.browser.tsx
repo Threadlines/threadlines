@@ -13,6 +13,7 @@ import type {
 import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
+import { buildRightPanelLauncherStates } from "./rightPanelLauncherState";
 import { ThreadActivityChip } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
@@ -857,6 +858,190 @@ describe("AgentsPanel", () => {
 
       (document.querySelector("[data-right-panel-launcher-row='diff']") as HTMLElement).click();
       expect(onSelectTab).toHaveBeenCalledWith("diff");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("dims the launcher rows whose surfaces are empty, and opens them anyway", async () => {
+    const onSelectTab = vi.fn();
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={[]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={null}
+          launcherSurfaceStates={buildRightPanelLauncherStates({
+            workingTreeFileCount: 0,
+            reviewableTurnCount: 0,
+            diffHasExplicitTarget: false,
+            agents: { subagents: [], backgroundRuns: [], history: [] },
+          })}
+          onSelectTab={onSelectTab}
+          onCloseTab={vi.fn()}
+        >
+          <div data-testid="never-rendered" />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByText("No uncommitted changes.")).toBeVisible();
+      await expect.element(page.getByText("No changes to review.")).toBeVisible();
+      await expect.element(page.getByText("No agents yet.")).toBeVisible();
+
+      const rows = [
+        ...document.querySelectorAll("[data-right-panel-launcher-row]"),
+      ] as HTMLElement[];
+      const foregroundLabel = getComputedStyle(document.body).color;
+      for (const row of rows) {
+        expect(row.dataset.rightPanelLauncherRowEmpty).toBe("true");
+        // Dimmed, not disabled: nothing here says the row cannot be used.
+        expect(row.hasAttribute("disabled")).toBe(false);
+        expect(row.getAttribute("aria-disabled")).toBeNull();
+        expect(getComputedStyle(row).pointerEvents).not.toBe("none");
+        expect(getComputedStyle(row).textDecorationLine).toBe("none");
+        const label = row.querySelector("span > span:first-child") as HTMLElement;
+        expect(getComputedStyle(label).color).not.toBe(foregroundLabel);
+      }
+
+      // Every dimmed row still opens its surface.
+      for (const row of rows) {
+        row.click();
+      }
+      expect(onSelectTab.mock.calls.map((call) => call[0])).toEqual([
+        "sourceControl",
+        "diff",
+        "agents",
+      ]);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("reports the working tree and the thread's agents on the launcher's rows", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={[]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={null}
+          launcherSurfaceStates={buildRightPanelLauncherStates({
+            workingTreeFileCount: 12,
+            reviewableTurnCount: 4,
+            diffHasExplicitTarget: false,
+            agents: {
+              subagents: [buildSubagent({ label: "Router sweep" })],
+              backgroundRuns: [],
+              history: [
+                buildHistoryEntry({
+                  item: buildSubagent({
+                    id: "old",
+                    agentThreadId: "agent-old",
+                    status: "completed",
+                  }),
+                }),
+              ],
+            },
+          })}
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div data-testid="never-rendered" />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      // Source and Diff open onto the same working tree, so they report it alike.
+      await expect.element(page.getByText("12 files changed.").first()).toBeVisible();
+      expect(document.querySelectorAll("[data-right-panel-launcher-row-empty]")).toHaveLength(0);
+      await expect.element(page.getByText("1 of 2 agents running.")).toBeVisible();
+
+      for (const row of [
+        ...document.querySelectorAll("[data-right-panel-launcher-row]"),
+      ] as HTMLElement[]) {
+        // A count is read, not guessed at: it fits its line whole at 330px.
+        const description = row.querySelector("span > span:last-child") as HTMLElement;
+        expect(description.scrollWidth).toBeLessThanOrEqual(description.clientWidth + 1);
+      }
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("never dims a Diff tab that is pointed at a file, even on a clean tree", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["diff"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={null}
+          launcherSurfaceStates={buildRightPanelLauncherStates({
+            workingTreeFileCount: 0,
+            reviewableTurnCount: 0,
+            diffHasExplicitTarget: true,
+            agents: { subagents: [], backgroundRuns: [], history: [] },
+          })}
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div data-testid="never-rendered" />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      const diffRow = document.querySelector(
+        "[data-right-panel-launcher-row='diff']",
+      ) as HTMLElement;
+      expect(diffRow.dataset.rightPanelLauncherRowEmpty).toBeUndefined();
+      await expect.element(page.getByText("Review this thread's diff.")).toBeVisible();
+      // The tree really is clean; only Diff's own target keeps it lit.
+      expect(
+        (document.querySelector("[data-right-panel-launcher-row='sourceControl']") as HTMLElement)
+          .dataset.rightPanelLauncherRowEmpty,
+      ).toBe("true");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps Diff lit after a commit, when only the working tree went quiet", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={[]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={null}
+          launcherSurfaceStates={buildRightPanelLauncherStates({
+            workingTreeFileCount: 0,
+            reviewableTurnCount: 6,
+            diffHasExplicitTarget: false,
+            agents: { subagents: [], backgroundRuns: [], history: [] },
+          })}
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div data-testid="never-rendered" />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      const diffRow = document.querySelector(
+        "[data-right-panel-launcher-row='diff']",
+      ) as HTMLElement;
+      expect(diffRow.dataset.rightPanelLauncherRowEmpty).toBeUndefined();
+      // The longest line the launcher can produce still fits its row whole.
+      const description = diffRow.querySelector("span > span:last-child") as HTMLElement;
+      expect(description.textContent).toBe("No uncommitted changes, 6 turns to review.");
+      expect(description.scrollWidth).toBeLessThanOrEqual(description.clientWidth + 1);
+      // Source is the working tree and nothing else, so it is empty.
+      expect(
+        (document.querySelector("[data-right-panel-launcher-row='sourceControl']") as HTMLElement)
+          .dataset.rightPanelLauncherRowEmpty,
+      ).toBe("true");
     } finally {
       await mounted.unmount();
     }
