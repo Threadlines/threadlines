@@ -16,7 +16,7 @@ import { useServerProviders } from "../../rpc/serverState";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { LiveNode } from "../ui/threadline";
-import type { SubagentDisplayDetails } from "./threadActivity";
+import { normalizeSubagentInlineText, type SubagentDisplayDetails } from "./threadActivity";
 import {
   formatSubagentMetaParts,
   resolveSubagentModelLabel,
@@ -64,6 +64,7 @@ export function SubagentInspector({
   onClose,
 }: SubagentInspectorProps) {
   const [providerAgent, setProviderAgent] = useState<ProviderSubagentTranscriptResult["agent"]>();
+  const [transcriptInstruction, setTranscriptInstruction] = useState<string | null>(null);
   const [goalExpanded, setGoalExpanded] = useState(false);
   const providers = useServerProviders();
   const displayName = formatSubagentDisplayName(item);
@@ -71,6 +72,9 @@ export function SubagentInspector({
   const transcriptAgentId = item.transcriptAgentId ?? item.agentThreadId;
   const handleAgentResolved = useCallback((agent: ProviderSubagentTranscriptResult["agent"]) => {
     setProviderAgent(agent);
+  }, []);
+  const handleInstructionResolved = useCallback((text: string | null) => {
+    setTranscriptInstruction(text);
   }, []);
   // The spawning tool call rarely names the model a Claude agent runs on; the
   // provider's own record of the agent does.
@@ -82,6 +86,15 @@ export function SubagentInspector({
   const providerGoal = providerAgent?.description?.trim() || null;
   const goal = details.goal ?? providerGoal;
   const goalTitle = details.title ?? providerGoal ?? undefined;
+  // The instruction block below already carries this text, in full and
+  // unclamped, so the header does not say it a second time. Comparing the
+  // rendered text rather than the provider covers both shapes: a Codex child
+  // whose block is standing in the objective, and a Claude child whose leading
+  // message is the prompt the objective was derived from.
+  const goalShownInTranscript =
+    goal !== null &&
+    transcriptInstruction !== null &&
+    normalizeSubagentInlineText(transcriptInstruction).includes(goal);
   const metaParts = formatSubagentMetaParts(item, {
     context: details.context,
     elapsed: active
@@ -142,7 +155,7 @@ export function SubagentInspector({
             </Button>
           ) : null}
         </div>
-        {goal ? (
+        {goal && !goalShownInTranscript ? (
           <button
             type="button"
             className="mt-1 block w-full text-left text-[12px] leading-4 text-foreground/85"
@@ -187,6 +200,7 @@ export function SubagentInspector({
         objective={goal}
         fallbackBody={item.liveBody}
         onAgentResolved={handleAgentResolved}
+        onInstructionResolved={handleInstructionResolved}
         scrollable
       />
     </section>

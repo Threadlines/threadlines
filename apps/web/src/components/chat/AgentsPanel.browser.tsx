@@ -254,6 +254,84 @@ describe("AgentsPanel", () => {
     }
   });
 
+  /** The instruction block above the drilled-in thread, if there is one. */
+  function drilledInInstructionText(): string | null {
+    return (
+      document.querySelector("[data-subagent-transcript-instruction='true']")?.textContent ?? null
+    );
+  }
+
+  function headerObjectiveText(): string | null {
+    return document.querySelector("[data-subagent-inspector-goal='true']")?.textContent ?? null;
+  }
+
+  it("stands the objective in as the instruction rather than saying it twice", async () => {
+    // The default transcript opens on the agent's own work, with no leading
+    // message: the shape a forked Codex child arrives in.
+    const mounted = await renderPanel({ subagents: [buildSubagent({ label: "Router sweep" })] });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+
+      expect(drilledInInstructionText()).toContain("Sweep the router for panel wiring");
+      expect(headerObjectiveText()).toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("drops the header objective when a leading message already carries it", async () => {
+    // A Claude child: its first stored record is the spawn prompt the row's
+    // objective was derived from, so the header would only repeat it.
+    transcriptRpcMock.mockResolvedValue({
+      entries: [
+        {
+          role: "user",
+          text: "Sweep the router for panel wiring. Report back with a list.",
+          toolUses: [],
+        },
+        { role: "assistant", text: "Walked the route files.", toolUses: [] },
+      ],
+      truncated: false,
+      offset: 0,
+      totalEntries: 2,
+    });
+    const mounted = await renderPanel({ subagents: [buildSubagent({ label: "Router sweep" })] });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText(/Report back with a list/)).toBeVisible();
+
+      expect(drilledInInstructionText()).toContain("Report back with a list");
+      expect(headerObjectiveText()).toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps the header objective when the instruction says something else", async () => {
+    transcriptRpcMock.mockResolvedValue({
+      entries: [
+        { role: "user", text: "Continue where the last agent stopped.", toolUses: [] },
+        { role: "assistant", text: "Walked the route files.", toolUses: [] },
+      ],
+      truncated: false,
+      offset: 0,
+      totalEntries: 2,
+    });
+    const mounted = await renderPanel({ subagents: [buildSubagent({ label: "Router sweep" })] });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText("Continue where the last agent stopped.")).toBeVisible();
+
+      expect(headerObjectiveText()).toContain("Sweep the router for panel wiring");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("says so only when the thread has never run an agent", async () => {
     const mounted = await renderPanel();
 

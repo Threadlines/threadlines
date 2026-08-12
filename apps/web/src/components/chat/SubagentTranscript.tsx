@@ -80,6 +80,9 @@ interface SubagentTranscriptProps {
   /** Reports the provider's own record of the agent (its id, type and model),
    *  which the spawning tool call does not always carry. */
   onAgentResolved?: (agent: ProviderSubagentTranscriptResult["agent"]) => void;
+  /** Reports the text the instruction block above the thread is showing, so the
+   *  header can drop its own copy of it rather than say it twice. */
+  onInstructionResolved?: (text: string | null) => void;
   className?: string;
 }
 
@@ -218,6 +221,7 @@ export function SubagentTranscript({
   objective,
   fallbackBody = null,
   onAgentResolved,
+  onInstructionResolved,
   className,
 }: SubagentTranscriptProps) {
   const [state, setState] = useState<SubagentTranscriptFetchState>({ status: "loading" });
@@ -327,6 +331,39 @@ export function SubagentTranscript({
     () => (state.status === "loaded" ? transcriptRevision(state.sections) : state.status),
     [state],
   );
+
+  /** Per-section view state, built once so the instruction the panel renders is
+   *  the same one it reports to the header. */
+  const sectionViews = useMemo(() => {
+    if (state.status !== "loaded") {
+      return [];
+    }
+    return state.sections.map((section, sectionIndex) => {
+      const items = buildSubagentTranscriptView(section.result.entries, section.result.offset ?? 0);
+      const atTranscriptStart =
+        section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0;
+      const { lead, steps } = splitSubagentTranscriptLead(items, atTranscriptStart);
+      return {
+        agentId: section.agentId,
+        result: section.result,
+        items,
+        steps,
+        // Only the first section can stand in the objective: the prop describes
+        // one agent, and repeating it under each of several sections would
+        // claim it as every agent's instruction.
+        instruction: resolveSubagentTranscriptInstruction(
+          lead,
+          sectionIndex === 0 ? objective : null,
+          atTranscriptStart,
+        ),
+      };
+    });
+  }, [objective, state]);
+
+  const leadInstructionText = sectionViews[0]?.instruction?.text ?? null;
+  useEffect(() => {
+    onInstructionResolved?.(leadInstructionText);
+  }, [leadInstructionText, onInstructionResolved]);
 
   const resolvedAgent = state.status === "loaded" ? state.sections[0]?.result.agent : undefined;
   const reportedAgentRef = useRef<string | null>(null);
@@ -509,25 +546,11 @@ export function SubagentTranscript({
               follow={follow}
             />
           ) : (
-            state.sections.map((section, sectionIndex) => {
-              const items = buildSubagentTranscriptView(
-                section.result.entries,
-                section.result.offset ?? 0,
-              );
-              const atTranscriptStart =
-                section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0;
-              const { lead, steps } = splitSubagentTranscriptLead(items, atTranscriptStart);
-              // Only the first section can stand in the objective: the prop
-              // describes one agent, and repeating it under each of several
-              // would claim it as every agent's instruction.
-              const instruction = resolveSubagentTranscriptInstruction(
-                lead,
-                sectionIndex === 0 ? objective : null,
-                atTranscriptStart,
-              );
+            sectionViews.map((section, sectionIndex) => {
+              const { instruction, items, steps } = section;
               const showLiveTail =
                 follow &&
-                sectionIndex === state.sections.length - 1 &&
+                sectionIndex === sectionViews.length - 1 &&
                 shouldShowSubagentLiveTail(items, fallbackBody);
               return (
                 <div key={section.agentId} className="space-y-2">
@@ -548,7 +571,7 @@ export function SubagentTranscript({
                   {earlierLoadError ? (
                     <p className="text-[10px] text-destructive/80">{earlierLoadError}</p>
                   ) : null}
-                  {state.sections.length > 1 ? (
+                  {sectionViews.length > 1 ? (
                     <p className="font-mono text-[10px] text-muted-foreground/50">
                       Agent {section.agentId}
                     </p>
@@ -955,10 +978,6 @@ const TranscriptMessage = memo(function TranscriptMessage({
             cwd={cwd}
             environmentId={environmentId}
             threadId={threadId}
-            // Agent prose cites files as backticked full paths, which at this
-            // width wrap mid-token. The chip is the same one the conversation
-            // gives a file link, so both surfaces show one clickable file.
-            compactFileReferences
           />
         </div>
       )}
@@ -1068,10 +1087,6 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
             cwd={cwd}
             environmentId={environmentId}
             threadId={threadId}
-            // Agent prose cites files as backticked full paths, which at this
-            // width wrap mid-token. The chip is the same one the conversation
-            // gives a file link, so both surfaces show one clickable file.
-            compactFileReferences
           />
         </div>
       )}

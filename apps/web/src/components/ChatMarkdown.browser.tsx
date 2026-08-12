@@ -420,16 +420,14 @@ describe("ChatMarkdown", () => {
     "[AgentsPanel.tsx](file:///repo/project/docs/AgentsPanel.tsx) documents it. " +
     "Call `spawn_agent` to start one.";
 
-  it("renders inline-code file references as the chip a file link gets when asked", async () => {
+  it("renders inline-code file references as the chip a file link gets", async () => {
     const cwd = "/repo/project";
     setActiveFileViewerContext({
       environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
       cwd,
       threadRef: CHAT_MARKDOWN_THREAD_REF,
     });
-    const screen = await render(
-      <ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd={cwd} compactFileReferences />,
-    );
+    const screen = await render(<ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd={cwd} />);
 
     try {
       // Both citations went through one pre-pass, so the two namesakes carry the
@@ -457,8 +455,16 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("leaves inline-code file references as clickable code by default", async () => {
-    const screen = await render(<ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd="/repo/project" />);
+  it("keeps references as written while a search hit is highlighted", async () => {
+    // A chip drops the highlight and shortens the path, so the characters the
+    // reader searched for could leave the page entirely.
+    const screen = await render(
+      <ChatMarkdown
+        text={MIXED_REFERENCE_PROSE}
+        cwd="/repo/project"
+        searchHighlightQuery="components/chat"
+      />,
+    );
 
     try {
       await expect
@@ -466,7 +472,27 @@ describe("ChatMarkdown", () => {
           page.getByRole("button", { name: "apps/web/src/components/chat/AgentsPanel.tsx:300" }),
         )
         .toBeInTheDocument();
-      expect(document.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(1);
+      // The searched characters are still on the page, which a shortened label
+      // could not promise.
+      expect(document.body.textContent).toContain("components/chat");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("leaves inline-code file references alone when there is no workspace to resolve against", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="The gutter is set in `apps/web/src/AgentsPanel.tsx:300`."
+        cwd={undefined}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "apps/web/src/AgentsPanel.tsx:300" }))
+        .toBeInTheDocument();
+      expect(document.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(0);
     } finally {
       await screen.unmount();
     }

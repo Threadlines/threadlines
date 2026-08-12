@@ -90,13 +90,6 @@ interface ChatMarkdownProps {
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
-  /**
-   * Renders inline-code file references (`apps/web/src/App.tsx:12`) as the same
-   * compact chip a markdown file link gets, instead of clickable code showing
-   * the raw path. Opt-in because a narrow column is where the raw path stops
-   * being readable: it wraps mid-token and reads as a broken button.
-   */
-  compactFileReferences?: boolean | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -754,7 +747,6 @@ function ChatMarkdownDocument({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
-  compactFileReferences = false,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Null unless both halves of the identity are here: a transcript rendered
@@ -780,10 +772,16 @@ function ChatMarkdownDocument({
     }
     return metaByHref;
   }, [cwd, text]);
+  // While a search hit is being highlighted in this document the reader is
+  // hunting for literal text, and a chip both drops the highlight and shortens
+  // the path -- the matched characters could leave the page entirely. So the
+  // one document being highlighted keeps its references as written.
   const inlineCodeFileLinkMetaBySpan = useMemo(
     () =>
-      compactFileReferences ? buildInlineCodeFileLinkMeta(text, cwd) : EMPTY_FILE_LINK_META_MAP,
-    [compactFileReferences, cwd, text],
+      searchHighlightQuery?.trim()
+        ? EMPTY_FILE_LINK_META_MAP
+        : buildInlineCodeFileLinkMeta(text, cwd),
+    [cwd, searchHighlightQuery, text],
   );
   // Links and inline references share one pre-pass, so the same file cited both
   // ways gets the same parent-suffix disambiguation and the same resolved kind.
@@ -1029,7 +1027,6 @@ function StreamingTailBlock({
   threadId,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
-  compactFileReferences,
 }: Omit<ChatMarkdownProps, "isStreaming">) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush.
@@ -1043,7 +1040,6 @@ function StreamingTailBlock({
       isStreaming
       skills={skills}
       searchHighlightQuery={searchHighlightQuery}
-      compactFileReferences={compactFileReferences}
     />
   );
 }
@@ -1056,7 +1052,6 @@ function ChatMarkdownBody({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
-  compactFileReferences,
 }: ChatMarkdownProps) {
   let body: ReactNode;
   if (isStreaming) {
@@ -1076,7 +1071,6 @@ function ChatMarkdownBody({
           threadId={threadId}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
-          compactFileReferences={compactFileReferences}
         />
       ) : (
         <MemoChatMarkdownDocument
@@ -1088,7 +1082,6 @@ function ChatMarkdownBody({
           isStreaming={false}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
-          compactFileReferences={compactFileReferences}
         />
       ),
     );
@@ -1103,7 +1096,6 @@ function ChatMarkdownBody({
         isStreaming={false}
         skills={skills}
         searchHighlightQuery={searchHighlightQuery}
-        compactFileReferences={compactFileReferences}
       />
     );
   }
@@ -1119,7 +1111,6 @@ function ChatMarkdown({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
-  compactFileReferences,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const canRenderVisualizations = environmentId !== undefined && threadId !== undefined;
@@ -1151,7 +1142,6 @@ function ChatMarkdown({
             isStreaming={isStreaming && index === segments.length - 1}
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}
-            compactFileReferences={compactFileReferences}
           />
         );
       })}
