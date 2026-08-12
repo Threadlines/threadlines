@@ -1025,6 +1025,35 @@ function readSelectionReasoningEffort(options: unknown): string | null {
 }
 
 /**
+ * The dispatched selection a turn lifecycle activity states, or null when it
+ * states none. `provider.turn.preparing` nests it under `modelSelection`;
+ * `provider.turn.started` reports the provider's own view at the top level,
+ * which only some drivers populate but which is the more authoritative of the
+ * two when they disagree.
+ */
+function readTurnActivityModelSelection(
+  activity: OrchestrationThreadActivity,
+): TurnModelSelection | null {
+  const payload = asRecord(activity.payload);
+  if (payload === null) {
+    return null;
+  }
+  const selection =
+    activity.kind === "provider.turn.preparing"
+      ? asRecord(payload.modelSelection)
+      : activity.kind === "provider.turn.started"
+        ? payload
+        : null;
+  if (selection === null) {
+    return null;
+  }
+  const model = asTrimmedString(selection.model);
+  const reasoningEffort =
+    readSelectionReasoningEffort(selection.options) ?? asTrimmedString(selection.effort);
+  return model === null && reasoningEffort === null ? null : { model, reasoningEffort };
+}
+
+/**
  * What each turn was dispatched with, keyed by turn.
  *
  * A spawned agent inherits the parent turn's model and effort unless the spawn
@@ -1034,43 +1063,53 @@ function readSelectionReasoningEffort(options: unknown): string | null {
  * otherwise have no model or effort to show. The turn lifecycle activities
  * carry the dispatched selection for every turn, which is exactly what the
  * child inherited.
+ *
+ * `provider.turn.preparing` is the only activity that always carries the
+ * selection, and it is projected *before* the provider hands back a turn id, so
+ * it is stored unscoped (`turnId: null`). It describes the dispatch of the next
+ * turn to appear in the stream, so its selection is held and attributed to the
+ * first turn seen after it. A turn that already has a selection is left alone,
+ * which keeps a late activity tagged with an older turn (a background agent
+ * settling across a prompt boundary) from stealing the pending one.
  */
 function collectTurnModelSelections(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyMap<TurnId, TurnModelSelection> {
   const byTurnId = new Map<TurnId, TurnModelSelection>();
-  for (const activity of activities) {
-    const turnId = activity.turnId;
-    if (turnId === null || turnId === undefined) {
-      continue;
-    }
-    const payload = asRecord(activity.payload);
-    if (payload === null) {
-      continue;
-    }
-    // `provider.turn.preparing` always carries the selection the app dispatched;
-    // `provider.turn.started` carries what the provider itself reported, which
-    // only some drivers populate but which is the more authoritative of the two.
-    const selection =
-      activity.kind === "provider.turn.preparing"
-        ? asRecord(payload.modelSelection)
-        : activity.kind === "provider.turn.started"
-          ? payload
-          : null;
-    if (selection === null) {
-      continue;
-    }
-    const model = asTrimmedString(selection.model);
-    const reasoningEffort =
-      readSelectionReasoningEffort(selection.options) ?? asTrimmedString(selection.effort);
-    if (model === null && reasoningEffort === null) {
-      continue;
-    }
+  let pending: TurnModelSelection | null = null;
+
+  const merge = (turnId: TurnId, selection: TurnModelSelection) => {
     const previous = byTurnId.get(turnId);
     byTurnId.set(turnId, {
-      model: model ?? previous?.model ?? null,
-      reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
+      model: selection.model ?? previous?.model ?? null,
+      reasoningEffort: selection.reasoningEffort ?? previous?.reasoningEffort ?? null,
     });
+  };
+
+  /** The held dispatch is only a floor, so it is applied before whatever the
+   *  activity itself says and never overwrites a field that arrived scoped. */
+  const claimPending = (turnId: TurnId) => {
+    if (pending === null || byTurnId.has(turnId)) {
+      return;
+    }
+    merge(turnId, pending);
+    pending = null;
+  };
+
+  for (const activity of activities) {
+    const turnId = activity.turnId ?? null;
+    const selection = readTurnActivityModelSelection(activity);
+    if (selection !== null && turnId === null) {
+      pending = selection;
+      continue;
+    }
+    if (turnId === null) {
+      continue;
+    }
+    claimPending(turnId);
+    if (selection !== null) {
+      merge(turnId, selection);
+    }
   }
   return byTurnId;
 }

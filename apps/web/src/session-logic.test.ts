@@ -211,17 +211,24 @@ describe("deriveThreadSubagentHistory", () => {
   /** The shape Codex actually projects: the spawn arrives as a `subAgentActivity`
    *  item with no model or effort on it, and the polls that follow report them as
    *  `null`. The turn's own dispatch activity is the only record of what the
-   *  child inherited. */
+   *  child inherited.
+   *
+   *  Both lifecycle rows are copied from a real projected thread.
+   *  `provider.turn.preparing` is projected before the provider hands back a
+   *  turn id, so it is stored **unscoped** — that missing `turnId` is the whole
+   *  reason the child's model has to be resolved by stream position rather than
+   *  by a turn key. `provider.turn.started` is the first row to carry the id,
+   *  and for Codex it states no model of its own. */
   const codexSpawnActivities = (options: { readonly spawnModel?: string } = {}) => [
     makeActivity({
       id: "turn-preparing",
-      createdAt: "2026-08-11T19:34:36.000Z",
+      createdAt: "2026-08-11T22:33:20.729Z",
       kind: "provider.turn.preparing",
       summary: "Preparing provider turn",
       tone: "thinking",
-      turnId: "turn-1",
       payload: {
         phase: "preparing",
+        detail: "Preparing context and provider session before handing off to the provider",
         modelSelection: {
           instanceId: "codex",
           model: "gpt-5.6-sol",
@@ -230,6 +237,19 @@ describe("deriveThreadSubagentHistory", () => {
             { id: "serviceTier", value: "default" },
           ],
         },
+      },
+    }),
+    makeActivity({
+      id: "turn-started",
+      createdAt: "2026-08-11T22:33:26.437Z",
+      kind: "provider.turn.started",
+      summary: "Waiting for model response",
+      tone: "thinking",
+      turnId: "turn-1",
+      payload: {
+        phase: "waiting-for-model",
+        provider: "codex",
+        detail: "Provider accepted the turn and is preparing a response",
       },
     }),
     makeActivity({
@@ -308,6 +328,74 @@ describe("deriveThreadSubagentHistory", () => {
     expect(history[0]?.item.model).toBe("gpt-5.5-codex");
     // Effort was not overridden, so it still comes from the turn.
     expect(history[0]?.item.reasoningEffort).toBe("high");
+  });
+
+  /** Claude's `provider.turn.started` does state a model, so the unscoped
+   *  dispatch row has to act as a floor rather than be skipped: the effort only
+   *  ever appears in the dispatch, and the provider's model still has to win. */
+  it("keeps the dispatched effort when the provider restates only the model", () => {
+    const history = deriveThreadSubagentHistory([
+      makeActivity({
+        id: "turn-preparing",
+        createdAt: "2026-08-11T22:32:55.014Z",
+        kind: "provider.turn.preparing",
+        summary: "Preparing provider turn",
+        tone: "thinking",
+        payload: {
+          phase: "preparing",
+          detail: "Preparing context and provider session before handing off to the provider",
+          modelSelection: {
+            instanceId: "claudeAgent",
+            model: "claude-opus-5",
+            options: [{ id: "effort", value: "high" }],
+          },
+        },
+      }),
+      makeActivity({
+        id: "turn-started",
+        createdAt: "2026-08-11T22:32:56.000Z",
+        kind: "provider.turn.started",
+        summary: "Waiting for model response",
+        tone: "thinking",
+        turnId: "turn-1",
+        payload: {
+          phase: "waiting-for-model",
+          provider: "claudeAgent",
+          model: "claude-opus-5",
+          detail: "Provider accepted the turn and is preparing a response",
+        },
+      }),
+      makeActivity({
+        id: "claude-spawn",
+        createdAt: "2026-08-11T22:33:16.371Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "toolu_01VwZafiwoEJ3zFMCF3GLKWX",
+          status: "completed",
+          data: {
+            item: {
+              id: "toolu_01VwZafiwoEJ3zFMCF3GLKWX",
+              type: "collabAgentToolCall",
+              tool: "Task",
+              status: "completed",
+              agentRole: "general-purpose",
+              receiverThreadIds: ["toolu_01VwZafiwoEJ3zFMCF3GLKWX"],
+              agentsStates: {
+                toolu_01VwZafiwoEJ3zFMCF3GLKWX: { status: "completed", message: "31 files." },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(history[0]?.item).toMatchObject({
+      model: "claude-opus-5",
+      reasoningEffort: "high",
+    });
   });
 });
 
