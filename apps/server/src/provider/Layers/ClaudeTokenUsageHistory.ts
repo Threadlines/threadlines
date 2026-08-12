@@ -103,17 +103,15 @@ export function parseClaudeStatsTokenUsage(document: unknown): ClaudeStatsTokenU
       .filter((value): value is number => value !== undefined);
     if (totals.length > 0) lifetimeTokens = totals.reduce((sum, value) => sum + value, 0);
   }
+  const firstSessionDate = dateKeyFromUnknownInstant(document["firstSessionDate"]);
+  const lastComputedDate = normalizeDateKey(document["lastComputedDate"]);
 
   return {
     dailyBuckets: [...tokensByDay.entries()]
       .map(([startDate, tokens]) => ({ startDate, tokens }))
       .toSorted((left, right) => left.startDate.localeCompare(right.startDate)),
-    ...(dateKeyFromUnknownInstant(document["firstSessionDate"])
-      ? { firstSessionDate: dateKeyFromUnknownInstant(document["firstSessionDate"]) }
-      : {}),
-    ...(normalizeDateKey(document["lastComputedDate"])
-      ? { lastComputedDate: normalizeDateKey(document["lastComputedDate"]) }
-      : {}),
+    ...(firstSessionDate ? { firstSessionDate } : {}),
+    ...(lastComputedDate ? { lastComputedDate } : {}),
     ...(lifetimeTokens !== undefined ? { lifetimeTokens } : {}),
   };
 }
