@@ -104,13 +104,20 @@ function BranchRow({
       ? `Open ${branch.name} transcript`
       : `${branch.terminalVisible ? "Close" : "Open"} ${branch.name} terminal`;
 
+  const canStop = branch.kind === "run" && branch.run.canStop;
+
   const body = (
     <>
-      <span className="mt-1 flex shrink-0 items-center">
+      <span className="mt-1.5 flex shrink-0 items-center" data-agent-branch-node="true">
         <BranchNode status={branch.status} />
       </span>
       <span className="min-w-0">
-        <span className="flex min-w-0 items-baseline gap-2">
+        {/* The name owns its line. `model · effort · tokens · time` used to sit
+            beside it on a 45% leash, which at 330px meant the panel's most
+            answerable question -- which model, how hard, how long ago -- was the
+            one thing always cut off. It gets the full width underneath instead,
+            paid for out of the row's vertical padding rather than its height. */}
+        <span className={cn("flex min-w-0 items-baseline gap-2", canStop && "pr-9")}>
           {branch.kind === "subagent" && ProviderGlyph ? (
             <span
               className="translate-y-px shrink-0 text-muted-foreground/70"
@@ -130,19 +137,19 @@ function BranchRow({
               {branch.tag}
             </span>
           ) : null}
-          {meta ? (
-            <span
-              className="max-w-[45%] shrink-0 truncate font-mono text-[10px] leading-4 text-muted-foreground/55 tabular-nums"
-              data-agent-branch-meta="true"
-              title={meta}
-            >
-              {meta}
-            </span>
-          ) : null}
         </span>
+        {meta ? (
+          <span
+            className="mt-px block truncate font-mono text-[10px] leading-4 text-muted-foreground/55 tabular-nums"
+            data-agent-branch-meta="true"
+            title={meta}
+          >
+            {meta}
+          </span>
+        ) : null}
         {branch.task ? (
           <span
-            className="mt-0.5 block truncate text-[12px] leading-4 text-muted-foreground/80"
+            className="mt-px block truncate text-[12px] leading-4 text-muted-foreground/80"
             data-agent-branch-task="true"
             title={branch.task}
           >
@@ -152,7 +159,7 @@ function BranchRow({
         {branch.output ? (
           <span
             className={cn(
-              "mt-0.5 block truncate text-[11px] leading-4",
+              "mt-px block truncate text-[11px] leading-4",
               branch.status === "running" ? "text-primary-readable/75" : "text-muted-foreground/55",
             )}
             data-agent-branch-output="true"
@@ -165,12 +172,8 @@ function BranchRow({
     </>
   );
 
-  const canStop = branch.kind === "run" && branch.run.canStop;
-  const rowClassName = cn(
-    "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 py-4 pl-[calc(1.875rem+var(--branch-indent))] text-left",
-    // Keep the head line clear of the stop control parked in the corner.
-    canStop ? "pr-12" : "pr-3",
-  );
+  const rowClassName =
+    "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 py-2.5 pr-3 pl-[calc(1.875rem+var(--branch-indent))] text-left";
 
   return (
     <li
@@ -180,9 +183,13 @@ function BranchRow({
       data-agent-branch-kind={branch.kind}
       data-agent-branch-status={branch.status}
     >
+      {/* Centred on the node rather than measured to it: the node sits one line
+          height into the row (py-2.5 + half of the name's leading-5), so the arm
+          stays level with it whichever way the arm's own thickness goes. */}
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-[1.375rem] left-4 h-0.5 w-[calc(0.875rem+var(--branch-indent))] rounded-full"
+        data-agent-branch-arm="true"
+        className="pointer-events-none absolute top-5 left-4 h-0.5 w-[calc(0.875rem+var(--branch-indent))] -translate-y-1/2 rounded-full"
         style={ARM_STYLE}
       />
       {interactive ? (
@@ -201,7 +208,7 @@ function BranchRow({
       {canStop ? (
         <button
           type="button"
-          className="absolute top-3.5 right-2 rounded-[var(--app-radius-badge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground/55 transition-colors hover:text-destructive focus-ring"
+          className="absolute top-2.5 right-2 rounded-[var(--app-radius-badge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground/55 transition-colors hover:text-destructive focus-ring"
           aria-label={`Stop ${branch.name}`}
           data-agent-branch-stop="true"
           onClick={() => onStop(branch)}

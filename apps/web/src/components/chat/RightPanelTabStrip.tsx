@@ -1,7 +1,7 @@
 /**
  * The right sidebar's tab strip, in the internal browser's visual language: a
  * short row of rounded-top tabs, the active one lifted onto the background, a
- * close ✕ that appears on hover, and a `+` docked after the last tab.
+ * close ✕ that appears on hover, and a `+` sitting after the last tab.
  *
  * The `+` opens a menu of the thread's surfaces rather than a new blank tab,
  * because there is a fixed set of them and each can only be open once. A
@@ -47,7 +47,13 @@ function TabStripItem({
     <div
       role="presentation"
       className={cn(
-        "group/rail-tab flex min-w-0 flex-1 items-center gap-1 rounded-t-md px-1.5 text-xs",
+        // Sized by its label, the same as the internal browser's tabs: capped at
+        // max-w-44 so one open tab is a tab rather than a bar across the panel,
+        // and allowed to shrink to a floor that still fits an icon, a couple of
+        // characters and the ✕ once three of them share a 272px panel. Never
+        // flex-1 -- stretching to fill made the strip's look depend entirely on
+        // how many tabs happened to be open.
+        "group/rail-tab flex max-w-44 min-w-[4.5rem] shrink items-center gap-1 rounded-t-md px-1.5 text-xs",
         active
           ? "bg-background text-foreground"
           : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
@@ -104,8 +110,25 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
 }) {
   return (
     <div className="drag-region shrink-0 border-b border-border" data-right-panel-strip="true">
-      <div className="flex h-9 items-stretch gap-px px-1.5 pt-1.5 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-        <div role="tablist" aria-label="Thread panel" className="flex min-w-0 flex-1 items-stretch">
+      {/* Windows lays the min/max/close cluster over the top of the panel. The
+          tabs take a row of their own underneath rather than sharing that one:
+          sharing it meant padding the strip clear of the cluster, which at 330px
+          spent most of the width the tabs had to live in. This row stays empty
+          on purpose -- it is the window chrome, and what is left to grab up
+          there to move the window. Its height is the titlebar variable rather
+          than a bare `env()`, because an empty box whose only height came from an
+          unresolvable `env()` would collapse and take the drag region with it. */}
+      <div
+        aria-hidden="true"
+        data-right-panel-titlebar-spacer="true"
+        className="hidden wco:block wco:h-[var(--workspace-topbar-height)]"
+      />
+      <div className="flex h-9 items-stretch px-1.5 pt-1.5" data-right-panel-tabs-row="true">
+        <div
+          role="tablist"
+          aria-label="Thread panel"
+          className="flex min-w-0 items-stretch gap-px overflow-hidden"
+        >
           {openTabs.map((tab) => (
             <TabStripItem
               key={tab}
@@ -152,7 +175,11 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
             </MenuPopup>
           </Menu>
         ) : null}
-        {trailing ? <div className="flex shrink-0 items-center self-center">{trailing}</div> : null}
+        {/* Dismissal belongs to the panel, not to the tabs, so it keeps the far
+            edge while the `+` travels with them. */}
+        {trailing ? (
+          <div className="ms-auto flex shrink-0 items-center self-center ps-1">{trailing}</div>
+        ) : null}
       </div>
     </div>
   );

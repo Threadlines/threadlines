@@ -321,6 +321,93 @@ describe("AgentsPanel", () => {
     }
   });
 
+  it("gives the meta line its own row at the sidebar's width without a taller row", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <AgentsPanel
+          environmentId={ENVIRONMENT_ID}
+          threadId={THREAD_ID}
+          subagents={[
+            buildSubagent({
+              label: "Router sweep",
+              telemetry: {
+                step: null,
+                lastToolName: null,
+                durationMs: 92_000,
+                totalTokens: 48_120,
+                toolUses: 12,
+              },
+            }),
+          ]}
+          backgroundRuns={[]}
+          history={[
+            buildHistoryEntry({
+              item: buildSubagent({
+                id: "agent-old",
+                agentThreadId: "agent-old",
+                transcriptAgentId: "agent-old",
+                label: "Panel audit",
+                status: "completed",
+                statusLabel: "Completed",
+                model: "gpt-5.6-sol",
+                reasoningEffort: "high",
+                updatedAt: "2026-08-11T09:00:00.000Z",
+              }),
+              resultBody: "The strip never sized its tabs.",
+            }),
+          ]}
+          providerLabel="codex"
+          embedded
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByText("Panel audit")).toBeVisible();
+
+      const rows = [...document.querySelectorAll("[data-agent-branch='true']")] as HTMLElement[];
+      // Both the live turn and the Earlier history render through this row.
+      expect(rows).toHaveLength(2);
+
+      for (const row of rows) {
+        const name = row.querySelector("[data-agent-branch-meta='true']")
+          ?.previousElementSibling as HTMLElement;
+        const meta = row.querySelector("[data-agent-branch-meta='true']") as HTMLElement;
+        expect(meta).not.toBeNull();
+
+        // Under the name, not beside it.
+        expect(meta.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+          name.getBoundingClientRect().bottom - 1,
+        );
+        // Which is the point: `model · effort · tokens · time` fits at 330px now
+        // instead of being cut off by a 45% cap.
+        expect(meta.scrollWidth).toBeLessThanOrEqual(meta.clientWidth + 1);
+        // The extra line is paid for out of the padding, not the row's height:
+        // a name, a meta line and a task line stay inside this budget.
+        expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(90);
+      }
+
+      const historyMeta =
+        rows[1]?.querySelector("[data-agent-branch-meta='true']")?.textContent ?? "";
+      expect(historyMeta).toContain("gpt-5.6-sol · high");
+
+      // The arm off the trunk still meets the status dot, which moved when the
+      // row's padding tightened.
+      const firstRow = rows[0] as HTMLElement;
+      const arm = (
+        firstRow.querySelector("[data-agent-branch-arm='true']") as HTMLElement
+      ).getBoundingClientRect();
+      const node = (
+        firstRow.querySelector("[data-agent-branch-node='true']") as HTMLElement
+      ).getBoundingClientRect();
+      expect(Math.abs((arm.top + arm.bottom) / 2 - (node.top + node.bottom) / 2)).toBeLessThan(1.5);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("orders the history newest first and drills into a history-only agent", async () => {
     const mounted = await renderPanel({
       subagents: [],
@@ -615,6 +702,164 @@ describe("AgentsPanel", () => {
 
       changesItem.click();
       expect(onSelectTab).toHaveBeenCalledWith("sourceControl");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("sizes tabs to their labels and keeps the + beside the last one", async () => {
+    // The strip at its default width, then at the panel's 272px floor: the same
+    // three tabs have to look like tabs at both, which is what stretching them
+    // to fill never managed.
+    for (const width of [330, 272]) {
+      const mounted = await render(
+        <main style={{ boxSizing: "border-box", height: 640, width }}>
+          <ChatRightPanel
+            openTabs={["sourceControl", "diff", "agents"]}
+            availableTabs={["sourceControl", "diff", "agents"]}
+            activeTab="agents"
+            onSelectTab={vi.fn()}
+            onCloseTab={vi.fn()}
+          >
+            <div />
+          </ChatRightPanel>
+        </main>,
+      );
+
+      try {
+        await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+        const row = (
+          document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement
+        ).getBoundingClientRect();
+        const tabs = [...document.querySelectorAll("[data-right-panel-tab]")].map((tab) =>
+          tab.getBoundingClientRect(),
+        );
+        const plus = (
+          document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement
+        ).getBoundingClientRect();
+
+        expect(tabs).toHaveLength(3);
+        for (const tab of tabs) {
+          // Content-sized between the browser strip's cap and a floor that still
+          // holds an icon, a couple of characters and the ✕.
+          expect(tab.width).toBeLessThanOrEqual(176);
+          expect(tab.width).toBeGreaterThanOrEqual(71);
+        }
+        // Nothing overflows the strip, and the + travelled with the tabs rather
+        // than docking at the far edge.
+        const lastTab = tabs[tabs.length - 1] as DOMRect;
+        expect(plus.left - lastTab.right).toBeLessThan(8);
+        expect(plus.right).toBeLessThanOrEqual(row.right + 0.5);
+      } finally {
+        await mounted.unmount();
+      }
+    }
+  });
+
+  it("leaves one open tab a tab, not a bar across the strip", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="sourceControl"
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+      const row = (
+        document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement
+      ).getBoundingClientRect();
+      const tab = (
+        document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement
+      ).getBoundingClientRect();
+      const plus = (
+        document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement
+      ).getBoundingClientRect();
+
+      expect(tab.width).toBeLessThan(row.width / 2);
+      expect(plus.left - tab.right).toBeLessThan(8);
+      // The rest of the strip is empty rather than tab.
+      expect(row.right - plus.right).toBeGreaterThan(row.width / 3);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("parks the + at the strip's left edge while the launcher is showing", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={[]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={null}
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Open panel" })).toBeVisible();
+      const row = (
+        document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement
+      ).getBoundingClientRect();
+      const plus = (
+        document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement
+      ).getBoundingClientRect();
+
+      expect(document.querySelectorAll("[data-right-panel-tab]")).toHaveLength(0);
+      expect(plus.left - row.left).toBeLessThan(12);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("gives the tabs their own row under the window controls on Windows", async () => {
+    // The overlay's env() geometry does not exist in the test browser, so this
+    // covers the structure the wco variant needs: a spacer row for the controls,
+    // and a tab row that no longer pads itself away from them.
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["agents"]}
+          availableTabs={["agents"]}
+          activeTab="agents"
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      const strip = await vi.waitFor(() => {
+        const found = document.querySelector("[data-right-panel-strip='true']");
+        if (!found) throw new Error("The strip never rendered.");
+        return found as HTMLElement;
+      });
+      const spacer = strip.querySelector("[data-right-panel-titlebar-spacer='true']");
+      const tabsRow = strip.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement;
+
+      expect(spacer).not.toBeNull();
+      // Two rows in order: chrome, then tabs.
+      expect(spacer?.nextElementSibling).toBe(tabsRow);
+      // Titlebar-height only inside the overlay, hidden outside it.
+      expect(spacer?.className).toContain("hidden");
+      expect(spacer?.className).toContain("wco:h-[var(--workspace-topbar-height)]");
+      // Off the titlebar row, the tabs get the panel's whole width.
+      expect(tabsRow.className).not.toContain("wco:pr-");
+      // ...and outside the overlay the strip is still one row.
+      expect((spacer as HTMLElement).getBoundingClientRect().height).toBe(0);
     } finally {
       await mounted.unmount();
     }
