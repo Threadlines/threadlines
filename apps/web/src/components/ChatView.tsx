@@ -6361,14 +6361,19 @@ export default function ChatView(props: ChatViewProps) {
     [backgroundRuns, subagentProgress?.items],
   );
 
-  /** The turn activity row's agent summary. */
+  /**
+   * The turn activity row's agent summary. The live items only cover the turn in
+   * flight, so the thread's durable agent history rides along: it is what every
+   * settled turn's tracker is drawn from, and the only source at all after a
+   * reload.
+   */
   const timelineTurnAgents = useMemo<TimelineTurnAgentsState | null>(() => {
-    const subagents = subagentProgress?.items;
-    if (!subagents || subagents.length === 0) {
+    const subagents = subagentProgress?.items ?? [];
+    if (subagents.length === 0 && subagentHistory.length === 0) {
       return null;
     }
-    return { subagents };
-  }, [subagentProgress?.items]);
+    return { subagents, history: subagentHistory };
+  }, [subagentHistory, subagentProgress?.items]);
 
   /**
    * The conversation's way into the sidebar: the turn activity row opens or

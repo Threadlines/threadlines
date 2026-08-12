@@ -1136,11 +1136,15 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("keeps the tracker row on a turn that only delegated, with no count and nothing to expand", async () => {
+  it("keeps the tracker row on a reloaded turn that only delegated, with no count and nothing to expand", async () => {
     const onOpenAgentsPanel = vi.fn();
     // Every entry in the turn is agent lifecycle plumbing, so the conversation
     // has nothing of the main model's to narrate. The tracker still has to be
     // here: it is the only inline sign that two agents ran.
+    //
+    // This is the cold-load shape, which is how the row is seen most of the
+    // time: the turn settled before the page was opened, so there is no live
+    // agent state at all and the tracker has to come off the durable history.
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
@@ -1162,9 +1166,15 @@ describe("MessagesTimeline", () => {
         }))}
         onOpenAgentsPanel={onOpenAgentsPanel}
         turnAgents={{
-          subagents: [
-            buildTurnSubagent("agent-1", "completed"),
-            buildTurnSubagent("agent-2", "completed"),
+          subagents: [],
+          history: [
+            { item: buildTurnSubagent("agent-1", "completed"), resultBody: "50 .tsx files." },
+            { item: buildTurnSubagent("agent-2", "completed"), resultBody: "31 .ts files." },
+            // Another turn's agent is in the same history and must not count here.
+            {
+              item: { ...buildTurnSubagent("agent-3", "completed"), turnId: TurnId.make("other") },
+              resultBody: null,
+            },
           ],
         }}
       />,

@@ -34,11 +34,12 @@ import {
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
   type SubagentProgressItem,
+  type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
 import {
   formatLiveAgentStatusLine,
   formatSubagentReceiptSummary,
-  selectSubagentsForTurns,
+  selectTurnAgents,
   summarizeTurnAgents,
   type LiveAgentStatusLine,
   type TurnAgentSummary,
@@ -179,7 +180,11 @@ interface TimelineRowSharedState {
 
 /** The turn's spawned agents, summarized on the turn's activity row. */
 export interface TimelineTurnAgentsState {
+  /** Live state for the turn in flight; empty for every settled turn. */
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  /** The thread's durable agent history — the same records the agents panel
+   *  lists — so a settled turn's tracker survives the turn ending and a reload. */
+  readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
 }
 
 /** Lifecycle context for proposed-plan rows: which plan is still actionable,
@@ -2835,11 +2840,20 @@ function useTurnAgentTracker(entries: ReadonlyArray<TimelineWorkEntry>): TurnAge
     [entries],
   );
   const turnSubagents = useMemo(
-    () => (turnAgents ? selectSubagentsForTurns(turnAgents.subagents, turnIds) : []),
+    () =>
+      turnAgents
+        ? selectTurnAgents({
+            live: turnAgents.subagents,
+            history: turnAgents.history,
+            turnIds,
+          })
+        : [],
     [turnAgents, turnIds],
   );
   return {
-    summary: turnAgents ? summarizeTurnAgents(turnSubagents) : null,
+    // An empty selection summarizes to null on its own, so a turn that ran no
+    // agents has no tracker whether or not the thread has agent state at all.
+    summary: summarizeTurnAgents(turnSubagents),
     liveStatus: formatLiveAgentStatusLine(turnSubagents),
   };
 }

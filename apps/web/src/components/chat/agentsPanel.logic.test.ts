@@ -11,6 +11,7 @@ import {
   formatAgentsHeaderMeta,
   formatLiveAgentStatusLine,
   selectSubagentsForTurns,
+  selectTurnAgents,
   summarizeLiveAgents,
   summarizeTurnAgents,
 } from "./agentsPanel.logic";
@@ -500,6 +501,46 @@ describe("selectSubagentsForTurns", () => {
 
   it("selects nothing when the row carries no turn", () => {
     expect(selectSubagentsForTurns([buildSubagent()], new Set())).toEqual([]);
+  });
+});
+
+describe("selectTurnAgents", () => {
+  /** A cold load: the live turn-agents state is empty because the turn settled
+   *  before the page was opened, so the tracker has only the durable history. */
+  it("falls back to the thread's agent history when nothing is live", () => {
+    const selected = selectTurnAgents({
+      live: [],
+      history: [
+        { item: buildSubagent({ id: "mine", status: "completed" }), resultBody: "done" },
+        { item: buildSubagent({ id: "other", turnId: TURN_TWO }), resultBody: null },
+      ],
+      turnIds: new Set([TURN_ONE]),
+    });
+
+    expect(selected.map((item) => item.id)).toEqual(["mine"]);
+    expect(summarizeTurnAgents(selected)?.text).toBe("1 subagent · 1 done");
+  });
+
+  it("prefers the live record for an agent that is in both", () => {
+    const selected = selectTurnAgents({
+      live: [buildSubagent({ agentThreadId: "shared", status: "running", statusLabel: "Running" })],
+      history: [
+        {
+          item: buildSubagent({
+            id: "stale",
+            agentThreadId: "shared",
+            status: "completed",
+            statusLabel: "Done",
+          }),
+          resultBody: "stale",
+        },
+        { item: buildSubagent({ id: "extra", agentThreadId: "extra" }), resultBody: null },
+      ],
+      turnIds: new Set([TURN_ONE]),
+    });
+
+    expect(selected.map((item) => item.status)).toEqual(["running", "running"]);
+    expect(selected.map((item) => item.agentThreadId)).toEqual(["shared", "extra"]);
   });
 });
 

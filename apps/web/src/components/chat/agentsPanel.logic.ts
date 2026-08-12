@@ -466,6 +466,39 @@ export function selectSubagentsForTurns(
 }
 
 /**
+ * The agents a turn's activity row summarizes.
+ *
+ * Live turn-agent state only describes the turn in flight: it is scoped to the
+ * latest turn and drops settled agents once that turn ends, so after a reload it
+ * knows nothing at all. A settled turn's tracker therefore reads the thread's
+ * durable agent history — the same records the panel's history section lists,
+ * each already tagged with the turn that spawned it.
+ *
+ * Both sources are consulted for every turn and the live record wins per agent,
+ * because only it carries streaming status and telemetry. History then fills in
+ * every agent the live state no longer knows about, which is all of them on a
+ * cold load and none of them mid-turn.
+ */
+export function selectTurnAgents(input: {
+  readonly live: ReadonlyArray<SubagentProgressItem>;
+  readonly history: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
+  readonly turnIds: ReadonlySet<TurnId>;
+}): ReadonlyArray<SubagentProgressItem> {
+  const live = selectSubagentsForTurns(input.live, input.turnIds);
+  if (input.history === undefined || input.history.length === 0) {
+    return live;
+  }
+  const liveIdentities = new Set(live.map(subagentIdentity));
+  return [
+    ...live,
+    ...selectSubagentsForTurns(
+      input.history.map((entry) => entry.item),
+      input.turnIds,
+    ).filter((item) => !liveIdentities.has(subagentIdentity(item))),
+  ];
+}
+
+/**
  * The turn row's compact read: how many agents ran, how many finished, and
  * how many are asking for something. Counts that are zero stay out of the line
  * so it never pads itself with nothing.
