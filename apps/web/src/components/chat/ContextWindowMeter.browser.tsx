@@ -63,6 +63,7 @@ const TEST_ACCOUNT_USAGE: ProviderAccountUsagePresentation = {
   tokenUsage: {
     label: "Token history",
     checkedAt: "2026-06-18T00:00:00.000Z",
+    scope: "account",
     completeLifetimeHistory: false,
     summary: [{ key: "lifetimeTokens", label: "Lifetime tokens", value: "6.35B" }],
     buckets: [
