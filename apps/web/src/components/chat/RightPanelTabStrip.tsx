@@ -47,13 +47,14 @@ function TabStripItem({
     <div
       role="presentation"
       className={cn(
-        // Sized by its label, the same as the internal browser's tabs: capped at
-        // max-w-44 so one open tab is a tab rather than a bar across the panel,
-        // and allowed to shrink to a floor that still fits an icon, a couple of
-        // characters and the ✕ once three of them share a 272px panel. Never
-        // flex-1 -- stretching to fill made the strip's look depend entirely on
-        // how many tabs happened to be open.
-        "group/rail-tab flex max-w-44 min-w-[4.5rem] shrink items-center gap-1 rounded-t-md px-1.5 text-xs",
+        // Exactly as wide as its own contents: icon, whole label, ✕. Not flex-1,
+        // which made the strip's look depend on how many tabs happened to be
+        // open, and not shrinkable either -- a surface named "Cha…" is worse
+        // than a narrow strip, so a label is never abbreviated. The labels are a
+        // fixed set of short words, so they fit at every panel width. A future
+        // tab set that genuinely outgrows the strip wants the browser panel's
+        // horizontal scroll (see BrowserPanel's ScrollArea), never truncation.
+        "group/rail-tab flex shrink-0 items-center gap-1 rounded-t-md px-1.5 text-xs",
         active
           ? "bg-background text-foreground"
           : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
@@ -65,7 +66,7 @@ function TabStripItem({
         type="button"
         role="tab"
         aria-selected={active}
-        className="flex min-w-0 flex-1 items-center gap-1.5 py-1 focus-ring"
+        className="flex shrink-0 items-center gap-1.5 py-1 focus-ring"
         title={surface.label}
         onClick={onSelect}
       >
@@ -74,7 +75,7 @@ function TabStripItem({
         ) : (
           <TabIcon className="size-3 shrink-0 opacity-70" aria-hidden="true" />
         )}
-        <span className="min-w-0 truncate">{surface.label}</span>
+        <span className="whitespace-nowrap">{surface.label}</span>
       </button>
       <button
         type="button"
@@ -110,20 +111,14 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
 }) {
   return (
     <div className="drag-region shrink-0 border-b border-border" data-right-panel-strip="true">
-      {/* Windows lays the min/max/close cluster over the top of the panel. The
-          tabs take a row of their own underneath rather than sharing that one:
-          sharing it meant padding the strip clear of the cluster, which at 330px
-          spent most of the width the tabs had to live in. This row stays empty
-          on purpose -- it is the window chrome, and what is left to grab up
-          there to move the window. Its height is the titlebar variable rather
-          than a bare `env()`, because an empty box whose only height came from an
-          unresolvable `env()` would collapse and take the drag region with it. */}
+      {/* One row, shared with the window controls Windows overlays on the top of
+          the panel: the strip takes titlebar height and pads itself clear of the
+          min/max/close cluster. Content-sized tabs are what make that share
+          workable -- stretched ones had to divide whatever the padding left. */}
       <div
-        aria-hidden="true"
-        data-right-panel-titlebar-spacer="true"
-        className="hidden wco:block wco:h-[var(--workspace-topbar-height)]"
-      />
-      <div className="flex h-9 items-stretch px-1.5 pt-1.5" data-right-panel-tabs-row="true">
+        className="flex h-9 items-stretch px-1.5 pt-1.5 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]"
+        data-right-panel-tabs-row="true"
+      >
         <div
           role="tablist"
           aria-label="Thread panel"

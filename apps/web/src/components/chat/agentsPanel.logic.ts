@@ -246,7 +246,8 @@ function formatAgentHistoryMeta(
 /**
  * A finished agent from an earlier turn. It renders through the same row as a
  * live branch — the dot dims itself once the status is `completed` — but its
- * meta is a record rather than a running total, and it has no live output line.
+ * meta is a record rather than a running total, and its signal line is what it
+ * reported back rather than what it is doing now.
  */
 function historyBranch(
   entry: ThreadSubagentHistoryEntry,
@@ -261,10 +262,11 @@ function historyBranch(
     name: formatSubagentDisplayName(item),
     statusLabel: item.statusLabel,
     meta: formatAgentHistoryMeta(item, nowMs),
-    // What the agent was asked to do is the durable fact, but what it reported
-    // back is the more useful one, so the result leads when there is one.
-    task: (resultBody === null ? null : formatSubagentReceiptSummary(resultBody)) ?? details.goal,
-    output: null,
+    // What it was asked to do stays on the record for the row's tooltip; the row
+    // itself spends its one prose line on what came back, which is the more
+    // useful half and the same slot a live agent puts its progress in.
+    task: details.goal,
+    output: resultBody === null ? null : formatSubagentReceiptSummary(resultBody),
     tag: null,
     depth: Math.min(Math.max(item.treeDepth ?? 0, 0), MAX_BRANCH_DEPTH),
     item,

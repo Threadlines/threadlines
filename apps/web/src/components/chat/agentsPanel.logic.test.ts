@@ -240,10 +240,11 @@ describe("buildAgentsPanelView", () => {
     expect(view.hasAny).toBe(true);
     expect(view.current).toEqual([]);
     expect(view.earlier.map((branch) => branch.status)).toEqual(["completed"]);
-    expect(view.earlier[0]?.task).toBe("The route never mounted the panel.");
+    // A finished agent spends its one prose line on what it reported back; the
+    // objective it was given stays on the branch for the row's tooltip.
+    expect(view.earlier[0]?.output).toBe("The route never mounted the panel.");
+    expect(view.earlier[0]?.task).toBe("Sweep the router for panel wiring");
     expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens", "12m ago"]);
-    // Nothing is streaming, so a history row has no live output line.
-    expect(view.earlier[0]?.output).toBeNull();
   });
 
   it("still names the model and effort for a child with no token totals", () => {

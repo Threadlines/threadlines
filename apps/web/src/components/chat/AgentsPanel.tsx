@@ -147,15 +147,10 @@ function BranchRow({
             {meta}
           </span>
         ) : null}
-        {branch.task ? (
-          <span
-            className="mt-px block truncate text-[12px] leading-4 text-muted-foreground/80"
-            data-agent-branch-task="true"
-            title={branch.task}
-          >
-            {branch.task}
-          </span>
-        ) : null}
+        {/* One prose line, not two. What the agent was asked to do mostly
+            restated its own name, so it moved to the row's tooltip and to the
+            drill-in, leaving the line for the thing that changes: the step it is
+            on, or the result it came back with. */}
         {branch.output ? (
           <span
             className={cn(
@@ -173,7 +168,9 @@ function BranchRow({
   );
 
   const rowClassName =
-    "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 py-2.5 pr-3 pl-[calc(1.875rem+var(--branch-indent))] text-left";
+    "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 py-2 pr-3 pl-[calc(1.875rem+var(--branch-indent))] text-left";
+  // What the agent was asked to do, kept hoverable now that it is off the row.
+  const rowTitle = branch.task ?? undefined;
 
   return (
     <li
@@ -184,12 +181,12 @@ function BranchRow({
       data-agent-branch-status={branch.status}
     >
       {/* Centred on the node rather than measured to it: the node sits one line
-          height into the row (py-2.5 + half of the name's leading-5), so the arm
+          height into the row (py-2 + half of the name's leading-5), so the arm
           stays level with it whichever way the arm's own thickness goes. */}
       <span
         aria-hidden="true"
         data-agent-branch-arm="true"
-        className="pointer-events-none absolute top-5 left-4 h-0.5 w-[calc(0.875rem+var(--branch-indent))] -translate-y-1/2 rounded-full"
+        className="pointer-events-none absolute top-4.5 left-4 h-0.5 w-[calc(0.875rem+var(--branch-indent))] -translate-y-1/2 rounded-full"
         style={ARM_STYLE}
       />
       {interactive ? (
@@ -197,18 +194,21 @@ function BranchRow({
           type="button"
           className={cn(rowClassName, "transition-colors hover:bg-foreground/[0.03] focus-ring")}
           aria-label={ariaLabel}
+          title={rowTitle}
           aria-pressed={branch.kind === "run" ? branch.terminalVisible : undefined}
           onClick={() => onSelect(branch)}
         >
           {body}
         </button>
       ) : (
-        <div className={rowClassName}>{body}</div>
+        <div className={rowClassName} title={rowTitle}>
+          {body}
+        </div>
       )}
       {canStop ? (
         <button
           type="button"
-          className="absolute top-2.5 right-2 rounded-[var(--app-radius-badge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground/55 transition-colors hover:text-destructive focus-ring"
+          className="absolute top-2 right-2 rounded-[var(--app-radius-badge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground/55 transition-colors hover:text-destructive focus-ring"
           aria-label={`Stop ${branch.name}`}
           data-agent-branch-stop="true"
           onClick={() => onStop(branch)}
@@ -367,7 +367,9 @@ export const AgentsPanel = memo(function AgentsPanel({
               className="pointer-events-none absolute top-0 bottom-0 left-4 w-0.5 rounded-full"
               style={TRUNK_STYLE}
             />
-            <ul className="relative divide-y divide-border/60">
+            {/* Faint dividers: enough to separate rows into a list, not enough
+                to box each one into a slab. */}
+            <ul className="relative divide-y divide-border/40">
               {view.current.map((branch) => (
                 <BranchRow
                   key={branch.key}
@@ -389,7 +391,7 @@ export const AgentsPanel = memo(function AgentsPanel({
                 >
                   Earlier
                 </SectionLabel>
-                <ul className="relative divide-y divide-border/60 border-t border-border/60">
+                <ul className="relative divide-y divide-border/40 border-t border-border/40">
                   {view.earlier.map((branch) => (
                     <BranchRow
                       key={branch.key}

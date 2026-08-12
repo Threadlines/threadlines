@@ -242,8 +242,13 @@ describe("AgentsPanel", () => {
 
       await page.getByRole("button", { name: "Back to agents" }).click();
 
-      await expect.element(page.getByText("Sweep the router for panel wiring")).toBeVisible();
       expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
+      // The objective is no longer a line of its own; the row still carries it.
+      expect(
+        document
+          .querySelector("[data-agent-branch='true'] > button, [data-agent-branch='true'] > div")
+          ?.getAttribute("title"),
+      ).toBe("Sweep the router for panel wiring");
     } finally {
       await mounted.unmount();
     }
@@ -384,9 +389,10 @@ describe("AgentsPanel", () => {
         // Which is the point: `model · effort · tokens · time` fits at 330px now
         // instead of being cut off by a 45% cap.
         expect(meta.scrollWidth).toBeLessThanOrEqual(meta.clientWidth + 1);
-        // The extra line is paid for out of the padding, not the row's height:
-        // a name, a meta line and a task line stay inside this budget.
-        expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(90);
+        // Three lines, and no more: name, meta, and one signal line. The
+        // objective used to take a fourth.
+        expect(row.querySelector("[data-agent-branch-task='true']")).toBeNull();
+        expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(72);
       }
 
       const historyMeta =
@@ -708,9 +714,16 @@ describe("AgentsPanel", () => {
   });
 
   it("sizes tabs to their labels and keeps the + beside the last one", async () => {
-    // The strip at its default width, then at the panel's 272px floor: the same
-    // three tabs have to look like tabs at both, which is what stretching them
-    // to fill never managed.
+    // The strip at its default width, then at the panel's 272px floor. Labels are
+    // whole at both -- a tab is as wide as its own words, never abbreviated.
+    //
+    // Measured: the three tabs come to ~252px and the `+` wants 26 more. That
+    // fits the 330px default with room over. It does NOT fit the 272px floor,
+    // where the last tab overflows and is clipped, and it does not fit at all in
+    // the Windows overlay, whose right padding is the controls cluster (~154px).
+    // Clipping is the deliberate choice over an ellipsis; the fix when it starts
+    // to bite is the browser panel's horizontal scroll, not shrinking labels.
+    const widthsByPanel = new Map<number, ReadonlyArray<number>>();
     for (const width of [330, 272]) {
       const mounted = await render(
         <main style={{ boxSizing: "border-box", height: 640, width }}>
@@ -739,21 +752,48 @@ describe("AgentsPanel", () => {
         ).getBoundingClientRect();
 
         expect(tabs).toHaveLength(3);
-        for (const tab of tabs) {
-          // Content-sized between the browser strip's cap and a floor that still
-          // holds an icon, a couple of characters and the ✕.
-          expect(tab.width).toBeLessThanOrEqual(176);
-          expect(tab.width).toBeGreaterThanOrEqual(71);
+        // No label is ever abbreviated to "Cha…", at either width.
+        for (const label of document.querySelectorAll("[data-right-panel-tab] [role='tab'] span")) {
+          expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
+          expect(getComputedStyle(label).textOverflow).toBe("clip");
         }
-        // Nothing overflows the strip, and the + travelled with the tabs rather
-        // than docking at the far edge.
-        const lastTab = tabs[tabs.length - 1] as DOMRect;
-        expect(plus.left - lastTab.right).toBeLessThan(8);
+        expect(
+          [...document.querySelectorAll("[data-right-panel-tab] [role='tab']")].map(
+            (tab) => tab.textContent,
+          ),
+        ).toEqual(["Changes", "Diff", "Agents"]);
+        widthsByPanel.set(
+          width,
+          tabs.map((tab) => Math.round(tab.width)),
+        );
+
+        // The + travels with the tabs rather than docking at the far edge, and
+        // never leaves the strip.
+        const tablist = document.querySelector("[role='tablist']") as HTMLElement;
         expect(plus.right).toBeLessThanOrEqual(row.right + 0.5);
+        expect(plus.left - tablist.getBoundingClientRect().right).toBeLessThan(8);
+
+        const overflow = tablist.scrollWidth - tablist.clientWidth;
+        if (width === 330) {
+          // The default width holds all three and the +, with room over.
+          expect(overflow).toBe(0);
+          const lastTab = tabs[tabs.length - 1] as DOMRect;
+          expect(plus.left - lastTab.right).toBeLessThan(8);
+          expect(row.right - plus.right).toBeGreaterThan(30);
+        } else {
+          // The floor does not, and the last tab is clipped rather than
+          // abbreviated. Asserted so that adopting horizontal scroll (or widening
+          // the floor) has to come back through this test.
+          expect(overflow).toBeGreaterThan(0);
+        }
       } finally {
         await mounted.unmount();
       }
     }
+
+    // The clincher: a tab is the same width in a 272px panel as in a 330px one.
+    // Nothing shrinks, so nothing has to be abbreviated to fit.
+    expect(widthsByPanel.get(272)).toEqual(widthsByPanel.get(330));
   });
 
   it("leaves one open tab a tab, not a bar across the strip", async () => {
@@ -823,10 +863,10 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("gives the tabs their own row under the window controls on Windows", async () => {
+  it("shares the titlebar row with the window controls on Windows", async () => {
     // The overlay's env() geometry does not exist in the test browser, so this
-    // covers the structure the wco variant needs: a spacer row for the controls,
-    // and a tab row that no longer pads itself away from them.
+    // covers the wiring the wco variant needs: one strip row, of titlebar
+    // height, padded clear of the min/max/close cluster, and draggable.
     const mounted = await render(
       <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
         <ChatRightPanel
@@ -847,19 +887,15 @@ describe("AgentsPanel", () => {
         if (!found) throw new Error("The strip never rendered.");
         return found as HTMLElement;
       });
-      const spacer = strip.querySelector("[data-right-panel-titlebar-spacer='true']");
       const tabsRow = strip.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement;
 
-      expect(spacer).not.toBeNull();
-      // Two rows in order: chrome, then tabs.
-      expect(spacer?.nextElementSibling).toBe(tabsRow);
-      // Titlebar-height only inside the overlay, hidden outside it.
-      expect(spacer?.className).toContain("hidden");
-      expect(spacer?.className).toContain("wco:h-[var(--workspace-topbar-height)]");
-      // Off the titlebar row, the tabs get the panel's whole width.
-      expect(tabsRow.className).not.toContain("wco:pr-");
-      // ...and outside the overlay the strip is still one row.
-      expect((spacer as HTMLElement).getBoundingClientRect().height).toBe(0);
+      // One row, and it is the strip's only one.
+      expect(strip.children).toHaveLength(1);
+      expect(strip.firstElementChild).toBe(tabsRow);
+      expect(strip.className).toContain("drag-region");
+      // Titlebar height, and clear of the controls cluster.
+      expect(tabsRow.className).toContain("wco:min-h-[env(titlebar-area-height)]");
+      expect(tabsRow.className).toContain("wco:pr-[calc(100vw-env(titlebar-area-width)");
     } finally {
       await mounted.unmount();
     }
