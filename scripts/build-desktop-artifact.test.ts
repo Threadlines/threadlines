@@ -18,6 +18,7 @@ import {
   filterPatchedDependenciesForStage,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
+  retryTransientElectronPackaging,
   createDesktopArtifactBuildEnv,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
@@ -89,6 +90,36 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
     );
   });
+
+  it.effect("retries Electron packaging only after transient network failures", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const result = yield* retryTransientElectronPackaging(
+        Effect.suspend(() => {
+          attempts += 1;
+          return attempts < 3 ? Effect.fail(new Error("socket hang up")) : Effect.succeed("built");
+        }),
+      );
+
+      assert.equal(result, "built");
+      assert.equal(attempts, 3);
+    }),
+  );
+
+  it.effect("does not retry non-network packaging failures", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const exit = yield* retryTransientElectronPackaging(
+        Effect.suspend(() => {
+          attempts += 1;
+          return Effect.fail(new Error("production dependency not found"));
+        }),
+      ).pipe(Effect.exit);
+
+      assert.equal(exit._tag, "Failure");
+      assert.equal(attempts, 1);
+    }),
+  );
 
   it("falls back to the default mock update port when the configured port is blank", () => {
     assert.equal(resolveMockUpdateServerUrl(undefined), "http://localhost:3000");
