@@ -189,6 +189,38 @@ describe("CodexAdapter item mapping", () => {
     });
   });
 
+  it("times a forked child's replayed first turn from the thread's own start", () => {
+    // A forked child's history arrives as a synthetic turn -- Codex ids it
+    // "rollout-N" -- with no startedAt, completedAt or durationMs, while every
+    // real turn after it is stamped. Codex times a turn rather than an item, so
+    // without a fallback the agent's opening words are the only untimed entries
+    // in the transcript, which reads as the timestamps sitting a row too low.
+    const thread = {
+      id: "forked-child",
+      createdAt: 1_786_487_612,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          completedAt: null,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "I'll delegate both counts." }],
+        },
+        {
+          id: "019ff2f5-a952-7c10-9fda-66f5498a6d49",
+          status: "completed",
+          startedAt: 1_786_487_613,
+          items: [{ id: "assistant-2", type: "agentMessage", text: "50 .tsx files." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.at),
+      ["2026-08-11T22:33:32.000Z", "2026-08-11T22:33:33.000Z"],
+    );
+  });
+
   it("uses source ancestry metadata and honors transcript limits", () => {
     const thread = {
       id: "grandchild-thread",

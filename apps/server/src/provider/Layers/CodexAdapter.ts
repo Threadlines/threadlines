@@ -406,19 +406,27 @@ export function mapCodexSubagentTranscript(
     readonly fromEnd?: boolean;
   },
 ): ProviderSubagentTranscriptResult {
+  // Codex stamps a time per turn rather than per item, and a forked child's
+  // first turn is a synthetic replay of the history it inherited (`turn.id` is
+  // literally "rollout-2"), which carries no times at all. Its entries are the
+  // agent's opening words, so leaving them blank reads as the transcript's
+  // timestamps being shifted a row. The thread's own creation time is the
+  // honest stand-in: it is a required field, and it lands a second or two
+  // before the replayed turn's real records.
+  const threadStartedAt = Number.isFinite(thread.createdAt)
+    ? isoFromEpochSeconds(thread.createdAt)
+    : undefined;
   const entries = thread.turns.flatMap((turn) =>
     turn.items.flatMap((item) => {
       const entry = mapCodexStoredItem(item);
-      return entry === undefined
-        ? []
-        : [
-            {
-              ...entry,
-              ...(turn.startedAt !== undefined && turn.startedAt !== null
-                ? { at: isoFromEpochSeconds(turn.startedAt) }
-                : {}),
-            },
-          ];
+      if (entry === undefined) {
+        return [];
+      }
+      const at =
+        turn.startedAt !== undefined && turn.startedAt !== null
+          ? isoFromEpochSeconds(turn.startedAt)
+          : threadStartedAt;
+      return [{ ...entry, ...(at === undefined ? {} : { at }) }];
     }),
   );
   const limit =
