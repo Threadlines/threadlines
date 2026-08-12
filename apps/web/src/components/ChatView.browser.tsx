@@ -72,10 +72,8 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
-import {
-  RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
-  resetSourceControlPanelStateMemoryForTests,
-} from "../rightPanelLayout";
+import { RIGHT_PANEL_RAIL_WIDTH } from "../rightPanelLayout";
+import { resetRightPanelTabsForTests } from "../rightPanelTabs";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -2177,7 +2175,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
-    resetSourceControlPanelStateMemoryForTests();
+    resetRightPanelTabsForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({
       draftsByThreadKey: {},
@@ -2689,35 +2687,229 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const sourceControlToggle = await waitForElement(
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      expect(railToggle.disabled).toBe(false);
+      expect(railToggle.hasAttribute("data-pressed")).toBe(false);
+      expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
+
+      // The header button opens the sidebar's own chrome, never a bare panel:
+      // on a fresh draft nothing is open yet, so that chrome is the launcher.
+      railToggle.click();
+
+      const changesTile = await waitForElement(
         () =>
           document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+            "[data-right-panel-launcher-row='sourceControl']",
+          ) as HTMLElement | null,
+        "The header button did not open the sidebar's launcher.",
       );
-      expect(sourceControlToggle.disabled).toBe(false);
-      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
-      expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+      expect(railToggle.hasAttribute("data-pressed")).toBe(true);
+      expect(document.querySelector("[data-right-panel-strip='true']")).not.toBeNull();
+      // A draft has no turn, so Agents is not one of its surfaces.
+      expect(document.querySelector("[data-right-panel-launcher-row='agents']")).toBeNull();
 
-      sourceControlToggle.click();
+      changesTile.click();
 
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
-          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(true);
+          expect(document.querySelector("[data-right-panel-tab='sourceControl']")).not.toBeNull();
+          expect(document.querySelector("[data-source-control-panel='true']")).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
-      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
 
-      sourceControlToggle.click();
+      railToggle.click();
 
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
-          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
-          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+          expect(railToggle.hasAttribute("data-pressed")).toBe(false);
+          expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  /** Every open tab stays mounted so its queries and scroll state survive a tab
+   *  switch, so "showing" has to mean laid out, not just mounted. */
+  function visibleSourceControlPanel(): HTMLElement | null {
+    const panel = document.querySelector(
+      "[data-source-control-panel='true']",
+    ) as HTMLElement | null;
+    return panel && panel.getClientRects().length > 0 ? panel : null;
+  }
+
+  /** Opens a surface from the launcher, which is what the sidebar shows before
+   *  a thread has any tab in its strip. */
+  async function openRightPanelSurfaceFromLauncher(tab: string): Promise<void> {
+    const tile = await waitForElement(
+      () =>
+        document.querySelector(`[data-right-panel-launcher-row='${tab}']`) as HTMLElement | null,
+      `Unable to find the sidebar launcher's ${tab} tile.`,
+    );
+    tile.click();
+  }
+
+  it("builds a tab strip from the launcher and switches between its tabs", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-tabs" as MessageId,
+        targetText: "rail tabs",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+
+      // Nothing open yet, so the sidebar opens on the launcher and offers all
+      // three of a server thread's surfaces.
+      await openRightPanelSurfaceFromLauncher("sourceControl");
+
+      const changesTab = await waitForElement(
+        () =>
+          document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement | null,
+        "Unable to find the sidebar's Source tab.",
+      );
+      expect(changesTab.getAttribute("data-active")).toBe("true");
+      expect(visibleSourceControlPanel()).not.toBeNull();
+      expect(document.querySelector("[data-agents-panel]")).toBeNull();
+
+      // The `+` menu adds the second tab and focuses it.
+      (document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement).click();
+      const agentsMenuItem = await waitForElement(
+        () => document.querySelector("[data-right-panel-menu-tab='agents']") as HTMLElement | null,
+        "The + menu never listed Agents.",
+      );
+      agentsMenuItem.click();
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ agents: "1" });
+          expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
+          // Source stays in the strip and stays mounted to keep its queries
+          // warm; the Agents tab is the one on screen.
+          expect(document.querySelector("[data-right-panel-tab='sourceControl']")).not.toBeNull();
+          expect(visibleSourceControlPanel()).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      (
+        document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
+      ).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+          expect(visibleSourceControlPanel()).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Closing the tabs one at a time empties the strip and lands back on the
+      // launcher, with the sidebar still open.
+      (
+        document.querySelector("[data-right-panel-close-tab='sourceControl']") as HTMLElement
+      ).click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-right-panel-tab='sourceControl']")).toBeNull();
+          expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      (document.querySelector("[data-right-panel-close-tab='agents']") as HTMLElement).click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-right-panel-launcher='true']")).not.toBeNull();
+          expect(document.querySelector("[data-right-panel-tab='agents']")).toBeNull();
+          // The sidebar itself is still showing, so its toggle stays pressed.
+          expect(railToggle.hasAttribute("data-pressed")).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // The header button is what puts the sidebar away.
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
+          expect(railToggle.hasAttribute("data-pressed")).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the tab strip inside the overlay sheet on phone widths", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-sheet" as MessageId,
+        targetText: "rail sheet",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+
+      // The launcher and the strip live in the sheet at this width, not in an
+      // inline sidebar.
+      const launcher = await waitForElement(
+        () => document.querySelector("[data-right-panel-launcher='true']") as HTMLElement | null,
+        "The sidebar never opened on a phone width.",
+      );
+      expect(launcher.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+      expect(document.querySelector("[data-right-panel-strip='true']")).not.toBeNull();
+
+      await openRightPanelSurfaceFromLauncher("agents");
+
+      const agentsPanel = await waitForElement(
+        () => document.querySelector("[data-agents-panel='tree']") as HTMLElement | null,
+        "The agents tab never opened on a phone width.",
+      );
+      expect(agentsPanel.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+      await expect.element(page.getByText(/No agents yet\./u)).toBeVisible();
+
+      // Closed and reopened, the sheet comes back on Agents — the same
+      // closed-to-`agents=1` transition the activity chip performs, which is
+      // where the sheet used to fail to appear at all.
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-agents-panel]")).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ agents: "1" });
+          const reopened = document.querySelector("[data-agents-panel='tree']");
+          expect(reopened).not.toBeNull();
+          expect(reopened?.closest('[data-slot="sheet-popup"]')).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2746,24 +2938,24 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const sourceControlToggle = await waitForElement(
+      const railToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
-      sourceControlToggle.click();
+      railToggle.click();
+      await openRightPanelSurfaceFromLauncher("sourceControl");
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+          expect(document.querySelector("[data-source-control-panel='true']")).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
-      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
 
       // Sidebar-style navigation carries no search params, which used to reset
-      // the panel. The other thread still starts closed; memory is per thread.
+      // the panel. The other thread still starts closed; the strip and its
+      // active tab are remembered per thread.
       await mounted.router.navigate({
         to: "/$environmentId/$threadId",
         params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: secondThreadId },
@@ -2773,7 +2965,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(mounted.router.state.location.pathname).toBe(
             `/${LOCAL_ENVIRONMENT_ID}/${secondThreadId}`,
           );
-          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+          expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2784,7 +2976,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
       await vi.waitFor(
         () => {
-          expect(document.querySelector('h2[aria-label="Source Control"]')).not.toBeNull();
+          expect(document.querySelector("[data-right-panel-tab='sourceControl']")).not.toBeNull();
+          expect(document.querySelector("[data-source-control-panel='true']")).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2824,17 +3017,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const sourceControlToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
 
       expect(sourceControlToggle.disabled).toBe(false);
       expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
-      await expect
-        .element(page.getByRole("heading", { name: "Source Control" }))
-        .not.toBeInTheDocument();
+      expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -2871,46 +3060,45 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const sourceControlToggle = await waitForElement(
         () =>
-          document.querySelector(
-            'button[aria-label="Toggle source control panel"]',
-          ) as HTMLButtonElement | null,
-        "Unable to find source control toggle.",
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
       );
 
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
           expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
-          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+          expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
 
+      // The auto-hide left the deep-linked tab in the strip, so reopening the
+      // sidebar lands straight back on Source rather than on the launcher.
       sourceControlToggle.click();
 
-      const sourceControlHeading = await waitForElement(
-        () =>
-          document.querySelector('h2[aria-label="Source Control"]') as HTMLHeadingElement | null,
-        "Unable to find source control panel heading.",
+      const sourceControlPanel = await waitForElement(
+        () => document.querySelector("[data-source-control-panel='true']") as HTMLElement | null,
+        "Unable to find the source control panel.",
       );
-      const sheetPopup = sourceControlHeading.closest(
+      const sheetPopup = sourceControlPanel.closest(
         '[data-slot="sheet-popup"]',
       ) as HTMLElement | null;
       expect(sheetPopup).not.toBeNull();
       await waitForLayout();
 
       expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
-      // Source control keeps the inline panel's fixed width on phones so a
-      // dismissible slice of the conversation remains visible.
-      expect(Math.round(sheetPopup?.getBoundingClientRect().width ?? 0)).toBe(
-        RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
-      );
+      // The rail overlays as a partial sheet on phones, so a dismissible slice
+      // of the conversation remains visible beside it.
+      const sheetWidth = Math.round(sheetPopup?.getBoundingClientRect().width ?? 0);
+      expect(sheetWidth).toBeLessThanOrEqual(RIGHT_PANEL_RAIL_WIDTH);
+      expect(sheetWidth).toBeLessThan(COMPACT_FOOTER_VIEWPORT.width);
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("opens the whole chat turn diff with the source control return affordance", async () => {
+  it("opens the whole chat turn diff in the Diff tab with a way back to Source", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithChangedFileSummary(),
@@ -2953,16 +3141,130 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => {
           expect(mounted.router.state.location.search).toMatchObject({
             diff: "1",
-            sourceControlReturn: "1",
             diffTurnId: "turn-chat-diff",
           });
           expect(mounted.router.state.location.search).not.toHaveProperty("diffFilePath");
+          // The link opens the sidebar on its Diff tab, tab strip and all.
+          expect(
+            document.querySelector("[data-right-panel-tab='diff'][data-active='true']"),
+          ).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
+      // The strip is the only navigation the embedded Diff needs: no in-panel
+      // back-to-Source control, and no header bar restating the active tab --
+      // the diff's own toolbar starts straight under the strip.
+      const diffToolbar = await waitForElement(
+        () => document.querySelector('[aria-label="Select diff source"]'),
+        "The diff toolbar should render.",
+      );
+      expect(document.querySelector('button[aria-label="Back to changes"]')).toBeNull();
+      const strip = document.querySelector("[data-right-panel-strip='true']")!;
+      expect(
+        diffToolbar.getBoundingClientRect().top - strip.getBoundingClientRect().bottom,
+      ).toBeLessThanOrEqual(10);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("retargets one Diff tab and keeps the Source tab in the strip", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithChangedFileSummary(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.getTurnDiff) {
+          return {
+            diff: [
+              "diff --git a/apps/web/src/components/DiffPanel.tsx b/apps/web/src/components/DiffPanel.tsx",
+              "index 1111111..2222222 100644",
+              "--- a/apps/web/src/components/DiffPanel.tsx",
+              "+++ b/apps/web/src/components/DiffPanel.tsx",
+              "@@ -1 +1 @@",
+              "-old",
+              "+new",
+            ].join("\n"),
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+      await openRightPanelSurfaceFromLauncher("sourceControl");
       await waitForElement(
-        () => document.querySelector('button[aria-label="Back to source control"]'),
-        "Back to source control button should render.",
+        () =>
+          document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement | null,
+        "Unable to find the sidebar's Source tab.",
+      );
+
+      const viewTurnDiffButton = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "View turn diff",
+          ) ?? null,
+        "View turn diff button should render.",
+      );
+      viewTurnDiffButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({
+            diff: "1",
+            diffTurnId: "turn-chat-diff",
+          });
+          expect(document.querySelectorAll("[data-right-panel-tab='diff']").length).toBe(1);
+          // Source stays in the strip, so tabbing back keeps its list.
+          expect(document.querySelector("[data-right-panel-tab='sourceControl']")).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Back to Source from its tab, then the link again: still one Diff tab.
+      (
+        document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
+      ).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+          expect(visibleSourceControlPanel()).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      viewTurnDiffButton.click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll("[data-right-panel-tab='diff']").length).toBe(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Tabbing between Source and Diff keeps the target the Diff tab had.
+      (
+        document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
+      ).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).not.toHaveProperty("diffTurnId");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      (document.querySelector("[data-right-panel-tab='diff'] [role='tab']") as HTMLElement).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({
+            diff: "1",
+            diffTurnId: "turn-chat-diff",
+          });
+          expect(document.querySelectorAll("[data-right-panel-tab='diff']").length).toBe(1);
+        },
+        { timeout: 8_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();

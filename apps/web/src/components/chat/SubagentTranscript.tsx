@@ -17,22 +17,33 @@ import {
   useState,
 } from "react";
 
+import { ChevronRightIcon } from "lucide-react";
+
 import { useSettings } from "../../hooks/useSettings";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { cn } from "~/lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
-import { LiveNode, SpineRow, spineAccentRowStyle } from "../ui/threadline";
+import { LiveNode, SectionLabel, SpineRow, spineAccentRowStyle } from "../ui/threadline";
 import { readSubagentTranscriptPage } from "./subagentTranscriptClient";
 import {
   buildSubagentTranscriptView,
   formatSubagentToolLabel,
   formatSubagentToolPreview,
+  formatSubagentToolRunActions,
+  groupSubagentTranscriptSteps,
   isSameSubagentTranscriptItem,
+  resolveSubagentTranscriptInstruction,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
+  subagentStepNodeOffsetPx,
+  type SubagentTranscriptInstruction,
+  type SubagentTranscriptProseItem,
+  type SubagentTranscriptStep,
+  type SubagentTranscriptToolRun,
   type SubagentTranscriptViewItem,
 } from "./SubagentTranscript.logic";
+import { formatSubagentDuration } from "./subagentMeta";
 
 const TRANSCRIPT_PAGE_SIZE = 60;
 const LIVE_REFRESH_INTERVAL_MS = 1_000;
@@ -59,12 +70,19 @@ interface SubagentTranscriptProps {
   scrollable?: boolean;
   /** Working directory used to resolve file references in agent prose. */
   cwd?: string | undefined;
+  /** The prompt the agent was spawned with, shown as the instruction when the
+   *  transcript itself has no leading message (a forked Codex child's stored
+   *  history starts at its first real turn). */
+  objective?: string | null | undefined;
   /** Shown when the provider has no transcript yet, so a just-spawned agent
    *  still says something useful. */
   fallbackBody?: string | null;
   /** Reports the provider's own record of the agent (its id, type and model),
    *  which the spawning tool call does not always carry. */
   onAgentResolved?: (agent: ProviderSubagentTranscriptResult["agent"]) => void;
+  /** Reports the text the instruction block above the thread is showing, so the
+   *  header can drop its own copy of it rather than say it twice. */
+  onInstructionResolved?: (text: string | null) => void;
   className?: string;
 }
 
@@ -200,8 +218,10 @@ export function SubagentTranscript({
   follow = false,
   scrollable = false,
   cwd,
+  objective,
   fallbackBody = null,
   onAgentResolved,
+  onInstructionResolved,
   className,
 }: SubagentTranscriptProps) {
   const [state, setState] = useState<SubagentTranscriptFetchState>({ status: "loading" });
@@ -311,6 +331,39 @@ export function SubagentTranscript({
     () => (state.status === "loaded" ? transcriptRevision(state.sections) : state.status),
     [state],
   );
+
+  /** Per-section view state, built once so the instruction the panel renders is
+   *  the same one it reports to the header. */
+  const sectionViews = useMemo(() => {
+    if (state.status !== "loaded") {
+      return [];
+    }
+    return state.sections.map((section, sectionIndex) => {
+      const items = buildSubagentTranscriptView(section.result.entries, section.result.offset ?? 0);
+      const atTranscriptStart =
+        section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0;
+      const { lead, steps } = splitSubagentTranscriptLead(items, atTranscriptStart);
+      return {
+        agentId: section.agentId,
+        result: section.result,
+        items,
+        steps,
+        // Only the first section can stand in the objective: the prop describes
+        // one agent, and repeating it under each of several sections would
+        // claim it as every agent's instruction.
+        instruction: resolveSubagentTranscriptInstruction(
+          lead,
+          sectionIndex === 0 ? objective : null,
+          atTranscriptStart,
+        ),
+      };
+    });
+  }, [objective, state]);
+
+  const leadInstructionText = sectionViews[0]?.instruction?.text ?? null;
+  useEffect(() => {
+    onInstructionResolved?.(leadInstructionText);
+  }, [leadInstructionText, onInstructionResolved]);
 
   const resolvedAgent = state.status === "loaded" ? state.sections[0]?.result.agent : undefined;
   const reportedAgentRef = useRef<string | null>(null);
@@ -451,12 +504,12 @@ export function SubagentTranscript({
       <div
         className={cn(
           "flex items-center justify-between gap-2",
-          scrollable ? "shrink-0 border-b border-border/45 px-4 py-2" : "mb-1",
+          // The panel's one gutter, and the same section label as Earlier: two
+          // labels in one panel should not be assembled from two systems.
+          scrollable ? "shrink-0 border-b border-border/45 px-3 py-1.5" : "mb-1",
         )}
       >
-        <p className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
-          Read-only transcript
-        </p>
+        <SectionLabel tick={false}>Read-only transcript</SectionLabel>
         {follow ? (
           <span
             className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/60"
@@ -469,13 +522,23 @@ export function SubagentTranscript({
       </div>
       <div
         ref={scrollElementRef}
-        className={cn(scrollable && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3")}
+        className={cn(scrollable && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3")}
         data-subagent-transcript="true"
         onScroll={scrollable ? handleTranscriptScroll : undefined}
       >
         <div ref={contentElementRef}>
           {state.status === "loading" ? (
-            <p className="text-[11px] text-muted-foreground/60">Loading transcript...</p>
+            // A flat line at panel text size, on the panel's gutter. A framed or
+            // centred loader would put more on screen while waiting than the
+            // transcript itself does once it arrives.
+            <p
+              className="text-[12px] text-muted-foreground/55"
+              role="status"
+              aria-live="polite"
+              data-subagent-transcript-loading="true"
+            >
+              Loading transcript…
+            </p>
           ) : state.status === "error" ? (
             <TranscriptUnavailable
               message={state.message}
@@ -483,18 +546,11 @@ export function SubagentTranscript({
               follow={follow}
             />
           ) : (
-            state.sections.map((section, sectionIndex) => {
-              const items = buildSubagentTranscriptView(
-                section.result.entries,
-                section.result.offset ?? 0,
-              );
-              const { lead, steps } = splitSubagentTranscriptLead(
-                items,
-                section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0,
-              );
+            sectionViews.map((section, sectionIndex) => {
+              const { instruction, items, steps } = section;
               const showLiveTail =
                 follow &&
-                sectionIndex === state.sections.length - 1 &&
+                sectionIndex === sectionViews.length - 1 &&
                 shouldShowSubagentLiveTail(items, fallbackBody);
               return (
                 <div key={section.agentId} className="space-y-2">
@@ -515,14 +571,14 @@ export function SubagentTranscript({
                   {earlierLoadError ? (
                     <p className="text-[10px] text-destructive/80">{earlierLoadError}</p>
                   ) : null}
-                  {state.sections.length > 1 ? (
+                  {sectionViews.length > 1 ? (
                     <p className="font-mono text-[10px] text-muted-foreground/50">
                       Agent {section.agentId}
                     </p>
                   ) : null}
-                  {lead ? (
+                  {instruction ? (
                     <TranscriptInstruction
-                      item={lead}
+                      instruction={instruction}
                       environmentId={environmentId}
                       threadId={threadId}
                       cwd={cwd}
@@ -530,21 +586,24 @@ export function SubagentTranscript({
                     />
                   ) : null}
                   <div style={TRANSCRIPT_SPINE_STYLE}>
-                    {steps.map((item, itemIndex) => {
-                      const lastItem = itemIndex === steps.length - 1;
+                    {groupSubagentTranscriptSteps(steps).map((step, stepIndex, groupedSteps) => {
+                      const lastItem = stepIndex === groupedSteps.length - 1;
                       // One live terminus per surface: the newest row, and only
                       // while the agent is still working.
                       const live = follow && lastItem && !showLiveTail;
                       return (
                         <SpineRow
-                          key={`${section.agentId}:${item.id}`}
-                          node={<TranscriptSpineNode item={item} live={live} />}
-                          connectTop={itemIndex > 0}
+                          key={`${section.agentId}:${step.id}`}
+                          node={<TranscriptSpineNode step={step} live={live} />}
+                          // The dot belongs to what the step says, so it lands on
+                          // the step's first line of text.
+                          nodeOffset={subagentStepNodeOffsetPx(step)}
+                          connectTop={stepIndex > 0}
                           connectBottom={!lastItem || showLiveTail}
                           style={
                             follow
                               ? spineAccentRowStyle(
-                                  steps.length - 1 - itemIndex + (showLiveTail ? 1 : 0),
+                                  groupedSteps.length - 1 - stepIndex + (showLiveTail ? 1 : 0),
                                 )
                               : undefined
                           }
@@ -553,13 +612,24 @@ export function SubagentTranscript({
                               spine gutter stretches to the row's content box,
                               so row padding would break the line. */}
                           <div className="py-1">
-                            <TranscriptItem
-                              item={item}
-                              environmentId={environmentId}
-                              threadId={threadId}
-                              cwd={cwd}
-                              timestampFormat={timestampFormat}
-                            />
+                            {step.kind === "tool-run" ? (
+                              <ToolRunReceipt
+                                run={step}
+                                // The run the agent is still adding to stays
+                                // open: collapsing it would hide the very thing
+                                // "following live" is for.
+                                openByDefault={follow && lastItem}
+                                timestampFormat={timestampFormat}
+                              />
+                            ) : (
+                              <TranscriptItem
+                                item={step.item}
+                                environmentId={environmentId}
+                                threadId={threadId}
+                                cwd={cwd}
+                                timestampFormat={timestampFormat}
+                              />
+                            )}
                           </div>
                         </SpineRow>
                       );
@@ -617,15 +687,26 @@ export function SubagentTranscript({
 function TranscriptTimestamp({
   at,
   timestampFormat,
+  float = false,
 }: {
   at: string | null;
   timestampFormat: TimestampFormat;
+  /** Rides the top-right of an entry's prose, on the prose's own first line,
+   *  rather than sitting in a meta row of its own. Floated rather than absolute
+   *  so a long first line wraps around it instead of running under it. */
+  float?: boolean;
 }) {
   if (!at) {
     return null;
   }
   return (
-    <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/40 tabular-nums">
+    <span
+      className={cn(
+        "font-mono text-[10px] text-muted-foreground/40 tabular-nums",
+        float ? "float-right ml-2 h-[18px] leading-[18px]" : "shrink-0 leading-5",
+      )}
+      data-subagent-transcript-time="true"
+    >
       {formatShortTimestamp(at, timestampFormat)}
     </span>
   );
@@ -717,6 +798,77 @@ const ToolGroup = memo(function ToolGroup({
   );
 });
 
+/**
+ * A run of tool calls as one line, in the same language as the conversation's
+ * activity receipt: what happened, how much of it, how long it took, and a way
+ * to open it. Expanding renders the same rows that would have been there.
+ */
+function ToolRunReceipt({
+  run,
+  openByDefault,
+  timestampFormat,
+}: {
+  run: SubagentTranscriptToolRun;
+  openByDefault: boolean;
+  timestampFormat: TimestampFormat;
+}) {
+  // Null means "no opinion yet", so a run that opens itself because it is live
+  // still collapses when the agent moves on, while a run the reader opened by
+  // hand stays open.
+  const [overrideExpanded, setOverrideExpanded] = useState<boolean | null>(null);
+  const expanded = overrideExpanded ?? openByDefault;
+  const duration = run.durationMs === null ? null : formatSubagentDuration(run.durationMs);
+
+  return (
+    <div className="min-w-0" data-subagent-transcript-entry="tool-run">
+      <div className="flex min-w-0 items-center gap-1.5 leading-5">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors duration-150 hover:text-foreground/75"
+          aria-expanded={expanded}
+          data-subagent-transcript-tool-run-toggle="true"
+          onClick={() => setOverrideExpanded(!expanded)}
+        >
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+              expanded && "rotate-90",
+            )}
+          />
+          <span className="shrink-0 text-[11px] leading-5 text-foreground/80">
+            {formatSubagentToolRunActions(run)}
+          </span>
+          {run.toolSummary ? (
+            <>
+              <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
+                ·
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
+                {run.toolSummary}
+              </span>
+            </>
+          ) : (
+            <span className="flex-1" />
+          )}
+          {duration ? (
+            <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
+              {duration}
+            </span>
+          ) : null}
+        </button>
+      </div>
+      {expanded ? (
+        <div className="mt-0.5 space-y-0.5">
+          {run.items.map((item) => (
+            <ToolGroup key={item.id} item={item} timestampFormat={timestampFormat} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const ThinkingBlock = memo(function ThinkingBlock({
   item,
   timestampFormat,
@@ -750,18 +902,10 @@ const ThinkingBlock = memo(function ThinkingBlock({
   );
 });
 
-/** Agent prose is authored for a chat column; inside a dense inspector its
- *  headings need to come down to the size of the rows around them. */
-const TRANSCRIPT_MARKDOWN_CLASS = cn(
-  "text-[12px] leading-5",
-  "[&_.chat-markdown]:text-[12px] [&_.chat-markdown]:leading-5",
-  "[&_.chat-markdown_p]:my-1.5 [&_.chat-markdown_ul]:my-1.5 [&_.chat-markdown_ol]:my-1.5",
-  "[&_.chat-markdown_pre]:my-1.5",
-  "[&_h1]:mt-2 [&_h1]:mb-1 [&_h1]:text-[13px] [&_h1]:font-semibold",
-  "[&_h2]:mt-2 [&_h2]:mb-1 [&_h2]:text-[12px] [&_h2]:font-semibold",
-  "[&_h3]:mt-1.5 [&_h3]:mb-0.5 [&_h3]:text-[12px] [&_h3]:font-medium",
-  "[&_h4]:mt-1.5 [&_h4]:mb-0.5 [&_h4]:text-[12px] [&_h4]:font-medium",
-);
+/** Agent prose is authored for a chat column. `chat-markdown-dense` (index.css)
+ *  brings the whole block -- body, headings, lists, inline code -- down to
+ *  12px/18px, so the drill-in reads at the size of the rows around it. */
+const TRANSCRIPT_MARKDOWN_CLASS = "chat-markdown-dense text-[12px] leading-[18px]";
 
 const TranscriptMessage = memo(function TranscriptMessage({
   item,
@@ -786,23 +930,25 @@ const TranscriptMessage = memo(function TranscriptMessage({
 
   return (
     <div className="min-w-0" data-subagent-transcript-entry={item.role}>
-      {label || item.at ? (
+      {/* A labelled role keeps its meta row: the label is the row's first line,
+          and the time sits at the end of it. The agent's own prose has no label,
+          so the time rides the first line of the prose instead of taking a line
+          of its own above it -- which is what put the spine's node on the time. */}
+      {label ? (
         <div className="flex min-w-0 items-baseline gap-2">
-          {label ? (
-            <button
-              type="button"
-              className={cn(
-                "shrink-0 text-[9px] font-medium tracking-[0.12em] uppercase",
-                foldable
-                  ? "text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
-                  : "pointer-events-none text-muted-foreground/45",
-              )}
-              aria-expanded={foldable ? expanded : undefined}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {label}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className={cn(
+              "shrink-0 text-[9px] font-medium tracking-[0.12em] uppercase",
+              foldable
+                ? "text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
+                : "pointer-events-none text-muted-foreground/45",
+            )}
+            aria-expanded={foldable ? expanded : undefined}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {label}
+          </button>
           {folded ? (
             <button
               type="button"
@@ -820,7 +966,13 @@ const TranscriptMessage = memo(function TranscriptMessage({
         </div>
       ) : null}
       {folded ? null : (
-        <div className={TRANSCRIPT_MARKDOWN_CLASS} data-subagent-transcript-message="true">
+        <div
+          className={cn(TRANSCRIPT_MARKDOWN_CLASS, "subagent-transcript-prose")}
+          data-subagent-transcript-message="true"
+        >
+          {label ? null : (
+            <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} float />
+          )}
           <ChatMarkdown
             text={item.text}
             cwd={cwd}
@@ -849,7 +1001,7 @@ const TranscriptItem = memo(
     cwd,
     timestampFormat,
   }: {
-    item: SubagentTranscriptViewItem;
+    item: SubagentTranscriptProseItem;
     environmentId: EnvironmentId;
     threadId: ThreadId;
     cwd: string | undefined;
@@ -857,9 +1009,6 @@ const TranscriptItem = memo(
   }) {
     if (item.kind === "thinking") {
       return <ThinkingBlock item={item} timestampFormat={timestampFormat} />;
-    }
-    if (item.kind === "tools") {
-      return <ToolGroup item={item} timestampFormat={timestampFormat} />;
     }
     return (
       <TranscriptMessage
@@ -886,13 +1035,13 @@ const INSTRUCTION_FOLD_CHARS = 220;
 /** The prompt the agent was spawned with. It sits above the thread rather than
  *  on it: it is the setup for every step below, not a step of its own. */
 const TranscriptInstruction = memo(function TranscriptInstruction({
-  item,
+  instruction,
   environmentId,
   threadId,
   cwd,
   timestampFormat,
 }: {
-  item: Extract<SubagentTranscriptViewItem, { kind: "message" }>;
+  instruction: SubagentTranscriptInstruction;
   environmentId: EnvironmentId;
   threadId: ThreadId;
   cwd: string | undefined;
@@ -900,22 +1049,22 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
 }) {
   const [expanded, setExpanded] = useState(false);
   const foldable =
-    item.text.length > INSTRUCTION_FOLD_CHARS ||
-    item.text.split("\n").length > INSTRUCTION_COLLAPSED_LINES;
+    instruction.text.length > INSTRUCTION_FOLD_CHARS ||
+    instruction.text.split("\n").length > INSTRUCTION_COLLAPSED_LINES;
   const folded = foldable && !expanded;
 
   return (
     <div
       className="min-w-0 border-b border-border/45 pb-2.5"
       data-subagent-transcript-instruction="true"
-      data-subagent-transcript-entry={item.role}
+      data-subagent-transcript-entry={instruction.label === "System" ? "system" : "user"}
     >
       <div className="flex min-w-0 items-baseline gap-2">
         <span className="shrink-0 text-[9px] font-medium tracking-[0.12em] text-muted-foreground/45 uppercase">
-          {item.role === "user" ? "Instruction" : "System"}
+          {instruction.label}
         </span>
         <span className="flex-1" />
-        <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} />
+        <TranscriptTimestamp at={instruction.at} timestampFormat={timestampFormat} />
         {foldable ? (
           <DisclosureButton
             expanded={expanded}
@@ -926,7 +1075,7 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
       </div>
       {folded ? (
         <p className="mt-1 line-clamp-4 text-[11.5px] leading-5 whitespace-pre-wrap wrap-break-word text-muted-foreground/70">
-          {item.text}
+          {instruction.text}
         </p>
       ) : (
         <div
@@ -934,7 +1083,7 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
           data-subagent-transcript-message="true"
         >
           <ChatMarkdown
-            text={item.text}
+            text={instruction.text}
             cwd={cwd}
             environmentId={environmentId}
             threadId={threadId}
@@ -951,14 +1100,24 @@ const TRANSCRIPT_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties
 
 /** Settled steps are quiet dots, foldable rows are hollow rings (same family,
  *  reads as openable), and the one live row carries the halo. */
-function TranscriptSpineNode({ item, live }: { item: SubagentTranscriptViewItem; live: boolean }) {
+function TranscriptSpineNode({ step, live }: { step: SubagentTranscriptStep; live: boolean }) {
   if (live) {
-    return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
+    return (
+      <LiveNode
+        className="size-1.5 [--thread-halo-delay:0.2s]"
+        data-subagent-transcript-node="true"
+      />
+    );
   }
-  if (item.kind === "thinking" || (item.kind === "message" && item.role !== "assistant")) {
+  const openable =
+    step.kind === "tool-run" ||
+    step.item.kind === "thinking" ||
+    (step.item.kind === "message" && step.item.role !== "assistant");
+  if (openable) {
     return (
       <span
         aria-hidden="true"
+        data-subagent-transcript-node="true"
         className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
       />
     );
@@ -966,15 +1125,18 @@ function TranscriptSpineNode({ item, live }: { item: SubagentTranscriptViewItem;
   return (
     <span
       aria-hidden="true"
+      data-subagent-transcript-node="true"
       className="size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
     />
   );
 }
 
-/** The agent's newest words, streamed ahead of the written transcript. */
+/** The agent's newest words, streamed ahead of the written transcript.
+ *  `leading-5` pins the label's line box to the meta line every other row leads
+ *  with, which is where the spine puts its node. */
 const LiveTail = memo(function LiveTail({ body }: { body: string }) {
   return (
-    <div className="min-w-0" data-subagent-transcript-live="true">
+    <div className="min-w-0 leading-5" data-subagent-transcript-live="true">
       {/* The spine already carries the live halo for this row. */}
       <span className="text-[9px] font-medium tracking-[0.12em] text-muted-foreground/45 uppercase">
         Writing

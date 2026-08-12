@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { SidebarProvider } from "../ui/sidebar";
-import { ChatHeader } from "./ChatHeader";
+import { ChatHeader, formatLiveAgentsTooltip } from "./ChatHeader";
 
 const TEST_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
@@ -23,13 +23,14 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     terminalAvailable: true,
     terminalOpen: false,
     terminalToggleShortcutLabel: null,
-    sourceControlToggleShortcutLabel: null,
-    sourceControlOpen: false,
+    railToggleShortcutLabel: null,
+    railOpen: false,
     sourceControlAvailable: false,
     browserAvailable: true,
     browserOpen: false,
     workingTreeDiffStat: null,
     remoteBehindCount: null,
+    liveAgents: null,
     fileBrowserAvailable: false,
     taskProgress: null,
     subagentProgress: null,
@@ -39,11 +40,11 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     onAddProjectScript: vi.fn(async () => {}),
     onUpdateProjectScript: vi.fn(async () => {}),
     onDeleteProjectScript: vi.fn(async () => {}),
-    onToggleBackgroundRunTerminal: vi.fn(),
-    onStopBackgroundRun: vi.fn(),
+    agentsPanelOpen: false,
+    onToggleAgentsPanel: vi.fn(),
     onOpenForkSourceThread: vi.fn(),
     onToggleTerminal: vi.fn(),
-    onToggleSourceControl: vi.fn(),
+    onToggleRail: vi.fn(),
     onToggleBrowser: vi.fn(),
     ...overrides,
   } satisfies ComponentProps<typeof ChatHeader>;
@@ -87,10 +88,10 @@ describe("ChatHeader", () => {
     expect(markup).toContain("cursor-default");
   });
 
-  it("shows the working-tree diffstat on the closed source control toggle", () => {
+  it("shows the working-tree diffstat on the closed rail toggle", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: false,
+      railOpen: false,
       workingTreeDiffStat: { insertions: 38, deletions: 12 },
     });
 
@@ -98,10 +99,10 @@ describe("ChatHeader", () => {
     expect(markup).toContain("−12");
   });
 
-  it("drops the diffstat once the panel is open and shows its own counts", () => {
+  it("drops the diffstat once the rail is open and shows its own counts", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: true,
+      railOpen: true,
       workingTreeDiffStat: { insertions: 38, deletions: 12 },
     });
 
@@ -109,23 +110,71 @@ describe("ChatHeader", () => {
     expect(markup).not.toContain("−12");
   });
 
-  it("shows the behind-remote count on the closed source control toggle", () => {
+  it("shows the behind-remote count on the closed rail toggle", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: false,
+      railOpen: false,
       remoteBehindCount: 2,
     });
 
     expect(markup).toContain("↓2");
   });
 
-  it("drops the behind-remote count once the panel is open", () => {
+  it("drops the behind-remote count once the rail is open", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
-      sourceControlOpen: true,
+      railOpen: true,
       remoteBehindCount: 2,
     });
 
     expect(markup).not.toContain("↓2");
+  });
+
+  it("nodes the closed rail toggle while agents are live, counting past one", () => {
+    const single = renderChatHeader({
+      railOpen: false,
+      liveAgents: { count: 1, waitingCount: 0 },
+    });
+    expect(single).toContain('data-header-live-agents="running"');
+    // One agent needs no digit; the node alone says it.
+    expect(single).not.toContain("data-header-live-agents-count");
+
+    const several = renderChatHeader({
+      railOpen: false,
+      liveAgents: { count: 2, waitingCount: 0 },
+    });
+    expect(several).toContain('data-header-live-agents="running"');
+    expect(several).toContain('data-header-live-agents-count="true"');
+    expect(several).toContain(">2<");
+  });
+
+  it("turns the node amber when an agent is waiting on the user", () => {
+    const markup = renderChatHeader({
+      railOpen: false,
+      liveAgents: { count: 3, waitingCount: 1 },
+    });
+
+    expect(markup).toContain('data-header-live-agents="waiting"');
+    expect(markup).toContain("bg-amber-500");
+  });
+
+  it("drops the live-agent node once the rail is open, where the Agents tab owns it", () => {
+    const markup = renderChatHeader({
+      railOpen: true,
+      liveAgents: { count: 2, waitingCount: 0 },
+    });
+
+    expect(markup).not.toContain("data-header-live-agents");
+  });
+});
+
+describe("formatLiveAgentsTooltip", () => {
+  it("leads with what is running and names anything waiting", () => {
+    expect(formatLiveAgentsTooltip({ count: 1, waitingCount: 0 })).toBe("1 agent running.");
+    expect(formatLiveAgentsTooltip({ count: 2, waitingCount: 0 })).toBe("2 agents running.");
+    expect(formatLiveAgentsTooltip({ count: 3, waitingCount: 1 })).toBe(
+      "2 agents running, 1 waiting on you.",
+    );
+    expect(formatLiveAgentsTooltip({ count: 1, waitingCount: 1 })).toBe("1 agent waiting on you.");
   });
 });

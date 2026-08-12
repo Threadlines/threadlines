@@ -104,6 +104,10 @@ export interface WorkLogEntry {
   images?: ReadonlyArray<WorkLogImagePreview>;
   tone: "thinking" | "tool" | "info" | "warning" | "error";
   toolTitle?: string;
+  /** The projected activity kind this row was derived from. Every derived entry
+   *  carries one; it is optional here only so hand-built entries (tests,
+   *  synthesized summary rows) do not have to invent an activity. */
+  activityKind?: OrchestrationThreadActivity["kind"];
   itemType?: ToolLifecycleItemType;
   /** Whether a subagent tool row creates an agent or only coordinates one.
    *  Coordination calls stay in the transcript without inflating delegation
@@ -113,6 +117,12 @@ export interface WorkLogEntry {
    *  the main model's. Drives the indented child-row rendering in the
    *  timeline. */
   subagentTask?: { subagentType: string | null; toolUseId: string | null };
+  /** The spawned agent this row's activity actually belongs to, as stamped by
+   *  the provider. Unlike `subagentTask` — which a parent's own Task tool rows
+   *  also carry — this is set only when the work was done BY the child, so it
+   *  is the test for "this is not the main agent's activity". The conversation
+   *  excludes these rows; the rail's Agents tab owns them. */
+  sourceAgentThreadId?: string;
   /** Provider tool call id backing this row, when the activity carried one.
    *  Lets the timeline correlate a subagent lane with its spawn row. */
   toolCallId?: string;
@@ -783,16 +793,7 @@ export function deriveSubagentProgressState(input: {
   const visibleRecords = records.filter(
     (record) => record.status !== "completed" || input.latestTurnSettled === false,
   );
-  const items = visibleRecords.map(
-    ({
-      resolvedModel: _resolvedModel,
-      liveBodyUpdatedAt: _liveBodyUpdatedAt,
-      resultActivityId: _resultActivityId,
-      resultBody: _resultBody,
-      resultCreatedAt: _resultCreatedAt,
-      ...item
-    }) => item,
-  );
+  const items = visibleRecords.map(toSubagentProgressItem);
   if (items.length === 0) {
     return null;
   }
@@ -827,6 +828,46 @@ export function deriveSubagentProgressState(input: {
     summary,
     badge,
   };
+}
+
+/** Strips the bookkeeping fields the collector carries for its own use. */
+function toSubagentProgressItem(record: InternalSubagentRecord): SubagentProgressItem {
+  const {
+    resolvedModel: _resolvedModel,
+    liveBodyUpdatedAt: _liveBodyUpdatedAt,
+    resultActivityId: _resultActivityId,
+    resultBody: _resultBody,
+    resultCreatedAt: _resultCreatedAt,
+    ...item
+  } = record;
+  return item;
+}
+
+/** One agent this thread has run, at its latest known lifecycle state. */
+export interface ThreadSubagentHistoryEntry {
+  readonly item: SubagentProgressItem;
+  /** The agent's final report, when it filed one. */
+  readonly resultBody: string | null;
+}
+
+/**
+ * Every agent the thread has ever spawned, oldest first, with no turn scoping.
+ *
+ * {@link deriveSubagentProgressState} answers "what is this turn doing", so it
+ * scopes to the latest turn and drops settled agents once that turn ends. The
+ * agents panel's history needs the other question — "what has this thread run"
+ * — which is the same collector without the visibility filter. It reads from
+ * the thread's projected activities, so it survives turn end and reload alike
+ * (bounded only by the server's `MAX_THREAD_ACTIVITIES` window, which caps
+ * every activity-derived read model equally).
+ */
+export function deriveThreadSubagentHistory(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ThreadSubagentHistoryEntry[] {
+  return collectSubagentActivityRecords(activities, {}).map((record) => ({
+    item: toSubagentProgressItem(record),
+    resultBody: record.resultBody,
+  }));
 }
 
 export function deriveSubagentResultEntries(
@@ -958,6 +999,121 @@ export function deriveForkContextEntries(
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+interface TurnModelSelection {
+  readonly model: string | null;
+  readonly reasoningEffort: string | null;
+}
+
+/** Effort rides in the selection's option list rather than a named field, and
+ *  the id differs by provider family (`reasoningEffort` for Codex/Claude,
+ *  `effort` for the legacy shape still stored on older threads). */
+function readSelectionReasoningEffort(options: unknown): string | null {
+  if (!Array.isArray(options)) {
+    return null;
+  }
+  for (const option of options) {
+    const record = asRecord(option);
+    const id = asTrimmedString(record?.id);
+    if (id === "reasoningEffort" || id === "effort") {
+      const value = asTrimmedString(record?.value);
+      if (value !== null) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The dispatched selection a turn lifecycle activity states, or null when it
+ * states none. `provider.turn.preparing` nests it under `modelSelection`;
+ * `provider.turn.started` reports the provider's own view at the top level,
+ * which only some drivers populate but which is the more authoritative of the
+ * two when they disagree.
+ */
+function readTurnActivityModelSelection(
+  activity: OrchestrationThreadActivity,
+): TurnModelSelection | null {
+  const payload = asRecord(activity.payload);
+  if (payload === null) {
+    return null;
+  }
+  const selection =
+    activity.kind === "provider.turn.preparing"
+      ? asRecord(payload.modelSelection)
+      : activity.kind === "provider.turn.started"
+        ? payload
+        : null;
+  if (selection === null) {
+    return null;
+  }
+  const model = asTrimmedString(selection.model);
+  const reasoningEffort =
+    readSelectionReasoningEffort(selection.options) ?? asTrimmedString(selection.effort);
+  return model === null && reasoningEffort === null ? null : { model, reasoningEffort };
+}
+
+/**
+ * What each turn was dispatched with, keyed by turn.
+ *
+ * A spawned agent inherits the parent turn's model and effort unless the spawn
+ * overrode them, and only Codex's `spawnAgent` item states an override. Its
+ * other agent lifecycle items — `wait`, `sendInput`, `closeAgent`, and the
+ * `subAgentActivity` spawn rows — report `model: null`, so a Codex child would
+ * otherwise have no model or effort to show. The turn lifecycle activities
+ * carry the dispatched selection for every turn, which is exactly what the
+ * child inherited.
+ *
+ * `provider.turn.preparing` is the only activity that always carries the
+ * selection, and it is projected *before* the provider hands back a turn id, so
+ * it is stored unscoped (`turnId: null`). It describes the dispatch of the next
+ * turn to appear in the stream, so its selection is held and attributed to the
+ * first turn seen after it. A turn that already has a selection is left alone,
+ * which keeps a late activity tagged with an older turn (a background agent
+ * settling across a prompt boundary) from stealing the pending one.
+ */
+function collectTurnModelSelections(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<TurnId, TurnModelSelection> {
+  const byTurnId = new Map<TurnId, TurnModelSelection>();
+  let pending: TurnModelSelection | null = null;
+
+  const merge = (turnId: TurnId, selection: TurnModelSelection) => {
+    const previous = byTurnId.get(turnId);
+    byTurnId.set(turnId, {
+      model: selection.model ?? previous?.model ?? null,
+      reasoningEffort: selection.reasoningEffort ?? previous?.reasoningEffort ?? null,
+    });
+  };
+
+  /** The held dispatch is only a floor, so it is applied before whatever the
+   *  activity itself says and never overwrites a field that arrived scoped. */
+  const claimPending = (turnId: TurnId) => {
+    if (pending === null || byTurnId.has(turnId)) {
+      return;
+    }
+    merge(turnId, pending);
+    pending = null;
+  };
+
+  for (const activity of activities) {
+    const turnId = activity.turnId ?? null;
+    const selection = readTurnActivityModelSelection(activity);
+    if (selection !== null && turnId === null) {
+      pending = selection;
+      continue;
+    }
+    if (turnId === null) {
+      continue;
+    }
+    claimPending(turnId);
+    if (selection !== null) {
+      merge(turnId, selection);
+    }
+  }
+  return byTurnId;
+}
+
 function collectSubagentActivityRecords(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   options: { latestTurnId?: TurnId | null | undefined },
@@ -972,6 +1128,7 @@ function collectSubagentActivityRecords(
   // front and merged into the record the spawning tool call builds.
   const telemetryByToolUseId = new Map<string, SubagentTelemetry>();
   const activityTelemetryByAgentId = collectSubagentActivityTelemetry(sortedActivities);
+  const turnModelSelections = collectTurnModelSelections(sortedActivities);
   const taskIdByToolUseId = new Map<string, string>();
   const toolUseIdByTaskId = new Map<string, string>();
   for (const activity of sortedActivities) {
@@ -1136,6 +1293,11 @@ function collectSubagentActivityRecords(
             ? (asTrimmedString(data?.subagentLiveTextAt) ?? activity.createdAt)
             : (previous?.liveBodyUpdatedAt ?? null);
 
+      const turnId = activity.turnId ?? previous?.turnId ?? null;
+      // What the spawn asked for always wins; the turn's own selection is the
+      // floor for providers that only state a model when it was overridden.
+      const inherited = turnId === null ? undefined : turnModelSelections.get(turnId);
+
       byAgentId.set(agentId, {
         id: agentId,
         agentThreadId: pendingAgent ? null : agentId,
@@ -1145,7 +1307,7 @@ function collectSubagentActivityRecords(
         agentPath: pathMetadata?.agentPath ?? null,
         parentAgentPath: pathMetadata?.parentAgentPath ?? null,
         treeDepth: pathMetadata?.treeDepth ?? 0,
-        turnId: activity.turnId ?? previous?.turnId ?? null,
+        turnId,
         label,
         ...(nickname ? { nickname } : {}),
         role,
@@ -1153,8 +1315,15 @@ function collectSubagentActivityRecords(
         status,
         statusLabel: subagentProgressStatusLabel(status),
         resolvedModel: resolvedModel ?? previous?.resolvedModel ?? null,
-        model: resolvedModel ?? previous?.resolvedModel ?? model ?? previous?.model ?? null,
-        reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
+        model:
+          resolvedModel ??
+          previous?.resolvedModel ??
+          model ??
+          previous?.model ??
+          inherited?.model ??
+          null,
+        reasoningEffort:
+          reasoningEffort ?? previous?.reasoningEffort ?? inherited?.reasoningEffort ?? null,
         liveBody,
         liveBodyUpdatedAt,
         // Claude supplies a dedicated task stream. Codex child work arrives as
@@ -2076,6 +2245,7 @@ function toDerivedWorkLogEntry(
         asTrimmedString(payloadData?.sourceAgentLabel),
       toolUseId: sourceAgentThreadId,
     };
+    entry.sourceAgentThreadId = sourceAgentThreadId;
   }
   if (itemType === "collab_agent_tool_call") {
     const spawnToolUseId = extractToolCallId(payload);

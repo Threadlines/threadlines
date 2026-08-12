@@ -47,11 +47,20 @@ import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
-  closeRightPanelSearchParams,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
-  stripRightPanelSearchParams,
 } from "../diffRouteSearch";
+import {
+  availableRightPanelTabs,
+  focusRightPanelTab,
+  hideRightPanel,
+  retargetRightPanelDiff,
+  rightPanelTabSearchParams,
+  showRightPanel,
+  useRightPanelTabs,
+  type RightPanelDiffTarget,
+  type RightPanelTab,
+} from "../rightPanelTabs";
 import {
   collapseExpandedComposerCursor,
   parseComposerGoalCommand,
@@ -70,6 +79,7 @@ import {
   deriveSubagentProgressState,
   deriveSubagentLiveEntries,
   deriveSubagentResultEntries,
+  deriveThreadSubagentHistory,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -79,6 +89,7 @@ import {
   formatElapsed,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
+  type SubagentProgressItem,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -120,10 +131,11 @@ import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-  draftSourceControlPanelStateKey,
+  draftRightPanelStateKey,
   useChatHeaderBottomVarRef,
-  useSourceControlPanelOpen,
 } from "../rightPanelLayout";
+import { publishAgentsPanelSource, selectAgentsPanelAgent } from "../agentsPanelStore";
+import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -192,7 +204,11 @@ import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
+import {
+  MessagesTimeline,
+  type TimelineProposedPlanState,
+  type TimelineTurnAgentsState,
+} from "./chat/MessagesTimeline";
 import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { useFirstRunSetupCard } from "./chat/FirstRunSetupCard";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
@@ -204,7 +220,7 @@ import {
   pickedElementFromPreview,
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
-import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
+import type { ThreadBackgroundRunItem } from "./chat/threadActivity";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -327,6 +343,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_SUBAGENT_ITEMS: ReadonlyArray<SubagentProgressItem> = [];
 const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_PROVIDER_DRIVER = ProviderDriverKind.make("claudeAgent");
 const LAYOUT_STICK_TO_BOTTOM_FRAME_COUNT = 4;
@@ -1288,15 +1305,15 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = useSourceControlPanelOpen(
-    rawSearch,
-    routeKind === "draft" && draftId ? draftSourceControlPanelStateKey(draftId) : routeThreadKey,
-  );
-  // The diff panel is a drill-in of source control, so the header toggle
-  // treats the right panel as one unit: it stays pressed while a diff is
-  // open and pressing it closes the whole panel.
-  const diffPanelOpen = rawSearch.diff === "1";
-  const rightPanelEngaged = sourceControlOpen || diffPanelOpen;
+  const rightPanelStateKey =
+    routeKind === "draft" && draftId ? draftRightPanelStateKey(draftId) : routeThreadKey;
+  // The sidebar's tab strip is owned by the route that renders it; the header
+  // reads the same store so its panel button and activity chip agree with what
+  // is on screen. The button reflects the sidebar as a whole — it stays pressed
+  // on any tab, and on the launcher.
+  const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
+  const rightPanelEngaged = rightPanelTabs.visible;
+  const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1346,6 +1363,17 @@ export default function ChatView(props: ChatViewProps) {
   // General Chat threads run in a hidden scratch workspace: source-control,
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
+  // Which surfaces this thread's sidebar offers. Resolved from the same inputs
+  // the route uses, so the header's entry points can never land on a tab the
+  // strip would refuse to show.
+  const rightPanelAvailableTabs = useMemo(
+    () =>
+      availableRightPanelTabs({
+        isGeneralChat: isGeneralChatThread,
+        isDraft: routeKind === "draft" || !isServerThread,
+      }),
+    [isGeneralChatThread, isServerThread, routeKind],
+  );
   /**
    * A picked element becomes a context attached to the message, not text in it.
    * It is the same shape as a terminal excerpt or a highlighted quote: evidence
@@ -1930,6 +1958,13 @@ export default function ChatView(props: ChatViewProps) {
         latestTurnSettled,
       }),
     [activeLatestTurn?.turnId, latestTurnSettled, threadActivities],
+  );
+  // The turn-scoped progress above empties when the turn settles. The panel's
+  // history section and the conversation's receipts both need the thread's whole
+  // roster, which the same activities answer without the turn filter.
+  const subagentHistory = useMemo(
+    () => deriveThreadSubagentHistory(threadActivities),
+    [threadActivities],
   );
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -2656,71 +2691,98 @@ export default function ChatView(props: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle", nonTerminalShortcutLabelOptions),
     [keybindings, nonTerminalShortcutLabelOptions],
   );
-  const closeRightPanelForRoute = useCallback(() => {
+  /**
+   * Writes the sidebar's active tab into the URL for whichever route this chat
+   * column is rendered by. A null tab is the sidebar hidden or sitting on the
+   * launcher; the strip state itself lives in the shared tab store, which the
+   * route reads back on the next render.
+   */
+  const navigateToRightPanelTab = useCallback(
+    (tab: RightPanelTab | null, diffTarget?: RightPanelDiffTarget | null) => {
+      if (!activeThread) {
+        return;
+      }
+      const nextSearch = (previous: Record<string, unknown>) =>
+        rightPanelTabSearchParams(previous, tab, diffTarget);
+      if (routeKind === "draft" && draftId) {
+        void navigate({
+          to: "/draft/$draftId",
+          params: buildDraftThreadRouteParams(draftId),
+          replace: true,
+          search: nextSearch,
+        });
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId,
+          threadId,
+        },
+        replace: true,
+        search: nextSearch,
+      });
+    },
+    [activeThread, draftId, environmentId, navigate, routeKind, threadId],
+  );
+
+  const openRightPanelTab = useCallback(
+    (tab: RightPanelTab, diffTarget?: RightPanelDiffTarget | null) => {
+      if (!activeThread || !rightPanelAvailableTabs.includes(tab)) {
+        return;
+      }
+      focusRightPanelTab(rightPanelStateKey, tab);
+      navigateToRightPanelTab(tab, diffTarget);
+    },
+    [activeThread, navigateToRightPanelTab, rightPanelAvailableTabs, rightPanelStateKey],
+  );
+
+  /**
+   * The header's activity chip: opens or focuses the Agents tab, and pressing
+   * it while Agents is the tab on screen puts the sidebar away again.
+   */
+  const onToggleAgentsPanel = useCallback(() => {
     if (!activeThread) {
       return;
     }
-    if (routeKind === "draft" && draftId) {
-      void navigate({
-        to: "/draft/$draftId",
-        params: buildDraftThreadRouteParams(draftId),
-        replace: true,
-        search: (previous) => closeRightPanelSearchParams(previous),
-      });
+    if (agentsPanelOpen) {
+      hideRightPanel(rightPanelStateKey);
+      navigateToRightPanelTab(null);
       return;
     }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId,
-      },
-      replace: true,
-      search: (previous) => closeRightPanelSearchParams(previous),
-    });
-  }, [activeThread, draftId, environmentId, navigate, routeKind, threadId]);
+    openRightPanelTab("agents");
+  }, [
+    activeThread,
+    agentsPanelOpen,
+    navigateToRightPanelTab,
+    openRightPanelTab,
+    rightPanelStateKey,
+  ]);
 
-  const onToggleSourceControl = useCallback(() => {
+  /**
+   * The header's one sidebar entry point: it shows and hides the sidebar
+   * itself. Showing lands on the tab this thread was left on, and on the
+   * launcher when nothing is open — never on a bare panel.
+   */
+  const onToggleRail = useCallback(() => {
     if (!activeThread) {
       return;
     }
     if (rightPanelEngaged) {
-      closeRightPanelForRoute();
+      hideRightPanel(rightPanelStateKey);
+      navigateToRightPanelTab(null);
       return;
     }
-    if (routeKind === "draft" && draftId) {
-      void navigate({
-        to: "/draft/$draftId",
-        params: buildDraftThreadRouteParams(draftId),
-        replace: true,
-        search: (previous) => ({
-          ...stripRightPanelSearchParams(previous),
-          sourceControl: "1",
-        }),
-      });
-      return;
+    const { activeTab, diffTarget } = showRightPanel(rightPanelStateKey, rightPanelAvailableTabs);
+    if (activeTab !== null) {
+      navigateToRightPanelTab(activeTab, activeTab === "diff" ? diffTarget : null);
     }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId,
-      },
-      replace: true,
-      search: (previous) => ({
-        ...stripRightPanelSearchParams(previous),
-        sourceControl: "1",
-      }),
-    });
   }, [
     activeThread,
-    closeRightPanelForRoute,
-    draftId,
-    environmentId,
-    navigate,
+    navigateToRightPanelTab,
+    rightPanelAvailableTabs,
     rightPanelEngaged,
-    routeKind,
-    threadId,
+    rightPanelStateKey,
   ]);
 
   const envLocked = Boolean(
@@ -2814,13 +2876,15 @@ export default function ChatView(props: ChatViewProps) {
     // in, so a terminal opened behind it would be invisible — close the
     // panel and let the drawer take the stage.
     if (opening && shouldUseRightPanelSheet && rightPanelEngaged) {
-      closeRightPanelForRoute();
+      hideRightPanel(rightPanelStateKey);
+      navigateToRightPanelTab(null);
     }
     setTerminalOpen(opening);
   }, [
     activeThreadRef,
-    closeRightPanelForRoute,
+    navigateToRightPanelTab,
     rightPanelEngaged,
+    rightPanelStateKey,
     setTerminalOpen,
     shouldUseRightPanelSheet,
     terminalState.terminalOpen,
@@ -3249,6 +3313,40 @@ export default function ChatView(props: ChatViewProps) {
     },
     [activeThreadId, activeThreadRef, requestCloseTerminal, setThreadError],
   );
+
+  // The agents panel mounts in the route's right-panel slot, beside the chat
+  // column, so the live turn state it renders has to be published out of here.
+  useEffect(() => {
+    if (!activeThreadId) {
+      publishAgentsPanelSource(null);
+      return;
+    }
+    publishAgentsPanelSource({
+      environmentId,
+      threadId: activeThreadId,
+      subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
+      backgroundRuns,
+      history: subagentHistory,
+      providerLabel: activeProviderDriver,
+      turnInFlight: activeTurnInProgress,
+      threadCwd: gitCwd,
+      onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
+      onStopBackgroundRun: stopBackgroundRun,
+    });
+  }, [
+    activeProviderDriver,
+    activeThreadId,
+    activeTurnInProgress,
+    backgroundRuns,
+    environmentId,
+    gitCwd,
+    stopBackgroundRun,
+    subagentHistory,
+    subagentProgress?.items,
+    toggleBackgroundRunTerminal,
+  ]);
+  useEffect(() => () => publishAgentsPanelSource(null), []);
+
   const confirmPendingTerminalKill = useCallback(() => {
     if (!pendingTerminalKill) return;
     performCloseTerminal(
@@ -4221,7 +4319,7 @@ export default function ChatView(props: ChatViewProps) {
       if (command === "diff.toggle") {
         event.preventDefault();
         event.stopPropagation();
-        onToggleSourceControl();
+        onToggleRail();
         return;
       }
 
@@ -4254,7 +4352,7 @@ export default function ChatView(props: ChatViewProps) {
     runProjectScript,
     splitTerminal,
     keybindings,
-    onToggleSourceControl,
+    onToggleRail,
     toggleTerminalVisibility,
   ]);
 
@@ -6041,17 +6139,6 @@ export default function ChatView(props: ChatViewProps) {
     setPlanScrollTarget(null);
   }, [activeThread?.id]);
 
-  const onViewProposedPlan = useCallback(() => {
-    if (!sidebarProposedPlan) {
-      return;
-    }
-    const planId = sidebarProposedPlan.id;
-    setPlanScrollTarget((current) => ({
-      planId,
-      requestKey: (current?.requestKey ?? 0) + 1,
-    }));
-  }, [sidebarProposedPlan]);
-
   const onImplementProposedPlanInThread = useCallback(() => {
     if (!activeProposedPlan) {
       return;
@@ -6213,33 +6300,22 @@ export default function ChatView(props: ChatViewProps) {
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
+  /** A "view diff" link in the conversation opens or retargets the one Diff
+   *  tab, leaving the rest of the strip alone. */
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
       if (!isServerThread) {
         return;
       }
       onDiffPanelOpen?.();
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: {
-          environmentId,
-          threadId,
-        },
-        search: (previous) => {
-          const rest = stripRightPanelSearchParams(previous);
-          return filePath
-            ? {
-                ...rest,
-                diff: "1",
-                sourceControlReturn: "1",
-                diffTurnId: turnId,
-                diffFilePath: filePath,
-              }
-            : { ...rest, diff: "1", sourceControlReturn: "1", diffTurnId: turnId };
-        },
-      });
+      const target: RightPanelDiffTarget = {
+        diffTurnId: turnId,
+        ...(filePath ? { diffFilePath: filePath } : {}),
+      };
+      retargetRightPanelDiff(rightPanelStateKey, target);
+      navigateToRightPanelTab("diff", target);
     },
-    [environmentId, isServerThread, navigate, onDiffPanelOpen, threadId],
+    [isServerThread, navigateToRightPanelTab, onDiffPanelOpen, rightPanelStateKey],
   );
   // Both the Map and the revert handler are read from refs at call-time so
   // the callback reference is fully stable and never busts context identity.
@@ -6273,6 +6349,46 @@ export default function ChatView(props: ChatViewProps) {
       });
     },
     [activeThread, navigate],
+  );
+
+  /** The closed panel button's live-agent node. */
+  const headerLiveAgents = useMemo(
+    () =>
+      summarizeLiveAgents({
+        subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
+        backgroundRuns,
+      }),
+    [backgroundRuns, subagentProgress?.items],
+  );
+
+  /**
+   * The turn activity row's agent summary. The live items only cover the turn in
+   * flight, so the thread's durable agent history rides along: it is what every
+   * settled turn's tracker is drawn from, and the only source at all after a
+   * reload.
+   */
+  const timelineTurnAgents = useMemo<TimelineTurnAgentsState | null>(() => {
+    const subagents = subagentProgress?.items ?? [];
+    if (subagents.length === 0 && subagentHistory.length === 0) {
+      return null;
+    }
+    return { subagents, history: subagentHistory };
+  }, [subagentHistory, subagentProgress?.items]);
+
+  /**
+   * The conversation's way into the sidebar: the turn activity row opens or
+   * focuses the Agents tab, a finished agent's receipt opens it drilled into
+   * that agent. Selecting before navigating keeps a second receipt press
+   * working while the tab is already showing.
+   */
+  const onOpenAgentsPanel = useCallback(
+    (agentThreadId: string | null) => {
+      selectAgentsPanelAgent(agentThreadId);
+      if (!agentsPanelOpen) {
+        openRightPanelTab("agents");
+      }
+    },
+    [agentsPanelOpen, openRightPanelTab],
   );
 
   const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(
@@ -6344,39 +6460,29 @@ export default function ChatView(props: ChatViewProps) {
           terminalAvailable={activeProject !== undefined}
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
-          sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
-          sourceControlOpen={rightPanelEngaged && !isGeneralChatThread}
+          railToggleShortcutLabel={sourceControlPanelShortcutLabel}
+          railOpen={rightPanelEngaged}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}
           onToggleBrowser={handleToggleBrowser}
           workingTreeDiffStat={workingTreeDiffStat}
           remoteBehindCount={remoteBehindCount}
+          liveAgents={headerLiveAgents}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
           forkContext={forkHeaderContext}
           backgroundRuns={backgroundRuns}
+          agentsPanelOpen={agentsPanelOpen}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
-          onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
-          onStopBackgroundRun={stopBackgroundRun}
-          onViewProposedPlan={
-            taskProgressProposedPlan !== null && !isGeneralChatThread
-              ? onViewProposedPlan
-              : undefined
-          }
-          onImplementProposedPlan={
-            canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
-          }
-          onDismissProposedPlan={
-            canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
-          }
+          onToggleAgentsPanel={onToggleAgentsPanel}
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
-          onToggleSourceControl={onToggleSourceControl}
+          onToggleRail={onToggleRail}
           onContinueInProject={
             isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
               ? onContinueInProject
@@ -6469,6 +6575,8 @@ export default function ChatView(props: ChatViewProps) {
               searchTarget={timelineSearchTarget}
               planScrollTarget={planScrollTarget}
               proposedPlanState={timelineProposedPlanState}
+              turnAgents={timelineTurnAgents}
+              onOpenAgentsPanel={onOpenAgentsPanel}
             />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom.

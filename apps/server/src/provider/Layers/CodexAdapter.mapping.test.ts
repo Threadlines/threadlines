@@ -189,6 +189,170 @@ describe("CodexAdapter item mapping", () => {
     });
   });
 
+  it("times a forked child's replayed first turn from the thread's own start", () => {
+    // A forked child's history arrives as a synthetic turn -- Codex ids it
+    // "rollout-N" -- with no startedAt, completedAt or durationMs, while every
+    // real turn after it is stamped. Codex times a turn rather than an item, so
+    // without a fallback the agent's opening words are the only untimed entries
+    // in the transcript, which reads as the timestamps sitting a row too low.
+    const thread = {
+      id: "forked-child",
+      createdAt: 1_786_487_612,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          completedAt: null,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "I'll delegate both counts." }],
+        },
+        {
+          id: "019ff2f5-a952-7c10-9fda-66f5498a6d49",
+          status: "completed",
+          startedAt: 1_786_487_613,
+          items: [{ id: "assistant-2", type: "agentMessage", text: "50 .tsx files." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.at),
+      ["2026-08-11T22:33:32.000Z", "2026-08-11T22:33:33.000Z"],
+    );
+  });
+
+  it("drops the parent history a forked child replays before its own first turn", () => {
+    // Codex spawns a subagent by forking, so the child's stored history opens
+    // with the parent's conversation replayed as an untimed turn. Rendering it
+    // labelled the operator's own message to the main thread as the instruction
+    // this agent was given, and attributed the main thread's reply to the child.
+    const thread = {
+      id: "forked-child",
+      forkedFromId: "parent-thread",
+      parentThreadId: "parent-thread",
+      createdAt: 1_786_487_612,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          completedAt: null,
+          items: [
+            { id: "user-1", type: "userMessage", text: "can you start up subagents again" },
+            { id: "assistant-1", type: "agentMessage", text: "Sure, starting two agents." },
+          ],
+        },
+        {
+          id: "019ff2f5-a952-7c10-9fda-66f5498a6d49",
+          status: "completed",
+          startedAt: 1_786_487_613,
+          items: [{ id: "assistant-2", type: "agentMessage", text: "50 .tsx files." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["50 .tsx files."],
+    );
+  });
+
+  it("drops the parent turn that was live at the fork, which carries a real time", () => {
+    // The second shape of the same inheritance, and the one a "no timestamps"
+    // rule slid straight past: the turn the parent was in the middle of when it
+    // spawned this child comes across with an ordinary id and a startedAt from
+    // before the child existed. Measured from a real fork: the parent's live
+    // turn started 11s before creation, the child's own work 1s after it.
+    const createdAt = 1_786_558_783;
+    const thread = {
+      id: "forked-child-live-parent-turn",
+      forkedFromId: "parent-thread",
+      parentThreadId: "parent-thread",
+      createdAt,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "Older replayed history." }],
+        },
+        {
+          id: "019ff733-7569-7ad2-9171-d6f19574734f",
+          status: "interrupted",
+          startedAt: createdAt - 11,
+          items: [
+            { id: "user-1", type: "userMessage", text: "can you run just 1 subagent this time" },
+            {
+              id: "assistant-2",
+              type: "agentMessage",
+              text: "I can run exactly one subagent now.",
+            },
+          ],
+        },
+        {
+          id: "019ff733-a3ec-7060-912e-f858d78b9ef9",
+          status: "completed",
+          startedAt: createdAt + 1,
+          items: [{ id: "assistant-3", type: "agentMessage", text: "Read-only scan complete." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["Read-only scan complete."],
+    );
+  });
+
+  it("keeps a child's own first turn that starts in the second it was created", () => {
+    const createdAt = 1_786_558_783;
+    const thread = {
+      id: "forked-child-instant-start",
+      forkedFromId: "parent-thread",
+      createdAt,
+      turns: [
+        {
+          id: "019ff733-7569-7ad2-9171-d6f19574734f",
+          status: "completed",
+          startedAt: createdAt - 4,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "Parent's own words." }],
+        },
+        {
+          id: "019ff733-a3ec-7060-912e-f858d78b9ef9",
+          status: "completed",
+          startedAt: createdAt,
+          items: [{ id: "assistant-2", type: "agentMessage", text: "Off to work." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["Off to work."],
+    );
+  });
+
+  it("keeps every turn when a forked child has no timed turn to start from", () => {
+    const thread = {
+      id: "forked-child-untimed",
+      forkedFromId: "parent-thread",
+      createdAt: 1_786_487_612,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "Only content there is." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["Only content there is."],
+    );
+  });
+
   it("uses source ancestry metadata and honors transcript limits", () => {
     const thread = {
       id: "grandchild-thread",

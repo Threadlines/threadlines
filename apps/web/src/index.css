@@ -618,6 +618,95 @@ label:has(> select#reasoning-effort) select {
   font-size: 0.75rem;
 }
 
+/* Agent prose in a sidebar inspector. The same markdown the conversation
+   renders, at the density of the rows around it: the drill-in is detail about a
+   thread, not a second copy of the thread. Scoped by an opt-in wrapper class so
+   the conversation itself is untouched. */
+.chat-markdown-dense .chat-markdown {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.chat-markdown-dense .chat-markdown p,
+.chat-markdown-dense .chat-markdown ul,
+.chat-markdown-dense .chat-markdown ol,
+.chat-markdown-dense .chat-markdown blockquote,
+.chat-markdown-dense .chat-markdown pre,
+.chat-markdown-dense .chat-markdown table {
+  margin: 0.375rem 0;
+}
+
+.chat-markdown-dense .chat-markdown li + li {
+  margin-top: 0.125rem;
+}
+
+/* The dense block margins outrank `.chat-markdown > :first-child` on
+   specificity, so the edge resets are restated here. Without them a dense
+   entry opens on 6px of dead space, which is also the space that pushed the
+   first line of prose off the thread's node. */
+.chat-markdown-dense .chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown-dense .chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown-dense .chat-markdown h1,
+.chat-markdown-dense .chat-markdown h2 {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.chat-markdown-dense .chat-markdown h3,
+.chat-markdown-dense .chat-markdown h4,
+.chat-markdown-dense .chat-markdown h5,
+.chat-markdown-dense .chat-markdown h6 {
+  margin: 0.375rem 0 0.125rem;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.chat-markdown-dense .chat-markdown :not(pre) > code {
+  font-size: 11px;
+}
+
+/* A file reference is inline code by origin, so its chip takes the same step
+   down as inline code does here: at 12px the chip outgrows the 18px line box the
+   drill-in's rows are set on, and every line carrying one gets taller than its
+   neighbours. `overflow`/`min-width` are what hold the label to one line -- a
+   path is a single unbreakable token to the chip, so without them a label too
+   wide for the panel would push out of it instead of ellipsing. */
+.chat-markdown-dense .chat-markdown .chat-markdown-file-link {
+  top: 1px;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.chat-markdown-dense .chat-markdown .chat-markdown-file-link-label {
+  min-width: 0;
+}
+
+/* The file-type glyph, not the text, is the tallest thing in the chip: left at
+   14px it alone makes the chip outgrow the line box. */
+.chat-markdown-dense .chat-markdown .chat-markdown-file-link-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* The subagent transcript floats an entry's timestamp onto the first line of the
+   entry's prose. Prose wraps around it, but a block that establishes its own
+   formatting context would be squeezed beside it, so a code fence or table that
+   opens an entry starts below the timestamp's line instead. */
+.subagent-transcript-prose .chat-markdown > pre:first-child,
+.subagent-transcript-prose .chat-markdown > table:first-child {
+  clear: right;
+}
+
 .chat-markdown-file-link {
   display: inline-flex;
   align-items: center;

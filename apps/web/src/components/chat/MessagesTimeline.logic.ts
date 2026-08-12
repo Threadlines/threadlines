@@ -2,7 +2,6 @@ import * as Equal from "effect/Equal";
 import {
   type ModelFallbackState,
   type ForkContextEntry,
-  type SubagentLiveEntry,
   type SubagentResultEntry,
   type TimelineEntry,
   type WorkLogEntry,
@@ -59,6 +58,15 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
+      /** Agent lifecycle entries this group swallowed. Never rendered and never
+       *  counted, but kept so the group still exists on a turn that did nothing
+       *  but delegate: the turn's agent tracker and its duration hang off it. */
+      agentAnchorEntries: WorkLogEntry[];
+      /** The turns this group shows the agent tracker for. A tracker summarizes
+       *  a whole turn, so only the turn's first group carries it; a later group
+       *  in the same turn would repeat the same bars and count. Empty means this
+       *  group shows no tracker at all. */
+      trackerTurnIds: TurnId[];
       isLive: boolean;
       liveStartedAt: string | null;
     }
@@ -88,12 +96,6 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       result: SubagentResultEntry;
-    }
-  | {
-      kind: "subagent-live";
-      id: string;
-      createdAt: string;
-      live: SubagentLiveEntry;
     }
   | {
       kind: "fork-context";
@@ -279,6 +281,8 @@ export function deriveMessagesTimelineRows(input: {
   const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
   const supersededRunningCommandEntryIds =
     inferSupersededRunningCommandEntryIds(visibleTimelineEntries);
+  /** Turns whose tracker has already been handed to an earlier group. */
+  const trackedTurnIds = new Set<TurnId>();
 
   for (let index = 0; index < visibleTimelineEntries.length; index += 1) {
     const timelineEntry = visibleTimelineEntries[index];
@@ -287,23 +291,41 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
-      const groupedEntries = [
-        settleSupersededRunningCommandEntry(timelineEntry.entry, supersededRunningCommandEntryIds),
-      ];
+      const groupedEntries: WorkLogEntry[] = [];
+      const agentAnchorEntries: WorkLogEntry[] = [];
+      const collect = (entry: Extract<TimelineEntry, { kind: "work" }>) => {
+        const settled = settleSupersededRunningCommandEntry(
+          entry.entry,
+          supersededRunningCommandEntryIds,
+        );
+        (isAgentLifecycleEntry(entry) ? agentAnchorEntries : groupedEntries).push(settled);
+      };
+      collect(timelineEntry);
       let cursor = index + 1;
       while (cursor < visibleTimelineEntries.length) {
         const nextEntry = visibleTimelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
-        groupedEntries.push(
-          settleSupersededRunningCommandEntry(nextEntry.entry, supersededRunningCommandEntryIds),
-        );
+        collect(nextEntry);
         cursor += 1;
+      }
+      // First group of a turn wins its tracker: that is where the turn's story
+      // starts, and while the turn runs it is where the live status line belongs.
+      const trackerTurnIds: TurnId[] = [];
+      for (const entry of [...groupedEntries, ...agentAnchorEntries]) {
+        const turnId = entry.turnId;
+        if (turnId === null || turnId === undefined || trackedTurnIds.has(turnId)) {
+          continue;
+        }
+        trackedTurnIds.add(turnId);
+        trackerTurnIds.push(turnId);
       }
       nextRows.push({
         kind: "work",
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         groupedEntries,
+        agentAnchorEntries,
+        trackerTurnIds,
         isLive: false,
         liveStartedAt: null,
       });
@@ -331,13 +353,10 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    // A running agent's streamed commentary never reaches the conversation:
+    // the turn's activity row summarizes what is running, and the rail carries
+    // the detail. Only the finished agent's receipt lands here.
     if (timelineEntry.kind === "subagent-live") {
-      nextRows.push({
-        kind: "subagent-live",
-        id: timelineEntry.id,
-        createdAt: timelineEntry.createdAt,
-        live: timelineEntry.live,
-      });
       continue;
     }
 
@@ -420,18 +439,64 @@ export function deriveMessagesTimelineRows(input: {
   return nextRows;
 }
 
+/**
+ * A spawned agent's own tool calls are not the conversation's activity, so they
+ * never reach the chat: not as expanded rows, and not in the receipt's counts.
+ * The turn's tracker row says how many agents ran and the rail's Agents tab owns
+ * what each of them did. The entries themselves are untouched — every other
+ * reader of the work log still sees them.
+ */
+function isSubagentAttributedEntry(entry: TimelineEntry): boolean {
+  return entry.kind === "work" && entry.entry.sourceAgentThreadId !== undefined;
+}
+
+/**
+ * Agent lifecycle plumbing: the spawn/poll/close tool calls the main model makes
+ * to run an agent, and the provider's own task stream for one. None of it is
+ * work the conversation should narrate — the turn's tracker row says how many
+ * agents ran, each finished agent files exactly one receipt, and the Agents tab
+ * owns the detail. So the entries never render and never count, but they are not
+ * discarded either: they stay on the row as its anchor, because a turn that only
+ * delegated still has to carry that tracker.
+ *
+ * Both signals are payload-level, not label text: `collab_agent_tool_call` is
+ * the item type every provider's agent tool call projects under (Codex's
+ * `spawnAgent`/`wait`/`sendInput`/`closeAgent`, Claude's `Agent`/`Task`), and a
+ * task activity is only an agent's when it carries that agent's identity —
+ * Claude's background bash tasks share the activity kinds and stay.
+ */
+function isAgentLifecycleEntry(entry: TimelineEntry): boolean {
+  if (entry.kind !== "work") {
+    return false;
+  }
+  const { itemType, activityKind, subagentTask } = entry.entry;
+  if (itemType === "collab_agent_tool_call") {
+    return true;
+  }
+  return (
+    (activityKind === "task.progress" || activityKind === "task.completed") &&
+    subagentTask !== undefined
+  );
+}
+
 function deriveVisibleTimelineEntries(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly isWorking: boolean;
   readonly activeTurnId?: TurnId | null;
 }): TimelineEntry[] {
-  const visibleByIndex = Array.from({ length: input.timelineEntries.length }, () => true);
+  // Agent lifecycle entries stay in this pass: they still count as concrete turn
+  // activity for the provider-lifecycle row's own visibility, and the grouping
+  // step below is what parks them out of sight.
+  const timelineEntries = input.timelineEntries.filter(
+    (entry) => !isSubagentAttributedEntry(entry),
+  );
+  const visibleByIndex = Array.from({ length: timelineEntries.length }, () => true);
   let hasLaterProviderLifecycle = false;
   let hasLaterConcreteTurnActivity = false;
   const laterConcreteTurnIds = new Set<TurnId>();
 
-  for (let index = input.timelineEntries.length - 1; index >= 0; index -= 1) {
-    const timelineEntry = input.timelineEntries[index];
+  for (let index = timelineEntries.length - 1; index >= 0; index -= 1) {
+    const timelineEntry = timelineEntries[index];
     if (!timelineEntry) {
       continue;
     }
@@ -457,7 +522,7 @@ function deriveVisibleTimelineEntries(input: {
     }
   }
 
-  return input.timelineEntries.filter((_, index) => visibleByIndex[index]);
+  return timelineEntries.filter((_, index) => visibleByIndex[index]);
 }
 
 function shouldShowProviderLifecycleWorkEntry(
@@ -529,6 +594,12 @@ function markLatestLiveWorkRow(
   if (!lastRow || lastRow.kind !== "work") {
     return false;
   }
+  // An anchor-only group has no step to hang the live node on — it renders as the
+  // turn's agent tracker, not as a spine — so the standalone working row still
+  // has to carry the live node at the bottom.
+  if (lastRow.groupedEntries.length === 0) {
+    return false;
+  }
   // Reasoning and other lifecycle entries arrive without a turn id, so a tail
   // work group that carries no turn association is still treated as the live
   // one rather than handed off to a detached working row.
@@ -586,18 +657,20 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "subagent-result":
       return a.result === (b as typeof a).result;
 
-    case "subagent-live":
-      return a.live === (b as typeof a).live;
-
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
 
-    case "work":
+    case "work": {
+      const bw = b as typeof a;
       return (
-        a.isLive === (b as typeof a).isLive &&
-        a.liveStartedAt === (b as typeof a).liveStartedAt &&
-        Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries)
+        a.isLive === bw.isLive &&
+        a.liveStartedAt === bw.liveStartedAt &&
+        a.trackerTurnIds.length === bw.trackerTurnIds.length &&
+        a.trackerTurnIds.every((turnId, index) => turnId === bw.trackerTurnIds[index]) &&
+        Equal.equals(a.groupedEntries, bw.groupedEntries) &&
+        Equal.equals(a.agentAnchorEntries, bw.agentAnchorEntries)
       );
+    }
 
     case "message": {
       const bm = b as typeof a;

@@ -31,10 +31,19 @@ import {
   deriveTimelineEntries,
   formatElapsed,
   formatSubagentDisplayName,
-  shouldShowSubagentDisplayChip,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
+  type SubagentProgressItem,
+  type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
+import {
+  formatLiveAgentStatusLine,
+  formatSubagentReceiptSummary,
+  selectTurnAgents,
+  summarizeTurnAgents,
+  type LiveAgentStatusLine,
+  type TurnAgentSummary,
+} from "./agentsPanel.logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
 import { type ChatAttachment, type TurnDiffSummary } from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
@@ -165,6 +174,17 @@ interface TimelineRowSharedState {
   searchTargetQuery: string;
   activeSearchTargetMessageId: MessageId | null;
   proposedPlanState: TimelineProposedPlanState | null;
+  turnAgents: TimelineTurnAgentsState | null;
+  onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
+}
+
+/** The turn's spawned agents, summarized on the turn's activity row. */
+export interface TimelineTurnAgentsState {
+  /** Live state for the turn in flight; empty for every settled turn. */
+  readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  /** The thread's durable agent history — the same records the agents panel
+   *  lists — so a settled turn's tracker survives the turn ending and a reload. */
+  readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
 }
 
 /** Lifecycle context for proposed-plan rows: which plan is still actionable,
@@ -585,6 +605,13 @@ interface MessagesTimelineProps {
     | null
     | undefined;
   proposedPlanState?: TimelineProposedPlanState | null | undefined;
+  turnAgents?: TimelineTurnAgentsState | null | undefined;
+  /**
+   * Opens the rail's Agents tab, optionally drilled into one agent. Passed in
+   * separately from `turnAgents` on purpose: a finished agent's receipt has to
+   * stay clickable after the live progress state for the turn has emptied.
+   */
+  onOpenAgentsPanel?: ((agentThreadId: string | null) => void) | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +657,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   searchTarget = null,
   planScrollTarget = null,
   proposedPlanState = null,
+  turnAgents = null,
+  onOpenAgentsPanel = null,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
     () =>
@@ -1225,6 +1254,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       searchTargetQuery: searchTarget?.query ?? "",
       activeSearchTargetMessageId,
       proposedPlanState,
+      turnAgents,
+      onOpenAgentsPanel,
     }),
     [
       timestampFormat,
@@ -1252,6 +1283,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       searchTarget?.query,
       activeSearchTargetMessageId,
       proposedPlanState,
+      turnAgents,
+      onOpenAgentsPanel,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1724,8 +1757,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
-      {row.kind === "subagent-live" ? <SubagentLiveTimelineRow row={row} /> : null}
-      {row.kind === "subagent-result" ? <SubagentResultTimelineRow row={row} /> : null}
+      {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
@@ -2337,257 +2369,75 @@ const COLLAPSED_MESSAGE_FADE_STYLE: CSSProperties = {
   maskImage: COLLAPSED_MESSAGE_FADE_MASK,
 };
 
-const MAX_COLLAPSED_SUBAGENT_RESULT_LINES = 12;
-const MAX_COLLAPSED_SUBAGENT_RESULT_LENGTH = 900;
-
-function SubagentLiveTimelineRow({
-  row,
-}: {
-  row: Extract<TimelineRow, { kind: "subagent-live" }>;
-}) {
-  const ctx = use(TimelineRowCtx);
-  const displayName = formatSubagentDisplayName(row.live);
-
-  return (
-    <div className="min-w-0 px-1 py-0.5" data-subagent-live-row="true">
-      <div className="max-w-2xl border-l-2 border-primary/25 bg-primary/[0.025] py-1.5 pr-2 pl-3">
-        <div className="mb-1.5 flex min-w-0 items-center gap-1.5">
-          <BotIcon className="size-3.5 shrink-0 text-primary-readable/70" aria-hidden="true" />
-          <p className="truncate text-[11px] font-medium text-foreground/80">{displayName}</p>
-          <span className="shrink-0 rounded border border-border/50 bg-background/45 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
-            Subagent
-          </span>
-          <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/55">
-            <span
-              className="size-1.5 animate-pulse rounded-full bg-primary/65 motion-reduce:animate-none"
-              aria-hidden="true"
-            />
-            Working
-          </span>
-        </div>
-        <div
-          className="min-w-0 text-[13px] text-muted-foreground/85"
-          data-subagent-live-body="true"
-        >
-          <ChatMarkdown
-            text={row.live.body}
-            cwd={ctx.markdownCwd}
-            environmentId={ctx.activeThreadEnvironmentId}
-            threadId={ctx.activeThreadId ?? undefined}
-            isStreaming
-            skills={ctx.skills}
-          />
-        </div>
-        <p className="mt-1 text-[9px] tracking-tight tabular-nums text-muted-foreground/30">
-          Live commentary · {formatTimestamp(row.createdAt, ctx.timestampFormat)}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function SubagentResultTimelineRow({
+/**
+ * A finished agent, as one line of the conversation. The full report is not
+ * inlined: the rail's Agents tab owns the transcript, and this row is the
+ * receipt that says it happened and takes you there.
+ */
+function SubagentReceiptTimelineRow({
   row,
 }: {
   row: Extract<TimelineRow, { kind: "subagent-result" }>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const [expanded, setExpanded] = useState(false);
-  const metaChips = [row.result.model, row.result.reasoningEffort].filter(
-    (part): part is string => typeof part === "string" && part.length > 0,
-  );
   const displayName = formatSubagentDisplayName(row.result);
-  const showSubagentChip = shouldShowSubagentDisplayChip(row.result);
-  const canCollapse = shouldCollapseMessageText(row.result.body, {
-    maxLength: MAX_COLLAPSED_SUBAGENT_RESULT_LENGTH,
-    maxLines: MAX_COLLAPSED_SUBAGENT_RESULT_LINES,
-  });
-  const isCollapsed = canCollapse && !expanded;
+  const summary = formatSubagentReceiptSummary(row.result.body);
+  const agentThreadId = row.result.agentThreadId;
+  const meta = [row.result.model, formatTimestamp(row.createdAt, ctx.timestampFormat)]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join(" · ");
+  // A provider that serves no transcript for this agent has nothing to drill
+  // into, so the receipt is just a line of the record.
+  const onOpenAgentsPanel = ctx.onOpenAgentsPanel;
+  const interactive = onOpenAgentsPanel !== null && agentThreadId.length > 0;
+
+  const body = (
+    <>
+      <span
+        aria-hidden="true"
+        className="mt-[7px] block size-1.5 shrink-0 rounded-full bg-muted-foreground/35"
+      />
+      <span className="min-w-0 flex-1 truncate text-[12px] leading-5">
+        <span className="font-medium text-foreground/85">{displayName}</span>
+        {summary ? (
+          <>
+            <span className="px-1.5 text-muted-foreground/30">·</span>
+            <span className="text-muted-foreground/75">{summary}</span>
+          </>
+        ) : null}
+      </span>
+      <span className="shrink-0 font-mono text-[10px] leading-5 tracking-[0.12em] text-muted-foreground/45 uppercase">
+        Subagent
+      </span>
+      {meta ? (
+        <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/35 tabular-nums">
+          {meta}
+        </span>
+      ) : null}
+    </>
+  );
+
+  const rowClassName = "flex w-full min-w-0 items-start gap-2 px-1 py-1 text-left";
 
   return (
-    <div className="min-w-0 px-1 py-0.5" data-subagent-result-row="true">
-      <div className="max-w-2xl rounded-lg border border-border/65 bg-muted/20 px-3 py-2.5">
-        <div className="mb-2 flex min-w-0 items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-2">
-            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
-              <BotIcon className="size-3" aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <p
-                  className="truncate text-xs font-medium text-foreground"
-                  title={row.result.label}
-                >
-                  {displayName}
-                </p>
-                {showSubagentChip ? (
-                  <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
-                    Subagent
-                  </span>
-                ) : null}
-              </div>
-              {row.result.objective ? (
-                <ExpandableSubagentInstructionText text={row.result.objective} />
-              ) : null}
-            </div>
-          </div>
-          <span className="shrink-0 rounded-full bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
-            Done
-          </span>
-        </div>
-        <div
+    <div className="min-w-0" data-subagent-receipt-row="true">
+      {interactive ? (
+        <button
+          type="button"
           className={cn(
-            "relative min-w-0 border-l border-border/60 pl-3",
-            isCollapsed && "max-h-56 overflow-hidden",
+            rowClassName,
+            "rounded-sm transition-colors hover:bg-foreground/[0.03] focus-ring",
           )}
-          data-subagent-result-body="true"
-          data-subagent-result-collapsed={isCollapsed ? "true" : "false"}
-          data-subagent-result-collapsible={canCollapse ? "true" : "false"}
-          style={isCollapsed ? COLLAPSED_MESSAGE_FADE_STYLE : undefined}
+          aria-label={`Open ${displayName} transcript`}
+          data-subagent-receipt-open="true"
+          onClick={() => onOpenAgentsPanel(agentThreadId)}
         >
-          <ChatMarkdown
-            text={row.result.body}
-            cwd={ctx.markdownCwd}
-            environmentId={ctx.activeThreadEnvironmentId}
-            threadId={ctx.activeThreadId ?? undefined}
-            isStreaming={false}
-            skills={ctx.skills}
-          />
-        </div>
-        <div
-          className="mt-2 flex items-center justify-between gap-2"
-          data-subagent-result-footer="true"
-        >
-          {canCollapse ? (
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              aria-expanded={expanded}
-              data-scroll-anchor-ignore
-              onClick={() => setExpanded((value) => !value)}
-              className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
-            >
-              {expanded ? "Show less" : "Show full result"}
-            </Button>
-          ) : (
-            <p className="truncate text-[10px] text-muted-foreground/40">Subagent result</p>
-          )}
-          <div className="flex shrink-0 items-center gap-1.5">
-            {metaChips.map((chip) => (
-              <span
-                key={chip}
-                className="rounded border border-border/55 bg-background/55 px-1.5 py-0.5 text-[9px] leading-none tracking-[0.08em] text-muted-foreground/70 uppercase"
-                data-subagent-result-meta-chip="true"
-              >
-                {chip}
-              </span>
-            ))}
-            <p className="shrink-0 text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
-              {formatTimestamp(row.createdAt, ctx.timestampFormat)}
-            </p>
-          </div>
-        </div>
-      </div>
+          {body}
+        </button>
+      ) : (
+        <div className={rowClassName}>{body}</div>
+      )}
     </div>
-  );
-}
-
-function ExpandableSubagentInstructionText({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const [truncated, setTruncated] = useState(false);
-  const textElementRef = useRef<HTMLElement | null>(null);
-  const setParagraphRef = useCallback((node: HTMLParagraphElement | null) => {
-    textElementRef.current = node;
-  }, []);
-  const setButtonRef = useCallback((node: HTMLButtonElement | null) => {
-    textElementRef.current = node;
-  }, []);
-  const measureTruncation = useCallback(() => {
-    if (expanded) {
-      return;
-    }
-    const element = textElementRef.current;
-    if (!element) {
-      return;
-    }
-    const nextTruncated =
-      element.scrollHeight > element.clientHeight + 1 ||
-      element.scrollWidth > element.clientWidth + 1;
-    setTruncated((current) => (current === nextTruncated ? current : nextTruncated));
-  }, [expanded]);
-
-  useEffect(() => {
-    setExpanded(false);
-    setTruncated(false);
-  }, [text]);
-
-  useEffect(() => {
-    if (expanded) {
-      return;
-    }
-
-    const element = textElementRef.current;
-    if (!element) {
-      return;
-    }
-
-    const animationFrameId = window.requestAnimationFrame(measureTruncation);
-    if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", measureTruncation);
-      return () => {
-        window.cancelAnimationFrame(animationFrameId);
-        window.removeEventListener("resize", measureTruncation);
-      };
-    }
-
-    const resizeObserver = new ResizeObserver(() => {
-      measureTruncation();
-    });
-    resizeObserver.observe(element);
-    return () => {
-      window.cancelAnimationFrame(animationFrameId);
-      resizeObserver.disconnect();
-    };
-  }, [expanded, measureTruncation, text]);
-
-  const className = cn(
-    "mt-0.5 w-full text-left text-[11px] leading-4 text-muted-foreground/70",
-    !expanded && "line-clamp-2",
-    (truncated || expanded) &&
-      "cursor-pointer rounded-sm transition-colors hover:text-muted-foreground/90 focus-ring",
-  );
-
-  if (truncated || expanded) {
-    return (
-      <button
-        type="button"
-        ref={setButtonRef}
-        className={className}
-        title={expanded ? "Collapse subagent instructions" : text}
-        aria-expanded={expanded}
-        aria-label={expanded ? "Collapse subagent instructions" : "Expand subagent instructions"}
-        data-subagent-result-objective="true"
-        data-subagent-result-objective-expanded={expanded ? "true" : "false"}
-        data-subagent-result-objective-truncated={truncated ? "true" : "false"}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        {text}
-      </button>
-    );
-  }
-
-  return (
-    <p
-      ref={setParagraphRef}
-      className={className}
-      title={text}
-      data-subagent-result-objective="true"
-      data-subagent-result-objective-expanded="false"
-      data-subagent-result-objective-truncated="false"
-    >
-      {text}
-    </p>
   );
 }
 
@@ -2761,7 +2611,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
-  const { workspaceRoot, turnDiffSummaryByTurnId } = use(TimelineRowCtx);
+  const { workspaceRoot, turnDiffSummaryByTurnId, onOpenAgentsPanel } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const previousIsWorkingRef = useRef(isWorking);
@@ -2769,6 +2619,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
     [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
   );
+  // The tracker and the duration belong to everything the turn did, including the
+  // agent lifecycle rows the group parked out of sight.
+  const trackedEntries = useMemo(
+    () => [...row.groupedEntries, ...row.agentAnchorEntries],
+    [row.agentAnchorEntries, row.groupedEntries],
+  );
+  const turnAgentTracker = useTurnAgentTracker(row.trackerTurnIds);
   const isLiveActivity = isWorking && row.isLive;
 
   useEffect(() => {
@@ -2779,6 +2636,30 @@ const WorkGroupSection = memo(function WorkGroupSection({
       setIsExpanded(false);
     }
   }, [isWorking]);
+
+  // A turn that only delegated has nothing to narrate and nothing to expand, but
+  // its tracker is the one inline signal that agents are running at all, so the
+  // row survives as the tracker alone. With no tracker to show there is no row.
+  if (groupedEntries.length === 0) {
+    // The tracker is the row's whole reason to exist here, and it is only useful
+    // when it can open the panel it summarizes.
+    if (turnAgentTracker.summary === null || !onOpenAgentsPanel) {
+      return null;
+    }
+    return (
+      <div data-work-activity-receipt="true" data-work-activity-anchor="true" style={spineStyle()}>
+        <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={false}>
+          <ActivityReceipt
+            entries={groupedEntries}
+            durationEntries={trackedEntries}
+            tracker={turnAgentTracker}
+            isExpanded={false}
+            onToggle={null}
+          />
+        </SpineRow>
+      </div>
+    );
+  }
 
   if (isLiveActivity) {
     return (
@@ -2837,6 +2718,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
       <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={isExpanded}>
         <ActivityReceipt
           entries={groupedEntries}
+          durationEntries={trackedEntries}
+          tracker={turnAgentTracker}
           isExpanded={isExpanded}
           onToggle={() => setIsExpanded((value) => !value)}
         />
@@ -2937,47 +2820,139 @@ function LiveTurnElapsedTimer({ createdAt }: { createdAt: string }) {
   );
 }
 
+interface TurnAgentTracker {
+  readonly summary: TurnAgentSummary | null;
+  readonly liveStatus: LiveAgentStatusLine | null;
+}
+
+/** The turn's agents, resolved from the turns this group owns the tracker for —
+ *  which is only the turns that started in it, so a turn with several activity
+ *  groups shows one tracker rather than the same one repeated down the turn.
+ *  Derived once by the group so the receipt and the group's own render decision
+ *  cannot disagree about whether there is a tracker to show. */
+function useTurnAgentTracker(trackerTurnIds: ReadonlyArray<TurnId>): TurnAgentTracker {
+  const { turnAgents } = use(TimelineRowCtx);
+  const turnIds = useMemo(() => new Set(trackerTurnIds), [trackerTurnIds]);
+  const turnSubagents = useMemo(
+    () =>
+      turnAgents
+        ? selectTurnAgents({
+            live: turnAgents.subagents,
+            history: turnAgents.history,
+            turnIds,
+          })
+        : [],
+    [turnAgents, turnIds],
+  );
+  return {
+    // An empty selection summarizes to null on its own, so a turn that ran no
+    // agents has no tracker whether or not the thread has agent state at all.
+    summary: summarizeTurnAgents(turnSubagents),
+    liveStatus: formatLiveAgentStatusLine(turnSubagents),
+  };
+}
+
 function ActivityReceipt({
   entries,
+  durationEntries,
+  tracker,
   isExpanded,
   onToggle,
 }: {
   entries: ReadonlyArray<TimelineWorkEntry>;
+  /** Everything the turn did, including the agent lifecycle rows the group hides.
+   *  Only the duration reads this; the count and the summary read `entries`. */
+  durationEntries: ReadonlyArray<TimelineWorkEntry>;
+  tracker: TurnAgentTracker;
   isExpanded: boolean;
-  onToggle: () => void;
+  /** Null when the group has nothing to expand, which drops the toggle. */
+  onToggle: (() => void) | null;
 }) {
+  const { onOpenAgentsPanel } = use(TimelineRowCtx);
   const summary = summarizeActivityReceipt(entries);
   const actionCount = entries.length;
-  const duration = formatActivityDuration(entries);
+  const duration = formatActivityDuration(durationEntries);
+  const { summary: agentSummary, liveStatus: liveAgentStatus } = tracker;
 
   return (
     <div className="flex min-w-0 items-start justify-between gap-3 py-1">
       <div className="min-w-0">
         <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-5 text-muted-foreground/80">
           <span className="font-medium text-foreground/75">Activity</span>
-          <span className="text-muted-foreground/35">·</span>
-          <span>{formatActivityCount(actionCount, "action", "actions")}</span>
+          {/* A turn that only delegated took no actions of its own, and "0
+              actions" would read as if nothing happened. */}
+          {actionCount > 0 ? (
+            <>
+              <span className="text-muted-foreground/35">·</span>
+              <span>{formatActivityCount(actionCount, "action", "actions")}</span>
+            </>
+          ) : null}
           {duration ? (
             <>
               <span className="text-muted-foreground/35">·</span>
               <span>{duration}</span>
             </>
           ) : null}
+          {agentSummary && onOpenAgentsPanel ? (
+            <>
+              <span className="text-muted-foreground/35">·</span>
+              <button
+                type="button"
+                className="inline-flex min-w-0 items-center gap-1.5 transition-colors duration-150 hover:text-foreground/75"
+                aria-label={`${agentSummary.text}. Open the agents panel.`}
+                data-turn-agents-summary="true"
+                onClick={() => onOpenAgentsPanel(null)}
+              >
+                <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+                  {agentSummary.segments.map((segment) => (
+                    <span
+                      key={segment.id}
+                      className={cn(
+                        "block h-1 w-[22px] rounded-full",
+                        segment.status === "running" && "bg-primary-graph",
+                        segment.status === "waiting" && "bg-amber-500",
+                        segment.status === "failed" && "bg-destructive",
+                        segment.status === "completed" && "bg-muted-foreground/35",
+                      )}
+                    />
+                  ))}
+                </span>
+                <span className="truncate">{agentSummary.text}</span>
+              </button>
+            </>
+          ) : null}
         </p>
+        {/* One line for every live agent on this turn, not one per agent: the
+            freshest signal, named. Disappears the moment nothing is live. */}
+        {liveAgentStatus && onOpenAgentsPanel ? (
+          <button
+            type="button"
+            className="block w-full min-w-0 truncate text-left text-[11px] leading-4 text-primary-readable/70 transition-colors duration-150 hover:text-primary-readable"
+            data-turn-live-agent-status="true"
+            title={`${liveAgentStatus.name}: ${liveAgentStatus.step}`}
+            onClick={() => onOpenAgentsPanel(null)}
+          >
+            <span className="text-primary-readable/85">{liveAgentStatus.name}</span>
+            <span className="px-1.5 text-muted-foreground/30">·</span>
+            <span>{liveAgentStatus.step}</span>
+          </button>
+        ) : null}
         {summary ? (
           <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
         ) : null}
       </div>
-      <button
-        type="button"
-        className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-        aria-expanded={isExpanded}
-        aria-label={isExpanded ? "Hide activity" : "Show activity"}
-        data-activity-transcript-toggle="true"
-        onClick={onToggle}
-      >
-        {isExpanded ? "Hide activity" : "Show activity"}
-      </button>
+      {onToggle ? (
+        <button
+          type="button"
+          className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? "Hide activity" : "Show activity"}
+          data-activity-transcript-toggle="true"
+          onClick={onToggle}
+        >
+          {isExpanded ? "Hide activity" : "Show activity"}
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -2,12 +2,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { SubagentProgressState } from "../../session-logic";
 import {
-  backgroundRunSourceLabel,
-  deriveSubagentDisplayDetails,
   deriveThreadActivityTriggerState,
-  type ThreadBackgroundRunItem,
   type ThreadTaskProgressState,
 } from "./ThreadActivityPopover";
+import {
+  backgroundRunSourceLabel,
+  deriveSubagentDisplayDetails,
+  type ThreadBackgroundRunItem,
+} from "./threadActivity";
 
 describe("deriveSubagentDisplayDetails", () => {
   it("promotes the goal and removes the workspace path from what is shown", () => {

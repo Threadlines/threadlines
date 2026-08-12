@@ -91,17 +91,24 @@ function TooltipWrapper({
   side,
   align,
   sideOffset,
+  delay,
   children,
 }: {
   tooltip: ReactNode;
   side?: TooltipSide;
   align?: TooltipPrimitive.Positioner.Props["align"];
   sideOffset?: TooltipPrimitive.Positioner.Props["sideOffset"];
+  /**
+   * Hover dwell before the tooltip opens. Omit for the app's default; pass `0`
+   * where the tooltip is the only thing naming its control (an icon-only tab,
+   * say), because there the wait reads as the control being unlabelled.
+   */
+  delay?: number;
   children: ReactElement;
 }) {
   return (
     <Tooltip>
-      <TooltipTrigger render={children} />
+      <TooltipTrigger delay={delay} render={children} />
       <TooltipPopup align={align} side={side} sideOffset={sideOffset}>
         {typeof tooltip === "string" ? <p>{tooltip}</p> : tooltip}
       </TooltipPopup>

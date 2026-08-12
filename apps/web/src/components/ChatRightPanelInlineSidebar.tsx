@@ -9,6 +9,7 @@ import {
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
   RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
   normalizeRightPanelStoredWidth,
+  useRightPanelInsetVarRef,
 } from "../rightPanelLayout";
 import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 
@@ -19,19 +20,24 @@ const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 export function ChatRightPanelInlineSidebar(props: {
   open: boolean;
   onClose: () => void;
-  onOpenSourceControl: () => void;
+  /** Reopens the panel the slot was last showing (the rail handle asks for
+   *  this, and it must reach the route so the URL agrees). */
+  onRequestOpen: () => void;
   children: ReactNode;
 }) {
-  const { open, onClose, onOpenSourceControl } = props;
+  const { open, onClose, onRequestOpen } = props;
+  // Body-portaled overlays (toasts) are fixed to the viewport, so they need to
+  // be told how wide this slot is to keep off the panel.
+  const insetRef = useRightPanelInsetVarRef();
   const onOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
-        onOpenSourceControl();
+        onRequestOpen();
         return;
       }
       onClose();
     },
-    [onClose, onOpenSourceControl],
+    [onClose, onRequestOpen],
   );
   const shouldAcceptInlineSidebarWidth = useCallback(
     ({ nextWidth, wrapper }: { nextWidth: number; wrapper: HTMLElement }) => {
@@ -85,6 +91,7 @@ export function ChatRightPanelInlineSidebar(props: {
       open={open}
       onOpenChange={onOpenChange}
       className="w-auto min-h-0 flex-none bg-transparent"
+      ref={insetRef}
       style={{ "--sidebar-width": RIGHT_PANEL_INLINE_DEFAULT_WIDTH } as CSSProperties}
     >
       <Sidebar

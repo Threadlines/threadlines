@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildSubagentTranscriptView,
+  formatSubagentToolRunActions,
+  groupSubagentTranscriptSteps,
+  resolveSubagentTranscriptInstruction,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
+  subagentStepNodeOffsetPx,
   type SubagentTranscriptEntryLike,
 } from "./SubagentTranscript.logic";
 
@@ -117,6 +121,111 @@ describe("buildSubagentTranscriptView", () => {
   });
 });
 
+describe("groupSubagentTranscriptSteps", () => {
+  const toolUse = (name: string) => ({ name, summary: `${name}: src/thing.ts` });
+
+  it("folds a long run of tool calls into one receipt and leaves the prose alone", () => {
+    const view = buildSubagentTranscriptView([
+      entry({
+        role: "assistant",
+        text: "Looking for the handler.",
+        at: "2026-08-11T10:00:00.000Z",
+      }),
+      entry({
+        role: "assistant",
+        toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")],
+        at: "2026-08-11T10:00:05.000Z",
+      }),
+      entry({
+        role: "assistant",
+        toolUses: [toolUse("Edit"), toolUse("Bash")],
+        at: "2026-08-11T10:01:15.000Z",
+      }),
+      entry({ role: "assistant", text: "Fixed it.", at: "2026-08-11T10:02:00.000Z" }),
+    ]);
+
+    const grouped = groupSubagentTranscriptSteps(view);
+
+    expect(grouped.map((step) => step.kind)).toEqual(["item", "tool-run", "item"]);
+    const run = grouped[1];
+    expect(run?.kind === "tool-run" ? run.actionCount : null).toBe(5);
+    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe("Read ×3, Edit ×1, Bash ×1");
+    expect(run?.kind === "tool-run" ? run.durationMs : null).toBe(70_000);
+    // The rows are folded, not dropped.
+    expect(run?.kind === "tool-run" ? run.items.length : null).toBe(2);
+  });
+
+  it("gives a single call a receipt of its own, so the thread is prose and receipts", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", text: "Checking." }),
+      entry({ role: "assistant", toolUses: [toolUse("Read")] }),
+      entry({ role: "assistant", text: "Done." }),
+    ]);
+
+    const grouped = groupSubagentTranscriptSteps(view);
+    expect(grouped.map((step) => step.kind)).toEqual(["item", "tool-run", "item"]);
+    const run = grouped[1];
+    expect(run?.kind === "tool-run" ? formatSubagentToolRunActions(run) : null).toBe("1 action");
+    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe("Read ×1");
+  });
+
+  it("reads a result whose call is on an earlier page as tool output, not zero actions", () => {
+    const view = buildSubagentTranscriptView([entry({ role: "user", outputPreview: "42 files" })]);
+
+    const [run] = groupSubagentTranscriptSteps(view);
+    expect(run?.kind === "tool-run" ? formatSubagentToolRunActions(run) : null).toBe("Tool output");
+  });
+
+  it("puts the node on the prose's own first line, and on the meta line elsewhere", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", text: "Walked the route files." }),
+      entry({ role: "assistant", toolUses: [toolUse("Read")] }),
+      entry({ role: "thinking", text: "Considering the gutter." }),
+    ]);
+
+    // Prose leads with an 18px line, everything else with a 20px meta line, on
+    // 4px of row padding. The panel geometry test measures the rendered result.
+    expect(groupSubagentTranscriptSteps(view).map(subagentStepNodeOffsetPx)).toEqual([13, 14, 14]);
+  });
+
+  it("breaks a run at the prose between two batches", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", toolUses: [toolUse("Read"), toolUse("Read"), toolUse("Read")] }),
+      entry({ role: "assistant", text: "Halfway." }),
+      entry({ role: "assistant", toolUses: [toolUse("Edit"), toolUse("Edit"), toolUse("Edit")] }),
+    ]);
+
+    expect(groupSubagentTranscriptSteps(view).map((step) => step.kind)).toEqual([
+      "tool-run",
+      "item",
+      "tool-run",
+    ]);
+  });
+
+  it("names only the three busiest kinds and counts the rest", () => {
+    const view = buildSubagentTranscriptView([
+      entry({
+        role: "assistant",
+        toolUses: [
+          toolUse("Edit"),
+          toolUse("Edit"),
+          toolUse("Edit"),
+          toolUse("Read"),
+          toolUse("Read"),
+          toolUse("Bash"),
+          toolUse("Grep"),
+          toolUse("Glob"),
+        ],
+      }),
+    ]);
+
+    const [run] = groupSubagentTranscriptSteps(view);
+    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe(
+      "Edit ×3, Read ×2, Bash ×1, +2 more",
+    );
+  });
+});
+
 describe("shouldShowSubagentLiveTail", () => {
   const message = (text: string) =>
     buildSubagentTranscriptView([entry({ role: "assistant", text })]);
@@ -167,5 +276,42 @@ describe("splitSubagentTranscriptLead", () => {
 
     expect(splitSubagentTranscriptLead(view, false).lead).toBeNull();
     expect(splitSubagentTranscriptLead(view, false).steps).toHaveLength(2);
+  });
+});
+
+describe("resolveSubagentTranscriptInstruction", () => {
+  const lead = (role: "user" | "system") =>
+    splitSubagentTranscriptLead(
+      buildSubagentTranscriptView([
+        entry({ role, text: "Survey the repo.", at: "2026-08-11T10:00:00.000Z" }),
+        entry({ role: "assistant", text: "Working on it." }),
+      ]),
+      true,
+    ).lead;
+
+  it("prefers the transcript's own leading message", () => {
+    expect(resolveSubagentTranscriptInstruction(lead("user"), "Spawn objective", true)).toEqual({
+      text: "Survey the repo.",
+      at: "2026-08-11T10:00:00.000Z",
+      label: "Instruction",
+    });
+    expect(resolveSubagentTranscriptInstruction(lead("system"), null, true)?.label).toBe("System");
+  });
+
+  it("stands in the objective when the transcript has no leading message", () => {
+    expect(resolveSubagentTranscriptInstruction(null, "  Survey the repo.  ", true)).toEqual({
+      text: "Survey the repo.",
+      at: null,
+      label: "Instruction",
+    });
+  });
+
+  it("shows nothing without a leading message or an objective", () => {
+    expect(resolveSubagentTranscriptInstruction(null, null, true)).toBeNull();
+    expect(resolveSubagentTranscriptInstruction(null, "   ", true)).toBeNull();
+  });
+
+  it("claims no beginning on a page that starts mid-transcript", () => {
+    expect(resolveSubagentTranscriptInstruction(null, "Survey the repo.", false)).toBeNull();
   });
 });

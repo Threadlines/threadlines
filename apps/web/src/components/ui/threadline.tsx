@@ -88,7 +88,14 @@ function SectionTick({ className }: { className?: string }) {
  * line by setting the `--spine` custom property on any ancestor; it falls back
  * to the hairline border colour. For row-specific accents, set `--spine-top`
  * and/or `--spine-bottom` on the row to override each connector segment.
+ *
+ * The node sits `nodeOffset` px below the top of the row's content box, and the
+ * connectors meet it there. The default suits rows whose first line is 20px
+ * tall on 4px of top padding; a row with a different first line (denser prose,
+ * say) passes its own offset so the node lands on that line rather than on
+ * whatever the row happens to render first.
  */
+const SPINE_NODE_OFFSET_PX = 14;
 const SPINE_TOP_STYLE = {
   background: "var(--spine-top, var(--spine, var(--border)))",
 } satisfies React.CSSProperties;
@@ -100,6 +107,7 @@ function SpineRow({
   node,
   connectTop = true,
   connectBottom = true,
+  nodeOffset = SPINE_NODE_OFFSET_PX,
   className,
   style,
   children,
@@ -107,6 +115,8 @@ function SpineRow({
   node: React.ReactNode;
   connectTop?: boolean;
   connectBottom?: boolean;
+  /** Distance in px from the top of the row's content box to the node's centre. */
+  nodeOffset?: number;
   className?: string | undefined;
   style?: React.CSSProperties | undefined;
   children: React.ReactNode;
@@ -117,18 +127,25 @@ function SpineRow({
         {connectTop ? (
           <span
             aria-hidden="true"
-            className="absolute top-0 left-1/2 h-3.5 w-px -translate-x-1/2"
-            style={SPINE_TOP_STYLE}
+            className="absolute top-0 left-1/2 w-px -translate-x-1/2"
+            style={{ ...SPINE_TOP_STYLE, height: nodeOffset }}
           />
         ) : null}
         {connectBottom ? (
           <span
             aria-hidden="true"
-            className="absolute top-3.5 bottom-0 left-1/2 w-px -translate-x-1/2"
-            style={SPINE_BOTTOM_STYLE}
+            className="absolute bottom-0 left-1/2 w-px -translate-x-1/2"
+            style={{ ...SPINE_BOTTOM_STYLE, top: nodeOffset }}
           />
         ) : null}
-        <span className="relative z-10 flex h-7 items-center justify-center">{node}</span>
+        {/* Centring the node in a box of twice the offset puts its centre on the
+            offset without taking the row out of flow. */}
+        <span
+          className="relative z-10 flex items-center justify-center"
+          style={{ height: nodeOffset * 2 }}
+        >
+          {node}
+        </span>
       </div>
       <div className="min-w-0 flex-1">{children}</div>
     </div>

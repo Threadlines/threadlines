@@ -230,10 +230,16 @@ interface SourceControlPanelProps {
   readonly onPrefetchDiff?: () => void;
   /**
    * Closes the containing right panel. Surfaced as an in-panel ✕ on phone
-   * widths, where the sheet spans the full screen and the header toggle is
-   * easy to miss.
+   * widths, where the sheet spans the full screen and the header toggle is easy
+   * to miss. Ignored when embedded: the tab strip owns the dismissal there.
    */
   readonly onClose?: () => void;
+  /**
+   * Set when the panel renders inside the sidebar's tab strip, which already
+   * carries the window chrome, the panel's name and its dismissal. The panel
+   * then leads with the repository row instead of a title row of its own.
+   */
+  readonly embedded?: boolean;
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
@@ -1989,6 +1995,7 @@ export function SourceControlPanel({
   onOpenDiff,
   onPrefetchDiff,
   onClose,
+  embedded = false,
 }: SourceControlPanelProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -2449,6 +2456,7 @@ export function SourceControlPanel({
   const isSourceControlMutationDisabled =
     isGitActionRunning || isParentRepositoryConfirmationRequired;
   const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
+  const hasChangedFiles = changedFiles.length > 0;
   const stagedChangeFiles = useMemo(
     () =>
       changedFiles
@@ -4172,88 +4180,110 @@ export function SourceControlPanel({
   const headerTitle = status?.refName ? `${target.name} - ${status.refName}` : target.name;
   const sourceControlLinks = deriveSourceControlQuickLinks(status);
 
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-rail">
-      <div className="drag-region shrink-0 border-b border-border">
-        <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-            <h2
-              aria-label="Source Control"
-              className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70"
-              title="Source Control"
-            >
-              <span className="source-control-title-short">SC</span>
-              <span className="source-control-title-full">Source Control</span>
-            </h2>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    aria-label={
-                      isSourceControlRefreshing
-                        ? "Refreshing source control"
-                        : "Refresh source control"
-                    }
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={refreshPanelFromRemote}
-                  />
-                }
-              >
-                <RefreshCwIcon
-                  className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")}
-                />
-              </TooltipTrigger>
-              <TooltipPopup side="top">Refresh</TooltipPopup>
-            </Tooltip>
-            {onClose ? (
-              <Button
-                type="button"
-                aria-label="Close source control panel"
-                variant="ghost"
-                size="icon-xs"
-                className="sm:hidden"
-                onClick={onClose}
-              >
-                <XIcon className="size-3.5" />
-              </Button>
-            ) : null}
-          </div>
-        </div>
-        <div className="flex min-w-0 items-center gap-1.5 px-3 pt-0.5 pb-2">
-          <span
-            className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85"
-            title={headerTitle}
-          >
-            {target.name}
+  const refreshButton = (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            aria-label={
+              isSourceControlRefreshing ? "Refreshing source control" : "Refresh source control"
+            }
+            variant="ghost"
+            size="icon-xs"
+            className="shrink-0"
+            onClick={refreshPanelFromRemote}
+          />
+        }
+      >
+        <RefreshCwIcon className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")} />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Refresh</TooltipPopup>
+    </Tooltip>
+  );
+
+  // The repository row: which checkout these changes are in, and the branch
+  // they are on. Embedded it is the panel's whole header, so it takes the
+  // refresh control with it.
+  const repositoryRow = (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-1.5 px-3",
+        embedded ? "h-9 border-b border-border" : "pt-0.5 pb-2",
+      )}
+    >
+      <span
+        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85"
+        title={headerTitle}
+      >
+        {target.name}
+      </span>
+      {target.effectiveCwd ? (
+        <TooltipWrapper
+          tooltip={`This thread's work is currently in ${target.effectiveCwd}; showing that checkout.`}
+        >
+          <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
+            <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
+            <span className="min-w-0 truncate">{threadWorkingCwdLabel(target.effectiveCwd)}</span>
           </span>
-          {target.effectiveCwd ? (
-            <TooltipWrapper
-              tooltip={`This thread's work is currently in ${target.effectiveCwd}; showing that checkout.`}
-            >
-              <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
-                <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
-                <span className="min-w-0 truncate">
-                  {threadWorkingCwdLabel(target.effectiveCwd)}
-                </span>
-              </span>
-            </TooltipWrapper>
-          ) : null}
-          {sourceControlLinks ? <SourceControlLinksMenu links={sourceControlLinks} /> : null}
-          {status?.refName ? (
-            <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
-              <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
-                <GitBranchIcon className="size-3 shrink-0 opacity-70" />
-                <span className="min-w-0 truncate">{status.refName}</span>
-              </span>
-            </TooltipWrapper>
-          ) : null}
+        </TooltipWrapper>
+      ) : null}
+      {sourceControlLinks ? <SourceControlLinksMenu links={sourceControlLinks} /> : null}
+      {status?.refName ? (
+        <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
+          {/* Which branch, in the same voice as the left sidebar's version text:
+              mono, muted, no fill. It is a fact about the header, not a control
+              waiting to be pressed. */}
+          <span
+            className="inline-flex min-w-0 max-w-[45%] items-center gap-1 font-mono text-[10px] leading-none text-muted-foreground/70"
+            data-source-control-branch-chip="true"
+          >
+            <GitBranchIcon className="size-3 shrink-0 opacity-70" />
+            <span className="min-w-0 truncate">{status.refName}</span>
+          </span>
+        </TooltipWrapper>
+      ) : null}
+      {embedded ? <span className="-mr-1 shrink-0">{refreshButton}</span> : null}
+    </div>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-rail" data-source-control-panel="true">
+      {embedded ? (
+        repositoryRow
+      ) : (
+        <div className="drag-region shrink-0 border-b border-border">
+          <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+              <h2
+                aria-label="Source Control"
+                className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70"
+                title="Source Control"
+              >
+                <span className="source-control-title-short">SC</span>
+                <span className="source-control-title-full">Source Control</span>
+              </h2>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {refreshButton}
+              {onClose ? (
+                <Button
+                  type="button"
+                  aria-label="Close source control panel"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="sm:hidden"
+                  onClick={onClose}
+                >
+                  <XIcon className="size-3.5" />
+                </Button>
+              ) : null}
+            </div>
+          </div>
+          {repositoryRow}
         </div>
-      </div>
+      )}
 
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3">
         {parentRepositoryRoot ? (
@@ -4376,13 +4406,19 @@ export function SourceControlPanel({
                 </TooltipPopup>
               </Tooltip>
               {onOpenDiff ? (
+                // `aria-disabled` rather than `disabled`: the button's own base
+                // style drops pointer events while disabled, so the tooltip
+                // saying why it is unavailable would never open -- on the one
+                // state where the button needs to explain itself.
                 <Button
                   type="button"
                   variant="ghost"
                   size="xs"
-                  disabled={changedFiles.length === 0}
-                  onPointerEnter={onPrefetchDiff}
-                  onClick={() => onOpenDiff()}
+                  aria-disabled={hasChangedFiles ? undefined : true}
+                  className={cn(!hasChangedFiles && "cursor-default opacity-64")}
+                  tooltip={hasChangedFiles ? undefined : "Nothing to diff yet"}
+                  onPointerEnter={hasChangedFiles ? onPrefetchDiff : undefined}
+                  onClick={hasChangedFiles ? () => onOpenDiff() : undefined}
                 >
                   <FileTextIcon className="size-3" />
                   Diff
@@ -4417,7 +4453,12 @@ export function SourceControlPanel({
               </Button>
             </div>
           ) : changedFiles.length === 0 ? (
-            <div className="rounded-md border border-border/70 bg-background/40 px-2.5 py-2 text-xs text-muted-foreground/70">
+            // Nothing to show is a line, not a box. The left sidebar's empty
+            // states are flat text and this one is no different.
+            <div
+              className="border-t border-border/40 py-2 text-[12px] text-muted-foreground/55"
+              data-source-control-empty="true"
+            >
               No working tree changes
             </div>
           ) : (

@@ -6,7 +6,6 @@ import { type ContextMenuItem, TurnId } from "@threadlines/contracts";
 import type { DiffRenderMode } from "@threadlines/contracts/settings";
 import {
   ChevronDownIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   ChevronUpIcon,
   ChevronsDownUpIcon,
@@ -261,22 +260,20 @@ interface PendingDiscardDiffFile {
 
 interface DiffPanelProps {
   mode?: DiffPanelMode;
-  onBackToSourceControl?: () => void;
   /**
    * Closes the containing right panel. Surfaced as an in-panel ✕ on phone
    * widths, where the sheet spans the full screen and the header toggle is
-   * easy to miss.
+   * easy to miss. Ignored when embedded: the tab strip owns the dismissal.
    */
   onClose?: () => void;
+  /** Set when the panel renders inside the sidebar's tab strip, which already
+   *  carries the window chrome and the dismissal. */
+  embedded?: boolean;
 }
 
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 
-export default function DiffPanel({
-  mode = "inline",
-  onBackToSourceControl,
-  onClose,
-}: DiffPanelProps) {
+export default function DiffPanel({ mode = "inline", onClose, embedded = false }: DiffPanelProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
@@ -1197,33 +1194,15 @@ export default function DiffPanel({
       (diffStatsSummary ?? "All checkpointed changes from this chat")
     );
 
-  const headerRow = (
+  // Embedded, the tab strip above already names this surface and is the way to
+  // every other one, so the panel adds no header of its own: no title bar, no
+  // back-to-Source breadcrumb, no row of height spent restating the tab.
+  const headerRow = embedded ? null : (
     <div className="flex min-w-0 flex-1 items-center gap-1">
-      {onBackToSourceControl ? (
-        <TooltipWrapper tooltip="Back to source control (Esc)">
-          <button
-            type="button"
-            aria-label="Back to source control"
-            className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-ring"
-            onClick={onBackToSourceControl}
-          >
-            <ChevronLeftIcon className="size-3.5 shrink-0 opacity-80" />
-            <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
-            <span className="min-w-0 truncate">
-              <span className="source-control-title-short">SC</span>
-              <span className="source-control-title-full">Source Control</span>
-            </span>
-          </button>
-        </TooltipWrapper>
-      ) : (
-        <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
-          <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
-          <span className="min-w-0 truncate">
-            <span className="source-control-title-short">SC</span>
-            <span className="source-control-title-full">Source Control</span>
-          </span>
-        </span>
-      )}
+      <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+        <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
+        <span className="min-w-0 truncate">Source</span>
+      </span>
       <span aria-hidden="true" className="shrink-0 text-[11px] text-muted-foreground/40">
         /
       </span>
@@ -1560,7 +1539,7 @@ export default function DiffPanel({
   );
 
   return (
-    <DiffPanelShell mode={mode} header={headerRow} onEscape={onBackToSourceControl}>
+    <DiffPanelShell mode={mode} embedded={embedded} header={headerRow}>
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col",

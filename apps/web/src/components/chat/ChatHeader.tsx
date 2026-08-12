@@ -11,6 +11,7 @@ import {
   FolderOpenIcon,
   GitForkIcon,
   GlobeIcon,
+  PanelRightIcon,
   TerminalSquareIcon,
 } from "lucide-react";
 import { Badge } from "../ui/badge";
@@ -20,16 +21,14 @@ import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/too
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
-import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import {
-  ThreadActivityPopover,
-  type ThreadBackgroundRunItem,
-  type ThreadTaskProgressState,
-} from "./ThreadActivityPopover";
+import { ThreadActivityChip, type ThreadTaskProgressState } from "./ThreadActivityPopover";
+import type { ThreadBackgroundRunItem } from "./threadActivity";
 import type { SubagentProgressState } from "../../session-logic";
+import type { LiveAgentIndicator } from "./agentsPanel.logic";
+import { LiveNode } from "../ui/threadline";
 import { cn } from "../../lib/utils";
 
 export interface ForkHeaderContext {
@@ -51,43 +50,49 @@ interface ChatHeaderProps {
   terminalAvailable: boolean;
   terminalOpen: boolean;
   terminalToggleShortcutLabel: string | null;
-  sourceControlToggleShortcutLabel: string | null;
-  sourceControlOpen: boolean;
-  /** False for capability-gated threads (General Chats) even when a project name exists. */
+  railToggleShortcutLabel: string | null;
+  /** Whether the right rail is showing, on either of its tabs. */
+  railOpen: boolean;
+  /** False for capability-gated threads (General Chats) even when a project
+   *  name exists: the rail still opens, just without its Source tab. */
   sourceControlAvailable: boolean;
   /** False where there is no project to preview, e.g. a general chat. */
   browserAvailable: boolean;
   browserOpen: boolean;
   /**
-   * Working-tree diffstat, surfaced on the closed source control toggle so the
-   * size of the pending change is legible without opening the panel. Null when
-   * the tree is clean or the status has not loaded.
+   * Working-tree diffstat, surfaced on the closed rail toggle so the size of
+   * the pending change is legible without opening the rail. Null when the tree
+   * is clean or the status has not loaded.
    */
   workingTreeDiffStat: { readonly insertions: number; readonly deletions: number } | null;
   /**
-   * Commits the branch is behind its upstream, surfaced on the closed source
-   * control toggle as a pull-available hint. Null when there is nothing to
-   * pull or the status has not loaded.
+   * Commits the branch is behind its upstream, surfaced on the closed rail
+   * toggle as a pull-available hint. Null when there is nothing to pull or the
+   * status has not loaded.
    */
   remoteBehindCount: number | null;
+  /**
+   * Agents running right now, surfaced on the closed rail toggle the same way
+   * the diffstat is. Null when nothing is live. While the rail is open its Agents
+   * tab carries the live node itself, so these stay closed-only.
+   */
+  liveAgents: LiveAgentIndicator | null;
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
   forkContext: ForkHeaderContext | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Whether the activity chip's panel is the one showing in the right slot. */
+  agentsPanelOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
-  onToggleBackgroundRunTerminal: (terminalId: string) => void;
-  onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
-  onViewProposedPlan?: (() => void) | undefined;
-  onImplementProposedPlan?: (() => void) | undefined;
-  onDismissProposedPlan?: (() => void) | undefined;
+  onToggleAgentsPanel: () => void;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
-  onToggleSourceControl: () => void;
+  onToggleRail: () => void;
   onToggleBrowser: () => void;
   /** Present only for General Chat threads that can continue into a project. */
   onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
@@ -106,6 +111,21 @@ export function shouldShowOpenInEditor(input: {
   );
 }
 
+/** Reads the live-agent node on the closed panel button out loud. Waiting leads,
+ *  because it is the part that asks the user for something. */
+export function formatLiveAgentsTooltip(liveAgents: LiveAgentIndicator): string {
+  const { count, waitingCount } = liveAgents;
+  const running = count - waitingCount;
+  const noun = (value: number) => (value === 1 ? "agent" : "agents");
+  if (running === 0) {
+    return `${waitingCount} ${noun(waitingCount)} waiting on you.`;
+  }
+  if (waitingCount === 0) {
+    return `${running} ${noun(running)} running.`;
+  }
+  return `${running} ${noun(running)} running, ${waitingCount} waiting on you.`;
+}
+
 export function resolveContinueInProjectHeaderState(disabledReason: string | null | undefined): {
   readonly disabled: boolean;
   readonly tooltip: string;
@@ -119,7 +139,6 @@ export function resolveContinueInProjectHeaderState(disabledReason: string | nul
 
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
-  activeThreadId,
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
@@ -131,31 +150,29 @@ export const ChatHeader = memo(function ChatHeader({
   terminalAvailable,
   terminalOpen,
   terminalToggleShortcutLabel,
-  sourceControlToggleShortcutLabel,
-  sourceControlOpen,
+  railToggleShortcutLabel,
+  railOpen,
   sourceControlAvailable,
   browserAvailable,
   browserOpen,
   onToggleBrowser,
   workingTreeDiffStat,
   remoteBehindCount,
+  liveAgents,
   fileBrowserAvailable,
   taskProgress,
   subagentProgress,
   forkContext,
   backgroundRuns,
+  agentsPanelOpen,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
-  onToggleBackgroundRunTerminal,
-  onStopBackgroundRun,
-  onViewProposedPlan,
-  onImplementProposedPlan,
-  onDismissProposedPlan,
+  onToggleAgentsPanel,
   onOpenForkSourceThread,
   onToggleTerminal,
-  onToggleSourceControl,
+  onToggleRail,
   onContinueInProject,
   continueInProjectDisabledReason,
 }: ChatHeaderProps) {
@@ -225,18 +242,12 @@ export const ChatHeader = memo(function ChatHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
-        <ThreadActivityPopover
-          activeThreadEnvironmentId={activeThreadEnvironmentId}
-          activeThreadId={activeThreadId}
+        <ThreadActivityChip
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
-          threadCwd={openInCwd}
           backgroundRuns={backgroundRuns}
-          onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
-          onStopBackgroundRun={onStopBackgroundRun}
-          onViewProposedPlan={onViewProposedPlan}
-          onImplementProposedPlan={onImplementProposedPlan}
-          onDismissProposedPlan={onDismissProposedPlan}
+          pressed={agentsPanelOpen}
+          onClick={onToggleAgentsPanel}
         />
         {activeProjectScripts && (
           <ProjectScriptsControl
@@ -355,78 +366,106 @@ export const ChatHeader = memo(function ChatHeader({
                 <TooltipPopup side="bottom">Toggle browser preview</TooltipPopup>
               </Tooltip>
             ) : null}
-            {sourceControlAvailable || sourceControlOpen ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Toggle
-                      className={cn(
-                        "shrink-0",
-                        // With the counts alongside it, the control needs room
-                        // on both sides -- the icon otherwise sits against the
-                        // hover fill -- and less between them: the base gap is
-                        // sized for icons, not for a label that belongs to one.
-                        (workingTreeDiffStat !== null || remoteBehindCount !== null) &&
-                          !sourceControlOpen &&
-                          "gap-1 px-1.5",
-                      )}
-                      pressed={sourceControlOpen}
-                      onPressedChange={onToggleSourceControl}
-                      aria-label="Toggle source control panel"
-                      variant="outline"
-                      size="xs"
-                      disabled={!sourceControlAvailable && !sourceControlOpen}
-                    >
-                      <SourceControlIcon className="size-[11px]" />
-                      {/* Only while closed: once the panel is open it shows the
-                          per-file counts, and repeating the total is noise. */}
-                      {!sourceControlOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
-                        <span className="font-mono text-[10px] leading-none">
-                          {workingTreeDiffStat ? (
-                            <>
-                              <span className="text-success">
-                                +{workingTreeDiffStat.insertions}
-                              </span>
-                              <span className="ps-1 text-destructive">
-                                −{workingTreeDiffStat.deletions}
-                              </span>
-                            </>
-                          ) : null}
-                          {/* Deliberately hue-less: the arrow is the signal, and a
-                              third color next to the green/red counts would crowd
-                              an icon-sized control. */}
-                          {remoteBehindCount !== null ? (
-                            <span
-                              className={cn(
-                                "text-muted-foreground",
-                                workingTreeDiffStat !== null && "ps-1",
-                              )}
-                            >
-                              ↓{remoteBehindCount}
+            {/* One entry point for the whole rail: the tab row inside it picks
+                between the turn's agents and the thread's changes. */}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className={cn(
+                      "shrink-0",
+                      // With the counts alongside it, the control needs room
+                      // on both sides -- the icon otherwise sits against the
+                      // hover fill -- and less between them: the base gap is
+                      // sized for icons, not for a label that belongs to one.
+                      (workingTreeDiffStat !== null ||
+                        remoteBehindCount !== null ||
+                        liveAgents !== null) &&
+                        !railOpen &&
+                        "gap-1 px-1.5",
+                    )}
+                    pressed={railOpen}
+                    onPressedChange={onToggleRail}
+                    aria-label="Toggle panel"
+                    variant="outline"
+                    size="xs"
+                  >
+                    <PanelRightIcon className="size-3" />
+                    {/* Only while closed: once the rail is open its Source tab
+                        shows the per-file counts, and repeating the total is
+                        noise. */}
+                    {!railOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
+                      <span className="font-mono text-[10px] leading-none">
+                        {workingTreeDiffStat ? (
+                          <>
+                            <span className="text-success">+{workingTreeDiffStat.insertions}</span>
+                            <span className="ps-1 text-destructive">
+                              −{workingTreeDiffStat.deletions}
                             </span>
-                          ) : null}
-                        </span>
-                      ) : null}
-                    </Toggle>
-                  }
-                />
-                <TooltipPopup side="bottom">
-                  {!sourceControlAvailable && !sourceControlOpen
-                    ? "Source control is unavailable until this thread has an active project."
-                    : sourceControlToggleShortcutLabel
-                      ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
-                      : "Toggle source control panel"}
-                  {!sourceControlOpen && sourceControlAvailable && remoteBehindCount !== null ? (
-                    <div className="text-muted-foreground">
-                      {remoteBehindCount === 1
-                        ? "1 commit behind the remote."
-                        : `${remoteBehindCount} commits behind the remote.`}{" "}
-                      Pull from the source control panel.
-                    </div>
-                  ) : null}
-                </TooltipPopup>
-              </Tooltip>
-            ) : null}
+                          </>
+                        ) : null}
+                        {/* Deliberately hue-less: the arrow is the signal, and a
+                            third color next to the green/red counts would crowd
+                            an icon-sized control. */}
+                        {remoteBehindCount !== null ? (
+                          <span
+                            className={cn(
+                              "text-muted-foreground",
+                              workingTreeDiffStat !== null && "ps-1",
+                            )}
+                          >
+                            ↓{remoteBehindCount}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                    {/* Typographic, like the counts beside it: a node and at most
+                        a digit. An agent waiting on the user turns it amber. */}
+                    {!railOpen && liveAgents ? (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-0.5"
+                        data-header-live-agents={
+                          liveAgents.waitingCount > 0 ? "waiting" : "running"
+                        }
+                      >
+                        {liveAgents.waitingCount > 0 ? (
+                          <span
+                            aria-hidden="true"
+                            className="block size-1.5 rounded-full bg-amber-500"
+                          />
+                        ) : (
+                          <LiveNode className="size-1.5" />
+                        )}
+                        {liveAgents.count > 1 ? (
+                          <span
+                            className="font-mono text-[10px] leading-none text-muted-foreground"
+                            data-header-live-agents-count="true"
+                          >
+                            {liveAgents.count}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                  </Toggle>
+                }
+              />
+              <TooltipPopup side="bottom">
+                {railToggleShortcutLabel ? `Panel (${railToggleShortcutLabel})` : "Panel"}
+                {!railOpen && liveAgents ? (
+                  <div className="text-muted-foreground">
+                    {formatLiveAgentsTooltip(liveAgents)} Open the Agents tab.
+                  </div>
+                ) : null}
+                {!railOpen && sourceControlAvailable && remoteBehindCount !== null ? (
+                  <div className="text-muted-foreground">
+                    {remoteBehindCount === 1
+                      ? "1 commit behind the remote."
+                      : `${remoteBehindCount} commits behind the remote.`}{" "}
+                    Pull from the Source tab.
+                  </div>
+                ) : null}
+              </TooltipPopup>
+            </Tooltip>
           </Group>
         </div>
       </div>

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   closeRightPanelSearchParams,
-  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForDraftNavigation,
   stripDiffSearchParams,
@@ -101,12 +100,10 @@ describe("parseDiffRouteSearch", () => {
         diff: "1",
         diffMode: "workingTree",
         sourceControl: "1",
-        sourceControlReturn: "1",
       }),
     ).toEqual({
       diff: "1",
       diffMode: "workingTree",
-      sourceControlReturn: "1",
     });
   });
 
@@ -138,24 +135,6 @@ describe("parseDiffRouteSearch", () => {
   });
 });
 
-describe("isSourceControlPanelOpen", () => {
-  it("stays closed unless explicitly opened", () => {
-    expect(isSourceControlPanelOpen({})).toBe(false);
-    expect(isSourceControlPanelOpen({ sourceControl: "1" })).toBe(true);
-  });
-
-  it("lets the settings default open the panel without URL state", () => {
-    expect(isSourceControlPanelOpen({}, { defaultOpen: true })).toBe(true);
-    expect(isSourceControlPanelOpen({ sourceControl: "0" }, { defaultOpen: true })).toBe(false);
-    expect(isSourceControlPanelOpen({ diff: "1" }, { defaultOpen: true })).toBe(false);
-  });
-
-  it("treats explicit close and diff routes as closed", () => {
-    expect(isSourceControlPanelOpen({ sourceControl: "0" })).toBe(false);
-    expect(isSourceControlPanelOpen({ diff: "1", sourceControlReturn: "1" })).toBe(false);
-  });
-});
-
 describe("stripDiffSearchParams", () => {
   it("clears retained diff params explicitly", () => {
     expect(
@@ -177,13 +156,14 @@ describe("stripDiffSearchParams", () => {
 });
 
 describe("closeRightPanelSearchParams", () => {
-  it("clears retained right-panel params and marks source control closed", () => {
+  // Both tabs are recorded closed: dismissing the rail means the rail is
+  // closed, not that the other tab takes the slot.
+  it("clears retained right-panel params and marks both rail tabs closed", () => {
     expect(
       closeRightPanelSearchParams({
         diff: "1",
         diffMode: "workingTree",
         sourceControl: "1",
-        sourceControlReturn: "1",
         diffTurnId: "turn-1",
         diffFilePath: "src/app.ts",
         keep: "yes",
@@ -193,7 +173,7 @@ describe("closeRightPanelSearchParams", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: "0",
-      sourceControlReturn: undefined,
+      agents: "0",
       diffTurnId: undefined,
       diffFilePath: undefined,
     });
@@ -212,7 +192,6 @@ describe("preserveRightPanelSearchParamsForDraftNavigation", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: "1",
-      sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
     });
@@ -229,7 +208,6 @@ describe("preserveRightPanelSearchParamsForDraftNavigation", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: "0",
-      sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
     });
@@ -240,7 +218,6 @@ describe("preserveRightPanelSearchParamsForDraftNavigation", () => {
       preserveRightPanelSearchParamsForDraftNavigation({
         diff: "1",
         diffMode: "workingTree",
-        sourceControlReturn: "1",
         diffTurnId: "turn-1",
         diffFilePath: "src/app.ts",
         keep: "yes",
@@ -250,7 +227,6 @@ describe("preserveRightPanelSearchParamsForDraftNavigation", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: undefined,
-      sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
     });
@@ -264,7 +240,6 @@ describe("stripRightPanelSearchParams", () => {
         diff: "1",
         diffMode: "workingTree",
         sourceControl: "1",
-        sourceControlReturn: "1",
         diffTurnId: "turn-1",
         diffFilePath: "src/app.ts",
         keep: "yes",
@@ -274,7 +249,6 @@ describe("stripRightPanelSearchParams", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: undefined,
-      sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
     });

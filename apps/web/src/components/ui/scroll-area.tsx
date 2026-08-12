@@ -17,7 +17,13 @@ function ScrollArea({
   horizontalWheelScroll = false,
   ...props
 }: ScrollAreaPrimitive.Root.Props & {
-  scrollFade?: boolean;
+  /**
+   * Fade the content out at whichever edges it overflows. `"x-end"` fades only
+   * the right edge, for a row whose left edge is a hard boundary (the panel's
+   * own side) while its right edge runs under something fixed — the fade there
+   * reads as content passing beneath, which a matching left fade would muddle.
+   */
+  scrollFade?: boolean | "x-end";
   scrollbarGutter?: boolean;
   hideScrollbars?: boolean;
   chainVerticalScroll?: boolean;
@@ -73,8 +79,10 @@ function ScrollArea({
         className={cn(
           "h-full max-h-[inherit] overflow-auto overscroll-contain rounded-[inherit] outline-none transition-shadows focus-ring data-has-overflow-x:overscroll-x-contain",
           chainVerticalScroll && "overscroll-y-auto",
-          scrollFade &&
+          scrollFade === true &&
             "mask-t-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-y-start)))] mask-b-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-y-end)))] mask-l-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-start)))] mask-r-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-end)))] [--fade-size:1.5rem]",
+          scrollFade === "x-end" &&
+            "mask-r-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-end)))] [--fade-size:1.5rem]",
           scrollbarGutter && "[scrollbar-gutter:stable]",
           hideScrollbars &&
             "[-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
@@ -123,4 +131,19 @@ function ScrollBar({
   );
 }
 
-export { ScrollArea, ScrollBar };
+/**
+ * A horizontal strip's scrollbar: a hairline overlay, shown whenever the strip
+ * overflows rather than only while it is hovered or scrolled. Overlaid, so it
+ * costs the row no height -- a native bar would eat into it and then force a
+ * vertical one too. Used by every scrolling tab strip, so the four
+ * measurements live here instead of being retyped per strip.
+ */
+const MINI_HORIZONTAL_SCROLLBAR_CLASS =
+  "[&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100 " +
+  // Opaque, unlike the default translucent thumb: this bar lies across the tabs
+  // themselves, and letting a label show through it made the two read as one
+  // layer. Mixed to the same value the translucent thumb resolved to over the
+  // rail, so it looks unchanged while nothing scrolls behind it.
+  "[&_[data-slot=scroll-area-thumb]]:bg-[color-mix(in_oklab,var(--foreground)_20%,var(--rail))]";
+
+export { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea, ScrollBar };

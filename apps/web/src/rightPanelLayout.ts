@@ -1,6 +1,5 @@
 import { type RefCallback, useCallback, useEffect, useRef } from "react";
 
-import { type DiffRouteSearch, isSourceControlPanelOpen } from "./diffRouteSearch";
 import { isElectron } from "./env";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { useSettings } from "./hooks/useSettings";
@@ -9,7 +8,9 @@ export const RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 980px)";
 
 export const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
 export const RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH = 17 * 16;
-export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH = 15 * 16;
+// The legacy source control minimum, now the floor for every tab: the strip and
+// its `+` still have to fit, and the changes list was already unusable narrower.
+export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH = 17 * 16;
 // Keep in sync with --app-window-resize-edge-inset in index.css. The right
 // panel reserves this space inside its border box in Electron, so the outer
 // min width needs to include it for the visible content area to match the left.
@@ -17,7 +18,12 @@ const RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH = 6;
 export const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH =
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH +
   (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0);
-export const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH}px`;
+// The sidebar is one draggable slot shared by every tab, so it carries one
+// width and one storage key, and switching tabs never resizes it.
+export const RIGHT_PANEL_RAIL_WIDTH = 330;
+export const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${
+  RIGHT_PANEL_RAIL_WIDTH + (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0)
+}px`;
 export const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 
 // Both right-panel sheets start below the chat header (measured into
@@ -31,14 +37,51 @@ const RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME =
 // keeps the near-full 88vw sheet (disjoint `sm:max-[760px]:` so no cascade
 // ordering is relied on), and phones go full width.
 export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(42vw,28rem)] min-w-80 max-w-[28rem] sm:max-[760px]:w-[min(88vw,24rem)] sm:max-[760px]:min-w-0 max-sm:w-full max-sm:min-w-0 max-sm:max-w-none`;
-// Phones keep source control at the same fixed width as everywhere else so it
-// overlays as a partial sheet (matching the app sidebar's rendered mobile
-// width) with a slice of the conversation visible and tappable to dismiss.
-export const RIGHT_PANEL_SOURCE_CONTROL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[var(--right-panel-inline-min-width)] min-w-[var(--right-panel-inline-min-width)] max-w-[var(--right-panel-inline-min-width)]`;
+// The rail overlays as a partial sheet: 400px where it fits, and as much of
+// the viewport as fits below that, so a slice of the conversation stays
+// visible and tappable to dismiss.
+export const RIGHT_PANEL_RAIL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(92vw,var(--right-panel-rail-width))] max-w-[var(--right-panel-rail-width)]`;
 export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";
 
 export const CHAT_HEADER_BOTTOM_CSS_VAR = "--chat-header-bottom";
+export const RIGHT_PANEL_INSET_CSS_VAR = "--right-panel-inset";
+
+/**
+ * Publishes how much of the viewport's right edge the open right panel occupies
+ * as a root-level CSS variable, so body-portaled overlays can stay clear of it.
+ * `0px` while the panel is closed. Attach the returned ref to the element that
+ * holds the panel's layout slot.
+ *
+ * Same pattern (and the same reason) as {@link useChatHeaderBottomVarRef}: the
+ * toast viewport is fixed to the viewport, not to the chat column, so nothing in
+ * the layout can push it aside. The width changes on open/close, on a drag of
+ * the panel's resize handle, and on a window resize, all of which the observer
+ * catches. The variable is reset on unmount so a route without a right panel
+ * does not leave overlays inset for a panel that is gone.
+ */
+export function useRightPanelInsetVarRef(): RefCallback<HTMLElement> {
+  return useCallback((node: HTMLElement | null) => {
+    const rootStyle = document.documentElement.style;
+    if (!node || typeof ResizeObserver === "undefined") {
+      rootStyle.setProperty(RIGHT_PANEL_INSET_CSS_VAR, "0px");
+      return undefined;
+    }
+    const publish = () => {
+      rootStyle.setProperty(
+        RIGHT_PANEL_INSET_CSS_VAR,
+        `${Math.max(0, Math.round(node.getBoundingClientRect().width))}px`,
+      );
+    };
+    const observer = new ResizeObserver(publish);
+    observer.observe(node);
+    publish();
+    return () => {
+      observer.disconnect();
+      rootStyle.setProperty(RIGHT_PANEL_INSET_CSS_VAR, "0px");
+    };
+  }, []);
+}
 
 /**
  * Publishes the chat header's bottom edge (in viewport px) as a root-level CSS
@@ -83,72 +126,43 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
 }
 
 /**
- * Last explicit panel state per thread. The URL only carries explicit state
- * until the next thread navigation drops it, so without this memory an open
- * panel silently closes on the A -> B -> A round trip. Session-scoped on
- * purpose: a fresh launch starts from the settings default again.
- */
-const sourceControlPanelStateByThreadKey = new Map<string, "1" | "0">();
-
-/**
- * Memory key for a draft route's panel state, distinct from the
+ * Memory key for a draft route's sidebar state, distinct from the
  * `environmentId:threadId` keys server threads use. The draft route and the
  * chat header resolve the same draft through this so they agree.
  */
-export function draftSourceControlPanelStateKey(draftId: string): string {
+export function draftRightPanelStateKey(draftId: string): string {
   return `draft:${draftId}`;
 }
 
-export function resetSourceControlPanelStateMemoryForTests(): void {
-  sourceControlPanelStateByThreadKey.clear();
-}
-
 /**
- * Whether the source control panel is showing for the given route search
- * params. The routes and the header toggle must always agree on this, so the
- * settings default and its wide-layout gate live here instead of at call
- * sites (a per-surface `defaultOpen` is how the 0.3.0 default-closed change
- * missed the draft route and the header button).
- *
- * Explicit URL state still wins; when the URL carries none, the thread's
- * remembered last explicit state applies before the default-open setting, so
- * leaving a thread and returning keeps the panel the way it was left.
- *
- * The default-open setting and the per-thread memory only apply on wide
- * layouts: in sheet mode the panel covers the conversation, so threads there
- * always start closed.
+ * Whether a thread with no sidebar state at all should open on Source. The
+ * setting only applies on wide layouts: in sheet mode the sidebar covers the
+ * conversation, so threads there always start closed.
  */
-export function useSourceControlPanelOpen(
-  search: DiffRouteSearch,
-  threadPanelStateKey: string | null,
-): boolean {
+export function useRightPanelDefaultVisible(): boolean {
   const sheetLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const defaultOpenSetting = useSettings((settings) => settings.sourceControlPanelDefaultOpen);
-  const explicitState = search.sourceControl;
-  useEffect(() => {
-    if (threadPanelStateKey && explicitState) {
-      sourceControlPanelStateByThreadKey.set(threadPanelStateKey, explicitState);
-    }
-  }, [explicitState, threadPanelStateKey]);
-  const rememberedState = threadPanelStateKey
-    ? sourceControlPanelStateByThreadKey.get(threadPanelStateKey)
-    : undefined;
-  const defaultOpen = rememberedState !== undefined ? rememberedState === "1" : defaultOpenSetting;
-  return isSourceControlPanelOpen(search, { defaultOpen: defaultOpen && !sheetLayout });
+  return defaultOpenSetting && !sheetLayout;
 }
 
 export function normalizeRightPanelStoredWidth(width: number) {
   return width <= RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH ? null : width;
 }
 
-export function useAutoHideSourceControlSheet(input: {
+/**
+ * An explicit `=1` carried into a narrow layout (or across a thread switch)
+ * closes itself, so a sheet never lands on top of the conversation the user
+ * navigated to. Shared by both right-panel sheets.
+ */
+export function useAutoHideRightPanelSheet(input: {
   enabled: boolean;
   resetKey: string | null;
-  sourceControl: "1" | "0" | undefined;
+  /** The raw explicit URL value for the panel, not the resolved boolean. */
+  panelState: "1" | "0" | undefined;
   blocked?: boolean;
   onAutoHide: () => void;
 }): boolean {
-  const { blocked, enabled, onAutoHide, resetKey, sourceControl } = input;
+  const { blocked, enabled, onAutoHide, resetKey, panelState } = input;
   const previousRef = useRef({
     enabled: false,
     resetKey: null as string | null,
@@ -156,7 +170,7 @@ export function useAutoHideSourceControlSheet(input: {
   const shouldAutoHide =
     enabled &&
     !blocked &&
-    sourceControl === "1" &&
+    panelState === "1" &&
     (!previousRef.current.enabled || resetKey !== previousRef.current.resetKey);
 
   useEffect(() => {

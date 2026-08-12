@@ -2,17 +2,20 @@ import type { KeyboardEvent, ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
-import { Skeleton } from "./ui/skeleton";
-
 export type DiffPanelMode = "inline" | "sheet" | "sidebar";
 
 export function DiffPanelShell(props: {
   mode: DiffPanelMode;
-  header: ReactNode;
+  /** Omitted embedded in the right sidebar, where the tab strip is the header:
+   *  a second bar there would only restate the tab that is already selected. */
+  header?: ReactNode;
   children: ReactNode;
   onEscape?: (() => void) | undefined;
+  /** Set when the panel renders under the right sidebar's tab strip, which
+   *  already carries the drag region and the window-controls inset. */
+  embedded?: boolean;
 }) {
-  const { onEscape } = props;
+  const { embedded = false, onEscape } = props;
   const handleKeyDown =
     onEscape && props.mode !== "sheet"
       ? (event: KeyboardEvent<HTMLDivElement>) => {
@@ -34,49 +37,40 @@ export function DiffPanelShell(props: {
       )}
       onKeyDown={handleKeyDown}
     >
-      <div className="drag-region shrink-0 border-b border-border">
-        <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-          {props.header}
+      {props.header ? (
+        <div className={cn("shrink-0 border-b border-border", !embedded && "drag-region")}>
+          <div
+            className={cn(
+              "@container/source-control-title flex items-center justify-between gap-2",
+              embedded
+                ? "h-9 px-3"
+                : "h-12 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+            )}
+          >
+            {props.header}
+          </div>
         </div>
-      </div>
+      ) : null}
       {props.children}
     </div>
   );
 }
 
-export function DiffPanelHeaderSkeleton() {
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-1.5">
-      <Skeleton className="size-3.5 shrink-0 rounded-sm" />
-      <Skeleton className="h-3 w-32 rounded-full" />
-    </div>
-  );
-}
-
+/**
+ * Waiting for the diff says so in one line, on the panel's gutter. It used to be
+ * a framed pane of skeleton bars, which drew a whole fake document over a delay
+ * that is usually shorter than reading the word "loading" -- and made the panel
+ * look like an embedded app rather than a sidebar.
+ */
 export function DiffPanelLoadingState(props: { label: string }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col p-2">
-      <div
-        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border/60 bg-card/25"
-        role="status"
-        aria-live="polite"
-        aria-label={props.label}
-      >
-        <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2">
-          <Skeleton className="h-4 w-32 rounded-full" />
-          <Skeleton className="ml-auto h-4 w-20 rounded-full" />
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-4 px-3 py-4">
-          <div className="space-y-2">
-            <Skeleton className="h-3 w-full rounded-full" />
-            <Skeleton className="h-3 w-full rounded-full" />
-            <Skeleton className="h-3 w-10/12 rounded-full" />
-            <Skeleton className="h-3 w-11/12 rounded-full" />
-            <Skeleton className="h-3 w-9/12 rounded-full" />
-          </div>
-          <span className="sr-only">{props.label}</span>
-        </div>
-      </div>
+    <div
+      className="min-h-0 flex-1 px-3 py-2 text-[12px] text-muted-foreground/55"
+      role="status"
+      aria-live="polite"
+      data-diff-panel-loading="true"
+    >
+      {props.label}
     </div>
   );
 }

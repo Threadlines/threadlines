@@ -143,6 +143,145 @@ function keyToolUses(
   });
 }
 
+export type SubagentTranscriptToolsItem = Extract<SubagentTranscriptViewItem, { kind: "tools" }>;
+
+/**
+ * A stretch of back-to-back tool calls, folded into one receipt. The agent's own
+ * prose is what a reader is following; twenty Read rows between two paragraphs
+ * are the machinery under it, and they push the prose off the screen.
+ */
+export interface SubagentTranscriptToolRun {
+  readonly kind: "tool-run";
+  readonly id: string;
+  readonly items: ReadonlyArray<SubagentTranscriptToolsItem>;
+  /** Total tool calls across the run, which is what the receipt counts. */
+  readonly actionCount: number;
+  /** `Read ×5, Edit ×8, Bash ×1`, busiest first, capped at three kinds. */
+  readonly toolSummary: string;
+  /** First call to last call, when the provider timestamped both. */
+  readonly durationMs: number | null;
+}
+
+/** Everything that is not tool machinery: the agent's prose, its reasoning, and
+ *  messages sent to it. Tool rows only reach the thread inside a run. */
+export type SubagentTranscriptProseItem = Exclude<SubagentTranscriptViewItem, { kind: "tools" }>;
+
+export type SubagentTranscriptStep =
+  | { readonly kind: "item"; readonly id: string; readonly item: SubagentTranscriptProseItem }
+  | SubagentTranscriptToolRun;
+
+const MAX_SUMMARIZED_TOOL_KINDS = 3;
+
+/**
+ * Folds each run of consecutive tool rows into one receipt, leaving prose and
+ * reasoning rows exactly where they are. Every run gets a receipt, down to a
+ * single call: the transcript then reads as prose with receipts between it, and
+ * a lone tool row can no longer sit on the thread in a shape of its own.
+ */
+export function groupSubagentTranscriptSteps(
+  steps: ReadonlyArray<SubagentTranscriptViewItem>,
+): ReadonlyArray<SubagentTranscriptStep> {
+  const grouped: Array<SubagentTranscriptStep> = [];
+  let index = 0;
+
+  while (index < steps.length) {
+    const step = steps[index];
+    if (step === undefined) {
+      index += 1;
+      continue;
+    }
+    if (step.kind !== "tools") {
+      grouped.push({ kind: "item", id: step.id, item: step });
+      index += 1;
+      continue;
+    }
+
+    const run: Array<SubagentTranscriptToolsItem> = [];
+    while (index < steps.length) {
+      const candidate = steps[index];
+      if (candidate === undefined || candidate.kind !== "tools") {
+        break;
+      }
+      run.push(candidate);
+      index += 1;
+    }
+
+    const actionCount = run.reduce((total, item) => total + item.tools.length, 0);
+    grouped.push({
+      kind: "tool-run",
+      id: `${run[0]?.id ?? String(index)}:run`,
+      items: run,
+      actionCount,
+      toolSummary: summarizeToolRunNames(run),
+      durationMs: toolRunDurationMs(run),
+    });
+  }
+
+  return grouped;
+}
+
+/** The receipt's leading count, in the conversation's wording: `1 action`,
+ *  `14 actions`. A run can carry no calls at all -- a result whose call sits on
+ *  an earlier page -- and "0 actions" would read as if nothing happened. */
+export function formatSubagentToolRunActions(run: SubagentTranscriptToolRun): string {
+  if (run.actionCount === 0) {
+    return "Tool output";
+  }
+  return `${run.actionCount.toLocaleString()} ${run.actionCount === 1 ? "action" : "actions"}`;
+}
+
+/**
+ * Where the spine's node belongs on a step: the row's own top padding plus half
+ * its first text line, so the dot reads as belonging to the words rather than to
+ * the line above them. Agent prose renders at 12px/18px; every other row leads
+ * with a 20px meta line (a receipt, reasoning, a folded message header).
+ *
+ * Mirrors the row padding and line heights in `SubagentTranscript.tsx`, which
+ * the transcript's geometry test measures against the rendered panel.
+ */
+const TRANSCRIPT_ROW_PADDING_TOP_PX = 4;
+const TRANSCRIPT_PROSE_LINE_PX = 18;
+const TRANSCRIPT_META_LINE_PX = 20;
+
+export function subagentStepNodeOffsetPx(step: SubagentTranscriptStep): number {
+  const firstLinePx =
+    step.kind === "item" && step.item.kind === "message" && step.item.role === "assistant"
+      ? TRANSCRIPT_PROSE_LINE_PX
+      : TRANSCRIPT_META_LINE_PX;
+  return TRANSCRIPT_ROW_PADDING_TOP_PX + firstLinePx / 2;
+}
+
+function summarizeToolRunNames(run: ReadonlyArray<SubagentTranscriptToolsItem>): string {
+  const counts = new Map<string, number>();
+  for (const item of run) {
+    for (const tool of item.tools) {
+      counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+    }
+  }
+  // Busiest kinds lead; insertion order breaks ties so the line is stable
+  // across refreshes rather than reshuffling equal counts.
+  const ordered = [...counts.entries()].toSorted((left, right) => right[1] - left[1]);
+  const shown = ordered.slice(0, MAX_SUMMARIZED_TOOL_KINDS);
+  const hiddenKinds = ordered.length - shown.length;
+  const parts = shown.map(([name, count]) => `${name} ×${count}`);
+  if (hiddenKinds > 0) {
+    parts.push(`+${hiddenKinds} more`);
+  }
+  return parts.join(", ");
+}
+
+function toolRunDurationMs(run: ReadonlyArray<SubagentTranscriptToolsItem>): number | null {
+  const timestamps = run
+    .map((item) => (item.at === null ? null : Date.parse(item.at)))
+    .filter((value): value is number => value !== null && !Number.isNaN(value));
+  const first = timestamps[0];
+  const last = timestamps.at(-1);
+  if (first === undefined || last === undefined || last <= first) {
+    return null;
+  }
+  return last - first;
+}
+
 /** The prompt an agent was spawned with is context, not a step it took, so it
  *  is lifted out of the thread and shown above it. Only the very first entry of
  *  the transcript qualifies: a later instruction is a mid-run message to the
@@ -164,6 +303,43 @@ export function splitSubagentTranscriptLead(
   return first.role === "assistant"
     ? { lead: null, steps: items }
     : { lead: first, steps: items.slice(1) };
+}
+
+export interface SubagentTranscriptInstruction {
+  readonly text: string;
+  readonly at: string | null;
+  readonly label: "Instruction" | "System";
+}
+
+/**
+ * What the block above the thread shows as the instruction the agent was given.
+ *
+ * A Claude child's first stored record is its spawn prompt, so its transcript
+ * carries its own instruction. Codex spawns a child by forking the parent, and
+ * a forked child's transcript starts at its first real turn, so it carries no
+ * leading message at all: the objective the agent was spawned with stands in,
+ * being the same information from the only place that still holds it.
+ *
+ * @param atTranscriptStart False when the page starts mid-transcript, where an
+ *  instruction of any kind would be claiming a beginning that is not on screen.
+ */
+export function resolveSubagentTranscriptInstruction(
+  lead: Extract<SubagentTranscriptViewItem, { kind: "message" }> | null,
+  objective: string | null | undefined,
+  atTranscriptStart: boolean,
+): SubagentTranscriptInstruction | null {
+  if (lead) {
+    return {
+      text: lead.text,
+      at: lead.at,
+      label: lead.role === "user" ? "Instruction" : "System",
+    };
+  }
+  const trimmedObjective = objective?.trim();
+  if (!atTranscriptStart || !trimmedObjective) {
+    return null;
+  }
+  return { text: trimmedObjective, at: null, label: "Instruction" };
 }
 
 /** The provider only writes a transcript record once a message completes, so a

@@ -1,10 +1,16 @@
 import { MessageId, TurnId } from "@threadlines/contracts";
 
+/**
+ * The right sidebar's tabs are filed under the params they have always used:
+ * `sourceControl=1` is the Source tab, `diff=1` the Diff tab, `agents=1` the
+ * Agents tab. At most one reads as open, and that one is the active tab; an
+ * explicit `0` means the sidebar is closed.
+ */
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
   diffMode?: "workingTree" | undefined;
   sourceControl?: "1" | "0" | undefined;
-  sourceControlReturn?: "1" | undefined;
+  agents?: "1" | "0" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
   focusMessageId?: MessageId | undefined;
@@ -57,24 +63,35 @@ export function stripDiffSearchParams<T extends Record<string, unknown>>(
   };
 }
 
-export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
-  params: T,
-): Omit<
-  T,
-  "diff" | "diffMode" | "sourceControl" | "sourceControlReturn" | "diffTurnId" | "diffFilePath"
-> & {
+type RightPanelSearchKey =
+  | "diff"
+  | "diffMode"
+  | "sourceControl"
+  | "agents"
+  | "diffTurnId"
+  | "diffFilePath";
+
+interface ClearedRightPanelSearchParams {
   diff?: undefined;
   diffMode?: undefined;
   sourceControl?: undefined;
-  sourceControlReturn?: undefined;
+  agents?: undefined;
   diffTurnId?: undefined;
   diffFilePath?: undefined;
-} {
+}
+
+/**
+ * Only one tab is active at a time, so every "activate tab X" navigation
+ * starts by clearing the params the other tabs are filed under.
+ */
+export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
+  params: T,
+): Omit<T, RightPanelSearchKey> & ClearedRightPanelSearchParams {
   const {
     diff: _diff,
     diffMode: _diffMode,
     sourceControl: _sourceControl,
-    sourceControlReturn: _sourceControlReturn,
+    agents: _agents,
     diffTurnId: _diffTurnId,
     diffFilePath: _diffFilePath,
     ...rest
@@ -84,26 +101,21 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     diff: undefined,
     diffMode: undefined,
     sourceControl: undefined,
-    sourceControlReturn: undefined,
+    agents: undefined,
     diffTurnId: undefined,
     diffFilePath: undefined,
-  } as Omit<
-    T,
-    "diff" | "diffMode" | "sourceControl" | "sourceControlReturn" | "diffTurnId" | "diffFilePath"
-  > & {
-    diff?: undefined;
-    diffMode?: undefined;
-    sourceControl?: undefined;
-    sourceControlReturn?: undefined;
-    diffTurnId?: undefined;
-    diffFilePath?: undefined;
-  };
+  } as Omit<T, RightPanelSearchKey> & ClearedRightPanelSearchParams;
 }
 
+/**
+ * Hiding the sidebar. Both tab keys are recorded closed so neither the
+ * default-open setting nor a remembered tab reopens it behind the dismissal.
+ */
 export function closeRightPanelSearchParams<T extends Record<string, unknown>>(params: T) {
   return {
     ...stripRightPanelSearchParams(params),
     sourceControl: "0" as const,
+    agents: "0" as const,
   };
 }
 
@@ -115,29 +127,13 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
 export function preserveRightPanelSearchParamsForDraftNavigation<T extends Record<string, unknown>>(
   params: T,
 ) {
-  const { sourceControl } = parseDiffRouteSearch(params);
+  const { sourceControl, agents } = parseDiffRouteSearch(params);
   const stripped = stripRightPanelSearchParams(params);
-  return sourceControl ? { ...stripped, sourceControl } : stripped;
-}
-
-/**
- * Closed unless asked for. Explicit URL state (a toggle press or a deep link)
- * always wins; `defaultOpen` only decides what a thread with no panel state
- * shows. UI code should not call this directly — `useSourceControlPanelOpen`
- * in rightPanelLayout.ts is the single place that resolves `defaultOpen` from
- * the user's setting and the layout, so every surface agrees.
- */
-export function isSourceControlPanelOpen(
-  search: DiffRouteSearch,
-  options: { defaultOpen?: boolean } = {},
-): boolean {
-  if (search.diff === "1" || search.sourceControl === "0") {
-    return false;
-  }
-  if (search.sourceControl === "1") {
-    return true;
-  }
-  return options.defaultOpen ?? false;
+  return {
+    ...stripped,
+    ...(sourceControl ? { sourceControl } : {}),
+    ...(agents ? { agents } : {}),
+  };
 }
 
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
@@ -149,7 +145,12 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
       : !diff && isExplicitClosedValue(search.sourceControl)
         ? "0"
         : undefined;
-  const sourceControlReturn = diff && isDiffOpenValue(search.sourceControlReturn) ? "1" : undefined;
+  const agents =
+    !diff && isDiffOpenValue(search.agents)
+      ? "1"
+      : !diff && isExplicitClosedValue(search.agents)
+        ? "0"
+        : undefined;
   const diffTurnIdRaw =
     diff && diffMode !== "workingTree" ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.make(diffTurnIdRaw) : undefined;
@@ -165,7 +166,7 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(diff ? { diff } : {}),
     ...(diffMode ? { diffMode } : {}),
     ...(sourceControl ? { sourceControl } : {}),
-    ...(sourceControlReturn ? { sourceControlReturn } : {}),
+    ...(agents ? { agents } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
     ...(focusMessageId ? { focusMessageId } : {}),
