@@ -221,6 +221,63 @@ describe("CodexAdapter item mapping", () => {
     );
   });
 
+  it("drops the parent history a forked child replays before its own first turn", () => {
+    // Codex spawns a subagent by forking, so the child's stored history opens
+    // with the parent's conversation replayed as an untimed turn. Rendering it
+    // labelled the operator's own message to the main thread as the instruction
+    // this agent was given, and attributed the main thread's reply to the child.
+    const thread = {
+      id: "forked-child",
+      forkedFromId: "parent-thread",
+      parentThreadId: "parent-thread",
+      createdAt: 1_786_487_612,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          completedAt: null,
+          items: [
+            { id: "user-1", type: "userMessage", text: "can you start up subagents again" },
+            { id: "assistant-1", type: "agentMessage", text: "Sure, starting two agents." },
+          ],
+        },
+        {
+          id: "019ff2f5-a952-7c10-9fda-66f5498a6d49",
+          status: "completed",
+          startedAt: 1_786_487_613,
+          items: [{ id: "assistant-2", type: "agentMessage", text: "50 .tsx files." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["50 .tsx files."],
+    );
+  });
+
+  it("keeps every turn when a forked child has no timed turn to start from", () => {
+    const thread = {
+      id: "forked-child-untimed",
+      forkedFromId: "parent-thread",
+      createdAt: 1_786_487_612,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "Only content there is." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["Only content there is."],
+    );
+  });
+
   it("uses source ancestry metadata and honors transcript limits", () => {
     const thread = {
       id: "grandchild-thread",

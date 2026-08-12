@@ -416,7 +416,21 @@ export function mapCodexSubagentTranscript(
   const threadStartedAt = Number.isFinite(thread.createdAt)
     ? isoFromEpochSeconds(thread.createdAt)
     : undefined;
-  const entries = thread.turns.flatMap((turn) =>
+  // Codex spawns a subagent by forking its parent, so the child inherits the
+  // parent's conversation and replays it as that leading timeless turn. None of
+  // it is the child's own work: the replayed user message is what the operator
+  // typed to the main thread, which the panel then labelled as the instruction
+  // this agent was given, and the replayed assistant message is the main
+  // thread's own reply attributed to the child. A forked child's transcript
+  // starts at its first real turn instead. The child's actual instruction is
+  // the spawn prompt, which the panel already carries as its objective.
+  const firstOwnTurnIndex = thread.forkedFromId
+    ? thread.turns.findIndex((turn) => turn.startedAt !== undefined && turn.startedAt !== null)
+    : 0;
+  // A thread with no timed turn at all is not a fork whose inheritance can be
+  // told apart, so it keeps every turn rather than losing its only content.
+  const ownTurns = firstOwnTurnIndex > 0 ? thread.turns.slice(firstOwnTurnIndex) : thread.turns;
+  const entries = ownTurns.flatMap((turn) =>
     turn.items.flatMap((item) => {
       const entry = mapCodexStoredItem(item);
       if (entry === undefined) {
