@@ -6,6 +6,7 @@ import {
   type ProviderOptionDescriptor,
   ProviderDriverKind,
   RUNTIME_MODES,
+  type ServerProviderAccountTokenUsage,
   type ServerProviderAccountUsage,
   type ServerProviderAuthCapabilities,
   type ServerProviderModel,
@@ -989,6 +990,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ServerProviderAccountUsage | undefined>,
   resolveUsageAuthEmail?: (claudeSettings: ClaudeSettings) => Effect.Effect<string | undefined>,
+  resolveTokenUsage?: (
+    claudeSettings: ClaudeSettings,
+  ) => Effect.Effect<ServerProviderAccountTokenUsage | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -1102,8 +1106,20 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const modelCatalogSource = discoveredCatalog.hasLiveModels ? "live" : "fallback";
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
+  const tokenUsageEffect = resolveTokenUsage
+    ? resolveTokenUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+    : Effect.succeed(undefined);
 
   if (!capabilities) {
+    const tokenUsage = yield* tokenUsageEffect;
+    const localTokenAccountUsage = tokenUsage
+      ? {
+          source: "claude-oauth-usage" as const,
+          checkedAt: tokenUsage.checkedAt,
+          limits: [],
+          tokenUsage,
+        }
+      : undefined;
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -1116,6 +1132,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: parsedVersion,
         status: "warning",
         auth: { status: "unknown" },
+        ...(localTokenAccountUsage ? { accountUsage: localTokenAccountUsage } : {}),
         message: "Could not verify Claude authentication status from initialization result.",
       },
     });
@@ -1132,10 +1149,26 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const isLongLivedOAuthAuth = authMetadata?.type === "longLivedOAuthToken";
   // Subscription usage comes from the Claude Code OAuth credential, which
   // does not exist for API-key auth — skip the lookup entirely there.
-  const accountUsage =
-    resolveAccountUsage && !isApiKeyAuth
-      ? yield* resolveAccountUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
-      : undefined;
+  const [accountUsage, tokenUsage] = yield* Effect.all(
+    [
+      resolveAccountUsage && !isApiKeyAuth
+        ? resolveAccountUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+        : Effect.succeed(undefined),
+      tokenUsageEffect,
+    ],
+    { concurrency: "unbounded" },
+  );
+  const localTokenAccountUsage = tokenUsage
+    ? {
+        source: "claude-oauth-usage" as const,
+        checkedAt: tokenUsage.checkedAt,
+        limits: [],
+        tokenUsage,
+      }
+    : undefined;
+  const combinedAccountUsage = accountUsage
+    ? { ...accountUsage, ...(tokenUsage ? { tokenUsage } : {}) }
+    : localTokenAccountUsage;
   const resolvedUsageEmail =
     resolveUsageAuthEmail && isLongLivedOAuthAuth
       ? yield* resolveUsageAuthEmail(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
@@ -1166,7 +1199,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           hasAccountUsage: accountUsage !== undefined,
         }),
       },
-      ...(accountUsage ? { accountUsage } : {}),
+      ...(combinedAccountUsage ? { accountUsage: combinedAccountUsage } : {}),
       ...(upgradeMessage ? { message: upgradeMessage } : {}),
     },
   });

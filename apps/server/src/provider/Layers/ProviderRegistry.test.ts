@@ -41,6 +41,10 @@ import {
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import {
+  makeClaudeTokenUsageHistoryReader,
+  parseClaudeStatsTokenUsage,
+} from "./ClaudeTokenUsageHistory.ts";
 import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from "./ClaudeUsage.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
@@ -706,6 +710,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
 
           assert.deepStrictEqual(status.accountUsage?.tokenUsage, {
             checkedAt: status.checkedAt,
+            scope: "account",
             dailyBuckets: [
               { startDate: "2026-06-16", tokens: 1200 },
               { startDate: "2026-06-17", tokens: 3400 },
@@ -718,6 +723,32 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               peakDailyTokens: 3400,
             },
           });
+        }),
+      );
+
+      it.effect("retains a calendar year of sparse Codex token usage", () =>
+        Effect.gen(function* () {
+          const firstBucketMs = Date.UTC(2025, 5, 28);
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                tokenUsage: {
+                  dailyUsageBuckets: Array.from({ length: 368 }, (_, index) => ({
+                    startDate: new Date(firstBucketMs + index * 86_400_000)
+                      .toISOString()
+                      .slice(0, 10),
+                    tokens: index + 1,
+                  })),
+                  summary: {},
+                },
+              }),
+            ),
+          );
+
+          const buckets = status.accountUsage?.tokenUsage?.dailyBuckets ?? [];
+          assert.strictEqual(buckets.length, 366);
+          assert.strictEqual(buckets[0]?.startDate, "2025-06-30");
+          assert.strictEqual(buckets.at(-1)?.startDate, "2026-06-30");
         }),
       );
 
@@ -982,6 +1013,116 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         assert.deepStrictEqual(
           mergeProviderSnapshot(previousProvider, refreshedProvider).accountUsage,
           usage,
+        );
+      });
+
+      it("merges sparse token history across same-account usage refreshes", () => {
+        const providerBase = {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: {
+            status: "authenticated",
+            email: "same@example.com",
+            type: "chatgpt",
+          },
+          version: "0.147.0",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const;
+        const previousProvider = {
+          ...providerBase,
+          checkedAt: "2026-08-11T12:00:00.000Z",
+          accountUsage: {
+            source: "codex-rate-limits",
+            checkedAt: "2026-08-11T12:00:00.000Z",
+            limits: [],
+            tokenUsage: {
+              checkedAt: "2026-08-11T12:00:00.000Z",
+              dailyBuckets: [
+                { startDate: "2025-08-11", tokens: 10 },
+                { startDate: "2025-08-12", tokens: 20 },
+                { startDate: "2026-02-08", tokens: 30 },
+                { startDate: "2026-08-01", tokens: 40 },
+              ],
+              summary: { lifetimeTokens: 100 },
+            },
+          },
+        } as const satisfies ServerProvider;
+        const nextProvider = {
+          ...providerBase,
+          checkedAt: "2026-08-12T12:00:00.000Z",
+          accountUsage: {
+            source: "codex-rate-limits",
+            checkedAt: "2026-08-12T12:00:00.000Z",
+            limits: [],
+            tokenUsage: {
+              checkedAt: "2026-08-12T12:00:00.000Z",
+              dailyBuckets: [
+                { startDate: "2026-08-01", tokens: 45 },
+                { startDate: "2026-08-11", tokens: 50 },
+              ],
+              summary: { lifetimeTokens: 115 },
+            },
+          },
+        } as const satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, nextProvider).accountUsage?.tokenUsage,
+          {
+            checkedAt: "2026-08-12T12:00:00.000Z",
+            dailyBuckets: [
+              { startDate: "2025-08-12", tokens: 20 },
+              { startDate: "2026-02-08", tokens: 30 },
+              { startDate: "2026-08-01", tokens: 45 },
+              { startDate: "2026-08-11", tokens: 50 },
+            ],
+            summary: { lifetimeTokens: 115 },
+          },
+        );
+      });
+
+      it("keeps same-account token history when a refresh only reports limits", () => {
+        const usage: ServerProviderAccountUsage = {
+          source: "codex-rate-limits",
+          checkedAt: "2026-08-11T12:00:00.000Z",
+          limits: [],
+          tokenUsage: {
+            checkedAt: "2026-08-11T12:00:00.000Z",
+            dailyBuckets: [{ startDate: "2026-08-10", tokens: 42 }],
+            summary: { lifetimeTokens: 42 },
+          },
+        };
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated", email: "same@example.com", type: "chatgpt" },
+          checkedAt: "2026-08-11T12:00:00.000Z",
+          version: "0.147.0",
+          models: [],
+          slashCommands: [],
+          skills: [],
+          accountUsage: usage,
+        } as const satisfies ServerProvider;
+        const nextProvider = {
+          ...previousProvider,
+          checkedAt: "2026-08-12T12:00:00.000Z",
+          accountUsage: {
+            source: "codex-rate-limits",
+            checkedAt: "2026-08-12T12:00:00.000Z",
+            limits: [],
+          },
+        } as const satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, nextProvider).accountUsage?.tokenUsage,
+          usage.tokenUsage,
         );
       });
 
@@ -2513,6 +2654,124 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             }),
           ),
         ),
+      );
+
+      it.effect("attaches machine-scoped Claude token history without subscription usage", () =>
+        Effect.gen(function* () {
+          const tokenUsage = {
+            checkedAt: "2026-08-12T12:00:00.000Z",
+            scope: "local" as const,
+            coverageStartDate: "2025-08-12",
+            coverageEndDate: "2026-08-12",
+            completeLifetimeHistory: false,
+            dailyBuckets: [{ startDate: "2026-08-11", tokens: 4200 }],
+            summary: { lifetimeTokens: 4200, peakDailyTokens: 4200 },
+          };
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ subscriptionType: "pro" }),
+            process.env,
+            undefined,
+            undefined,
+            () => Effect.succeed(tokenUsage),
+          );
+
+          assert.deepStrictEqual(status.accountUsage, {
+            source: "claude-oauth-usage",
+            checkedAt: tokenUsage.checkedAt,
+            limits: [],
+            tokenUsage,
+          });
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              if (args.join(" ") === "--version") {
+                return { stdout: "2.1.228\n", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${args.join(" ")}`);
+            }),
+          ),
+        ),
+      );
+
+      it("normalizes Claude's local stats cache into daily token buckets", () => {
+        assert.deepStrictEqual(
+          parseClaudeStatsTokenUsage({
+            version: 2,
+            lastComputedDate: "2026-08-11",
+            firstSessionDate: "2025-12-03T09:30:00.000Z",
+            dailyModelTokens: [
+              {
+                date: "2026-08-10",
+                tokensByModel: { "claude-opus-4-6": 1200, "claude-sonnet-4-6": 800 },
+              },
+              { date: "invalid", tokensByModel: { "claude-opus-4-6": 999 } },
+              { date: "2026-08-11", tokensByModel: { "claude-opus-4-6": 3000 } },
+            ],
+            modelUsage: {
+              "claude-opus-4-6": {
+                inputTokens: 100,
+                outputTokens: 200,
+                cacheReadInputTokens: 300,
+                cacheCreationInputTokens: 400,
+              },
+            },
+            totalSessions: 4,
+            totalMessages: 12,
+          }),
+          {
+            dailyBuckets: [
+              { startDate: "2026-08-10", tokens: 2000 },
+              { startDate: "2026-08-11", tokens: 3000 },
+            ],
+            firstSessionDate: "2025-12-03",
+            lastComputedDate: "2026-08-11",
+            lifetimeTokens: 1000,
+          },
+        );
+      });
+
+      it.effect("falls back to the configured Claude home's local transcripts", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-history-",
+          });
+          const projectDir = path.join(homePath, ".claude", "projects", "project");
+          yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+          const now = new Date();
+          yield* TestClock.setTime(now.getTime());
+          const today = now.toISOString().slice(0, 10);
+          yield* fileSystem.writeFileString(
+            path.join(projectDir, "session.jsonl"),
+            `${JSON.stringify({
+              type: "assistant",
+              timestamp: now.toISOString(),
+              sessionId: "session-1",
+              requestId: "request-1",
+              message: {
+                id: "message-1",
+                model: "claude-opus-4-6",
+                usage: {
+                  input_tokens: 100,
+                  output_tokens: 50,
+                  cache_read_input_tokens: 25,
+                  cache_creation_input_tokens: 10,
+                },
+              },
+            })}\n`,
+          );
+
+          const readHistory = yield* makeClaudeTokenUsageHistoryReader({ homePath });
+          const history = yield* readHistory;
+
+          assert.strictEqual(history?.scope, "local");
+          assert.strictEqual(history?.coverageEndDate, today);
+          assert.deepStrictEqual(history?.dailyBuckets, [{ startDate: today, tokens: 185 }]);
+          assert.strictEqual(history?.summary.lifetimeTokens, 185);
+          assert.strictEqual(history?.summary.peakDailyTokens, 185);
+        }),
       );
 
       it.effect("does not request account usage for API key auth", () =>

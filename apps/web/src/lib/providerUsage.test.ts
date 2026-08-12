@@ -228,6 +228,9 @@ describe("deriveProviderAccountUsagePresentation", () => {
       },
       tokenUsage: {
         label: "Token history",
+        checkedAt: "2026-06-18T00:00:00.000Z",
+        scope: "account",
+        completeLifetimeHistory: true,
         summary: [
           { key: "lifetimeTokens", label: "Lifetime tokens", value: "4.6k" },
           { key: "peakDailyTokens", label: "Peak tokens", value: "3.4k" },
@@ -253,6 +256,35 @@ describe("deriveProviderAccountUsagePresentation", () => {
         ],
       },
       windows: [],
+    });
+  });
+
+  it("labels machine-scoped Claude token history honestly", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "claude-oauth-usage",
+      checkedAt: "2026-08-12T12:00:00.000Z",
+      limits: [],
+      tokenUsage: {
+        checkedAt: "2026-08-12T12:00:00.000Z",
+        scope: "local",
+        coverageStartDate: "2025-08-12",
+        coverageEndDate: "2026-08-12",
+        completeLifetimeHistory: false,
+        dailyBuckets: [{ startDate: "2026-08-11", tokens: 4200 }],
+        summary: { lifetimeTokens: 4200, peakDailyTokens: 4200 },
+      },
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage)?.tokenUsage).toMatchObject({
+      label: "Local token activity",
+      scope: "local",
+      coverageStartDate: "2025-08-12",
+      coverageEndDate: "2026-08-12",
+      completeLifetimeHistory: false,
+      summary: [
+        { key: "lifetimeTokens", label: "Tracked tokens", value: "4.2k" },
+        { key: "peakDailyTokens", label: "Peak tokens", value: "4.2k" },
+      ],
     });
   });
 
