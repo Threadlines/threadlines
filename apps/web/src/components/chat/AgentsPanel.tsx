@@ -15,6 +15,7 @@ import {
   buildAgentsPanelView,
   findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
+  formatAgentsPanelSummary,
   hasRunningAgentActivity,
   type AgentBranch,
   type AgentBranchStatus,
@@ -301,6 +302,10 @@ export const AgentsPanel = memo(function AgentsPanel({
     [backgroundRuns, history, providerLabel, subagents],
   );
   const headerMeta = useMemo(() => formatAgentsHeaderMeta({ subagents }), [subagents]);
+  const headerSummary = useMemo(
+    () => formatAgentsPanelSummary(view, providerLabel),
+    [providerLabel, view],
+  );
   const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
   const anyRunning = hasRunningAgentActivity({ subagents, backgroundRuns });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
@@ -369,9 +374,17 @@ export const AgentsPanel = memo(function AgentsPanel({
           that is left worth a row is the turn's counts — and only when there
           are any. */}
       {embedded ? (
-        headerMeta ? (
+        headerMeta || headerSummary ? (
           <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-3">
             {anyRunning ? <LiveNode className="size-1.5" /> : null}
+            {headerSummary ? (
+              <span
+                className="min-w-0 truncate text-[11px] leading-4 text-muted-foreground/70"
+                data-agents-panel-summary="true"
+              >
+                {headerSummary}
+              </span>
+            ) : null}
             <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/55 tabular-nums">
               {headerMeta}
             </span>

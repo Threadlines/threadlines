@@ -7,6 +7,7 @@ import type { ThreadBackgroundRunItem } from "./threadActivity";
 import {
   buildAgentBranches,
   buildAgentsPanelView,
+  formatAgentsPanelSummary,
   findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
   formatLiveAgentStatusLine,
@@ -247,6 +248,54 @@ describe("buildAgentsPanelView", () => {
     // What ran, in the meta; when it ran, on the row's own right edge.
     expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens"]);
     expect(view.earlier[0]?.time).toBe("12m ago");
+  });
+
+  describe("formatAgentsPanelSummary", () => {
+    const viewOf = (input: Parameters<typeof buildAgentsPanelView>[0]) =>
+      buildAgentsPanelView(input);
+
+    it("says whose agents these are, what they are doing, and what is behind them", () => {
+      const view = viewOf({
+        subagents: [
+          buildSubagent({ id: "a", agentThreadId: "a", status: "running" }),
+          buildSubagent({ id: "b", agentThreadId: "b", status: "running" }),
+          buildSubagent({
+            id: "c",
+            agentThreadId: "c",
+            status: "waiting",
+            statusLabel: "Needs approval",
+          }),
+        ],
+        backgroundRuns: [],
+        history: [
+          historyOf(
+            buildSubagent({ id: "old", agentThreadId: "old", status: "completed" }),
+            "Done.",
+          ),
+        ],
+      });
+
+      expect(formatAgentsPanelSummary(view, "codex")).toBe(
+        "Codex · 2 running · 1 needs you · 1 earlier",
+      );
+    });
+
+    it("counts a background run as a run rather than as an agent", () => {
+      const view = viewOf({
+        subagents: [buildSubagent({ id: "a", agentThreadId: "a", status: "running" })],
+        backgroundRuns: [
+          buildRun({ id: "terminal:default", source: "terminal", terminalId: "default" }),
+        ],
+      });
+
+      expect(formatAgentsPanelSummary(view, "claude")).toBe("Claude · 1 running · 1 run");
+    });
+
+    it("has nothing to say about a thread that has never run an agent", () => {
+      expect(
+        formatAgentsPanelSummary(viewOf({ subagents: [], backgroundRuns: [] }), "codex"),
+      ).toBeNull();
+    });
   });
 
   it("still names the model and effort for a child with no token totals", () => {

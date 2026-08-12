@@ -307,6 +307,53 @@ export interface AgentsPanelView {
 }
 
 /**
+ * What the panel's own header says it is showing: the provider whose agents
+ * these are, how many are working, how many want something, and how much of the
+ * list is already finished. The row otherwise carried a pulsing dot and a
+ * duration with nothing between them naming what was pulsing.
+ *
+ * Terminal and detected runs are counted as runs rather than folded into the
+ * agent count — a dev server on the tree is not an agent, and saying so would
+ * inflate the only number here anyone would act on.
+ */
+export function formatAgentsPanelSummary(
+  view: AgentsPanelView,
+  providerLabel?: string | null | undefined,
+): string | null {
+  if (!view.hasAny) {
+    return null;
+  }
+
+  const subagents = view.current.filter(
+    (branch): branch is AgentSubagentBranch => branch.kind === "subagent",
+  );
+  const runningCount = subagents.filter((branch) => branch.status === "running").length;
+  const waitingCount = subagents.filter((branch) => branch.status === "waiting").length;
+  const runCount = view.current.filter((branch) => branch.kind === "run").length;
+
+  const parts = [
+    providerDisplayLabel(providerLabel),
+    runningCount > 0 ? `${runningCount} running` : null,
+    waitingCount > 0 ? `${waitingCount} needs you` : null,
+    runCount > 0 ? pluralize(runCount, "run") : null,
+    view.earlier.length > 0 ? `${view.earlier.length} earlier` : null,
+  ].filter((part): part is string => part !== null);
+
+  // A finished turn whose agents have not aged into "earlier" yet would leave
+  // only the provider's name, which says nothing the rows do not.
+  return parts.length > 1 ? parts.join(" · ") : (parts[0] ?? null);
+}
+
+/** `codex` as the panel says it: the provider's own name, capitalised. */
+function providerDisplayLabel(providerLabel: string | null | undefined): string | null {
+  const provider = providerLabel?.trim();
+  if (!provider) {
+    return null;
+  }
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+/**
  * The panel's whole list: the live turn on top, then everything this thread has
  * run before it. The two sources overlap — a live agent is also in the thread's
  * history — so the live record wins, since only it carries streaming output.
