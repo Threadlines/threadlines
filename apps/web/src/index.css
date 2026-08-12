@@ -640,6 +640,18 @@ label:has(> select#reasoning-effort) select {
   margin-top: 0.125rem;
 }
 
+/* The dense block margins outrank `.chat-markdown > :first-child` on
+   specificity, so the edge resets are restated here. Without them a dense
+   entry opens on 6px of dead space, which is also the space that pushed the
+   first line of prose off the thread's node. */
+.chat-markdown-dense .chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown-dense .chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
 .chat-markdown-dense .chat-markdown h1,
 .chat-markdown-dense .chat-markdown h2 {
   margin: 0.5rem 0 0.25rem;
@@ -660,6 +672,15 @@ label:has(> select#reasoning-effort) select {
 
 .chat-markdown-dense .chat-markdown :not(pre) > code {
   font-size: 11px;
+}
+
+/* The subagent transcript floats an entry's timestamp onto the first line of the
+   entry's prose. Prose wraps around it, but a block that establishes its own
+   formatting context would be squeezed beside it, so a code fence or table that
+   opens an entry starts below the timestamp's line instead. */
+.subagent-transcript-prose .chat-markdown > pre:first-child,
+.subagent-transcript-prose .chat-markdown > table:first-child {
+  clear: right;
 }
 
 .chat-markdown-file-link {

@@ -615,7 +615,7 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("leaves a short tool run inline rather than fronting it with a receipt", async () => {
+  it("fronts even a short tool run with a receipt, so the drill-in is prose and receipts", async () => {
     transcriptRpcMock.mockResolvedValue({
       entries: [
         { role: "assistant", text: "Checking two things.", toolUses: [] },
@@ -643,12 +643,17 @@ describe("AgentsPanel", () => {
       await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
       await expect.element(page.getByText("Checking two things.")).toBeVisible();
 
+      // The run is folded, not inlined, and the rows only arrive on request.
       await vi.waitFor(() => {
-        expect(document.querySelector("[data-subagent-transcript-entry='tool']")).not.toBeNull();
+        expect(
+          document.querySelector("[data-subagent-transcript-tool-run-toggle='true']"),
+        ).not.toBeNull();
       });
-      expect(
-        document.querySelector("[data-subagent-transcript-tool-run-toggle='true']"),
-      ).toBeNull();
+      await expect.element(page.getByText("2 actions")).toBeVisible();
+      expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
+
+      await page.getByRole("button", { name: /2 actions/u }).click();
+      await expect.element(page.getByText("handler")).toBeVisible();
     } finally {
       await mounted.unmount();
     }

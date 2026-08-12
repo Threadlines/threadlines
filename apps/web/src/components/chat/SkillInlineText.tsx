@@ -145,6 +145,18 @@ export function SkillInlineText(props: { text: string } & InlineMarkdownContext)
   return <>{nodes}</>;
 }
 
+interface InlineMarkdownChildProps {
+  children?: ReactNode;
+  href?: string;
+  /** The hast node the markdown renderer built this element from. */
+  node?: { tagName?: string } | undefined;
+}
+
+/** Inline markdown whose contents belong to the renderer, not to this walker. */
+function isInlineMarkdownTag(type: unknown): boolean {
+  return type === "code" || type === "a";
+}
+
 export function renderSkillInlineMarkdownChildren(
   children: ReactNode,
   context: InlineMarkdownContext,
@@ -153,10 +165,16 @@ export function renderSkillInlineMarkdownChildren(
     if (typeof child === "string") {
       return <SkillInlineText text={child} {...context} />;
     }
-    if (!isValidElement<{ children?: ReactNode; href?: string }>(child)) {
+    if (!isValidElement<InlineMarkdownChildProps>(child)) {
       return child;
     }
-    if (child.type === "code" || child.type === "a") {
+    // Code and links are left exactly as the markdown renderer built them.
+    // A renderer that overrides these tags hands over an element typed by the
+    // override component rather than by the tag, so the tag has to be read off
+    // the source node too: rewriting the text child of an inline-code element
+    // is what stopped `AgentsPanel.tsx:300` from being a file reference the
+    // renderer could recognise and open.
+    if (isInlineMarkdownTag(child.type) || isInlineMarkdownTag(child.props.node?.tagName)) {
       return child;
     }
     // Custom anchor components are elements like any other, so the tag check

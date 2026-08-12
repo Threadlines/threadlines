@@ -30,10 +30,13 @@ import {
   buildSubagentTranscriptView,
   formatSubagentToolLabel,
   formatSubagentToolPreview,
+  formatSubagentToolRunActions,
   groupSubagentTranscriptSteps,
   isSameSubagentTranscriptItem,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
+  subagentStepNodeOffsetPx,
+  type SubagentTranscriptProseItem,
   type SubagentTranscriptStep,
   type SubagentTranscriptToolRun,
   type SubagentTranscriptViewItem,
@@ -555,6 +558,9 @@ export function SubagentTranscript({
                         <SpineRow
                           key={`${section.agentId}:${step.id}`}
                           node={<TranscriptSpineNode step={step} live={live} />}
+                          // The dot belongs to what the step says, so it lands on
+                          // the step's first line of text.
+                          nodeOffset={subagentStepNodeOffsetPx(step)}
                           connectTop={stepIndex > 0}
                           connectBottom={!lastItem || showLiveTail}
                           style={
@@ -644,15 +650,26 @@ export function SubagentTranscript({
 function TranscriptTimestamp({
   at,
   timestampFormat,
+  float = false,
 }: {
   at: string | null;
   timestampFormat: TimestampFormat;
+  /** Rides the top-right of an entry's prose, on the prose's own first line,
+   *  rather than sitting in a meta row of its own. Floated rather than absolute
+   *  so a long first line wraps around it instead of running under it. */
+  float?: boolean;
 }) {
   if (!at) {
     return null;
   }
   return (
-    <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/40 tabular-nums">
+    <span
+      className={cn(
+        "font-mono text-[10px] text-muted-foreground/40 tabular-nums",
+        float ? "float-right ml-2 h-[18px] leading-[18px]" : "shrink-0 leading-5",
+      )}
+      data-subagent-transcript-time="true"
+    >
       {formatShortTimestamp(at, timestampFormat)}
     </span>
   );
@@ -783,14 +800,20 @@ function ToolRunReceipt({
             )}
           />
           <span className="shrink-0 text-[11px] leading-5 text-foreground/80">
-            {run.actionCount.toLocaleString()} actions
+            {formatSubagentToolRunActions(run)}
           </span>
-          <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
-            ·
-          </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
-            {run.toolSummary}
-          </span>
+          {run.toolSummary ? (
+            <>
+              <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
+                ·
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/55">
+                {run.toolSummary}
+              </span>
+            </>
+          ) : (
+            <span className="flex-1" />
+          )}
           {duration ? (
             <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
               {duration}
@@ -870,23 +893,25 @@ const TranscriptMessage = memo(function TranscriptMessage({
 
   return (
     <div className="min-w-0" data-subagent-transcript-entry={item.role}>
-      {label || item.at ? (
+      {/* A labelled role keeps its meta row: the label is the row's first line,
+          and the time sits at the end of it. The agent's own prose has no label,
+          so the time rides the first line of the prose instead of taking a line
+          of its own above it -- which is what put the spine's node on the time. */}
+      {label ? (
         <div className="flex min-w-0 items-baseline gap-2">
-          {label ? (
-            <button
-              type="button"
-              className={cn(
-                "shrink-0 text-[9px] font-medium tracking-[0.12em] uppercase",
-                foldable
-                  ? "text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
-                  : "pointer-events-none text-muted-foreground/45",
-              )}
-              aria-expanded={foldable ? expanded : undefined}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {label}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className={cn(
+              "shrink-0 text-[9px] font-medium tracking-[0.12em] uppercase",
+              foldable
+                ? "text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
+                : "pointer-events-none text-muted-foreground/45",
+            )}
+            aria-expanded={foldable ? expanded : undefined}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {label}
+          </button>
           {folded ? (
             <button
               type="button"
@@ -904,7 +929,13 @@ const TranscriptMessage = memo(function TranscriptMessage({
         </div>
       ) : null}
       {folded ? null : (
-        <div className={TRANSCRIPT_MARKDOWN_CLASS} data-subagent-transcript-message="true">
+        <div
+          className={cn(TRANSCRIPT_MARKDOWN_CLASS, "subagent-transcript-prose")}
+          data-subagent-transcript-message="true"
+        >
+          {label ? null : (
+            <TranscriptTimestamp at={item.at} timestampFormat={timestampFormat} float />
+          )}
           <ChatMarkdown
             text={item.text}
             cwd={cwd}
@@ -933,7 +964,7 @@ const TranscriptItem = memo(
     cwd,
     timestampFormat,
   }: {
-    item: SubagentTranscriptViewItem;
+    item: SubagentTranscriptProseItem;
     environmentId: EnvironmentId;
     threadId: ThreadId;
     cwd: string | undefined;
@@ -941,9 +972,6 @@ const TranscriptItem = memo(
   }) {
     if (item.kind === "thinking") {
       return <ThinkingBlock item={item} timestampFormat={timestampFormat} />;
-    }
-    if (item.kind === "tools") {
-      return <ToolGroup item={item} timestampFormat={timestampFormat} />;
     }
     return (
       <TranscriptMessage
@@ -1037,21 +1065,22 @@ const TRANSCRIPT_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties
  *  reads as openable), and the one live row carries the halo. */
 function TranscriptSpineNode({ step, live }: { step: SubagentTranscriptStep; live: boolean }) {
   if (live) {
-    return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
-  }
-  if (step.kind === "tool-run") {
     return (
-      <span
-        aria-hidden="true"
-        className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
+      <LiveNode
+        className="size-1.5 [--thread-halo-delay:0.2s]"
+        data-subagent-transcript-node="true"
       />
     );
   }
-  const item = step.item;
-  if (item.kind === "thinking" || (item.kind === "message" && item.role !== "assistant")) {
+  const openable =
+    step.kind === "tool-run" ||
+    step.item.kind === "thinking" ||
+    (step.item.kind === "message" && step.item.role !== "assistant");
+  if (openable) {
     return (
       <span
         aria-hidden="true"
+        data-subagent-transcript-node="true"
         className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
       />
     );
@@ -1059,15 +1088,18 @@ function TranscriptSpineNode({ step, live }: { step: SubagentTranscriptStep; liv
   return (
     <span
       aria-hidden="true"
+      data-subagent-transcript-node="true"
       className="size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
     />
   );
 }
 
-/** The agent's newest words, streamed ahead of the written transcript. */
+/** The agent's newest words, streamed ahead of the written transcript.
+ *  `leading-5` pins the label's line box to the meta line every other row leads
+ *  with, which is where the spine puts its node. */
 const LiveTail = memo(function LiveTail({ body }: { body: string }) {
   return (
-    <div className="min-w-0" data-subagent-transcript-live="true">
+    <div className="min-w-0 leading-5" data-subagent-transcript-live="true">
       {/* The spine already carries the live halo for this row. */}
       <span className="text-[9px] font-medium tracking-[0.12em] text-muted-foreground/45 uppercase">
         Writing

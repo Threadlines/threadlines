@@ -162,18 +162,21 @@ export interface SubagentTranscriptToolRun {
   readonly durationMs: number | null;
 }
 
+/** Everything that is not tool machinery: the agent's prose, its reasoning, and
+ *  messages sent to it. Tool rows only reach the thread inside a run. */
+export type SubagentTranscriptProseItem = Exclude<SubagentTranscriptViewItem, { kind: "tools" }>;
+
 export type SubagentTranscriptStep =
-  | { readonly kind: "item"; readonly id: string; readonly item: SubagentTranscriptViewItem }
+  | { readonly kind: "item"; readonly id: string; readonly item: SubagentTranscriptProseItem }
   | SubagentTranscriptToolRun;
 
-/** Below this a run is shorter than the receipt that would replace it. */
-const MIN_COLLAPSIBLE_TOOL_RUN = 3;
 const MAX_SUMMARIZED_TOOL_KINDS = 3;
 
 /**
  * Folds each run of consecutive tool rows into one receipt, leaving prose and
- * reasoning rows exactly where they are. A run of one or two calls renders
- * inline: it is already as short as its own summary would be.
+ * reasoning rows exactly where they are. Every run gets a receipt, down to a
+ * single call: the transcript then reads as prose with receipts between it, and
+ * a lone tool row can no longer sit on the thread in a shape of its own.
  */
 export function groupSubagentTranscriptSteps(
   steps: ReadonlyArray<SubagentTranscriptViewItem>,
@@ -204,12 +207,6 @@ export function groupSubagentTranscriptSteps(
     }
 
     const actionCount = run.reduce((total, item) => total + item.tools.length, 0);
-    if (actionCount < MIN_COLLAPSIBLE_TOOL_RUN) {
-      for (const item of run) {
-        grouped.push({ kind: "item", id: item.id, item });
-      }
-      continue;
-    }
     grouped.push({
       kind: "tool-run",
       id: `${run[0]?.id ?? String(index)}:run`,
@@ -221,6 +218,37 @@ export function groupSubagentTranscriptSteps(
   }
 
   return grouped;
+}
+
+/** The receipt's leading count, in the conversation's wording: `1 action`,
+ *  `14 actions`. A run can carry no calls at all -- a result whose call sits on
+ *  an earlier page -- and "0 actions" would read as if nothing happened. */
+export function formatSubagentToolRunActions(run: SubagentTranscriptToolRun): string {
+  if (run.actionCount === 0) {
+    return "Tool output";
+  }
+  return `${run.actionCount.toLocaleString()} ${run.actionCount === 1 ? "action" : "actions"}`;
+}
+
+/**
+ * Where the spine's node belongs on a step: the row's own top padding plus half
+ * its first text line, so the dot reads as belonging to the words rather than to
+ * the line above them. Agent prose renders at 12px/18px; every other row leads
+ * with a 20px meta line (a receipt, reasoning, a folded message header).
+ *
+ * Mirrors the row padding and line heights in `SubagentTranscript.tsx`, which
+ * the transcript's geometry test measures against the rendered panel.
+ */
+const TRANSCRIPT_ROW_PADDING_TOP_PX = 4;
+const TRANSCRIPT_PROSE_LINE_PX = 18;
+const TRANSCRIPT_META_LINE_PX = 20;
+
+export function subagentStepNodeOffsetPx(step: SubagentTranscriptStep): number {
+  const firstLinePx =
+    step.kind === "item" && step.item.kind === "message" && step.item.role === "assistant"
+      ? TRANSCRIPT_PROSE_LINE_PX
+      : TRANSCRIPT_META_LINE_PX;
+  return TRANSCRIPT_ROW_PADDING_TOP_PX + firstLinePx / 2;
 }
 
 function summarizeToolRunNames(run: ReadonlyArray<SubagentTranscriptToolsItem>): string {

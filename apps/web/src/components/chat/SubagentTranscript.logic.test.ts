@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildSubagentTranscriptView,
+  formatSubagentToolRunActions,
   groupSubagentTranscriptSteps,
   shouldShowSubagentLiveTail,
   splitSubagentTranscriptLead,
+  subagentStepNodeOffsetPx,
   type SubagentTranscriptEntryLike,
 } from "./SubagentTranscript.logic";
 
@@ -152,18 +154,37 @@ describe("groupSubagentTranscriptSteps", () => {
     expect(run?.kind === "tool-run" ? run.items.length : null).toBe(2);
   });
 
-  it("leaves a run of two calls inline, where a receipt would save nothing", () => {
+  it("gives a single call a receipt of its own, so the thread is prose and receipts", () => {
     const view = buildSubagentTranscriptView([
       entry({ role: "assistant", text: "Checking." }),
-      entry({ role: "assistant", toolUses: [toolUse("Read"), toolUse("Grep")] }),
+      entry({ role: "assistant", toolUses: [toolUse("Read")] }),
       entry({ role: "assistant", text: "Done." }),
     ]);
 
-    expect(groupSubagentTranscriptSteps(view).map((step) => step.kind)).toEqual([
-      "item",
-      "item",
-      "item",
+    const grouped = groupSubagentTranscriptSteps(view);
+    expect(grouped.map((step) => step.kind)).toEqual(["item", "tool-run", "item"]);
+    const run = grouped[1];
+    expect(run?.kind === "tool-run" ? formatSubagentToolRunActions(run) : null).toBe("1 action");
+    expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe("Read ×1");
+  });
+
+  it("reads a result whose call is on an earlier page as tool output, not zero actions", () => {
+    const view = buildSubagentTranscriptView([entry({ role: "user", outputPreview: "42 files" })]);
+
+    const [run] = groupSubagentTranscriptSteps(view);
+    expect(run?.kind === "tool-run" ? formatSubagentToolRunActions(run) : null).toBe("Tool output");
+  });
+
+  it("puts the node on the prose's own first line, and on the meta line elsewhere", () => {
+    const view = buildSubagentTranscriptView([
+      entry({ role: "assistant", text: "Walked the route files." }),
+      entry({ role: "assistant", toolUses: [toolUse("Read")] }),
+      entry({ role: "thinking", text: "Considering the gutter." }),
     ]);
+
+    // Prose leads with an 18px line, everything else with a 20px meta line, on
+    // 4px of row padding. The panel geometry test measures the rendered result.
+    expect(groupSubagentTranscriptSteps(view).map(subagentStepNodeOffsetPx)).toEqual([13, 14, 14]);
   });
 
   it("breaks a run at the prose between two batches", () => {
