@@ -257,6 +257,81 @@ describe("CodexAdapter item mapping", () => {
     );
   });
 
+  it("drops the parent turn that was live at the fork, which carries a real time", () => {
+    // The second shape of the same inheritance, and the one a "no timestamps"
+    // rule slid straight past: the turn the parent was in the middle of when it
+    // spawned this child comes across with an ordinary id and a startedAt from
+    // before the child existed. Measured from a real fork: the parent's live
+    // turn started 11s before creation, the child's own work 1s after it.
+    const createdAt = 1_786_558_783;
+    const thread = {
+      id: "forked-child-live-parent-turn",
+      forkedFromId: "parent-thread",
+      parentThreadId: "parent-thread",
+      createdAt,
+      turns: [
+        {
+          id: "rollout-2",
+          status: "completed",
+          startedAt: null,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "Older replayed history." }],
+        },
+        {
+          id: "019ff733-7569-7ad2-9171-d6f19574734f",
+          status: "interrupted",
+          startedAt: createdAt - 11,
+          items: [
+            { id: "user-1", type: "userMessage", text: "can you run just 1 subagent this time" },
+            {
+              id: "assistant-2",
+              type: "agentMessage",
+              text: "I can run exactly one subagent now.",
+            },
+          ],
+        },
+        {
+          id: "019ff733-a3ec-7060-912e-f858d78b9ef9",
+          status: "completed",
+          startedAt: createdAt + 1,
+          items: [{ id: "assistant-3", type: "agentMessage", text: "Read-only scan complete." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["Read-only scan complete."],
+    );
+  });
+
+  it("keeps a child's own first turn that starts in the second it was created", () => {
+    const createdAt = 1_786_558_783;
+    const thread = {
+      id: "forked-child-instant-start",
+      forkedFromId: "parent-thread",
+      createdAt,
+      turns: [
+        {
+          id: "019ff733-7569-7ad2-9171-d6f19574734f",
+          status: "completed",
+          startedAt: createdAt - 4,
+          items: [{ id: "assistant-1", type: "agentMessage", text: "Parent's own words." }],
+        },
+        {
+          id: "019ff733-a3ec-7060-912e-f858d78b9ef9",
+          status: "completed",
+          startedAt: createdAt,
+          items: [{ id: "assistant-2", type: "agentMessage", text: "Off to work." }],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.deepStrictEqual(
+      mapCodexSubagentTranscript(thread).entries.map((entry) => entry.text),
+      ["Off to work."],
+    );
+  });
+
   it("keeps every turn when a forked child has no timed turn to start from", () => {
     const thread = {
       id: "forked-child-untimed",

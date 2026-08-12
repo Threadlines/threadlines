@@ -417,18 +417,32 @@ export function mapCodexSubagentTranscript(
     ? isoFromEpochSeconds(thread.createdAt)
     : undefined;
   // Codex spawns a subagent by forking its parent, so the child inherits the
-  // parent's conversation and replays it as that leading timeless turn. None of
-  // it is the child's own work: the replayed user message is what the operator
+  // parent's conversation and replays it at the head of its own history. None
+  // of it is the child's work: the replayed user message is what the operator
   // typed to the main thread, which the panel then labelled as the instruction
   // this agent was given, and the replayed assistant message is the main
-  // thread's own reply attributed to the child. A forked child's transcript
-  // starts at its first real turn instead. The child's actual instruction is
-  // the spawn prompt, which the panel already carries as its objective.
-  const firstOwnTurnIndex = thread.forkedFromId
-    ? thread.turns.findIndex((turn) => turn.startedAt !== undefined && turn.startedAt !== null)
-    : 0;
-  // A thread with no timed turn at all is not a fork whose inheritance can be
-  // told apart, so it keeps every turn rather than losing its only content.
+  // thread's own reply attributed to the child.
+  //
+  // The inheritance arrives in two shapes, and only one of them is timeless: an
+  // older block Codex ids `rollout-N` with no times at all, and the parent turn
+  // that was live at the moment of the fork, which carries an ordinary id and a
+  // real `startedAt` -- from *before* this thread existed. What separates them
+  // from the child's own work is therefore not the ids or the missing times but
+  // the clock: a turn that started before the child was created cannot be the
+  // child's. Measured against two real forks, own work begins one and two
+  // seconds after `createdAt`, so the comparison is strict rather than fuzzy.
+  const forkedThreadCreatedAt = Number.isFinite(thread.createdAt) ? thread.createdAt : null;
+  const firstOwnTurnIndex =
+    thread.forkedFromId && forkedThreadCreatedAt !== null
+      ? thread.turns.findIndex(
+          (turn) =>
+            turn.startedAt !== undefined &&
+            turn.startedAt !== null &&
+            turn.startedAt >= forkedThreadCreatedAt,
+        )
+      : 0;
+  // No turn of the child's own leaves nothing to tell the inheritance from, so
+  // the thread keeps every turn rather than losing its only content.
   const ownTurns = firstOwnTurnIndex > 0 ? thread.turns.slice(firstOwnTurnIndex) : thread.turns;
   const entries = ownTurns.flatMap((turn) =>
     turn.items.flatMap((item) => {
