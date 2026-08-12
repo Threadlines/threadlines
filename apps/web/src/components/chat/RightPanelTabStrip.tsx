@@ -6,7 +6,8 @@
  * The `+` opens a menu of the thread's surfaces rather than a new blank tab,
  * because there is a fixed set of them and each can only be open once. A
  * surface already in the strip stays listed and dimmed: choosing it focuses the
- * tab it already has.
+ * tab it already has. Empty surfaces stay clickable too, but use the same quiet
+ * treatment as their rows in the panel launcher.
  *
  * The row shares its width with the Windows window-controls overlay, which
  * reserves ~150px of it, so the strip measures itself and drops every label
@@ -24,6 +25,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
 import { LiveNode } from "../ui/threadline";
 import { TooltipWrapper } from "../ui/tooltip";
+import type { RightPanelLauncherStates } from "./rightPanelLauncherState";
 import {
   RIGHT_PANEL_SURFACES,
   type RightPanelTab,
@@ -197,19 +199,29 @@ function TabStripItem({
           // across the whole tab: without it nothing says the pointer is on the ✕
           // rather than on the tab it sits in.
           className={cn(
-            "absolute inline-flex items-center justify-center opacity-0 transition-[opacity,background-color,color] hover:bg-foreground/10 hover:text-foreground focus-ring",
+            "group/rail-close absolute inline-flex items-center justify-center opacity-0 transition-[opacity,background-color,color] hover:text-foreground focus-ring",
             active ? "bg-background" : "bg-rail",
             iconOnly
               ? // The whole tab, so the target is the icon's own 28px box rather
-                // than a badge pinned to a corner of it.
+                // than a badge pinned to a corner of it. Its visible hover fill
+                // stays around the centered ✕, matching the labelled control,
+                // while this full box keeps the pointer target generous.
                 "inset-0 rounded-t-md"
-              : "top-1/2 right-1 size-4 -translate-y-1/2 rounded",
+              : "top-1/2 right-1 size-4 -translate-y-1/2 rounded hover:bg-foreground/10",
             REVEAL_ON_TAB_HOVER_OR_FOCUS,
             "focus-visible:opacity-100",
           )}
           onClick={onClose}
         >
-          <XIcon className="size-3" aria-hidden="true" />
+          <span
+            className={cn(
+              "inline-flex items-center justify-center transition-colors",
+              iconOnly && "size-4 rounded group-hover/rail-close:bg-foreground/10",
+            )}
+            data-right-panel-close-glyph="true"
+          >
+            <XIcon className="size-3" aria-hidden="true" />
+          </span>
         </button>
       ) : null}
     </div>
@@ -305,6 +317,7 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   availableTabs,
   activeTab,
   liveTabs,
+  surfaceStates,
   onSelectTab,
   onCloseTab,
   trailing,
@@ -314,6 +327,8 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   activeTab: RightPanelTab | null;
   /** Tabs whose content is currently live, drawn with a live node. */
   liveTabs?: ReadonlyArray<RightPanelTab>;
+  /** Shared surface availability, used to quiet empty entries in the + menu. */
+  surfaceStates?: RightPanelLauncherStates | undefined;
   onSelectTab: (tab: RightPanelTab) => void;
   onCloseTab: (tab: RightPanelTab) => void;
   /** Sheet-mode dismissal, parked at the end of the row. */
@@ -461,16 +476,21 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
                 {availableTabs.map((tab) => {
                   const surface = RIGHT_PANEL_SURFACES[tab];
                   const alreadyOpen = openTabs.includes(tab);
+                  const empty = surfaceStates?.[tab]?.empty ?? false;
                   const MenuIcon = RIGHT_PANEL_TAB_ICONS[tab];
                   return (
                     <MenuItem
                       key={tab}
                       data-right-panel-menu-tab={tab}
                       data-right-panel-menu-tab-open={alreadyOpen ? "true" : undefined}
-                      className={cn(alreadyOpen && "text-muted-foreground/60")}
+                      data-right-panel-menu-tab-empty={empty ? "true" : undefined}
+                      className={cn((alreadyOpen || empty) && "text-muted-foreground/60")}
                       onClick={() => onSelectTab(tab)}
                     >
-                      <MenuIcon aria-hidden="true" className="text-muted-foreground" />
+                      <MenuIcon
+                        aria-hidden="true"
+                        className={cn(empty ? "text-muted-foreground/45" : "text-muted-foreground")}
+                      />
                       {surface.label}
                     </MenuItem>
                   );

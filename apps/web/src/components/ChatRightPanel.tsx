@@ -42,6 +42,7 @@ export function ChatRightPanel(props: {
         openTabs={props.openTabs}
         availableTabs={props.availableTabs}
         activeTab={activeTab}
+        surfaceStates={props.launcherSurfaceStates}
         {...(props.liveTabs ? { liveTabs: props.liveTabs } : {})}
         onSelectTab={props.onSelectTab}
         onCloseTab={props.onCloseTab}

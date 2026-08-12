@@ -1100,6 +1100,60 @@ describe("AgentsPanel", () => {
     }
   });
 
+  it("dims an empty Diff entry in the + menu without disabling it", async () => {
+    const onSelectTab = vi.fn();
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="sourceControl"
+          launcherSurfaceStates={buildRightPanelLauncherStates({
+            workingTreeFileCount: 0,
+            reviewableTurnCount: 0,
+            diffHasExplicitTarget: false,
+            agents: {
+              subagents: [buildSubagent({ label: "Router sweep" })],
+              backgroundRuns: [],
+              history: [],
+            },
+          })}
+          onSelectTab={onSelectTab}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Open panel" }).click();
+
+      const diffItem = await vi.waitFor(() => {
+        const item = document.querySelector("[data-right-panel-menu-tab='diff']");
+        if (!item) throw new Error("The + menu never listed Diff.");
+        return item as HTMLElement;
+      });
+      const agentsItem = document.querySelector(
+        "[data-right-panel-menu-tab='agents']",
+      ) as HTMLElement;
+
+      expect(diffItem.dataset.rightPanelMenuTabEmpty).toBe("true");
+      expect(agentsItem.dataset.rightPanelMenuTabEmpty).toBeUndefined();
+      expect(getComputedStyle(diffItem).color).not.toBe(getComputedStyle(agentsItem).color);
+      // Empty is only a visual state: opening Diff still reaches its own empty
+      // surface, where the fuller explanation belongs.
+      expect(diffItem.hasAttribute("disabled")).toBe(false);
+      expect(diffItem.getAttribute("aria-disabled")).toBeNull();
+      expect(getComputedStyle(diffItem).pointerEvents).not.toBe("none");
+
+      diffItem.click();
+      expect(onSelectTab).toHaveBeenCalledWith("diff");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("labels every tab while they fit, and drops all the labels rather than scrolling", async () => {
     // Both panel widths that matter -- the 330px default and the 272px floor --
     // and each of them twice: as the panel has the row to itself, and with the
@@ -1632,11 +1686,23 @@ describe("AgentsPanel", () => {
         "[data-right-panel-tab='sourceControl']",
       ) as HTMLElement;
       const close = activeTab.querySelector("[data-right-panel-close-tab]") as HTMLElement;
+      const closeGlyph = close.querySelector("[data-right-panel-close-glyph]") as HTMLElement;
       const activeBox = activeTab.getBoundingClientRect();
       const closeBox = close.getBoundingClientRect();
       expect(closeBox.width).toBeGreaterThanOrEqual(24);
       expect(closeBox.width).toBeCloseTo(activeBox.width, 0);
       expect(closeBox.height).toBeCloseTo(activeBox.height, 0);
+
+      const restingGlyphBackground = getComputedStyle(closeGlyph).backgroundColor;
+      await page.getByRole("button", { name: "Close Source" }).hover();
+      await vi.waitFor(() => {
+        if (getComputedStyle(close).opacity !== "1") {
+          throw new Error("Hovering the active icon tab never revealed its ✕.");
+        }
+        if (getComputedStyle(closeGlyph).backgroundColor === restingGlyphBackground) {
+          throw new Error("The icon-only ✕ never gained its hover fill.");
+        }
+      });
 
       await page.getByRole("button", { name: "Close Source" }).click();
       expect(onCloseTab).toHaveBeenCalledWith("sourceControl");
