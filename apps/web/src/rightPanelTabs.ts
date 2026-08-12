@@ -1,7 +1,7 @@
 /**
  * The right sidebar's tab model.
  *
- * The sidebar is one browser-style panel with a tab strip: Changes, Diff and
+ * The sidebar is one browser-style panel with a tab strip: Source, Diff and
  * Agents are surfaces you open into it, each at most once. Two things have to
  * agree about it — the route that renders the panel and the chat header that
  * toggles it — so the state lives here rather than in either of them.
@@ -48,7 +48,12 @@ export interface RightPanelSurface {
 export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurface>> = {
   sourceControl: {
     id: "sourceControl",
-    label: "Changes",
+    // "Source", not "Git": the contracts already model `jj` beside git, so a
+    // Jujutsu repo would be reading a wrong word. Not "Changes" either -- the
+    // surface commits, pulls and stashes as well as listing changes, and the
+    // list inside it is already headed "Changes". The id, the search param and
+    // every other internal name stay `sourceControl`.
+    label: "Source",
     description: "Working tree changes on this branch.",
   },
   diff: {
@@ -281,7 +286,7 @@ export interface RightPanelReconcileInput {
   readonly urlClosed: boolean;
   readonly urlDiffTarget: RightPanelDiffTarget;
   readonly availableTabs: ReadonlyArray<RightPanelTab>;
-  /** Whether a thread with no state at all should open on Changes (the
+  /** Whether a thread with no state at all should open on Source (the
    *  default-open setting, already gated to wide layouts by the caller). */
   readonly defaultVisible: boolean;
 }

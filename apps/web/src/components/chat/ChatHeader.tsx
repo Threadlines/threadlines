@@ -54,7 +54,7 @@ interface ChatHeaderProps {
   /** Whether the right rail is showing, on either of its tabs. */
   railOpen: boolean;
   /** False for capability-gated threads (General Chats) even when a project
-   *  name exists: the rail still opens, just without its Changes tab. */
+   *  name exists: the rail still opens, just without its Source tab. */
   sourceControlAvailable: boolean;
   /** False where there is no project to preview, e.g. a general chat. */
   browserAvailable: boolean;
@@ -391,7 +391,7 @@ export const ChatHeader = memo(function ChatHeader({
                     size="xs"
                   >
                     <PanelRightIcon className="size-3" />
-                    {/* Only while closed: once the rail is open its Changes tab
+                    {/* Only while closed: once the rail is open its Source tab
                         shows the per-file counts, and repeating the total is
                         noise. */}
                     {!railOpen && (workingTreeDiffStat || remoteBehindCount !== null) ? (
@@ -461,7 +461,7 @@ export const ChatHeader = memo(function ChatHeader({
                     {remoteBehindCount === 1
                       ? "1 commit behind the remote."
                       : `${remoteBehindCount} commits behind the remote.`}{" "}
-                    Pull from the Changes tab.
+                    Pull from the Source tab.
                   </div>
                 ) : null}
               </TooltipPopup>

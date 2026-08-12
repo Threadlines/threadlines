@@ -1,7 +1,7 @@
 import "../../index.css";
 
 import { EnvironmentId, ThreadId } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -791,9 +791,9 @@ describe("AgentsPanel", () => {
       expect(document.querySelector("[data-agents-panel='drill-in']")).not.toBeNull();
 
       // The tabs stay reachable from inside the transcript.
-      const changesTab = page.getByRole("tab", { name: "Changes" });
-      await expect.element(changesTab).toBeVisible();
-      await changesTab.click();
+      const sourceTab = page.getByRole("tab", { name: "Source" });
+      await expect.element(sourceTab).toBeVisible();
+      await sourceTab.click();
       expect(onSelectTab).toHaveBeenCalledWith("sourceControl");
     } finally {
       await mounted.unmount();
@@ -881,9 +881,9 @@ describe("AgentsPanel", () => {
     try {
       await page.getByRole("button", { name: "Open panel" }).click();
 
-      const changesItem = await vi.waitFor(() => {
+      const sourceItem = await vi.waitFor(() => {
         const item = document.querySelector("[data-right-panel-menu-tab='sourceControl']");
-        if (!item) throw new Error("The + menu never listed Changes.");
+        if (!item) throw new Error("The + menu never listed Source.");
         return item as HTMLElement;
       });
       // Diff is not a surface this thread has, so it is absent entirely.
@@ -894,28 +894,22 @@ describe("AgentsPanel", () => {
           .querySelector("[data-right-panel-menu-tab='agents']")
           ?.getAttribute("data-right-panel-menu-tab-open"),
       ).toBe("true");
-      expect(changesItem.getAttribute("data-right-panel-menu-tab-open")).toBeNull();
+      expect(sourceItem.getAttribute("data-right-panel-menu-tab-open")).toBeNull();
 
-      changesItem.click();
+      sourceItem.click();
       expect(onSelectTab).toHaveBeenCalledWith("sourceControl");
     } finally {
       await mounted.unmount();
     }
   });
 
-  it("scrolls the tab row instead of shrinking or clipping tabs when it overflows", async () => {
-    // Three tabs and the `+` come to ~200px now that the ✕ shares the glyph's
-    // slot instead of holding a column of its own, which fits both the 330px
-    // default and the 272px floor. It still does not fit the Windows overlay,
-    // whose right padding is the controls cluster (~154px), so that case scrolls
-    // as the browser panel's does: labels stay whole, tabs stay the same width,
-    // the ones off screen are reachable rather than cut in half, and the `+`
-    // stays put -- beside the last tab while they fit, out at the usable right
-    // edge once they do not, with the tabs scrolling under it either way.
-    // Which case a width falls into is measured, not assumed: the point is that
-    // both behaviours hold, not where the boundary between them happens to sit.
-    const widthsByPanel = new Map<string, ReadonlyArray<number>>();
-    const stripHeights = new Map<string, number>();
+  it("labels every tab while they fit, and drops all the labels rather than scrolling", async () => {
+    // Both panel widths that matter -- the 330px default and the 272px floor --
+    // and each of them twice: as the panel has the row to itself, and with the
+    // row padded clear of the Windows controls cluster (~154px), which is the
+    // tightest this strip ever gets and the case that used to lose sight of the
+    // tab you came from behind a scroll. Which side of the boundary a width falls
+    // on is measured, not assumed; the point is that both behaviours hold.
     for (const width of [330, 272]) {
       const mounted = await render(
         <main style={{ boxSizing: "border-box", height: 640, width }}>
@@ -932,146 +926,260 @@ describe("AgentsPanel", () => {
       );
 
       try {
-        await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+        await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
         const strip = document.querySelector("[data-right-panel-strip='true']") as HTMLElement;
         const row = document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement;
-        const tablist = document.querySelector("[data-right-panel-tablist='true']") as HTMLElement;
         const viewport = row.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement;
         const plus = document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement;
-        const scrollbar = () =>
-          row.querySelector<HTMLElement>(
-            '[data-slot="scroll-area-scrollbar"][data-orientation="horizontal"]',
-          );
-
-        // Measured with the panel at this width, and again with the row padded
-        // clear of the Windows controls cluster -- the tightest strip there is.
-        for (const wco of [false, true]) {
-          row.style.paddingRight = wco ? "154px" : "";
-          // Layout settles synchronously on read, so this is the real answer for
-          // this width rather than a guess baked into the test.
-          const overflowing = viewport.scrollWidth - viewport.clientWidth > 0;
-          // The bar is mounted off a resize observation, so it arrives a frame
-          // after the padding that caused the overflow.
-          await vi.waitFor(() => {
-            if (overflowing !== (scrollbar()?.getClientRects().length === 1)) {
-              throw new Error("The overlay scrollbar never matched the overflow state.");
-            }
-          });
-          stripHeights.set(`${width}:${wco}`, strip.getBoundingClientRect().height);
-          const tabs = [...document.querySelectorAll("[data-right-panel-tab]")] as HTMLElement[];
-          expect(tabs).toHaveLength(3);
-          const content = tablist.parentElement!.getBoundingClientRect();
-
-          for (const tab of tabs) {
-            // The label, not the glyph slot that now precedes it.
-            const label = tab.querySelector(
-              "[role='tab'] span:not([data-right-panel-tab-glyph])",
-            ) as HTMLElement;
-            // No label is ever abbreviated to "Cha…".
-            expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
-            expect(getComputedStyle(label).textOverflow).toBe("clip");
-            // And no tab is cut off against the strip: every one is drawn whole
-            // inside the scroll content, however little of it is on screen.
-            const box = tab.getBoundingClientRect();
-            expect(box.left).toBeGreaterThanOrEqual(content.left - 0.5);
-            expect(box.right).toBeLessThanOrEqual(content.right + 0.5);
-          }
-          expect(
-            [...document.querySelectorAll("[data-right-panel-tab] [role='tab']")].map(
-              (tab) => tab.textContent,
-            ),
-          ).toEqual(["Changes", "Diff", "Agents"]);
-          widthsByPanel.set(
-            `${width}:${wco}`,
-            tabs.map((tab) => Math.round(tab.getBoundingClientRect().width)),
-          );
-
-          // The + is anchored beside the scroller rather than riding inside it,
-          // it never leaves the strip, and it is always the thing under the
-          // pointer -- however far the tabs have scrolled behind it.
-          const rowBox = row.getBoundingClientRect();
-          // What the strip actually has to spend, which in the overlay case is
-          // everything left of the window controls.
-          const usableRight = rowBox.right - parseFloat(getComputedStyle(row).paddingRight);
-          const plusBox = plus.getBoundingClientRect();
-          expect(plusBox.left).toBeGreaterThanOrEqual(viewport.getBoundingClientRect().right - 0.5);
-          expect(plusBox.right).toBeLessThanOrEqual(usableRight + 0.5);
+        const mode = () => strip.getAttribute("data-right-panel-strip-mode");
+        const tabs = () =>
+          [...document.querySelectorAll("[data-right-panel-tab]")] as HTMLElement[];
+        const expectPlusUsable = () => {
+          const box = plus.getBoundingClientRect();
+          const usableRight =
+            row.getBoundingClientRect().right - parseFloat(getComputedStyle(row).paddingRight);
+          expect(box.right).toBeLessThanOrEqual(usableRight + 0.5);
           const hit = document.elementFromPoint(
-            (plusBox.left + plusBox.right) / 2,
-            (plusBox.top + plusBox.bottom) / 2,
+            (box.left + box.right) / 2,
+            (box.top + box.bottom) / 2,
           );
           expect(plus.contains(hit)).toBe(true);
+        };
 
-          const overflow = viewport.scrollWidth - viewport.clientWidth;
-          if (!overflowing) {
-            // The default width holds all three and the +, with room over. The
-            // scroller takes its width from the tabs, so the + parks right after
-            // the last one rather than out at the far edge, and there is no bar.
-            expect(overflow).toBe(0);
-            const lastTab = tabs[tabs.length - 1]!.getBoundingClientRect();
-            expect(plusBox.left - lastTab.right).toBeLessThan(8);
-            // Beside the last tab, so demonstrably not flush against the usable
-            // edge the overflowing case pins it to. How much room is left over
-            // depends on the width, and is not the point.
-            expect(usableRight - plusBox.right).toBeGreaterThan(8);
-          } else {
-            // Everything tighter gives the scroller every pixel the + does not
-            // need: the + goes flush to the usable right edge and the tabs scroll
-            // under it, all the way to the far end.
-            expect(overflow).toBeGreaterThan(0);
-            expect(usableRight - plusBox.right).toBeLessThanOrEqual(1);
-            viewport.scrollLeft = overflow;
-            expect(
-              document.querySelector("[data-right-panel-tab='agents']")!.getBoundingClientRect()
-                .right,
-            ).toBeLessThanOrEqual(viewport.getBoundingClientRect().right + 0.5);
-            viewport.scrollLeft = 0;
-
-            // And it says so with the browser strip's hairline overlay bar:
-            // visible without hovering, inside the row, costing it no height.
-            const bar = scrollbar()!;
-            expect(getComputedStyle(bar).opacity).toBe("1");
-            expect(getComputedStyle(bar).position).toBe("absolute");
-            const barBox = bar.getBoundingClientRect();
-            expect(barBox.height).toBeLessThanOrEqual(6);
-            // And opaque, since it lies across the tabs: a translucent thumb let
-            // a label show through and the two read as one layer. Asserted on the
-            // computed colour because the alpha lives in a class that would fail
-            // silently, leaving the primitive's translucent default in place.
-            const thumbColor = getComputedStyle(
-              bar.querySelector('[data-slot="scroll-area-thumb"]')!,
-            ).backgroundColor;
-            expect(thumbColor.startsWith("rgba(")).toBe(false);
-            expect(thumbColor).not.toContain("/");
-            expect(barBox.bottom).toBeLessThanOrEqual(rowBox.bottom + 0.5);
-          }
+        // The panel with the row to itself: three whole labels, nothing scrolling,
+        // and the + parked directly after the last tab rather than out at the edge.
+        // True at the floor as well as the default -- collapsing is not a width
+        // threshold, it is whether these particular labels fit.
+        expect(mode()).toBe("labels");
+        const labelledHeight = strip.getBoundingClientRect().height;
+        const labelledWidths = tabs().map((tab) => Math.round(tab.getBoundingClientRect().width));
+        expect(
+          [...document.querySelectorAll("[data-right-panel-tab] [role='tab']")].map(
+            (tab) => tab.textContent,
+          ),
+        ).toEqual(["Source", "Diff", "Agents"]);
+        for (const tab of tabs()) {
+          const label = tab.querySelector("[data-right-panel-tab-label]") as HTMLElement;
+          expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
+          expect(getComputedStyle(label).textOverflow).toBe("clip");
         }
+        expect(viewport.scrollWidth - viewport.clientWidth).toBe(0);
+        expect(
+          plus.getBoundingClientRect().left - tabs().at(-1)!.getBoundingClientRect().right,
+        ).toBeLessThan(8);
+        expectPlusUsable();
+
+        // Now the row the window controls take their cut of. Two labelled tabs
+        // already do not fit; the answer is every label, not a scrollbar.
+        row.style.paddingRight = "154px";
+        await vi.waitFor(() => {
+          if (mode() !== "icons") {
+            throw new Error("The strip never collapsed its labels.");
+          }
+        });
+
+        // All of them, not just the inactive ones: one labelled tab beside two
+        // glyphs reads as three different kinds of thing.
+        expect(document.querySelectorAll("[data-right-panel-tab-label]")).toHaveLength(0);
+        expect(document.querySelectorAll("[data-right-panel-tab-icon-only='true']")).toHaveLength(
+          3,
+        );
+        // And nothing is abbreviated on the way: the name is a tooltip, or nowhere.
+        expect(
+          tabs().map((tab) => tab.querySelector("[role='tab']")!.getAttribute("aria-label")),
+        ).toEqual(["Source", "Diff", "Agents"]);
+        for (const tab of tabs()) {
+          const box = tab.getBoundingClientRect();
+          // Square-ish: the glyph and its padding, nothing else.
+          expect(box.width).toBeGreaterThanOrEqual(24);
+          expect(box.width).toBeLessThanOrEqual(34);
+          expect(Math.abs(box.width - box.height)).toBeLessThanOrEqual(6);
+          expect(tab.scrollWidth).toBeLessThanOrEqual(tab.clientWidth + 1);
+        }
+        const iconWidths = tabs().map((tab) => Math.round(tab.getBoundingClientRect().width));
+        const total = (widths: ReadonlyArray<number>) =>
+          widths.reduce((sum, next) => sum + next, 0);
+        expect(total(iconWidths)).toBeLessThan(total(labelledWidths));
+        // The + is still the anchored, clickable control it was, and the strip is
+        // the same height: collapsing is a width decision, not a layout one.
+        expectPlusUsable();
+        expect(strip.getBoundingClientRect().height).toBeCloseTo(labelledHeight, 1);
+
+        // Give the room back and the labels come back with it, unchanged.
         row.style.paddingRight = "";
+        await vi.waitFor(() => {
+          if (mode() !== "labels") {
+            throw new Error("The strip never put its labels back.");
+          }
+        });
+        expect(tabs().map((tab) => Math.round(tab.getBoundingClientRect().width))).toEqual(
+          labelledWidths,
+        );
       } finally {
         await mounted.unmount();
       }
     }
+  });
 
-    // The clincher: a tab is the same width in a 272px panel, or in a row shared
-    // with the window controls, as it is in a 330px one. Nothing shrinks, so
-    // nothing has to be abbreviated to fit.
-    const reference = widthsByPanel.get("330:false");
-    for (const widths of widthsByPanel.values()) {
-      expect(widths).toEqual(reference);
-    }
-    // And the strip is the same height whether it is scrolling or not: the bar
-    // and the fades are overlays, as the browser strip's are, so overflow never
-    // costs the row a pixel of the titlebar it shares.
-    expect([...stripHeights.values()]).toEqual(
-      Array.from(stripHeights, () => stripHeights.get("330:false")),
+  it("crosses the label boundary once per crossing rather than oscillating on it", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 420 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "diff", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="agents"
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
     );
+
+    try {
+      await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
+      const strip = document.querySelector("[data-right-panel-strip='true']") as HTMLElement;
+      const row = document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement;
+      const mode = () => strip.getAttribute("data-right-panel-strip-mode");
+      // The boundary is computed from the strip's own inputs -- the labelled row
+      // it measures against and the width the anchored controls take out of the
+      // row -- rather than guessed at, so this test does not encode a font.
+      const labelled = (row.querySelector("[data-right-panel-tabs-measure='true']") as HTMLElement)
+        .offsetWidth;
+      const actions = (row.querySelector("[data-right-panel-strip-actions='true']") as HTMLElement)
+        .offsetWidth;
+      const paddingLeaving = (available: number) =>
+        `${row.clientWidth - parseFloat(getComputedStyle(row).paddingLeft) - actions - available}px`;
+      const settle = async () => {
+        for (let frame = 0; frame < 3; frame += 1) {
+          await new Promise((resolve) => {
+            requestAnimationFrame(() => resolve(null));
+          });
+        }
+      };
+
+      let flips = 0;
+      const observer = new MutationObserver(() => {
+        flips += 1;
+      });
+      observer.observe(strip, { attributeFilter: ["data-right-panel-strip-mode"] });
+      try {
+        expect(mode()).toBe("labels");
+
+        // Four pixels short: the labels go, once.
+        row.style.paddingRight = paddingLeaving(labelled - 4);
+        await vi.waitFor(() => {
+          if (mode() !== "icons") {
+            throw new Error("The strip never collapsed its labels.");
+          }
+        });
+        expect(flips).toBe(1);
+
+        // Four pixels back the other way -- a drag jittering on the boundary.
+        // They fit again by the strict measure, and the strip stays put anyway:
+        // that gap is the hysteresis, and it is what stops the flicker.
+        row.style.paddingRight = paddingLeaving(labelled + 4);
+        await settle();
+        expect(mode()).toBe("icons");
+        expect(flips).toBe(1);
+
+        // Real headroom does bring them back, and once.
+        row.style.paddingRight = paddingLeaving(labelled + 20);
+        await vi.waitFor(() => {
+          if (mode() !== "labels") {
+            throw new Error("Real headroom never brought the labels back.");
+          }
+        });
+        await settle();
+        expect(flips).toBe(2);
+      } finally {
+        observer.disconnect();
+      }
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("names an icon-only tab with a styled tooltip that arrives with the pointer", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 200 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "diff", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="agents"
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      const strip = await vi.waitFor(() => {
+        const found = document.querySelector("[data-right-panel-strip='true']");
+        if (found?.getAttribute("data-right-panel-strip-mode") !== "icons") {
+          throw new Error("The strip never collapsed to icons at 200px.");
+        }
+        return found as HTMLElement;
+      });
+      const tabButton = strip.querySelector(
+        "[data-right-panel-tab='diff'] [role='tab']",
+      ) as HTMLElement;
+      // The app's own tooltip, not the unstyled OS one a `title` would give.
+      expect(tabButton.getAttribute("title")).toBeNull();
+
+      await page.getByRole("tab", { name: "Diff" }).hover();
+      // No dwell: on a tab with no label, waiting reads as an unnamed control.
+      const tooltip = await vi.waitFor(() => {
+        const popup = document.querySelector('[data-slot="tooltip-popup"]');
+        if (popup === null) {
+          throw new Error("Hovering an icon-only tab never named it.");
+        }
+        return popup as HTMLElement;
+      });
+      expect(tooltip.textContent).toBe("Diff");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("leaves a labelled tab's name on the tab rather than in a tooltip", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 420 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "diff", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="agents"
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
+      await page.getByRole("tab", { name: "Source" }).hover();
+      for (let frame = 0; frame < 4; frame += 1) {
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => resolve(null));
+        });
+      }
+      // The label is right there; a tooltip repeating it is noise.
+      expect(document.querySelector('[data-slot="tooltip-popup"]')).toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
   });
 
   it("brings the active tab into view when the row is scrolled past it", async () => {
-    // Narrow enough that the three tabs genuinely do not fit, so whichever one is
-    // active is the one the strip has to reach.
+    // Narrow enough that even the collapsed icons do not fit -- scrolling is the
+    // last resort now, past dropping every label -- so whichever tab is active is
+    // the one the strip has to reach.
     const panel = (activeTab: "sourceControl" | "agents") => (
-      <main style={{ boxSizing: "border-box", height: 640, width: 200 }}>
+      <main style={{ boxSizing: "border-box", height: 640, width: 110 }}>
         <ChatRightPanel
           openTabs={["sourceControl", "diff", "agents"]}
           availableTabs={["sourceControl", "diff", "agents"]}
@@ -1086,7 +1194,7 @@ describe("AgentsPanel", () => {
     const mounted = await render(panel("agents"));
 
     try {
-      await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+      await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
       const viewport = document.querySelector(
         '[data-right-panel-tabs-row="true"] [data-slot="scroll-area-viewport"]',
       ) as HTMLElement;
@@ -1131,7 +1239,7 @@ describe("AgentsPanel", () => {
     );
 
     try {
-      await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+      await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
       const row = (
         document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement
       ).getBoundingClientRect();
@@ -1220,10 +1328,10 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("closes a tab from its hover ✕", async () => {
+  it("reveals a tab's ✕ on its right edge, costing the tab no width", async () => {
     const onCloseTab = vi.fn();
     const mounted = await render(
-      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+      <main style={{ boxSizing: "border-box", height: 640, width: 420 }}>
         <ChatRightPanel
           openTabs={["sourceControl", "agents"]}
           availableTabs={["sourceControl", "diff", "agents"]}
@@ -1237,26 +1345,108 @@ describe("AgentsPanel", () => {
     );
 
     try {
-      const close = page.getByRole("button", { name: "Close Changes" });
-      // The ✕ takes the glyph's place rather than a column of its own: it covers
-      // the glyph, and the tab is only as wide as its padding, glyph and label,
-      // so nothing about the strip's width depends on a control that is
-      // invisible until the pointer arrives.
-      const closeBox = (await close.element()).getBoundingClientRect();
+      await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
       const tab = document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement;
-      const glyphBox = tab.querySelector("[data-right-panel-tab-glyph]")!.getBoundingClientRect();
-      const labelBox = tab
-        .querySelector("[role='tab'] span:not([data-right-panel-tab-glyph])")!
-        .getBoundingClientRect();
-      const tabBox = tab.getBoundingClientRect();
-      expect(
-        Math.abs(closeBox.left + closeBox.width / 2 - (glyphBox.left + glyphBox.width / 2)),
-      ).toBeLessThan(3);
-      expect(closeBox.right).toBeLessThanOrEqual(labelBox.left + 1);
-      expect(tabBox.right - labelBox.right).toBeLessThan(closeBox.width);
+      const tabButton = tab.querySelector("[role='tab']") as HTMLElement;
+      const glyph = tab.querySelector("[data-right-panel-tab-glyph]") as HTMLElement;
+      const label = tab.querySelector("[data-right-panel-tab-label]") as HTMLElement;
+      const close = tab.querySelector("[data-right-panel-close-tab]") as HTMLElement;
+      const restingWidth = tab.getBoundingClientRect().width;
 
-      await close.click();
+      // Nothing on show for a tab nobody is pointing at.
+      expect(getComputedStyle(close).opacity).toBe("0");
+
+      // Keyboard reaches it the same way the pointer does: focus the tab, then
+      // the ✕ is the next stop and shows itself on arrival.
+      tabButton.focus();
+      await userEvent.keyboard("{Tab}");
+      await vi.waitFor(() => {
+        if (document.activeElement !== close) {
+          throw new Error("Tabbing off the tab never reached its ✕.");
+        }
+        if (getComputedStyle(close).opacity !== "1") {
+          throw new Error("focus-visible never revealed the ✕.");
+        }
+      });
+
+      await page.getByRole("tab", { name: "Source" }).hover();
+      await vi.waitFor(() => {
+        if (getComputedStyle(close).opacity !== "1") {
+          throw new Error("Hover never revealed the ✕.");
+        }
+      });
+
+      // The whole point of overlaying it: the tab is the same box revealed as it
+      // is at rest, so nothing in the strip's width is spent on it.
+      expect(tab.getBoundingClientRect().width).toBeCloseTo(restingWidth, 1);
+
+      const closeBox = close.getBoundingClientRect();
+      const tabBox = tab.getBoundingClientRect();
+      // On the right edge, and the icon stays exactly where it was -- the ✕ used
+      // to take the glyph's slot, which moved the one thing naming the surface.
+      expect(closeBox.left).toBeGreaterThan(glyph.getBoundingClientRect().right);
+      expect(tabBox.right - closeBox.right).toBeLessThanOrEqual(4);
+      expect(getComputedStyle(glyph).opacity).toBe("1");
+      // The label slides under it behind a short fade rather than being clipped
+      // to an ellipsis or pushed along.
+      expect(getComputedStyle(label).maskImage).toContain("gradient");
+      expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
+
+      await page.getByRole("button", { name: "Close Source" }).click();
       expect(onCloseTab).toHaveBeenCalledWith("sourceControl");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("closes an icon-only tab from the active tab's ✕, and any of them by middle-click", async () => {
+    // With no label to overlay there is nowhere for a per-tab ✕ to go that does
+    // not turn a 28px box into two opposite meanings, so an inactive icon offers
+    // none: hovering it goes to its surface. The active icon's ✕ takes the whole
+    // box -- a real target, not a badge on a corner -- and middle-click closes
+    // any of them outright, so no panel width strands a tab open.
+    const onCloseTab = vi.fn();
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 200 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "diff", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="sourceControl"
+          onSelectTab={vi.fn()}
+          onCloseTab={onCloseTab}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      const strip = await vi.waitFor(() => {
+        const found = document.querySelector("[data-right-panel-strip='true']");
+        if (found?.getAttribute("data-right-panel-strip-mode") !== "icons") {
+          throw new Error("The strip never collapsed to icons at 200px.");
+        }
+        return found as HTMLElement;
+      });
+
+      expect(strip.querySelector("[data-right-panel-close-tab='diff']")).toBeNull();
+      expect(strip.querySelector("[data-right-panel-close-tab='agents']")).toBeNull();
+      const activeTab = strip.querySelector(
+        "[data-right-panel-tab='sourceControl']",
+      ) as HTMLElement;
+      const close = activeTab.querySelector("[data-right-panel-close-tab]") as HTMLElement;
+      const activeBox = activeTab.getBoundingClientRect();
+      const closeBox = close.getBoundingClientRect();
+      expect(closeBox.width).toBeGreaterThanOrEqual(24);
+      expect(closeBox.width).toBeCloseTo(activeBox.width, 0);
+      expect(closeBox.height).toBeCloseTo(activeBox.height, 0);
+
+      await page.getByRole("button", { name: "Close Source" }).click();
+      expect(onCloseTab).toHaveBeenCalledWith("sourceControl");
+
+      const diffTab = strip.querySelector("[data-right-panel-tab='diff']") as HTMLElement;
+      diffTab.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+      expect(onCloseTab).toHaveBeenCalledWith("diff");
     } finally {
       await mounted.unmount();
     }

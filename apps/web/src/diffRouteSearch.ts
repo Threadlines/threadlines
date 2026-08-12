@@ -2,7 +2,7 @@ import { MessageId, TurnId } from "@threadlines/contracts";
 
 /**
  * The right sidebar's tabs are filed under the params they have always used:
- * `sourceControl=1` is the Changes tab, `diff=1` the Diff tab, `agents=1` the
+ * `sourceControl=1` is the Source tab, `diff=1` the Diff tab, `agents=1` the
  * Agents tab. At most one reads as open, and that one is the active tab; an
  * explicit `0` means the sidebar is closed.
  */

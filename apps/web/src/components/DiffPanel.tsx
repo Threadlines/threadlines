@@ -1196,12 +1196,12 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
 
   // Embedded, the tab strip above already names this surface and is the way to
   // every other one, so the panel adds no header of its own: no title bar, no
-  // back-to-Changes breadcrumb, no row of height spent restating the tab.
+  // back-to-Source breadcrumb, no row of height spent restating the tab.
   const headerRow = embedded ? null : (
     <div className="flex min-w-0 flex-1 items-center gap-1">
       <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
         <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
-        <span className="min-w-0 truncate">Changes</span>
+        <span className="min-w-0 truncate">Source</span>
       </span>
       <span aria-hidden="true" className="shrink-0 text-[11px] text-muted-foreground/40">
         /

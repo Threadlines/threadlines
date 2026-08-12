@@ -135,7 +135,7 @@ export function draftRightPanelStateKey(draftId: string): string {
 }
 
 /**
- * Whether a thread with no sidebar state at all should open on Changes. The
+ * Whether a thread with no sidebar state at all should open on Source. The
  * setting only applies on wide layouts: in sheet mode the sidebar covers the
  * conversation, so threads there always start closed.
  */

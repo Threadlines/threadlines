@@ -2729,7 +2729,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const changesTab = await waitForElement(
         () =>
           document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement | null,
-        "Unable to find the sidebar's Changes tab.",
+        "Unable to find the sidebar's Source tab.",
       );
       expect(changesTab.getAttribute("data-active")).toBe("true");
       expect(visibleSourceControlPanel()).not.toBeNull();
@@ -2747,7 +2747,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ agents: "1" });
           expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
-          // Changes stays in the strip and stays mounted to keep its queries
+          // Source stays in the strip and stays mounted to keep its queries
           // warm; the Agents tab is the one on screen.
           expect(document.querySelector("[data-right-panel-tab='sourceControl']")).not.toBeNull();
           expect(visibleSourceControlPanel()).toBeNull();
@@ -3021,7 +3021,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       // The auto-hide left the deep-linked tab in the strip, so reopening the
-      // sidebar lands straight back on Changes rather than on the launcher.
+      // sidebar lands straight back on Source rather than on the launcher.
       sourceControlToggle.click();
 
       const sourceControlPanel = await waitForElement(
@@ -3045,7 +3045,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens the whole chat turn diff in the Diff tab with a way back to Changes", async () => {
+  it("opens the whole chat turn diff in the Diff tab with a way back to Source", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithChangedFileSummary(),
@@ -3099,7 +3099,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
       // The strip is the only navigation the embedded Diff needs: no in-panel
-      // back-to-Changes control, and no header bar restating the active tab --
+      // back-to-Source control, and no header bar restating the active tab --
       // the diff's own toolbar starts straight under the strip.
       const diffToolbar = await waitForElement(
         () => document.querySelector('[aria-label="Select diff source"]'),
@@ -3115,7 +3115,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("retargets one Diff tab and keeps the Changes tab in the strip", async () => {
+  it("retargets one Diff tab and keeps the Source tab in the strip", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotWithChangedFileSummary(),
@@ -3148,7 +3148,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForElement(
         () =>
           document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement | null,
-        "Unable to find the sidebar's Changes tab.",
+        "Unable to find the sidebar's Source tab.",
       );
 
       const viewTurnDiffButton = await waitForElement(
@@ -3167,13 +3167,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
             diffTurnId: "turn-chat-diff",
           });
           expect(document.querySelectorAll("[data-right-panel-tab='diff']").length).toBe(1);
-          // Changes stays in the strip, so tabbing back keeps its list.
+          // Source stays in the strip, so tabbing back keeps its list.
           expect(document.querySelector("[data-right-panel-tab='sourceControl']")).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
 
-      // Back to Changes from its tab, then the link again: still one Diff tab.
+      // Back to Source from its tab, then the link again: still one Diff tab.
       (
         document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
       ).click();
@@ -3192,7 +3192,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      // Tabbing between Changes and Diff keeps the target the Diff tab had.
+      // Tabbing between Source and Diff keeps the target the Diff tab had.
       (
         document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
       ).click();

@@ -467,7 +467,7 @@ function ChatThreadRouteView() {
       ) : null}
     </>
   );
-  // Hidden means gone, not merely off-canvas: a mounted Changes tab keeps
+  // Hidden means gone, not merely off-canvas: a mounted Source tab keeps
   // polling git, and neither layout unmounts its children on its own.
   const rightPanelChrome = !sidebarVisible ? null : (
     <ChatRightPanel
