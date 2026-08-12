@@ -1035,6 +1035,32 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
   return "completed" as const;
 }
 
+function turnDiffEventCompletesTurn(
+  thread: Pick<Thread, "session">,
+  payload: { readonly turnId: string; readonly completesTurn?: boolean | undefined },
+): boolean {
+  if (payload.completesTurn !== undefined) {
+    return payload.completesTurn;
+  }
+  const activeTurnId = thread.session?.activeTurnId ?? null;
+  return activeTurnId === null || activeTurnId !== payload.turnId;
+}
+
+function assistantMessageEventCompletesTurn(input: {
+  readonly streaming: boolean;
+  readonly completesTurn?: boolean | undefined;
+  readonly activeTurnId: string | null;
+  readonly eventTurnId: string;
+}): boolean {
+  if (input.streaming) {
+    return false;
+  }
+  if (input.completesTurn !== undefined) {
+    return input.completesTurn;
+  }
+  return input.activeTurnId === null || input.activeTurnId !== input.eventTurnId;
+}
+
 function compareActivities(
   left: Thread["activities"][number],
   right: Thread["activities"][number],
@@ -1758,6 +1784,12 @@ function applyEnvironmentOrchestrationEvent(
                 event.payload.messageId,
               )
             : thread.turnDiffSummaries;
+        const completesTurn = assistantMessageEventCompletesTurn({
+          streaming: event.payload.streaming,
+          completesTurn: event.payload.completesTurn,
+          activeTurnId: thread.session?.activeTurnId ?? null,
+          eventTurnId: event.payload.turnId ?? "",
+        });
         const latestTurn: Thread["latestTurn"] =
           event.payload.role === "assistant" &&
           event.payload.turnId !== null &&
@@ -1765,8 +1797,8 @@ function applyEnvironmentOrchestrationEvent(
             ? buildLatestTurn({
                 previous: thread.latestTurn,
                 turnId: event.payload.turnId,
-                state: event.payload.streaming
-                  ? "running"
+                state: !completesTurn
+                  ? (thread.latestTurn?.state ?? "running")
                   : thread.latestTurn?.state === "interrupted"
                     ? "interrupted"
                     : thread.latestTurn?.state === "error"
@@ -1781,7 +1813,7 @@ function applyEnvironmentOrchestrationEvent(
                     ? (thread.latestTurn.startedAt ?? event.payload.createdAt)
                     : event.payload.createdAt,
                 sourceProposedPlan: thread.pendingSourceProposedPlan,
-                completedAt: event.payload.streaming
+                completedAt: !completesTurn
                   ? thread.latestTurn?.turnId === event.payload.turnId
                     ? (thread.latestTurn.completedAt ?? null)
                     : null
@@ -1903,8 +1935,10 @@ function applyEnvironmentOrchestrationEvent(
               (right.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER),
           )
           .slice(-MAX_THREAD_CHECKPOINTS);
+        const completesTurn = turnDiffEventCompletesTurn(thread, event.payload);
         const latestTurn =
-          thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId
+          completesTurn &&
+          (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
             ? buildLatestTurn({
                 previous: thread.latestTurn,
                 turnId: event.payload.turnId,

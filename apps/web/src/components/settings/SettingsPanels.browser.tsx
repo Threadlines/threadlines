@@ -1495,7 +1495,7 @@ describe("GeneralSettingsPanel observability", () => {
 
   // An audit read the pre-snapshot section as "nothing paired" because it was
   // rendered completely empty, and revoke stayed disabled with it.
-  it("says devices are loading until the access snapshot lands", async () => {
+  it("shows a device-row skeleton until the access snapshot lands", async () => {
     window.desktopBridge = createDesktopBridgeStub({
       serverExposureState: {
         mode: "network-accessible",
@@ -1546,7 +1546,7 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
-    await expect.element(page.getByText("Loading devices...")).toBeInTheDocument();
+    await expect.element(page.getByTestId("connected-devices-skeleton")).toBeInTheDocument();
     await expect
       .element(page.getByText("No phones or tablets are connected yet."))
       .not.toBeInTheDocument();
@@ -1557,7 +1557,7 @@ describe("GeneralSettingsPanel observability", () => {
     authAccessHarness.emitSnapshot();
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
-    await expect.element(page.getByText("Loading devices...")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("connected-devices-skeleton")).not.toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Remove other devices", exact: true }))
       .not.toBeDisabled();
@@ -1726,6 +1726,35 @@ describe("GeneralSettingsPanel observability", () => {
     await openLogsButton.click();
 
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.threadlines/logs", "cursor");
+  });
+
+  it("uses native-layout skeletons while diagnostics are initially loading", async () => {
+    const pendingDiagnostics = new Promise<never>(() => {});
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        getProcessDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
+        getProcessResourceHistory: vi.fn().mockReturnValue(pendingDiagnostics),
+        getTraceDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <DiagnosticsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await expect
+      .element(page.getByText("Loading diagnostics", { exact: true }))
+      .toBeInTheDocument();
+    expect(await page.getByTestId("diagnostics-loading-skeleton").all()).toHaveLength(10);
+    await expect.element(page.getByText("Loading live processes...")).not.toBeInTheDocument();
   });
 
   it("shows Claude configuration fields in provider settings", async () => {

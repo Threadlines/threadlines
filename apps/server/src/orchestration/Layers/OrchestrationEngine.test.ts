@@ -824,6 +824,7 @@ describe("OrchestrationEngine", () => {
         status: "ready",
         files: [],
         checkpointTurnCount: 1,
+        completesTurn: true,
         createdAt,
       }),
     );

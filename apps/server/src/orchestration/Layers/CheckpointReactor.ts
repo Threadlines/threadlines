@@ -445,6 +445,7 @@ const make = Effect.gen(function* () {
     readonly assistantMessageId: MessageId | undefined;
     readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
     readonly refreshSharedCheckoutSummaryFromCheckpoint: boolean;
+    readonly completesTurn: boolean;
     /** When the turn's diff window opened (turn start). Undefined falls back
      * to the instantaneous live-session check alone. */
     readonly turnWindowStartIso: string | undefined;
@@ -601,6 +602,7 @@ const make = Effect.gen(function* () {
       files,
       assistantMessageId,
       checkpointTurnCount: input.turnCount,
+      completesTurn: input.completesTurn,
       createdAt: input.createdAt,
     });
     yield* appendCheckpointFileChangeActivity({
@@ -619,13 +621,15 @@ const make = Effect.gen(function* () {
       status: input.status,
       createdAt: input.createdAt,
     });
-    yield* receiptBus.publish({
-      type: "turn.processing.quiesced",
-      threadId: input.threadId,
-      turnId: input.turnId,
-      checkpointTurnCount: input.turnCount,
-      createdAt: input.createdAt,
-    });
+    if (input.completesTurn) {
+      yield* receiptBus.publish({
+        type: "turn.processing.quiesced",
+        threadId: input.threadId,
+        turnId: input.turnId,
+        checkpointTurnCount: input.turnCount,
+        createdAt: input.createdAt,
+      });
+    }
 
     yield* orchestrationEngine.dispatch({
       type: "thread.activity.append",
@@ -702,6 +706,7 @@ const make = Effect.gen(function* () {
         assistantMessageId: undefined,
         providerSummaryFiles,
         refreshSharedCheckoutSummaryFromCheckpoint: true,
+        completesTurn: true,
         turnWindowStartIso: turnWindowStartIsoForThread(thread, turnId),
         createdAt: event.createdAt,
       });
@@ -734,6 +739,11 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const activeTurnId = thread.session?.activeTurnId ?? null;
+    const completesTurn =
+      event.payload.completesTurn !== undefined
+        ? event.payload.completesTurn
+        : activeTurnId === null || !sameId(activeTurnId, turnId);
     // If a real checkpoint already exists for this turn, skip.
     if (
       thread.checkpoints.some(
@@ -768,6 +778,7 @@ const make = Effect.gen(function* () {
       assistantMessageId: event.payload.assistantMessageId ?? undefined,
       providerSummaryFiles: event.payload.files,
       refreshSharedCheckoutSummaryFromCheckpoint: false,
+      completesTurn,
       turnWindowStartIso: turnWindowStartIsoForThread(thread, turnId),
       createdAt: event.payload.completedAt,
     });
@@ -1071,11 +1082,9 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    // When ProviderRuntimeIngestion creates a placeholder checkpoint (status "missing")
-    // from a turn.diff.updated runtime event, capture the real git checkpoint to
-    // replace it. The providerService.streamEvents PubSub does not reliably deliver
-    // turn.completed runtime events to this reactor (shared subscription), so
-    // reacting to the domain event is the reliable path.
+    // Provider diff notifications create a non-terminal placeholder. Capture a
+    // real checkpoint for diff/revert fidelity, but propagate completesTurn so
+    // that capture cannot settle the still-running provider turn.
     if (event.type === "thread.turn-diff-completed") {
       yield* captureCheckpointFromPlaceholder(event).pipe(
         Effect.catch((error) =>

@@ -1340,6 +1340,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: "",
           turnId: command.turnId ?? null,
           streaming: false,
+          completesTurn: command.completesTurn,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -1455,6 +1456,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           files: command.files,
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
+          completesTurn: command.completesTurn,
         },
       };
     }
