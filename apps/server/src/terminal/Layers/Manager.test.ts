@@ -712,6 +712,64 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
+  it.effect("ignores a PowerShell completion marker queued before command submission", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+
+      const drainBlocked = yield* Deferred.make<void>();
+      const releaseDrain = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data === "prompt output"
+          ? Deferred.succeed(drainBlocked, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseDrain)),
+            )
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      process.emitData("prompt output");
+      yield* Deferred.await(drainBlocked);
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "Start-Sleep -Seconds 30\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess),
+        ),
+      );
+
+      yield* Deferred.succeed(releaseDrain, undefined);
+      yield* Effect.sleep("60 millis");
+      expect((yield* getEvents).filter((event) => event.type === "activity")).toEqual([
+        expect.objectContaining({
+          type: "activity",
+          hasRunningSubprocess: true,
+          command: "Start-Sleep -Seconds 30",
+        }),
+      ]);
+
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && !event.hasRunningSubprocess),
+        ),
+      );
+    }),
+  );
+
   it.effect("ignores an in-flight subprocess result after PowerShell reports completion", () =>
     Effect.gen(function* () {
       const checkStarted = yield* Deferred.make<void>();
