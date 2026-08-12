@@ -277,6 +277,30 @@ describe("buildAgentsPanelView", () => {
     expect(view.earlier[0]?.time).toBe("6m ago");
   });
 
+  it("names the model and effort on a running agent too, ahead of its clock", () => {
+    // A live row's meta line had the width for all three and was spending it on
+    // the clock alone, which is also the one part that changes every second --
+    // hence identity first, so the line does not reflow as it ticks.
+    const view = buildAgentsPanelView({
+      subagents: [
+        buildSubagent({
+          id: "live-child",
+          agentThreadId: "live-child",
+          status: "running",
+          statusLabel: "Running",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          telemetry: null,
+          createdAt: "2026-08-11T10:11:24.000Z",
+        }),
+      ],
+      backgroundRuns: [],
+      nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
+    });
+
+    expect(view.current[0]?.meta).toEqual(["gpt-5.6-sol", "high", "36s"]);
+  });
+
   it("orders the history newest first", () => {
     const view = buildAgentsPanelView({
       subagents: [],

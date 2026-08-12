@@ -130,6 +130,18 @@ function backgroundRunTag(
   return provider ? `${provider} · ${run.source}` : run.source;
 }
 
+/**
+ * `gpt-5.6-sol · high`: who is doing the work, as the provider recorded it. The
+ * model is the raw slug rather than a catalog display name, because that is what
+ * was recorded. Either half can be missing — Claude's spawns state a model but
+ * no per-agent effort — so the line carries whatever is actually known.
+ */
+function agentIdentityMetaParts(item: SubagentProgressItem): ReadonlyArray<string> {
+  return [item.model?.trim() || null, item.reasoningEffort?.trim() || null].filter(
+    (part): part is string => part !== null,
+  );
+}
+
 function subagentBranch(
   item: SubagentProgressItem,
   nowMs: number | undefined,
@@ -143,11 +155,17 @@ function subagentBranch(
     status,
     name: formatSubagentDisplayName(item),
     statusLabel: item.statusLabel,
-    meta: formatSubagentMetaParts(item, {
-      context: details.context,
-      elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,
-      includeCurrentTool: false,
-    }),
+    // Identity first, then the running totals: a live row's meta line had the
+    // width for both and was spending it on the elapsed clock alone. Leading
+    // with the model also keeps the line still while the clock ticks.
+    meta: [
+      ...agentIdentityMetaParts(item),
+      ...formatSubagentMetaParts(item, {
+        context: details.context,
+        elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,
+        includeCurrentTool: false,
+      }),
+    ],
     time: null,
     task: details.goal,
     // The step the provider reports is the freshest signal; the agent's own
@@ -239,12 +257,11 @@ export function buildAgentBranches(input: {
 function formatAgentHistoryMeta(item: SubagentProgressItem): ReadonlyArray<string> {
   const totalTokens = item.telemetry?.totalTokens ?? null;
   return [
-    item.model?.trim() || null,
-    item.reasoningEffort?.trim() || null,
-    totalTokens !== null && totalTokens > 0
-      ? `${formatContextWindowTokens(totalTokens)} tokens`
-      : null,
-  ].filter((part): part is string => part !== null);
+    ...agentIdentityMetaParts(item),
+    ...(totalTokens !== null && totalTokens > 0
+      ? [`${formatContextWindowTokens(totalTokens)} tokens`]
+      : []),
+  ];
 }
 
 /**

@@ -821,14 +821,16 @@ describe("AgentsPanel", () => {
   });
 
   it("scrolls the tab row instead of shrinking or clipping tabs when it overflows", async () => {
-    // The three tabs come to ~252px and the `+` wants 26 more. That fits the
-    // 330px default with room over. It does NOT fit the 272px floor, and it does
-    // not fit at all in the Windows overlay, whose right padding is the controls
-    // cluster (~154px). In every one of those cases the row scrolls, as the
-    // browser panel's does: labels stay whole, tabs stay the same width, the ones
-    // off screen are reachable rather than cut in half, and the `+` stays put --
-    // beside the last tab while they fit, out at the usable right edge once they
-    // do not, with the tabs scrolling under it either way.
+    // Three tabs and the `+` come to ~200px now that the ✕ shares the glyph's
+    // slot instead of holding a column of its own, which fits both the 330px
+    // default and the 272px floor. It still does not fit the Windows overlay,
+    // whose right padding is the controls cluster (~154px), so that case scrolls
+    // as the browser panel's does: labels stay whole, tabs stay the same width,
+    // the ones off screen are reachable rather than cut in half, and the `+`
+    // stays put -- beside the last tab while they fit, out at the usable right
+    // edge once they do not, with the tabs scrolling under it either way.
+    // Which case a width falls into is measured, not assumed: the point is that
+    // both behaviours hold, not where the boundary between them happens to sit.
     const widthsByPanel = new Map<string, ReadonlyArray<number>>();
     const stripHeights = new Map<string, number>();
     for (const width of [330, 272]) {
@@ -862,7 +864,9 @@ describe("AgentsPanel", () => {
         // clear of the Windows controls cluster -- the tightest strip there is.
         for (const wco of [false, true]) {
           row.style.paddingRight = wco ? "154px" : "";
-          const overflowing = width !== 330 || wco;
+          // Layout settles synchronously on read, so this is the real answer for
+          // this width rather than a guess baked into the test.
+          const overflowing = viewport.scrollWidth - viewport.clientWidth > 0;
           // The bar is mounted off a resize observation, so it arrives a frame
           // after the padding that caused the overflow.
           await vi.waitFor(() => {
@@ -876,7 +880,10 @@ describe("AgentsPanel", () => {
           const content = tablist.parentElement!.getBoundingClientRect();
 
           for (const tab of tabs) {
-            const label = tab.querySelector("[role='tab'] span") as HTMLElement;
+            // The label, not the glyph slot that now precedes it.
+            const label = tab.querySelector(
+              "[role='tab'] span:not([data-right-panel-tab-glyph])",
+            ) as HTMLElement;
             // No label is ever abbreviated to "Cha…".
             expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
             expect(getComputedStyle(label).textOverflow).toBe("clip");
@@ -920,7 +927,10 @@ describe("AgentsPanel", () => {
             expect(overflow).toBe(0);
             const lastTab = tabs[tabs.length - 1]!.getBoundingClientRect();
             expect(plusBox.left - lastTab.right).toBeLessThan(8);
-            expect(usableRight - plusBox.right).toBeGreaterThan(30);
+            // Beside the last tab, so demonstrably not flush against the usable
+            // edge the overflowing case pins it to. How much room is left over
+            // depends on the width, and is not the point.
+            expect(usableRight - plusBox.right).toBeGreaterThan(8);
           } else {
             // Everything tighter gives the scroller every pixel the + does not
             // need: the + goes flush to the usable right edge and the tabs scroll
@@ -1135,7 +1145,25 @@ describe("AgentsPanel", () => {
     );
 
     try {
-      await page.getByRole("button", { name: "Close Changes" }).click();
+      const close = page.getByRole("button", { name: "Close Changes" });
+      // The ✕ takes the glyph's place rather than a column of its own: it covers
+      // the glyph, and the tab is only as wide as its padding, glyph and label,
+      // so nothing about the strip's width depends on a control that is
+      // invisible until the pointer arrives.
+      const closeBox = (await close.element()).getBoundingClientRect();
+      const tab = document.querySelector("[data-right-panel-tab='sourceControl']") as HTMLElement;
+      const glyphBox = tab.querySelector("[data-right-panel-tab-glyph]")!.getBoundingClientRect();
+      const labelBox = tab
+        .querySelector("[role='tab'] span:not([data-right-panel-tab-glyph])")!
+        .getBoundingClientRect();
+      const tabBox = tab.getBoundingClientRect();
+      expect(
+        Math.abs(closeBox.left + closeBox.width / 2 - (glyphBox.left + glyphBox.width / 2)),
+      ).toBeLessThan(3);
+      expect(closeBox.right).toBeLessThanOrEqual(labelBox.left + 1);
+      expect(tabBox.right - labelBox.right).toBeLessThan(closeBox.width);
+
+      await close.click();
       expect(onCloseTab).toHaveBeenCalledWith("sourceControl");
     } finally {
       await mounted.unmount();

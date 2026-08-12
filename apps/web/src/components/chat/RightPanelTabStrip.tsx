@@ -48,13 +48,16 @@ function TabStripItem({
     <div
       role="presentation"
       className={cn(
-        // Exactly as wide as its own contents: icon, whole label, ✕. Not flex-1,
+        // Exactly as wide as its own contents: icon and whole label. Not flex-1,
         // which made the strip's look depend on how many tabs happened to be
         // open, and not shrinkable either -- a surface named "Cha…" is worse
         // than a narrow one, so a label is never abbreviated. When the set
         // outgrows the strip the row scrolls, exactly as the browser panel's
         // does; nothing shrinks and nothing is truncated.
-        "group/rail-tab flex shrink-0 items-center gap-1 rounded-t-md px-1.5 text-xs",
+        // Padded wider after the label than before the glyph: the glyph anchors
+        // the left edge, while the label's tail is now the tab's own edge -- the
+        // ✕ used to stand between them.
+        "group/rail-tab relative flex shrink-0 items-center rounded-t-md pr-2.5 pl-1.5 text-xs",
         active
           ? "bg-background text-foreground"
           : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
@@ -70,18 +73,34 @@ function TabStripItem({
         title={surface.label}
         onClick={onSelect}
       >
-        {live ? (
-          <LiveNode className="size-1.5 shrink-0" />
-        ) : (
-          <TabIcon className="size-3 shrink-0 opacity-70" aria-hidden="true" />
-        )}
+        {/* The leading slot says three things in turn: which surface this is,
+            that its work is live, and -- while the pointer is on the tab -- that
+            it can be closed. Reserving a fourth column for a ✕ that is invisible
+            most of the time cost every tab 20px of a strip that has to share its
+            row with the window controls. */}
+        <span
+          className="flex size-3 shrink-0 items-center justify-center transition-opacity group-hover/rail-tab:opacity-0 group-has-[[data-right-panel-close-tab]:focus-visible]/rail-tab:opacity-0"
+          data-right-panel-tab-glyph="true"
+        >
+          {live ? (
+            <LiveNode className="size-1.5" />
+          ) : (
+            <TabIcon className="size-3 opacity-70" aria-hidden="true" />
+          )}
+        </span>
         <span className="whitespace-nowrap">{surface.label}</span>
       </button>
+      {/* Sits over the glyph rather than after the label: a sibling of the tab's
+          own button (never nested inside it), covering the glyph and the gap
+          that follows, so the label still starts where it always did. */}
       <button
         type="button"
         aria-label={`Close ${surface.label}`}
         data-right-panel-close-tab={surface.id}
-        className="inline-flex size-4 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/rail-tab:opacity-100 focus-visible:opacity-100 focus-ring"
+        // Its own hover fill, because the cursor is an arrow over the whole tab:
+        // without it there is nothing to say the pointer is on the ✕ rather than
+        // on the tab it sits in.
+        className="absolute top-1/2 left-1 inline-flex size-4.5 -translate-y-1/2 items-center justify-center rounded opacity-0 transition-[opacity,background-color,color] hover:bg-foreground/10 hover:text-foreground group-hover/rail-tab:opacity-100 focus-visible:opacity-100 focus-ring"
         onClick={onClose}
       >
         <XIcon className="size-3" aria-hidden="true" />
