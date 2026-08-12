@@ -1201,6 +1201,69 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("gives a turn's tracker to its first activity group only", async () => {
+    // A subagent's report splits the turn's work into two activity groups. The
+    // tracker describes the whole turn, so repeating it on the second group
+    // would read as a duplicated row rather than as more information.
+    const workEntry = (id: string, createdAt: string) => ({
+      id,
+      kind: "work" as const,
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        turnId: ACTIVITY_ROW_TURN_ID,
+        label: "command",
+        detail: id,
+        command: `echo ${id}`,
+        tone: "tool" as const,
+      },
+    });
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          ...Array.from({ length: 8 }, (_, index) =>
+            workEntry(`first-${index}`, `2026-04-13T12:0${index}:00.000Z`),
+          ),
+          {
+            ...buildSubagentResultTimelineEntry("Count the files"),
+            result: {
+              ...buildSubagentResultTimelineEntry("Count the files").result,
+              turnId: ACTIVITY_ROW_TURN_ID,
+            },
+          },
+          ...Array.from({ length: 8 }, (_, index) =>
+            workEntry(`second-${index}`, `2026-04-13T12:1${index}:00.000Z`),
+          ),
+        ]}
+        onOpenAgentsPanel={vi.fn()}
+        turnAgents={{
+          subagents: [],
+          history: [
+            { item: buildTurnSubagent("agent-1", "completed"), resultBody: "50 .tsx files." },
+            { item: buildTurnSubagent("agent-2", "completed"), resultBody: "40 .ts files." },
+          ],
+        }}
+      />,
+    );
+
+    try {
+      const receipts = [...document.querySelectorAll("[data-work-activity-receipt='true']")];
+      expect(receipts.length).toBe(2);
+
+      const trackers = [...document.querySelectorAll("[data-turn-agents-summary='true']")];
+      expect(trackers.length).toBe(1);
+      // On the group the turn started in, not a later one.
+      expect(receipts[0]?.contains(trackers[0] ?? null)).toBe(true);
+      expect(trackers[0]?.getAttribute("aria-label")).toBe(
+        "2 subagents · 2 done. Open the agents panel.",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows one live agent status line under the tracker row and drops it when nothing is live", async () => {
     const onOpenAgentsPanel = vi.fn();
     const liveSubagent = (id: string, step: string, updatedAt: string) => ({

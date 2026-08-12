@@ -62,6 +62,11 @@ export type MessagesTimelineRow =
        *  counted, but kept so the group still exists on a turn that did nothing
        *  but delegate: the turn's agent tracker and its duration hang off it. */
       agentAnchorEntries: WorkLogEntry[];
+      /** The turns this group shows the agent tracker for. A tracker summarizes
+       *  a whole turn, so only the turn's first group carries it; a later group
+       *  in the same turn would repeat the same bars and count. Empty means this
+       *  group shows no tracker at all. */
+      trackerTurnIds: TurnId[];
       isLive: boolean;
       liveStartedAt: string | null;
     }
@@ -276,6 +281,8 @@ export function deriveMessagesTimelineRows(input: {
   const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
   const supersededRunningCommandEntryIds =
     inferSupersededRunningCommandEntryIds(visibleTimelineEntries);
+  /** Turns whose tracker has already been handed to an earlier group. */
+  const trackedTurnIds = new Set<TurnId>();
 
   for (let index = 0; index < visibleTimelineEntries.length; index += 1) {
     const timelineEntry = visibleTimelineEntries[index];
@@ -301,12 +308,24 @@ export function deriveMessagesTimelineRows(input: {
         collect(nextEntry);
         cursor += 1;
       }
+      // First group of a turn wins its tracker: that is where the turn's story
+      // starts, and while the turn runs it is where the live status line belongs.
+      const trackerTurnIds: TurnId[] = [];
+      for (const entry of [...groupedEntries, ...agentAnchorEntries]) {
+        const turnId = entry.turnId;
+        if (turnId === null || turnId === undefined || trackedTurnIds.has(turnId)) {
+          continue;
+        }
+        trackedTurnIds.add(turnId);
+        trackerTurnIds.push(turnId);
+      }
       nextRows.push({
         kind: "work",
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         groupedEntries,
         agentAnchorEntries,
+        trackerTurnIds,
         isLive: false,
         liveStartedAt: null,
       });
@@ -641,13 +660,17 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
 
-    case "work":
+    case "work": {
+      const bw = b as typeof a;
       return (
-        a.isLive === (b as typeof a).isLive &&
-        a.liveStartedAt === (b as typeof a).liveStartedAt &&
-        Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries) &&
-        Equal.equals(a.agentAnchorEntries, (b as typeof a).agentAnchorEntries)
+        a.isLive === bw.isLive &&
+        a.liveStartedAt === bw.liveStartedAt &&
+        a.trackerTurnIds.length === bw.trackerTurnIds.length &&
+        a.trackerTurnIds.every((turnId, index) => turnId === bw.trackerTurnIds[index]) &&
+        Equal.equals(a.groupedEntries, bw.groupedEntries) &&
+        Equal.equals(a.agentAnchorEntries, bw.agentAnchorEntries)
       );
+    }
 
     case "message": {
       const bm = b as typeof a;

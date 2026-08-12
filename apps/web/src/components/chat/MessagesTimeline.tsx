@@ -2625,7 +2625,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => [...row.groupedEntries, ...row.agentAnchorEntries],
     [row.agentAnchorEntries, row.groupedEntries],
   );
-  const turnAgentTracker = useTurnAgentTracker(trackedEntries);
+  const turnAgentTracker = useTurnAgentTracker(row.trackerTurnIds);
   const isLiveActivity = isWorking && row.isLive;
 
   useEffect(() => {
@@ -2825,20 +2825,14 @@ interface TurnAgentTracker {
   readonly liveStatus: LiveAgentStatusLine | null;
 }
 
-/** The turn's agents, resolved from whichever turns this activity group covers.
+/** The turn's agents, resolved from the turns this group owns the tracker for —
+ *  which is only the turns that started in it, so a turn with several activity
+ *  groups shows one tracker rather than the same one repeated down the turn.
  *  Derived once by the group so the receipt and the group's own render decision
  *  cannot disagree about whether there is a tracker to show. */
-function useTurnAgentTracker(entries: ReadonlyArray<TimelineWorkEntry>): TurnAgentTracker {
+function useTurnAgentTracker(trackerTurnIds: ReadonlyArray<TurnId>): TurnAgentTracker {
   const { turnAgents } = use(TimelineRowCtx);
-  const turnIds = useMemo(
-    () =>
-      new Set(
-        entries
-          .map((entry) => entry.turnId)
-          .filter((turnId): turnId is TurnId => turnId !== undefined && turnId !== null),
-      ),
-    [entries],
-  );
+  const turnIds = useMemo(() => new Set(trackerTurnIds), [trackerTurnIds]);
   const turnSubagents = useMemo(
     () =>
       turnAgents
