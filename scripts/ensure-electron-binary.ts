@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 
+import { fetchWithNetworkRetry } from "./fetch-with-network-retry.ts";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopRequire = createRequire(resolve(repoRoot, "apps/desktop/package.json"));
 const electronPackagePath = desktopRequire.resolve("electron/package.json");
@@ -110,7 +112,13 @@ async function installElectronBinary(): Promise<void> {
   try {
     log(`Downloading ${artifactUrl}`);
 
-    const response = await fetch(artifactUrl, { signal: AbortSignal.timeout(300_000) });
+    const response = await fetchWithNetworkRetry(artifactUrl, {
+      onRetry: ({ attempt, delayMs, error, maxAttempts }) => {
+        log(
+          `Electron download attempt ${attempt}/${maxAttempts} failed (${String(error)}); retrying in ${delayMs}ms`,
+        );
+      },
+    });
     if (!response.ok) {
       throw new Error(
         `Electron artifact download failed: ${response.status} ${response.statusText}`,
