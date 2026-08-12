@@ -2503,6 +2503,198 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect("keeps a provider diff placeholder from completing the active turn projection", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const placeholderAt = "2026-01-01T00:00:02.000Z";
+      const completedAt = "2026-01-01T00:00:05.000Z";
+      const threadId = ThreadId.make("thread-provider-diff-placeholder");
+      const turnId = TurnId.make("turn-provider-diff-placeholder");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-provider-diff-placeholder-project"),
+        projectId: ProjectId.make("project-provider-diff-placeholder"),
+        title: "Provider Diff Placeholder Project",
+        workspaceRoot: "/tmp/project-provider-diff-placeholder",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-provider-diff-placeholder-thread"),
+        threadId,
+        projectId: ProjectId.make("project-provider-diff-placeholder"),
+        title: "Provider Diff Placeholder Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-provider-diff-placeholder-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-provider-diff-placeholder-assistant-delta"),
+        threadId,
+        messageId: MessageId.make("assistant-provider-diff-placeholder"),
+        turnId,
+        delta: "Intermediate progress update",
+        createdAt: placeholderAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-provider-diff-placeholder-assistant-complete"),
+        threadId,
+        messageId: MessageId.make("assistant-provider-diff-placeholder"),
+        turnId,
+        completesTurn: false,
+        createdAt: placeholderAt,
+      });
+
+      const assistantSegmentTurnRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+        readonly assistantMessageId: string | null;
+      }>`
+        SELECT
+          state,
+          completed_at AS "completedAt",
+          assistant_message_id AS "assistantMessageId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(assistantSegmentTurnRows, [
+        {
+          state: "running",
+          completedAt: null,
+          assistantMessageId: "assistant-provider-diff-placeholder",
+        },
+      ]);
+
+      yield* engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-provider-diff-placeholder"),
+        threadId,
+        turnId,
+        completedAt: placeholderAt,
+        checkpointRef: CheckpointRef.make("provider-diff:evt-provider-diff-placeholder"),
+        status: "missing",
+        files: [
+          {
+            path: "apps/web/src/components/usage/UsageView.tsx",
+            kind: "modified",
+            additions: 12,
+            deletions: 3,
+          },
+        ],
+        assistantMessageId: MessageId.make("assistant-provider-diff-placeholder"),
+        checkpointTurnCount: 1,
+        completesTurn: false,
+        createdAt: placeholderAt,
+      });
+
+      const placeholderTurnRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+        readonly checkpointStatus: string | null;
+        readonly checkpointFilesJson: string;
+      }>`
+        SELECT
+          state,
+          completed_at AS "completedAt",
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_files_json AS "checkpointFilesJson"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+      `;
+      assert.equal(placeholderTurnRows[0]?.state, "running");
+      assert.equal(placeholderTurnRows[0]?.completedAt, null);
+      assert.equal(placeholderTurnRows[0]?.checkpointStatus, "missing");
+      assert.deepEqual(JSON.parse(placeholderTurnRows[0]?.checkpointFilesJson ?? "[]"), [
+        {
+          path: "apps/web/src/components/usage/UsageView.tsx",
+          kind: "modified",
+          additions: 12,
+          deletions: 3,
+        },
+      ]);
+
+      yield* engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-provider-diff-terminal"),
+        threadId,
+        turnId,
+        completedAt,
+        checkpointRef: CheckpointRef.make(
+          "refs/threadlines/checkpoints/thread-provider-diff-placeholder/turn/1",
+        ),
+        status: "ready",
+        files: [
+          {
+            path: "apps/web/src/components/usage/UsageView.tsx",
+            kind: "modified",
+            additions: 14,
+            deletions: 3,
+          },
+        ],
+        assistantMessageId: MessageId.make("assistant-provider-diff-placeholder"),
+        checkpointTurnCount: 1,
+        completesTurn: true,
+        createdAt: completedAt,
+      });
+
+      const completedTurnRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+        readonly checkpointStatus: string | null;
+      }>`
+        SELECT
+          state,
+          completed_at AS "completedAt",
+          checkpoint_status AS "checkpointStatus"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(completedTurnRows, [
+        { state: "completed", completedAt, checkpointStatus: "ready" },
+      ]);
+
+      const threadRows = yield* sql<{ readonly latestTurnId: string | null }>`
+        SELECT latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [{ latestTurnId: "turn-provider-diff-placeholder" }]);
+    }),
+  );
+
   it.effect("interrupts an unfinished latest turn when its session stops", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

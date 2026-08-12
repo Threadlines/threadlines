@@ -3903,6 +3903,19 @@ describe("ProviderRuntimeIngestion", () => {
         status: "completed",
       },
     });
+    const afterItemCompletion = await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-complete-dedup" && !message.streaming,
+      ),
+    );
+    expect(afterItemCompletion.session?.activeTurnId).toBe("turn-complete-dedup");
+    expect(afterItemCompletion.latestTurn).toMatchObject({
+      turnId: "turn-complete-dedup",
+      state: "running",
+      completedAt: null,
+    });
+
     harness.emit({
       type: "turn.completed",
       eventId: asEventId("evt-turn-completed-for-complete-dedup"),
@@ -3941,6 +3954,12 @@ describe("ProviderRuntimeIngestion", () => {
       );
     });
     expect(completionEvents).toHaveLength(1);
+    const completionEvent = completionEvents[0];
+    expect(completionEvent?.type).toBe("thread.message-sent");
+    if (completionEvent?.type !== "thread.message-sent") {
+      throw new Error("Expected one assistant message completion event");
+    }
+    expect(completionEvent.payload.completesTurn).toBe(false);
   });
 
   it("maps canonical request events into approval activities with requestKind", async () => {
@@ -4404,6 +4423,13 @@ describe("ProviderRuntimeIngestion", () => {
     const placeholder = afterFirst.checkpoints.find(
       (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-cumulative",
     );
+    expect(afterFirst.session?.status).toBe("running");
+    expect(afterFirst.session?.activeTurnId).toBe("turn-cumulative");
+    expect(afterFirst.latestTurn).toMatchObject({
+      turnId: "turn-cumulative",
+      state: "running",
+      completedAt: null,
+    });
     expect(placeholder?.files).toEqual([
       { path: "file.txt", kind: "modified", additions: 1, deletions: 0 },
     ]);

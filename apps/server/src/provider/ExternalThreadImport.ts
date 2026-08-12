@@ -118,6 +118,7 @@ export function importExternalProviderThread(
                 threadId: input.threadId,
                 messageId,
                 turnId,
+                completesTurn: true,
                 createdAt: message.createdAt,
               }),
             ),

@@ -53,6 +53,17 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
   return "completed" as const;
 }
 
+function turnDiffEventCompletesTurn(
+  thread: Pick<OrchestrationThread, "session">,
+  payload: { readonly turnId: string; readonly completesTurn?: boolean | undefined },
+) {
+  if (payload.completesTurn !== undefined) {
+    return payload.completesTurn;
+  }
+  const activeTurnId = thread.session?.activeTurnId ?? null;
+  return activeTurnId === null || activeTurnId !== payload.turnId;
+}
+
 function updateThread(
   threads: ReadonlyArray<OrchestrationThread>,
   threadId: ThreadId,
@@ -740,12 +751,9 @@ export function projectEvent(
         ]
           .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
           .slice(-MAX_THREAD_CHECKPOINTS);
-
-        return {
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            checkpoints,
-            latestTurn: {
+        const completesTurn = turnDiffEventCompletesTurn(thread, payload);
+        const latestTurn = completesTurn
+          ? {
               turnId: payload.turnId,
               state: checkpointStatusToLatestTurnState(payload.status),
               requestedAt:
@@ -758,7 +766,14 @@ export function projectEvent(
                   : payload.completedAt,
               completedAt: payload.completedAt,
               assistantMessageId: payload.assistantMessageId,
-            },
+            }
+          : thread.latestTurn;
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            checkpoints,
+            latestTurn,
             updatedAt: event.occurredAt,
           }),
         };

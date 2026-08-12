@@ -1473,14 +1473,15 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             { concurrency: 2 },
           ).pipe(
             Effect.map(([primaryResult, localResult]) => {
-              const response = Result.isSuccess(primaryResult)
-                ? Result.isSuccess(localResult)
+              let response: CodexSchema.V2PluginListResponse;
+              if (Result.isFailure(primaryResult)) {
+                if (Result.isFailure(localResult)) return Result.fail(primaryResult.failure);
+                response = localResult.success;
+              } else {
+                response = Result.isSuccess(localResult)
                   ? mergeCodexPluginCatalogResponses(primaryResult.success, localResult.success)
-                  : primaryResult.success
-                : Result.isSuccess(localResult)
-                  ? localResult.success
-                  : undefined;
-              if (!response) return Result.fail(primaryResult.failure);
+                  : primaryResult.success;
+              }
               return Result.succeed({
                 ...mapCodexPluginInventory(response),
                 loadErrorMessage: codexMarketplaceLoadErrorMessage(response),

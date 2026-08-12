@@ -16,6 +16,7 @@ import {
   CommandList,
   CommandShortcut,
 } from "./ui/command";
+import { Skeleton } from "./ui/skeleton";
 import { cn } from "~/lib/utils";
 
 interface CommandPaletteResultsProps {
@@ -23,13 +24,25 @@ interface CommandPaletteResultsProps {
   groups: ReadonlyArray<CommandPaletteGroup>;
   highlightedItemValue?: string | null;
   isActionsOnly: boolean;
+  isLoading?: boolean | undefined;
   keybindings: ResolvedKeybindingsConfig;
   query: string;
   onExecuteItem: (item: CommandPaletteActionItem | CommandPaletteSubmenuItem) => void;
 }
 
+const COMMAND_PALETTE_LOADING_ROWS = [
+  { title: "w-36", detail: "w-56" },
+  { title: "w-44", detail: "w-64" },
+  { title: "w-32", detail: "w-48" },
+  { title: "w-40", detail: "w-52" },
+] as const;
+
 export function CommandPaletteResults(props: CommandPaletteResultsProps) {
   if (props.groups.length === 0) {
+    if (props.isLoading) {
+      return <CommandPaletteResultsSkeleton />;
+    }
+
     return (
       <div className="py-10 text-center text-sm text-muted-foreground">
         {props.emptyStateMessage ??
@@ -64,6 +77,34 @@ export function CommandPaletteResults(props: CommandPaletteResultsProps) {
         </CommandGroup>
       ))}
     </CommandList>
+  );
+}
+
+function CommandPaletteResultsSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading command results"
+      data-testid="command-palette-results-skeleton"
+      className="px-2 py-2"
+    >
+      <Skeleton className="mx-2 mb-1.5 h-3 w-20 rounded-full" />
+      <div className="space-y-1">
+        {COMMAND_PALETTE_LOADING_ROWS.map((row) => (
+          <div
+            key={row.title}
+            className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5 text-base sm:min-h-7 sm:text-sm"
+          >
+            <Skeleton className="size-4 shrink-0 rounded-sm" />
+            <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <Skeleton className={cn("h-3.5 rounded-full", row.title)} />
+              <Skeleton className={cn("h-2.5 rounded-full", row.detail)} />
+            </span>
+            <Skeleton className="h-3 w-10 shrink-0 rounded-full" />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

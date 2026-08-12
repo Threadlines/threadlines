@@ -190,4 +190,85 @@ layer("045_SettleStoppedProjectionTurns", (it) => {
       ]);
     }),
   );
+
+  it.effect("backfills checkpoint capture time separately from turn completion", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 45 });
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json
+        )
+        VALUES
+          (
+            'thread-checkpoint',
+            'turn-checkpoint',
+            NULL,
+            'assistant-checkpoint',
+            'completed',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:05.000Z',
+            1,
+            'refs/threadlines/checkpoints/thread-checkpoint/turn/1',
+            'ready',
+            '[]'
+          ),
+          (
+            'thread-no-checkpoint',
+            'turn-no-checkpoint',
+            NULL,
+            NULL,
+            'completed',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:03.000Z',
+            NULL,
+            NULL,
+            NULL,
+            '[]'
+          )
+      `;
+
+      yield* runMigrations({ toMigrationInclusive: 46 });
+
+      const rows = yield* sql<{
+        readonly turnId: string;
+        readonly completedAt: string | null;
+        readonly checkpointCompletedAt: string | null;
+      }>`
+        SELECT
+          turn_id AS "turnId",
+          completed_at AS "completedAt",
+          checkpoint_completed_at AS "checkpointCompletedAt"
+        FROM projection_turns
+        WHERE thread_id IN ('thread-checkpoint', 'thread-no-checkpoint')
+        ORDER BY turn_id ASC
+      `;
+      assert.deepStrictEqual(rows, [
+        {
+          turnId: "turn-checkpoint",
+          completedAt: "2026-06-01T00:00:05.000Z",
+          checkpointCompletedAt: "2026-06-01T00:00:05.000Z",
+        },
+        {
+          turnId: "turn-no-checkpoint",
+          completedAt: "2026-06-01T00:00:03.000Z",
+          checkpointCompletedAt: null,
+        },
+      ]);
+    }),
+  );
 });

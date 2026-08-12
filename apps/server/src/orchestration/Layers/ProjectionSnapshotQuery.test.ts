@@ -277,7 +277,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
-          checkpoint_files_json
+          checkpoint_files_json,
+          checkpoint_completed_at
         )
         VALUES (
           'thread-1',
@@ -293,7 +294,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           1,
           'checkpoint-1',
           'ready',
-          '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]'
+          '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]',
+          '2026-02-24T00:00:08.000Z'
         )
       `;
 
@@ -864,7 +866,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
-          checkpoint_files_json
+          checkpoint_files_json,
+          checkpoint_completed_at
         )
         VALUES
           (
@@ -881,7 +884,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             1,
             'checkpoint-a',
             'ready',
-            '[]'
+            '[]',
+            '2026-03-02T00:00:04.000Z'
           ),
           (
             'thread-context',
@@ -897,7 +901,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             2,
             'checkpoint-b',
             'ready',
-            '[]'
+            '[]',
+            '2026-03-02T00:00:05.000Z'
           )
       `;
 
@@ -1714,7 +1719,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
-          checkpoint_files_json
+          checkpoint_files_json,
+          checkpoint_completed_at
         )
         VALUES
           (
@@ -1731,7 +1737,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             5,
             'checkpoint-5',
             'ready',
-            '[]'
+            '[]',
+            '2026-04-02T00:00:20.000Z'
           ),
           (
             'thread-1',
@@ -1747,7 +1754,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             NULL,
             NULL,
             NULL,
-            '[]'
+            '[]',
+            NULL
           )
       `;
 
@@ -2162,7 +2170,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
-          checkpoint_files_json
+          checkpoint_files_json,
+          checkpoint_completed_at
         )
         VALUES
           (
@@ -2179,7 +2188,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             1,
             'checkpoint-1',
             'ready',
-            '[{"path":"a.ts","kind":"modified","additions":10,"deletions":2},{"path":"b.ts","kind":"added","additions":5,"deletions":0}]'
+            '[{"path":"a.ts","kind":"modified","additions":10,"deletions":2},{"path":"b.ts","kind":"added","additions":5,"deletions":0}]',
+            '2026-07-01T00:00:11.000Z'
           ),
           (
             'thread-busy',
@@ -2195,7 +2205,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             2,
             'checkpoint-2',
             'ready',
-            '[{"path":"a.ts","kind":"modified","additions":1,"deletions":7}]'
+            '[{"path":"a.ts","kind":"modified","additions":1,"deletions":7}]',
+            '2026-07-01T00:00:21.000Z'
           ),
           (
             'thread-busy',
@@ -2211,7 +2222,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             3,
             'provider-diff:event-3',
             'missing',
-            '[{"path":"c.ts","kind":"modified","additions":4,"deletions":3}]'
+            '[{"path":"c.ts","kind":"modified","additions":4,"deletions":3}]',
+            '2026-07-01T00:00:31.000Z'
           ),
           (
             'thread-busy',
@@ -2227,7 +2239,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             4,
             'checkpoint-4',
             'ready',
-            '[]'
+            '[]',
+            '2026-07-01T00:00:41.000Z'
           ),
           (
             'thread-quiet',
@@ -2243,7 +2256,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             1,
             'checkpoint-5',
             'ready',
-            '[]'
+            '[]',
+            '2026-07-01T00:00:51.000Z'
           )
       `;
 
@@ -2408,23 +2422,25 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           thread_id, turn_id, pending_message_id, source_proposed_plan_thread_id,
           source_proposed_plan_id, assistant_message_id, state, requested_at,
           started_at, completed_at, checkpoint_turn_count, checkpoint_ref,
-          checkpoint_status, checkpoint_files_json
+          checkpoint_status, checkpoint_files_json, checkpoint_completed_at
         )
         VALUES
           (
             'thread-root', 'turn-1', NULL, NULL, NULL, 'message-1', 'completed',
             '2026-07-01T00:00:10.000Z', '2026-07-01T00:00:10.000Z',
-            '2026-07-01T00:00:11.000Z', 1, 'checkpoint-1', 'ready', '[]'
+            '2026-07-01T00:00:11.000Z', 1, 'checkpoint-1', 'ready', '[]',
+            '2026-07-01T00:00:11.000Z'
           ),
           (
             'thread-root', 'turn-2', NULL, NULL, NULL, 'message-2', 'completed',
             '2026-07-01T00:00:20.000Z', '2026-07-01T00:00:20.000Z',
-            '2026-07-01T00:00:21.000Z', 2, 'checkpoint-2', 'ready', '[]'
+            '2026-07-01T00:00:21.000Z', 2, 'checkpoint-2', 'ready', '[]',
+            '2026-07-01T00:00:21.000Z'
           ),
           (
             'thread-worktree', 'turn-3', NULL, NULL, NULL, NULL, 'running',
             '2026-07-01T00:00:30.000Z', '2026-07-01T00:00:30.000Z',
-            NULL, NULL, NULL, NULL, '[]'
+            NULL, NULL, NULL, NULL, '[]', NULL
           )
       `;
 

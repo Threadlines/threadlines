@@ -2033,6 +2033,9 @@ function OpenCommandPaletteDialog() {
     remoteProjectInputPlaceholder(addProjectCloneFlow) ??
     currentView?.inputPlaceholder ??
     getCommandPaletteInputPlaceholder(paletteMode);
+  const commandResultsLoading =
+    (codexSessionFlow !== null && externalSessionsQuery.isPending) ||
+    (isGitHubRepositorySelectionStep && gitHubRepositoriesQuery.isPending);
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
   const hasHighlightedRemoteRepositoryItem =
@@ -2357,6 +2360,7 @@ function OpenCommandPaletteDialog() {
             groups={displayedGroups}
             highlightedItemValue={highlightedItemValue}
             isActionsOnly={isActionsOnly}
+            isLoading={commandResultsLoading}
             keybindings={keybindings}
             query={deferredQuery}
             onExecuteItem={executeItem}

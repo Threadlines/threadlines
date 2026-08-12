@@ -69,6 +69,7 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { Kbd } from "./ui/kbd";
+import { Skeleton } from "./ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
   SidebarContent,
@@ -149,6 +150,51 @@ const DONE_REVEAL_STEP = 20;
 // The queued-turn grace window is measured in minutes, so a coarse clock is
 // enough to keep "can this be marked done" honest without re-rendering often.
 const INBOX_CLOCK_INTERVAL_MS = 30_000;
+const SIDEBAR_LOADING_LIVE_ROW_WIDTHS = ["w-36", "w-28", "w-40"] as const;
+const SIDEBAR_LOADING_WRAPPED_ROW_WIDTHS = ["w-32", "w-24"] as const;
+
+function SidebarInboxLoadingSkeleton() {
+  return (
+    <div
+      className="px-2 py-1"
+      role="status"
+      aria-label="Loading projects and threads"
+      data-testid="sidebar-loading-skeleton"
+    >
+      {/* These are representative row shapes, not a prediction of the user's
+          counts or activity. No status dot is drawn because that would make
+          neutral loading rows look like work is already running. */}
+      <div className="flex flex-col" data-testid="sidebar-loading-live-rows">
+        {SIDEBAR_LOADING_LIVE_ROW_WIDTHS.map((width) => (
+          <div key={width} className="relative w-full px-3 pt-1.5 pb-2">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Skeleton className="size-3 shrink-0 rounded-sm" />
+              <Skeleton className="h-2.5 w-16 rounded-full" />
+              <Skeleton className="ml-auto h-2.5 w-10 rounded-full" />
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+              <Skeleton className={cn("h-3.5 rounded-full", width)} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-1.5 flex items-center gap-2 px-3 pb-1.5">
+        <Skeleton className="h-2.5 w-16 rounded-full" />
+        <Skeleton className="h-px flex-1 rounded-none" />
+        <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+      </div>
+      <div className="flex flex-col" data-testid="sidebar-loading-wrapped-rows">
+        {SIDEBAR_LOADING_WRAPPED_ROW_WIDTHS.map((width) => (
+          <div key={width} className="flex items-center gap-2 px-3 py-1.5">
+            <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+            <Skeleton className={cn("h-3.5 rounded-full", width)} />
+            <Skeleton className="ml-auto h-2.5 w-8 shrink-0 rounded-full" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface InboxEntry {
   thread: SidebarThreadSummary;
@@ -1475,25 +1521,25 @@ export default function Sidebar() {
                   />
 
                   {liveEntries.length === 0 && visibleDraftSessionCount === 0 ? (
-                    <div className="flex flex-col items-start gap-1.5 px-3 py-2">
-                      <span className="text-[11px] text-muted-foreground/60">
-                        {!bootstrapComplete
-                          ? "Loading projects"
-                          : hasWorkspaceProjects
-                            ? "No threads yet"
-                            : "No projects yet"}
-                      </span>
-                      {hasWorkspaceProjects || !bootstrapComplete ? null : (
-                        <button
-                          type="button"
-                          data-testid="inbox-empty-add-project"
-                          className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                          onClick={openAddProjectCommandPalette}
-                        >
-                          Add a project
-                        </button>
-                      )}
-                    </div>
+                    !bootstrapComplete ? (
+                      <SidebarInboxLoadingSkeleton />
+                    ) : (
+                      <div className="flex flex-col items-start gap-1.5 px-3 py-2">
+                        <span className="text-[11px] text-muted-foreground/60">
+                          {hasWorkspaceProjects ? "No threads yet" : "No projects yet"}
+                        </span>
+                        {hasWorkspaceProjects ? null : (
+                          <button
+                            type="button"
+                            data-testid="inbox-empty-add-project"
+                            className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
+                            onClick={openAddProjectCommandPalette}
+                          >
+                            Add a project
+                          </button>
+                        )}
+                      </div>
+                    )
                   ) : (
                     <ul data-testid="inbox-thread-list">
                       {visibleLiveEntries.map((entry) => (
