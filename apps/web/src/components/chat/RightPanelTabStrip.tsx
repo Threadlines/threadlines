@@ -166,7 +166,11 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
             the far right of whatever the strip has left. */}
         <div className="flex min-w-0 shrink items-stretch">
           <ScrollArea
-            scrollFade
+            // Right edge only: that is where the tabs run under the `+` and the
+            // window controls, so the fade reads as tabs passing beneath them.
+            // The left edge is just the panel's own side, and fading there only
+            // made the first tab look half-drawn.
+            scrollFade="x-end"
             observeContentResize
             horizontalWheelScroll
             contentClassName="h-full"

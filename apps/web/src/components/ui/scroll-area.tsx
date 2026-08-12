@@ -17,7 +17,13 @@ function ScrollArea({
   horizontalWheelScroll = false,
   ...props
 }: ScrollAreaPrimitive.Root.Props & {
-  scrollFade?: boolean;
+  /**
+   * Fade the content out at whichever edges it overflows. `"x-end"` fades only
+   * the right edge, for a row whose left edge is a hard boundary (the panel's
+   * own side) while its right edge runs under something fixed — the fade there
+   * reads as content passing beneath, which a matching left fade would muddle.
+   */
+  scrollFade?: boolean | "x-end";
   scrollbarGutter?: boolean;
   hideScrollbars?: boolean;
   chainVerticalScroll?: boolean;
@@ -73,8 +79,10 @@ function ScrollArea({
         className={cn(
           "h-full max-h-[inherit] overflow-auto overscroll-contain rounded-[inherit] outline-none transition-shadows focus-ring data-has-overflow-x:overscroll-x-contain",
           chainVerticalScroll && "overscroll-y-auto",
-          scrollFade &&
+          scrollFade === true &&
             "mask-t-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-y-start)))] mask-b-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-y-end)))] mask-l-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-start)))] mask-r-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-end)))] [--fade-size:1.5rem]",
+          scrollFade === "x-end" &&
+            "mask-r-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-end)))] [--fade-size:1.5rem]",
           scrollbarGutter && "[scrollbar-gutter:stable]",
           hideScrollbars &&
             "[-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
