@@ -44,7 +44,7 @@ import {
 } from "../project/Services/ProjectSetupScriptRunner.ts";
 
 interface FakeGhScenario {
-  prListSequence?: string[];
+  prListSequence?: Array<string | GitHubCliError>;
   prListByHeadSelector?: Record<string, string>;
   prListSequenceByHeadSelector?: Record<string, string[]>;
   createdPrUrl?: string;
@@ -423,7 +423,11 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
         typeof headSelector === "string"
           ? scenario.prListByHeadSelector?.[headSelector]
           : undefined;
-      const stdout = (mappedQueue ?? mappedStdout ?? prListQueue.shift() ?? "[]") + "\n";
+      const queued = mappedQueue ?? mappedStdout ?? prListQueue.shift() ?? "[]";
+      if (queued instanceof GitHubCliError) {
+        return Effect.fail(queued);
+      }
+      const stdout = queued + "\n";
       return Effect.succeed(fakeGhOutput(stdout));
     }
 
@@ -1420,6 +1424,45 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const status = yield* manager.status({ cwd: repoDir });
       expect(status.refName).toBe("feature/status-no-gh");
       expect(status.pr).toBeNull();
+    }),
+  );
+
+  it.effect("keeps the last-known PR through a lookup failure and clears it on success", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("threadlines-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-stable-pr"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-stable-pr"]);
+
+      const existingPr = {
+        number: 47,
+        title: "Stable PR icon",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/47",
+        baseRefName: "main",
+        headRefName: "feature/status-stable-pr",
+      };
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            JSON.stringify([existingPr]),
+            new GitHubCliError({
+              operation: "execute",
+              detail: "Temporary GitHub lookup failure.",
+            }),
+            "[]",
+          ],
+        },
+      });
+
+      const initial = yield* manager.status({ cwd: repoDir });
+      const retained = yield* manager.remoteStatus({ cwd: repoDir }, { forceRefresh: true });
+      const cleared = yield* manager.remoteStatus({ cwd: repoDir }, { forceRefresh: true });
+
+      expect(initial.pr?.number).toBe(47);
+      expect(retained?.pr?.number).toBe(47);
+      expect(cleared?.pr).toBeNull();
     }),
   );
 

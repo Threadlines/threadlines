@@ -193,8 +193,19 @@ export const ServerProviderAccountTokenUsageSummary = Schema.Struct({
 export type ServerProviderAccountTokenUsageSummary =
   typeof ServerProviderAccountTokenUsageSummary.Type;
 
+export const ServerProviderAccountTokenUsageScope = Schema.Literals(["account", "local"]);
+export type ServerProviderAccountTokenUsageScope = typeof ServerProviderAccountTokenUsageScope.Type;
+
 export const ServerProviderAccountTokenUsage = Schema.Struct({
   checkedAt: IsoDateTime,
+  /** Whether the history represents an account or activity observed locally. */
+  scope: Schema.optional(ServerProviderAccountTokenUsageScope),
+  /** First calendar day for which zero activity is also authoritative. */
+  coverageStartDate: Schema.optional(TrimmedNonEmptyString),
+  /** Last calendar day for which zero activity is also authoritative. */
+  coverageEndDate: Schema.optional(TrimmedNonEmptyString),
+  /** True when the retained buckets cover the provider's complete lifetime. */
+  completeLifetimeHistory: Schema.optional(Schema.Boolean),
   dailyBuckets: Schema.Array(ServerProviderAccountTokenUsageDailyBucket),
   summary: ServerProviderAccountTokenUsageSummary,
 });

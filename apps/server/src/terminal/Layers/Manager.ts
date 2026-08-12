@@ -132,7 +132,7 @@ interface TerminalSessionState {
   status: TerminalSessionStatus;
   pid: number | null;
   history: string;
-  pendingHistoryControlSequence: string;
+  pendingHistoryControlSequence: PendingHistoryControlSequence | null;
   pendingProcessEvents: Array<PendingProcessEvent>;
   pendingProcessEventIndex: number;
   processEventDrainRunning: boolean;
@@ -147,6 +147,7 @@ interface TerminalSessionState {
   hasRunningSubprocess: boolean;
   runningSubprocessCommand: string | null;
   submittedCommand: string | null;
+  commandGeneration: number;
   subprocessPollingArmed: boolean;
   consecutiveSubprocessIdlePolls: number;
   commandCompletionMarkersEnabled: boolean;
@@ -154,12 +155,19 @@ interface TerminalSessionState {
   runtimeEnv: Record<string, string> | null;
 }
 
+interface PendingHistoryControlSequence {
+  data: string;
+  commandGeneration: number;
+}
+
 interface PersistHistoryRequest {
   history: string;
   immediate: boolean;
 }
 
-type PendingProcessEvent = { type: "output"; data: string } | { type: "exit"; event: PtyExitEvent };
+type PendingProcessEvent =
+  | { type: "output"; data: string; commandGeneration: number }
+  | { type: "exit"; event: PtyExitEvent };
 
 type DrainProcessEventAction =
   | { type: "idle" }
@@ -523,19 +531,39 @@ function findEscapeSequenceEndIndex(input: string, start: number): number | null
 }
 
 function sanitizeTerminalHistoryChunk(
-  pendingControlSequence: string,
+  pendingControlSequence: PendingHistoryControlSequence | null,
   data: string,
-): { visibleText: string; pendingControlSequence: string; commandFinished: boolean } {
-  const input = `${pendingControlSequence}${data}`;
+  commandGeneration: number,
+): {
+  visibleText: string;
+  pendingControlSequence: PendingHistoryControlSequence | null;
+  commandFinishedGenerations: number[];
+} {
+  const pendingData = pendingControlSequence?.data ?? "";
+  const input = `${pendingData}${data}`;
   let visibleText = "";
-  let commandFinished = false;
+  const commandFinishedGenerations: number[] = [];
   let index = 0;
 
-  const result = (nextPendingControlSequence: string) => ({
-    visibleText,
-    pendingControlSequence: nextPendingControlSequence,
-    commandFinished,
-  });
+  const generationAt = (offset: number) =>
+    pendingControlSequence !== null && offset < pendingData.length
+      ? pendingControlSequence.commandGeneration
+      : commandGeneration;
+
+  const result = (pendingStartIndex: number | null) => {
+    const nextPendingData = pendingStartIndex === null ? "" : input.slice(pendingStartIndex);
+    return {
+      visibleText,
+      pendingControlSequence:
+        nextPendingData.length > 0
+          ? {
+              data: nextPendingData,
+              commandGeneration: generationAt(pendingStartIndex ?? input.length),
+            }
+          : null,
+      commandFinishedGenerations,
+    };
+  };
 
   const append = (value: string) => {
     visibleText += value;
@@ -547,7 +575,7 @@ function sanitizeTerminalHistoryChunk(
     if (codePoint === 0x1b) {
       const nextCodePoint = input.charCodeAt(index + 1);
       if (Number.isNaN(nextCodePoint)) {
-        return result(input.slice(index));
+        return result(index);
       }
 
       if (nextCodePoint === 0x5b) {
@@ -565,7 +593,7 @@ function sanitizeTerminalHistoryChunk(
           cursor += 1;
         }
         if (cursor >= input.length) {
-          return result(input.slice(index));
+          return result(index);
         }
         continue;
       }
@@ -578,12 +606,12 @@ function sanitizeTerminalHistoryChunk(
       ) {
         const terminatorIndex = findStringTerminatorIndex(input, index + 2);
         if (terminatorIndex === null) {
-          return result(input.slice(index));
+          return result(index);
         }
         const sequence = input.slice(index, terminatorIndex);
         const content = stripStringTerminator(input.slice(index + 2, terminatorIndex));
         if (nextCodePoint === 0x5d && content === COMMAND_FINISHED_OSC_CONTENT) {
-          commandFinished = true;
+          commandFinishedGenerations.push(generationAt(index));
         }
         if (nextCodePoint !== 0x5d || !shouldStripOscSequence(content)) {
           append(sequence);
@@ -594,7 +622,7 @@ function sanitizeTerminalHistoryChunk(
 
       const escapeSequenceEndIndex = findEscapeSequenceEndIndex(input, index + 1);
       if (escapeSequenceEndIndex === null) {
-        return result(input.slice(index));
+        return result(index);
       }
       append(input.slice(index, escapeSequenceEndIndex));
       index = escapeSequenceEndIndex;
@@ -616,7 +644,7 @@ function sanitizeTerminalHistoryChunk(
         cursor += 1;
       }
       if (cursor >= input.length) {
-        return result(input.slice(index));
+        return result(index);
       }
       continue;
     }
@@ -624,12 +652,12 @@ function sanitizeTerminalHistoryChunk(
     if (codePoint === 0x9d || codePoint === 0x90 || codePoint === 0x9e || codePoint === 0x9f) {
       const terminatorIndex = findStringTerminatorIndex(input, index + 1);
       if (terminatorIndex === null) {
-        return result(input.slice(index));
+        return result(index);
       }
       const sequence = input.slice(index, terminatorIndex);
       const content = stripStringTerminator(input.slice(index + 1, terminatorIndex));
       if (codePoint === 0x9d && content === COMMAND_FINISHED_OSC_CONTENT) {
-        commandFinished = true;
+        commandFinishedGenerations.push(generationAt(index));
       }
       if (codePoint !== 0x9d || !shouldStripOscSequence(content)) {
         append(sequence);
@@ -642,7 +670,7 @@ function sanitizeTerminalHistoryChunk(
     index += 1;
   }
 
-  return result("");
+  return result(null);
 }
 
 function legacySafeThreadId(threadId: string): string {
@@ -1425,6 +1453,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             const sanitized = sanitizeTerminalHistoryChunk(
               session.pendingHistoryControlSequence,
               nextEvent.data,
+              nextEvent.commandGeneration,
             );
             session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
             if (sanitized.visibleText.length > 0) {
@@ -1435,7 +1464,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             }
             const commandFinished =
               session.commandCompletionMarkersEnabled &&
-              sanitized.commandFinished &&
+              sanitized.commandFinishedGenerations.includes(session.commandGeneration) &&
               session.hasRunningSubprocess;
             if (commandFinished) {
               session.hasRunningSubprocess = false;
@@ -1469,7 +1498,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.commandCompletionMarkersEnabled = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
           session.status = "exited";
-          session.pendingHistoryControlSequence = "";
+          session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;
@@ -1555,7 +1584,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.commandCompletionMarkersEnabled = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
         session.status = "exited";
-        session.pendingHistoryControlSequence = "";
+        session.pendingHistoryControlSequence = null;
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
@@ -1658,10 +1687,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.hasRunningSubprocess = false;
         session.runningSubprocessCommand = null;
         session.submittedCommand = null;
+        session.commandGeneration = 0;
         session.subprocessPollingArmed = false;
         session.consecutiveSubprocessIdlePolls = 0;
         session.commandCompletionMarkersEnabled = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
+        session.pendingHistoryControlSequence = null;
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
@@ -1688,7 +1719,16 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
               const processPid = ptyProcess.pid;
               const unsubscribeData = ptyProcess.onData((data) => {
-                if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
+                // PTY callbacks can outpace the event drain. Preserve the
+                // command generation from receipt time so an initial or prior
+                // prompt marker cannot finish a command submitted afterward.
+                if (
+                  !enqueueProcessEvent(session, processPid, {
+                    type: "output",
+                    data,
+                    commandGeneration: session.commandGeneration,
+                  })
+                ) {
                   return;
                 }
                 runFork(drainProcessEvents(session, processPid));
@@ -1746,10 +1786,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.hasRunningSubprocess = false;
           session.runningSubprocessCommand = null;
           session.submittedCommand = null;
+          session.commandGeneration = 0;
           session.subprocessPollingArmed = false;
           session.consecutiveSubprocessIdlePolls = 0;
           session.commandCompletionMarkersEnabled = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
+          session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;
@@ -2060,7 +2102,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               status: "starting",
               pid: null,
               history,
-              pendingHistoryControlSequence: "",
+              pendingHistoryControlSequence: null,
               pendingProcessEvents: [],
               pendingProcessEventIndex: 0,
               processEventDrainRunning: false,
@@ -2075,6 +2117,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               hasRunningSubprocess: false,
               runningSubprocessCommand: null,
               submittedCommand: null,
+              commandGeneration: 0,
               subprocessPollingArmed: false,
               consecutiveSubprocessIdlePolls: 0,
               commandCompletionMarkersEnabled: false,
@@ -2119,7 +2162,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             liveSession.worktreePath = input.worktreePath ?? null;
             liveSession.runtimeEnv = nextRuntimeEnv;
             liveSession.history = "";
-            liveSession.pendingHistoryControlSequence = "";
+            liveSession.pendingHistoryControlSequence = null;
             liveSession.pendingProcessEvents = [];
             liveSession.pendingProcessEventIndex = 0;
             liveSession.processEventDrainRunning = false;
@@ -2135,7 +2178,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             liveSession.runtimeEnv = nextRuntimeEnv;
             liveSession.worktreePath = input.worktreePath ?? null;
             liveSession.history = "";
-            liveSession.pendingHistoryControlSequence = "";
+            liveSession.pendingHistoryControlSequence = null;
             liveSession.pendingProcessEvents = [];
             liveSession.pendingProcessEventIndex = 0;
             liveSession.processEventDrainRunning = false;
@@ -2197,6 +2240,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         // Keep checking this PTY after a submitted command even if an early
         // process snapshot misses its child. This also covers commands recalled
         // through shell history, whose text cannot be reconstructed here.
+        session.commandGeneration += 1;
         session.subprocessPollingArmed = true;
         session.consecutiveSubprocessIdlePolls = 0;
         if (session.commandCompletionMarkersEnabled && session.pid !== null) {
@@ -2239,7 +2283,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const session = yield* requireSession(input.threadId, terminalId);
           const updatedAt = yield* nowIso;
           session.history = "";
-          session.pendingHistoryControlSequence = "";
+          session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;
@@ -2278,7 +2322,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               status: "starting",
               pid: null,
               history: "",
-              pendingHistoryControlSequence: "",
+              pendingHistoryControlSequence: null,
               pendingProcessEvents: [],
               pendingProcessEventIndex: 0,
               processEventDrainRunning: false,
@@ -2293,6 +2337,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               hasRunningSubprocess: false,
               runningSubprocessCommand: null,
               submittedCommand: null,
+              commandGeneration: 0,
               subprocessPollingArmed: false,
               consecutiveSubprocessIdlePolls: 0,
               commandCompletionMarkersEnabled: false,
@@ -2318,7 +2363,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const rows = input.rows ?? session.rows;
 
           session.history = "";
-          session.pendingHistoryControlSequence = "";
+          session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;

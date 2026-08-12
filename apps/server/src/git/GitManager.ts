@@ -899,6 +899,15 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     normalizeStatusCacheKey(cwd).pipe(
       Effect.flatMap((cacheKey) => Cache.invalidate(localStatusResultCache, cacheKey)),
     );
+  const lastKnownPrByCwdRef = yield* Ref.make(
+    new Map<
+      string,
+      {
+        readonly branch: string;
+        readonly pr: VcsStatusRemoteResult["pr"];
+      }
+    >(),
+  );
   const readRemoteStatus = Effect.fn("readRemoteStatus")(function* (
     cwd: string,
     options?: GitRemoteStatusOptions,
@@ -910,12 +919,20 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       return null;
     }
 
+    const branch = details.branch;
     const pr =
-      details.branch !== null
-        ? yield* findLatestPr(cwd, {
-            branch: details.branch,
-            upstreamRef: details.upstreamRef,
-          }).pipe(
+      branch !== null
+        ? yield* sourceControlProvider(cwd).pipe(
+            // An unknown host has no PR integration. That is a successful
+            // absence, unlike a configured provider that temporarily fails.
+            Effect.flatMap((provider) =>
+              provider.kind === "unknown"
+                ? Effect.succeed(null)
+                : findLatestPr(cwd, {
+                    branch,
+                    upstreamRef: details.upstreamRef,
+                  }),
+            ),
             Effect.map((latest) => {
               if (!latest) return null;
               // On the default branch, only surface open PRs.
@@ -923,7 +940,26 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
               if (details.isDefaultBranch && latest.state !== "open") return null;
               return toStatusPr(latest);
             }),
-            Effect.catch(() => Effect.succeed(null)),
+            Effect.tap((nextPr) =>
+              Ref.update(lastKnownPrByCwdRef, (lastKnownByCwd) => {
+                const next = new Map(lastKnownByCwd);
+                next.delete(cwd);
+                next.set(cwd, { branch, pr: nextPr });
+                if (next.size > STATUS_RESULT_CACHE_CAPACITY) {
+                  const oldestCwd = next.keys().next().value;
+                  if (oldestCwd !== undefined) next.delete(oldestCwd);
+                }
+                return next;
+              }),
+            ),
+            Effect.catch(() =>
+              Ref.get(lastKnownPrByCwdRef).pipe(
+                Effect.map((lastKnownByCwd) => {
+                  const lastKnown = lastKnownByCwd.get(cwd);
+                  return lastKnown?.branch === branch ? lastKnown.pr : null;
+                }),
+              ),
+            ),
           )
         : null;
 
