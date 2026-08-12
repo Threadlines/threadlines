@@ -103,16 +103,17 @@ function changedFilesDescription(fileCount: number): string {
 }
 
 /**
- * Source is the working tree and nothing else, so a clean tree really is an
- * empty surface -- its branch, commit and push controls are still there, which
- * is why the copy talks about changes rather than about the surface.
+ * Source reports the working tree but is never dimmed by it: switching branches,
+ * committing, pushing and opening a pull request are all reasons to go there
+ * with nothing changed, so a clean tree is a fact about the tree rather than a
+ * surface with nothing in it.
  */
 function sourceControlState(fileCount: number | null): RightPanelSurfaceState {
   if (fileCount === null) {
     return staticState("sourceControl");
   }
   if (fileCount === 0) {
-    return { description: "No uncommitted changes.", empty: true };
+    return { description: "No uncommitted changes.", empty: false };
   }
   return { description: changedFilesDescription(fileCount), empty: false };
 }

@@ -2456,6 +2456,7 @@ export function SourceControlPanel({
   const isSourceControlMutationDisabled =
     isGitActionRunning || isParentRepositoryConfirmationRequired;
   const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
+  const hasChangedFiles = changedFiles.length > 0;
   const stagedChangeFiles = useMemo(
     () =>
       changedFiles
@@ -4405,13 +4406,19 @@ export function SourceControlPanel({
                 </TooltipPopup>
               </Tooltip>
               {onOpenDiff ? (
+                // `aria-disabled` rather than `disabled`: the button's own base
+                // style drops pointer events while disabled, so the tooltip
+                // saying why it is unavailable would never open -- on the one
+                // state where the button needs to explain itself.
                 <Button
                   type="button"
                   variant="ghost"
                   size="xs"
-                  disabled={changedFiles.length === 0}
-                  onPointerEnter={onPrefetchDiff}
-                  onClick={() => onOpenDiff()}
+                  aria-disabled={hasChangedFiles ? undefined : true}
+                  className={cn(!hasChangedFiles && "cursor-default opacity-64")}
+                  tooltip={hasChangedFiles ? undefined : "Nothing to diff yet"}
+                  onPointerEnter={hasChangedFiles ? onPrefetchDiff : undefined}
+                  onClick={hasChangedFiles ? () => onOpenDiff() : undefined}
                 >
                   <FileTextIcon className="size-3" />
                   Diff

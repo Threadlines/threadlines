@@ -894,7 +894,18 @@ describe("AgentsPanel", () => {
         ...document.querySelectorAll("[data-right-panel-launcher-row]"),
       ] as HTMLElement[];
       const foregroundLabel = getComputedStyle(document.body).color;
-      for (const row of rows) {
+      // Source is never dimmed by a clean tree -- branching, committing and
+      // opening a pull request are all reasons to go there with nothing
+      // changed -- so only the two surfaces that really are empty are.
+      const dimmedRows = rows.filter(
+        (row) => row.dataset.rightPanelLauncherRow !== "sourceControl",
+      );
+      expect(dimmedRows).toHaveLength(2);
+      expect(
+        rows.find((row) => row.dataset.rightPanelLauncherRow === "sourceControl")?.dataset
+          .rightPanelLauncherRowEmpty,
+      ).toBeUndefined();
+      for (const row of dimmedRows) {
         expect(row.dataset.rightPanelLauncherRowEmpty).toBe("true");
         // Dimmed, not disabled: nothing here says the row cannot be used.
         expect(row.hasAttribute("disabled")).toBe(false);
@@ -997,11 +1008,11 @@ describe("AgentsPanel", () => {
       ) as HTMLElement;
       expect(diffRow.dataset.rightPanelLauncherRowEmpty).toBeUndefined();
       await expect.element(page.getByText("Review this thread's diff.")).toBeVisible();
-      // The tree really is clean; only Diff's own target keeps it lit.
+      // The tree really is clean, and Source reports that without dimming for it.
       expect(
         (document.querySelector("[data-right-panel-launcher-row='sourceControl']") as HTMLElement)
           .dataset.rightPanelLauncherRowEmpty,
-      ).toBe("true");
+      ).toBeUndefined();
     } finally {
       await mounted.unmount();
     }
@@ -1037,11 +1048,12 @@ describe("AgentsPanel", () => {
       const description = diffRow.querySelector("span > span:last-child") as HTMLElement;
       expect(description.textContent).toBe("No uncommitted changes, 6 turns to review.");
       expect(description.scrollWidth).toBeLessThanOrEqual(description.clientWidth + 1);
-      // Source is the working tree and nothing else, so it is empty.
+      // Source reports the quiet tree, and stays lit for the branch and commit
+      // controls that are the reason to open it after a commit.
       expect(
         (document.querySelector("[data-right-panel-launcher-row='sourceControl']") as HTMLElement)
           .dataset.rightPanelLauncherRowEmpty,
-      ).toBe("true");
+      ).toBeUndefined();
     } finally {
       await mounted.unmount();
     }

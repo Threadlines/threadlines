@@ -82,16 +82,19 @@ describe("countReviewableTurnDiffs", () => {
 });
 
 describe("buildRightPanelLauncherStates", () => {
-  it("dims both git surfaces when the tree is clean and no turn left a diff", () => {
+  it("dims Diff on a clean tree with no turn diffs, but never Source", () => {
     const states = buildRightPanelLauncherStates({
       workingTreeFileCount: 0,
       diffHasExplicitTarget: false,
       ...EMPTY_THREAD,
     });
 
+    // Source stays lit whatever the tree says: switching branches, committing
+    // and opening a pull request are all reasons to go there with nothing
+    // changed. Only its description reports the clean tree.
     expect(states.sourceControl).toEqual({
       description: "No uncommitted changes.",
-      empty: true,
+      empty: false,
     });
     expect(states.diff).toEqual({ description: "No changes to review.", empty: true });
   });
@@ -128,8 +131,7 @@ describe("buildRightPanelLauncherStates", () => {
       description: "No uncommitted changes, 6 turns to review.",
       empty: false,
     });
-    // Source really is the working tree, so it is empty and says so.
-    expect(states.sourceControl).toEqual({ description: "No uncommitted changes.", empty: true });
+    expect(states.sourceControl).toEqual({ description: "No uncommitted changes.", empty: false });
   });
 
   it("leaves Diff lit when the thread's turns cannot be seen from here", () => {
@@ -152,7 +154,7 @@ describe("buildRightPanelLauncherStates", () => {
 
     expect(states.diff).toEqual({ description: "Review this thread's diff.", empty: false });
     // The Source surface still reports the tree it actually opens onto.
-    expect(states.sourceControl?.empty).toBe(true);
+    expect(states.sourceControl?.description).toBe("No uncommitted changes.");
   });
 
   it("falls back to the static copy while the working tree is unknown", () => {
