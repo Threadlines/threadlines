@@ -56,8 +56,8 @@ const TAB_LABEL_HYSTERESIS_PX = 12;
  * classes it can see written down.
  */
 const LABEL_FADE_UNDER_CLOSE =
-  "group-hover/rail-tab:[mask-image:linear-gradient(to_right,black_calc(100%-1.25rem),transparent_calc(100%-0.5rem))] " +
-  "group-has-[:focus-visible]/rail-tab:[mask-image:linear-gradient(to_right,black_calc(100%-1.25rem),transparent_calc(100%-0.5rem))]";
+  "group-hover/rail-tab:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent_calc(100%-0.75rem))] " +
+  "group-has-[:focus-visible]/rail-tab:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent_calc(100%-0.75rem))]";
 
 /** Hover on the tab, or keyboard focus anywhere in it -- including the ✕ itself,
  *  which has to stay visible while it is the focused element. */
@@ -150,8 +150,9 @@ function TabStripItem({
           ? // Square-ish: the glyph and its padding, nothing else.
             "px-2"
           : // Padded wider after the label than before the glyph: the glyph
-            // anchors the left edge and the label's tail is the tab's own edge.
-            "pr-2.5 pl-1.5",
+            // anchors the left edge, and the tail carries the ✕, which wants a
+            // margin of its own rather than sitting on the tab's edge.
+            "pr-3.5 pl-1.5",
         active
           ? "bg-background text-foreground"
           : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
@@ -202,7 +203,7 @@ function TabStripItem({
               ? // The whole tab, so the target is the icon's own 28px box rather
                 // than a badge pinned to a corner of it.
                 "inset-0 rounded-t-md"
-              : "top-1/2 right-0.5 size-4 -translate-y-1/2 rounded",
+              : "top-1/2 right-1 size-4 -translate-y-1/2 rounded",
             REVEAL_ON_TAB_HOVER_OR_FOCUS,
             "focus-visible:opacity-100",
           )}
