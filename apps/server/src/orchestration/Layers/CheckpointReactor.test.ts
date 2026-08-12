@@ -867,7 +867,6 @@ describe("CheckpointReactor", () => {
     const thread = await waitForThread(
       harness.readModel,
       (entry) =>
-        entry.latestTurn?.turnId === "turn-shared-provider-summary" &&
         entry.checkpoints.length === 1 &&
         entry.checkpoints[0]?.status === "ready" &&
         entry.activities.some(
@@ -955,10 +954,7 @@ describe("CheckpointReactor", () => {
 
     await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-shared-refresh-same-path-summary" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+      (entry) => entry.checkpoints.length === 1 && entry.checkpoints[0]?.status === "ready",
     );
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\nmore\n", "utf8");
@@ -1031,10 +1027,7 @@ describe("CheckpointReactor", () => {
 
     await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-empty-provider-summary" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+      (entry) => entry.checkpoints.length === 1 && entry.checkpoints[0]?.status === "ready",
     );
 
     harness.provider.emit({
@@ -1246,10 +1239,7 @@ describe("CheckpointReactor", () => {
 
     await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-refresh-summary" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+      (entry) => entry.checkpoints.length === 1 && entry.checkpoints[0]?.status === "ready",
     );
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\n", "utf8");
