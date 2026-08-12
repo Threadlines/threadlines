@@ -60,6 +60,10 @@ import {
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
+import {
+  dateKeyFromIsoDateTime,
+  mergeProviderTokenUsageBuckets,
+} from "../providerTokenUsageHistory.ts";
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -170,6 +174,69 @@ const shouldPreservePreviousChatAuth = (
   );
 };
 
+const canReusePreviousAccountUsage = (
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): boolean => {
+  if (!previousProvider.accountUsage || !nextProvider.enabled) return false;
+  if (
+    previousProvider.auth.status !== "authenticated" ||
+    nextProvider.auth.status !== "authenticated"
+  ) {
+    return false;
+  }
+  if (nextProvider.auth.type === "apiKey") return false;
+  if (!haveMatchingChatAuthIdentity(previousProvider, nextProvider)) return false;
+  if (
+    previousProvider.auth.usageEmail &&
+    nextProvider.auth.usageEmail &&
+    previousProvider.auth.usageEmail !== nextProvider.auth.usageEmail
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const mergeProviderAccountUsage = (
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): ServerProvider["accountUsage"] => {
+  const previousUsage = previousProvider.accountUsage;
+  const nextUsage = nextProvider.accountUsage;
+  if (
+    !previousUsage ||
+    !nextUsage ||
+    !canReusePreviousAccountUsage(previousProvider, nextProvider)
+  ) {
+    return nextUsage;
+  }
+  if (previousUsage.source !== nextUsage.source) return nextUsage;
+
+  const previousTokenUsage = previousUsage.tokenUsage;
+  const nextTokenUsage = nextUsage.tokenUsage;
+  if (!previousTokenUsage) return nextUsage;
+  if (!nextTokenUsage) {
+    return { ...nextUsage, tokenUsage: previousTokenUsage };
+  }
+
+  const anchorDateKey = dateKeyFromIsoDateTime(nextTokenUsage.checkedAt);
+  if (!anchorDateKey) return nextUsage;
+  return {
+    ...nextUsage,
+    tokenUsage: {
+      ...nextTokenUsage,
+      ...(!nextTokenUsage.coverageStartDate && previousTokenUsage.coverageStartDate
+        ? { coverageStartDate: previousTokenUsage.coverageStartDate }
+        : {}),
+      dailyBuckets: mergeProviderTokenUsageBuckets({
+        previous: previousTokenUsage.dailyBuckets,
+        next: nextTokenUsage.dailyBuckets,
+        anchorDateKey,
+      }),
+    },
+  };
+};
+
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
@@ -178,6 +245,9 @@ export const mergeProviderSnapshot = (
   if (previousProvider.checkedAt > nextProvider.checkedAt) return previousProvider;
 
   const preserveAccountUsage = shouldPreservePreviousAccountUsage(previousProvider, nextProvider);
+  const accountUsage = preserveAccountUsage
+    ? previousProvider.accountUsage
+    : mergeProviderAccountUsage(previousProvider, nextProvider);
   const preserveChatAuth = shouldPreservePreviousChatAuth(previousProvider, nextProvider);
   const previousChat = previousProvider.auth.capabilities?.chat;
   const previousUsage =
@@ -210,7 +280,7 @@ export const mergeProviderSnapshot = (
     models: mergeProviderModels(previousProvider.models, nextProvider.models, {
       preserveMissingPreviousModels: missingModelPreservation(nextProvider),
     }),
-    ...(preserveAccountUsage ? { accountUsage: previousProvider.accountUsage } : {}),
+    ...(accountUsage ? { accountUsage } : {}),
     ...(preserveChatFailure
       ? {
           status: previousProvider.status,
@@ -225,23 +295,7 @@ const shouldPreservePreviousAccountUsage = (
   nextProvider: ServerProvider,
 ): boolean => {
   if (nextProvider.accountUsage || !previousProvider.accountUsage) return false;
-  if (!nextProvider.enabled) return false;
-  if (
-    previousProvider.auth.status !== "authenticated" ||
-    nextProvider.auth.status !== "authenticated"
-  ) {
-    return false;
-  }
-  if (nextProvider.auth.type === "apiKey") return false;
-  if (!haveMatchingChatAuthIdentity(previousProvider, nextProvider)) return false;
-  if (
-    previousProvider.auth.usageEmail &&
-    nextProvider.auth.usageEmail &&
-    previousProvider.auth.usageEmail !== nextProvider.auth.usageEmail
-  ) {
-    return false;
-  }
-  return true;
+  return canReusePreviousAccountUsage(previousProvider, nextProvider);
 };
 
 const sanitizeHydratedProviderModels = (

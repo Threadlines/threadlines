@@ -37,6 +37,7 @@ import {
   probeClaudeCapabilities,
   readClaudeNormalAuthEmail,
 } from "../Layers/ClaudeProvider.ts";
+import { makeClaudeTokenUsageHistoryReader } from "../Layers/ClaudeTokenUsageHistory.ts";
 import {
   applyClaudeRateLimitInfoToAccountUsage,
   fetchClaudeAccountUsage,
@@ -309,6 +310,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         platform: process.platform,
       });
       const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);
+      const readTokenUsage = yield* makeClaudeTokenUsageHistoryReader(effectiveConfig);
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -346,6 +348,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(Path.Path, path),
           ),
+        () => readTokenUsage,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
