@@ -111,6 +111,11 @@ export interface ProviderAccountTokenUsageSummaryPresentation {
 
 export interface ProviderAccountTokenUsagePresentation {
   readonly label: string;
+  readonly checkedAt: string;
+  readonly scope: "account" | "local";
+  readonly coverageStartDate?: string;
+  readonly coverageEndDate?: string;
+  readonly completeLifetimeHistory: boolean;
   readonly summary: ReadonlyArray<ProviderAccountTokenUsageSummaryPresentation>;
   readonly buckets: ReadonlyArray<ProviderAccountTokenUsageBucketPresentation>;
 }
@@ -386,6 +391,11 @@ function formatTokenUsagePresentation(
 ): ProviderAccountTokenUsagePresentation | undefined {
   if (!usage) return undefined;
 
+  const reportedLifetimeTokens = usage.summary.lifetimeTokens;
+  const bucketLifetimeTokens = usage.dailyBuckets.reduce(
+    (total, bucket) => total + bucket.tokens,
+    0,
+  );
   const peakTokens = Math.max(0, ...usage.dailyBuckets.map((bucket) => bucket.tokens));
   const buckets = usage.dailyBuckets.map((bucket) => ({
     startDate: bucket.startDate,
@@ -399,7 +409,11 @@ function formatTokenUsagePresentation(
   const summary: ProviderAccountTokenUsageSummaryPresentation[] = [];
   const lifetimeTokens = formatProviderTokenCount(usage.summary.lifetimeTokens);
   if (lifetimeTokens) {
-    summary.push({ key: "lifetimeTokens", label: "Lifetime tokens", value: lifetimeTokens });
+    summary.push({
+      key: "lifetimeTokens",
+      label: usage.scope === "local" ? "Tracked tokens" : "Lifetime tokens",
+      value: lifetimeTokens,
+    });
   }
   const peakDailyTokens = formatProviderTokenCount(usage.summary.peakDailyTokens);
   if (peakDailyTokens) {
@@ -420,7 +434,14 @@ function formatTokenUsagePresentation(
 
   if (summary.length === 0 && buckets.length === 0) return undefined;
   return {
-    label: "Token history",
+    label: usage.scope === "local" ? "Local token activity" : "Token history",
+    checkedAt: usage.checkedAt,
+    scope: usage.scope ?? "account",
+    ...(usage.coverageStartDate ? { coverageStartDate: usage.coverageStartDate } : {}),
+    ...(usage.coverageEndDate ? { coverageEndDate: usage.coverageEndDate } : {}),
+    completeLifetimeHistory:
+      usage.completeLifetimeHistory ??
+      (reportedLifetimeTokens !== undefined && bucketLifetimeTokens === reportedLifetimeTokens),
     summary,
     buckets,
   };

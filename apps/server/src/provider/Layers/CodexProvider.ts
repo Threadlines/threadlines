@@ -42,6 +42,7 @@ import {
 } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import packageJson from "../../../package.json" with { type: "json" };
+import { retainProviderTokenUsageBuckets } from "../providerTokenUsageHistory.ts";
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 const CODEX_PRESENTATION = {
@@ -294,17 +295,17 @@ function normalizeCodexTokenUsage(
 ): ServerProviderAccountTokenUsage | undefined {
   if (!tokenUsage) return undefined;
 
-  const dailyBuckets = (tokenUsage.dailyUsageBuckets ?? [])
-    .map((bucket) => {
-      const startDate = optionalString(bucket.startDate);
-      const tokens = optionalNonNegativeInt(bucket.tokens);
-      return startDate && tokens !== undefined ? { startDate, tokens } : undefined;
-    })
-    .filter((bucket): bucket is { readonly startDate: string; readonly tokens: number } =>
-      Boolean(bucket),
-    )
-    .toSorted((left, right) => left.startDate.localeCompare(right.startDate))
-    .slice(-30);
+  const dailyBuckets = retainProviderTokenUsageBuckets(
+    (tokenUsage.dailyUsageBuckets ?? [])
+      .map((bucket) => {
+        const startDate = optionalString(bucket.startDate);
+        const tokens = optionalNonNegativeInt(bucket.tokens);
+        return startDate && tokens !== undefined ? { startDate, tokens } : undefined;
+      })
+      .filter((bucket): bucket is { readonly startDate: string; readonly tokens: number } =>
+        Boolean(bucket),
+      ),
+  );
 
   const summary = {
     ...(optionalNonNegativeInt(tokenUsage.summary.currentStreakDays) !== undefined
@@ -330,6 +331,7 @@ function normalizeCodexTokenUsage(
 
   return {
     checkedAt,
+    scope: "account",
     dailyBuckets,
     summary,
   };

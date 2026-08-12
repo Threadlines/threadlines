@@ -187,6 +187,10 @@ describe("ServerProvider", () => {
         },
         tokenUsage: {
           checkedAt: "2026-04-10T00:00:00.000Z",
+          scope: "local",
+          coverageStartDate: "2025-04-10",
+          coverageEndDate: "2026-04-10",
+          completeLifetimeHistory: false,
           dailyBuckets: [
             {
               startDate: "2026-04-09",
@@ -228,5 +232,9 @@ describe("ServerProvider", () => {
     expect(parsed.accountUsage?.rateLimitResetCredits?.credits?.[0]?.expiresAt).toBe(1_778_889_600);
     expect(parsed.accountUsage?.tokenUsage?.summary.lifetimeTokens).toBe(1200000);
     expect(parsed.accountUsage?.tokenUsage?.dailyBuckets[0]?.tokens).toBe(1200);
+    expect(parsed.accountUsage?.tokenUsage?.scope).toBe("local");
+    expect(parsed.accountUsage?.tokenUsage?.coverageStartDate).toBe("2025-04-10");
+    expect(parsed.accountUsage?.tokenUsage?.coverageEndDate).toBe("2026-04-10");
+    expect(parsed.accountUsage?.tokenUsage?.completeLifetimeHistory).toBe(false);
   });
 });
