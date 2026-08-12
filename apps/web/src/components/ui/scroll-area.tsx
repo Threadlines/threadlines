@@ -123,4 +123,14 @@ function ScrollBar({
   );
 }
 
-export { ScrollArea, ScrollBar };
+/**
+ * A horizontal strip's scrollbar: a hairline overlay, shown whenever the strip
+ * overflows rather than only while it is hovered or scrolled. Overlaid, so it
+ * costs the row no height -- a native bar would eat into it and then force a
+ * vertical one too. Used by every scrolling tab strip, so the four
+ * measurements live here instead of being retyped per strip.
+ */
+const MINI_HORIZONTAL_SCROLLBAR_CLASS =
+  "[&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100";
+
+export { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea, ScrollBar };

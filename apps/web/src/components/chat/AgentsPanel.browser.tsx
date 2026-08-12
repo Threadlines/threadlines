@@ -826,8 +826,11 @@ describe("AgentsPanel", () => {
     // not fit at all in the Windows overlay, whose right padding is the controls
     // cluster (~154px). In every one of those cases the row scrolls, as the
     // browser panel's does: labels stay whole, tabs stay the same width, the ones
-    // off screen are reachable rather than cut in half, and the `+` stays put.
+    // off screen are reachable rather than cut in half, and the `+` stays put --
+    // beside the last tab while they fit, out at the usable right edge once they
+    // do not, with the tabs scrolling under it either way.
     const widthsByPanel = new Map<string, ReadonlyArray<number>>();
+    const stripHeights = new Map<string, number>();
     for (const width of [330, 272]) {
       const mounted = await render(
         <main style={{ boxSizing: "border-box", height: 640, width }}>
@@ -845,15 +848,29 @@ describe("AgentsPanel", () => {
 
       try {
         await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+        const strip = document.querySelector("[data-right-panel-strip='true']") as HTMLElement;
         const row = document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement;
         const tablist = document.querySelector("[data-right-panel-tablist='true']") as HTMLElement;
         const viewport = row.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement;
         const plus = document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement;
+        const scrollbar = () =>
+          row.querySelector<HTMLElement>(
+            '[data-slot="scroll-area-scrollbar"][data-orientation="horizontal"]',
+          );
 
         // Measured with the panel at this width, and again with the row padded
         // clear of the Windows controls cluster -- the tightest strip there is.
         for (const wco of [false, true]) {
           row.style.paddingRight = wco ? "154px" : "";
+          const overflowing = width !== 330 || wco;
+          // The bar is mounted off a resize observation, so it arrives a frame
+          // after the padding that caused the overflow.
+          await vi.waitFor(() => {
+            if (overflowing !== (scrollbar()?.getClientRects().length === 1)) {
+              throw new Error("The overlay scrollbar never matched the overflow state.");
+            }
+          });
+          stripHeights.set(`${width}:${wco}`, strip.getBoundingClientRect().height);
           const tabs = [...document.querySelectorAll("[data-right-panel-tab]")] as HTMLElement[];
           expect(tabs).toHaveLength(3);
           const content = tablist.parentElement!.getBoundingClientRect();
@@ -882,9 +899,13 @@ describe("AgentsPanel", () => {
           // The + is anchored beside the scroller rather than riding inside it,
           // it never leaves the strip, and it is always the thing under the
           // pointer -- however far the tabs have scrolled behind it.
+          const rowBox = row.getBoundingClientRect();
+          // What the strip actually has to spend, which in the overlay case is
+          // everything left of the window controls.
+          const usableRight = rowBox.right - parseFloat(getComputedStyle(row).paddingRight);
           const plusBox = plus.getBoundingClientRect();
           expect(plusBox.left).toBeGreaterThanOrEqual(viewport.getBoundingClientRect().right - 0.5);
-          expect(plusBox.right).toBeLessThanOrEqual(row.getBoundingClientRect().right + 0.5);
+          expect(plusBox.right).toBeLessThanOrEqual(usableRight + 0.5);
           const hit = document.elementFromPoint(
             (plusBox.left + plusBox.right) / 2,
             (plusBox.top + plusBox.bottom) / 2,
@@ -892,24 +913,35 @@ describe("AgentsPanel", () => {
           expect(plus.contains(hit)).toBe(true);
 
           const overflow = viewport.scrollWidth - viewport.clientWidth;
-          if (width === 330 && !wco) {
+          if (!overflowing) {
             // The default width holds all three and the +, with room over. The
             // scroller takes its width from the tabs, so the + parks right after
-            // the last one rather than out at the far edge.
+            // the last one rather than out at the far edge, and there is no bar.
             expect(overflow).toBe(0);
             const lastTab = tabs[tabs.length - 1]!.getBoundingClientRect();
             expect(plusBox.left - lastTab.right).toBeLessThan(8);
-            expect(row.getBoundingClientRect().right - plusBox.right).toBeGreaterThan(30);
+            expect(usableRight - plusBox.right).toBeGreaterThan(30);
           } else {
-            // Everything tighter scrolls the tabs behind the anchored +, and
-            // scrolling reaches the far end.
+            // Everything tighter gives the scroller every pixel the + does not
+            // need: the + goes flush to the usable right edge and the tabs scroll
+            // under it, all the way to the far end.
             expect(overflow).toBeGreaterThan(0);
+            expect(usableRight - plusBox.right).toBeLessThanOrEqual(1);
             viewport.scrollLeft = overflow;
             expect(
               document.querySelector("[data-right-panel-tab='agents']")!.getBoundingClientRect()
                 .right,
             ).toBeLessThanOrEqual(viewport.getBoundingClientRect().right + 0.5);
             viewport.scrollLeft = 0;
+
+            // And it says so with the browser strip's hairline overlay bar:
+            // visible without hovering, inside the row, costing it no height.
+            const bar = scrollbar()!;
+            expect(getComputedStyle(bar).opacity).toBe("1");
+            expect(getComputedStyle(bar).position).toBe("absolute");
+            const barBox = bar.getBoundingClientRect();
+            expect(barBox.height).toBeLessThanOrEqual(6);
+            expect(barBox.bottom).toBeLessThanOrEqual(rowBox.bottom + 0.5);
           }
         }
         row.style.paddingRight = "";
@@ -925,6 +957,12 @@ describe("AgentsPanel", () => {
     for (const widths of widthsByPanel.values()) {
       expect(widths).toEqual(reference);
     }
+    // And the strip is the same height whether it is scrolling or not: the bar
+    // and the fades are overlays, as the browser strip's are, so overflow never
+    // costs the row a pixel of the titlebar it shares.
+    expect([...stripHeights.values()]).toEqual(
+      Array.from(stripHeights, () => stripHeights.get("330:false")),
+    );
   });
 
   it("brings the active tab into view when the row is scrolled past it", async () => {

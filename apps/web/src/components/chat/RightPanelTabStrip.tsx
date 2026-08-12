@@ -15,7 +15,7 @@ import { cn } from "~/lib/utils";
 import type { Icon } from "../Icons";
 import { SourceControlIcon } from "../Icons";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
-import { ScrollArea } from "../ui/scroll-area";
+import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
 import { LiveNode } from "../ui/threadline";
 import {
   RIGHT_PANEL_SURFACES,
@@ -149,22 +149,22 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
         {/* Tabs scroll rather than shrink, as the browser panel's do. Whatever
             the panel's width -- the 272px floor, or the Windows overlay's row
             shared with the controls cluster -- every tab is drawn whole and the
-            hidden ones are reachable by scrolling. The scrollbar itself would be
-            noise on a 330px panel, so the edge mask-fades carry the affordance
-            and the wheel scrolls the row.
+            hidden ones are reachable by scrolling, marked by the same hairline
+            overlay bar and edge fades the browser strip uses. Neither costs the
+            row any height.
 
-            The scroller is sized by its tabs and shrinks only when it has to, so
-            while they fit the `+` is parked directly after the last one, and once
-            they overflow the row scrolls behind the `+` rather than pushing it
-            off the strip. */}
+            The scroller is sized by its tabs and shrinks only when it has to.
+            That one rule covers both cases with no branch in it: while the tabs
+            fit, the `+` is parked directly after the last one; once they do not,
+            the scroller gives up exactly the pixels the `+` needs and lands it at
+            the far right of whatever the strip has left. */}
         <div className="flex min-w-0 shrink items-stretch">
           <ScrollArea
             scrollFade
             observeContentResize
-            hideScrollbars
             horizontalWheelScroll
             contentClassName="h-full"
-            className="min-w-0 flex-1 self-stretch"
+            className={cn("min-w-0 flex-1 self-stretch", MINI_HORIZONTAL_SCROLLBAR_CLASS)}
           >
             <div
               role="tablist"

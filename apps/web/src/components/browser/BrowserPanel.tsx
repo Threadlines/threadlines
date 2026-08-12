@@ -64,7 +64,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
-import { ScrollArea } from "../ui/scroll-area";
+import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
@@ -670,7 +670,7 @@ export function BrowserPanel({
           observeContentResize
           contentClassName="h-full"
           horizontalWheelScroll
-          className="min-w-0 flex-1 self-stretch [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100"
+          className={cn("min-w-0 flex-1 self-stretch", MINI_HORIZONTAL_SCROLLBAR_CLASS)}
         >
           <div className="flex h-full items-stretch">
             <div ref={tabsRowRef} className="flex h-full items-stretch gap-px">
