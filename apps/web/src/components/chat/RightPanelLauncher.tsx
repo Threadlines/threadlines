@@ -1,7 +1,8 @@
 /**
- * The sidebar with nothing open in it. Tiles rather than a list because each one
- * is a single click that opens a surface, and a tile can carry the one line of
- * copy that says what the surface is for.
+ * The sidebar with nothing open in it: the thread's surfaces as a short list of
+ * rows, in the left sidebar's own language. Rows rather than tiles because this
+ * is navigation, and the left sidebar navigates by rows -- hairline dividers,
+ * content on the panel's gutter, a hover fill and nothing else.
  */
 import { memo } from "react";
 
@@ -15,35 +16,44 @@ export const RightPanelLauncher = memo(function RightPanelLauncher({
   onOpenTab,
 }: {
   availableTabs: ReadonlyArray<RightPanelTab>;
-  /** Surfaces already in the strip, marked so the tile reads as a focus. */
+  /** Surfaces already in the strip, marked so the row reads as a focus. */
   openTabs: ReadonlyArray<RightPanelTab>;
   onOpenTab: (tab: RightPanelTab) => void;
 }) {
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3" data-right-panel-launcher="true">
-      <SectionLabel className="mb-2.5">Open a panel</SectionLabel>
+    <div className="min-h-0 flex-1 overflow-y-auto py-2" data-right-panel-launcher="true">
+      <SectionLabel className="px-3 py-1.5" tick={false}>
+        Open a panel
+      </SectionLabel>
       {availableTabs.length === 0 ? (
-        <p className="text-[12px] text-muted-foreground/60">Nothing to show for this thread yet.</p>
+        <p className="px-3 py-1.5 text-[12px] text-muted-foreground/60">
+          Nothing to show for this thread yet.
+        </p>
       ) : (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="divide-y divide-border/40 border-y border-border/40">
           {availableTabs.map((tab) => {
             const surface = RIGHT_PANEL_SURFACES[tab];
-            const TileIcon = RIGHT_PANEL_TAB_ICONS[tab];
+            const RowIcon = RIGHT_PANEL_TAB_ICONS[tab];
             return (
               <button
                 key={tab}
                 type="button"
-                data-right-panel-launcher-tile={tab}
-                data-right-panel-launcher-tile-open={openTabs.includes(tab) ? "true" : undefined}
-                className="flex flex-col items-start gap-1 rounded-md border border-border bg-transparent px-2.5 py-2.5 text-left transition-colors hover:bg-accent/50 focus-ring"
+                data-right-panel-launcher-row={tab}
+                data-right-panel-launcher-row-open={openTabs.includes(tab) ? "true" : undefined}
+                className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-foreground/[0.04] focus-ring"
                 onClick={() => onOpenTab(tab)}
               >
-                <TileIcon className="size-3.5 text-muted-foreground/70" aria-hidden="true" />
-                <span className="text-[13px] leading-4 font-medium text-foreground">
-                  {surface.label}
-                </span>
-                <span className="text-[11px] leading-4 text-muted-foreground/70">
-                  {surface.description}
+                <RowIcon
+                  className="size-3.5 shrink-0 text-muted-foreground/70"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] leading-4 font-medium text-foreground/90">
+                    {surface.label}
+                  </span>
+                  <span className="block truncate text-[11px] leading-4 text-muted-foreground/60">
+                    {surface.description}
+                  </span>
                 </span>
               </button>
             );

@@ -36,12 +36,20 @@ interface SubagentInspectorProps {
   onClose: () => void;
 }
 
+/**
+ * Chroma is for the states that want the reader: running, waiting on them, or
+ * failed. "Done" is the ordinary outcome of every agent that ever ran, so it
+ * reads as muted text with no fill behind it -- a receipt, not an alert.
+ */
 function statusClassName(status: SubagentProgressItem["status"]): string {
   if (status === "completed") {
-    return "bg-success/10 text-success";
+    return "text-muted-foreground/55";
   }
   if (status === "failed" || status === "interrupted") {
     return "bg-destructive/10 text-destructive";
+  }
+  if (status === "waiting") {
+    return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
   }
   return "bg-primary/10 text-primary-readable";
 }
@@ -87,8 +95,11 @@ export function SubagentInspector({
       aria-label={`${displayName} subagent inspector`}
       data-subagent-inspector="true"
     >
-      <header className="shrink-0 border-b border-border/65 px-4 py-3">
-        <div className="flex min-w-0 items-start gap-2">
+      {/* The way back rides on the title line rather than owning a column beside
+          it: everything under the title then starts on the panel's own 12px
+          gutter instead of hanging off a 44px indent. */}
+      <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-1.5">
           {dismissVariant === "back" ? (
             <Button
               type="button"
@@ -101,66 +112,29 @@ export function SubagentInspector({
               <ArrowLeftIcon className="size-3.5" aria-hidden="true" />
             </Button>
           ) : (
-            <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
-              <BotIcon className="size-3.5" aria-hidden="true" />
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
+              <BotIcon className="size-3" aria-hidden="true" />
             </span>
           )}
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-[13px] font-medium text-foreground">{displayName}</h2>
-              <span
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-none font-medium",
-                  statusClassName(item.status),
-                )}
-              >
-                {active ? <LiveNode className="size-1.5" /> : null}
-                {item.statusLabel}
-              </span>
-            </div>
-            {goal ? (
-              <button
-                type="button"
-                className="mt-1 block w-full text-left text-[12px] leading-4 text-foreground/85"
-                aria-expanded={goalExpanded}
-                title={goalTitle}
-                onClick={() => setGoalExpanded((value) => !value)}
-                data-subagent-inspector-goal="true"
-              >
-                <span className={cn("block", goalExpanded ? undefined : "line-clamp-2")}>
-                  {goal}
-                </span>
-              </button>
-            ) : null}
-            <div
-              className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] text-muted-foreground/60"
-              data-subagent-inspector-meta="true"
-            >
-              <SubagentModelMeta modelLabel={modelLabel} reasoningEffort={item.reasoningEffort} />
-              {metaParts.map((part, index) => (
-                <span key={part} className="inline-flex items-center gap-1.5">
-                  {index > 0 || hasModelMeta ? (
-                    <span className="text-muted-foreground/30">·</span>
-                  ) : null}
-                  <span className="max-w-full truncate">{part}</span>
-                </span>
-              ))}
-            </div>
-            {item.agentPath ? (
-              <p
-                className="mt-0.5 max-w-full truncate font-mono text-[10px] text-muted-foreground/45"
-                title={item.agentPath}
-              >
-                {item.agentPath}
-              </p>
-            ) : null}
-          </div>
+          <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
+            {displayName}
+          </h2>
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-none font-medium",
+              statusClassName(item.status),
+            )}
+            data-subagent-inspector-status="true"
+          >
+            {active ? <LiveNode className="size-1.5" /> : null}
+            {item.statusLabel}
+          </span>
           {dismissVariant === "close" ? (
             <Button
               type="button"
               variant="ghost"
               size="icon-xs"
-              className="-mt-0.5 -mr-1 shrink-0 text-muted-foreground/70"
+              className="-mr-1 shrink-0 text-muted-foreground/70"
               aria-label="Close subagent inspector"
               onClick={onClose}
             >
@@ -168,6 +142,40 @@ export function SubagentInspector({
             </Button>
           ) : null}
         </div>
+        {goal ? (
+          <button
+            type="button"
+            className="mt-1 block w-full text-left text-[12px] leading-4 text-foreground/85"
+            aria-expanded={goalExpanded}
+            title={goalTitle}
+            onClick={() => setGoalExpanded((value) => !value)}
+            data-subagent-inspector-goal="true"
+          >
+            <span className={cn("block", goalExpanded ? undefined : "line-clamp-2")}>{goal}</span>
+          </button>
+        ) : null}
+        <div
+          className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] text-muted-foreground/60"
+          data-subagent-inspector-meta="true"
+        >
+          <SubagentModelMeta modelLabel={modelLabel} reasoningEffort={item.reasoningEffort} />
+          {metaParts.map((part, index) => (
+            <span key={part} className="inline-flex items-center gap-1.5">
+              {index > 0 || hasModelMeta ? (
+                <span className="text-muted-foreground/30">·</span>
+              ) : null}
+              <span className="max-w-full truncate">{part}</span>
+            </span>
+          ))}
+        </div>
+        {item.agentPath ? (
+          <p
+            className="mt-0.5 max-w-full truncate font-mono text-[10px] text-muted-foreground/45"
+            title={item.agentPath}
+          >
+            {item.agentPath}
+          </p>
+        ) : null}
       </header>
 
       <SubagentTranscript

@@ -37,6 +37,10 @@ interface AgentBranchBase {
   readonly statusLabel: string;
   /** Mono meta parts, already ordered; joined with `·` by the row. */
   readonly meta: ReadonlyArray<string>;
+  /** When the branch last moved, for a row that puts time on its own right edge
+   *  rather than at the end of the meta run. Set for settled history rows; a
+   *  live branch keeps its elapsed inside `meta`, where it ticks. */
+  readonly time: string | null;
   /** One line describing what the branch was asked to do. */
   readonly task: string | null;
   /** One line of the freshest output; live-tinted while running. */
@@ -144,6 +148,7 @@ function subagentBranch(
       elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,
       includeCurrentTool: false,
     }),
+    time: null,
     task: details.goal,
     // The step the provider reports is the freshest signal; the agent's own
     // streamed prose is the fallback when there is no task stream.
@@ -175,6 +180,7 @@ function runBranch(
     name: run.label,
     statusLabel: run.statusLabel,
     meta: [backgroundRunSourceLabel(run), ...backgroundRunMetaItems(run)],
+    time: null,
     task,
     output,
     tag: backgroundRunTag(run, providerLabel),
@@ -223,15 +229,14 @@ export function buildAgentBranches(input: {
 }
 
 /**
- * The mono meta for a finished agent in the history section. The model is shown
- * exactly as the provider stored it (`claude-opus-5`) rather than resolved to a
- * catalog display name: history is a record of what ran, and the raw slug is
- * the thing that was recorded. Tokens and effort only appear when known.
+ * The mono meta for a finished agent in the history section: `model · effort ·
+ * tokens`. The model is shown exactly as the provider stored it
+ * (`claude-opus-5`) rather than resolved to a catalog display name -- history is
+ * a record of what ran, and the raw slug is the thing that was recorded. Tokens
+ * and effort only appear when known. When it ran is not in here: a history row
+ * puts that on its own right edge, where a left-sidebar row does.
  */
-function formatAgentHistoryMeta(
-  item: SubagentProgressItem,
-  nowMs: number | undefined,
-): ReadonlyArray<string> {
+function formatAgentHistoryMeta(item: SubagentProgressItem): ReadonlyArray<string> {
   const totalTokens = item.telemetry?.totalTokens ?? null;
   return [
     item.model?.trim() || null,
@@ -239,7 +244,6 @@ function formatAgentHistoryMeta(
     totalTokens !== null && totalTokens > 0
       ? `${formatContextWindowTokens(totalTokens)} tokens`
       : null,
-    formatRelativeTimeLabel(item.updatedAt, nowMs ?? Date.now()),
   ].filter((part): part is string => part !== null);
 }
 
@@ -261,7 +265,8 @@ function historyBranch(
     status: subagentBranchStatus(item.status),
     name: formatSubagentDisplayName(item),
     statusLabel: item.statusLabel,
-    meta: formatAgentHistoryMeta(item, nowMs),
+    meta: formatAgentHistoryMeta(item),
+    time: formatRelativeTimeLabel(item.updatedAt, nowMs ?? Date.now()),
     // What it was asked to do stays on the record for the row's tooltip; the row
     // itself spends its one prose line on what came back, which is the more
     // useful half and the same slot a live agent puts its progress in.

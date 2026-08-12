@@ -326,7 +326,7 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("gives the meta line its own row at the sidebar's width without a taller row", async () => {
+  it("branches the live turn off a trunk and files the history flat, on one gutter", async () => {
     const mounted = await render(
       <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
         <AgentsPanel
@@ -335,6 +335,7 @@ describe("AgentsPanel", () => {
           subagents={[
             buildSubagent({
               label: "Router sweep",
+              liveBody: "Reading the strip's measurements.",
               telemetry: {
                 step: null,
                 lastToolName: null,
@@ -372,9 +373,15 @@ describe("AgentsPanel", () => {
     try {
       await expect.element(page.getByText("Panel audit")).toBeVisible();
 
+      const panel = document.querySelector("[data-agents-panel='tree']")!.getBoundingClientRect();
       const rows = [...document.querySelectorAll("[data-agent-branch='true']")] as HTMLElement[];
-      // Both the live turn and the Earlier history render through this row.
+      // Both the live turn and the Earlier history render through this row, in
+      // its two shapes: the live turn branches, the record is filed flat.
       expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.getAttribute("data-agent-branch-variant"))).toEqual([
+        "branch",
+        "flat",
+      ]);
 
       for (const row of rows) {
         const name = row.querySelector("[data-agent-branch-meta='true']")
@@ -386,29 +393,100 @@ describe("AgentsPanel", () => {
         expect(meta.getBoundingClientRect().top).toBeGreaterThanOrEqual(
           name.getBoundingClientRect().bottom - 1,
         );
-        // Which is the point: `model · effort · tokens · time` fits at 330px now
-        // instead of being cut off by a 45% cap.
+        // Which is the point: `model · effort · tokens` fits at 330px now instead
+        // of being cut off by a 45% cap.
         expect(meta.scrollWidth).toBeLessThanOrEqual(meta.clientWidth + 1);
+        // Meta and the signal line read at one size, as the left sidebar's do.
+        expect(getComputedStyle(meta).fontSize).toBe("11px");
+        expect(
+          getComputedStyle(row.querySelector("[data-agent-branch-output='true']")!).fontSize,
+        ).toBe("11px");
         // Three lines, and no more: name, meta, and one signal line. The
         // objective used to take a fourth.
         expect(row.querySelector("[data-agent-branch-task='true']")).toBeNull();
-        expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(72);
+        expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(66);
       }
 
-      const historyMeta =
-        rows[1]?.querySelector("[data-agent-branch-meta='true']")?.textContent ?? "";
-      expect(historyMeta).toContain("gpt-5.6-sol · high");
+      const [liveRow, historyRow] = rows as [HTMLElement, HTMLElement];
 
-      // The arm off the trunk still meets the status dot, which moved when the
-      // row's padding tightened.
-      const firstRow = rows[0] as HTMLElement;
+      // The live row hangs off the trunk on a slim tree gutter, and its arm still
+      // meets the status dot after the row's padding tightened.
       const arm = (
-        firstRow.querySelector("[data-agent-branch-arm='true']") as HTMLElement
+        liveRow.querySelector("[data-agent-branch-arm='true']") as HTMLElement
       ).getBoundingClientRect();
       const node = (
-        firstRow.querySelector("[data-agent-branch-node='true']") as HTMLElement
+        liveRow.querySelector("[data-agent-branch-node='true']") as HTMLElement
       ).getBoundingClientRect();
       expect(Math.abs((arm.top + arm.bottom) / 2 - (node.top + node.bottom) / 2)).toBeLessThan(1.5);
+      expect(node.left - panel.left).toBeLessThanOrEqual(22);
+
+      // The record does not: no arm, no indent, content on the panel's own 12px
+      // gutter, level with the Earlier label above it.
+      const earlier = document.querySelector("[data-agents-panel-earlier='true']")!;
+      const earlierBox = earlier.getBoundingClientRect();
+      expect(historyRow.querySelector("[data-agent-branch-arm='true']")).toBeNull();
+      const historyName = historyRow.querySelector("[data-agent-branch-meta='true']")!
+        .previousElementSibling as HTMLElement;
+      const historyNameLeft = historyName.getBoundingClientRect().left - panel.left;
+      expect(historyNameLeft).toBeCloseTo(12, 0);
+      expect(
+        earlier.querySelector("span.truncate")!.getBoundingClientRect().left - panel.left,
+      ).toBeCloseTo(historyNameLeft, 0);
+
+      // Its meta is `model · effort · tokens`; when it ran sits on the row's own
+      // right edge instead, where a left thread row puts it.
+      const historyMeta = historyRow.querySelector("[data-agent-branch-meta='true']")!;
+      expect(historyMeta.textContent).toBe("gpt-5.6-sol · high");
+      const time = historyRow.querySelector("[data-agent-branch-time='true']") as HTMLElement;
+      expect(time.textContent).toMatch(/ago$/u);
+      expect(panel.right - time.getBoundingClientRect().right).toBeLessThanOrEqual(34);
+
+      // The trunk stops where the history starts: alive branches, done is filed.
+      const trunk = document.querySelector("[data-agents-panel-trunk='true']")!;
+      expect(trunk.getBoundingClientRect().bottom).toBeLessThanOrEqual(earlierBox.top + 0.5);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("shows a disclosure at the right edge of a row that opens something, on hover", async () => {
+    const mounted = await renderPanel({
+      subagents: [
+        // Transcript-backed, so clicking it drills in.
+        buildSubagent({ label: "Router sweep" }),
+        // No agent thread, so there is nothing to open and nothing to promise.
+        buildSubagent({
+          id: "agent-mute",
+          agentThreadId: null,
+          transcriptAgentId: null,
+          label: "Unspawned sweep",
+        }),
+      ],
+    });
+
+    try {
+      await expect.element(page.getByText("Unspawned sweep")).toBeVisible();
+      const rows = [...document.querySelectorAll("[data-agent-branch='true']")] as HTMLElement[];
+      const [openable, inert] = rows as [HTMLElement, HTMLElement];
+
+      const chevron = openable.querySelector("[data-agent-branch-disclosure='true']");
+      expect(chevron).not.toBeNull();
+      expect(inert.querySelector("[data-agent-branch-disclosure='true']")).toBeNull();
+
+      // Transparent until the row is hovered or focused: an always-drawn icon on
+      // every row would be noise, and colour is the only thing that changes.
+      const transparent = /(?:,|\/)\s*0\s*\)/u;
+      expect(getComputedStyle(chevron!).color).toMatch(transparent);
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).hover();
+      await vi.waitFor(() => {
+        if (transparent.test(getComputedStyle(chevron!).color)) {
+          throw new Error("The disclosure never appeared on hover.");
+        }
+      });
+      // And it sits at the row's right edge, not in the text.
+      expect(
+        openable.getBoundingClientRect().right - chevron!.getBoundingClientRect().right,
+      ).toBeLessThanOrEqual(16);
     } finally {
       await mounted.unmount();
     }
@@ -639,7 +717,7 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("shows the launcher when the sidebar has no tabs open, and opens one from a tile", async () => {
+  it("shows the launcher as flat rows on the panel gutter, and opens one from a row", async () => {
     const onSelectTab = vi.fn();
     const mounted = await render(
       <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
@@ -656,16 +734,45 @@ describe("AgentsPanel", () => {
     );
 
     try {
-      await expect
-        .element(page.getByText("Working tree changes on this thread's branch."))
-        .toBeVisible();
-      await expect
-        .element(page.getByText("Subagents and background runs on this thread."))
-        .toBeVisible();
+      await expect.element(page.getByText("Working tree changes on this branch.")).toBeVisible();
+      await expect.element(page.getByText("Subagents and background runs.")).toBeVisible();
       // No tab is open, so no surface is mounted behind the launcher.
       expect(document.querySelector("[data-testid='never-rendered']")).toBeNull();
 
-      (document.querySelector("[data-right-panel-launcher-tile='diff']") as HTMLElement).click();
+      const panel = document
+        .querySelector("[data-chat-right-panel='true']")!
+        .getBoundingClientRect();
+      const rows = [
+        ...document.querySelectorAll("[data-right-panel-launcher-row]"),
+      ] as HTMLElement[];
+      expect(rows).toHaveLength(3);
+      // "Open a panel" sits on the same gutter the rows do.
+      const sectionLabelText = document.querySelector(
+        "[data-right-panel-launcher='true'] span.truncate",
+      )!;
+      const labelLeft = sectionLabelText.getBoundingClientRect().left - panel.left;
+      expect(labelLeft).toBeCloseTo(12, 0);
+
+      for (const row of rows) {
+        const box = row.getBoundingClientRect();
+        // Full-width rows in the left sidebar's rhythm, not a grid of tiles: the
+        // row spans the panel and its own height is a row's, not a card's.
+        expect(Math.round(box.width)).toBe(Math.round(panel.width));
+        expect(box.height).toBeGreaterThanOrEqual(38);
+        expect(box.height).toBeLessThanOrEqual(46);
+        // Nothing boxed: structure comes from the dividers between rows.
+        expect(getComputedStyle(row).borderTopWidth).toBe("0px");
+        expect(getComputedStyle(row).borderRadius).toBe("0px");
+        // Row content opens on the panel's one gutter, level with the label.
+        const icon = row.firstElementChild as HTMLElement;
+        expect(icon.getBoundingClientRect().left - panel.left).toBeCloseTo(labelLeft, 0);
+        // A description is read, not guessed at: it fits its line whole.
+        const description = row.querySelector("span > span:last-child") as HTMLElement;
+        expect(description.textContent).toMatch(/\.$/u);
+        expect(description.scrollWidth).toBeLessThanOrEqual(description.clientWidth + 1);
+      }
+
+      (document.querySelector("[data-right-panel-launcher-row='diff']") as HTMLElement).click();
       expect(onSelectTab).toHaveBeenCalledWith("diff");
     } finally {
       await mounted.unmount();
@@ -713,17 +820,14 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("sizes tabs to their labels and keeps the + beside the last one", async () => {
-    // The strip at its default width, then at the panel's 272px floor. Labels are
-    // whole at both -- a tab is as wide as its own words, never abbreviated.
-    //
-    // Measured: the three tabs come to ~252px and the `+` wants 26 more. That
-    // fits the 330px default with room over. It does NOT fit the 272px floor,
-    // where the last tab overflows and is clipped, and it does not fit at all in
-    // the Windows overlay, whose right padding is the controls cluster (~154px).
-    // Clipping is the deliberate choice over an ellipsis; the fix when it starts
-    // to bite is the browser panel's horizontal scroll, not shrinking labels.
-    const widthsByPanel = new Map<number, ReadonlyArray<number>>();
+  it("scrolls the tab row instead of shrinking or clipping tabs when it overflows", async () => {
+    // The three tabs come to ~252px and the `+` wants 26 more. That fits the
+    // 330px default with room over. It does NOT fit the 272px floor, and it does
+    // not fit at all in the Windows overlay, whose right padding is the controls
+    // cluster (~154px). In every one of those cases the row scrolls, as the
+    // browser panel's does: labels stay whole, tabs stay the same width, the ones
+    // off screen are reachable rather than cut in half, and the `+` stays put.
+    const widthsByPanel = new Map<string, ReadonlyArray<number>>();
     for (const width of [330, 272]) {
       const mounted = await render(
         <main style={{ boxSizing: "border-box", height: 640, width }}>
@@ -741,59 +845,134 @@ describe("AgentsPanel", () => {
 
       try {
         await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
-        const row = (
-          document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement
-        ).getBoundingClientRect();
-        const tabs = [...document.querySelectorAll("[data-right-panel-tab]")].map((tab) =>
-          tab.getBoundingClientRect(),
-        );
-        const plus = (
-          document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement
-        ).getBoundingClientRect();
+        const row = document.querySelector("[data-right-panel-tabs-row='true']") as HTMLElement;
+        const tablist = document.querySelector("[data-right-panel-tablist='true']") as HTMLElement;
+        const viewport = row.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement;
+        const plus = document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement;
 
-        expect(tabs).toHaveLength(3);
-        // No label is ever abbreviated to "Cha…", at either width.
-        for (const label of document.querySelectorAll("[data-right-panel-tab] [role='tab'] span")) {
-          expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
-          expect(getComputedStyle(label).textOverflow).toBe("clip");
+        // Measured with the panel at this width, and again with the row padded
+        // clear of the Windows controls cluster -- the tightest strip there is.
+        for (const wco of [false, true]) {
+          row.style.paddingRight = wco ? "154px" : "";
+          const tabs = [...document.querySelectorAll("[data-right-panel-tab]")] as HTMLElement[];
+          expect(tabs).toHaveLength(3);
+          const content = tablist.parentElement!.getBoundingClientRect();
+
+          for (const tab of tabs) {
+            const label = tab.querySelector("[role='tab'] span") as HTMLElement;
+            // No label is ever abbreviated to "Cha…".
+            expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
+            expect(getComputedStyle(label).textOverflow).toBe("clip");
+            // And no tab is cut off against the strip: every one is drawn whole
+            // inside the scroll content, however little of it is on screen.
+            const box = tab.getBoundingClientRect();
+            expect(box.left).toBeGreaterThanOrEqual(content.left - 0.5);
+            expect(box.right).toBeLessThanOrEqual(content.right + 0.5);
+          }
+          expect(
+            [...document.querySelectorAll("[data-right-panel-tab] [role='tab']")].map(
+              (tab) => tab.textContent,
+            ),
+          ).toEqual(["Changes", "Diff", "Agents"]);
+          widthsByPanel.set(
+            `${width}:${wco}`,
+            tabs.map((tab) => Math.round(tab.getBoundingClientRect().width)),
+          );
+
+          // The + is anchored beside the scroller rather than riding inside it,
+          // it never leaves the strip, and it is always the thing under the
+          // pointer -- however far the tabs have scrolled behind it.
+          const plusBox = plus.getBoundingClientRect();
+          expect(plusBox.left).toBeGreaterThanOrEqual(viewport.getBoundingClientRect().right - 0.5);
+          expect(plusBox.right).toBeLessThanOrEqual(row.getBoundingClientRect().right + 0.5);
+          const hit = document.elementFromPoint(
+            (plusBox.left + plusBox.right) / 2,
+            (plusBox.top + plusBox.bottom) / 2,
+          );
+          expect(plus.contains(hit)).toBe(true);
+
+          const overflow = viewport.scrollWidth - viewport.clientWidth;
+          if (width === 330 && !wco) {
+            // The default width holds all three and the +, with room over. The
+            // scroller takes its width from the tabs, so the + parks right after
+            // the last one rather than out at the far edge.
+            expect(overflow).toBe(0);
+            const lastTab = tabs[tabs.length - 1]!.getBoundingClientRect();
+            expect(plusBox.left - lastTab.right).toBeLessThan(8);
+            expect(row.getBoundingClientRect().right - plusBox.right).toBeGreaterThan(30);
+          } else {
+            // Everything tighter scrolls the tabs behind the anchored +, and
+            // scrolling reaches the far end.
+            expect(overflow).toBeGreaterThan(0);
+            viewport.scrollLeft = overflow;
+            expect(
+              document.querySelector("[data-right-panel-tab='agents']")!.getBoundingClientRect()
+                .right,
+            ).toBeLessThanOrEqual(viewport.getBoundingClientRect().right + 0.5);
+            viewport.scrollLeft = 0;
+          }
         }
-        expect(
-          [...document.querySelectorAll("[data-right-panel-tab] [role='tab']")].map(
-            (tab) => tab.textContent,
-          ),
-        ).toEqual(["Changes", "Diff", "Agents"]);
-        widthsByPanel.set(
-          width,
-          tabs.map((tab) => Math.round(tab.width)),
-        );
-
-        // The + travels with the tabs rather than docking at the far edge, and
-        // never leaves the strip.
-        const tablist = document.querySelector("[role='tablist']") as HTMLElement;
-        expect(plus.right).toBeLessThanOrEqual(row.right + 0.5);
-        expect(plus.left - tablist.getBoundingClientRect().right).toBeLessThan(8);
-
-        const overflow = tablist.scrollWidth - tablist.clientWidth;
-        if (width === 330) {
-          // The default width holds all three and the +, with room over.
-          expect(overflow).toBe(0);
-          const lastTab = tabs[tabs.length - 1] as DOMRect;
-          expect(plus.left - lastTab.right).toBeLessThan(8);
-          expect(row.right - plus.right).toBeGreaterThan(30);
-        } else {
-          // The floor does not, and the last tab is clipped rather than
-          // abbreviated. Asserted so that adopting horizontal scroll (or widening
-          // the floor) has to come back through this test.
-          expect(overflow).toBeGreaterThan(0);
-        }
+        row.style.paddingRight = "";
       } finally {
         await mounted.unmount();
       }
     }
 
-    // The clincher: a tab is the same width in a 272px panel as in a 330px one.
-    // Nothing shrinks, so nothing has to be abbreviated to fit.
-    expect(widthsByPanel.get(272)).toEqual(widthsByPanel.get(330));
+    // The clincher: a tab is the same width in a 272px panel, or in a row shared
+    // with the window controls, as it is in a 330px one. Nothing shrinks, so
+    // nothing has to be abbreviated to fit.
+    const reference = widthsByPanel.get("330:false");
+    for (const widths of widthsByPanel.values()) {
+      expect(widths).toEqual(reference);
+    }
+  });
+
+  it("brings the active tab into view when the row is scrolled past it", async () => {
+    // Narrow enough that the three tabs genuinely do not fit, so whichever one is
+    // active is the one the strip has to reach.
+    const panel = (activeTab: "sourceControl" | "agents") => (
+      <main style={{ boxSizing: "border-box", height: 640, width: 200 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "diff", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab={activeTab}
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>
+    );
+    const mounted = await render(panel("agents"));
+
+    try {
+      await expect.element(page.getByRole("tab", { name: "Changes" })).toBeVisible();
+      const viewport = document.querySelector(
+        '[data-right-panel-tabs-row="true"] [data-slot="scroll-area-viewport"]',
+      ) as HTMLElement;
+      const rightEdge = () => viewport.getBoundingClientRect().right + 0.5;
+      const leftEdge = () => viewport.getBoundingClientRect().left - 0.5;
+      const tabBox = (tab: string) =>
+        document.querySelector(`[data-right-panel-tab='${tab}']`)!.getBoundingClientRect();
+
+      // Opening the panel on the last tab has already scrolled the row to it.
+      await vi.waitFor(() => {
+        if (viewport.scrollLeft <= 0 || tabBox("agents").right > rightEdge()) {
+          throw new Error("The strip never scrolled the active tab into view.");
+        }
+      });
+
+      // Selecting one off the other end brings it back, by the shortest scroll.
+      mounted.rerender(panel("sourceControl"));
+      await vi.waitFor(() => {
+        if (tabBox("sourceControl").left < leftEdge()) {
+          throw new Error("The strip never scrolled back to the newly active tab.");
+        }
+      });
+      expect(viewport.scrollLeft).toBe(0);
+    } finally {
+      await mounted.unmount();
+    }
   });
 
   it("leaves one open tab a tab, not a bar across the strip", async () => {

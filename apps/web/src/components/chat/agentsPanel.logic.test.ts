@@ -244,7 +244,9 @@ describe("buildAgentsPanelView", () => {
     // objective it was given stays on the branch for the row's tooltip.
     expect(view.earlier[0]?.output).toBe("The route never mounted the panel.");
     expect(view.earlier[0]?.task).toBe("Sweep the router for panel wiring");
-    expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens", "12m ago"]);
+    // What ran, in the meta; when it ran, on the row's own right edge.
+    expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens"]);
+    expect(view.earlier[0]?.time).toBe("12m ago");
   });
 
   it("still names the model and effort for a child with no token totals", () => {
@@ -271,7 +273,8 @@ describe("buildAgentsPanelView", () => {
       nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
     });
 
-    expect(view.earlier[0]?.meta).toEqual(["gpt-5.6-sol", "high", "6m ago"]);
+    expect(view.earlier[0]?.meta).toEqual(["gpt-5.6-sol", "high"]);
+    expect(view.earlier[0]?.time).toBe("6m ago");
   });
 
   it("orders the history newest first", () => {

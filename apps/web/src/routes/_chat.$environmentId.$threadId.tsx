@@ -10,7 +10,6 @@ import { HostedStaticLoadingState } from "../components/ConnectionStatusStates";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
-  DiffPanelHeaderSkeleton,
   DiffPanelLoadingState,
   DiffPanelShell,
   type DiffPanelMode,
@@ -88,21 +87,20 @@ function LazyFileViewerOverlay() {
 }
 
 const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
+  // Embedded, like the panel it stands in for: the tab strip is the header, so
+  // waiting for the chunk is one muted line and nothing else.
   return (
-    <DiffPanelShell mode={props.mode} header={<DiffPanelHeaderSkeleton />}>
-      <DiffPanelLoadingState label="Loading diff viewer..." />
+    <DiffPanelShell mode={props.mode} embedded>
+      <DiffPanelLoadingState label="Loading diff viewer…" />
     </DiffPanelShell>
   );
 };
 
-const LazyDiffPanel = (props: {
-  mode: DiffPanelMode;
-  onBackToChanges: (() => void) | undefined;
-}) => {
+const LazyDiffPanel = (props: { mode: DiffPanelMode }) => {
   return (
     <DiffWorkerPoolProvider>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <DiffPanel mode={props.mode} embedded onBackToChanges={props.onBackToChanges} />
+        <DiffPanel mode={props.mode} embedded />
       </Suspense>
     </DiffWorkerPoolProvider>
   );
@@ -363,11 +361,6 @@ function ChatThreadRouteView() {
     },
     [currentThreadKey, diffTarget, navigateToTab],
   );
-  const backToChanges = useMemo(
-    () => (availableTabs.includes("sourceControl") ? () => selectTab("sourceControl") : undefined),
-    [availableTabs, selectTab],
-  );
-
   // Warm the lazy diff chunk while source control is open: a file click is
   // the most likely next action, and the Suspense skeleton reads as jank.
   useEffect(() => {
@@ -469,10 +462,7 @@ function ChatThreadRouteView() {
       ) : null}
       {shouldRenderDiffContent ? (
         <div className={cn("h-full w-full min-w-0 flex-col", diffOpen ? "flex" : "hidden")}>
-          <LazyDiffPanel
-            mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
-            onBackToChanges={backToChanges}
-          />
+          <LazyDiffPanel mode={shouldUseDiffSheet ? "sheet" : "sidebar"} />
         </div>
       ) : null}
     </>

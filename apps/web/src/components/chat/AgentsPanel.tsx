@@ -1,5 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
-import { XIcon } from "lucide-react";
+import { ChevronRightIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
 import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "../../session-logic";
@@ -83,13 +83,42 @@ function BranchNode({ status }: { status: AgentBranchStatus }) {
   );
 }
 
+/**
+ * Live work branches off a trunk; finished work is filed away flat.
+ *
+ * `branch` draws the tree: the trunk down the panel's left, an arm out to each
+ * row, content on a 20px gutter. `flat` drops all of it and uses the left
+ * sidebar's row language instead -- content on the panel's 12px gutter, the time
+ * on the row's own right edge -- because a settled agent is a record, and a
+ * record does not need to show what it hangs off.
+ */
+type BranchRowVariant = "branch" | "flat";
+
+/** A row that opens something says so at its right edge, on hover and focus
+ *  only. The column is always reserved, so nothing shifts when it appears. */
+function RowDisclosure({ visible }: { visible: boolean }) {
+  return (
+    <span className="flex w-3 shrink-0 items-center justify-end self-center">
+      {visible ? (
+        <ChevronRightIcon
+          aria-hidden="true"
+          className="size-3 text-muted-foreground/0 transition-colors group-hover/agent-row:text-muted-foreground/45 group-focus-visible/agent-row:text-muted-foreground/45"
+          data-agent-branch-disclosure="true"
+        />
+      ) : null}
+    </span>
+  );
+}
+
 function BranchRow({
   branch,
+  variant,
   providerGlyph: ProviderGlyph,
   onSelect,
   onStop,
 }: {
   branch: AgentBranch;
+  variant: BranchRowVariant;
   /** The thread provider's mark, drawn ahead of a spawned agent's name. Runs
    *  are not the provider's own work, so they keep their text tag instead. */
   providerGlyph: Icon | null;
@@ -105,18 +134,27 @@ function BranchRow({
       : `${branch.terminalVisible ? "Close" : "Open"} ${branch.name} terminal`;
 
   const canStop = branch.kind === "run" && branch.run.canStop;
+  const flat = variant === "flat";
+  // Flat rows carry no trunk to hang a status dot off, and a filed-away agent
+  // that simply finished has nothing to say with one. Anything else does.
+  const showNode = !flat || branch.status !== "completed";
 
   const body = (
     <>
-      <span className="mt-1.5 flex shrink-0 items-center" data-agent-branch-node="true">
-        <BranchNode status={branch.status} />
-      </span>
+      {showNode ? (
+        <span
+          className={cn("flex shrink-0 items-center", flat ? "mt-1" : "mt-1.5")}
+          data-agent-branch-node="true"
+        >
+          <BranchNode status={branch.status} />
+        </span>
+      ) : null}
       <span className="min-w-0">
-        {/* The name owns its line. `model · effort · tokens · time` used to sit
-            beside it on a 45% leash, which at 330px meant the panel's most
-            answerable question -- which model, how hard, how long ago -- was the
-            one thing always cut off. It gets the full width underneath instead,
-            paid for out of the row's vertical padding rather than its height. */}
+        {/* The name owns its line. `model · effort · tokens` used to sit beside
+            it on a 45% leash, which at 330px meant the panel's most answerable
+            question -- which model, how hard, how long ago -- was the one thing
+            always cut off. It gets the full width underneath instead, paid for
+            out of the row's vertical padding rather than its height. */}
         <span className={cn("flex min-w-0 items-baseline gap-2", canStop && "pr-9")}>
           {branch.kind === "subagent" && ProviderGlyph ? (
             <span
@@ -137,10 +175,20 @@ function BranchRow({
               {branch.tag}
             </span>
           ) : null}
+          {/* Where a left thread row puts its time: end of the title line, mono,
+              right-aligned. Only a settled row has one to put there. */}
+          {branch.time ? (
+            <span
+              className="shrink-0 font-mono text-[11px] leading-4 text-muted-foreground/45 tabular-nums"
+              data-agent-branch-time="true"
+            >
+              {branch.time}
+            </span>
+          ) : null}
         </span>
         {meta ? (
           <span
-            className="mt-px block truncate font-mono text-[10px] leading-4 text-muted-foreground/55 tabular-nums"
+            className="block truncate font-mono text-[11px] leading-4 text-muted-foreground/55 tabular-nums"
             data-agent-branch-meta="true"
             title={meta}
           >
@@ -154,7 +202,7 @@ function BranchRow({
         {branch.output ? (
           <span
             className={cn(
-              "mt-px block truncate text-[11px] leading-4",
+              "block truncate text-[11px] leading-4",
               branch.status === "running" ? "text-primary-readable/75" : "text-muted-foreground/55",
             )}
             data-agent-branch-output="true"
@@ -164,11 +212,20 @@ function BranchRow({
           </span>
         ) : null}
       </span>
+      <RowDisclosure visible={interactive} />
     </>
   );
 
-  const rowClassName =
-    "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 py-2 pr-3 pl-[calc(1.875rem+var(--branch-indent))] text-left";
+  const rowClassName = cn(
+    "group/agent-row grid w-full items-start gap-2 py-1.5 pr-3 text-left",
+    showNode ? "grid-cols-[auto_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]",
+    flat
+      ? // Everything else on the panel starts here, and so does a filed row.
+        "pl-3"
+      : // Narrow enough that the tree costs one glyph's width, wide enough that
+        // the arm still reads as an arm.
+        "gap-x-2.5 pl-[calc(1.25rem+var(--branch-indent))]",
+  );
   // What the agent was asked to do, kept hoverable now that it is off the row.
   const rowTitle = branch.task ?? undefined;
 
@@ -179,16 +236,19 @@ function BranchRow({
       data-agent-branch="true"
       data-agent-branch-kind={branch.kind}
       data-agent-branch-status={branch.status}
+      data-agent-branch-variant={variant}
     >
       {/* Centred on the node rather than measured to it: the node sits one line
-          height into the row (py-2 + half of the name's leading-5), so the arm
+          height into the row (py-1.5 + half of the name's leading-5), so the arm
           stays level with it whichever way the arm's own thickness goes. */}
-      <span
-        aria-hidden="true"
-        data-agent-branch-arm="true"
-        className="pointer-events-none absolute top-4.5 left-4 h-0.5 w-[calc(0.875rem+var(--branch-indent))] -translate-y-1/2 rounded-full"
-        style={ARM_STYLE}
-      />
+      {flat ? null : (
+        <span
+          aria-hidden="true"
+          data-agent-branch-arm="true"
+          className="pointer-events-none absolute top-4 left-2.5 h-0.5 w-[calc(0.625rem+var(--branch-indent))] -translate-y-1/2 rounded-full"
+          style={ARM_STYLE}
+        />
+      )}
       {interactive ? (
         <button
           type="button"
@@ -208,7 +268,7 @@ function BranchRow({
       {canStop ? (
         <button
           type="button"
-          className="absolute top-2 right-2 rounded-[var(--app-radius-badge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground/55 transition-colors hover:text-destructive focus-ring"
+          className="absolute top-1.5 right-2 rounded-[var(--app-radius-badge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground/55 transition-colors hover:text-destructive focus-ring"
           aria-label={`Stop ${branch.name}`}
           data-agent-branch-stop="true"
           onClick={() => onStop(branch)}
@@ -310,7 +370,7 @@ export const AgentsPanel = memo(function AgentsPanel({
           are any. */}
       {embedded ? (
         headerMeta ? (
-          <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-4">
+          <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-3">
             {anyRunning ? <LiveNode className="size-1.5" /> : null}
             <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/55 tabular-nums">
               {headerMeta}
@@ -352,7 +412,7 @@ export const AgentsPanel = memo(function AgentsPanel({
       >
         {!view.hasAny ? (
           <p
-            className="px-4 py-6 text-[12px] text-muted-foreground/55"
+            className="px-3 py-6 text-[12px] text-muted-foreground/55"
             data-agents-panel-empty="true"
             data-agents-panel-empty-state={turnInFlight ? "waiting" : "never-ran"}
           >
@@ -361,41 +421,45 @@ export const AgentsPanel = memo(function AgentsPanel({
               : "No agents yet. Subagents and background runs on this thread will appear here."}
           </p>
         ) : (
-          <div className="relative">
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute top-0 bottom-0 left-4 w-0.5 rounded-full"
-              style={TRUNK_STYLE}
-            />
-            {/* Faint dividers: enough to separate rows into a list, not enough
-                to box each one into a slab. */}
-            <ul className="relative divide-y divide-border/40">
-              {view.current.map((branch) => (
-                <BranchRow
-                  key={branch.key}
-                  branch={branch}
-                  providerGlyph={providerGlyph}
-                  onSelect={handleSelect}
-                  onStop={handleStop}
+          <div>
+            {/* The trunk belongs to the live turn and stops with it: alive is
+                branching, done is filed away. Where it ends is where Earlier
+                begins, which is the whole point of the two row shapes. */}
+            {view.current.length > 0 ? (
+              <div className="relative">
+                <span
+                  aria-hidden="true"
+                  data-agents-panel-trunk="true"
+                  className="pointer-events-none absolute top-0 bottom-0 left-2.5 w-0.5 rounded-full"
+                  style={TRUNK_STYLE}
                 />
-              ))}
-            </ul>
+                {/* Faint dividers: enough to separate rows into a list, not
+                    enough to box each one into a slab. */}
+                <ul className="relative divide-y divide-border/40">
+                  {view.current.map((branch) => (
+                    <BranchRow
+                      key={branch.key}
+                      branch={branch}
+                      variant="branch"
+                      providerGlyph={providerGlyph}
+                      onSelect={handleSelect}
+                      onStop={handleStop}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {view.earlier.length > 0 ? (
               <>
-                {/* The trunk runs behind this, so the label needs the rail's own
-                    background to sit on rather than a line through its text. */}
-                <SectionLabel
-                  className="relative bg-rail py-2 pr-4 pl-4"
-                  tick={false}
-                  data-agents-panel-earlier="true"
-                >
+                <SectionLabel className="px-3 py-1.5" tick={false} data-agents-panel-earlier="true">
                   Earlier
                 </SectionLabel>
-                <ul className="relative divide-y divide-border/40 border-t border-border/40">
+                <ul className="divide-y divide-border/40 border-t border-border/40">
                   {view.earlier.map((branch) => (
                     <BranchRow
                       key={branch.key}
                       branch={branch}
+                      variant="flat"
                       providerGlyph={providerGlyph}
                       onSelect={handleSelect}
                       onStop={handleStop}

@@ -24,7 +24,7 @@ import { formatShortTimestamp } from "../../timestampFormat";
 import { cn } from "~/lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
-import { LiveNode, SpineRow, spineAccentRowStyle } from "../ui/threadline";
+import { LiveNode, SectionLabel, SpineRow, spineAccentRowStyle } from "../ui/threadline";
 import { readSubagentTranscriptPage } from "./subagentTranscriptClient";
 import {
   buildSubagentTranscriptView,
@@ -457,12 +457,12 @@ export function SubagentTranscript({
       <div
         className={cn(
           "flex items-center justify-between gap-2",
-          scrollable ? "shrink-0 border-b border-border/45 px-4 py-2" : "mb-1",
+          // The panel's one gutter, and the same section label as Earlier: two
+          // labels in one panel should not be assembled from two systems.
+          scrollable ? "shrink-0 border-b border-border/45 px-3 py-1.5" : "mb-1",
         )}
       >
-        <p className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
-          Read-only transcript
-        </p>
+        <SectionLabel tick={false}>Read-only transcript</SectionLabel>
         {follow ? (
           <span
             className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/60"
@@ -475,13 +475,23 @@ export function SubagentTranscript({
       </div>
       <div
         ref={scrollElementRef}
-        className={cn(scrollable && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3")}
+        className={cn(scrollable && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3")}
         data-subagent-transcript="true"
         onScroll={scrollable ? handleTranscriptScroll : undefined}
       >
         <div ref={contentElementRef}>
           {state.status === "loading" ? (
-            <p className="text-[11px] text-muted-foreground/60">Loading transcript...</p>
+            // A flat line at panel text size, on the panel's gutter. A framed or
+            // centred loader would put more on screen while waiting than the
+            // transcript itself does once it arrives.
+            <p
+              className="text-[12px] text-muted-foreground/55"
+              role="status"
+              aria-live="polite"
+              data-subagent-transcript-loading="true"
+            >
+              Loading transcript…
+            </p>
           ) : state.status === "error" ? (
             <TranscriptUnavailable
               message={state.message}
@@ -832,18 +842,10 @@ const ThinkingBlock = memo(function ThinkingBlock({
   );
 });
 
-/** Agent prose is authored for a chat column; inside a dense inspector its
- *  headings need to come down to the size of the rows around them. */
-const TRANSCRIPT_MARKDOWN_CLASS = cn(
-  "text-[12px] leading-5",
-  "[&_.chat-markdown]:text-[12px] [&_.chat-markdown]:leading-5",
-  "[&_.chat-markdown_p]:my-1.5 [&_.chat-markdown_ul]:my-1.5 [&_.chat-markdown_ol]:my-1.5",
-  "[&_.chat-markdown_pre]:my-1.5",
-  "[&_h1]:mt-2 [&_h1]:mb-1 [&_h1]:text-[13px] [&_h1]:font-semibold",
-  "[&_h2]:mt-2 [&_h2]:mb-1 [&_h2]:text-[12px] [&_h2]:font-semibold",
-  "[&_h3]:mt-1.5 [&_h3]:mb-0.5 [&_h3]:text-[12px] [&_h3]:font-medium",
-  "[&_h4]:mt-1.5 [&_h4]:mb-0.5 [&_h4]:text-[12px] [&_h4]:font-medium",
-);
+/** Agent prose is authored for a chat column. `chat-markdown-dense` (index.css)
+ *  brings the whole block -- body, headings, lists, inline code -- down to
+ *  12px/18px, so the drill-in reads at the size of the rows around it. */
+const TRANSCRIPT_MARKDOWN_CLASS = "chat-markdown-dense text-[12px] leading-[18px]";
 
 const TranscriptMessage = memo(function TranscriptMessage({
   item,

@@ -2650,14 +2650,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const changesTile = await waitForElement(
         () =>
           document.querySelector(
-            "[data-right-panel-launcher-tile='sourceControl']",
+            "[data-right-panel-launcher-row='sourceControl']",
           ) as HTMLElement | null,
         "The header button did not open the sidebar's launcher.",
       );
       expect(railToggle.hasAttribute("data-pressed")).toBe(true);
       expect(document.querySelector("[data-right-panel-strip='true']")).not.toBeNull();
       // A draft has no turn, so Agents is not one of its surfaces.
-      expect(document.querySelector("[data-right-panel-launcher-tile='agents']")).toBeNull();
+      expect(document.querySelector("[data-right-panel-launcher-row='agents']")).toBeNull();
 
       changesTile.click();
 
@@ -2699,7 +2699,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
   async function openRightPanelSurfaceFromLauncher(tab: string): Promise<void> {
     const tile = await waitForElement(
       () =>
-        document.querySelector(`[data-right-panel-launcher-tile='${tab}']`) as HTMLElement | null,
+        document.querySelector(`[data-right-panel-launcher-row='${tab}']`) as HTMLElement | null,
       `Unable to find the sidebar launcher's ${tab} tile.`,
     );
     tile.click();
@@ -3098,10 +3098,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
-      await waitForElement(
-        () => document.querySelector('button[aria-label="Back to changes"]'),
-        "Back to changes button should render.",
+      // The strip is the only navigation the embedded Diff needs: no in-panel
+      // back-to-Changes control, and no header bar restating the active tab --
+      // the diff's own toolbar starts straight under the strip.
+      const diffToolbar = await waitForElement(
+        () => document.querySelector('[aria-label="Select diff source"]'),
+        "The diff toolbar should render.",
       );
+      expect(document.querySelector('button[aria-label="Back to changes"]')).toBeNull();
+      const strip = document.querySelector("[data-right-panel-strip='true']")!;
+      expect(
+        diffToolbar.getBoundingClientRect().top - strip.getBoundingClientRect().bottom,
+      ).toBeLessThanOrEqual(10);
     } finally {
       await mounted.cleanup();
     }
@@ -3165,8 +3173,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      // Back to Changes, then the link again: still exactly one Diff tab.
-      (document.querySelector('button[aria-label="Back to changes"]') as HTMLElement).click();
+      // Back to Changes from its tab, then the link again: still one Diff tab.
+      (
+        document.querySelector("[data-right-panel-tab='sourceControl'] [role='tab']") as HTMLElement
+      ).click();
       await vi.waitFor(
         () => {
           expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });

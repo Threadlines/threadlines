@@ -40,7 +40,8 @@ export const RIGHT_PANEL_TAB_ORDER: ReadonlyArray<RightPanelTab> = [
 export interface RightPanelSurface {
   readonly id: RightPanelTab;
   readonly label: string;
-  /** One line, for the launcher tiles. */
+  /** One line, for the launcher rows. Short enough to fit one line of the
+   *  panel at its narrowest, so nothing here is ever read half-truncated. */
   readonly description: string;
 }
 
@@ -48,7 +49,7 @@ export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurf
   sourceControl: {
     id: "sourceControl",
     label: "Changes",
-    description: "Working tree changes on this thread's branch.",
+    description: "Working tree changes on this branch.",
   },
   diff: {
     id: "diff",
@@ -58,7 +59,7 @@ export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurf
   agents: {
     id: "agents",
     label: "Agents",
-    description: "Subagents and background runs on this thread.",
+    description: "Subagents and background runs.",
   },
 };
 

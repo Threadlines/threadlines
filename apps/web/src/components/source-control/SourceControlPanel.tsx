@@ -4230,7 +4230,13 @@ export function SourceControlPanel({
       {sourceControlLinks ? <SourceControlLinksMenu links={sourceControlLinks} /> : null}
       {status?.refName ? (
         <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
-          <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
+          {/* Which branch, in the same voice as the left sidebar's version text:
+              mono, muted, no fill. It is a fact about the header, not a control
+              waiting to be pressed. */}
+          <span
+            className="inline-flex min-w-0 max-w-[45%] items-center gap-1 font-mono text-[10px] leading-none text-muted-foreground/70"
+            data-source-control-branch-chip="true"
+          >
             <GitBranchIcon className="size-3 shrink-0 opacity-70" />
             <span className="min-w-0 truncate">{status.refName}</span>
           </span>
@@ -4440,7 +4446,12 @@ export function SourceControlPanel({
               </Button>
             </div>
           ) : changedFiles.length === 0 ? (
-            <div className="rounded-md border border-border/70 bg-background/40 px-2.5 py-2 text-xs text-muted-foreground/70">
+            // Nothing to show is a line, not a box. The left sidebar's empty
+            // states are flat text and this one is no different.
+            <div
+              className="border-t border-border/40 py-2 text-[12px] text-muted-foreground/55"
+              data-source-control-empty="true"
+            >
               No working tree changes
             </div>
           ) : (

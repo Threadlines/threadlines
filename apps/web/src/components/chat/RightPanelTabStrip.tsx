@@ -9,12 +9,13 @@
  * tab it already has.
  */
 import { BotIcon, FileDiffIcon, PlusIcon, XIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 
 import { cn } from "~/lib/utils";
 import type { Icon } from "../Icons";
 import { SourceControlIcon } from "../Icons";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { ScrollArea } from "../ui/scroll-area";
 import { LiveNode } from "../ui/threadline";
 import {
   RIGHT_PANEL_SURFACES,
@@ -50,10 +51,9 @@ function TabStripItem({
         // Exactly as wide as its own contents: icon, whole label, ✕. Not flex-1,
         // which made the strip's look depend on how many tabs happened to be
         // open, and not shrinkable either -- a surface named "Cha…" is worse
-        // than a narrow strip, so a label is never abbreviated. The labels are a
-        // fixed set of short words, so they fit at every panel width. A future
-        // tab set that genuinely outgrows the strip wants the browser panel's
-        // horizontal scroll (see BrowserPanel's ScrollArea), never truncation.
+        // than a narrow one, so a label is never abbreviated. When the set
+        // outgrows the strip the row scrolls, exactly as the browser panel's
+        // does; nothing shrinks and nothing is truncated.
         "group/rail-tab flex shrink-0 items-center gap-1 rounded-t-md px-1.5 text-xs",
         active
           ? "bg-background text-foreground"
@@ -109,8 +109,35 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   /** Sheet-mode dismissal, parked at the end of the row. */
   trailing?: React.ReactNode;
 }) {
+  const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // Selecting or opening a tab brings it into view, by the smallest scroll that
+  // does it: a tab already on screen must not move the strip under the pointer.
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (activeTab === null || strip === null) {
+      return;
+    }
+    const viewport = strip.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    const tab = strip.querySelector<HTMLElement>(`[data-right-panel-tab="${activeTab}"]`);
+    if (viewport === null || tab === null) {
+      return;
+    }
+    const start = tab.offsetLeft;
+    const end = start + tab.offsetWidth;
+    if (start < viewport.scrollLeft) {
+      viewport.scrollLeft = start;
+    } else if (end > viewport.scrollLeft + viewport.clientWidth) {
+      viewport.scrollLeft = end - viewport.clientWidth;
+    }
+  }, [activeTab, openTabs]);
+
   return (
-    <div className="drag-region shrink-0 border-b border-border" data-right-panel-strip="true">
+    <div
+      ref={stripRef}
+      className="drag-region shrink-0 border-b border-border"
+      data-right-panel-strip="true"
+    >
       {/* One row, shared with the window controls Windows overlays on the top of
           the panel: the strip takes titlebar height and pads itself clear of the
           min/max/close cluster. Content-sized tabs are what make that share
@@ -119,22 +146,47 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
         className="flex h-9 items-stretch px-1.5 pt-1.5 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]"
         data-right-panel-tabs-row="true"
       >
-        <div
-          role="tablist"
-          aria-label="Thread panel"
-          className="flex min-w-0 items-stretch gap-px overflow-hidden"
-        >
-          {openTabs.map((tab) => (
-            <TabStripItem
-              key={tab}
-              surface={RIGHT_PANEL_SURFACES[tab]}
-              active={tab === activeTab}
-              live={liveTabs?.includes(tab) ?? false}
-              onSelect={() => onSelectTab(tab)}
-              onClose={() => onCloseTab(tab)}
-            />
-          ))}
+        {/* Tabs scroll rather than shrink, as the browser panel's do. Whatever
+            the panel's width -- the 272px floor, or the Windows overlay's row
+            shared with the controls cluster -- every tab is drawn whole and the
+            hidden ones are reachable by scrolling. The scrollbar itself would be
+            noise on a 330px panel, so the edge mask-fades carry the affordance
+            and the wheel scrolls the row.
+
+            The scroller is sized by its tabs and shrinks only when it has to, so
+            while they fit the `+` is parked directly after the last one, and once
+            they overflow the row scrolls behind the `+` rather than pushing it
+            off the strip. */}
+        <div className="flex min-w-0 shrink items-stretch">
+          <ScrollArea
+            scrollFade
+            observeContentResize
+            hideScrollbars
+            horizontalWheelScroll
+            contentClassName="h-full"
+            className="min-w-0 flex-1 self-stretch"
+          >
+            <div
+              role="tablist"
+              aria-label="Thread panel"
+              className="flex h-full items-stretch gap-px"
+              data-right-panel-tablist="true"
+            >
+              {openTabs.map((tab) => (
+                <TabStripItem
+                  key={tab}
+                  surface={RIGHT_PANEL_SURFACES[tab]}
+                  active={tab === activeTab}
+                  live={liveTabs?.includes(tab) ?? false}
+                  onSelect={() => onSelectTab(tab)}
+                  onClose={() => onCloseTab(tab)}
+                />
+              ))}
+            </div>
+          </ScrollArea>
         </div>
+        {/* Anchored beside the scroller, never in it: the one control that adds a
+            tab has to stay reachable no matter how far the tabs have scrolled. */}
         {availableTabs.length > 0 ? (
           <Menu>
             <MenuTrigger
@@ -171,9 +223,9 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
           </Menu>
         ) : null}
         {/* Dismissal belongs to the panel, not to the tabs, so it keeps the far
-            edge while the `+` travels with them. */}
+            edge and stays put while the tabs scroll past it. */}
         {trailing ? (
-          <div className="ms-auto flex shrink-0 items-center self-center ps-1">{trailing}</div>
+          <div className="flex shrink-0 items-center self-center ps-1">{trailing}</div>
         ) : null}
       </div>
     </div>
