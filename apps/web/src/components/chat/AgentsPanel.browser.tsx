@@ -956,6 +956,15 @@ describe("AgentsPanel", () => {
             expect(getComputedStyle(bar).position).toBe("absolute");
             const barBox = bar.getBoundingClientRect();
             expect(barBox.height).toBeLessThanOrEqual(6);
+            // And opaque, since it lies across the tabs: a translucent thumb let
+            // a label show through and the two read as one layer. Asserted on the
+            // computed colour because the alpha lives in a class that would fail
+            // silently, leaving the primitive's translucent default in place.
+            const thumbColor = getComputedStyle(
+              bar.querySelector('[data-slot="scroll-area-thumb"]')!,
+            ).backgroundColor;
+            expect(thumbColor.startsWith("rgba(")).toBe(false);
+            expect(thumbColor).not.toContain("/");
             expect(barBox.bottom).toBeLessThanOrEqual(rowBox.bottom + 0.5);
           }
         }

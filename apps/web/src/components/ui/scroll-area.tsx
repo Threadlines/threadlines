@@ -139,6 +139,11 @@ function ScrollBar({
  * measurements live here instead of being retyped per strip.
  */
 const MINI_HORIZONTAL_SCROLLBAR_CLASS =
-  "[&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100";
+  "[&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100 " +
+  // Opaque, unlike the default translucent thumb: this bar lies across the tabs
+  // themselves, and letting a label show through it made the two read as one
+  // layer. Mixed to the same value the translucent thumb resolved to over the
+  // rail, so it looks unchanged while nothing scrolls behind it.
+  "[&_[data-slot=scroll-area-thumb]]:bg-[color-mix(in_oklab,var(--foreground)_20%,var(--rail))]";
 
 export { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea, ScrollBar };
