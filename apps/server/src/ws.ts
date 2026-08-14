@@ -48,6 +48,7 @@ import {
   ProviderSubagentTranscriptError,
   ThreadId,
   type TerminalEvent,
+  SourceControlToolUpdateError,
   WS_METHODS,
   WsRpcGroup,
 } from "@threadlines/contracts";
@@ -125,6 +126,7 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
+import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
 import { SourceControlRepositoryService } from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
@@ -263,6 +265,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const serverEnvironment = yield* ServerEnvironment;
       const serverAuth = yield* ServerAuth;
       const sourceControlDiscovery = yield* SourceControlDiscoveryLayer.SourceControlDiscovery;
+      const sourceControlToolMaintenance =
+        yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.automaticGitFetchInterval),
         Effect.catch((cause) =>
@@ -1198,6 +1202,55 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverUpdateSourceControlTool]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverUpdateSourceControlTool,
+            Effect.gen(function* () {
+              const before = yield* sourceControlDiscovery.discover;
+              if (
+                !SourceControlToolMaintenance.hasVerifiedSourceControlToolUpdateAction(
+                  before,
+                  input.target,
+                )
+              ) {
+                return yield* new SourceControlToolUpdateError({
+                  target: input.target,
+                  reason:
+                    "Threadlines could not verify an available update for this tool. Rescan the server environment and try again.",
+                });
+              }
+              const previousVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
+                before,
+                input.target,
+              );
+
+              yield* sourceControlToolMaintenance.update(input);
+
+              const discovery = yield* sourceControlDiscovery.discover;
+              const currentVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
+                discovery,
+                input.target,
+              );
+              if (currentVersion === null) {
+                return yield* new SourceControlToolUpdateError({
+                  target: input.target,
+                  reason:
+                    "WinGet finished, but Threadlines could not verify the installed tool version afterward. Rescan after restarting the desktop app.",
+                });
+              }
+
+              return {
+                target: input.target,
+                status: previousVersion === currentVersion ? "unchanged" : "succeeded",
+                previousVersion,
+                currentVersion,
+                discovery,
+              } as const;
+            }),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetTraceDiagnostics,
@@ -2129,6 +2182,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             makeWsRpcLayer(session.sessionId).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
+              Layer.provide(
+                SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer)),
+              ),
               Layer.provide(
                 SourceControlDiscoveryLayer.layer.pipe(
                   Layer.provide(

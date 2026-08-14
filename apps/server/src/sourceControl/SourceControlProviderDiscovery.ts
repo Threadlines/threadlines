@@ -35,6 +35,7 @@ export type SourceControlCliDiscoverySpec = SourceControlDiscoverySpecBase & {
   readonly executable: string;
   readonly versionArgs: ReadonlyArray<string>;
   readonly authArgs: ReadonlyArray<string>;
+  readonly env?: NodeJS.ProcessEnv;
   readonly parseAuth: (input: SourceControlAuthProbeInput) => SourceControlProviderAuth;
   readonly refineUnknownRemote?: (
     input: SourceControlUnknownRemoteRefinementInput,
@@ -179,6 +180,7 @@ function probeCli(input: {
       command: input.spec.executable,
       args: input.spec.versionArgs,
       cwd: input.cwd,
+      ...(input.spec.env !== undefined ? { env: input.spec.env } : {}),
       timeoutMs: 5_000,
       maxOutputBytes: 8_000,
       appendTruncationMarker: true,
@@ -258,6 +260,7 @@ export function probeSourceControlProvider(input: {
           command: spec.executable,
           args: spec.authArgs,
           cwd: input.cwd,
+          ...(spec.env !== undefined ? { env: spec.env } : {}),
           allowNonZeroExit: true,
           timeoutMs: 5_000,
           maxOutputBytes: 8_000,
@@ -301,6 +304,7 @@ export const refineUnknownRemoteProvider = Effect.fn("refineUnknownRemoteProvide
           command: spec.executable,
           args: spec.authArgs,
           cwd: input.cwd,
+          ...(spec.env !== undefined ? { env: spec.env } : {}),
           allowNonZeroExit: true,
           timeoutMs: 5_000,
           maxOutputBytes: 8_000,

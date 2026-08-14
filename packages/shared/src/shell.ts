@@ -2,7 +2,7 @@
 import * as NodeOS from "node:os";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { extname, join } from "node:path";
+import { join as joinHostPath, posix as PosixPath, win32 as WindowsPath } from "node:path";
 
 const PATH_CAPTURE_START = "__THREADLINES_PATH_START__";
 const PATH_CAPTURE_END = "__THREADLINES_PATH_END__";
@@ -20,7 +20,21 @@ type ExecFileSyncLike = (
 export interface CommandAvailabilityOptions {
   readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
+  readonly fileSystem?: CommandFileSystem;
 }
+
+export interface CommandFileSystem {
+  readonly isFile: (filePath: string) => boolean;
+  readonly canAccess: (filePath: string, mode: number) => boolean;
+}
+
+const defaultCommandFileSystem: CommandFileSystem = {
+  isFile: (filePath) => statSync(filePath).isFile(),
+  canAccess: (filePath, mode) => {
+    accessSync(filePath, mode);
+    return true;
+  },
+};
 
 export interface WindowsEnvironmentProbeOptions {
   readonly loadProfile?: boolean;
@@ -337,13 +351,17 @@ function resolveWindowsPathExtensions(env: NodeJS.ProcessEnv): ReadonlyArray<str
   return parsed.length > 0 ? Array.from(new Set(parsed)) : fallback;
 }
 
+function pathForPlatform(platform: NodeJS.Platform) {
+  return platform === "win32" ? WindowsPath : PosixPath;
+}
+
 function resolveCommandCandidates(
   command: string,
   platform: NodeJS.Platform,
   windowsPathExtensions: ReadonlyArray<string>,
 ): ReadonlyArray<string> {
   if (platform !== "win32") return [command];
-  const extension = extname(command);
+  const extension = pathForPlatform(platform).extname(command);
   const normalizedExtension = extension.toUpperCase();
 
   if (extension.length > 0 && windowsPathExtensions.includes(normalizedExtension)) {
@@ -359,8 +377,8 @@ function resolveCommandCandidates(
 
   const candidates: string[] = [];
   for (const candidateExtension of windowsPathExtensions) {
-    candidates.push(`${command}${candidateExtension}`);
     candidates.push(`${command}${candidateExtension.toLowerCase()}`);
+    candidates.push(`${command}${candidateExtension}`);
   }
   return Array.from(new Set(candidates));
 }
@@ -369,19 +387,31 @@ function isExecutableFile(
   filePath: string,
   platform: NodeJS.Platform,
   windowsPathExtensions: ReadonlyArray<string>,
+  fileSystem: CommandFileSystem,
 ): boolean {
   try {
-    const stat = statSync(filePath);
-    if (!stat.isFile()) return false;
+    if (!fileSystem.isFile(filePath)) return false;
     if (platform === "win32") {
-      const extension = extname(filePath);
+      const extension = pathForPlatform(platform).extname(filePath);
       if (extension.length === 0) return false;
       return windowsPathExtensions.includes(extension.toUpperCase());
     }
-    accessSync(filePath, constants.X_OK);
-    return true;
+    return fileSystem.canAccess(filePath, constants.X_OK);
   } catch {
-    return false;
+    if (platform !== "win32") return false;
+
+    // Windows App Execution Aliases (including winget.exe) are launchable reparse points,
+    // but Node's stat call can fail with EACCES. F_OK still reflects whether Windows can
+    // resolve the alias, so accept that narrower fallback for executable extensions.
+    const extension = pathForPlatform(platform).extname(filePath);
+    if (extension.length === 0 || !windowsPathExtensions.includes(extension.toUpperCase())) {
+      return false;
+    }
+    try {
+      return fileSystem.canAccess(filePath, constants.F_OK);
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -391,12 +421,18 @@ export function resolveCommandPath(
 ): string | null {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
+  const fileSystem = options.fileSystem ?? defaultCommandFileSystem;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   const commandCandidates = resolveCommandCandidates(command, platform, windowsPathExtensions);
+  // The default filesystem always uses the host's path syntax. Platform overrides are
+  // also used by cross-platform callers and tests against real host temp directories.
+  // An injected filesystem models the target platform instead (for example, Windows
+  // App Execution Alias probing), so its candidate paths use the target path syntax.
+  const joinPath = options.fileSystem ? pathForPlatform(platform).join : joinHostPath;
 
   if (command.includes("/") || command.includes("\\")) {
     for (const candidate of commandCandidates) {
-      if (isExecutableFile(candidate, platform, windowsPathExtensions)) {
+      if (isExecutableFile(candidate, platform, windowsPathExtensions, fileSystem)) {
         return candidate;
       }
     }
@@ -412,8 +448,8 @@ export function resolveCommandPath(
 
   for (const pathEntry of pathEntries) {
     for (const candidate of commandCandidates) {
-      const candidatePath = join(pathEntry, candidate);
-      if (isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
+      const candidatePath = joinPath(pathEntry, candidate);
+      if (isExecutableFile(candidatePath, platform, windowsPathExtensions, fileSystem)) {
         return candidatePath;
       }
     }
@@ -431,11 +467,23 @@ export function isCommandAvailable(
 export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
   const appData = env.APPDATA?.trim();
   const localAppData = env.LOCALAPPDATA?.trim();
+  const programFiles = env.ProgramFiles?.trim();
+  const programFilesX86 = env["ProgramFiles(x86)"]?.trim();
   const userProfile = env.USERPROFILE?.trim();
 
   return [
+    ...(programFiles ? [`${programFiles}\\Git\\cmd`, `${programFiles}\\GitHub CLI`] : []),
+    ...(programFilesX86 ? [`${programFilesX86}\\Git\\cmd`, `${programFilesX86}\\GitHub CLI`] : []),
     ...(appData ? [`${appData}\\npm`] : []),
-    ...(localAppData ? [`${localAppData}\\Programs\\nodejs`, `${localAppData}\\Volta\\bin`] : []),
+    ...(localAppData
+      ? [
+          `${localAppData}\\Microsoft\\WindowsApps`,
+          `${localAppData}\\Programs\\Git\\cmd`,
+          `${localAppData}\\Programs\\GitHub CLI`,
+          `${localAppData}\\Programs\\nodejs`,
+          `${localAppData}\\Volta\\bin`,
+        ]
+      : []),
     ...(localAppData ? [`${localAppData}\\pnpm`] : []),
     ...(userProfile ? [`${userProfile}\\.bun\\bin`, `${userProfile}\\scoop\\shims`] : []),
   ];

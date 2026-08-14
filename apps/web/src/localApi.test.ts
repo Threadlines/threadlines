@@ -117,6 +117,8 @@ const rpcClientMock = {
     upsertKeybinding: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
+    discoverSourceControl: vi.fn(),
+    updateSourceControlTool: vi.fn(),
     subscribeConfig: vi.fn(),
     subscribeLifecycle: vi.fn(),
     subscribeAuthAccess: vi.fn(),
@@ -701,6 +703,27 @@ describe("wsApi", () => {
     );
     expect(rpcClientMock.server.updateSettings).toHaveBeenCalledWith({
       enableAssistantStreaming: true,
+    });
+  });
+
+  it("forwards typed source control tool updates to the RPC client", async () => {
+    const result = {
+      target: "github-cli" as const,
+      status: "succeeded" as const,
+      previousVersion: "2.92.0",
+      currentVersion: "2.98.0",
+      discovery: { versionControlSystems: [], sourceControlProviders: [] },
+    };
+    rpcClientMock.server.updateSourceControlTool.mockResolvedValue(result);
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(api.server.updateSourceControlTool({ target: "github-cli" })).resolves.toEqual(
+      result,
+    );
+    expect(rpcClientMock.server.updateSourceControlTool).toHaveBeenCalledWith({
+      target: "github-cli",
     });
   });
 

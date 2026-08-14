@@ -73,8 +73,14 @@ export interface SourceControlDiscoveryManagerConfig {
   readonly getClient: (key: string) => SourceControlDiscoveryClient | null;
 }
 
+export interface SourceControlDiscoveryRefreshOptions {
+  /** Start a new probe even if an older request for this target is still pending. */
+  readonly force?: boolean;
+}
+
 export function createSourceControlDiscoveryManager(config: SourceControlDiscoveryManagerConfig) {
   const refreshInFlight = new Map<string, Promise<SourceControlDiscoveryResult | null>>();
+  const refreshGeneration = new Map<string, number>();
 
   /* -- Atom helpers -------------------------------------------------- */
 
@@ -137,6 +143,7 @@ export function createSourceControlDiscoveryManager(config: SourceControlDiscove
   function refresh(
     target: SourceControlDiscoveryTarget,
     client?: SourceControlDiscoveryClient,
+    options?: SourceControlDiscoveryRefreshOptions,
   ): Promise<SourceControlDiscoveryResult | null> {
     const targetKey = getSourceControlDiscoveryTargetKey(target);
     if (targetKey === null) {
@@ -144,9 +151,15 @@ export function createSourceControlDiscoveryManager(config: SourceControlDiscove
     }
 
     const existing = refreshInFlight.get(targetKey);
-    if (existing) {
+    if (existing && options?.force !== true) {
       return existing;
     }
+
+    if (options?.force === true) {
+      refreshGeneration.set(targetKey, (refreshGeneration.get(targetKey) ?? 0) + 1);
+      refreshInFlight.delete(targetKey);
+    }
+    const generation = refreshGeneration.get(targetKey) ?? 0;
 
     const resolvedClient = client ?? config.getClient(targetKey);
     if (!resolvedClient) {
@@ -158,15 +171,23 @@ export function createSourceControlDiscoveryManager(config: SourceControlDiscove
     markPending(targetKey);
     const promise = resolvedClient.discoverSourceControl().then(
       (result) => {
-        setData(targetKey, result);
+        if ((refreshGeneration.get(targetKey) ?? 0) === generation) {
+          setData(targetKey, result);
+        }
         return result;
       },
       (error: unknown) => {
-        setError(targetKey, error);
+        if ((refreshGeneration.get(targetKey) ?? 0) === generation) {
+          setError(targetKey, error);
+        }
         return getSnapshot(target).data;
       },
     );
-    const tracked = promise.finally(() => refreshInFlight.delete(targetKey));
+    const tracked = promise.finally(() => {
+      if (refreshInFlight.get(targetKey) === tracked) {
+        refreshInFlight.delete(targetKey);
+      }
+    });
     refreshInFlight.set(targetKey, tracked);
     return tracked;
   }
@@ -186,6 +207,18 @@ export function createSourceControlDiscoveryManager(config: SourceControlDiscove
     return config.getRegistry().get(sourceControlDiscoveryStateAtom(targetKey));
   }
 
+  /** Store a discovery result already returned by another server operation. */
+  function storeResult(
+    target: SourceControlDiscoveryTarget,
+    result: SourceControlDiscoveryResult,
+  ): void {
+    const targetKey = getSourceControlDiscoveryTargetKey(target);
+    if (targetKey === null) return;
+    refreshGeneration.set(targetKey, (refreshGeneration.get(targetKey) ?? 0) + 1);
+    refreshInFlight.delete(targetKey);
+    setData(targetKey, result);
+  }
+
   /**
    * Clear in-flight refresh tracking and reset every known discovery atom.
    * Primarily used by tests and runtime teardown.
@@ -193,6 +226,7 @@ export function createSourceControlDiscoveryManager(config: SourceControlDiscove
   function reset(): void {
     refreshInFlight.clear();
     for (const key of knownSourceControlDiscoveryKeys) {
+      refreshGeneration.set(key, (refreshGeneration.get(key) ?? 0) + 1);
       setState(key, INITIAL_SOURCE_CONTROL_DISCOVERY_STATE);
     }
     knownSourceControlDiscoveryKeys.clear();
@@ -201,6 +235,7 @@ export function createSourceControlDiscoveryManager(config: SourceControlDiscove
   return {
     refresh,
     getSnapshot,
+    storeResult,
     reset,
   };
 }

@@ -36,6 +36,10 @@ import { __resetLocalApiForTests } from "../../localApi";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import { useUiStateStore } from "../../uiStateStore";
+import {
+  collectSourceControlToolUpdateWarnings,
+  sourceControlToolUpdateWarningSetKey,
+} from "../SourceControlToolUpdateLaunchNotification.logic";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
@@ -2442,10 +2446,12 @@ describe("SourceControlSettingsPanel discovery states", () => {
 
   function setSourceControlDiscoveryStub(
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>,
+    updateSourceControlTool?: LocalApi["server"]["updateSourceControlTool"],
   ) {
     window.nativeApi = {
       server: {
         discoverSourceControl,
+        ...(updateSourceControlTool ? { updateSourceControlTool } : {}),
       },
     } as LocalApi;
   }
@@ -2515,6 +2521,133 @@ describe("SourceControlSettingsPanel discovery states", () => {
 
     await expect.element(page.getByRole("switch", { name: "Git availability" })).toBeDisabled();
     await expect.element(page.getByText("Nothing detected yet")).not.toBeInTheDocument();
+  });
+
+  it("runs a verified source control tool update only after Update now is clicked", async () => {
+    const discoveryResult: SourceControlDiscoveryResult = {
+      versionControlSystems: [
+        {
+          kind: "git",
+          label: "Git",
+          executable: "git",
+          implemented: true,
+          status: "available",
+          version: Option.some("git version 2.55.0.windows.4"),
+          installHint: "Install Git.",
+          detail: Option.none(),
+          versionAdvisory: {
+            status: "behind_latest",
+            severity: "info",
+            currentVersion: "2.55.0.windows.4",
+            latestVersion: "2.56.0.windows.1",
+            recommendedVersion: "2.56.0.windows.1",
+            checkedAt: "2026-08-14T00:00:00.000Z",
+            message: "A newer Git for Windows release is available.",
+            notificationKey: null,
+            actions: [],
+          },
+        },
+      ],
+      sourceControlProviders: [
+        {
+          kind: "github",
+          label: "GitHub",
+          executable: "gh",
+          status: "available",
+          version: Option.some("gh version 2.92.0"),
+          installHint: "Install GitHub CLI.",
+          detail: Option.none(),
+          auth: {
+            status: "authenticated",
+            account: Option.some("octocat"),
+            host: Option.some("github.com"),
+            detail: Option.none(),
+          },
+          versionAdvisory: {
+            status: "recommended_update",
+            severity: "warning",
+            currentVersion: "2.92.0",
+            latestVersion: "2.98.0",
+            recommendedVersion: "2.97.0",
+            checkedAt: "2026-08-14T00:00:00.000Z",
+            message:
+              "This GitHub CLI version can briefly open terminal windows during background telemetry on Windows and is below the recommended security-fix release.",
+            notificationKey: "github-cli:security:2.97.0",
+            actions: [
+              {
+                label: "Update now",
+                kind: "runUpdate",
+                target: "github-cli",
+              },
+              {
+                label: "Copy WinGet command",
+                kind: "copyCommand",
+                value:
+                  "winget upgrade --id GitHub.cli --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+              },
+              {
+                label: "Open releases",
+                kind: "openUrl",
+                value: "https://github.com/cli/cli/releases/latest",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const updateSourceControlTool = vi
+      .fn<LocalApi["server"]["updateSourceControlTool"]>()
+      .mockResolvedValue({
+        target: "github-cli",
+        status: "succeeded",
+        previousVersion: "2.92.0",
+        currentVersion: "2.98.0",
+        discovery: discoveryResult,
+      });
+    setSourceControlDiscoveryStub(async () => discoveryResult, updateSourceControlTool);
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <SourceControlSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const advisoryButton = page.getByRole("button", { name: "GitHub update advisory" });
+    await expect.element(advisoryButton).toBeInTheDocument();
+
+    await advisoryButton.click();
+
+    await expect.element(page.getByText("Update available")).toBeVisible();
+    await expect.element(page.getByText("Latest")).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "winget upgrade --id GitHub.cli --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+        ),
+      )
+      .toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Update now" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Open releases" })).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Threadlines runs only the verified WinGet package shown above after you click Update now. Windows may ask for permission.",
+        ),
+      )
+      .toBeVisible();
+    expect(updateSourceControlTool).not.toHaveBeenCalled();
+
+    await page.getByRole("button", { name: "Update now" }).click();
+    expect(updateSourceControlTool).toHaveBeenCalledWith({ target: "github-cli" });
+
+    const warnings = collectSourceControlToolUpdateWarnings({
+      discovery: discoveryResult,
+      environmentKey: "environment:test-host",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(sourceControlToolUpdateWarningSetKey(warnings)).toBe(
+      "environment:test-host:github-cli:security:2.97.0",
+    );
   });
 
   it("shows unauthenticated source control providers as unavailable", async () => {

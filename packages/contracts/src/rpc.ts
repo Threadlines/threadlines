@@ -228,6 +228,9 @@ import {
   SourceControlRepositoryError,
   SourceControlRepositoryInfo,
   SourceControlRepositoryLookupInput,
+  SourceControlToolUpdateError,
+  SourceControlToolUpdateInput,
+  SourceControlToolUpdateResult,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 
@@ -320,6 +323,7 @@ export const WS_METHODS = {
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
+  serverUpdateSourceControlTool: "server.updateSourceControlTool",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
@@ -466,6 +470,15 @@ export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscov
   payload: Schema.Struct({}),
   success: SourceControlDiscoveryResult,
 });
+
+export const WsServerUpdateSourceControlToolRpc = Rpc.make(
+  WS_METHODS.serverUpdateSourceControlTool,
+  {
+    payload: SourceControlToolUpdateInput,
+    success: SourceControlToolUpdateResult,
+    error: SourceControlToolUpdateError,
+  },
+);
 
 export const WsServerGetTraceDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetTraceDiagnostics, {
   payload: Schema.Struct({}),
@@ -1130,6 +1143,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
   WsServerDiscoverSourceControlRpc,
+  WsServerUpdateSourceControlToolRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,

@@ -1,5 +1,6 @@
 import {
   type SourceControlDiscoveryResult,
+  type SourceControlProviderDiscoveryItem,
   type VcsDiscoveryItem,
   type VcsDriverKind,
 } from "@threadlines/contracts";
@@ -8,11 +9,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { HttpClient } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SourceControlProviderDiscovery from "./SourceControlProviderDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
+import * as SourceControlToolVersionAdvisory from "./SourceControlToolVersionAdvisory.ts";
 
 interface DiscoveryProbe {
   readonly label: string;
@@ -64,6 +67,8 @@ export interface SourceControlDiscoveryShape {
 
 export interface SourceControlDiscoveryOptions {
   readonly commandAvailable?: SourceControlProviderDiscovery.CommandAvailability;
+  readonly latestVersionResolver?: SourceControlToolVersionAdvisory.LatestVersionResolver;
+  readonly platform?: NodeJS.Platform;
 }
 
 export class SourceControlDiscovery extends Context.Service<
@@ -94,9 +99,13 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
   options?: SourceControlDiscoveryOptions,
 ) {
   const config = yield* ServerConfig;
-  const process = yield* VcsProcess.VcsProcess;
+  const vcsProcess = yield* VcsProcess.VcsProcess;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
-  const commandAvailable = options?.commandAvailable ?? ((command) => isCommandAvailable(command));
+  const platform = options?.platform ?? process.platform;
+  const commandAvailable =
+    options?.commandAvailable ?? ((command) => isCommandAvailable(command, { platform }));
+  const latestVersionResolver = options?.latestVersionResolver;
+  const canRunToolUpdate = platform === "win32" && commandAvailable("winget");
 
   const probe = <Kind extends VcsDriverKind>(
     input: DiscoveryProbe & { readonly kind: Kind },
@@ -117,7 +126,7 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
       );
     }
 
-    return process
+    return vcsProcess
       .run({
         operation: "source-control.discovery.probe",
         command: executable,
@@ -155,15 +164,50 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
       );
   };
 
+  const withVersionAdvisory = <Item extends VcsDiscoveryItem | SourceControlProviderDiscoveryItem>(
+    item: Item,
+  ): Effect.Effect<Item> =>
+    latestVersionResolver
+      ? SourceControlToolVersionAdvisory.withSourceControlToolVersionAdvisory({
+          item,
+          platform,
+          latestVersionResolver,
+          canRunUpdate: canRunToolUpdate,
+        })
+      : Effect.succeed(item);
+
   return SourceControlDiscovery.of({
     discover: Effect.all({
       versionControlSystems: Effect.all(
         VCS_PROBES.map((entry) => probe(entry)) as ReadonlyArray<Effect.Effect<VcsDiscoveryItem>>,
         { concurrency: "unbounded" },
+      ).pipe(
+        Effect.flatMap((items) =>
+          Effect.forEach(items, withVersionAdvisory, {
+            concurrency: "unbounded",
+          }),
+        ),
       ),
-      sourceControlProviders: sourceControlProviders.discover,
+      sourceControlProviders: sourceControlProviders.discover.pipe(
+        Effect.flatMap((items) =>
+          Effect.forEach(items, withVersionAdvisory, {
+            concurrency: "unbounded",
+          }),
+        ),
+      ),
     }),
   });
 });
 
-export const layer = Layer.effect(SourceControlDiscovery, make());
+export const layer = Layer.effect(
+  SourceControlDiscovery,
+  Effect.gen(function* () {
+    const httpClient = yield* HttpClient.HttpClient;
+    return yield* make({
+      latestVersionResolver: (target) =>
+        SourceControlToolVersionAdvisory.resolveLatestToolVersion(target).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+        ),
+    });
+  }),
+);

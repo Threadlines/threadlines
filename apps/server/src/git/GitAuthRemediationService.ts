@@ -18,6 +18,7 @@ import {
 } from "@threadlines/shared/git";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { THREADLINES_GITHUB_CLI_ENV } from "../sourceControl/GitHubCliEnvironment.ts";
 
 export interface GitAuthRemediationServiceShape {
   readonly plan: (
@@ -119,6 +120,7 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         command: "gh",
         args: ["auth", "status", "--hostname", host],
         cwd,
+        env: THREADLINES_GITHUB_CLI_ENV,
         allowNonZeroExit: true,
         timeoutMs: GH_PROBE_TIMEOUT_MS,
       })
@@ -257,6 +259,7 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         command: "gh",
         args: ["auth", "setup-git", "--hostname", host],
         cwd,
+        env: THREADLINES_GITHUB_CLI_ENV,
         allowNonZeroExit: true,
         timeoutMs: APPLY_TIMEOUT_MS,
       })

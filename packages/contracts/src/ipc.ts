@@ -182,6 +182,8 @@ import type {
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryInfo,
   SourceControlRepositoryLookupInput,
+  SourceControlToolUpdateInput,
+  SourceControlToolUpdateResult,
 } from "./sourceControl.ts";
 
 export interface ContextMenuItem<T extends string = string> {
@@ -1054,6 +1056,9 @@ export interface LocalApi {
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>;
+    updateSourceControlTool: (
+      input: SourceControlToolUpdateInput,
+    ) => Promise<SourceControlToolUpdateResult>;
     getTraceDiagnostics: () => Promise<ServerTraceDiagnosticsResult>;
     getProcessDiagnostics: () => Promise<ServerProcessDiagnosticsResult>;
     getProcessResourceHistory: (
