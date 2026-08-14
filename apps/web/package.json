@@ -9,7 +9,6 @@
     "preview": "vp preview",
     "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests --project unit",
-    "test:browser": "vp test run --config vitest.browser.config.ts",
     "test:browser:install": "playwright install --with-deps chromium"
   },
   "dependencies": {

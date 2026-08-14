@@ -32,7 +32,7 @@
     "typecheck": "vp run -r --concurrency-limit 2 --cache typecheck",
     "tc": "vp run -r --concurrency-limit 2 --cache typecheck",
     "lint": "vp lint --report-unused-disable-directives",
-    "test": "vp run -r test",
+    "test": "vp run -r --cache test",
     "test:desktop-smoke": "vp run --filter @threadlines/desktop smoke-test",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",

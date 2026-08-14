@@ -3,8 +3,10 @@
 ## Task Completion Requirements
 
 - All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering tasks completed. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
-- Run the tests covering the code you changed: `vp run '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
-- Web UI changes also need the browser suite: `vp run '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it — green unit tests alone do not mean a green branch.
+- Run the tests covering the code you changed: `vp run --cache '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
+- Web UI changes also need the browser suite: `vp run --cache '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it — green unit tests alone do not mean a green branch.
+- Pass `--cache` only to pure check/test commands as shown above. vp fingerprints the files a task reads and its arguments, so an unchanged re-run replays instantly instead of re-executing — but never add it to side-effecting scripts (`deploy`, `clean`, `dist:*`, `release:*`), where a cache replay would silently skip the real action.
+- Heavy suites (browser tests, full typecheck) saturate the machine when two sessions run them at once and produce spurious timeouts. Before starting one, check for a running vitest/tsc and wait if another session's suite is active.
 - NEVER run `bun test`. The Bun toolchain is not used for repo tasks.
 
 ## Testing Discipline
