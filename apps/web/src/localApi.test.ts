@@ -709,6 +709,7 @@ describe("wsApi", () => {
   it("forwards typed source control tool updates to the RPC client", async () => {
     const result = {
       target: "github-cli" as const,
+      operation: "update" as const,
       status: "succeeded" as const,
       previousVersion: "2.92.0",
       currentVersion: "2.98.0",

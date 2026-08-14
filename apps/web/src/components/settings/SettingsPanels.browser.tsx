@@ -2599,6 +2599,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
       .fn<LocalApi["server"]["updateSourceControlTool"]>()
       .mockResolvedValue({
         target: "github-cli",
+        operation: "update",
         status: "succeeded",
         previousVersion: "2.92.0",
         currentVersion: "2.98.0",
@@ -2648,6 +2649,137 @@ describe("SourceControlSettingsPanel discovery states", () => {
     expect(sourceControlToolUpdateWarningSetKey(warnings)).toBe(
       "environment:test-host:github-cli:security:2.97.0",
     );
+  });
+
+  it("runs a verified Homebrew install only after Install now is clicked", async () => {
+    const discoveryResult: SourceControlDiscoveryResult = {
+      versionControlSystems: [],
+      sourceControlProviders: [
+        {
+          kind: "github",
+          label: "GitHub",
+          executable: "gh",
+          status: "missing",
+          version: Option.none(),
+          installHint: "Install GitHub CLI.",
+          detail: Option.some("gh was not found on the server PATH."),
+          auth: {
+            status: "unknown",
+            account: Option.none(),
+            host: Option.none(),
+            detail: Option.none(),
+          },
+          versionAdvisory: {
+            status: "install_available",
+            severity: "info",
+            currentVersion: null,
+            latestVersion: null,
+            recommendedVersion: null,
+            checkedAt: "2026-08-14T00:00:00.000Z",
+            message: "Install GitHub CLI to enable this source control integration.",
+            notificationKey: null,
+            actions: [
+              {
+                label: "Install now",
+                kind: "runUpdate",
+                target: "github-cli",
+                operation: "install",
+              },
+              {
+                label: "Copy Homebrew command",
+                kind: "copyCommand",
+                value: "brew install gh",
+              },
+              {
+                label: "Open install guide",
+                kind: "openUrl",
+                value: "https://cli.github.com/",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const updateSourceControlTool = vi
+      .fn<LocalApi["server"]["updateSourceControlTool"]>()
+      .mockResolvedValue({
+        target: "github-cli",
+        operation: "install",
+        status: "succeeded",
+        previousVersion: null,
+        currentVersion: "2.98.0",
+        discovery: discoveryResult,
+      });
+    setSourceControlDiscoveryStub(async () => discoveryResult, updateSourceControlTool);
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <SourceControlSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    expect(updateSourceControlTool).not.toHaveBeenCalled();
+
+    await page.getByRole("button", { name: "Install GitHub" }).click();
+    expect(updateSourceControlTool).toHaveBeenCalledWith({
+      target: "github-cli",
+      operation: "install",
+    });
+  });
+
+  it("shows the official release without Update now while WinGet trails upstream", async () => {
+    setSourceControlDiscoveryStub(async () => ({
+      versionControlSystems: [
+        {
+          kind: "git",
+          label: "Git",
+          executable: "git",
+          implemented: true,
+          status: "available",
+          version: Option.some("git version 2.55.0.windows.3"),
+          installHint: "Install Git.",
+          detail: Option.none(),
+          versionAdvisory: {
+            status: "recommended_update",
+            severity: "warning",
+            currentVersion: "2.55.0.windows.3",
+            latestVersion: "2.55.0.windows.4",
+            recommendedVersion: "2.55.0.windows.4",
+            checkedAt: "2026-08-14T00:00:00.000Z",
+            message:
+              "This Git for Windows version is below the recommended security-fix release. Git for Windows 2.55.0.windows.4 has not reached WinGet yet; use the official release link or check again later.",
+            notificationKey: "git-for-windows:security:2.55.0.windows.4",
+            actions: [
+              {
+                label: "Open official release",
+                kind: "openUrl",
+                value: "https://github.com/git-for-windows/git/releases/latest",
+              },
+            ],
+          },
+        },
+      ],
+      sourceControlProviders: [],
+    }));
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <SourceControlSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await page.getByRole("button", { name: "Git update advisory" }).click();
+
+    await expect.element(page.getByRole("button", { name: "Update now" })).not.toBeInTheDocument();
+    await expect.element(page.getByText(/has not reached WinGet yet/i)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Open official release" })).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Threadlines cannot run this update automatically yet. Use the official release link or check again after WinGet publishes it.",
+        ),
+      )
+      .toBeVisible();
   });
 
   it("shows unauthenticated source control providers as unavailable", async () => {

@@ -271,8 +271,7 @@ function DiscoveryItemRow({
                 {item.label}
               </span>
               {version ? <code className="text-xs text-muted-foreground">{version}</code> : null}
-              {item.versionAdvisory?.status === "behind_latest" ||
-              item.versionAdvisory?.status === "recommended_update" ? (
+              {item.versionAdvisory && item.versionAdvisory.actions.length > 0 ? (
                 <CompactVersionAdvisory
                   advisory={item.versionAdvisory}
                   environmentId={environmentId}

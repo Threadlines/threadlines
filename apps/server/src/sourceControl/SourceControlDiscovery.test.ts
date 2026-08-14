@@ -115,6 +115,8 @@ it.effect("reports implemented tools separately from locally available executabl
       platform: "win32",
       latestVersionResolver: (target) =>
         Effect.succeed(target === "github-cli" ? "2.98.0" : "2.55.0.windows.4"),
+      winGetVersionResolver: (target) =>
+        Effect.succeed(target === "github-cli" ? "2.98.0" : "2.55.0.windows.4"),
     }),
   ).pipe(
     Layer.provide(
@@ -422,5 +424,68 @@ it.effect("skips unavailable discovery commands before spawning probes", () => {
       ],
     );
     assert.deepStrictEqual(processCommands, []);
+  }).pipe(Effect.provide(testLayer));
+});
+
+it.effect("offers allowlisted Homebrew installs for missing macOS tools", () => {
+  const hasOnlyHomebrew = (command: string) => command === "brew";
+  const processMock = {
+    run: (input: VcsProcess.VcsProcessInput) =>
+      Effect.fail(
+        new VcsProcessSpawnError({
+          operation: input.operation,
+          command: input.command,
+          cwd: input.cwd,
+          cause: new Error(`${input.command} should not be spawned`),
+        }),
+      ),
+  } satisfies Partial<VcsProcess.VcsProcessShape>;
+  const testLayer = Layer.effect(
+    SourceControlDiscovery.SourceControlDiscovery,
+    SourceControlDiscovery.make({
+      commandAvailable: hasOnlyHomebrew,
+      platform: "darwin",
+      latestVersionResolver: noLatestToolVersion,
+    }),
+  ).pipe(
+    Layer.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-brew-discovery-" }),
+    ),
+    Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+    Layer.provide(
+      sourceControlProviderRegistryTestLayer({
+        process: processMock,
+        commandAvailable: hasOnlyHomebrew,
+        bitbucket: {
+          probeAuth: Effect.succeed({
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.some("bitbucket.org"),
+            detail: Option.none(),
+          }),
+        },
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const discovery = yield* SourceControlDiscovery.SourceControlDiscovery;
+    const result = yield* discovery.discover;
+    const actions = [...result.versionControlSystems, ...result.sourceControlProviders].flatMap(
+      (item) => item.versionAdvisory?.actions.filter((action) => action.kind === "runUpdate") ?? [],
+    );
+
+    assert.deepStrictEqual(
+      actions.map((action) =>
+        action.kind === "runUpdate" ? [action.target, action.operation] : null,
+      ),
+      [
+        ["git", "install"],
+        ["github-cli", "install"],
+        ["gitlab-cli", "install"],
+        ["azure-cli", "install"],
+      ],
+    );
   }).pipe(Effect.provide(testLayer));
 });

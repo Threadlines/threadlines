@@ -1206,17 +1206,19 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSourceControlTool,
             Effect.gen(function* () {
+              const operation = input.operation ?? "update";
               const before = yield* sourceControlDiscovery.discover;
               if (
                 !SourceControlToolMaintenance.hasVerifiedSourceControlToolUpdateAction(
                   before,
                   input.target,
+                  operation,
                 )
               ) {
                 return yield* new SourceControlToolUpdateError({
                   target: input.target,
                   reason:
-                    "Threadlines could not verify an available update for this tool. Rescan the server environment and try again.",
+                    "Threadlines could not verify an available install or update action for this tool. Rescan the server environment and try again.",
                 });
               }
               const previousVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
@@ -1224,7 +1226,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 input.target,
               );
 
-              yield* sourceControlToolMaintenance.update(input);
+              yield* sourceControlToolMaintenance.update({ ...input, operation });
 
               const discovery = yield* sourceControlDiscovery.discover;
               const currentVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
@@ -1235,12 +1237,13 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 return yield* new SourceControlToolUpdateError({
                   target: input.target,
                   reason:
-                    "WinGet finished, but Threadlines could not verify the installed tool version afterward. Rescan after restarting the desktop app.",
+                    "The package-manager command finished, but Threadlines could not verify the installed tool version afterward. Rescan after restarting the desktop app.",
                 });
               }
 
               return {
                 target: input.target,
+                operation,
                 status: previousVersion === currentVersion ? "unchanged" : "succeeded",
                 previousVersion,
                 currentVersion,

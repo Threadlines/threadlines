@@ -49,6 +49,7 @@ it.effect("recommends GitHub CLI updates for the Windows terminal flash range", 
       platform: "win32",
       canRunUpdate: true,
       latestVersionResolver: () => Effect.succeed("2.98.0"),
+      winGetVersionResolver: () => Effect.succeed("2.98.0"),
       item,
     });
 
@@ -108,6 +109,7 @@ it.effect("recommends the Git for Windows security baseline without executing up
       platform: "win32",
       canRunUpdate: true,
       latestVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
+      winGetVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
       item,
     });
 
@@ -118,6 +120,61 @@ it.effect("recommends the Git for Windows security baseline without executing up
       enriched.versionAdvisory?.actions.find((action) => action.kind === "runUpdate"),
       { label: "Update now", kind: "runUpdate", target: "git" },
     );
+  }),
+);
+
+it.effect("does not offer a stale WinGet update after its catalog version is installed", () =>
+  Effect.gen(function* () {
+    const item: VcsDiscoveryItem = {
+      kind: "git",
+      label: "Git",
+      executable: "git",
+      implemented: true,
+      status: "available",
+      version: Option.some("git version 2.55.0.windows.3"),
+      installHint: "Install Git.",
+      detail: Option.none(),
+    };
+    const enriched = yield* withSourceControlToolVersionAdvisory({
+      platform: "win32",
+      canRunUpdate: true,
+      latestVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
+      winGetVersionResolver: () => Effect.succeed("2.55.0.windows.3"),
+      item,
+    });
+
+    assert.strictEqual(enriched.versionAdvisory?.status, "recommended_update");
+    assert.strictEqual(enriched.versionAdvisory?.latestVersion, "2.55.0.windows.4");
+    assert.match(enriched.versionAdvisory?.message ?? "", /has not reached WinGet yet/i);
+    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "openUrl"));
+    assert.ok(!enriched.versionAdvisory?.actions.some((action) => action.kind === "runUpdate"));
+    assert.ok(!enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
+  }),
+);
+
+it.effect("offers the newer WinGet package while explaining when it trails upstream", () =>
+  Effect.gen(function* () {
+    const item: VcsDiscoveryItem = {
+      kind: "git",
+      label: "Git",
+      executable: "git",
+      implemented: true,
+      status: "available",
+      version: Option.some("git version 2.54.0.windows.1"),
+      installHint: "Install Git.",
+      detail: Option.none(),
+    };
+    const enriched = yield* withSourceControlToolVersionAdvisory({
+      platform: "win32",
+      canRunUpdate: true,
+      latestVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
+      winGetVersionResolver: () => Effect.succeed("2.55.0.windows.3"),
+      item,
+    });
+
+    assert.match(enriched.versionAdvisory?.message ?? "", /currently offers 2\.55\.0\.windows\.3/i);
+    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "runUpdate"));
+    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
   }),
 );
 
@@ -147,6 +204,45 @@ it.effect("does not check Git for Windows latest releases off Windows", () => {
     assert.strictEqual(resolverCalls, 0);
   });
 });
+
+it.effect("offers one-click Homebrew installs for missing macOS source control tools", () =>
+  Effect.gen(function* () {
+    const item: SourceControlProviderDiscoveryItem = {
+      kind: "github",
+      label: "GitHub",
+      executable: "gh",
+      status: "missing",
+      version: Option.none(),
+      installHint: "Install GitHub CLI.",
+      detail: Option.some("gh was not found on the server PATH."),
+      auth: {
+        status: "unknown",
+        account: Option.none(),
+        host: Option.none(),
+        detail: Option.none(),
+      },
+    };
+    const enriched = yield* withSourceControlToolVersionAdvisory({
+      platform: "darwin",
+      packageManager: "homebrew",
+      canRunInstall: true,
+      latestVersionResolver: () => Effect.succeed(null),
+      item,
+    });
+
+    assert.strictEqual(enriched.versionAdvisory?.status, "install_available");
+    assert.strictEqual(enriched.versionAdvisory?.currentVersion, null);
+    assert.deepStrictEqual(enriched.versionAdvisory?.actions.slice(0, 2), [
+      {
+        label: "Install now",
+        kind: "runUpdate",
+        target: "github-cli",
+        operation: "install",
+      },
+      { label: "Copy Homebrew command", kind: "copyCommand", value: "brew install gh" },
+    ]);
+  }),
+);
 
 it.effect("caches successful latest-release lookups", () => {
   clearSourceControlToolVersionAdvisoryCacheForTests();

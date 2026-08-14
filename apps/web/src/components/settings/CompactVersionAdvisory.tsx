@@ -38,7 +38,14 @@ function openExternalUrl(url: string): void {
 }
 
 function advisoryTitle(advisory: SourceControlToolVersionAdvisory): string {
-  return advisory.status === "current" ? "Up to date" : "Update available";
+  if (advisory.status === "current") return "Up to date";
+  return advisory.status === "install_available" ? "Install available" : "Update available";
+}
+
+function packageManagerLabel(copyLabel: string | undefined): string {
+  if (copyLabel?.toLowerCase().includes("homebrew")) return "Homebrew";
+  if (copyLabel?.toLowerCase().includes("winget")) return "WinGet";
+  return "package manager";
 }
 
 export function CompactVersionAdvisory({
@@ -76,22 +83,33 @@ export function CompactVersionAdvisory({
     void updateSourceControlTool({
       ...(environmentId === undefined ? {} : { environmentId }),
       target: updateAction.target,
+      ...(updateAction.operation ? { operation: updateAction.operation } : {}),
     })
       .then((result) => {
         toastManager.add({
           type: result.status === "succeeded" ? "success" : "info",
-          title: result.status === "succeeded" ? `${label} updated` : `${label} is unchanged`,
+          title:
+            result.status === "succeeded"
+              ? result.operation === "install"
+                ? `${label} installed`
+                : `${label} updated`
+              : `${label} is unchanged`,
           description:
             result.status === "succeeded"
-              ? `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
-              : "WinGet completed, but the detected version did not change.",
+              ? result.operation === "install"
+                ? result.currentVersion
+                  ? `Installed ${result.currentVersion}`
+                  : "Installed successfully."
+                : `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
+              : `${packageManagerLabel(copyAction?.label)} completed, but the detected version did not change.`,
         });
       })
       .catch((error: unknown) => {
+        const operation = updateAction.operation ?? "update";
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: `Could not update ${label}`,
+            title: `Could not ${operation === "install" ? "install" : "update"} ${label}`,
             description:
               error instanceof Error ? error.message : "The verified update command failed.",
           }),
@@ -99,6 +117,23 @@ export function CompactVersionAdvisory({
       })
       .finally(() => setIsUpdating(false));
   };
+
+  if (advisory.status === "install_available" && updateAction) {
+    return (
+      <Button
+        type="button"
+        size="xs"
+        variant="default"
+        className="h-6 px-2 text-[11px]"
+        disabled={isUpdating}
+        onClick={runUpdate}
+        aria-label={`Install ${label}`}
+      >
+        {isUpdating ? <LoaderIcon className="size-3 animate-spin" aria-hidden /> : null}
+        {isUpdating ? "Installing" : "Install"}
+      </Button>
+    );
+  }
 
   return (
     <Popover>
@@ -114,7 +149,7 @@ export function CompactVersionAdvisory({
                 ? "text-warning hover:text-warning"
                 : "text-primary-readable hover:text-primary-readable",
             )}
-            aria-label={`${label} update advisory`}
+            aria-label={`${label} ${advisory.status === "install_available" ? "install" : "update"} advisory`}
           >
             <ArrowUpCircleIcon className="size-3.5" aria-hidden />
           </Button>
@@ -229,8 +264,17 @@ export function CompactVersionAdvisory({
           >
             <AlertCircleIcon className="mt-0.5 size-3 shrink-0" aria-hidden />
             {updateAction
-              ? "Threadlines runs only the verified WinGet package shown above after you click Update now. Windows may ask for permission."
-              : "Threadlines cannot run this update automatically. Use the copied command on this environment's host."}
+              ? packageManagerLabel(copyAction?.label) === "WinGet" &&
+                (updateAction.operation ?? "update") === "update"
+                ? "Threadlines runs only the verified WinGet package shown above after you click Update now. Windows may ask for permission."
+                : `Threadlines runs only the verified ${packageManagerLabel(copyAction?.label)} ${updateAction.operation === "install" ? "install" : "update"} recipe shown above after you click ${updateAction.label}.`
+              : copyAction
+                ? "Threadlines cannot run this automatically. Use the copied command on this environment's host."
+                : advisory.status === "current"
+                  ? "This tool is up to date."
+                  : advisory.status === "install_available"
+                    ? "Threadlines cannot run this install automatically yet. Use the official install guide on this environment's host."
+                    : "Threadlines cannot run this update automatically yet. Use the official release link or check again after WinGet publishes it."}
           </p>
         </div>
       </PopoverPopup>
