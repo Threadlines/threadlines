@@ -135,7 +135,10 @@ describe("DesktopServerExposure", () => {
 
         yield* settings.setServerExposureMode("network-accessible");
 
-        const state = yield* serverExposure.configureFromSettings({ port: 4173 });
+        const state = yield* serverExposure.configureFromSettings({
+          port: 4173,
+          selectedByScan: true,
+        });
         assert.equal(state.mode, "local-only");
         assert.equal(state.endpointUrl, null);
         assert.equal((yield* settings.get).serverExposureMode, "network-accessible");
@@ -152,7 +155,7 @@ describe("DesktopServerExposure", () => {
       emptyNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
+        yield* serverExposure.configureFromSettings({ port: 4173, selectedByScan: true });
 
         const error = yield* serverExposure.setMode("network-accessible").pipe(Effect.flip);
         assert.ok(error._tag === "DesktopServerExposureNoNetworkAddressError");
@@ -169,7 +172,7 @@ describe("DesktopServerExposure", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
 
         yield* settings.load;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
+        yield* serverExposure.configureFromSettings({ port: 4173, selectedByScan: true });
 
         const change = yield* serverExposure.setMode("network-accessible");
         assert.equal(change.requiresRelaunch, true);
@@ -199,7 +202,7 @@ describe("DesktopServerExposure", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
 
         yield* settings.load;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
+        yield* serverExposure.configureFromSettings({ port: 4173, selectedByScan: true });
 
         const changed = yield* serverExposure.setTailscaleServeEnabled({
           enabled: true,
@@ -227,7 +230,7 @@ describe("DesktopServerExposure", () => {
       { ...lanNetworkInterfaces, ...tailnetNetworkInterfaces },
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
+        yield* serverExposure.configureFromSettings({ port: 4173, selectedByScan: true });
         yield* serverExposure.setMode("network-accessible");
 
         const endpoints = yield* serverExposure.getAdvertisedEndpoints;
@@ -244,7 +247,7 @@ describe("DesktopServerExposure", () => {
       lanNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
+        yield* serverExposure.configureFromSettings({ port: 4173, selectedByScan: true });
         const change = yield* serverExposure.setMode("network-accessible");
 
         assert.equal(change.state.advertisedHost, "10.0.0.7");
@@ -268,7 +271,7 @@ describe("DesktopServerExposure", () => {
       lanNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 3773 });
+        yield* serverExposure.configureFromSettings({ port: 3773, selectedByScan: true });
         yield* serverExposure.setMode("network-accessible");
 
         const endpoints = yield* serverExposure.getAdvertisedEndpoints;
