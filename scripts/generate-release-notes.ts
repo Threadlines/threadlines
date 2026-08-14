@@ -249,6 +249,26 @@ interface ParsedGitHubGeneratedNotes {
   readonly fullChangelogLine: string | undefined;
 }
 
+function githubProfileLink(login: string): string {
+  return `[@${login}](https://github.com/${login})`;
+}
+
+/** GitHub gives bare @mentions a viewer-specific highlight. Keep attribution
+ * clickable without that highlight by rendering the generated author patterns
+ * as ordinary profile links. Limit this to GitHub's own templates so an @ in a
+ * pull request title or email-like text is not rewritten. */
+function linkGitHubGeneratedAttribution(line: string): string {
+  return line
+    .replace(
+      /\bby @([a-z\d](?:[a-z\d-]{0,37}[a-z\d])?)(?=\s+in\s+)/gi,
+      (_match, login: string) => `by ${githubProfileLink(login)}`,
+    )
+    .replace(
+      /^([-*]\s+)@([a-z\d](?:[a-z\d-]{0,37}[a-z\d])?)(?=\s+made their first contribution\b)/i,
+      (_match, bullet: string, login: string) => `${bullet}${githubProfileLink(login)}`,
+    );
+}
+
 function parseGitHubGeneratedNotes(body: string): ParsedGitHubGeneratedNotes {
   const lines = body.replaceAll("\r\n", "\n").split("\n");
   const newContributorsStart = lines.findIndex((line) => /^##\s+New Contributors\s*$/i.test(line));
@@ -272,7 +292,7 @@ function parseGitHubGeneratedNotes(body: string): ParsedGitHubGeneratedNotes {
       if (pullRequestNumber) filteredPullRequestNumbers.add(pullRequestNumber);
       return false;
     })
-    .map((line) => line.trim().replace(/^\*\s+/, "- "));
+    .map((line) => linkGitHubGeneratedAttribution(line.trim().replace(/^\*\s+/, "- ")));
 
   const newContributorSection =
     newContributorsStart === -1
@@ -286,7 +306,7 @@ function parseGitHubGeneratedNotes(body: string): ParsedGitHubGeneratedNotes {
             const pullRequestNumber = /\/pull\/(\d+)/i.exec(line)?.[1];
             return !pullRequestNumber || !filteredPullRequestNumbers.has(pullRequestNumber);
           })
-          .map((line) => line.trimEnd())
+          .map((line) => linkGitHubGeneratedAttribution(line.trimEnd()))
           .filter((line, index, section) => {
             if (line.length > 0) return true;
             return index > 0 && index < section.length - 1;
