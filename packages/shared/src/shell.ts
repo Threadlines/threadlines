@@ -2,7 +2,7 @@
 import * as NodeOS from "node:os";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { posix as PosixPath, win32 as WindowsPath } from "node:path";
+import { join as joinHostPath, posix as PosixPath, win32 as WindowsPath } from "node:path";
 
 const PATH_CAPTURE_START = "__THREADLINES_PATH_START__";
 const PATH_CAPTURE_END = "__THREADLINES_PATH_END__";
@@ -377,8 +377,8 @@ function resolveCommandCandidates(
 
   const candidates: string[] = [];
   for (const candidateExtension of windowsPathExtensions) {
-    candidates.push(`${command}${candidateExtension}`);
     candidates.push(`${command}${candidateExtension.toLowerCase()}`);
+    candidates.push(`${command}${candidateExtension}`);
   }
   return Array.from(new Set(candidates));
 }
@@ -424,7 +424,11 @@ export function resolveCommandPath(
   const fileSystem = options.fileSystem ?? defaultCommandFileSystem;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   const commandCandidates = resolveCommandCandidates(command, platform, windowsPathExtensions);
-  const platformPath = pathForPlatform(platform);
+  // The default filesystem always uses the host's path syntax. Platform overrides are
+  // also used by cross-platform callers and tests against real host temp directories.
+  // An injected filesystem models the target platform instead (for example, Windows
+  // App Execution Alias probing), so its candidate paths use the target path syntax.
+  const joinPath = options.fileSystem ? pathForPlatform(platform).join : joinHostPath;
 
   if (command.includes("/") || command.includes("\\")) {
     for (const candidate of commandCandidates) {
@@ -444,7 +448,7 @@ export function resolveCommandPath(
 
   for (const pathEntry of pathEntries) {
     for (const candidate of commandCandidates) {
-      const candidatePath = platformPath.join(pathEntry, candidate);
+      const candidatePath = joinPath(pathEntry, candidate);
       if (isExecutableFile(candidatePath, platform, windowsPathExtensions, fileSystem)) {
         return candidatePath;
       }
