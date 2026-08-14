@@ -2662,12 +2662,37 @@ const WorkGroupSection = memo(function WorkGroupSection({
   }
 
   if (isLiveActivity) {
+    // A turn that delegated keeps its receipt while the group is still live:
+    // the tracker on it is the conversation's only inline signal that agents
+    // are running, and it must not blink out whenever the live group happens
+    // to absorb the turn's earlier steps. The receipt stays collapsed here —
+    // the live spine below already narrates the recent steps.
+    const showLiveTracker = turnAgentTracker.summary !== null && onOpenAgentsPanel;
     return (
-      <LiveActivitySpine
-        entries={groupedEntries}
-        liveStartedAt={row.liveStartedAt}
-        workspaceRoot={workspaceRoot}
-      />
+      <>
+        {showLiveTracker ? (
+          <div
+            data-work-activity-receipt="true"
+            data-work-activity-live-tracker="true"
+            style={spineStyle()}
+          >
+            <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={false}>
+              <ActivityReceipt
+                entries={groupedEntries}
+                durationEntries={trackedEntries}
+                tracker={turnAgentTracker}
+                isExpanded={false}
+                onToggle={null}
+              />
+            </SpineRow>
+          </div>
+        ) : null}
+        <LiveActivitySpine
+          entries={groupedEntries}
+          liveStartedAt={row.liveStartedAt}
+          workspaceRoot={workspaceRoot}
+        />
+      </>
     );
   }
 

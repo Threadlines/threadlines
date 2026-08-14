@@ -316,6 +316,62 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("keeps one work group when live agent commentary interleaves with the turn's steps", () => {
+    const workEntry = (id: string, createdAt: string) => ({
+      id,
+      kind: "work" as const,
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        label: id,
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+      },
+    });
+    // The live entry's timestamp moves with every streamed update, so if it
+    // could split work groups, the receipt would flicker as the agent streams.
+    const liveEntry = {
+      id: "subagent-live:turn-1:agent-1",
+      kind: "subagent-live" as const,
+      createdAt: "2026-01-01T00:00:05Z",
+      live: {
+        id: "subagent-live:turn-1:agent-1",
+        createdAt: "2026-01-01T00:00:05Z",
+        turnId: "turn-1" as never,
+        agentThreadId: "agent-1",
+        label: "Subagent",
+        role: null,
+        objective: null,
+        body: "Checking the runtime path.",
+        model: null,
+        reasoningEffort: null,
+      },
+    };
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        workEntry("main-read", "2026-01-01T00:00:00Z"),
+        liveEntry,
+        workEntry("main-edit", "2026-01-01T00:00:10Z"),
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : null).toEqual([
+      "main-read",
+      "main-edit",
+    ]);
+    expect(row?.kind === "work" ? row.isLive : null).toBe(true);
+  });
+
   it("uses the active status label for the live activity row", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],

@@ -373,6 +373,59 @@ describe("deriveThreadSubagentHistory", () => {
     expect(history[0]?.item.reasoningEffort).toBeNull();
   });
 
+  /** The durable roster seeds a record for every agent before the lifecycle
+   *  rows are folded, so the collab spawn is never the record's first sighting.
+   *  A spawn that stated no model still means "the parent turn's settings" —
+   *  the roster seed must not swallow that inheritance. */
+  it("inherits the turn's dispatched settings for a roster-seeded collab spawn", () => {
+    const durable: OrchestrationSubagent = {
+      id: "codex-child-1",
+      agentThreadId: "codex-child-1",
+      parentAgentThreadId: null,
+      spawnCallId: "call_spawn",
+      transcriptAgentId: "codex-child-1",
+      turnId: TurnId.make("turn-1"),
+      agentPath: "/root/web_tsx_count",
+      parentAgentPath: "/root",
+      treeDepth: 0,
+      nickname: null,
+      role: null,
+      objective: null,
+      status: "running",
+      requestedModel: null,
+      resolvedModel: null,
+      reasoningEffort: null,
+      modelProvenance: null,
+      reasoningEffortProvenance: null,
+      resultBody: null,
+      resultCreatedAt: null,
+      createdAt: "2026-08-11T19:34:59.000Z",
+      updatedAt: "2026-08-11T19:34:59.000Z",
+    };
+    const [turnPreparing, turnStarted, spawn, wait] = codexSpawnActivities();
+    const collabSpawn = structuredClone(spawn) as typeof spawn;
+    const collabItem = (
+      (collabSpawn?.payload as { data: { item: Record<string, unknown> } }).data as {
+        item: Record<string, unknown>;
+      }
+    ).item;
+    // The same spawn shaped as a collab tool call rather than a native item:
+    // this omission means "parent settings", not "unknown".
+    collabItem.type = "collabAgentToolCall";
+
+    const history = deriveThreadSubagentHistory(
+      [turnPreparing!, turnStarted!, collabSpawn!, wait!],
+      [durable],
+    );
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.item).toMatchObject({
+      agentThreadId: "codex-child-1",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    });
+  });
+
   /** Claude's `provider.turn.started` does state a model, so the unscoped
    *  dispatch row has to act as a floor rather than be skipped: the effort only
    *  ever appears in the dispatch, and the provider's model still has to win. */
