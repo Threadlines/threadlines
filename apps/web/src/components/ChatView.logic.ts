@@ -146,6 +146,7 @@ export function buildLocalDraftThread(
     goal: null,
     turnDiffSummaries: [],
     activities: [],
+    subagents: [],
     proposedPlans: [],
   };
 }
@@ -188,6 +189,7 @@ export function mergeLocalDraftThreadWithServerThread(
     diffStatBaselineTurnCount: serverThread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: serverThread.turnDiffSummaries,
     activities: serverThread.activities,
+    subagents: serverThread.subagents ?? [],
   };
 }
 

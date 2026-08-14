@@ -5,6 +5,7 @@ import {
   isPathWithinCwd,
   openDirectoryInViewer,
   openFileInViewer,
+  parseChatFileReference,
   relativePathWithinCwd,
   useFileViewerStore,
 } from "./fileViewerStore";
@@ -43,6 +44,21 @@ describe("fileViewerStore", () => {
   it("distinguishes Windows paths outside the active workspace", () => {
     expect(isPathWithinCwd("C:/Users/wilfr/.claude/CLAUDE.md", WINDOWS_CWD)).toBe(false);
     expect(isPathWithinCwd(`${WINDOWS_CWD}/AGENTS.md`, WINDOWS_CWD)).toBe(true);
+  });
+
+  it("does not mistake dotted telemetry identifiers for bare file names", () => {
+    expect(parseChatFileReference("telemetry.step")).toBeNull();
+    expect(parseChatFileReference("tool.started")).toBeNull();
+    expect(parseChatFileReference("tool.output.updated")).toBeNull();
+    expect(parseChatFileReference("AgentsPanel.tsx:300")).toEqual({
+      path: "AgentsPanel.tsx",
+      line: 300,
+    });
+    // An explicit path is still actionable even when its extension is niche.
+    expect(parseChatFileReference("fixtures/workflow.step:4")).toEqual({
+      path: "fixtures/workflow.step",
+      line: 4,
+    });
   });
 
   it("opens Git Bash Windows absolute paths with line suffixes in the viewer", () => {

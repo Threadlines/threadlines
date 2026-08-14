@@ -20,6 +20,7 @@ import {
 import { ChevronRightIcon } from "lucide-react";
 
 import { useSettings } from "../../hooks/useSettings";
+import type { WorkLogEntry } from "../../session-logic";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { cn } from "~/lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
@@ -28,6 +29,7 @@ import { LiveNode, SectionLabel, SpineRow, spineAccentRowStyle } from "../ui/thr
 import { readSubagentTranscriptPage } from "./subagentTranscriptClient";
 import {
   buildSubagentTranscriptView,
+  buildSubagentTranscriptActivityRun,
   formatSubagentToolLabel,
   formatSubagentToolPreview,
   formatSubagentToolRunActions,
@@ -38,6 +40,7 @@ import {
   splitSubagentTranscriptLead,
   subagentStepNodeOffsetPx,
   type SubagentTranscriptInstruction,
+  type SubagentTranscriptActivityRun,
   type SubagentTranscriptProseItem,
   type SubagentTranscriptStep,
   type SubagentTranscriptToolRun,
@@ -47,6 +50,7 @@ import { formatSubagentDuration } from "./subagentMeta";
 
 const TRANSCRIPT_PAGE_SIZE = 60;
 const LIVE_REFRESH_INTERVAL_MS = 1_000;
+const EMPTY_WORK_ENTRIES: ReadonlyArray<WorkLogEntry> = [];
 /** Generous enough that ordinary momentum scrolling near the end keeps
  *  following, small enough that a deliberate scroll up releases. */
 const BOTTOM_STICK_THRESHOLD_PX = 48;
@@ -77,6 +81,9 @@ interface SubagentTranscriptProps {
   /** Shown when the provider has no transcript yet, so a just-spawned agent
    *  still says something useful. */
   fallbackBody?: string | null;
+  /** Child-owned work from the parent activity projection. Codex code-mode
+   *  calls currently live here even when `thread/read` omits them. */
+  activityEntries?: ReadonlyArray<WorkLogEntry> | undefined;
   /** Reports the provider's own record of the agent (its id, type and model),
    *  which the spawning tool call does not always carry. */
   onAgentResolved?: (agent: ProviderSubagentTranscriptResult["agent"]) => void;
@@ -220,6 +227,7 @@ export function SubagentTranscript({
   cwd,
   objective,
   fallbackBody = null,
+  activityEntries = EMPTY_WORK_ENTRIES,
   onAgentResolved,
   onInstructionResolved,
   className,
@@ -343,11 +351,14 @@ export function SubagentTranscript({
       const atTranscriptStart =
         section.result.nextCursor === undefined && (section.result.offset ?? 0) === 0;
       const { lead, steps } = splitSubagentTranscriptLead(items, atTranscriptStart);
+      const activityRun =
+        sectionIndex === 0 ? buildSubagentTranscriptActivityRun(activityEntries, items) : null;
       return {
         agentId: section.agentId,
         result: section.result,
         items,
         steps,
+        activityRun,
         // Only the first section can stand in the objective: the prop describes
         // one agent, and repeating it under each of several sections would
         // claim it as every agent's instruction.
@@ -358,7 +369,7 @@ export function SubagentTranscript({
         ),
       };
     });
-  }, [objective, state]);
+  }, [activityEntries, objective, state]);
 
   const leadInstructionText = sectionViews[0]?.instruction?.text ?? null;
   useEffect(() => {
@@ -547,7 +558,8 @@ export function SubagentTranscript({
             />
           ) : (
             sectionViews.map((section, sectionIndex) => {
-              const { instruction, items, steps } = section;
+              const { activityRun, instruction, items, steps } = section;
+              const groupedSteps = groupSubagentTranscriptSteps(steps);
               const showLiveTail =
                 follow &&
                 sectionIndex === sectionViews.length - 1 &&
@@ -586,8 +598,9 @@ export function SubagentTranscript({
                     />
                   ) : null}
                   <div style={TRANSCRIPT_SPINE_STYLE}>
-                    {groupSubagentTranscriptSteps(steps).map((step, stepIndex, groupedSteps) => {
-                      const lastItem = stepIndex === groupedSteps.length - 1;
+                    {groupedSteps.map((step, stepIndex) => {
+                      const lastTranscriptItem = stepIndex === groupedSteps.length - 1;
+                      const lastItem = lastTranscriptItem && activityRun === null;
                       // One live terminus per surface: the newest row, and only
                       // while the agent is still working.
                       const live = follow && lastItem && !showLiveTail;
@@ -634,10 +647,27 @@ export function SubagentTranscript({
                         </SpineRow>
                       );
                     })}
+                    {activityRun ? (
+                      <SpineRow
+                        node={
+                          <ActivitySpineNode
+                            live={follow && activityRun.running && !showLiveTail}
+                          />
+                        }
+                        nodeOffset={14}
+                        connectTop={groupedSteps.length > 0}
+                        connectBottom={showLiveTail}
+                        style={follow ? spineAccentRowStyle(showLiveTail ? 1 : 0) : undefined}
+                      >
+                        <div className="py-1">
+                          <ActivityRunReceipt run={activityRun} timestampFormat={timestampFormat} />
+                        </div>
+                      </SpineRow>
+                    ) : null}
                     {showLiveTail && fallbackBody ? (
                       <SpineRow
                         node={<LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />}
-                        connectTop={steps.length > 0}
+                        connectTop={groupedSteps.length > 0 || activityRun !== null}
                         connectBottom={false}
                         style={spineAccentRowStyle(0)}
                       >
@@ -860,6 +890,82 @@ function ToolRunReceipt({
       </div>
       {expanded ? (
         <div className="mt-0.5 space-y-0.5">
+          {run.items.map((item) => (
+            <ToolGroup key={item.id} item={item} timestampFormat={timestampFormat} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The parent activity stream's durable view of work the provider transcript
+ * omitted. It stays one row as calls arrive and only exposes the machinery when
+ * the reader asks for it. */
+function ActivityRunReceipt({
+  run,
+  timestampFormat,
+}: {
+  run: SubagentTranscriptActivityRun;
+  timestampFormat: TimestampFormat;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = run.durationMs === null ? null : formatSubagentDuration(run.durationMs);
+
+  return (
+    <div className="min-w-0" data-subagent-transcript-entry="activity-run">
+      <button
+        type="button"
+        className="flex min-w-0 w-full items-center gap-1.5 text-left transition-colors duration-150 hover:text-foreground/75"
+        aria-expanded={expanded}
+        data-subagent-transcript-activity-toggle="true"
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+            expanded && "rotate-90",
+          )}
+        />
+        <span className="shrink-0 text-[11px] leading-5 font-medium text-foreground/80">
+          Activity
+        </span>
+        <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
+          ·
+        </span>
+        <span className="shrink-0 text-[11px] leading-5 text-muted-foreground/65">
+          {formatSubagentToolRunActions(run)}
+        </span>
+        <span aria-hidden="true" className="shrink-0 text-muted-foreground/30">
+          ·
+        </span>
+        <span
+          className={cn(
+            "shrink-0 text-[11px] leading-5",
+            run.running ? "text-primary-readable/75" : "text-muted-foreground/60",
+          )}
+        >
+          {run.latestLabel}
+        </span>
+        {run.latestPreview ? (
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-muted-foreground/50"
+            title={run.latestPreview}
+          >
+            {run.latestPreview}
+          </span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        {duration ? (
+          <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
+            {duration}
+          </span>
+        ) : null}
+      </button>
+      {expanded ? (
+        <div className="mt-0.5 space-y-0.5" data-subagent-transcript-activity-entries="true">
           {run.items.map((item) => (
             <ToolGroup key={item.id} item={item} timestampFormat={timestampFormat} />
           ))}
@@ -1097,6 +1203,21 @@ const TranscriptInstruction = memo(function TranscriptInstruction({
 /** The spine reads as one unbroken thread, so its own colour stays neutral and
  *  only the rows near the live terminus warm toward accent. */
 const TRANSCRIPT_SPINE_STYLE = { ["--spine"]: "var(--border)" } as CSSProperties;
+
+function ActivitySpineNode({ live }: { live: boolean }) {
+  return live ? (
+    <LiveNode
+      className="size-1.5 [--thread-halo-delay:0.2s]"
+      data-subagent-transcript-node="true"
+    />
+  ) : (
+    <span
+      aria-hidden="true"
+      data-subagent-transcript-node="true"
+      className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
+    />
+  );
+}
 
 /** Settled steps are quiet dots, foldable rows are hollow rings (same family,
  *  reads as openable), and the one live row carries the halo. */

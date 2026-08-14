@@ -413,6 +413,7 @@ describe("collab child thread metadata", () => {
               thread_spawn: {
                 agent_nickname: "Fallback",
                 agent_role: "fallback-role",
+                agent_path: "/root/inspect_runtime",
                 depth: 1,
                 parent_thread_id: "parent-thread",
               },
@@ -427,7 +428,35 @@ describe("collab child thread metadata", () => {
       metadata: {
         agentNickname: "Euclid",
         agentRole: "helper",
+        agentPath: "/root/inspect_runtime",
+        parentAgentThreadId: "parent-thread",
+        depth: 1,
       },
+    });
+
+    const enriched = enrichCollabAgentToolPayload(
+      notification,
+      new Map([
+        [
+          "child-thread-1",
+          {
+            agentNickname: "Euclid",
+            agentRole: "helper",
+            agentPath: "/root/inspect_runtime",
+            parentAgentThreadId: "parent-thread",
+            depth: 1,
+          },
+        ],
+      ]),
+      true,
+    ) as { readonly subagentMetadata: Record<string, unknown> };
+    assert.deepStrictEqual(enriched.subagentMetadata, {
+      agentThreadId: "child-thread-1",
+      agentNickname: "Euclid",
+      agentRole: "helper",
+      agentPath: "/root/inspect_runtime",
+      parentAgentThreadId: "parent-thread",
+      depth: 1,
     });
   });
 
@@ -475,6 +504,90 @@ describe("collab child thread metadata", () => {
 
     assert.equal(payload.item.agentNickname, "Euclid");
     assert.equal(payload.item.agentRole, "helper");
+  });
+
+  it("attaches remembered identity to native subagent activity", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        completedAtMs: 10,
+        item: {
+          id: "call-spawn",
+          type: "subAgentActivity",
+          kind: "started",
+          agentPath: "/root/inspect_runtime",
+          agentThreadId: "child-thread-1",
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    const payload = enrichCollabAgentToolPayload(
+      notification,
+      new Map([
+        [
+          "child-thread-1",
+          {
+            agentNickname: "Euclid",
+            agentRole: "helper",
+            parentAgentThreadId: "parent-thread",
+          },
+        ],
+      ]),
+    ) as { readonly item: Record<string, unknown> };
+
+    assert.deepStrictEqual(payload.item, {
+      id: "call-spawn",
+      type: "subAgentActivity",
+      kind: "started",
+      agentPath: "/root/inspect_runtime",
+      agentThreadId: "child-thread-1",
+      agentNickname: "Euclid",
+      agentRole: "helper",
+      parentAgentThreadId: "parent-thread",
+    });
+  });
+
+  it("marks effective settings as child-scoped before adapter mapping", () => {
+    const notification = {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "child-thread-1",
+        threadSettings: {
+          model: "gpt-5.6-sol",
+          effort: "high",
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    assert.deepStrictEqual(
+      enrichCollabAgentToolPayload(
+        notification,
+        new Map([
+          [
+            "child-thread-1",
+            {
+              agentPath: "/root/inspect_runtime",
+              parentAgentThreadId: "parent-thread",
+            },
+          ],
+        ]),
+        true,
+      ),
+      {
+        threadId: "child-thread-1",
+        threadSettings: {
+          model: "gpt-5.6-sol",
+          effort: "high",
+        },
+        subagentMetadata: {
+          agentThreadId: "child-thread-1",
+          agentPath: "/root/inspect_runtime",
+          parentAgentThreadId: "parent-thread",
+        },
+      },
+    );
   });
 });
 

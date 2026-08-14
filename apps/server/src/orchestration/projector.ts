@@ -44,6 +44,7 @@ import {
   ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
 } from "./Schemas.ts";
+import { projectSubagentActivity } from "./subagentProjection.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 
@@ -152,6 +153,15 @@ function retainThreadActivitiesAfterRevert(
 ): ReadonlyArray<OrchestrationThread["activities"][number]> {
   return activities.filter(
     (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
+  );
+}
+
+function retainThreadSubagentsAfterRevert(
+  subagents: ReadonlyArray<NonNullable<OrchestrationThread["subagents"]>[number]>,
+  retainedTurnIds: ReadonlySet<string>,
+): ReadonlyArray<NonNullable<OrchestrationThread["subagents"]>[number]> {
+  return subagents.filter(
+    (subagent) => subagent.turnId === null || retainedTurnIds.has(subagent.turnId),
   );
 }
 
@@ -297,6 +307,7 @@ export function projectEvent(
             deletedAt: null,
             messages: [],
             activities: [],
+            subagents: [],
             checkpoints: [],
             session: null,
           },
@@ -864,6 +875,10 @@ export function projectEvent(
             retainedTurnIds,
           ).slice(-MAX_THREAD_PROPOSED_PLANS);
           const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
+          const subagents = retainThreadSubagentsAfterRevert(
+            thread.subagents ?? [],
+            retainedTurnIds,
+          );
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;
           const latestTurn =
@@ -885,6 +900,7 @@ export function projectEvent(
               messages,
               proposedPlans,
               activities,
+              subagents,
               latestTurn,
               updatedAt: event.occurredAt,
             }),
@@ -911,11 +927,13 @@ export function projectEvent(
           ]
             .toSorted(compareThreadActivities)
             .slice(-MAX_THREAD_ACTIVITIES);
+          const subagents = projectSubagentActivity(thread.subagents ?? [], payload.activity);
 
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
+              subagents,
               updatedAt: event.occurredAt,
             }),
           };

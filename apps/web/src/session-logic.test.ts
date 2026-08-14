@@ -4,6 +4,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
+  type OrchestrationSubagent,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -307,27 +308,69 @@ describe("deriveThreadSubagentHistory", () => {
     }),
   ];
 
-  it("gives a Codex child the model and effort its turn was dispatched with", () => {
+  it("does not mislabel a native Codex child with its parent turn settings", () => {
     const history = deriveThreadSubagentHistory(codexSpawnActivities());
 
     expect(history).toHaveLength(1);
     expect(history[0]?.item).toMatchObject({
       agentThreadId: "codex-child-1",
-      model: "gpt-5.6-sol",
-      reasoningEffort: "high",
+      model: null,
+      reasoningEffort: null,
       status: "completed",
     });
     expect(history[0]?.resultBody).toBe("50 .tsx files.");
   });
 
-  it("prefers a model the spawn asked for over the turn's own selection", () => {
+  it("keeps durable child identity and explicit spawn settings after lifecycle rows age out", () => {
+    const durable: OrchestrationSubagent = {
+      id: "codex-child-1",
+      agentThreadId: "codex-child-1",
+      parentAgentThreadId: "codex-parent-1",
+      spawnCallId: "call_spawn",
+      transcriptAgentId: "codex-child-1",
+      turnId: TurnId.make("turn-1"),
+      agentPath: "/root/metadata_audit",
+      parentAgentPath: "/root",
+      treeDepth: 0,
+      nickname: "Beauvoir",
+      role: "metadata audit",
+      objective: "Trace the spawn metadata path",
+      status: "completed",
+      requestedModel: "gpt-5.5",
+      resolvedModel: null,
+      reasoningEffort: "medium",
+      modelProvenance: "explicit",
+      reasoningEffortProvenance: "explicit",
+      resultBody: "Found the capped projection.",
+      resultCreatedAt: "2026-08-13T20:41:00.000Z",
+      createdAt: "2026-08-13T20:35:56.000Z",
+      updatedAt: "2026-08-13T20:41:00.000Z",
+    };
+
+    const history = deriveThreadSubagentHistory([], [durable]);
+
+    expect(history).toEqual([
+      {
+        item: expect.objectContaining({
+          agentThreadId: "codex-child-1",
+          nickname: "Beauvoir",
+          role: "metadata audit",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          status: "completed",
+        }),
+        resultBody: "Found the capped projection.",
+      },
+    ]);
+  });
+
+  it("uses settings stated on the native spawn without inventing omitted effort", () => {
     const history = deriveThreadSubagentHistory(
       codexSpawnActivities({ spawnModel: "gpt-5.5-codex" }),
     );
 
     expect(history[0]?.item.model).toBe("gpt-5.5-codex");
-    // Effort was not overridden, so it still comes from the turn.
-    expect(history[0]?.item.reasoningEffort).toBe("high");
+    expect(history[0]?.item.reasoningEffort).toBeNull();
   });
 
   /** Claude's `provider.turn.started` does state a model, so the unscoped

@@ -36,6 +36,47 @@ function mcpStatusEvent(
 }
 
 describe("ProviderActivityProjection", () => {
+  it("projects provider-authored subagent metadata for durable roster updates", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "subagent.metadata.updated",
+      eventId: EventId.make("evt-subagent-metadata"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-08-13T20:00:00.000Z",
+      payload: {
+        callId: "call-spawn-1",
+        agentThreadId: "provider-child-thread",
+        agentPath: "/root/inspect_runtime",
+        taskName: "inspect_runtime",
+        objective: "inspect_runtime",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        modelSource: "provider",
+        reasoningEffortSource: "provider",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        id: "evt-subagent-metadata",
+        kind: "subagent.metadata",
+        tone: "info",
+        summary: "Subagent metadata updated",
+        payload: {
+          callId: "call-spawn-1",
+          agentThreadId: "provider-child-thread",
+          agentPath: "/root/inspect_runtime",
+          taskName: "inspect_runtime",
+          objective: "inspect_runtime",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          modelSource: "provider",
+          reasoningEffortSource: "provider",
+        },
+      }),
+    ]);
+  });
+
   it("projects model fallback reroutes with explicit fallback wording", () => {
     const activities = projectRuntimeEventToActivities({
       type: "model.rerouted",

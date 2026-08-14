@@ -8,6 +8,7 @@ import type {
   RepositoryIdentity,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  OrchestrationSubagent,
   OrchestrationThreadDiffStat,
   OrchestrationThreadDoneOverride,
   OrchestrationThreadGoal,
@@ -155,6 +156,8 @@ export interface Thread {
   diffStatBaselineTurnCount?: number;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  /** Durable identity/settings roster, independent of the rolling activity window. */
+  subagents?: OrchestrationSubagent[];
 }
 
 export interface ThreadShell {

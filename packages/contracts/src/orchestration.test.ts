@@ -21,6 +21,7 @@ import {
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
   OrchestrationSession,
+  OrchestrationThread,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
@@ -45,6 +46,7 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
@@ -62,6 +64,37 @@ const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpda
 const decodeThreadForkContextPayload = Schema.decodeUnknownEffect(ThreadForkContextPayload);
 const decodeCodexInlineVisualizationReadInput = Schema.decodeUnknownEffect(
   CodexInlineVisualizationReadInput,
+);
+
+it.effect("defaults the durable subagent roster for older thread snapshots", () =>
+  Effect.gen(function* () {
+    const thread = yield* decodeOrchestrationThread({
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Legacy thread",
+      modelSelection: { provider: "codex", model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      voiceActive: false,
+      latestTurn: null,
+      createdAt: "2026-08-13T12:00:00.000Z",
+      updatedAt: "2026-08-13T12:00:00.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      doneOverride: null,
+      lastSeenAt: null,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+      session: null,
+    });
+
+    assert.deepEqual(thread.subagents, []);
+  }),
 );
 
 it.effect("accepts only path-free kebab-case Codex visualization filenames", () =>

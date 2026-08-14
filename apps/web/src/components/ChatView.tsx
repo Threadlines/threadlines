@@ -1954,17 +1954,18 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       deriveSubagentProgressState({
         activities: threadActivities,
+        subagents: activeThread?.subagents ?? [],
         latestTurnId: activeLatestTurn?.turnId ?? null,
         latestTurnSettled,
       }),
-    [activeLatestTurn?.turnId, latestTurnSettled, threadActivities],
+    [activeLatestTurn?.turnId, activeThread?.subagents, latestTurnSettled, threadActivities],
   );
   // The turn-scoped progress above empties when the turn settles. The panel's
   // history section and the conversation's receipts both need the thread's whole
   // roster, which the same activities answer without the turn filter.
   const subagentHistory = useMemo(
-    () => deriveThreadSubagentHistory(threadActivities),
-    [threadActivities],
+    () => deriveThreadSubagentHistory(threadActivities, activeThread?.subagents),
+    [activeThread?.subagents, threadActivities],
   );
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -2290,12 +2291,13 @@ export default function ChatView(props: ChatViewProps) {
         timelineMessages,
         activeThread?.proposedPlans ?? [],
         workLogEntries,
-        deriveSubagentResultEntries(threadActivities),
+        deriveSubagentResultEntries(threadActivities, activeThread?.subagents),
         forkContextEntries,
-        deriveSubagentLiveEntries(threadActivities),
+        deriveSubagentLiveEntries(threadActivities, activeThread?.subagents),
       ),
     [
       activeThread?.proposedPlans,
+      activeThread?.subagents,
       forkContextEntries,
       threadActivities,
       timelineMessages,
@@ -3305,6 +3307,7 @@ export default function ChatView(props: ChatViewProps) {
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       backgroundRuns,
       history: subagentHistory,
+      workEntries: workLogEntries,
       providerLabel: activeProviderDriver,
       turnInFlight: activeTurnInProgress,
       threadCwd: gitCwd,
@@ -3322,6 +3325,7 @@ export default function ChatView(props: ChatViewProps) {
     subagentHistory,
     subagentProgress?.items,
     toggleBackgroundRunTerminal,
+    workLogEntries,
   ]);
   useEffect(() => () => publishAgentsPanelSource(null), []);
 

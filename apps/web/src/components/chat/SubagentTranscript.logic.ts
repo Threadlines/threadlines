@@ -7,6 +7,8 @@
  * straight map over items.
  */
 
+import type { WorkLogEntry } from "../../session-logic";
+
 export interface SubagentTranscriptEntryLike {
   readonly id?: string | undefined;
   readonly role: "user" | "assistant" | "system" | "thinking";
@@ -162,6 +164,17 @@ export interface SubagentTranscriptToolRun {
   readonly durationMs: number | null;
 }
 
+/** Child-owned activity that the parent event stream saw but the provider's
+ * stored transcript did not. Codex code-mode `exec` calls currently have this
+ * shape: they are durable work-log entries, while `thread/read` returns only
+ * the child's prose. */
+export interface SubagentTranscriptActivityRun extends Omit<SubagentTranscriptToolRun, "kind"> {
+  readonly kind: "activity-run";
+  readonly latestLabel: string;
+  readonly latestPreview: string;
+  readonly running: boolean;
+}
+
 /** Everything that is not tool machinery: the agent's prose, its reasoning, and
  *  messages sent to it. Tool rows only reach the thread inside a run. */
 export type SubagentTranscriptProseItem = Exclude<SubagentTranscriptViewItem, { kind: "tools" }>;
@@ -223,7 +236,7 @@ export function groupSubagentTranscriptSteps(
 /** The receipt's leading count, in the conversation's wording: `1 action`,
  *  `14 actions`. A run can carry no calls at all -- a result whose call sits on
  *  an earlier page -- and "0 actions" would read as if nothing happened. */
-export function formatSubagentToolRunActions(run: SubagentTranscriptToolRun): string {
+export function formatSubagentToolRunActions(run: { readonly actionCount: number }): string {
   if (run.actionCount === 0) {
     return "Tool output";
   }
@@ -280,6 +293,117 @@ function toolRunDurationMs(run: ReadonlyArray<SubagentTranscriptToolsItem>): num
     return null;
   }
   return last - first;
+}
+
+function normalizedToolSignature(name: string, summary: string): string {
+  return `${name.trim().toLowerCase()}\u0000${summary.trim().replace(/\s+/gu, " ")}`;
+}
+
+function activityToolName(entry: WorkLogEntry): string {
+  switch (entry.itemType) {
+    case "command_execution":
+      return "shell_command";
+    case "file_change":
+      return "apply_patch";
+    case "web_search":
+      return "web_search";
+    case "image_view":
+      return "view_image";
+    default:
+      return entry.toolTitle?.trim() || entry.label.trim() || "tool";
+  }
+}
+
+function activityToolSummary(entry: WorkLogEntry): string {
+  return (
+    entry.rawCommand?.trim() ||
+    entry.command?.trim() ||
+    entry.detail?.trim() ||
+    entry.toolTitle?.trim() ||
+    ""
+  );
+}
+
+function activityLatestLabel(entry: WorkLogEntry): string {
+  if (entry.executionState !== "running") {
+    return entry.label.trim() || "Used tool";
+  }
+  switch (entry.itemType) {
+    case "command_execution":
+      return "Running command";
+    case "file_change":
+      return "Editing files";
+    case "web_search":
+      return "Searching the web";
+    default:
+      return entry.label.trim() || "Using tool";
+  }
+}
+
+/**
+ * Builds the one expandable activity receipt the inspector owns for child work
+ * that is absent from the provider transcript. Existing transcript tools win;
+ * matching activity rows are removed so providers that do persist their calls
+ * do not render the same command twice.
+ */
+export function buildSubagentTranscriptActivityRun(
+  entries: ReadonlyArray<WorkLogEntry>,
+  transcriptItems: ReadonlyArray<SubagentTranscriptViewItem>,
+): SubagentTranscriptActivityRun | null {
+  const transcriptToolSignatures = new Set(
+    transcriptItems.flatMap((item) =>
+      item.kind === "tools"
+        ? item.tools.map((tool) => normalizedToolSignature(tool.name, tool.summary))
+        : [],
+    ),
+  );
+  const actions = entries.filter(
+    (entry) =>
+      entry.sourceAgentThreadId !== undefined &&
+      entry.tone !== "thinking" &&
+      entry.itemType !== undefined,
+  );
+  const items: SubagentTranscriptToolsItem[] = [];
+  const retainedEntries: WorkLogEntry[] = [];
+
+  for (const entry of actions) {
+    const name = activityToolName(entry);
+    const summary = activityToolSummary(entry);
+    if (transcriptToolSignatures.has(normalizedToolSignature(name, summary))) {
+      continue;
+    }
+    retainedEntries.push(entry);
+    items.push({
+      kind: "tools",
+      id: `activity:${entry.toolCallId ?? entry.id}`,
+      tools: [
+        {
+          id: `activity:${entry.toolCallId ?? entry.id}:tool`,
+          name,
+          summary,
+        },
+      ],
+      output: entry.outputPreview?.trim() || null,
+      at: entry.createdAt.trim() || null,
+    });
+  }
+
+  const latestEntry = retainedEntries.at(-1);
+  if (!latestEntry || items.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "activity-run",
+    id: `activity-run:${items[0]?.id ?? latestEntry.id}`,
+    items,
+    actionCount: items.length,
+    toolSummary: summarizeToolRunNames(items),
+    durationMs: toolRunDurationMs(items),
+    latestLabel: activityLatestLabel(latestEntry),
+    latestPreview: activityToolSummary(latestEntry),
+    running: retainedEntries.some((entry) => entry.executionState === "running"),
+  };
 }
 
 /** The prompt an agent was spawned with is context, not a step it took, so it

@@ -5,7 +5,11 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "../../session-logic";
+import type {
+  SubagentProgressItem,
+  ThreadSubagentHistoryEntry,
+  WorkLogEntry,
+} from "../../session-logic";
 import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
@@ -695,6 +699,70 @@ describe("AgentsPanel", () => {
 
       await page.getByRole("button", { name: /2 actions/u }).click();
       await expect.element(page.getByText("handler")).toBeVisible();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("bridges child activity into one expandable receipt when the provider transcript omits tools", async () => {
+    transcriptRpcMock.mockResolvedValue({
+      entries: [{ role: "assistant", text: "I am checking the route.", toolUses: [] }],
+      truncated: false,
+      offset: 0,
+      totalEntries: 1,
+    });
+    const workEntries: WorkLogEntry[] = [
+      {
+        id: "command-1",
+        createdAt: "2026-08-13T20:30:00.000Z",
+        completedAt: "2026-08-13T20:30:02.000Z",
+        label: "Ran command",
+        rawCommand: "rg -n handler apps/web",
+        outputPreview: "apps/web/router.ts:42",
+        tone: "tool",
+        itemType: "command_execution",
+        executionState: "completed",
+        sourceAgentThreadId: "agent-1",
+        toolCallId: "call-1",
+      },
+      {
+        id: "command-2",
+        createdAt: "2026-08-13T20:30:05.000Z",
+        label: "Ran command",
+        rawCommand: "vp run typecheck",
+        tone: "tool",
+        itemType: "command_execution",
+        executionState: "running",
+        sourceAgentThreadId: "agent-1",
+        toolCallId: "call-2",
+      },
+    ];
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+      workEntries,
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText("I am checking the route.")).toBeVisible();
+
+      const receipt = await vi.waitUntil(() =>
+        document.querySelector<HTMLElement>("[data-subagent-transcript-activity-toggle='true']"),
+      );
+      expect(receipt.textContent).toContain("Activity");
+      expect(receipt.textContent).toContain("2 actions");
+      expect(receipt.textContent).toContain("Running command");
+      expect(receipt.textContent).toContain("vp run typecheck");
+      expect(receipt.getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector("[data-subagent-transcript-entry='tool']")).toBeNull();
+
+      receipt.click();
+      await vi.waitFor(() => {
+        expect(receipt.getAttribute("aria-expanded")).toBe("true");
+        expect(document.querySelectorAll("[data-subagent-transcript-entry='tool']")).toHaveLength(
+          2,
+        );
+      });
     } finally {
       await mounted.unmount();
     }

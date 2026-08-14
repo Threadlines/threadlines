@@ -466,6 +466,80 @@ export function openDirectoryInActiveViewer(input: { path: string }): boolean {
 const CHAT_FILE_REFERENCE_PATTERN =
   /^(?<path>[\w.@~-]+(?:\/[\w.@~-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})(?::(?<line>\d+)(?::\d+)?)?$/;
 
+/** Bare dotted identifiers (`telemetry.step`, `tool.started`) are common in
+ * technical prose and look exactly like extensionless file names to a regex.
+ * A path makes intent explicit; a bare name needs a familiar file extension
+ * before the chat turns it into a file chip. */
+const CHAT_BARE_FILE_EXTENSIONS = new Set([
+  "astro",
+  "bash",
+  "bat",
+  "c",
+  "cc",
+  "cjs",
+  "cpp",
+  "cs",
+  "css",
+  "csv",
+  "cxx",
+  "env",
+  "fish",
+  "fs",
+  "fsx",
+  "gif",
+  "go",
+  "gql",
+  "graphql",
+  "h",
+  "hpp",
+  "htm",
+  "html",
+  "hxx",
+  "ico",
+  "java",
+  "jpeg",
+  "jpg",
+  "js",
+  "json",
+  "jsonc",
+  "jsx",
+  "kt",
+  "kts",
+  "less",
+  "lock",
+  "md",
+  "mdx",
+  "mjs",
+  "pdf",
+  "php",
+  "png",
+  "proto",
+  "ps1",
+  "psm1",
+  "py",
+  "pyi",
+  "rb",
+  "rs",
+  "sass",
+  "scss",
+  "sh",
+  "sql",
+  "svelte",
+  "svg",
+  "swift",
+  "toml",
+  "ts",
+  "tsv",
+  "tsx",
+  "txt",
+  "vue",
+  "webp",
+  "xml",
+  "yaml",
+  "yml",
+  "zsh",
+]);
+
 export function parseChatFileReference(
   text: string,
 ): { path: string; line: number | undefined } | null {
@@ -473,8 +547,13 @@ export function parseChatFileReference(
   if (!match?.groups?.path) {
     return null;
   }
+  const path = match.groups.path;
+  const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  if (!path.includes("/") && !CHAT_BARE_FILE_EXTENSIONS.has(extension)) {
+    return null;
+  }
   const line = match.groups.line ? Number.parseInt(match.groups.line, 10) : undefined;
-  return { path: match.groups.path, line };
+  return { path, line };
 }
 
 /**

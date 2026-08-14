@@ -10,6 +10,7 @@ import {
   formatSubagentDisplayName,
   isActiveSubagentStatus,
   type SubagentProgressItem,
+  type WorkLogEntry,
 } from "../../session-logic";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { useServerProviders } from "../../rpc/serverState";
@@ -28,6 +29,7 @@ interface SubagentInspectorProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   item: SubagentProgressItem;
+  activityEntries?: ReadonlyArray<WorkLogEntry> | undefined;
   details: SubagentDisplayDetails;
   cwd?: string | undefined;
   /** `back` returns to a list the inspector was drilled into (the agents
@@ -58,6 +60,7 @@ export function SubagentInspector({
   environmentId,
   threadId,
   item,
+  activityEntries,
   details,
   cwd,
   dismissVariant = "close",
@@ -199,6 +202,7 @@ export function SubagentInspector({
         cwd={cwd}
         objective={goal}
         fallbackBody={item.liveBody}
+        activityEntries={activityEntries}
         onAgentResolved={handleAgentResolved}
         onInstructionResolved={handleInstructionResolved}
         scrollable

@@ -11,7 +11,11 @@ import { create } from "zustand";
 
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 
-import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "./session-logic";
+import type {
+  SubagentProgressItem,
+  ThreadSubagentHistoryEntry,
+  WorkLogEntry,
+} from "./session-logic";
 import type { ThreadBackgroundRunItem } from "./components/chat/threadActivity";
 
 export interface AgentsPanelSource {
@@ -23,6 +27,10 @@ export interface AgentsPanelSource {
    *  the live items so the panel and the conversation's receipts resolve the
    *  same set of agents. */
   history: ReadonlyArray<ThreadSubagentHistoryEntry>;
+  /** Child-owned work remains in this durable log even though the main
+   *  conversation suppresses it. The inspector uses it to fill provider
+   *  transcript gaps. */
+  workEntries: ReadonlyArray<WorkLogEntry>;
   /** Provider driver label, e.g. `codex`; drives the trunk hue and run chips. */
   providerLabel: string | null;
   /** True from the moment a turn is dispatched until it settles. Lets the panel

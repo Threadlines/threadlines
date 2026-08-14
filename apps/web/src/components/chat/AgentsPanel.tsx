@@ -2,7 +2,11 @@ import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
-import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "../../session-logic";
+import type {
+  SubagentProgressItem,
+  ThreadSubagentHistoryEntry,
+  WorkLogEntry,
+} from "../../session-logic";
 import { cn } from "~/lib/utils";
 import { selectAgentsPanelAgent, useSelectedAgentId } from "../../agentsPanelStore";
 import type { Icon } from "../Icons";
@@ -21,6 +25,8 @@ import {
   type AgentBranchStatus,
 } from "./agentsPanel.logic";
 
+const EMPTY_WORK_ENTRIES: ReadonlyArray<WorkLogEntry> = [];
+
 export interface AgentsPanelProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
@@ -29,6 +35,9 @@ export interface AgentsPanelProps {
   /** Every agent the thread has run, from its durable activity projection. Keeps
    *  the panel populated (and receipts resolvable) after the turn ends. */
   history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
+  /** Work attributed to spawned children. These rows are intentionally absent
+   *  from the main conversation and belong in the selected child's inspector. */
+  workEntries?: ReadonlyArray<WorkLogEntry> | undefined;
   /** Drives the trunk hue, the branch glyphs and the provenance chip, e.g. `codex`. */
   providerLabel?: string | null | undefined;
   /** Whether a turn is running right now. Only changes the empty state: a turn
@@ -287,6 +296,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   subagents,
   backgroundRuns,
   history,
+  workEntries = EMPTY_WORK_ENTRIES,
   providerLabel,
   turnInFlight = false,
   threadCwd,
@@ -309,6 +319,14 @@ export const AgentsPanel = memo(function AgentsPanel({
   const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
   const anyRunning = hasRunningAgentActivity({ subagents, backgroundRuns });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
+  const selectedSubagentThreadId = selectedSubagent?.agentThreadId ?? null;
+  const selectedSubagentWorkEntries = useMemo(
+    () =>
+      selectedSubagentThreadId
+        ? workEntries.filter((entry) => entry.sourceAgentThreadId === selectedSubagentThreadId)
+        : [],
+    [selectedSubagentThreadId, workEntries],
+  );
 
   const handleSelect = useCallback(
     (branch: AgentBranch) => {
@@ -343,6 +361,7 @@ export const AgentsPanel = memo(function AgentsPanel({
       environmentId={environmentId}
       threadId={threadId}
       item={selectedSubagent}
+      activityEntries={selectedSubagentWorkEntries}
       details={deriveSubagentDisplayDetails(selectedSubagent)}
       cwd={threadCwd ?? undefined}
       dismissVariant="back"

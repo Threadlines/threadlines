@@ -455,6 +455,26 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("leaves dotted event and telemetry identifiers as ordinary inline code", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="The stream reports `tool.started`, `tool.output.updated`, and `telemetry.step`."
+        cwd="/repo/project"
+      />,
+    );
+
+    try {
+      expect(
+        [...document.querySelectorAll(".chat-markdown code")].map((element) =>
+          element.textContent?.trim(),
+        ),
+      ).toEqual(["tool.started", "tool.output.updated", "telemetry.step"]);
+      expect(document.querySelector(".chat-markdown-file-link")).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps references as written while a search hit is highlighted", async () => {
     // A chip drops the highlight and shortens the path, so the characters the
     // reader searched for could leave the page entirely.

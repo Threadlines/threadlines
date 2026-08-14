@@ -539,6 +539,17 @@ export function projectRuntimeEventToActivities(
   },
 ): ReadonlyArray<OrchestrationThreadActivity> {
   switch (event.type) {
+    case "subagent.metadata.updated":
+      return [
+        baseActivity(event, {
+          id: event.eventId,
+          tone: "info",
+          kind: "subagent.metadata",
+          summary: "Subagent metadata updated",
+          payload: event.payload,
+        }),
+      ];
+
     case "turn.started":
       return [
         baseActivity(event, {

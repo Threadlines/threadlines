@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
+import type { WorkLogEntry } from "../../session-logic";
 import {
+  buildSubagentTranscriptActivityRun,
   buildSubagentTranscriptView,
   formatSubagentToolRunActions,
   groupSubagentTranscriptSteps,
@@ -223,6 +225,65 @@ describe("groupSubagentTranscriptSteps", () => {
     expect(run?.kind === "tool-run" ? run.toolSummary : null).toBe(
       "Edit ×3, Read ×2, Bash ×1, +2 more",
     );
+  });
+});
+
+describe("buildSubagentTranscriptActivityRun", () => {
+  const command = (overrides: Partial<WorkLogEntry> = {}): WorkLogEntry => ({
+    id: "command-1",
+    createdAt: "2026-08-13T20:30:00.000Z",
+    completedAt: "2026-08-13T20:30:02.000Z",
+    label: "Ran command",
+    rawCommand: "rg -n handler apps/web",
+    outputPreview: "apps/web/router.ts:42",
+    tone: "tool",
+    itemType: "command_execution",
+    executionState: "completed",
+    sourceAgentThreadId: "agent-1",
+    toolCallId: "call-1",
+    ...overrides,
+  });
+
+  it("builds one dynamic receipt from child work missing in the provider transcript", () => {
+    const run = buildSubagentTranscriptActivityRun(
+      [
+        command(),
+        command({
+          id: "command-2",
+          toolCallId: "call-2",
+          createdAt: "2026-08-13T20:30:05.000Z",
+          rawCommand: "vp run typecheck",
+          executionState: "running",
+        }),
+      ],
+      buildSubagentTranscriptView([
+        entry({ role: "assistant", text: "Checking the route first." }),
+      ]),
+    );
+
+    expect(run).toMatchObject({
+      kind: "activity-run",
+      actionCount: 2,
+      toolSummary: "shell_command ×2",
+      latestLabel: "Running command",
+      latestPreview: "vp run typecheck",
+      running: true,
+    });
+    expect(run?.items[0]).toMatchObject({
+      output: "apps/web/router.ts:42",
+      tools: [{ name: "shell_command", summary: "rg -n handler apps/web" }],
+    });
+  });
+
+  it("does not repeat a call the provider transcript already contains", () => {
+    const transcript = buildSubagentTranscriptView([
+      entry({
+        role: "assistant",
+        toolUses: [{ name: "shell_command", summary: "rg -n handler apps/web" }],
+      }),
+    ]);
+
+    expect(buildSubagentTranscriptActivityRun([command()], transcript)).toBeNull();
   });
 });
 

@@ -631,6 +631,52 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const OrchestrationSubagentStatus = Schema.Literals([
+  "starting",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "interrupted",
+]);
+export type OrchestrationSubagentStatus = typeof OrchestrationSubagentStatus.Type;
+
+export const OrchestrationSubagentSettingProvenance = Schema.Literals([
+  "explicit",
+  "inherited",
+  "provider",
+]);
+export type OrchestrationSubagentSettingProvenance =
+  typeof OrchestrationSubagentSettingProvenance.Type;
+
+/** Durable identity and effective settings for one child agent. Unlike activity
+ * history, this roster is not a rolling timeline and therefore is never capped. */
+export const OrchestrationSubagent = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  agentThreadId: Schema.NullOr(TrimmedNonEmptyString),
+  parentAgentThreadId: Schema.NullOr(TrimmedNonEmptyString),
+  spawnCallId: Schema.NullOr(TrimmedNonEmptyString),
+  transcriptAgentId: Schema.NullOr(TrimmedNonEmptyString),
+  turnId: Schema.NullOr(TurnId),
+  agentPath: Schema.NullOr(TrimmedNonEmptyString),
+  parentAgentPath: Schema.NullOr(TrimmedNonEmptyString),
+  treeDepth: NonNegativeInt,
+  nickname: Schema.NullOr(TrimmedNonEmptyString),
+  role: Schema.NullOr(TrimmedNonEmptyString),
+  objective: Schema.NullOr(TrimmedNonEmptyString),
+  status: OrchestrationSubagentStatus,
+  requestedModel: Schema.NullOr(TrimmedNonEmptyString),
+  resolvedModel: Schema.NullOr(TrimmedNonEmptyString),
+  reasoningEffort: Schema.NullOr(TrimmedNonEmptyString),
+  modelProvenance: Schema.NullOr(OrchestrationSubagentSettingProvenance),
+  reasoningEffortProvenance: Schema.NullOr(OrchestrationSubagentSettingProvenance),
+  resultBody: Schema.NullOr(Schema.String),
+  resultCreatedAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationSubagent = typeof OrchestrationSubagent.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -704,6 +750,10 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
+  subagents: Schema.Array(OrchestrationSubagent).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
   /** See OrchestrationThreadShell.diffStatBaselineTurnCount. */

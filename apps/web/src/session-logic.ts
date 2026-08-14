@@ -5,6 +5,7 @@ import {
   isToolLifecycleItemType,
   type MessageId,
   type OrchestrationLatestTurn,
+  type OrchestrationSubagent,
   type OrchestrationThreadActivity,
   type OrchestrationThreadDiffStat,
   type OrchestrationProposedPlanId,
@@ -780,10 +781,12 @@ interface CollabAgentStateSnapshot {
 
 export function deriveSubagentProgressState(input: {
   activities: ReadonlyArray<OrchestrationThreadActivity>;
+  subagents?: ReadonlyArray<OrchestrationSubagent>;
   latestTurnId?: TurnId | null | undefined;
   latestTurnSettled?: boolean | undefined;
 }): SubagentProgressState | null {
   const records = collectSubagentActivityRecords(input.activities, {
+    subagents: input.subagents,
     latestTurnId: input.latestTurnId ?? null,
   });
   // Finished agents remain useful while their parent turn is still running:
@@ -863,8 +866,9 @@ export interface ThreadSubagentHistoryEntry {
  */
 export function deriveThreadSubagentHistory(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  subagents: ReadonlyArray<OrchestrationSubagent> = [],
 ): ThreadSubagentHistoryEntry[] {
-  return collectSubagentActivityRecords(activities, {}).map((record) => ({
+  return collectSubagentActivityRecords(activities, { subagents }).map((record) => ({
     item: toSubagentProgressItem(record),
     resultBody: record.resultBody,
   }));
@@ -872,8 +876,9 @@ export function deriveThreadSubagentHistory(
 
 export function deriveSubagentResultEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  subagents: ReadonlyArray<OrchestrationSubagent> = [],
 ): SubagentResultEntry[] {
-  return collectSubagentActivityRecords(activities, {})
+  return collectSubagentActivityRecords(activities, { subagents })
     .filter(
       (
         record,
@@ -909,8 +914,9 @@ export function deriveSubagentResultEntries(
  *  with the durable subagent-result row. */
 export function deriveSubagentLiveEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  subagents: ReadonlyArray<OrchestrationSubagent> = [],
 ): SubagentLiveEntry[] {
-  return collectSubagentActivityRecords(activities, {})
+  return collectSubagentActivityRecords(activities, { subagents })
     .filter(
       (
         record,
@@ -1116,12 +1122,52 @@ function collectTurnModelSelections(
 
 function collectSubagentActivityRecords(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  options: { latestTurnId?: TurnId | null | undefined },
+  options: {
+    latestTurnId?: TurnId | null | undefined;
+    subagents?: ReadonlyArray<OrchestrationSubagent> | undefined;
+  },
 ): InternalSubagentRecord[] {
   const byAgentId = new Map<string, InternalSubagentRecord>();
   const pendingSpawnKeysByCallId = new Map<string, string>();
   const latestTurnId = options.latestTurnId ?? null;
   const sortedActivities = [...activities].toSorted(compareActivitiesByOrder);
+
+  // The server owns an uncapped roster so identity and spawn settings survive
+  // activity compaction. Recent activities overlay these seeds with live
+  // lifecycle state and telemetry below.
+  for (const subagent of options.subagents ?? []) {
+    const agentId = subagent.agentThreadId ?? subagent.id;
+    const label = subagentDisplayLabel({
+      role: subagent.role,
+      nickname: null,
+    });
+    byAgentId.set(agentId, {
+      id: agentId,
+      agentThreadId: subagent.agentThreadId,
+      transcriptAgentId: subagent.transcriptAgentId,
+      agentPath: subagent.agentPath,
+      parentAgentPath: subagent.parentAgentPath,
+      treeDepth: subagent.treeDepth,
+      turnId: subagent.turnId,
+      label,
+      ...(subagent.nickname ? { nickname: subagent.nickname } : {}),
+      role: subagent.role,
+      objective: subagent.objective,
+      status: subagent.status,
+      statusLabel: subagentProgressStatusLabel(subagent.status),
+      resolvedModel: subagent.resolvedModel,
+      model: subagent.resolvedModel ?? subagent.requestedModel,
+      reasoningEffort: subagent.reasoningEffort,
+      liveBody: null,
+      liveBodyUpdatedAt: null,
+      telemetry: null,
+      createdAt: subagent.createdAt,
+      updatedAt: subagent.updatedAt,
+      resultActivityId: subagent.resultBody === null ? null : `subagent-result:${agentId}`,
+      resultBody: subagent.resultBody,
+      resultCreatedAt: subagent.resultCreatedAt,
+    });
+  }
 
   // The same task stream carries per-agent counters and the provider's own
   // agent id. They arrive on their own activities, so they are collected up
@@ -1296,7 +1342,10 @@ function collectSubagentActivityRecords(
       const turnId = activity.turnId ?? previous?.turnId ?? null;
       // What the spawn asked for always wins; the turn's own selection is the
       // floor for providers that only state a model when it was overridden.
-      const inherited = turnId === null ? undefined : turnModelSelections.get(turnId);
+      const inherited =
+        item.type === "subAgentActivity" || turnId === null
+          ? undefined
+          : turnModelSelections.get(turnId);
 
       byAgentId.set(agentId, {
         id: agentId,
@@ -1959,6 +2008,7 @@ export function deriveWorkLogEntries(
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "subagent.result")
+    .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.

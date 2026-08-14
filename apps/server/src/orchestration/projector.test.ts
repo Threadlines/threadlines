@@ -6,6 +6,7 @@ import {
   ThreadId,
   type OrchestrationEvent,
 } from "@threadlines/contracts";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -98,11 +99,147 @@ describe("orchestration projector", () => {
         messages: [],
         proposedPlans: [],
         activities: [],
+        subagents: [],
         checkpoints: [],
         session: null,
         voiceActive: false,
         diffStatBaselineTurnCount: 0,
       },
+    ]);
+  });
+
+  it("keeps durable subagent identity and settings after its source activity leaves the timeline", async () => {
+    const createdAt = "2026-08-13T12:00:00.000Z";
+    let model = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-subagents",
+          occurredAt: createdAt,
+          commandId: "cmd-create-subagents",
+          payload: {
+            threadId: "thread-subagents",
+            projectId: "project-1",
+            title: "Subagents",
+            modelSelection: { provider: "codex", model: "gpt-5.6-sol" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const metadataActivities = [
+      {
+        id: "spawn-metadata",
+        payload: {
+          callId: "spawn-call-1",
+          taskName: "durable_identity",
+          objective: "Trace durable identity",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          modelSource: "explicit",
+          reasoningEffortSource: "explicit",
+          status: "starting",
+        },
+      },
+      {
+        id: "child-metadata",
+        payload: {
+          callId: "spawn-call-1",
+          agentThreadId: "agent-thread-1",
+          agentPath: "/root/durable_identity",
+          agentNickname: "Identity",
+          model: "gpt-5.6-sol-2026-08-01",
+          modelSource: "provider",
+          status: "running",
+        },
+      },
+    ];
+
+    for (const [index, activity] of metadataActivities.entries()) {
+      model = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 2,
+            type: "thread.activity-appended",
+            aggregateKind: "thread",
+            aggregateId: "thread-subagents",
+            occurredAt: `2026-08-13T12:00:0${index + 1}.000Z`,
+            commandId: `cmd-metadata-${index}`,
+            payload: {
+              threadId: "thread-subagents",
+              activity: {
+                id: activity.id,
+                tone: "info",
+                kind: "subagent.metadata",
+                summary: "Subagent metadata",
+                payload: activity.payload,
+                turnId: null,
+                createdAt: `2026-08-13T12:00:0${index + 1}.000Z`,
+              },
+            },
+          }),
+        ),
+      );
+    }
+
+    for (let index = 0; index <= MAX_THREAD_ACTIVITIES; index += 1) {
+      model = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 4,
+            type: "thread.activity-appended",
+            aggregateKind: "thread",
+            aggregateId: "thread-subagents",
+            occurredAt: "2026-08-13T12:01:00.000Z",
+            commandId: `cmd-filler-${index}`,
+            payload: {
+              threadId: "thread-subagents",
+              activity: {
+                id: `filler-${index}`,
+                tone: "info",
+                kind: "runtime.note",
+                summary: `Filler ${index}`,
+                payload: {},
+                turnId: null,
+                sequence: index + 4,
+                createdAt: "2026-08-13T12:01:00.000Z",
+              },
+            },
+          }),
+        ),
+      );
+    }
+
+    const thread = model.threads[0];
+    expect(thread?.activities).toHaveLength(MAX_THREAD_ACTIVITIES);
+    expect(thread?.activities.some((activity) => activity.kind === "subagent.metadata")).toBe(
+      false,
+    );
+    expect(thread?.subagents).toEqual([
+      expect.objectContaining({
+        id: "agent-thread-1",
+        agentThreadId: "agent-thread-1",
+        spawnCallId: "spawn-call-1",
+        nickname: "Identity",
+        role: "durable_identity",
+        objective: "Trace durable identity",
+        status: "running",
+        requestedModel: "gpt-5.6-sol",
+        resolvedModel: "gpt-5.6-sol-2026-08-01",
+        reasoningEffort: "high",
+        modelProvenance: "explicit",
+        reasoningEffortProvenance: "explicit",
+      }),
     ]);
   });
 

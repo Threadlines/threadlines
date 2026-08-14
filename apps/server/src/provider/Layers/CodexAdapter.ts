@@ -20,6 +20,7 @@ import {
   type ProviderExternalThreadTranscriptMessage,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type SubagentMetadataUpdatedPayload,
   type ProviderRequestKind,
   type ProviderRealtimeAudioChunk,
   type ProviderSubagentTranscriptEntry,
@@ -922,6 +923,101 @@ function rawResponseItemId(item: unknown): string | undefined {
   return undefined;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  try {
+    return recordValue(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function rawSpawnAgentMetadata(
+  item: unknown,
+): (SubagentMetadataUpdatedPayload & { readonly callId: string }) | undefined {
+  const record = recordValue(item);
+  if (!record || record.type !== "function_call" || record.name !== "spawn_agent") {
+    return undefined;
+  }
+  const callId = firstStringField(record, ["call_id", "id"]);
+  const args = parseJsonRecord(record.arguments);
+  if (!callId || !args) {
+    return undefined;
+  }
+
+  const taskName = firstStringField(args, ["task_name"]);
+  const model = firstStringField(args, ["model"]);
+  const reasoningEffort = firstStringField(args, ["reasoning_effort"]);
+  return {
+    callId,
+    ...(taskName ? { taskName } : {}),
+    ...(taskName ? { objective: taskName } : {}),
+    ...(model ? { model, modelSource: "explicit" } : {}),
+    ...(reasoningEffort ? { reasoningEffort, reasoningEffortSource: "explicit" } : {}),
+  };
+}
+
+function childThreadMetadata(
+  thread: EffectCodexSchema.V2ThreadStartedNotification["thread"],
+  payload: unknown,
+): SubagentMetadataUpdatedPayload | undefined {
+  const subagentMarker = recordValue(recordValue(payload)?.subagentMetadata);
+  if (firstStringField(subagentMarker, ["agentThreadId"]) !== thread.id) {
+    return undefined;
+  }
+  const threadRecord = thread as typeof thread & Record<string, unknown>;
+  const source = recordValue(threadRecord.source);
+  const subAgent = recordValue(source?.subAgent);
+  const threadSpawn = recordValue(subAgent?.thread_spawn);
+  const parentAgentThreadId =
+    trimText(thread.parentThreadId) ?? firstStringField(threadSpawn, ["parent_thread_id"]);
+  if (!parentAgentThreadId && !threadSpawn) {
+    return undefined;
+  }
+  const agentPath = firstStringField(threadSpawn, ["agent_path"]);
+  const agentNickname =
+    trimText(thread.agentNickname) ?? firstStringField(threadSpawn, ["agent_nickname"]);
+  const agentRole = trimText(thread.agentRole) ?? firstStringField(threadSpawn, ["agent_role"]);
+  return {
+    agentThreadId: thread.id,
+    ...(parentAgentThreadId ? { parentAgentThreadId } : {}),
+    ...(agentPath ? { agentPath } : {}),
+    ...(agentNickname ? { agentNickname } : {}),
+    ...(agentRole ? { agentRole } : {}),
+  };
+}
+
+function childSettingsMetadata(payload: unknown): SubagentMetadataUpdatedPayload | undefined {
+  const record = recordValue(payload);
+  const marker = recordValue(record?.subagentMetadata);
+  const threadSettings = recordValue(record?.threadSettings);
+  const agentThreadId = firstStringField(marker, ["agentThreadId"]);
+  if (!marker || !threadSettings || !agentThreadId) {
+    return undefined;
+  }
+  const model = firstStringField(threadSettings, ["model"]);
+  const reasoningEffort = firstStringField(threadSettings, ["effort"]);
+  const parentAgentThreadId = firstStringField(marker, ["parentAgentThreadId"]);
+  const agentPath = firstStringField(marker, ["agentPath"]);
+  const agentNickname = firstStringField(marker, ["agentNickname"]);
+  const agentRole = firstStringField(marker, ["agentRole"]);
+  return {
+    agentThreadId,
+    ...(parentAgentThreadId ? { parentAgentThreadId } : {}),
+    ...(agentPath ? { agentPath } : {}),
+    ...(agentNickname ? { agentNickname } : {}),
+    ...(agentRole ? { agentRole } : {}),
+    ...(model ? { model, modelSource: "provider" } : {}),
+    ...(reasoningEffort ? { reasoningEffort, reasoningEffortSource: "provider" } : {}),
+  };
+}
+
 function rawSearchDetail(
   item: EffectCodexSchema.V2RawResponseItemCompletedNotification["item"],
 ): string | undefined {
@@ -1249,6 +1345,37 @@ function mapItemLifecycle(
   };
 }
 
+function mapNativeSubagentMetadata(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+): ProviderRuntimeEvent | undefined {
+  const payload =
+    readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload) ??
+    readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+  const item = payload?.item;
+  if (!item || item.type !== "subAgentActivity" || isRootAgentPath(item.agentPath)) {
+    return undefined;
+  }
+  const itemRecord = item as typeof item & Record<string, unknown>;
+  const parentAgentThreadId = firstStringField(itemRecord, ["parentAgentThreadId"]);
+  const agentNickname = firstStringField(itemRecord, ["agentNickname"]);
+  const agentRole = firstStringField(itemRecord, ["agentRole"]);
+  const metadata: SubagentMetadataUpdatedPayload = {
+    ...(item.kind === "started" ? { callId: item.id } : {}),
+    agentThreadId: item.agentThreadId,
+    agentPath: item.agentPath,
+    ...(parentAgentThreadId ? { parentAgentThreadId } : {}),
+    ...(agentNickname ? { agentNickname } : {}),
+    ...(agentRole ? { agentRole } : {}),
+  };
+  return {
+    ...runtimeEventBase(event, canonicalThreadId),
+    eventId: EventId.make(`${event.id}:subagent-metadata`),
+    type: "subagent.metadata.updated",
+    payload: metadata,
+  };
+}
+
 export function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -1430,6 +1557,16 @@ export function mapToRuntimeEvents(
     if (!payload) {
       return [];
     }
+    const metadata = childThreadMetadata(payload.thread, event.payload);
+    if (metadata) {
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "subagent.metadata.updated",
+          payload: metadata,
+        },
+      ];
+    }
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -1437,6 +1574,20 @@ export function mapToRuntimeEvents(
         payload: {
           providerThreadId: payload.thread.id,
         },
+      },
+    ];
+  }
+
+  if (event.method === "thread/settings/updated") {
+    const metadata = childSettingsMetadata(event.payload);
+    if (!metadata) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "subagent.metadata.updated",
+        payload: metadata,
       },
     ];
   }
@@ -1726,7 +1877,11 @@ export function mapToRuntimeEvents(
 
   if (event.method === "item/started") {
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
-    return started ? [started] : [];
+    if (!started) {
+      return [];
+    }
+    const metadata = mapNativeSubagentMetadata(event, canonicalThreadId);
+    return metadata ? [started, metadata] : [started];
   }
 
   if (event.method === "item/completed") {
@@ -1752,7 +1907,11 @@ export function mapToRuntimeEvents(
       ];
     }
     const completed = mapItemLifecycle(event, canonicalThreadId, "item.completed");
-    return completed ? [completed] : [];
+    if (!completed) {
+      return [];
+    }
+    const metadata = mapNativeSubagentMetadata(event, canonicalThreadId);
+    return metadata ? [completed, metadata] : [completed];
   }
 
   if (
@@ -1927,6 +2086,21 @@ export function mapToRuntimeEvents(
     }
 
     const item = payload.item;
+    const spawnMetadata = rawSpawnAgentMetadata(item);
+    if (spawnMetadata) {
+      // spawn_agent arguments may contain the delegated prompt. The semantic
+      // event deliberately keeps only the safe metadata parsed above.
+      const { raw: _unsafeRaw, ...safeBase } = runtimeEventBase(event, canonicalThreadId);
+      return [
+        {
+          ...safeBase,
+          turnId: TurnId.make(payload.turnId),
+          itemId: RuntimeItemId.make(spawnMetadata.callId),
+          type: "subagent.metadata.updated",
+          payload: spawnMetadata,
+        },
+      ];
+    }
     if (
       item.type !== "tool_search_call" &&
       item.type !== "tool_search_output" &&

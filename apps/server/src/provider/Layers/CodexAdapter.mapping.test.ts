@@ -19,7 +19,7 @@ import {
 
 describe("CodexAdapter item mapping", () => {
   it("maps native subagent activity into the canonical collab-agent shape", () => {
-    const [runtimeEvent] = mapToRuntimeEvents(
+    const [runtimeEvent, metadataEvent] = mapToRuntimeEvents(
       {
         id: EventId.make("evt-subagent-started"),
         kind: "notification",
@@ -73,6 +73,160 @@ describe("CodexAdapter item mapping", () => {
         },
       },
     });
+    assert.ok(metadataEvent);
+    assert.equal(metadataEvent.type, "subagent.metadata.updated");
+    if (metadataEvent.type === "subagent.metadata.updated") {
+      assert.deepStrictEqual(metadataEvent.payload, {
+        callId: "subagent-activity-1",
+        agentThreadId: "019f5cf1-e2fc-74f2-a6c0-16502ecc4826",
+        agentPath: "/root/implement_pull_server",
+      });
+    }
+  });
+
+  it("maps explicit spawn settings without retaining the prompt message", () => {
+    const [metadataEvent] = mapToRuntimeEvents(
+      {
+        id: EventId.make("evt-spawn-call"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-08-13T20:00:00.000Z",
+        method: "rawResponseItem/completed",
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-1"),
+        itemId: ProviderItemId.make("call-spawn-1"),
+        payload: {
+          threadId: "provider-parent-thread",
+          turnId: "provider-parent-turn",
+          item: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn-1",
+            arguments: JSON.stringify({
+              task_name: "inspect_runtime",
+              message: "Sensitive delegated instructions",
+              model: "gpt-5.6-sol",
+              reasoning_effort: "high",
+            }),
+          },
+        },
+      },
+      ThreadId.make("thread-1"),
+    );
+
+    assert.ok(metadataEvent);
+    assert.equal(metadataEvent.type, "subagent.metadata.updated");
+    if (metadataEvent.type === "subagent.metadata.updated") {
+      assert.deepStrictEqual(metadataEvent.payload, {
+        callId: "call-spawn-1",
+        taskName: "inspect_runtime",
+        objective: "inspect_runtime",
+        model: "gpt-5.6-sol",
+        modelSource: "explicit",
+        reasoningEffort: "high",
+        reasoningEffortSource: "explicit",
+      });
+      assert.equal(JSON.stringify(metadataEvent).includes("Sensitive"), false);
+      assert.equal(metadataEvent.raw, undefined);
+    }
+  });
+
+  it("maps spawned thread identity instead of treating the child as the root thread", () => {
+    const [metadataEvent] = mapToRuntimeEvents(
+      {
+        id: EventId.make("evt-child-thread-started"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-08-13T20:00:01.000Z",
+        method: "thread/started",
+        threadId: ThreadId.make("thread-1"),
+        providerThreadId: "provider-child-thread",
+        payload: {
+          subagentMetadata: {
+            agentThreadId: "provider-child-thread",
+          },
+          thread: {
+            id: "provider-child-thread",
+            parentThreadId: "provider-parent-thread",
+            agentNickname: "Mercury",
+            agentRole: "explorer",
+            cliVersion: "1.0.0",
+            createdAt: 1_786_650_001,
+            cwd: "C:/repo",
+            ephemeral: false,
+            modelProvider: "openai",
+            preview: "",
+            sessionId: "session-1",
+            source: {
+              subAgent: {
+                thread_spawn: {
+                  depth: 1,
+                  parent_thread_id: "provider-parent-thread",
+                  agent_path: "/root/inspect_runtime",
+                  agent_nickname: "Mercury",
+                  agent_role: "explorer",
+                },
+              },
+            },
+            status: { type: "idle" },
+            turns: [],
+            updatedAt: 1_786_650_001,
+          },
+        },
+      },
+      ThreadId.make("thread-1"),
+    );
+
+    assert.ok(metadataEvent);
+    assert.equal(metadataEvent.type, "subagent.metadata.updated");
+    if (metadataEvent.type === "subagent.metadata.updated") {
+      assert.deepStrictEqual(metadataEvent.payload, {
+        agentThreadId: "provider-child-thread",
+        parentAgentThreadId: "provider-parent-thread",
+        agentPath: "/root/inspect_runtime",
+        agentNickname: "Mercury",
+        agentRole: "explorer",
+      });
+    }
+  });
+
+  it("maps child effective settings with provider provenance", () => {
+    const [metadataEvent] = mapToRuntimeEvents(
+      {
+        id: EventId.make("evt-child-settings"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-08-13T20:00:02.000Z",
+        method: "thread/settings/updated",
+        threadId: ThreadId.make("thread-1"),
+        providerThreadId: "provider-child-thread",
+        payload: {
+          threadId: "provider-child-thread",
+          threadSettings: {
+            model: "gpt-5.6-sol",
+            effort: "high",
+          },
+          subagentMetadata: {
+            agentThreadId: "provider-child-thread",
+            agentPath: "/root/inspect_runtime",
+          },
+        },
+      },
+      ThreadId.make("thread-1"),
+    );
+
+    assert.ok(metadataEvent);
+    assert.equal(metadataEvent.type, "subagent.metadata.updated");
+    if (metadataEvent.type === "subagent.metadata.updated") {
+      assert.deepStrictEqual(metadataEvent.payload, {
+        agentThreadId: "provider-child-thread",
+        agentPath: "/root/inspect_runtime",
+        model: "gpt-5.6-sol",
+        modelSource: "provider",
+        reasoningEffort: "high",
+        reasoningEffortSource: "provider",
+      });
+    }
   });
 
   it("does not project root conversation activity as a subagent", () => {

@@ -160,6 +160,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.started",
   "thread.state.changed",
   "thread.metadata.updated",
+  "subagent.metadata.updated",
   "thread.token-usage.updated",
   "goal.updated",
   "goal.cleared",
@@ -218,6 +219,7 @@ const SessionExitedType = Schema.Literal("session.exited");
 const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
 const ThreadMetadataUpdatedType = Schema.Literal("thread.metadata.updated");
+const SubagentMetadataUpdatedType = Schema.Literal("subagent.metadata.updated");
 const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated");
 const GoalUpdatedType = Schema.Literal("goal.updated");
 const GoalClearedType = Schema.Literal("goal.cleared");
@@ -335,6 +337,25 @@ const ThreadMetadataUpdatedPayload = Schema.Struct({
   metadata: Schema.optional(UnknownRecordSchema),
 });
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;
+
+export const SubagentMetadataProvenance = Schema.Literals(["explicit", "provider"]);
+export type SubagentMetadataProvenance = typeof SubagentMetadataProvenance.Type;
+
+export const SubagentMetadataUpdatedPayload = Schema.Struct({
+  callId: Schema.optional(TrimmedNonEmptyStringSchema),
+  agentThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  parentAgentThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
+  agentNickname: Schema.optional(TrimmedNonEmptyStringSchema),
+  agentRole: Schema.optional(TrimmedNonEmptyStringSchema),
+  taskName: Schema.optional(TrimmedNonEmptyStringSchema),
+  objective: Schema.optional(TrimmedNonEmptyStringSchema),
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyStringSchema),
+  modelSource: Schema.optional(SubagentMetadataProvenance),
+  reasoningEffortSource: Schema.optional(SubagentMetadataProvenance),
+});
+export type SubagentMetadataUpdatedPayload = typeof SubagentMetadataUpdatedPayload.Type;
 
 export const ThreadTokenUsageSnapshot = Schema.Struct({
   usedTokens: NonNegativeInt,
@@ -789,6 +810,14 @@ const ProviderRuntimeThreadMetadataUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeThreadMetadataUpdatedEvent =
   typeof ProviderRuntimeThreadMetadataUpdatedEvent.Type;
 
+const ProviderRuntimeSubagentMetadataUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SubagentMetadataUpdatedType,
+  payload: SubagentMetadataUpdatedPayload,
+});
+export type ProviderRuntimeSubagentMetadataUpdatedEvent =
+  typeof ProviderRuntimeSubagentMetadataUpdatedEvent.Type;
+
 const ProviderRuntimeThreadTokenUsageUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ThreadTokenUsageUpdatedType,
@@ -1146,6 +1175,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadStartedEvent,
   ProviderRuntimeThreadStateChangedEvent,
   ProviderRuntimeThreadMetadataUpdatedEvent,
+  ProviderRuntimeSubagentMetadataUpdatedEvent,
   ProviderRuntimeThreadTokenUsageUpdatedEvent,
   ProviderRuntimeGoalUpdatedEvent,
   ProviderRuntimeGoalClearedEvent,

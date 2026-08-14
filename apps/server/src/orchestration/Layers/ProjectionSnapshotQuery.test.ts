@@ -949,6 +949,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`DELETE FROM projection_projects`;
       yield* sql`DELETE FROM projection_threads`;
       yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_subagents`;
       yield* sql`DELETE FROM projection_state`;
 
       yield* sql`
@@ -1203,6 +1204,22 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         `;
       }
 
+      yield* sql`
+        INSERT INTO projection_thread_subagents (
+          thread_id, subagent_id, agent_thread_id, parent_agent_thread_id, spawn_call_id, transcript_agent_id,
+          turn_id, agent_path, parent_agent_path, tree_depth, nickname, role, objective,
+          status, requested_model, resolved_model, reasoning_effort, model_provenance,
+          reasoning_effort_provenance, result_body, result_created_at, created_at, updated_at
+        )
+        VALUES (
+          'thread-activity-cap', 'agent-durable', 'agent-durable', NULL, 'spawn-durable',
+          'agent-durable', NULL, '/root/agent-durable', '/root', 0, 'researcher',
+          'Researcher', 'Inspect the projection', 'running', 'gpt-5.6-sol', NULL,
+          'high', 'explicit', 'explicit', NULL, NULL,
+          '2026-04-01T00:00:01.500Z', '2026-04-01T00:00:01.500Z'
+        )
+      `;
+
       const snapshot = yield* snapshotQuery.getSnapshot();
       const threadDetail = yield* snapshotQuery.getThreadDetailById(
         ThreadId.make("thread-activity-cap"),
@@ -1216,8 +1233,35 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           threadDetail.value.activities[MAX_THREAD_ACTIVITIES - 1]?.id,
           asEventId("activity-505"),
         );
+        assert.deepEqual(threadDetail.value.subagents, [
+          {
+            id: "agent-durable",
+            agentThreadId: "agent-durable",
+            parentAgentThreadId: null,
+            spawnCallId: "spawn-durable",
+            transcriptAgentId: "agent-durable",
+            turnId: null,
+            agentPath: "/root/agent-durable",
+            parentAgentPath: "/root",
+            treeDepth: 0,
+            nickname: "researcher",
+            role: "Researcher",
+            objective: "Inspect the projection",
+            status: "running",
+            requestedModel: "gpt-5.6-sol",
+            resolvedModel: null,
+            reasoningEffort: "high",
+            modelProvenance: "explicit",
+            reasoningEffortProvenance: "explicit",
+            resultBody: null,
+            resultCreatedAt: null,
+            createdAt: "2026-04-01T00:00:01.500Z",
+            updatedAt: "2026-04-01T00:00:01.500Z",
+          },
+        ]);
       }
       assert.equal(snapshot.threads[0]?.activities.length, MAX_THREAD_ACTIVITIES);
+      assert.equal(snapshot.threads[0]?.subagents?.[0]?.id, "agent-durable");
 
       yield* sql`DELETE FROM projection_thread_activities`;
       yield* sql`

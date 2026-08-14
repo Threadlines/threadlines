@@ -386,6 +386,9 @@ interface PendingUserInput {
 export interface CollabChildThreadMetadata {
   readonly agentNickname?: string;
   readonly agentRole?: string;
+  readonly agentPath?: string;
+  readonly parentAgentThreadId?: string;
+  readonly depth?: number;
 }
 
 export type CodexServerNotification = {
@@ -899,6 +902,7 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/unarchived":
     case "thread/closed":
     case "thread/name/updated":
+    case "thread/settings/updated":
     case "thread/tokenUsage/updated":
     case "thread/goal/updated":
     case "thread/goal/cleared":
@@ -1080,7 +1084,8 @@ export function rememberCollabThreadStartTurn(
     return;
   }
   const sourceMetadata = readSubAgentSourceMetadata(thread.source);
-  const parentThreadId = readTrimmedString(thread.parentThreadId) ?? sourceMetadata?.parentThreadId;
+  const parentThreadId =
+    readTrimmedString(thread.parentThreadId) ?? sourceMetadata?.parentAgentThreadId;
   if (!parentThreadId) {
     return;
   }
@@ -1118,9 +1123,7 @@ function readTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function readSubAgentSourceMetadata(
-  source: unknown,
-): (CollabChildThreadMetadata & { readonly parentThreadId?: string }) | undefined {
+function readSubAgentSourceMetadata(source: unknown): CollabChildThreadMetadata | undefined {
   if (!source || typeof source !== "object") {
     return undefined;
   }
@@ -1138,12 +1141,19 @@ function readSubAgentSourceMetadata(
   const threadSpawnRecord = threadSpawn as Record<string, unknown>;
   const agentNickname = readTrimmedString(threadSpawnRecord.agent_nickname);
   const agentRole = readTrimmedString(threadSpawnRecord.agent_role);
-  const parentThreadId = readTrimmedString(threadSpawnRecord.parent_thread_id);
-  return agentNickname || agentRole || parentThreadId
+  const agentPath = readTrimmedString(threadSpawnRecord.agent_path);
+  const parentAgentThreadId = readTrimmedString(threadSpawnRecord.parent_thread_id);
+  const depth =
+    typeof threadSpawnRecord.depth === "number" && Number.isInteger(threadSpawnRecord.depth)
+      ? threadSpawnRecord.depth
+      : undefined;
+  return agentNickname || agentRole || agentPath || parentAgentThreadId || depth !== undefined
     ? {
         ...(agentNickname ? { agentNickname } : {}),
         ...(agentRole ? { agentRole } : {}),
-        ...(parentThreadId ? { parentThreadId } : {}),
+        ...(agentPath ? { agentPath } : {}),
+        ...(parentAgentThreadId ? { parentAgentThreadId } : {}),
+        ...(depth !== undefined ? { depth } : {}),
       }
     : undefined;
 }
@@ -1156,6 +1166,9 @@ function mergeCollabChildThreadMetadata(
     ...current,
     ...(incoming.agentNickname ? { agentNickname: incoming.agentNickname } : {}),
     ...(incoming.agentRole ? { agentRole: incoming.agentRole } : {}),
+    ...(incoming.agentPath ? { agentPath: incoming.agentPath } : {}),
+    ...(incoming.parentAgentThreadId ? { parentAgentThreadId: incoming.parentAgentThreadId } : {}),
+    ...(incoming.depth !== undefined ? { depth: incoming.depth } : {}),
   };
 }
 
@@ -1170,9 +1183,14 @@ export function readCollabChildThreadMetadata(
   const sourceMetadata = readSubAgentSourceMetadata(thread.source);
   const agentNickname = readTrimmedString(thread.agentNickname) ?? sourceMetadata?.agentNickname;
   const agentRole = readTrimmedString(thread.agentRole) ?? sourceMetadata?.agentRole;
+  const parentAgentThreadId =
+    readTrimmedString(thread.parentThreadId) ?? sourceMetadata?.parentAgentThreadId;
   const metadata = {
     ...(agentNickname ? { agentNickname } : {}),
     ...(agentRole ? { agentRole } : {}),
+    ...(sourceMetadata?.agentPath ? { agentPath: sourceMetadata.agentPath } : {}),
+    ...(parentAgentThreadId ? { parentAgentThreadId } : {}),
+    ...(sourceMetadata?.depth !== undefined ? { depth: sourceMetadata.depth } : {}),
   };
 
   return Object.keys(metadata).length > 0 ? { threadId: thread.id, metadata } : undefined;
@@ -1196,16 +1214,13 @@ function rememberCollabChildThreadMetadata(
   );
 }
 
-function readCollabAgentMetadataForItem(
-  item: Extract<
-    CodexRpc.ServerNotificationParamsByMethod["item/started"]["item"],
-    { readonly type: "collabAgentToolCall" }
-  >,
+function readCollabAgentMetadataForThreadIds(
+  receiverThreadIds: ReadonlyArray<string>,
   childThreadMetadata: ReadonlyMap<string, CollabChildThreadMetadata>,
 ): CollabChildThreadMetadata | undefined {
-  for (const receiverThreadId of item.receiverThreadIds) {
+  for (const receiverThreadId of receiverThreadIds) {
     const metadata = childThreadMetadata.get(receiverThreadId);
-    if (metadata?.agentNickname || metadata?.agentRole) {
+    if (metadata) {
       return metadata;
     }
   }
@@ -1215,17 +1230,44 @@ function readCollabAgentMetadataForItem(
 export function enrichCollabAgentToolPayload(
   notification: CodexServerNotification,
   childThreadMetadata: ReadonlyMap<string, CollabChildThreadMetadata>,
+  isChildThread = false,
 ): unknown {
+  if (notification.method === "thread/started" && isChildThread) {
+    const agentThreadId = notification.params.thread.id;
+    const metadata = childThreadMetadata.get(agentThreadId);
+    return {
+      ...notification.params,
+      subagentMetadata: {
+        agentThreadId,
+        ...metadata,
+      },
+    };
+  }
+
+  if (notification.method === "thread/settings/updated" && isChildThread) {
+    const agentThreadId = notification.params.threadId;
+    const metadata = childThreadMetadata.get(agentThreadId);
+    return {
+      ...notification.params,
+      subagentMetadata: {
+        agentThreadId,
+        ...metadata,
+      },
+    };
+  }
+
   if (notification.method !== "item/started" && notification.method !== "item/completed") {
     return notification.params;
   }
 
   const item = notification.params.item;
-  if (item.type !== "collabAgentToolCall") {
+  if (item.type !== "collabAgentToolCall" && item.type !== "subAgentActivity") {
     return notification.params;
   }
 
-  const metadata = readCollabAgentMetadataForItem(item, childThreadMetadata);
+  const receiverThreadIds =
+    item.type === "collabAgentToolCall" ? item.receiverThreadIds : [item.agentThreadId];
+  const metadata = readCollabAgentMetadataForThreadIds(receiverThreadIds, childThreadMetadata);
   if (!metadata) {
     return notification.params;
   }
@@ -1236,7 +1278,13 @@ export function enrichCollabAgentToolPayload(
   };
   const agentNickname = readTrimmedString(itemRecord.agentNickname) ?? metadata.agentNickname;
   const agentRole = readTrimmedString(itemRecord.agentRole) ?? metadata.agentRole;
-  if (!agentNickname && !agentRole) {
+  if (
+    !agentNickname &&
+    !agentRole &&
+    !metadata.agentPath &&
+    !metadata.parentAgentThreadId &&
+    metadata.depth === undefined
+  ) {
     return notification.params;
   }
 
@@ -1246,6 +1294,11 @@ export function enrichCollabAgentToolPayload(
       ...item,
       ...(agentNickname ? { agentNickname } : {}),
       ...(agentRole ? { agentRole } : {}),
+      ...(metadata.agentPath ? { agentPath: metadata.agentPath } : {}),
+      ...(metadata.parentAgentThreadId
+        ? { parentAgentThreadId: metadata.parentAgentThreadId }
+        : {}),
+      ...(metadata.depth !== undefined ? { depth: metadata.depth } : {}),
     },
   };
 }
@@ -1254,7 +1307,6 @@ function shouldSuppressChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
   return (
-    method === "thread/started" ||
     method === "thread/status/changed" ||
     method === "thread/archived" ||
     method === "thread/unarchived" ||
@@ -1580,7 +1632,11 @@ export const makeCodexSessionRuntime = (
           }
           return;
         }
-        const payload = enrichCollabAgentToolPayload(notification, collabChildThreadMetadata);
+        const payload = enrichCollabAgentToolPayload(
+          notification,
+          collabChildThreadMetadata,
+          childParentTurnId !== undefined,
+        );
         yield* emitEvent({
           kind: "notification",
           threadId: options.threadId,
