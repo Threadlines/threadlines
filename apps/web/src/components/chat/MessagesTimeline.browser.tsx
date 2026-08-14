@@ -1136,6 +1136,40 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("keeps the tracker visible while the turn's work group is live", async () => {
+    const onOpenAgentsPanel = vi.fn();
+    // The tail work group renders as the live spine while the turn works. The
+    // turn's tracker must not blink out with the settled receipt when the live
+    // group absorbs the turn's earlier steps — it rides above the live steps.
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={ACTIVITY_ROW_TURN_ID}
+        activeTurnStartedAt="2026-04-13T12:00:00.000Z"
+        timelineEntries={buildOverflowingWorkTimelineEntries()}
+        onOpenAgentsPanel={onOpenAgentsPanel}
+        turnAgents={{
+          subagents: [
+            buildTurnSubagent("agent-1", "running"),
+            buildTurnSubagent("agent-2", "running"),
+          ],
+        }}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "2 subagents. Open the agents panel." }))
+        .toBeVisible();
+      expect(document.querySelector("[data-work-activity-live-tracker='true']")).not.toBeNull();
+      expect(document.querySelector("[data-live-activity-strip='true']")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps the tracker row on a reloaded turn that only delegated, with no count and nothing to expand", async () => {
     const onOpenAgentsPanel = vi.fn();
     // Every entry in the turn is agent lifecycle plumbing, so the conversation

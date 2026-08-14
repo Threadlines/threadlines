@@ -768,6 +768,11 @@ interface InternalSubagentRecord extends SubagentProgressItem {
    *  spawn asked for. Sticky: later lifecycle rows only carry the alias
    *  again, and the model has not changed. */
   resolvedModel: string | null;
+  /** Whether a native `subAgentActivity` spawn established this agent. Sticky:
+   *  a native spawn's omitted model and effort mean unknown, so the parent
+   *  turn's dispatched selection must never fill them in — not at spawn, and
+   *  not through the coordination items that follow. */
+  nativeSpawn: boolean;
   liveBodyUpdatedAt: string | null;
   resultActivityId: string | null;
   resultBody: string | null;
@@ -837,6 +842,7 @@ export function deriveSubagentProgressState(input: {
 function toSubagentProgressItem(record: InternalSubagentRecord): SubagentProgressItem {
   const {
     resolvedModel: _resolvedModel,
+    nativeSpawn: _nativeSpawn,
     liveBodyUpdatedAt: _liveBodyUpdatedAt,
     resultActivityId: _resultActivityId,
     resultBody: _resultBody,
@@ -1154,6 +1160,10 @@ function collectSubagentActivityRecords(
       status: subagent.status,
       statusLabel: subagentProgressStatusLabel(subagent.status),
       resolvedModel: subagent.resolvedModel,
+      // The roster does not record how the agent was spawned; the lifecycle
+      // rows below re-flag native spawns before any coordination item could
+      // inherit on their behalf, since the spawn row precedes them.
+      nativeSpawn: false,
       model: subagent.resolvedModel ?? subagent.requestedModel,
       reasoningEffort: subagent.reasoningEffort,
       liveBody: null,
@@ -1339,18 +1349,14 @@ function collectSubagentActivityRecords(
 
       const turnId = activity.turnId ?? previous?.turnId ?? null;
       // What the spawn asked for always wins; the turn's own selection is the
-      // floor for providers that only state a model when it was overridden.
+      // floor for spawns that only state a model when it was overridden. A
+      // native spawn's omission means unknown, and that fact must survive the
+      // coordination items (`wait`, `sendInput`, `closeAgent`) that follow, so
+      // it lives on the record rather than on whichever item arrived first —
+      // a record seeded from the durable roster still inherits its floor.
+      const nativeSpawn = previous?.nativeSpawn === true || item.type === "subAgentActivity";
       const inherited =
-        item.type === "subAgentActivity" || turnId === null
-          ? undefined
-          : turnModelSelections.get(turnId);
-      // Inheritance is only a seed for a newly discovered child. Once a native
-      // spawn has established the record, later coordination items such as
-      // `wait` must preserve its deliberately omitted model and effort rather
-      // than filling them from the parent turn.
-      const previousOrInheritedModel = previous === undefined ? inherited?.model : previous.model;
-      const previousOrInheritedReasoningEffort =
-        previous === undefined ? inherited?.reasoningEffort : previous.reasoningEffort;
+        nativeSpawn || turnId === null ? undefined : turnModelSelections.get(turnId);
 
       byAgentId.set(agentId, {
         id: agentId,
@@ -1369,9 +1375,16 @@ function collectSubagentActivityRecords(
         status,
         statusLabel: subagentProgressStatusLabel(status),
         resolvedModel: resolvedModel ?? previous?.resolvedModel ?? null,
+        nativeSpawn,
         model:
-          resolvedModel ?? previous?.resolvedModel ?? model ?? previousOrInheritedModel ?? null,
-        reasoningEffort: reasoningEffort ?? previousOrInheritedReasoningEffort ?? null,
+          resolvedModel ??
+          previous?.resolvedModel ??
+          model ??
+          previous?.model ??
+          inherited?.model ??
+          null,
+        reasoningEffort:
+          reasoningEffort ?? previous?.reasoningEffort ?? inherited?.reasoningEffort ?? null,
         liveBody,
         liveBodyUpdatedAt,
         // Claude supplies a dedicated task stream. Codex child work arrives as

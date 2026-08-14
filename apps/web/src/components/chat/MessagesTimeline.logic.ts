@@ -355,7 +355,8 @@ export function deriveMessagesTimelineRows(input: {
 
     // A running agent's streamed commentary never reaches the conversation:
     // the turn's activity row summarizes what is running, and the rail carries
-    // the detail. Only the finished agent's receipt lands here.
+    // the detail. Filtered with the agent-attributed entries above; this arm
+    // only narrows the type for the message handling below.
     if (timelineEntry.kind === "subagent-live") {
       continue;
     }
@@ -486,9 +487,12 @@ function deriveVisibleTimelineEntries(input: {
 }): TimelineEntry[] {
   // Agent lifecycle entries stay in this pass: they still count as concrete turn
   // activity for the provider-lifecycle row's own visibility, and the grouping
-  // step below is what parks them out of sight.
+  // step below is what parks them out of sight. Live agent commentary leaves
+  // here entirely: it renders nothing, and its timestamp moves with every
+  // streamed update — left in, it would split and re-merge the turn's work
+  // groups as the agent streams, flickering the activity receipt in and out.
   const timelineEntries = input.timelineEntries.filter(
-    (entry) => !isSubagentAttributedEntry(entry),
+    (entry) => !isSubagentAttributedEntry(entry) && entry.kind !== "subagent-live",
   );
   const visibleByIndex = Array.from({ length: timelineEntries.length }, () => true);
   let hasLaterProviderLifecycle = false;
