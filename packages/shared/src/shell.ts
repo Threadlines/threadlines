@@ -2,7 +2,7 @@
 import * as NodeOS from "node:os";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { extname, join } from "node:path";
+import { posix as PosixPath, win32 as WindowsPath } from "node:path";
 
 const PATH_CAPTURE_START = "__THREADLINES_PATH_START__";
 const PATH_CAPTURE_END = "__THREADLINES_PATH_END__";
@@ -351,13 +351,17 @@ function resolveWindowsPathExtensions(env: NodeJS.ProcessEnv): ReadonlyArray<str
   return parsed.length > 0 ? Array.from(new Set(parsed)) : fallback;
 }
 
+function pathForPlatform(platform: NodeJS.Platform) {
+  return platform === "win32" ? WindowsPath : PosixPath;
+}
+
 function resolveCommandCandidates(
   command: string,
   platform: NodeJS.Platform,
   windowsPathExtensions: ReadonlyArray<string>,
 ): ReadonlyArray<string> {
   if (platform !== "win32") return [command];
-  const extension = extname(command);
+  const extension = pathForPlatform(platform).extname(command);
   const normalizedExtension = extension.toUpperCase();
 
   if (extension.length > 0 && windowsPathExtensions.includes(normalizedExtension)) {
@@ -388,7 +392,7 @@ function isExecutableFile(
   try {
     if (!fileSystem.isFile(filePath)) return false;
     if (platform === "win32") {
-      const extension = extname(filePath);
+      const extension = pathForPlatform(platform).extname(filePath);
       if (extension.length === 0) return false;
       return windowsPathExtensions.includes(extension.toUpperCase());
     }
@@ -399,7 +403,7 @@ function isExecutableFile(
     // Windows App Execution Aliases (including winget.exe) are launchable reparse points,
     // but Node's stat call can fail with EACCES. F_OK still reflects whether Windows can
     // resolve the alias, so accept that narrower fallback for executable extensions.
-    const extension = extname(filePath);
+    const extension = pathForPlatform(platform).extname(filePath);
     if (extension.length === 0 || !windowsPathExtensions.includes(extension.toUpperCase())) {
       return false;
     }
@@ -420,6 +424,7 @@ export function resolveCommandPath(
   const fileSystem = options.fileSystem ?? defaultCommandFileSystem;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   const commandCandidates = resolveCommandCandidates(command, platform, windowsPathExtensions);
+  const platformPath = pathForPlatform(platform);
 
   if (command.includes("/") || command.includes("\\")) {
     for (const candidate of commandCandidates) {
@@ -439,7 +444,7 @@ export function resolveCommandPath(
 
   for (const pathEntry of pathEntries) {
     for (const candidate of commandCandidates) {
-      const candidatePath = join(pathEntry, candidate);
+      const candidatePath = platformPath.join(pathEntry, candidate);
       if (isExecutableFile(candidatePath, platform, windowsPathExtensions, fileSystem)) {
         return candidatePath;
       }
