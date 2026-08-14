@@ -3,6 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import { useState, type ReactNode } from "react";
 import type {
+  EnvironmentId,
   SourceControlProviderKind,
   SourceControlDiscoveryResult,
   SourceControlProviderAuth,
@@ -26,6 +27,7 @@ import {
   refreshSourceControlDiscovery,
   useSourceControlDiscovery,
 } from "../../lib/sourceControlDiscoveryState";
+import { useStore } from "../../store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -69,6 +71,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { CompactVersionAdvisory } from "./CompactVersionAdvisory";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
@@ -237,9 +240,11 @@ function itemSummary({
 
 function DiscoveryItemRow({
   item,
+  environmentId,
   children,
 }: {
   readonly item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem;
+  readonly environmentId?: EnvironmentId | null;
   readonly children?: ReactNode;
 }) {
   const version = optionLabel(item.version);
@@ -266,6 +271,14 @@ function DiscoveryItemRow({
                 {item.label}
               </span>
               {version ? <code className="text-xs text-muted-foreground">{version}</code> : null}
+              {item.versionAdvisory?.status === "behind_latest" ||
+              item.versionAdvisory?.status === "recommended_update" ? (
+                <CompactVersionAdvisory
+                  advisory={item.versionAdvisory}
+                  environmentId={environmentId}
+                  label={item.label}
+                />
+              ) : null}
               {isVcsNotReady(item) ? (
                 <Badge variant="warning" size="sm">
                   Coming Soon
@@ -679,13 +692,14 @@ function EmptySourceControlDiscovery({
 }
 
 export function SourceControlSettingsPanel() {
-  const discovery = useSourceControlDiscovery();
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  const discovery = useSourceControlDiscovery({ environmentId: activeEnvironmentId });
   const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
   const hasDiscoveryItems =
     result.versionControlSystems.length > 0 || result.sourceControlProviders.length > 0;
   const isInitialScanPending = discovery.isPending && discovery.data === null;
   const handleScan = () => {
-    void refreshSourceControlDiscovery();
+    void refreshSourceControlDiscovery({ environmentId: activeEnvironmentId });
   };
   const scanButton = (
     <Tooltip>
@@ -720,7 +734,11 @@ export function SourceControlSettingsPanel() {
           {result.versionControlSystems.length > 0 ? (
             <SettingsSection title="Version Control" headerAction={scanButton}>
               {result.versionControlSystems.map((item) => (
-                <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
+                <DiscoveryItemRow
+                  key={`vcs:${item.kind}`}
+                  item={item}
+                  environmentId={activeEnvironmentId}
+                >
                   {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}
                 </DiscoveryItemRow>
               ))}
@@ -733,7 +751,11 @@ export function SourceControlSettingsPanel() {
               headerAction={result.versionControlSystems.length === 0 ? scanButton : null}
             >
               {result.sourceControlProviders.map((item) => (
-                <DiscoveryItemRow key={`provider:${item.kind}`} item={item} />
+                <DiscoveryItemRow
+                  key={`provider:${item.kind}`}
+                  item={item}
+                  environmentId={activeEnvironmentId}
+                />
               ))}
             </SettingsSection>
           ) : null}

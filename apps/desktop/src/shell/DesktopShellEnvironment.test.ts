@@ -220,6 +220,7 @@ describe("DesktopShellEnvironment", () => {
           PATH: "C:\\Windows\\System32",
           APPDATA: "C:\\Users\\testuser\\AppData\\Roaming",
           LOCALAPPDATA: "C:\\Users\\testuser\\AppData\\Local",
+          ProgramFiles: "C:\\Program Files",
           USERPROFILE: "C:\\Users\\testuser",
         };
         const commands: ChildProcess.Command[] = [];
@@ -246,7 +247,12 @@ describe("DesktopShellEnvironment", () => {
           [
             "C:\\Profile\\Node",
             "C:\\Windows\\System32",
+            "C:\\Program Files\\Git\\cmd",
+            "C:\\Program Files\\GitHub CLI",
             "C:\\Users\\testuser\\AppData\\Roaming\\npm",
+            "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps",
+            "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
+            "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
             "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
             "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
             "C:\\Users\\testuser\\AppData\\Local\\pnpm",

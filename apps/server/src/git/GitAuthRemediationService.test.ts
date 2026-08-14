@@ -11,6 +11,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitManagerError, VcsProcessSpawnError } from "@threadlines/contracts";
 import { ServerConfig } from "../config.ts";
+import { THREADLINES_GITHUB_CLI_ENV } from "../sourceControl/GitHubCliEnvironment.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitAuthRemediationService from "./GitAuthRemediationService.ts";
@@ -31,13 +32,14 @@ type FakeGhBehavior = "authed" | "unauthenticated" | "missing";
 interface RecordedGhCall {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly env: NodeJS.ProcessEnv | undefined;
 }
 
 const makeFakeVcsProcess = (behavior: FakeGhBehavior, calls: RecordedGhCall[]) =>
   VcsProcess.VcsProcess.of({
     run: (input) =>
       Effect.suspend(() => {
-        calls.push({ command: input.command, args: input.args });
+        calls.push({ command: input.command, args: input.args, env: input.env });
         if (behavior === "missing") {
           return Effect.fail(
             new VcsProcessSpawnError({
@@ -133,6 +135,7 @@ it.layer(TestLayer)("GitAuthRemediationService", (it) => {
           {
             command: "gh",
             args: ["auth", "status", "--hostname", UNREACHABLE_HOST],
+            env: THREADLINES_GITHUB_CLI_ENV,
           },
         ]);
 
@@ -241,6 +244,7 @@ it.layer(TestLayer)("GitAuthRemediationService", (it) => {
           {
             command: "gh",
             args: ["auth", "setup-git", "--hostname", UNREACHABLE_HOST],
+            env: THREADLINES_GITHUB_CLI_ENV,
           },
         ]);
       }),

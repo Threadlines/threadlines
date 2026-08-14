@@ -12,6 +12,7 @@ import {
 } from "@threadlines/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { THREADLINES_GITHUB_CLI_ENV } from "./GitHubCliEnvironment.ts";
 import * as GitHubPullRequests from "./gitHubPullRequests.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -263,6 +264,7 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
         command: "gh",
         args: input.args,
         cwd: input.cwd,
+        env: THREADLINES_GITHUB_CLI_ENV,
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       })
       .pipe(Effect.mapError((error) => normalizeGitHubCliError("execute", error)));

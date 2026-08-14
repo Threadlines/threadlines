@@ -141,6 +141,8 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
       getSettings: () => withServer((server) => server.getSettings()),
       updateSettings: (patch) => withServer((server) => server.updateSettings(patch)),
       discoverSourceControl: () => withServer((server) => server.discoverSourceControl()),
+      updateSourceControlTool: (input) =>
+        withServer((server) => server.updateSourceControlTool(input)),
       getTraceDiagnostics: () => withServer((server) => server.getTraceDiagnostics()),
       getProcessDiagnostics: () => withServer((server) => server.getProcessDiagnostics()),
       getProcessResourceHistory: (input) =>

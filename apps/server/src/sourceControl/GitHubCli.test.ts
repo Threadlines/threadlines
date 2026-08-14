@@ -16,6 +16,10 @@ const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
 });
 
 const mockRun = vi.fn<VcsProcess.VcsProcessShape["run"]>();
+const GITHUB_CLI_BACKGROUND_ENV = {
+  GH_NO_UPDATE_NOTIFIER: "1",
+  GH_TELEMETRY: "0",
+} as const;
 
 const layer = GitHubCli.layer.pipe(
   Layer.provide(
@@ -84,6 +88,7 @@ describe("GitHubCli.layer", () => {
           "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
         ],
         cwd: "/repo",
+        env: GITHUB_CLI_BACKGROUND_ENV,
         timeoutMs: 30_000,
       });
     }).pipe(Effect.provide(layer)),
@@ -255,6 +260,7 @@ describe("GitHubCli.layer", () => {
           "nameWithOwner,url,sshUrl",
         ],
         cwd: "/repo",
+        env: GITHUB_CLI_BACKGROUND_ENV,
         timeoutMs: 30_000,
       });
     }).pipe(Effect.provide(layer)),
@@ -302,6 +308,7 @@ describe("GitHubCli.layer", () => {
           "platform",
         ],
         cwd: "/repo",
+        env: GITHUB_CLI_BACKGROUND_ENV,
         timeoutMs: 30_000,
       });
       expect(mockRun).toHaveBeenNthCalledWith(2, {
@@ -309,6 +316,7 @@ describe("GitHubCli.layer", () => {
         command: "gh",
         args: ["api", "repos/octocat/example-app", "--jq", ".default_branch"],
         cwd: "/repo",
+        env: GITHUB_CLI_BACKGROUND_ENV,
         timeoutMs: 30_000,
       });
     }).pipe(Effect.provide(layer)),
@@ -346,6 +354,7 @@ describe("GitHubCli.layer", () => {
           "/tmp/body.md",
         ],
         cwd: "/repo",
+        env: GITHUB_CLI_BACKGROUND_ENV,
         timeoutMs: 30_000,
       });
     }).pipe(Effect.provide(layer)),

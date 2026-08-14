@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
 export const SourceControlProviderKind = Schema.Literals([
@@ -137,6 +137,50 @@ export const SourceControlProviderAuth = Schema.Struct({
 });
 export type SourceControlProviderAuth = typeof SourceControlProviderAuth.Type;
 
+export const SourceControlToolVersionAdvisoryStatus = Schema.Literals([
+  "unknown",
+  "current",
+  "behind_latest",
+  "recommended_update",
+]);
+export type SourceControlToolVersionAdvisoryStatus =
+  typeof SourceControlToolVersionAdvisoryStatus.Type;
+
+export const SourceControlToolVersionAdvisorySeverity = Schema.Literals(["info", "warning"]);
+export type SourceControlToolVersionAdvisorySeverity =
+  typeof SourceControlToolVersionAdvisorySeverity.Type;
+
+export const SourceControlToolUpdateTarget = Schema.Literals(["github-cli", "git"]);
+export type SourceControlToolUpdateTarget = typeof SourceControlToolUpdateTarget.Type;
+
+export const SourceControlToolVersionAdvisoryAction = Schema.Union([
+  Schema.Struct({
+    label: TrimmedNonEmptyString,
+    kind: Schema.Literals(["copyCommand", "openUrl"]),
+    value: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    label: TrimmedNonEmptyString,
+    kind: Schema.Literal("runUpdate"),
+    target: SourceControlToolUpdateTarget,
+  }),
+]);
+export type SourceControlToolVersionAdvisoryAction =
+  typeof SourceControlToolVersionAdvisoryAction.Type;
+
+export const SourceControlToolVersionAdvisory = Schema.Struct({
+  status: SourceControlToolVersionAdvisoryStatus,
+  severity: SourceControlToolVersionAdvisorySeverity,
+  currentVersion: Schema.NullOr(TrimmedNonEmptyString),
+  latestVersion: Schema.NullOr(TrimmedNonEmptyString),
+  recommendedVersion: Schema.NullOr(TrimmedNonEmptyString),
+  checkedAt: Schema.NullOr(IsoDateTime),
+  message: Schema.NullOr(TrimmedNonEmptyString),
+  notificationKey: Schema.NullOr(TrimmedNonEmptyString),
+  actions: Schema.Array(SourceControlToolVersionAdvisoryAction),
+});
+export type SourceControlToolVersionAdvisory = typeof SourceControlToolVersionAdvisory.Type;
+
 const SourceControlDiscoverySharedFields = {
   label: TrimmedNonEmptyString,
   executable: Schema.optional(TrimmedNonEmptyString),
@@ -144,6 +188,7 @@ const SourceControlDiscoverySharedFields = {
   version: Schema.Option(TrimmedNonEmptyString),
   installHint: TrimmedNonEmptyString,
   detail: Schema.Option(TrimmedNonEmptyString),
+  versionAdvisory: Schema.optionalKey(SourceControlToolVersionAdvisory),
 } as const;
 
 export const VcsDiscoveryItem = Schema.Struct({
@@ -165,6 +210,32 @@ export const SourceControlDiscoveryResult = Schema.Struct({
   sourceControlProviders: Schema.Array(SourceControlProviderDiscoveryItem),
 });
 export type SourceControlDiscoveryResult = typeof SourceControlDiscoveryResult.Type;
+
+export const SourceControlToolUpdateInput = Schema.Struct({
+  target: SourceControlToolUpdateTarget,
+});
+export type SourceControlToolUpdateInput = typeof SourceControlToolUpdateInput.Type;
+
+export const SourceControlToolUpdateResult = Schema.Struct({
+  target: SourceControlToolUpdateTarget,
+  status: Schema.Literals(["succeeded", "unchanged"]),
+  previousVersion: Schema.NullOr(TrimmedNonEmptyString),
+  currentVersion: Schema.NullOr(TrimmedNonEmptyString),
+  discovery: SourceControlDiscoveryResult,
+});
+export type SourceControlToolUpdateResult = typeof SourceControlToolUpdateResult.Type;
+
+export class SourceControlToolUpdateError extends Schema.TaggedErrorClass<SourceControlToolUpdateError>()(
+  "SourceControlToolUpdateError",
+  {
+    target: SourceControlToolUpdateTarget,
+    reason: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceControlProviderError>()(
   "SourceControlProviderError",

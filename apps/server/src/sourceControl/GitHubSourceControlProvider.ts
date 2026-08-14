@@ -12,6 +12,7 @@ import {
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@threadlines/shared/git";
 
 import * as GitHubCli from "./GitHubCli.ts";
+import { THREADLINES_GITHUB_CLI_ENV } from "./GitHubCliEnvironment.ts";
 import { findAuthenticatedGitHubAccount, parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
 import * as GitHubPullRequests from "./gitHubPullRequests.ts";
 import * as SourceControlProvider from "./SourceControlProvider.ts";
@@ -139,6 +140,7 @@ export const discovery = {
   executable: "gh",
   versionArgs: ["--version"],
   authArgs: ["auth", "status", "--json", "hosts"],
+  env: THREADLINES_GITHUB_CLI_ENV,
   parseAuth: parseGitHubAuth,
   installHint:
     "Install the GitHub command-line tool (`gh`) via https://cli.github.com/ or your package manager (for example `brew install gh`).",

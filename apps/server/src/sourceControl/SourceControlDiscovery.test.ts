@@ -12,13 +12,16 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
 import * as BitbucketApi from "./BitbucketApi.ts";
 import * as GitHubCli from "./GitHubCli.ts";
+import { THREADLINES_GITHUB_CLI_ENV } from "./GitHubCliEnvironment.ts";
 import * as GitLabCli from "./GitLabCli.ts";
 import * as SourceControlDiscovery from "./SourceControlDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 
-const hasGitAndGhCommand = (command: string) => command === "git" || command === "gh";
+const hasGitGhAndWingetCommand = (command: string) =>
+  command === "git" || command === "gh" || command === "winget";
 const hasAllCommandsExceptJj = (command: string) => command !== "jj";
 const noCommandsAvailable = () => false;
+const noLatestToolVersion = () => Effect.succeed(null);
 
 const sourceControlProviderRegistryTestLayer = (input: {
   readonly bitbucket: Partial<BitbucketApi.BitbucketApiShape>;
@@ -65,6 +68,9 @@ it.effect("reports implemented tools separately from locally available executabl
   const processMock = {
     run: (input: VcsProcess.VcsProcessInput) => {
       processCommands.push(input.command);
+      if (input.command === "gh") {
+        assert.deepStrictEqual(input.env, THREADLINES_GITHUB_CLI_ENV);
+      }
       if (input.command === "git") {
         return Effect.succeed(processOutput("git version 2.51.0\n"));
       }
@@ -104,7 +110,12 @@ it.effect("reports implemented tools separately from locally available executabl
   } satisfies Partial<VcsProcess.VcsProcessShape>;
   const testLayer = Layer.effect(
     SourceControlDiscovery.SourceControlDiscovery,
-    SourceControlDiscovery.make({ commandAvailable: hasGitAndGhCommand }),
+    SourceControlDiscovery.make({
+      commandAvailable: hasGitGhAndWingetCommand,
+      platform: "win32",
+      latestVersionResolver: (target) =>
+        Effect.succeed(target === "github-cli" ? "2.98.0" : "2.55.0.windows.4"),
+    }),
   ).pipe(
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-discovery-" }),
@@ -113,7 +124,7 @@ it.effect("reports implemented tools separately from locally available executabl
     Layer.provide(
       sourceControlProviderRegistryTestLayer({
         process: processMock,
-        commandAvailable: hasGitAndGhCommand,
+        commandAvailable: hasGitGhAndWingetCommand,
         bitbucket: {
           probeAuth: Effect.succeed({
             status: "unauthenticated",
@@ -181,6 +192,37 @@ it.effect("reports implemented tools separately from locally available executabl
     const bitbucket = result.sourceControlProviders.find((item) => item.kind === "bitbucket");
     assert.ok(bitbucket);
     assert.strictEqual(bitbucket.executable, undefined);
+    const github = result.sourceControlProviders.find((item) => item.kind === "github");
+    assert.ok(github);
+    assert.deepStrictEqual(github.versionAdvisory, {
+      status: "recommended_update",
+      severity: "warning",
+      currentVersion: "2.83.0",
+      latestVersion: "2.98.0",
+      recommendedVersion: "2.97.0",
+      checkedAt: github.versionAdvisory?.checkedAt ?? null,
+      message:
+        "This GitHub CLI version can briefly open terminal windows during background telemetry on Windows and is below the recommended security-fix release.",
+      notificationKey: "github-cli:security:2.97.0",
+      actions: [
+        {
+          label: "Update now",
+          kind: "runUpdate",
+          target: "github-cli",
+        },
+        {
+          label: "Copy WinGet command",
+          kind: "copyCommand",
+          value:
+            "winget upgrade --id GitHub.cli --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+        },
+        {
+          label: "Open releases",
+          kind: "openUrl",
+          value: "https://github.com/cli/cli/releases/latest",
+        },
+      ],
+    });
     assert.deepStrictEqual(
       processCommands.filter(
         (command) => command === "jj" || command === "glab" || command === "az",
@@ -242,7 +284,10 @@ Logged in to gitlab.com as gitlab-user
   } satisfies Partial<VcsProcess.VcsProcessShape>;
   const testLayer = Layer.effect(
     SourceControlDiscovery.SourceControlDiscovery,
-    SourceControlDiscovery.make({ commandAvailable: hasAllCommandsExceptJj }),
+    SourceControlDiscovery.make({
+      commandAvailable: hasAllCommandsExceptJj,
+      latestVersionResolver: noLatestToolVersion,
+    }),
   ).pipe(
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-auth-discovery-" }),
@@ -323,7 +368,10 @@ it.effect("skips unavailable discovery commands before spawning probes", () => {
   } satisfies Partial<VcsProcess.VcsProcessShape>;
   const testLayer = Layer.effect(
     SourceControlDiscovery.SourceControlDiscovery,
-    SourceControlDiscovery.make({ commandAvailable: noCommandsAvailable }),
+    SourceControlDiscovery.make({
+      commandAvailable: noCommandsAvailable,
+      latestVersionResolver: noLatestToolVersion,
+    }),
   ).pipe(
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-skip-discovery-" }),

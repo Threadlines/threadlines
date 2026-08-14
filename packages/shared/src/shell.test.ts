@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { constants } from "node:fs";
 
 import {
   extractPathFromShellOutput,
@@ -313,10 +314,19 @@ describe("resolveKnownWindowsCliDirs", () => {
       resolveKnownWindowsCliDirs({
         APPDATA: "C:\\Users\\testuser\\AppData\\Roaming",
         LOCALAPPDATA: "C:\\Users\\testuser\\AppData\\Local",
+        ProgramFiles: "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
         USERPROFILE: "C:\\Users\\testuser",
       }),
     ).toEqual([
+      "C:\\Program Files\\Git\\cmd",
+      "C:\\Program Files\\GitHub CLI",
+      "C:\\Program Files (x86)\\Git\\cmd",
+      "C:\\Program Files (x86)\\GitHub CLI",
       "C:\\Users\\testuser\\AppData\\Roaming\\npm",
+      "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps",
+      "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
+      "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
       "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
       "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
       "C:\\Users\\testuser\\AppData\\Local\\pnpm",
@@ -346,6 +356,21 @@ describe("resolveCommandPath", () => {
       }),
     ).toBeNull();
   });
+
+  it("recognizes a launchable Windows App Execution Alias when stat is denied", () => {
+    expect(
+      resolveCommandPath("winget", {
+        platform: "win32",
+        env: { PATH: "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps" },
+        fileSystem: {
+          isFile: () => {
+            throw new Error("EACCES");
+          },
+          canAccess: (filePath, mode) => filePath.endsWith("winget.EXE") && mode === constants.F_OK,
+        },
+      }),
+    ).toBe("C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps\\winget.EXE");
+  });
 });
 
 describe("resolveWindowsEnvironment", () => {
@@ -374,6 +399,9 @@ describe("resolveWindowsEnvironment", () => {
     ).toEqual({
       PATH: [
         "C:\\Users\\testuser\\AppData\\Roaming\\npm",
+        "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps",
+        "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
+        "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
         "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
         "C:\\Users\\testuser\\AppData\\Local\\pnpm",
@@ -424,6 +452,9 @@ describe("resolveWindowsEnvironment", () => {
         "C:\\Profile\\Node",
         "C:\\Windows\\System32",
         "C:\\Users\\testuser\\AppData\\Roaming\\npm",
+        "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps",
+        "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
+        "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
         "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
         "C:\\Users\\testuser\\AppData\\Local\\pnpm",

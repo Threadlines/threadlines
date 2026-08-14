@@ -1,5 +1,6 @@
 import { assert, beforeEach, it } from "vite-plus/test";
 import type { SourceControlDiscoveryResult } from "@threadlines/contracts";
+import * as Option from "effect/Option";
 import { AtomRegistry } from "effect/unstable/reactivity";
 
 import {
@@ -9,6 +10,22 @@ import {
 
 const EMPTY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
+  sourceControlProviders: [],
+};
+
+const GIT_AVAILABLE_RESULT: SourceControlDiscoveryResult = {
+  versionControlSystems: [
+    {
+      kind: "git",
+      label: "Git",
+      executable: "git",
+      implemented: true,
+      status: "available",
+      version: Option.some("git version 2.54.0.windows.1"),
+      installHint: "Install Git.",
+      detail: Option.none(),
+    },
+  ],
   sourceControlProviders: [],
 };
 
@@ -36,6 +53,21 @@ it("stores refreshed discovery data in an atom snapshot", async () => {
   const result = await manager.refresh({ key: "primary" });
 
   assert.strictEqual(result, EMPTY_RESULT);
+  assert.deepStrictEqual(manager.getSnapshot({ key: "primary" }), {
+    data: EMPTY_RESULT,
+    error: null,
+    isPending: false,
+  });
+});
+
+it("stores discovery returned by a related server operation", () => {
+  const manager = createSourceControlDiscoveryManager({
+    getRegistry: () => registry,
+    getClient: () => null,
+  });
+
+  manager.storeResult({ key: "primary" }, EMPTY_RESULT);
+
   assert.deepStrictEqual(manager.getSnapshot({ key: "primary" }), {
     data: EMPTY_RESULT,
     error: null,
@@ -77,6 +109,32 @@ it("deduplicates in-flight discovery refreshes by target key", async () => {
     error: null,
     isPending: false,
   });
+});
+
+it("forces a fresh probe after reconnect without letting the old result overwrite it", async () => {
+  const resolvers: Array<(result: SourceControlDiscoveryResult) => void> = [];
+  const manager = createSourceControlDiscoveryManager({
+    getRegistry: () => registry,
+    getClient: () => ({
+      discoverSourceControl: () =>
+        new Promise<SourceControlDiscoveryResult>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    }),
+  });
+
+  const beforeReconnect = manager.refresh({ key: "primary" });
+  const afterReconnect = manager.refresh({ key: "primary" }, undefined, { force: true });
+
+  assert.notStrictEqual(beforeReconnect, afterReconnect);
+  assert.strictEqual(resolvers.length, 2);
+
+  resolvers[1]!(GIT_AVAILABLE_RESULT);
+  await afterReconnect;
+  resolvers[0]!(EMPTY_RESULT);
+  await beforeReconnect;
+
+  assert.strictEqual(manager.getSnapshot({ key: "primary" }).data, GIT_AVAILABLE_RESULT);
 });
 
 it("keeps the previous snapshot when refresh fails", async () => {
