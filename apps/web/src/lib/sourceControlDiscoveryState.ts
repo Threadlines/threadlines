@@ -108,7 +108,10 @@ export async function updateSourceControlTool(
     throw new Error("The selected server environment is not connected.");
   }
 
-  const result = await server.updateSourceControlTool({ target: input.target });
+  const result = await server.updateSourceControlTool({
+    target: input.target,
+    ...(input.operation ? { operation: input.operation } : {}),
+  });
   sourceControlDiscoveryManager.storeResult(sourceControlDiscoveryTarget(input), result.discovery);
   return result;
 }

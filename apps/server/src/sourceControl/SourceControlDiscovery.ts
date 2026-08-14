@@ -15,7 +15,9 @@ import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SourceControlProviderDiscovery from "./SourceControlProviderDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
+import { selectSourceControlToolPackageManager } from "./SourceControlToolPackages.ts";
 import * as SourceControlToolVersionAdvisory from "./SourceControlToolVersionAdvisory.ts";
+import * as SourceControlWinGet from "./SourceControlWinGet.ts";
 
 interface DiscoveryProbe {
   readonly label: string;
@@ -68,6 +70,7 @@ export interface SourceControlDiscoveryShape {
 export interface SourceControlDiscoveryOptions {
   readonly commandAvailable?: SourceControlProviderDiscovery.CommandAvailability;
   readonly latestVersionResolver?: SourceControlToolVersionAdvisory.LatestVersionResolver;
+  readonly winGetVersionResolver?: SourceControlWinGet.LatestWinGetVersionResolver;
   readonly platform?: NodeJS.Platform;
 }
 
@@ -104,8 +107,13 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
   const platform = options?.platform ?? process.platform;
   const commandAvailable =
     options?.commandAvailable ?? ((command) => isCommandAvailable(command, { platform }));
-  const latestVersionResolver = options?.latestVersionResolver;
-  const canRunToolUpdate = platform === "win32" && commandAvailable("winget");
+  const latestVersionResolver =
+    options?.latestVersionResolver ?? (() => Effect.succeed<string | null>(null));
+  const sourceControlToolPackageManager = selectSourceControlToolPackageManager({
+    platform,
+    commandAvailable,
+  });
+  const canRunToolUpdate = platform === "win32" && sourceControlToolPackageManager === "winget";
 
   const probe = <Kind extends VcsDriverKind>(
     input: DiscoveryProbe & { readonly kind: Kind },
@@ -167,14 +175,21 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
   const withVersionAdvisory = <Item extends VcsDiscoveryItem | SourceControlProviderDiscoveryItem>(
     item: Item,
   ): Effect.Effect<Item> =>
-    latestVersionResolver
-      ? SourceControlToolVersionAdvisory.withSourceControlToolVersionAdvisory({
-          item,
-          platform,
-          latestVersionResolver,
-          canRunUpdate: canRunToolUpdate,
-        })
-      : Effect.succeed(item);
+    SourceControlToolVersionAdvisory.withSourceControlToolVersionAdvisory({
+      item,
+      platform,
+      latestVersionResolver,
+      ...(options?.winGetVersionResolver
+        ? { winGetVersionResolver: options.winGetVersionResolver }
+        : {}),
+      canRunUpdate: canRunToolUpdate,
+      packageManager: sourceControlToolPackageManager,
+      canRunInstall:
+        sourceControlToolPackageManager !== null &&
+        item.status !== "available" &&
+        item.executable !== undefined &&
+        !commandAvailable(item.executable),
+    });
 
   return SourceControlDiscovery.of({
     discover: Effect.all({
@@ -203,11 +218,17 @@ export const layer = Layer.effect(
   SourceControlDiscovery,
   Effect.gen(function* () {
     const httpClient = yield* HttpClient.HttpClient;
+    const config = yield* ServerConfig;
+    const vcsProcess = yield* VcsProcess.VcsProcess;
     return yield* make({
       latestVersionResolver: (target) =>
         SourceControlToolVersionAdvisory.resolveLatestToolVersion(target).pipe(
           Effect.provideService(HttpClient.HttpClient, httpClient),
         ),
+      winGetVersionResolver: SourceControlWinGet.makeLatestWinGetVersionResolver({
+        cwd: config.cwd,
+        vcsProcess,
+      }),
     });
   }),
 );

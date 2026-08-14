@@ -3,6 +3,7 @@ import {
   type SourceControlDiscoveryResult,
   type SourceControlToolUpdateInput,
   type SourceControlToolUpdateTarget,
+  type VcsError,
 } from "@threadlines/contracts";
 import { isCommandAvailable } from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
@@ -13,25 +14,16 @@ import * as Ref from "effect/Ref";
 
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import {
+  selectSourceControlToolPackageManager,
+  sourceControlToolLabel,
+  sourceControlToolPackageRecipe,
+} from "./SourceControlToolPackages.ts";
 import { parseGitHubCliVersion, parseGitVersion } from "./SourceControlToolVersionAdvisory.ts";
+import { isWinGetUpdateNotApplicable } from "./SourceControlWinGet.ts";
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
-
-const WINGET_PACKAGE_IDS = {
-  "github-cli": "GitHub.cli",
-  git: "Git.Git",
-} as const satisfies Record<SourceControlToolUpdateTarget, string>;
-
-const WINGET_UPDATE_SUFFIX = [
-  "--exact",
-  "--source",
-  "winget",
-  "--silent",
-  "--accept-source-agreements",
-  "--accept-package-agreements",
-  "--disable-interactivity",
-] as const;
 
 export interface SourceControlToolMaintenanceShape {
   readonly update: (
@@ -53,6 +45,25 @@ function updateError(target: SourceControlToolUpdateTarget, reason: string) {
   return new SourceControlToolUpdateError({ target, reason });
 }
 
+function packageManagerFailureReason(input: {
+  readonly target: SourceControlToolUpdateTarget;
+  readonly operation: "install" | "update";
+  readonly manager: "homebrew" | "winget";
+  readonly cause: VcsError;
+}): string {
+  if (
+    input.manager === "winget" &&
+    input.operation === "update" &&
+    isWinGetUpdateNotApplicable(input.cause)
+  ) {
+    const label = sourceControlToolLabel(input.target);
+    return `WinGet does not currently offer a newer compatible ${label} package. Its catalog may still be behind the latest official release; use the official release link or check again later.`;
+  }
+
+  const managerLabel = input.manager === "winget" ? "WinGet" : "Homebrew";
+  return `The verified ${managerLabel} ${input.operation} failed: ${input.cause.message || "unknown process error"}`;
+}
+
 export function currentSourceControlToolVersion(
   discovery: SourceControlDiscoveryResult,
   target: SourceControlToolUpdateTarget,
@@ -60,13 +71,24 @@ export function currentSourceControlToolVersion(
   const item =
     target === "git"
       ? discovery.versionControlSystems.find((candidate) => candidate.kind === "git")
-      : discovery.sourceControlProviders.find((candidate) => candidate.kind === "github");
+      : discovery.sourceControlProviders.find((candidate) => {
+          switch (target) {
+            case "github-cli":
+              return candidate.kind === "github";
+            case "gitlab-cli":
+              return candidate.kind === "gitlab";
+            case "azure-cli":
+              return candidate.kind === "azure-devops";
+          }
+        });
   if (!item) return null;
   const rawVersion = Option.getOrNull(item.version);
   const detectedVersion = rawVersion
     ? target === "git"
       ? parseGitVersion(rawVersion)
-      : parseGitHubCliVersion(rawVersion)
+      : target === "github-cli"
+        ? parseGitHubCliVersion(rawVersion)
+        : rawVersion
     : null;
   return detectedVersion ?? item.versionAdvisory?.currentVersion ?? null;
 }
@@ -74,14 +96,27 @@ export function currentSourceControlToolVersion(
 export function hasVerifiedSourceControlToolUpdateAction(
   discovery: SourceControlDiscoveryResult,
   target: SourceControlToolUpdateTarget,
+  operation: NonNullable<SourceControlToolUpdateInput["operation"]> = "update",
 ): boolean {
   const item =
     target === "git"
       ? discovery.versionControlSystems.find((candidate) => candidate.kind === "git")
-      : discovery.sourceControlProviders.find((candidate) => candidate.kind === "github");
+      : discovery.sourceControlProviders.find((candidate) => {
+          switch (target) {
+            case "github-cli":
+              return candidate.kind === "github";
+            case "gitlab-cli":
+              return candidate.kind === "gitlab";
+            case "azure-cli":
+              return candidate.kind === "azure-devops";
+          }
+        });
   return (
     item?.versionAdvisory?.actions.some(
-      (action) => action.kind === "runUpdate" && action.target === target,
+      (action) =>
+        action.kind === "runUpdate" &&
+        action.target === target &&
+        (action.operation ?? "update") === operation,
     ) === true
   );
 }
@@ -100,16 +135,23 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
     "SourceControlToolMaintenance.update",
   )(function* (input) {
     const { target } = input;
-    if (platform !== "win32") {
+    const packageManager = selectSourceControlToolPackageManager({ platform, commandAvailable });
+    if (packageManager === null) {
       return yield* updateError(
         target,
-        "One-click source control updates are currently available only for verified WinGet installations on Windows.",
+        "No supported package manager is available on this server for one-click source control tool maintenance.",
       );
     }
-    if (!commandAvailable("winget")) {
+    const operation = input.operation ?? "update";
+    const recipe = sourceControlToolPackageRecipe({
+      manager: packageManager,
+      target,
+      operation,
+    });
+    if (recipe === null) {
       return yield* updateError(
         target,
-        "WinGet is not available on this server, so Threadlines cannot run a verified update command.",
+        `${sourceControlToolLabel(target)} does not have a verified ${packageManager} package recipe yet.`,
       );
     }
 
@@ -119,26 +161,26 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
     }
 
     return yield* Effect.gen(function* () {
-      const packageId = WINGET_PACKAGE_IDS[target];
-
-      yield* vcsProcess
-        .run({
-          operation: "source-control.tool.update",
-          command: "winget",
-          args: ["upgrade", "--id", packageId, ...WINGET_UPDATE_SUFFIX],
-          cwd: config.cwd,
-          timeoutMs: UPDATE_TIMEOUT_MS,
-          maxOutputBytes: UPDATE_OUTPUT_MAX_BYTES,
-          appendTruncationMarker: true,
-        })
-        .pipe(
-          Effect.mapError((cause) =>
-            updateError(
-              target,
-              `The verified WinGet update failed: ${cause.message || "unknown process error"}`,
+      for (const step of recipe.steps) {
+        yield* vcsProcess
+          .run({
+            operation: `source-control.tool.${operation}`,
+            command: step.command,
+            args: step.args,
+            cwd: config.cwd,
+            timeoutMs: UPDATE_TIMEOUT_MS,
+            maxOutputBytes: UPDATE_OUTPUT_MAX_BYTES,
+            appendTruncationMarker: true,
+          })
+          .pipe(
+            Effect.mapError((cause) =>
+              updateError(
+                target,
+                packageManagerFailureReason({ target, operation, manager: packageManager, cause }),
+              ),
             ),
-          ),
-        );
+          );
+      }
     }).pipe(Effect.ensuring(Ref.set(updateActive, false)));
   });
 

@@ -1,5 +1,6 @@
 import type {
   SourceControlProviderDiscoveryItem,
+  SourceControlToolUpdateTarget,
   SourceControlToolVersionAdvisory,
   VcsDiscoveryItem,
 } from "@threadlines/contracts";
@@ -7,6 +8,14 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+
+import {
+  sourceControlToolLabel,
+  sourceControlToolPackageRecipe,
+  TOOL_RELEASE_URLS,
+  type SourceControlToolPackageManager,
+} from "./SourceControlToolPackages.ts";
+import type { LatestWinGetVersionResolver } from "./SourceControlWinGet.ts";
 
 const LATEST_VERSION_TIMEOUT_MS = 5_000;
 const LATEST_VERSION_CACHE_TTL_MS = 12 * 60 * 60_000;
@@ -171,39 +180,199 @@ function advisory(input: {
   };
 }
 
+function windowsUpdateActions(input: {
+  readonly target: SourceControlToolUpdateTarget;
+  readonly currentVersion: string | null;
+  readonly winGetVersion: string | null;
+  readonly canRunUpdate: boolean;
+  readonly copyCommand: string;
+  readonly openLabel: string;
+  readonly openUrl: string;
+}): SourceControlToolVersionAdvisory["actions"] {
+  const winGetUpdateAvailable =
+    input.currentVersion !== null &&
+    input.winGetVersion !== null &&
+    compareToolVersions(input.currentVersion, input.winGetVersion) < 0;
+
+  return [
+    ...(input.canRunUpdate && winGetUpdateAvailable
+      ? ([{ label: "Update now", kind: "runUpdate", target: input.target }] as const)
+      : []),
+    ...(winGetUpdateAvailable
+      ? ([{ label: "Copy WinGet command", kind: "copyCommand", value: input.copyCommand }] as const)
+      : []),
+    { label: input.openLabel, kind: "openUrl", value: input.openUrl },
+  ];
+}
+
+function installActions(input: {
+  readonly target: SourceControlToolUpdateTarget;
+  readonly packageManager: SourceControlToolPackageManager | null;
+  readonly canRun: boolean;
+  readonly openLabel: string;
+  readonly openUrl: string;
+}): SourceControlToolVersionAdvisory["actions"] {
+  const recipe = input.packageManager
+    ? sourceControlToolPackageRecipe({
+        manager: input.packageManager,
+        target: input.target,
+        operation: "install",
+      })
+    : null;
+  return [
+    ...(recipe && input.canRun
+      ? ([
+          {
+            label: "Install now",
+            kind: "runUpdate",
+            target: input.target,
+            operation: "install",
+          },
+        ] as const)
+      : []),
+    ...(recipe
+      ? ([{ label: recipe.copyLabel, kind: "copyCommand", value: recipe.copyCommand }] as const)
+      : []),
+    { label: input.openLabel, kind: "openUrl", value: input.openUrl },
+  ];
+}
+
+function updateActions(input: {
+  readonly target: SourceControlToolUpdateTarget;
+  readonly packageManager: SourceControlToolPackageManager | null;
+  readonly canRun: boolean;
+  readonly openLabel: string;
+  readonly openUrl: string;
+}): SourceControlToolVersionAdvisory["actions"] {
+  const recipe = input.packageManager
+    ? sourceControlToolPackageRecipe({
+        manager: input.packageManager,
+        target: input.target,
+        operation: "update",
+      })
+    : null;
+  return [
+    ...(recipe && input.canRun
+      ? ([
+          {
+            label: "Update now",
+            kind: "runUpdate",
+            target: input.target,
+            operation: "update",
+          },
+        ] as const)
+      : []),
+    ...(recipe
+      ? ([{ label: recipe.copyLabel, kind: "copyCommand", value: recipe.copyCommand }] as const)
+      : []),
+    { label: input.openLabel, kind: "openUrl", value: input.openUrl },
+  ];
+}
+
+function sourceControlToolTargetForItem(
+  item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem,
+): SourceControlToolUpdateTarget | null {
+  if (!("auth" in item) && item.kind === "git") return "git";
+  if ("auth" in item) {
+    switch (item.kind) {
+      case "github":
+        return "github-cli";
+      case "gitlab":
+        return "gitlab-cli";
+      case "azure-devops":
+        return "azure-cli";
+      case "bitbucket":
+      case "unknown":
+        return null;
+    }
+  }
+  return null;
+}
+
+function createMissingToolAdvisory(input: {
+  readonly item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem;
+  readonly packageManager: SourceControlToolPackageManager | null;
+  readonly canRunInstall: boolean;
+  readonly checkedAt: string;
+}): SourceControlToolVersionAdvisory | undefined {
+  const target = sourceControlToolTargetForItem(input.item);
+  if (target === null) return undefined;
+
+  const actions = installActions({
+    target,
+    packageManager: input.packageManager,
+    canRun: input.canRunInstall,
+    openLabel: "Open install guide",
+    openUrl: TOOL_RELEASE_URLS[target],
+  });
+
+  return advisory({
+    status: "install_available",
+    severity: "info",
+    currentVersion: null,
+    latestVersion: null,
+    recommendedVersion: null,
+    checkedAt: input.checkedAt,
+    message: `Install ${sourceControlToolLabel(target)} to enable this source control integration.`,
+    notificationKey: null,
+    actions,
+  });
+}
+
+function winGetAvailabilityNote(input: {
+  readonly label: string;
+  readonly currentVersion: string | null;
+  readonly targetVersion: string | null;
+  readonly winGetVersion: string | null;
+}): string | null {
+  if (
+    input.currentVersion === null ||
+    input.targetVersion === null ||
+    compareToolVersions(input.currentVersion, input.targetVersion) >= 0
+  ) {
+    return null;
+  }
+
+  if (input.winGetVersion === null) {
+    return `Threadlines could not verify ${input.label} ${input.targetVersion} in WinGet; use the official release link or check again later.`;
+  }
+  if (compareToolVersions(input.winGetVersion, input.targetVersion) >= 0) {
+    return null;
+  }
+  if (compareToolVersions(input.currentVersion, input.winGetVersion) < 0) {
+    return `WinGet currently offers ${input.winGetVersion}, but ${input.label} ${input.targetVersion} has not reached WinGet yet.`;
+  }
+  return `${input.label} ${input.targetVersion} has not reached WinGet yet; use the official release link or check again later.`;
+}
+
 function createGitHubCliAdvisory(input: {
   readonly currentVersion: string | null;
   readonly latestVersion: string | null;
+  readonly winGetVersion: string | null;
   readonly platform: NodeJS.Platform;
   readonly checkedAt: string;
   readonly canRunUpdate: boolean;
+  readonly packageManager: SourceControlToolPackageManager | null | undefined;
 }): SourceControlToolVersionAdvisory | undefined {
   const actions: SourceControlToolVersionAdvisory["actions"] =
     input.platform === "win32"
-      ? [
-          ...(input.canRunUpdate
-            ? ([
-                {
-                  label: "Update now",
-                  kind: "runUpdate",
-                  target: "github-cli",
-                },
-              ] as const)
-            : []),
-          {
-            label: "Copy WinGet command",
-            kind: "copyCommand",
-            value:
-              "winget upgrade --id GitHub.cli --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
-          },
-          { label: "Open releases", kind: "openUrl", value: GITHUB_CLI_RELEASES_URL },
-        ]
-      : input.platform === "darwin"
-        ? [
-            { label: "Copy Homebrew command", kind: "copyCommand", value: "brew upgrade gh" },
-            { label: "Open releases", kind: "openUrl", value: GITHUB_CLI_RELEASES_URL },
-          ]
-        : [{ label: "Open update instructions", kind: "openUrl", value: GITHUB_CLI_RELEASES_URL }];
+      ? windowsUpdateActions({
+          target: "github-cli",
+          currentVersion: input.currentVersion,
+          winGetVersion: input.winGetVersion,
+          canRunUpdate: input.canRunUpdate,
+          copyCommand:
+            "winget upgrade --id GitHub.cli --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+          openLabel: "Open releases",
+          openUrl: GITHUB_CLI_RELEASES_URL,
+        })
+      : updateActions({
+          target: "github-cli",
+          packageManager: input.packageManager ?? null,
+          canRun: input.canRunUpdate,
+          openLabel: "Open releases",
+          openUrl: GITHUB_CLI_RELEASES_URL,
+        });
 
   if (
     input.currentVersion !== null &&
@@ -212,6 +381,18 @@ function createGitHubCliAdvisory(input: {
     const hasWindowsTerminalFlashRisk =
       input.platform === "win32" &&
       compareToolVersions(input.currentVersion, GH_TERMINAL_FLASH_FIXED_VERSION) < 0;
+    const baseMessage = hasWindowsTerminalFlashRisk
+      ? "This GitHub CLI version can briefly open terminal windows during background telemetry on Windows and is below the recommended security-fix release."
+      : "This GitHub CLI version is below the recommended security-fix release.";
+    const availabilityNote =
+      input.platform === "win32"
+        ? winGetAvailabilityNote({
+            label: "GitHub CLI",
+            currentVersion: input.currentVersion,
+            targetVersion: GH_SECURITY_VERSION,
+            winGetVersion: input.winGetVersion,
+          })
+        : null;
     return advisory({
       status: "recommended_update",
       severity: "warning",
@@ -219,9 +400,7 @@ function createGitHubCliAdvisory(input: {
       latestVersion: input.latestVersion,
       recommendedVersion: GH_SECURITY_VERSION,
       checkedAt: input.checkedAt,
-      message: hasWindowsTerminalFlashRisk
-        ? "This GitHub CLI version can briefly open terminal windows during background telemetry on Windows and is below the recommended security-fix release."
-        : "This GitHub CLI version is below the recommended security-fix release.",
+      message: availabilityNote ? `${baseMessage} ${availabilityNote}` : baseMessage,
       notificationKey: `github-cli:security:${GH_SECURITY_VERSION}`,
       actions,
     });
@@ -232,6 +411,15 @@ function createGitHubCliAdvisory(input: {
     input.latestVersion !== null &&
     compareToolVersions(input.currentVersion, input.latestVersion) < 0
   ) {
+    const availabilityNote =
+      input.platform === "win32"
+        ? winGetAvailabilityNote({
+            label: "GitHub CLI",
+            currentVersion: input.currentVersion,
+            targetVersion: input.latestVersion,
+            winGetVersion: input.winGetVersion,
+          })
+        : null;
     return advisory({
       status: "behind_latest",
       severity: "info",
@@ -239,7 +427,7 @@ function createGitHubCliAdvisory(input: {
       latestVersion: input.latestVersion,
       recommendedVersion: input.latestVersion,
       checkedAt: input.checkedAt,
-      message: "A newer GitHub CLI version is available for this environment.",
+      message: availabilityNote ?? "A newer GitHub CLI version is available for this environment.",
       notificationKey: null,
       actions,
     });
@@ -265,37 +453,37 @@ function createGitHubCliAdvisory(input: {
 function createGitForWindowsAdvisory(input: {
   readonly currentVersion: string | null;
   readonly latestVersion: string | null;
+  readonly winGetVersion: string | null;
   readonly platform: NodeJS.Platform;
   readonly checkedAt: string;
   readonly canRunUpdate: boolean;
+  readonly packageManager: SourceControlToolPackageManager | null | undefined;
 }): SourceControlToolVersionAdvisory | undefined {
   if (input.platform !== "win32") {
     return undefined;
   }
 
-  const actions: SourceControlToolVersionAdvisory["actions"] = [
-    ...(input.canRunUpdate
-      ? ([
-          {
-            label: "Update now",
-            kind: "runUpdate",
-            target: "git",
-          },
-        ] as const)
-      : []),
-    {
-      label: "Copy WinGet command",
-      kind: "copyCommand",
-      value:
-        "winget upgrade --id Git.Git --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
-    },
-    { label: "Open official release", kind: "openUrl", value: GIT_FOR_WINDOWS_RELEASES_URL },
-  ];
+  const actions = windowsUpdateActions({
+    target: "git",
+    currentVersion: input.currentVersion,
+    winGetVersion: input.winGetVersion,
+    canRunUpdate: input.canRunUpdate,
+    copyCommand:
+      "winget upgrade --id Git.Git --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+    openLabel: "Open official release",
+    openUrl: GIT_FOR_WINDOWS_RELEASES_URL,
+  });
 
   if (
     input.currentVersion !== null &&
     compareToolVersions(input.currentVersion, GIT_FOR_WINDOWS_SECURITY_VERSION) < 0
   ) {
+    const availabilityNote = winGetAvailabilityNote({
+      label: "Git for Windows",
+      currentVersion: input.currentVersion,
+      targetVersion: GIT_FOR_WINDOWS_SECURITY_VERSION,
+      winGetVersion: input.winGetVersion,
+    });
     return advisory({
       status: "recommended_update",
       severity: "warning",
@@ -303,7 +491,12 @@ function createGitForWindowsAdvisory(input: {
       latestVersion: input.latestVersion,
       recommendedVersion: GIT_FOR_WINDOWS_SECURITY_VERSION,
       checkedAt: input.checkedAt,
-      message: "This Git for Windows version is below the recommended security-fix release.",
+      message: [
+        "This Git for Windows version is below the recommended security-fix release.",
+        availabilityNote,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" "),
       notificationKey: `git-for-windows:security:${GIT_FOR_WINDOWS_SECURITY_VERSION}`,
       actions,
     });
@@ -314,6 +507,12 @@ function createGitForWindowsAdvisory(input: {
     input.latestVersion !== null &&
     compareToolVersions(input.currentVersion, input.latestVersion) < 0
   ) {
+    const availabilityNote = winGetAvailabilityNote({
+      label: "Git for Windows",
+      currentVersion: input.currentVersion,
+      targetVersion: input.latestVersion,
+      winGetVersion: input.winGetVersion,
+    });
     return advisory({
       status: "behind_latest",
       severity: "info",
@@ -321,7 +520,7 @@ function createGitForWindowsAdvisory(input: {
       latestVersion: input.latestVersion,
       recommendedVersion: input.latestVersion,
       checkedAt: input.checkedAt,
-      message: "A newer Git for Windows release is available.",
+      message: availabilityNote ?? "A newer Git for Windows release is available.",
       notificationKey: null,
       actions,
     });
@@ -350,26 +549,46 @@ export function withSourceControlToolVersionAdvisory<
   readonly item: Item;
   readonly platform: NodeJS.Platform;
   readonly latestVersionResolver: LatestVersionResolver;
+  readonly winGetVersionResolver?: LatestWinGetVersionResolver;
   readonly canRunUpdate?: boolean;
+  readonly packageManager?: SourceControlToolPackageManager | null;
+  readonly canRunInstall?: boolean;
 }): Effect.Effect<Item> {
+  const checkedAt = new Date().toISOString();
+
   if (input.item.status !== "available") {
-    return Effect.succeed(input.item);
+    const versionAdvisory = createMissingToolAdvisory({
+      item: input.item,
+      packageManager: input.packageManager ?? null,
+      canRunInstall: input.canRunInstall === true,
+      checkedAt,
+    });
+    return Effect.succeed(
+      versionAdvisory ? ({ ...input.item, versionAdvisory } as Item) : input.item,
+    );
   }
 
   const resolver = input.latestVersionResolver;
   const versionLine = Option.getOrNull(input.item.version);
-  const checkedAt = new Date().toISOString();
 
   if ("auth" in input.item && input.item.kind === "github") {
     const currentVersion = parseGitHubCliVersion(versionLine);
-    return resolver("github-cli").pipe(
-      Effect.map((latestVersion) => {
+    return Effect.all({
+      latestVersion: resolver("github-cli"),
+      winGetVersion:
+        input.platform === "win32" && input.winGetVersionResolver
+          ? input.winGetVersionResolver("github-cli")
+          : Effect.succeed(null),
+    }).pipe(
+      Effect.map(({ latestVersion, winGetVersion }) => {
         const versionAdvisory = createGitHubCliAdvisory({
           currentVersion,
           latestVersion,
+          winGetVersion,
           platform: input.platform,
           checkedAt,
           canRunUpdate: input.canRunUpdate === true,
+          packageManager: input.packageManager,
         });
         return versionAdvisory ? ({ ...input.item, versionAdvisory } as Item) : input.item;
       }),
@@ -383,14 +602,21 @@ export function withSourceControlToolVersionAdvisory<
     }
 
     const currentVersion = parseGitVersion(versionLine);
-    return resolver("git-for-windows").pipe(
-      Effect.map((latestVersion) => {
+    return Effect.all({
+      latestVersion: resolver("git-for-windows"),
+      winGetVersion: input.winGetVersionResolver
+        ? input.winGetVersionResolver("git")
+        : Effect.succeed(null),
+    }).pipe(
+      Effect.map(({ latestVersion, winGetVersion }) => {
         const versionAdvisory = createGitForWindowsAdvisory({
           currentVersion,
           latestVersion,
+          winGetVersion,
           platform: input.platform,
           checkedAt,
           canRunUpdate: input.canRunUpdate === true,
+          packageManager: input.packageManager,
         });
         return versionAdvisory ? ({ ...input.item, versionAdvisory } as Item) : input.item;
       }),
