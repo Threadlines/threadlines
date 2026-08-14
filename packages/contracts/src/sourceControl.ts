@@ -139,6 +139,7 @@ export type SourceControlProviderAuth = typeof SourceControlProviderAuth.Type;
 
 export const SourceControlToolVersionAdvisoryStatus = Schema.Literals([
   "unknown",
+  "install_available",
   "current",
   "behind_latest",
   "recommended_update",
@@ -150,8 +151,16 @@ export const SourceControlToolVersionAdvisorySeverity = Schema.Literals(["info",
 export type SourceControlToolVersionAdvisorySeverity =
   typeof SourceControlToolVersionAdvisorySeverity.Type;
 
-export const SourceControlToolUpdateTarget = Schema.Literals(["github-cli", "git"]);
+export const SourceControlToolUpdateTarget = Schema.Literals([
+  "github-cli",
+  "git",
+  "gitlab-cli",
+  "azure-cli",
+]);
 export type SourceControlToolUpdateTarget = typeof SourceControlToolUpdateTarget.Type;
+
+export const SourceControlToolUpdateOperation = Schema.Literals(["install", "update"]);
+export type SourceControlToolUpdateOperation = typeof SourceControlToolUpdateOperation.Type;
 
 export const SourceControlToolVersionAdvisoryAction = Schema.Union([
   Schema.Struct({
@@ -163,6 +172,7 @@ export const SourceControlToolVersionAdvisoryAction = Schema.Union([
     label: TrimmedNonEmptyString,
     kind: Schema.Literal("runUpdate"),
     target: SourceControlToolUpdateTarget,
+    operation: Schema.optional(SourceControlToolUpdateOperation),
   }),
 ]);
 export type SourceControlToolVersionAdvisoryAction =
@@ -213,11 +223,13 @@ export type SourceControlDiscoveryResult = typeof SourceControlDiscoveryResult.T
 
 export const SourceControlToolUpdateInput = Schema.Struct({
   target: SourceControlToolUpdateTarget,
+  operation: Schema.optional(SourceControlToolUpdateOperation),
 });
 export type SourceControlToolUpdateInput = typeof SourceControlToolUpdateInput.Type;
 
 export const SourceControlToolUpdateResult = Schema.Struct({
   target: SourceControlToolUpdateTarget,
+  operation: SourceControlToolUpdateOperation,
   status: Schema.Literals(["succeeded", "unchanged"]),
   previousVersion: Schema.NullOr(TrimmedNonEmptyString),
   currentVersion: Schema.NullOr(TrimmedNonEmptyString),
