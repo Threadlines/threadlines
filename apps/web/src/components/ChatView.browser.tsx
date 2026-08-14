@@ -2261,7 +2261,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("swaps the sidebar Settings action for a history-aware Back action on Usage", async () => {
+  it("swaps the sidebar Usage action for a history-aware Back action on Usage", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -2298,6 +2298,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
         Array.from(footer.querySelectorAll("button")).some(
           (button) => button.textContent?.trim() === "Settings",
         ),
+      ).toBe(true);
+      expect(
+        Array.from(footer.querySelectorAll("button")).some((button) =>
+          button.textContent?.trim().startsWith("Usage"),
+        ),
       ).toBe(false);
 
       backButton.click();
@@ -2308,10 +2313,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       await waitForElement(
         () =>
-          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find(
-            (button) => button.textContent?.trim() === "Settings",
+          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            button.textContent?.trim().startsWith("Usage"),
           ) ?? null,
-        "Expected Settings to return after leaving Usage.",
+        "Expected Usage to return after leaving Usage.",
       );
     } finally {
       await mounted.cleanup();

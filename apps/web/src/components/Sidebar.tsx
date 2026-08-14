@@ -379,20 +379,27 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarUpdatePill />
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarUsageMeter />
+          {isOnUsage ? (
+            <SidebarMenuButton
+              size="sm"
+              className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+              onClick={handleBackClick}
+            >
+              <ArrowLeftIcon className="size-3.5" />
+              <span className="text-xs">Back</span>
+            </SidebarMenuButton>
+          ) : (
+            <SidebarUsageMeter />
+          )}
         </SidebarMenuItem>
         <SidebarMenuItem className="flex items-center gap-1.5">
           <SidebarMenuButton
             size="sm"
             className="flex-1 gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-            onClick={isOnUsage ? handleBackClick : handleSettingsClick}
+            onClick={handleSettingsClick}
           >
-            {isOnUsage ? (
-              <ArrowLeftIcon className="size-3.5" />
-            ) : (
-              <SettingsIcon className="size-3.5" />
-            )}
-            <span className="text-xs">{isOnUsage ? "Back" : "Settings"}</span>
+            <SettingsIcon className="size-3.5" />
+            <span className="text-xs">Settings</span>
           </SidebarMenuButton>
           <SidebarVersionTag />
         </SidebarMenuItem>
