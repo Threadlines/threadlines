@@ -198,4 +198,53 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       assert.equal(circularError.detail, "Failed to encode Codex App Server message");
     }),
   );
+
+  it.effect("keeps reading responses while an inbound request handler is pending", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const requestStarted = yield* Deferred.make<void>();
+      const releaseRequest = yield* Deferred.make<void>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onRequest: () =>
+          Deferred.succeed(requestStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseRequest)),
+            Effect.as({ answers: {} }),
+          ),
+      });
+
+      yield* Queue.offer(
+        input,
+        encodeJsonl({
+          id: 77,
+          method: "item/tool/requestUserInput",
+          params: {
+            itemId: "item-input-1",
+            threadId: "thread-1",
+            turnId: "turn-1",
+            questions: [{ id: "choice", header: "Choice", question: "Continue?" }],
+          },
+        }),
+      );
+      yield* Deferred.await(requestStarted);
+
+      const pendingInterrupt = yield* transport
+        .request("turn/interrupt", { threadId: "thread-1", turnId: "turn-1" })
+        .pipe(Effect.forkScoped);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+        id: 1,
+        method: "turn/interrupt",
+        params: { threadId: "thread-1", turnId: "turn-1" },
+      });
+
+      yield* Queue.offer(input, encodeJsonl({ id: 1, result: {} }));
+      assert.deepEqual(yield* Fiber.join(pendingInterrupt), {});
+
+      yield* Deferred.succeed(releaseRequest, undefined);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+        id: 77,
+        result: { answers: {} },
+      });
+    }),
+  );
 });

@@ -504,6 +504,7 @@ export interface ChatComposerProps {
   activePendingDraftAnswers: Record<string, PendingUserInputDraftAnswer>;
   activePendingQuestionIndex: number;
   respondingRequestIds: ApprovalRequestId[];
+  respondingUserInputRequestIds: ApprovalRequestId[];
   /** True while the timeline is scrolled away from the bottom; auto-collapses the questions panel. */
   isTimelineScrolledAway: boolean;
 
@@ -626,6 +627,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activePendingDraftAnswers,
     activePendingQuestionIndex,
     respondingRequestIds,
+    respondingUserInputRequestIds,
     isTimelineScrolledAway,
     showPlanFollowUpPrompt,
     activeProposedPlan,
@@ -3119,7 +3121,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
-                  respondingRequestIds={respondingRequestIds}
+                  respondingRequestIds={respondingUserInputRequestIds}
                   answers={activePendingDraftAnswers}
                   questionIndex={activePendingQuestionIndex}
                   isTimelineScrolledAway={isTimelineScrolledAway}
@@ -3160,7 +3162,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             >
               <ComposerPendingUserInputPanel
                 pendingUserInputs={pendingUserInputs}
-                respondingRequestIds={respondingRequestIds}
+                respondingRequestIds={respondingUserInputRequestIds}
                 answers={activePendingDraftAnswers}
                 questionIndex={activePendingQuestionIndex}
                 isTimelineScrolledAway={isTimelineScrolledAway}

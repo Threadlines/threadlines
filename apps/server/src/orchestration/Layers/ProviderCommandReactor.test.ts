@@ -158,6 +158,7 @@ describe("ProviderCommandReactor", () => {
      *  context-seed fallback path. */
     readonly failNativeForkStart?: boolean;
     readonly failRealtimeStart?: boolean;
+    readonly interruptTurn?: ProviderServiceShape["interruptTurn"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -265,7 +266,7 @@ describe("ProviderCommandReactor", () => {
             : asTurnId("turn-1"),
       }),
     );
-    const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const interruptTurn = vi.fn(input?.interruptTurn ?? ((_: unknown) => Effect.void));
     const realtimeStart = vi.fn<NonNullable<ProviderServiceShape["realtimeStart"]>>(() =>
       input?.failRealtimeStart
         ? Effect.fail(
@@ -2934,6 +2935,162 @@ describe("ProviderCommandReactor", () => {
         thread?.session?.status === "interrupted" &&
         thread.session.activeTurnId === null &&
         thread.latestTurn?.state === "interrupted"
+      );
+    });
+  });
+
+  it("settles interrupted turns and expires pending user input after provider acknowledgement", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-for-hung-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-user-input-requested-before-hung-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-user-input-before-hung-interrupt"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          payload: {
+            requestId: "user-input-request-1",
+            questions: [
+              {
+                id: "browser_visibility",
+                header: "Visibility",
+                question: "Which browser tab should be visible?",
+                options: [
+                  {
+                    label: "Foreground if blank",
+                    description: "Show the agent tab only when the visible tab is empty.",
+                  },
+                ],
+              },
+            ],
+          },
+          turnId: asTurnId("turn-1"),
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-hangs"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.session?.status === "interrupted" &&
+        thread.session.activeTurnId === null &&
+        thread.latestTurn?.state === "interrupted" &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "user-input-request-1" &&
+            (activity.payload as Record<string, unknown>).reason === "turn-interrupted",
+        )
+      );
+    });
+  });
+
+  it("expires pending user input that arrives after the thread is already interrupted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-interrupted-before-user-input"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "interrupted",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-late-user-input-requested-after-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-late-user-input-after-interrupt"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          payload: {
+            requestId: "user-input-request-late-1",
+            questions: [
+              {
+                id: "browser_visibility",
+                header: "Visibility",
+                question: "Which browser tab should be visible?",
+                options: [
+                  {
+                    label: "Foreground if blank",
+                    description: "Show the agent tab only when the visible tab is empty.",
+                  },
+                ],
+              },
+            ],
+          },
+          turnId: asTurnId("turn-1"),
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId ===
+              "user-input-request-late-1" &&
+            (activity.payload as Record<string, unknown>).reason === "turn-interrupted",
+        ) === true
       );
     });
   });

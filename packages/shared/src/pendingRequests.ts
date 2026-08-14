@@ -32,11 +32,12 @@ export const USER_INPUT_ACTIVITY_KINDS: PendingRequestActivityKinds = {
 };
 
 /**
- * `reason` payload value on `*.resolved` activities appended when a pending
- * request is closed because its provider session stopped rather than because
- * the provider answered it.
+ * `reason` payload values on `*.resolved` activities appended when a pending
+ * request is closed by host-side lifecycle rather than because the provider
+ * answered it.
  */
 export const PENDING_REQUEST_EXPIRED_REASON = "session-stopped";
+export const PENDING_REQUEST_INTERRUPTED_REASON = "turn-interrupted";
 
 const STALE_PENDING_REQUEST_DETAIL_MARKERS = [
   "no active provider session",

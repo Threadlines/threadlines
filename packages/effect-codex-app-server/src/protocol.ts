@@ -149,6 +149,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const nextRequestId = yield* Ref.make(1);
     const remainder = yield* Ref.make("");
     const terminationHandled = yield* Ref.make(false);
+    const scope = yield* Effect.scope;
 
     const logProtocol = (event: CodexAppServerProtocolLogEvent) => {
       if (event.direction === "incoming" && !options.logIncoming) {
@@ -265,6 +266,12 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
                     respondError(request.id, CodexError.normalizeToRequestError(error)),
                   onSuccess: (result) => respond(request.id, result),
                 }),
+                // Server-initiated requests such as requestUserInput remain
+                // open while the user decides. Keep reading the bidirectional
+                // JSON-RPC stream so client-initiated requests (especially
+                // turn/interrupt) can receive their responses in the meantime.
+                Effect.forkIn(scope),
+                Effect.asVoid,
               )
             : Effect.void,
         ),

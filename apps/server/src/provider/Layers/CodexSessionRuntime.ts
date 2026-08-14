@@ -2237,10 +2237,18 @@ export const makeCodexSessionRuntime = (
           if (!effectiveTurnId) {
             return;
           }
-          yield* client.request("turn/interrupt", {
-            threadId: providerThreadId,
-            turnId: effectiveTurnId,
-          });
+          yield* withCodexRequestTimeout(
+            "interrupt a Codex turn",
+            client.request("turn/interrupt", {
+              threadId: providerThreadId,
+              turnId: effectiveTurnId,
+            }),
+          );
+          // Codex clears provider-side requests owned by an interrupted turn.
+          // Release the matching local handlers too, otherwise their deferred
+          // waits survive until the entire session closes.
+          yield* settlePendingApprovals("cancel");
+          yield* settlePendingUserInputs({});
         }),
       realtimeStart: Effect.fnUntraced(function* (input?: CodexSessionRuntimeRealtimeStartInput) {
         const providerThreadId = yield* readProviderThreadId;

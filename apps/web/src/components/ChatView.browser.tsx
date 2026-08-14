@@ -5887,13 +5887,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("shows a pointer cursor for the running stop button", async () => {
+  it("shows a pointer cursor and dispatches one interrupt for repeated stop clicks", async () => {
+    const activeTurnId = "turn-stop-button" as TurnId;
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
         targetMessageId: "msg-user-stop-button-cursor" as MessageId,
         targetText: "stop button cursor target",
         sessionStatus: "running",
+        sessionActiveTurnId: activeTurnId,
       }),
     });
 
@@ -5904,6 +5906,21 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       expect(getComputedStyle(stopButton).cursor).toBe("pointer");
+      stopButton.click();
+      stopButton.click();
+
+      await vi.waitFor(() => {
+        const interruptRequests = wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.turn.interrupt",
+        );
+        expect(interruptRequests).toHaveLength(1);
+        expect(interruptRequests[0]).toMatchObject({
+          threadId: THREAD_ID,
+          turnId: activeTurnId,
+        });
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -9026,14 +9043,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("submits pending user input after the final option selection resolves the draft answers", async () => {
+    let resolveDispatch!: (value: { sequence: number }) => void;
+    const pendingDispatch = new Promise<{ sequence: number }>((resolve) => {
+      resolveDispatch = resolve;
+    });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithPendingUserInput(),
       resolveRpc: (body) => {
         if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
-          return {
-            sequence: fixture.snapshot.snapshotSequence + 1,
-          };
+          return pendingDispatch;
         }
         return undefined;
       },
@@ -9070,9 +9089,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
               risk: "Conservative",
             },
           });
+          expect(finalOption.disabled).toBe(true);
         },
         { timeout: 8_000, interval: 16 },
       );
+
+      finalOption.click();
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.user-input.respond",
+        ),
+      ).toHaveLength(1);
+      resolveDispatch({ sequence: fixture.snapshot.snapshotSequence + 1 });
     } finally {
       await mounted.cleanup();
     }

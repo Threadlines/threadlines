@@ -348,6 +348,7 @@ const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_PROVIDER_DRIVER = ProviderDriverKind.make("claudeAgent");
 const LAYOUT_STICK_TO_BOTTOM_FRAME_COUNT = 4;
 const PROGRAMMATIC_STICK_TO_BOTTOM_SUPPRESS_MS = 600;
+const INTERRUPT_RETRY_DELAY_MS = 12_000;
 type McpAuthReconnectStatus = "running" | "completed";
 
 function finiteScrollMetric(value: number | null | undefined): number | null {
@@ -1176,6 +1177,7 @@ export default function ChatView(props: ChatViewProps) {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  const interruptInFlightTurnByThreadRef = useRef(new Map<ThreadId, TurnId | null>());
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -4954,12 +4956,29 @@ export default function ChatView(props: ChatViewProps) {
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
-    await api.orchestration.dispatchCommand({
-      type: "thread.turn.interrupt",
-      commandId: newCommandId(),
-      threadId: activeThread.id,
-      createdAt: new Date().toISOString(),
-    });
+    const threadId = activeThread.id;
+    const turnId = activeThread.session?.activeTurnId ?? activeThread.latestTurn?.turnId ?? null;
+    if (interruptInFlightTurnByThreadRef.current.get(threadId) === turnId) {
+      return;
+    }
+    interruptInFlightTurnByThreadRef.current.set(threadId, turnId);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.turn.interrupt",
+        commandId: newCommandId(),
+        threadId,
+        ...(turnId ? { turnId } : {}),
+        createdAt: new Date().toISOString(),
+      });
+      window.setTimeout(() => {
+        if (interruptInFlightTurnByThreadRef.current.get(threadId) === turnId) {
+          interruptInFlightTurnByThreadRef.current.delete(threadId);
+        }
+      }, INTERRUPT_RETRY_DELAY_MS);
+    } catch (error) {
+      interruptInFlightTurnByThreadRef.current.delete(threadId);
+      throw error;
+    }
   };
 
   const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
@@ -6638,6 +6657,7 @@ export default function ChatView(props: ChatViewProps) {
                   activePendingDraftAnswers={activePendingDraftAnswers}
                   activePendingQuestionIndex={activePendingQuestionIndex}
                   respondingRequestIds={respondingRequestIds}
+                  respondingUserInputRequestIds={respondingUserInputRequestIds}
                   isTimelineScrolledAway={isTimelineScrolledFarFromEnd}
                   showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                   activeProposedPlan={activeProposedPlan}

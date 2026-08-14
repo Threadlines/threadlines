@@ -31,6 +31,7 @@ import {
   APPROVAL_ACTIVITY_KINDS,
   collectOpenPendingRequests,
   PENDING_REQUEST_EXPIRED_REASON,
+  PENDING_REQUEST_INTERRUPTED_REASON,
   USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
 import * as Cache from "effect/Cache";
@@ -90,6 +91,7 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-start-requested"
       | "thread.follow-up-submitted"
       | "thread.turn-interrupt-requested"
+      | "thread.activity-appended"
       | "thread.realtime-start-requested"
       | "thread.realtime-stop-requested"
       | "thread.context-compact-requested"
@@ -218,6 +220,7 @@ const serverCommandId = (tag: string): CommandId =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export function providerErrorLabel(value: string | undefined): string {
@@ -574,6 +577,7 @@ const make = Effect.gen(function* () {
       readonly turnId: TurnId | null;
     }>;
     readonly detail: string;
+    readonly reason?: string;
   }) {
     const expirations = [
       ...collectOpenPendingRequests(input.activities, APPROVAL_ACTIVITY_KINDS).map((open) => ({
@@ -604,7 +608,7 @@ const make = Effect.gen(function* () {
           summary,
           payload: {
             requestId: open.requestId,
-            reason: PENDING_REQUEST_EXPIRED_REASON,
+            reason: input.reason ?? PENDING_REQUEST_EXPIRED_REASON,
             detail: input.detail,
           },
           turnId: open.activity.turnId,
@@ -614,6 +618,34 @@ const make = Effect.gen(function* () {
       });
     }
   });
+
+  const expireOpenPendingRequestsForInterruptedTurn = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly activities: ReadonlyArray<{
+      readonly kind: string;
+      readonly payload?: unknown;
+      readonly turnId: TurnId | null;
+    }>;
+  }) {
+    yield* expireOpenPendingRequests({
+      threadId: input.threadId,
+      activities: input.activities,
+      detail: "The provider turn was interrupted before the request was answered.",
+      reason: PENDING_REQUEST_INTERRUPTED_REASON,
+    });
+  });
+
+  const isPendingRequestActivityAppended = (
+    event: OrchestrationEvent,
+  ): event is Extract<ProviderIntentEvent, { type: "thread.activity-appended" }> => {
+    if (event.type !== "thread.activity-appended") {
+      return false;
+    }
+    const kind = event.payload.activity.kind;
+    return (
+      kind === APPROVAL_ACTIVITY_KINDS.requested || kind === USER_INPUT_ACTIVITY_KINDS.requested
+    );
+  };
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
@@ -1616,33 +1648,65 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    const session = thread.session;
+    if (session.status === "interrupted" && session.activeTurnId === null) {
+      yield* expireOpenPendingRequestsForInterruptedTurn({
+        threadId: event.payload.threadId,
+        activities: thread.activities,
+      });
+      return;
+    }
 
-    // `turn/interrupt` is an acknowledgement that the provider accepted the
-    // cancellation. Settle the orchestration session immediately instead of
-    // leaving the Stop button active while waiting for the asynchronous
-    // provider completion notification. That notification can still advance
-    // the session from interrupted to ready when it arrives.
-    const interruptedThread = yield* resolveThread(event.payload.threadId);
-    const interruptedSession = interruptedThread?.session;
-    if (
-      interruptedSession &&
-      (interruptedSession.status === "running" || interruptedSession.activeTurnId !== null)
-    ) {
-      const interruptedAt = yield* nowIso;
+    // Orchestration turn ids are not provider turn ids, so interrupt by session.
+    const interruptOutcome = yield* providerService
+      .interruptTurn({ threadId: event.payload.threadId })
+      .pipe(
+        Effect.as({ _tag: "success" as const }),
+        Effect.catchCause((cause) => Effect.succeed({ _tag: "failure" as const, cause })),
+        Effect.timeoutOption(PROVIDER_INTERRUPT_ACK_TIMEOUT),
+      );
+
+    if (Option.isNone(interruptOutcome)) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.interrupt.failed",
+        summary: "Provider turn interrupt failed",
+        detail: `Timed out waiting ${Duration.toMillis(PROVIDER_INTERRUPT_ACK_TIMEOUT) / 1000} seconds for the provider to acknowledge the interrupt.`,
+        turnId: event.payload.turnId ?? session.activeTurnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    if (interruptOutcome.value._tag === "failure") {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.interrupt.failed",
+        summary: "Provider turn interrupt failed",
+        detail: Cause.pretty(interruptOutcome.value.cause),
+        turnId: event.payload.turnId ?? session.activeTurnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    // The provider has acknowledged cancellation. Settle the session and
+    // provider-owned prompts now; a later completion notification may advance
+    // the session from interrupted to ready.
+    if (session.status === "running" || session.activeTurnId !== null) {
       yield* setThreadSession({
         threadId: event.payload.threadId,
         session: {
-          ...interruptedSession,
+          ...session,
           status: "interrupted",
           activeTurnId: null,
           lastError: null,
-          updatedAt: interruptedAt,
+          updatedAt: event.payload.createdAt,
         },
-        createdAt: interruptedAt,
+        createdAt: event.payload.createdAt,
       });
     }
+    yield* expireOpenPendingRequestsForInterruptedTurn({
+      threadId: event.payload.threadId,
+      activities: thread.activities,
+    });
   });
 
   const recoverRealtimeFailure = (input: {
@@ -2055,6 +2119,15 @@ const make = Effect.gen(function* () {
       ) {
         yield* maybeApplyQueuedCheckoutSwitch(event.payload.threadId, event.occurredAt);
       }
+      if (event.payload.session.status === "interrupted") {
+        const thread = yield* resolveThread(event.payload.threadId);
+        if (thread) {
+          yield* expireOpenPendingRequestsForInterruptedTurn({
+            threadId: event.payload.threadId,
+            activities: thread.activities,
+          });
+        }
+      }
       return;
     }
     const thread = yield* resolveThread(event.payload.threadId);
@@ -2083,6 +2156,37 @@ const make = Effect.gen(function* () {
       detail: "The provider session stopped before the request was answered.",
     });
   });
+
+  const processPendingRequestActivityAppended = Effect.fn("processPendingRequestActivityAppended")(
+    function* (event: Extract<ProviderIntentEvent, { type: "thread.activity-appended" }>) {
+      if (!isPendingRequestActivityAppended(event)) {
+        return;
+      }
+      const thread = yield* resolveThread(event.payload.threadId);
+      const session = thread?.session;
+      if (!thread || !session) {
+        return;
+      }
+      const requestTurnWasInterrupted =
+        event.payload.activity.turnId !== null &&
+        thread.latestTurn?.turnId === event.payload.activity.turnId &&
+        thread.latestTurn.state === "interrupted";
+      if (session.status === "interrupted" || requestTurnWasInterrupted) {
+        yield* expireOpenPendingRequestsForInterruptedTurn({
+          threadId: event.payload.threadId,
+          activities: thread.activities,
+        });
+        return;
+      }
+      if (session.status === "stopped") {
+        yield* expireOpenPendingRequests({
+          threadId: event.payload.threadId,
+          activities: thread.activities,
+          detail: "The provider session stopped before the request was answered.",
+        });
+      }
+    },
+  );
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
@@ -2148,6 +2252,9 @@ const make = Effect.gen(function* () {
       case "thread.user-input-response-requested":
         yield* processUserInputResponseRequested(event);
         return;
+      case "thread.activity-appended":
+        yield* processPendingRequestActivityAppended(event);
+        return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
@@ -2185,6 +2292,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.follow-up-submitted" ||
         event.type === "thread.turn-interrupt-requested" ||
+        isPendingRequestActivityAppended(event) ||
         event.type === "thread.realtime-start-requested" ||
         event.type === "thread.realtime-stop-requested" ||
         event.type === "thread.context-compact-requested" ||

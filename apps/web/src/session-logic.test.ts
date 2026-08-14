@@ -308,14 +308,20 @@ describe("deriveThreadSubagentHistory", () => {
     }),
   ];
 
-  it("does not mislabel a native Codex child with its parent turn settings", () => {
+  /** Codex v2 clones the parent thread's config into a spawned child and never
+   *  states the child's model or effort anywhere on the wire (verified against
+   *  codex-rs: spawn only overrides the cloned config when the orchestrator
+   *  passes explicit args, and `thread/settings/updated` fires on change only).
+   *  The parent turn's dispatched selection is therefore the truthful default,
+   *  not a mislabel. */
+  it("labels a native Codex child with its parent turn's dispatched settings", () => {
     const history = deriveThreadSubagentHistory(codexSpawnActivities());
 
     expect(history).toHaveLength(1);
     expect(history[0]?.item).toMatchObject({
       agentThreadId: "codex-child-1",
-      model: null,
-      reasoningEffort: null,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
       status: "completed",
     });
     expect(history[0]?.resultBody).toBe("50 .tsx files.");
@@ -364,13 +370,13 @@ describe("deriveThreadSubagentHistory", () => {
     ]);
   });
 
-  it("uses settings stated on the native spawn without inventing omitted effort", () => {
+  it("keeps a model stated on the spawn over the turn's dispatched selection", () => {
     const history = deriveThreadSubagentHistory(
       codexSpawnActivities({ spawnModel: "gpt-5.5-codex" }),
     );
 
     expect(history[0]?.item.model).toBe("gpt-5.5-codex");
-    expect(history[0]?.item.reasoningEffort).toBeNull();
+    expect(history[0]?.item.reasoningEffort).toBe("high");
   });
 
   /** The durable roster seeds a record for every agent before the lifecycle
