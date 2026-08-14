@@ -61,6 +61,12 @@ import {
   resolveDesktopUserDataLocation,
   resolveDesktopUserDataPath,
 } from "./app/desktopUserData.ts";
+import {
+  readSingleInstanceGateConfigFromEnv,
+  resolvePrimaryReadinessProbeUrl,
+  resolveServerRuntimeStatePath,
+  shouldRequestSingleInstanceLock,
+} from "./app/singleInstanceGate.ts";
 
 // userData must be final before Electron's "ready" event: Chromium spawns its
 // sandboxed helper processes (GPU, network service) at ready with sandbox
@@ -79,6 +85,76 @@ Electron.app.setPath(
     directoryExists: NodeFS.existsSync,
   }),
 );
+
+// Ordering matters: Electron scopes the single-instance lock to the current
+// userData path and creates that directory as it acquires the lock, so the
+// request has to come after the setPath above. Asking first would both lock the
+// wrong path and pre-create a directory the legacy-directory probe reads.
+const isPrimaryInstance = shouldRequestSingleInstanceLock(
+  readSingleInstanceGateConfigFromEnv(process.env),
+)
+  ? Electron.app.requestSingleInstanceLock()
+  : true;
+
+// How long a denied launch waits for the primary's backend to answer before
+// concluding the primary is wedged rather than merely busy.
+const PRIMARY_READINESS_PROBE_TIMEOUT_MS = 2500;
+
+/**
+ * A denied secondary launch's whole job. Losing the lock already told the
+ * primary to raise its window, so when that primary is demonstrably healthy the
+ * right behavior is the silent hand-off every single-instance app does. The
+ * dialog is reserved for the case it was designed for — a primary that holds
+ * the lock but does not answer — because `showErrorBox` blocks this process
+ * until dismissed, and a dialog nobody notices would otherwise leave an idle
+ * Threadlines lingering in Task Manager.
+ */
+async function exitAfterSecondaryInstanceHandoff(): Promise<void> {
+  const probeUrl = resolvePrimaryReadinessProbeUrl(
+    (() => {
+      try {
+        return NodeFS.readFileSync(
+          resolveServerRuntimeStatePath({
+            env: process.env,
+            homeDirectory: NodeOS.homedir(),
+            path: NodePath,
+          }),
+          "utf8",
+        );
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+
+  let primaryIsHealthy = false;
+  if (probeUrl !== undefined) {
+    try {
+      const response = await fetch(probeUrl, {
+        signal: AbortSignal.timeout(PRIMARY_READINESS_PROBE_TIMEOUT_MS),
+      });
+      primaryIsHealthy = response.ok;
+    } catch {
+      primaryIsHealthy = false;
+    }
+  }
+
+  if (primaryIsHealthy) {
+    Electron.app.exit(0);
+    return;
+  }
+
+  // Safe before "ready": showErrorBox is the one dialog Electron allows early.
+  Electron.dialog.showErrorBox(
+    "Threadlines is already running",
+    "Another Threadlines process is already running on this computer but is not responding. Quit Threadlines from Task Manager (Windows) or Activity Monitor (Mac) and try again.",
+  );
+  Electron.app.exit(1);
+}
+
+if (!isPrimaryInstance) {
+  void exitAfterSecondaryInstanceHandoff();
+}
 
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -195,4 +271,10 @@ const desktopRuntimeLayer = ElectronProtocol.layerSchemePrivileges.pipe(
   ),
 );
 
-DesktopApp.program.pipe(Effect.provide(desktopRuntimeLayer), NodeRuntime.runMain);
+// Every layer above is a lazy description; this is the only line that builds
+// them. A secondary instance must never reach it, or it would spawn a second
+// backend, probe for a port, and open the shared SQLite state behind the
+// running app's back.
+if (isPrimaryInstance) {
+  DesktopApp.program.pipe(Effect.provide(desktopRuntimeLayer), NodeRuntime.runMain);
+}

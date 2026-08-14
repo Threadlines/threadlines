@@ -247,6 +247,12 @@ export interface DesktopServerExposureBackendConfig {
   readonly port: number;
   readonly bindHost: string;
   readonly httpBaseUrl: URL;
+  /**
+   * True when the port was chosen by scanning for a free one rather than being
+   * configured explicitly. Only a scanned port may be moved on a later backend
+   * restart; an explicitly configured port stays put so its failure is visible.
+   */
+  readonly portSelectedByScan: boolean;
   readonly tailscaleServeEnabled: boolean;
   readonly tailscaleServePort: number;
 }
@@ -261,6 +267,7 @@ export interface DesktopServerExposureShape {
   readonly backendConfig: Effect.Effect<DesktopServerExposureBackendConfig>;
   readonly configureFromSettings: (input: {
     readonly port: number;
+    readonly selectedByScan: boolean;
   }) => Effect.Effect<DesktopServerExposureState>;
   readonly setMode: (
     mode: DesktopServerExposureMode,
@@ -290,6 +297,7 @@ interface RuntimeState {
   readonly requestedMode: DesktopServerExposureMode;
   readonly mode: DesktopServerExposureMode;
   readonly port: number;
+  readonly portSelectedByScan: boolean;
   readonly bindHost: string;
   readonly localHttpUrl: string;
   readonly localWsUrl: string;
@@ -315,6 +323,7 @@ const initialRuntimeState = (): RuntimeState =>
       networkInterfaces: {},
     }),
     port: 0,
+    selectedByScan: false,
   });
 
 const toContractState = (state: RuntimeState): DesktopServerExposureState => ({
@@ -329,6 +338,7 @@ const toBackendConfig = (state: RuntimeState): DesktopServerExposureBackendConfi
   port: state.port,
   bindHost: state.bindHost,
   httpBaseUrl: state.httpBaseUrl,
+  portSelectedByScan: state.portSelectedByScan,
   tailscaleServeEnabled: state.tailscaleServeEnabled,
   tailscaleServePort: state.tailscaleServePort,
 });
@@ -347,11 +357,13 @@ function runtimeStateFromResolvedExposure(input: {
   readonly settings: DesktopSettings;
   readonly exposure: ResolvedDesktopServerExposure;
   readonly port: number;
+  readonly selectedByScan: boolean;
 }): RuntimeState {
   return {
     requestedMode: input.requestedMode,
     mode: input.exposure.mode,
     port: input.port,
+    portSelectedByScan: input.selectedByScan,
     bindHost: input.exposure.bindHost,
     localHttpUrl: input.exposure.localHttpUrl,
     localWsUrl: input.exposure.localWsUrl,
@@ -367,6 +379,7 @@ function resolveRuntimeState(input: {
   readonly requestedMode: DesktopServerExposureMode;
   readonly settings: DesktopSettings;
   readonly port: number;
+  readonly selectedByScan: boolean;
   readonly networkInterfaces: DesktopNetworkInterfaces;
   readonly advertisedHostOverride: Option.Option<string>;
 }): ResolvedRuntimeState {
@@ -394,6 +407,7 @@ function resolveRuntimeState(input: {
       settings: input.settings,
       exposure,
       port: input.port,
+      selectedByScan: input.selectedByScan,
     }),
     unavailable,
   };
@@ -418,14 +432,21 @@ const make = Effect.gen(function* () {
   const backendConfig = Ref.get(stateRef).pipe(Effect.map(toBackendConfig));
 
   const configureFromSettings = Effect.fn("desktop.serverExposure.configureFromSettings")(
-    function* ({ port }: { readonly port: number }) {
-      yield* Effect.annotateCurrentSpan({ port });
+    function* ({
+      port,
+      selectedByScan,
+    }: {
+      readonly port: number;
+      readonly selectedByScan: boolean;
+    }) {
+      yield* Effect.annotateCurrentSpan({ port, selectedByScan });
       const settings = yield* desktopSettings.get;
       const currentNetworkInterfaces = yield* readNetworkInterfaces;
       const resolved = resolveRuntimeState({
         requestedMode: settings.serverExposureMode,
         settings,
         port,
+        selectedByScan,
         networkInterfaces: currentNetworkInterfaces,
         advertisedHostOverride: config.desktopLanHostOverride,
       });
@@ -449,6 +470,7 @@ const make = Effect.gen(function* () {
       requestedMode: mode,
       settings: nextSettings,
       port: previous.port,
+      selectedByScan: previous.portSelectedByScan,
       networkInterfaces: currentNetworkInterfaces,
       advertisedHostOverride: config.desktopLanHostOverride,
     });

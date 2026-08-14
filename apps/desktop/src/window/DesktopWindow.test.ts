@@ -40,6 +40,7 @@ function makeFakeBrowserWindow(input?: {
   readonly bounds?: Electron.Rectangle;
   readonly normalBounds?: Electron.Rectangle;
   readonly isMaximized?: boolean;
+  readonly currentUrl?: string;
 }) {
   const windowHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
   const webContentsHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -49,6 +50,7 @@ function makeFakeBrowserWindow(input?: {
   const webContents = {
     copyImageAt: vi.fn(),
     focus: vi.fn(),
+    getURL: vi.fn(() => input?.currentUrl ?? ""),
     isLoadingMainFrame: vi.fn(() => false),
     on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
       webContentsHandlers.set(eventName, [...(webContentsHandlers.get(eventName) ?? []), listener]);
@@ -130,6 +132,7 @@ const desktopServerExposureLayer = Layer.succeed(DesktopServerExposure.DesktopSe
     port: 3773,
     bindHost: "127.0.0.1",
     httpBaseUrl: new URL("http://127.0.0.1:3773"),
+    portSelectedByScan: true,
     tailscaleServeEnabled: false,
     tailscaleServePort: 443,
   }),
@@ -273,6 +276,48 @@ describe("defaultMainWindowSize", () => {
 
     assert.isAtLeast(onSmall.width, 840);
     assert.isAtLeast(onSmall.height, 620);
+  });
+});
+
+describe("shouldRepointMainWindow", () => {
+  it("leaves a development window on the dev server", () => {
+    assert.isFalse(
+      DesktopWindow.shouldRepointMainWindow({
+        isDevelopment: true,
+        currentUrl: "http://127.0.0.1:5733/",
+        backendHttpBaseUrl: new URL("http://127.0.0.1:3774"),
+      }),
+    );
+  });
+
+  it("does not reload when the backend came back on the same port", () => {
+    assert.isFalse(
+      DesktopWindow.shouldRepointMainWindow({
+        isDevelopment: false,
+        currentUrl: "http://127.0.0.1:3773/threads/abc",
+        backendHttpBaseUrl: new URL("http://127.0.0.1:3773"),
+      }),
+    );
+  });
+
+  it("reloads a window stranded on the backend's previous port", () => {
+    assert.isTrue(
+      DesktopWindow.shouldRepointMainWindow({
+        isDevelopment: false,
+        currentUrl: "http://127.0.0.1:3773/threads/abc",
+        backendHttpBaseUrl: new URL("http://127.0.0.1:3774"),
+      }),
+    );
+  });
+
+  it("leaves a window that has not committed a URL yet alone", () => {
+    assert.isFalse(
+      DesktopWindow.shouldRepointMainWindow({
+        isDevelopment: false,
+        currentUrl: "",
+        backendHttpBaseUrl: new URL("http://127.0.0.1:3774"),
+      }),
+    );
   });
 });
 
