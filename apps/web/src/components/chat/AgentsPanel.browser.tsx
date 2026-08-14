@@ -5,16 +5,11 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import type {
-  SubagentProgressItem,
-  SubagentProgressState,
-  ThreadSubagentHistoryEntry,
-} from "../../session-logic";
+import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "../../session-logic";
 import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
 import { buildRightPanelLauncherStates } from "./rightPanelLauncherState";
-import { ThreadActivityChip } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
 const transcriptRpcMock = vi.hoisted(() => vi.fn());
@@ -108,39 +103,6 @@ describe("AgentsPanel", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
-  });
-
-  it("opens from the header activity chip", async () => {
-    const onToggleAgentsPanel = vi.fn();
-    const subagentProgress: SubagentProgressState = {
-      items: [],
-      activeCount: 2,
-      completedCount: 0,
-      failedCount: 0,
-      totalCount: 2,
-      summary: "2 subagents running",
-      badge: { label: "2", ariaLabel: "2 subagents running", tone: "active", pulse: true },
-    };
-    const mounted = await render(
-      <main className="flex items-center gap-2">
-        <ThreadActivityChip
-          taskProgress={null}
-          subagentProgress={subagentProgress}
-          backgroundRuns={[]}
-          pressed={false}
-          onClick={onToggleAgentsPanel}
-        />
-      </main>,
-    );
-
-    try {
-      const chip = page.getByRole("button", { name: "2 subagents running" });
-      await expect.element(chip).toHaveAttribute("aria-pressed", "false");
-      await chip.click();
-      expect(onToggleAgentsPanel).toHaveBeenCalledTimes(1);
-    } finally {
-      await mounted.unmount();
-    }
   });
 
   it("draws a branch for every state the turn is in", async () => {

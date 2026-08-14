@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { SubagentProgressState } from "../../session-logic";
 import {
   deriveThreadActivityTriggerState,
   type ThreadTaskProgressState,
@@ -52,7 +51,6 @@ describe("deriveThreadActivityTriggerState", () => {
     expect(
       deriveThreadActivityTriggerState({
         taskProgress: null,
-        subagentProgress: null,
         backgroundRuns: [],
       }),
     ).toBeNull();
@@ -80,7 +78,6 @@ describe("deriveThreadActivityTriggerState", () => {
 
     const state = deriveThreadActivityTriggerState({
       taskProgress,
-      subagentProgress: null,
       backgroundRuns: [],
     });
 
@@ -89,37 +86,9 @@ describe("deriveThreadActivityTriggerState", () => {
     expect(state?.chips).toHaveLength(1);
   });
 
-  it("uses subagent-specific trigger state when only subagents are active", () => {
-    const subagentProgress: SubagentProgressState = {
-      items: [],
-      activeCount: 2,
-      completedCount: 0,
-      failedCount: 0,
-      totalCount: 2,
-      summary: "2 subagents running",
-      badge: {
-        label: "2",
-        ariaLabel: "2 subagents running",
-        tone: "active",
-        pulse: true,
-      },
-    };
-
-    const state = deriveThreadActivityTriggerState({
-      taskProgress: null,
-      subagentProgress,
-      backgroundRuns: [],
-    });
-
-    expect(state?.mode).toBe("subagents");
-    expect(state?.badge?.label).toBe("2");
-    expect(state?.chips[0]?.kind).toBe("subagents");
-  });
-
   it("uses a background trigger state when only background runs are active", () => {
     const state = deriveThreadActivityTriggerState({
       taskProgress: null,
-      subagentProgress: null,
       backgroundRuns: [
         {
           id: "terminal:default",
@@ -162,24 +131,8 @@ describe("deriveThreadActivityTriggerState", () => {
       },
       label: "Tasks",
     };
-    const subagentProgress: SubagentProgressState = {
-      items: [],
-      activeCount: 2,
-      completedCount: 0,
-      failedCount: 0,
-      totalCount: 2,
-      summary: "2 subagents running",
-      badge: {
-        label: "2",
-        ariaLabel: "2 subagents running",
-        tone: "active",
-        pulse: true,
-      },
-    };
-
     const state = deriveThreadActivityTriggerState({
       taskProgress,
-      subagentProgress,
       backgroundRuns: [
         {
           id: "terminal:default",
@@ -216,11 +169,9 @@ describe("deriveThreadActivityTriggerState", () => {
     expect(state?.badge).toBeNull();
     expect(state?.chips.map((chip) => `${chip.kind}:${chip.label}`)).toEqual([
       "tasks:1/2",
-      "subagents:2",
       "background:2",
     ]);
     expect(state?.summary).toContain("Wire the Activity popover");
-    expect(state?.summary).toContain("2 subagents running");
     expect(state?.summary).toContain("2 background runs");
   });
 });

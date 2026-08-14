@@ -1,19 +1,11 @@
 import "../../index.css";
 
-import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
 import { Button } from "../ui/button";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
-
-const transcriptRpcMock = vi.hoisted(() => vi.fn());
-
-vi.mock("./subagentTranscriptClient", () => ({
-  readSubagentTranscriptPage: transcriptRpcMock,
-}));
 
 const TASK_BADGE = {
   label: "1/2",
@@ -21,9 +13,6 @@ const TASK_BADGE = {
   tone: "active",
   pulse: true,
 } as const;
-
-const ACTIVE_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
-const ACTIVE_THREAD_ID = ThreadId.make("thread-activity");
 
 function buildTaskProgress(activeStep: string): ThreadTaskProgressState {
   return {
@@ -54,10 +43,7 @@ async function renderOpenPopover(activeStep: string) {
       }}
     >
       <ThreadActivityPopover
-        activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-        activeThreadId={ACTIVE_THREAD_ID}
         taskProgress={buildTaskProgress(activeStep)}
-        subagentProgress={null}
         backgroundRuns={[]}
         onToggleBackgroundRunTerminal={vi.fn()}
         onStopBackgroundRun={vi.fn()}
@@ -72,16 +58,6 @@ async function renderOpenPopover(activeStep: string) {
 }
 
 describe("ThreadActivityPopover", () => {
-  beforeEach(() => {
-    transcriptRpcMock.mockReset();
-    transcriptRpcMock.mockResolvedValue({
-      entries: [{ role: "assistant", text: "Inspecting the selected area.", toolUses: [] }],
-      truncated: false,
-      offset: 0,
-      totalEntries: 1,
-    });
-  });
-
   afterEach(() => {
     document.body.innerHTML = "";
   });
@@ -91,10 +67,7 @@ describe("ThreadActivityPopover", () => {
     const mounted = await render(
       <main className="flex items-center gap-2">
         <ThreadActivityPopover
-          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-          activeThreadId={ACTIVE_THREAD_ID}
           taskProgress={buildTaskProgress("Implement mobile layout")}
-          subagentProgress={null}
           backgroundRuns={[]}
           onToggleBackgroundRunTerminal={vi.fn()}
           onStopBackgroundRun={vi.fn()}
@@ -171,6 +144,44 @@ describe("ThreadActivityPopover", () => {
     }
   });
 
+  it("opens task and background-run details from the mixed activity chip", async () => {
+    const mounted = await render(
+      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
+        <ThreadActivityPopover
+          taskProgress={buildTaskProgress("Restore the activity popover")}
+          backgroundRuns={[
+            {
+              id: "provider:command-1",
+              source: "provider",
+              providerKind: "command",
+              terminalId: null,
+              pid: null,
+              port: null,
+              elapsed: null,
+              canStop: false,
+              label: "Run preview server",
+              detail: "Agent command",
+              cwd: null,
+              statusLabel: "Running",
+              urls: [],
+            },
+          ]}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Thread activity" }).click();
+      await expect.element(page.getByText("Current tasks")).toBeVisible();
+      await expect.element(page.getByText("Background runs")).toBeVisible();
+      expect(document.querySelector("[data-activity-trigger-icon='subagents']")).toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("labels the terminal run button as close when the terminal is already visible", async () => {
     const onToggleBackgroundRunTerminal = vi.fn();
     const mounted = await render(
@@ -185,10 +196,7 @@ describe("ThreadActivityPopover", () => {
         }}
       >
         <ThreadActivityPopover
-          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-          activeThreadId={ACTIVE_THREAD_ID}
           taskProgress={null}
-          subagentProgress={null}
           backgroundRuns={[
             {
               id: "terminal:default",
@@ -217,390 +225,6 @@ describe("ThreadActivityPopover", () => {
       await page.getByRole("button", { name: "1 background run" }).click();
       await page.getByRole("button", { name: 'Close node -e "let n=0"' }).click();
       expect(onToggleBackgroundRunTerminal).toHaveBeenCalledWith("default");
-    } finally {
-      await mounted.unmount();
-    }
-  });
-
-  it("shows live subagent text only while the agent is running", async () => {
-    const baseItem: Omit<SubagentProgressItem, "id" | "status" | "statusLabel" | "liveBody"> = {
-      agentThreadId: "agent-1",
-      transcriptAgentId: "agent-1",
-      turnId: null,
-      label: "Subagent",
-      role: "code-reviewer",
-      objective: "Audit the SQL changes",
-      model: null,
-      reasoningEffort: null,
-      telemetry: null,
-      createdAt: "2026-02-23T00:00:01.000Z",
-      updatedAt: "2026-02-23T00:00:02.000Z",
-    };
-    const subagentProgress: SubagentProgressState = {
-      items: [
-        {
-          ...baseItem,
-          id: "agent-running",
-          status: "running",
-          statusLabel: "Working",
-          liveBody: "Scanning migrations now.",
-        },
-        {
-          ...baseItem,
-          id: "agent-done",
-          status: "completed",
-          statusLabel: "Done",
-          // A settled agent must not resurface stale progress text even if a
-          // late-merged snapshot still carries it.
-          liveBody: "stale live text",
-        },
-      ],
-      activeCount: 1,
-      completedCount: 1,
-      failedCount: 0,
-      totalCount: 2,
-      summary: "1 of 2 subagents active",
-      badge: {
-        label: "1/2",
-        ariaLabel: "1 of 2 subagents active",
-        tone: "active",
-        pulse: true,
-      },
-    };
-
-    const mounted = await render(
-      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
-        <ThreadActivityPopover
-          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-          activeThreadId={ACTIVE_THREAD_ID}
-          taskProgress={null}
-          subagentProgress={subagentProgress}
-          backgroundRuns={[]}
-          onToggleBackgroundRunTerminal={vi.fn()}
-          onStopBackgroundRun={vi.fn()}
-        />
-      </main>,
-    );
-
-    try {
-      await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
-      await expect.element(page.getByText("Scanning migrations now.")).toBeVisible();
-      const liveNodes = document.querySelectorAll("[data-subagent-progress-live]");
-      expect(liveNodes).toHaveLength(1);
-      expect(liveNodes[0]?.textContent).toBe("Scanning migrations now.");
-      expect(document.body.textContent).not.toContain("stale live text");
-    } finally {
-      await mounted.unmount();
-    }
-  });
-
-  it("shows nested agents as a hierarchy and opens a viewport-bounded transcript dialog", async () => {
-    const subagentProgress: SubagentProgressState = {
-      items: [
-        {
-          agentThreadId: "agent-parent",
-          transcriptAgentId: "agent-parent",
-          agentPath: "/root/research",
-          parentAgentPath: null,
-          treeDepth: 0,
-          id: "agent-parent",
-          turnId: null,
-          label: "Research subagent",
-          role: "research",
-          objective: "Map the current architecture",
-          status: "running",
-          statusLabel: "Running",
-          model: null,
-          reasoningEffort: null,
-          telemetry: null,
-          liveBody: null,
-          createdAt: "2026-02-23T00:00:01.000Z",
-          updatedAt: "2026-02-23T00:00:02.000Z",
-        },
-        {
-          agentThreadId: "agent-child",
-          transcriptAgentId: "agent-child",
-          agentPath: "/root/research/database",
-          parentAgentPath: "/root/research",
-          treeDepth: 1,
-          id: "agent-child",
-          turnId: null,
-          label: "Database subagent",
-          role: "database",
-          objective: "Inspect persistence",
-          status: "running",
-          statusLabel: "Running",
-          model: null,
-          reasoningEffort: null,
-          telemetry: null,
-          liveBody: null,
-          createdAt: "2026-02-23T00:00:02.000Z",
-          updatedAt: "2026-02-23T00:00:03.000Z",
-        },
-      ],
-      activeCount: 2,
-      completedCount: 0,
-      failedCount: 0,
-      totalCount: 2,
-      summary: "2 subagents active",
-      badge: {
-        label: "2",
-        ariaLabel: "2 subagents active",
-        tone: "active",
-        pulse: true,
-      },
-    };
-    transcriptRpcMock.mockImplementation(
-      async (input: { agentId: string; fromEnd?: boolean; offset?: number }) => {
-        if (input.agentId !== "agent-child") {
-          return {
-            entries: [{ role: "assistant", text: "Parent transcript", toolUses: [] }],
-            truncated: false,
-            offset: 0,
-            totalEntries: 1,
-          };
-        }
-        if (input.fromEnd) {
-          return {
-            entries: [
-              { role: "assistant", text: "Latest child step", toolUses: [] },
-              { role: "assistant", text: "Current child output", toolUses: [] },
-            ],
-            truncated: true,
-            offset: 2,
-            totalEntries: 4,
-          };
-        }
-        return {
-          entries: [
-            { role: "user", text: "Inspect persistence", toolUses: [] },
-            { role: "thinking", text: "Checking migrations", toolUses: [] },
-          ],
-          truncated: true,
-          offset: 0,
-          totalEntries: 4,
-        };
-      },
-    );
-    const mounted = await render(
-      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
-        <ThreadActivityPopover
-          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-          activeThreadId={ACTIVE_THREAD_ID}
-          taskProgress={null}
-          subagentProgress={subagentProgress}
-          backgroundRuns={[]}
-          onToggleBackgroundRunTerminal={vi.fn()}
-          onStopBackgroundRun={vi.fn()}
-        />
-      </main>,
-    );
-
-    try {
-      await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
-      const parent = document.querySelector<HTMLElement>(
-        "[data-subagent-agent-path='/root/research']",
-      );
-      const child = document.querySelector<HTMLElement>(
-        "[data-subagent-agent-path='/root/research/database']",
-      );
-      expect(parent?.dataset.subagentTreeDepth).toBe("0");
-      expect(child?.dataset.subagentTreeDepth).toBe("1");
-      expect(child?.classList.contains("ml-3")).toBe(true);
-
-      const inspect = page.getByRole("button", { name: "Inspect Database transcript" });
-      await inspect.click();
-      await expect.element(page.getByLabelText("Database subagent inspector")).toBeVisible();
-      await expect.element(page.getByText("Read-only transcript")).toBeVisible();
-      await expect.element(page.getByText("Current child output")).toBeVisible();
-      await vi.waitFor(() => {
-        expect(document.querySelector("[data-slot='popover-popup']")).toBeNull();
-      });
-      expect(document.querySelector("[data-subagent-inspector='true']")).not.toBeNull();
-      const dialogViewport = document.querySelector<HTMLElement>("[data-slot='dialog-viewport']");
-      const dialogPopup = document.querySelector<HTMLElement>("[data-slot='dialog-popup']");
-      expect(dialogViewport).not.toBeNull();
-      expect(getComputedStyle(dialogViewport!).position).toBe("fixed");
-      const popupBounds = dialogPopup!.getBoundingClientRect();
-      expect(popupBounds.top).toBeGreaterThanOrEqual(0);
-      expect(popupBounds.bottom).toBeLessThanOrEqual(window.innerHeight);
-      expect(transcriptRpcMock).toHaveBeenCalledWith({
-        environmentId: ACTIVE_ENVIRONMENT_ID,
-        threadId: ACTIVE_THREAD_ID,
-        agentId: "agent-child",
-        limit: 60,
-        fromEnd: true,
-      });
-
-      await page.getByRole("button", { name: "Load earlier" }).click();
-      await vi.waitFor(() => {
-        expect(document.querySelectorAll("[data-subagent-transcript-entry]")).toHaveLength(4);
-      });
-      expect(transcriptRpcMock).toHaveBeenCalledWith({
-        environmentId: ACTIVE_ENVIRONMENT_ID,
-        threadId: ACTIVE_THREAD_ID,
-        agentId: "agent-child",
-        offset: 0,
-        limit: 2,
-      });
-
-      const transcriptEntries = [
-        ...document.querySelectorAll<HTMLElement>("[data-subagent-transcript-entry]"),
-      ].map((entry) => `${entry.dataset.subagentTranscriptEntry}:${entry.textContent}`);
-      expect(transcriptEntries).toEqual([
-        "user:InstructionInspect persistence",
-        "thinking:Checking migrationsReasoning",
-        "assistant:Latest child step",
-        "assistant:Current child output",
-      ]);
-    } finally {
-      await mounted.unmount();
-    }
-  });
-
-  it("refreshes the selected running subagent transcript", async () => {
-    let readCount = 0;
-    transcriptRpcMock.mockImplementation(async () => {
-      readCount += 1;
-      return {
-        entries: [
-          {
-            role: "assistant",
-            text: readCount === 1 ? "Initial transcript output" : "Refreshed transcript output",
-            toolUses: [],
-          },
-        ],
-        truncated: false,
-        agent: {
-          id: "agent-live",
-          description: "Follow the live transcript",
-        },
-        offset: 0,
-        totalEntries: 1,
-      };
-    });
-    const subagentProgress: SubagentProgressState = {
-      items: [
-        {
-          agentThreadId: "agent-live",
-          transcriptAgentId: "agent-live",
-          id: "agent-live",
-          turnId: null,
-          label: "Live subagent",
-          role: "research",
-          objective: null,
-          status: "running",
-          statusLabel: "Running",
-          model: "gpt-5.6",
-          reasoningEffort: "high",
-          telemetry: null,
-          liveBody: "Reporting progress.",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          updatedAt: "2026-02-23T00:00:02.000Z",
-        },
-      ],
-      activeCount: 1,
-      completedCount: 0,
-      failedCount: 0,
-      totalCount: 1,
-      summary: "1 subagent active",
-      badge: {
-        label: "1",
-        ariaLabel: "1 subagent active",
-        tone: "active",
-        pulse: true,
-      },
-    };
-    const mounted = await render(
-      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
-        <ThreadActivityPopover
-          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-          activeThreadId={ACTIVE_THREAD_ID}
-          taskProgress={null}
-          subagentProgress={subagentProgress}
-          backgroundRuns={[]}
-          onToggleBackgroundRunTerminal={vi.fn()}
-          onStopBackgroundRun={vi.fn()}
-        />
-      </main>,
-    );
-
-    try {
-      await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
-      await page.getByRole("button", { name: "Inspect Research transcript" }).click();
-      await expect.element(page.getByText("Initial transcript output")).toBeVisible();
-      await expect.element(page.getByText("Follow the live transcript")).toBeVisible();
-      await expect.element(page.getByText("Following live")).toBeVisible();
-      await expect.element(page.getByText("Refreshed transcript output")).toBeVisible();
-      expect(transcriptRpcMock.mock.calls.length).toBeGreaterThanOrEqual(2);
-    } finally {
-      await mounted.unmount();
-    }
-  });
-
-  it("omits the tasks icon when mixed activity has no tasks", async () => {
-    const subagentProgress: SubagentProgressState = {
-      items: [],
-      activeCount: 1,
-      completedCount: 0,
-      failedCount: 0,
-      totalCount: 1,
-      summary: "1 subagent active",
-      badge: {
-        label: "1",
-        ariaLabel: "1 subagent active",
-        tone: "active",
-        pulse: true,
-      },
-    };
-    const mounted = await render(
-      <main
-        style={{
-          boxSizing: "border-box",
-          display: "flex",
-          justifyContent: "flex-end",
-          minHeight: 360,
-          padding: 24,
-          width: 960,
-        }}
-      >
-        <ThreadActivityPopover
-          activeThreadEnvironmentId={ACTIVE_ENVIRONMENT_ID}
-          activeThreadId={ACTIVE_THREAD_ID}
-          taskProgress={null}
-          subagentProgress={subagentProgress}
-          backgroundRuns={[
-            {
-              id: "provider:command-1",
-              source: "provider",
-              providerKind: "command",
-              terminalId: null,
-              pid: null,
-              port: null,
-              elapsed: null,
-              canStop: false,
-              label: "Get-Content command",
-              detail: "Agent command",
-              cwd: null,
-              statusLabel: "Running",
-              urls: [],
-            },
-          ]}
-          onToggleBackgroundRunTerminal={vi.fn()}
-          onStopBackgroundRun={vi.fn()}
-        />
-      </main>,
-    );
-
-    try {
-      const trigger = document.querySelector<HTMLButtonElement>(
-        "button[aria-label='Thread activity']",
-      );
-
-      expect(trigger).not.toBeNull();
-      expect(trigger?.querySelector("[data-activity-trigger-icon='tasks']")).toBeNull();
-      expect(trigger?.querySelector("[data-activity-trigger-icon='subagents']")).not.toBeNull();
-      expect(trigger?.querySelector("[data-activity-trigger-icon='background']")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }

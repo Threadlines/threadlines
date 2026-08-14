@@ -2738,28 +2738,6 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   /**
-   * The header's activity chip: opens or focuses the Agents tab, and pressing
-   * it while Agents is the tab on screen puts the sidebar away again.
-   */
-  const onToggleAgentsPanel = useCallback(() => {
-    if (!activeThread) {
-      return;
-    }
-    if (agentsPanelOpen) {
-      hideRightPanel(rightPanelStateKey);
-      navigateToRightPanelTab(null);
-      return;
-    }
-    openRightPanelTab("agents");
-  }, [
-    activeThread,
-    agentsPanelOpen,
-    navigateToRightPanelTab,
-    openRightPanelTab,
-    rightPanelStateKey,
-  ]);
-
-  /**
    * The header's one sidebar entry point: it shows and hides the sidebar
    * itself. Showing lands on the tab this thread was left on, and on the
    * launcher when nothing is open — never on a bare panel.
@@ -6139,6 +6117,17 @@ export default function ChatView(props: ChatViewProps) {
     setPlanScrollTarget(null);
   }, [activeThread?.id]);
 
+  const onViewProposedPlan = useCallback(() => {
+    if (!sidebarProposedPlan) {
+      return;
+    }
+    const planId = sidebarProposedPlan.id;
+    setPlanScrollTarget((current) => ({
+      planId,
+      requestKey: (current?.requestKey ?? 0) + 1,
+    }));
+  }, [sidebarProposedPlan]);
+
   const onImplementProposedPlanInThread = useCallback(() => {
     if (!activeProposedPlan) {
       return;
@@ -6442,7 +6431,6 @@ export default function ChatView(props: ChatViewProps) {
       >
         <ChatHeader
           activeThreadEnvironmentId={activeThread.environmentId}
-          activeThreadId={activeThread.id}
           activeThreadTitle={
             isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
           }
@@ -6471,15 +6459,25 @@ export default function ChatView(props: ChatViewProps) {
           liveAgents={headerLiveAgents}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
-          subagentProgress={subagentProgress}
           forkContext={forkHeaderContext}
           backgroundRuns={backgroundRuns}
-          agentsPanelOpen={agentsPanelOpen}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
-          onToggleAgentsPanel={onToggleAgentsPanel}
+          onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
+          onStopBackgroundRun={stopBackgroundRun}
+          onViewProposedPlan={
+            taskProgressProposedPlan !== null && !isGeneralChatThread
+              ? onViewProposedPlan
+              : undefined
+          }
+          onImplementProposedPlan={
+            canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
+          }
+          onDismissProposedPlan={
+            canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
+          }
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleRail={onToggleRail}

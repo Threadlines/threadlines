@@ -1,4 +1,3 @@
-import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import {
   memo,
   useCallback,
@@ -12,11 +11,8 @@ import {
   type RefObject,
 } from "react";
 import {
-  BotIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
-  CircleAlertIcon,
   ClockIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -29,34 +25,16 @@ import {
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
-import {
-  formatSubagentDisplayName,
-  isActiveSubagentStatus,
-  shouldShowSubagentDisplayChip,
-  type ActivePlanState,
-  type LatestProposedPlanState,
-  type SubagentProgressItem,
-  type SubagentProgressState,
-} from "../../session-logic";
-import { useServerProviders } from "../../rpc/serverState";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { type ActivePlanState, type LatestProposedPlanState } from "../../session-logic";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
-import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
-import { SubagentInspector } from "./SubagentInspector";
-import {
-  formatSubagentMetaParts,
-  resolveSubagentModelLabel,
-  SubagentModelMeta,
-} from "./subagentMeta";
 import {
   backgroundRunCommandText,
   backgroundRunMetaItems,
   backgroundRunSourceLabel,
-  deriveSubagentDisplayDetails,
-  normalizeSubagentInlineText,
   type ThreadBackgroundRunItem,
 } from "./threadActivity";
 
@@ -68,13 +46,7 @@ export interface ThreadTaskProgressState {
 }
 
 interface ThreadActivityPopoverProps {
-  activeThreadEnvironmentId: EnvironmentId;
-  activeThreadId: ThreadId;
   taskProgress: ThreadTaskProgressState | null;
-  subagentProgress: SubagentProgressState | null;
-  /** Working directory of the thread, used to resolve file references the
-   *  inspector renders in agent prose. */
-  threadCwd?: string | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
@@ -83,10 +55,10 @@ interface ThreadActivityPopoverProps {
   onDismissProposedPlan?: (() => void) | undefined;
 }
 
-type ActivityBadgeTone = PlanTaskBadgeState["tone"] | SubagentProgressState["badge"]["tone"];
+type ActivityBadgeTone = PlanTaskBadgeState["tone"];
 
 interface ActivityBadgeState {
-  kind: "tasks" | "subagents" | "background";
+  kind: "tasks" | "background";
   label: string;
   ariaLabel: string;
   tone: ActivityBadgeTone;
@@ -94,7 +66,7 @@ interface ActivityBadgeState {
 }
 
 interface ActivityTriggerState {
-  mode: "tasks" | "subagents" | "background" | "mixed";
+  mode: "tasks" | "background" | "mixed";
   badge: ActivityBadgeState | null;
   chips: ReadonlyArray<ActivityBadgeState>;
   ariaLabel: string;
@@ -103,7 +75,6 @@ interface ActivityTriggerState {
 }
 
 const COLLAPSED_TASK_LIMIT = 3;
-const COLLAPSED_SUBAGENT_LIMIT = 3;
 const ACTIVITY_POPOVER_MIN_WIDTH_PX = 256;
 const ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX = 320;
 const ACTIVITY_POPOVER_MAX_WIDTH_PX = 480;
@@ -332,11 +303,6 @@ function ActivityKindIcon({
       <ListTodoIcon className={className} data-activity-trigger-icon="tasks" aria-hidden="true" />
     );
   }
-  if (kind === "subagents") {
-    return (
-      <BotIcon className={className} data-activity-trigger-icon="subagents" aria-hidden="true" />
-    );
-  }
   return (
     <RadarIcon className={className} data-activity-trigger-icon="background" aria-hidden="true" />
   );
@@ -371,57 +337,6 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
         </span>
       ) : null}
     </>
-  );
-}
-
-/**
- * The header's activity chip. Same read as before — task, subagent and
- * background-run counts at a glance, with the summary on hover — but pressing
- * it now opens the agents panel instead of a popover, so the turn's
- * orchestration gets a surface it can actually be worked in.
- */
-export function ThreadActivityChip({
-  taskProgress,
-  subagentProgress,
-  backgroundRuns,
-  pressed,
-  onClick,
-}: {
-  taskProgress: ThreadTaskProgressState | null;
-  subagentProgress: SubagentProgressState | null;
-  backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
-  pressed: boolean;
-  onClick: () => void;
-}) {
-  const triggerState = deriveThreadActivityTriggerState({
-    taskProgress,
-    subagentProgress,
-    backgroundRuns,
-  });
-
-  if (!triggerState) {
-    return null;
-  }
-
-  return (
-    <TooltipWrapper tooltip={triggerState.tooltipText}>
-      <Button
-        type="button"
-        variant="outline"
-        size="xs"
-        aria-label={triggerState.ariaLabel}
-        aria-pressed={pressed}
-        data-thread-activity-chip="true"
-        className={cn(
-          "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
-          triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
-          triggerState.mode === "mixed" && "max-w-44",
-        )}
-        onClick={onClick}
-      >
-        <TriggerContent state={triggerState} />
-      </Button>
-    </TooltipWrapper>
   );
 }
 
@@ -510,30 +425,6 @@ function collapsedPlanStepWindow(steps: ActivePlanState["steps"]): {
   return { start, end: start + COLLAPSED_TASK_LIMIT };
 }
 
-function subagentStatusIcon(status: SubagentProgressItem["status"]): ReactNode {
-  if (status === "completed") {
-    return (
-      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-success/20 text-success">
-        <CheckIcon className="size-2.5" aria-hidden="true" />
-      </span>
-    );
-  }
-
-  if (status === "failed" || status === "interrupted") {
-    return (
-      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-destructive/20 text-destructive">
-        <CircleAlertIcon className="size-2.5" aria-hidden="true" />
-      </span>
-    );
-  }
-
-  return (
-    <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary-readable">
-      <LoaderIcon className="size-2.5 animate-spin" aria-hidden="true" />
-    </span>
-  );
-}
-
 function formatCount(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -557,27 +448,23 @@ function backgroundRunSectionSummary(
 
 export function deriveThreadActivityTriggerState(input: {
   taskProgress: ThreadTaskProgressState | null;
-  subagentProgress: SubagentProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
 }): ActivityTriggerState | null {
   const taskSummaryText = input.taskProgress
     ? taskSummary(input.taskProgress.activePlan, input.taskProgress.activeProposedPlan !== null)
     : null;
   const backgroundSummaryText = backgroundSummary(input.backgroundRuns);
-  const summaryParts = [
-    taskSummaryText,
-    input.subagentProgress?.summary ?? null,
-    backgroundSummaryText,
-  ].filter((part): part is string => Boolean(part));
+  const summaryParts = [taskSummaryText, backgroundSummaryText].filter((part): part is string =>
+    Boolean(part),
+  );
 
   if (summaryParts.length === 0) {
     return null;
   }
 
   const hasTasks = input.taskProgress !== null;
-  const hasSubagents = input.subagentProgress !== null;
   const hasBackgroundRuns = input.backgroundRuns.length > 0;
-  const activeKindCount = [hasTasks, hasSubagents, hasBackgroundRuns].filter(Boolean).length;
+  const activeKindCount = [hasTasks, hasBackgroundRuns].filter(Boolean).length;
   const taskChip =
     input.taskProgress?.badge !== null && input.taskProgress?.badge !== undefined
       ? {
@@ -588,15 +475,6 @@ export function deriveThreadActivityTriggerState(input: {
           pulse: input.taskProgress.badge.pulse,
         }
       : null;
-  const subagentChip = input.subagentProgress
-    ? {
-        kind: "subagents" as const,
-        label: input.subagentProgress.badge.label,
-        ariaLabel: input.subagentProgress.badge.ariaLabel,
-        tone: input.subagentProgress.badge.tone,
-        pulse: input.subagentProgress.badge.pulse,
-      }
-    : null;
   const backgroundChip = hasBackgroundRuns
     ? {
         kind: "background" as const,
@@ -606,24 +484,10 @@ export function deriveThreadActivityTriggerState(input: {
         pulse: true,
       }
     : null;
-  const chipCandidates: Array<ActivityBadgeState | null> = [taskChip, subagentChip, backgroundChip];
+  const chipCandidates: Array<ActivityBadgeState | null> = [taskChip, backgroundChip];
   const chips = chipCandidates.filter((chip): chip is ActivityBadgeState => chip !== null);
-  const failedCount = input.subagentProgress?.failedCount ?? 0;
-  const badge =
-    activeKindCount > 1
-      ? null
-      : (chips[0] ??
-        (failedCount > 0
-          ? {
-              kind: "subagents" as const,
-              label: "!",
-              ariaLabel: `Activity, ${formatCount(failedCount, "failed item", "failed items")}`,
-              tone: "warning" as const,
-              pulse: false,
-            }
-          : null));
-  const mode =
-    activeKindCount > 1 ? "mixed" : hasTasks ? "tasks" : hasSubagents ? "subagents" : "background";
+  const badge = activeKindCount > 1 ? null : (chips[0] ?? null);
+  const mode = activeKindCount > 1 ? "mixed" : hasTasks ? "tasks" : "background";
   const summary = summaryParts.join(" / ");
 
   return {
@@ -835,199 +699,6 @@ function TaskSection({
   );
 }
 
-function subagentTreeIndentClass(treeDepth: number | undefined): string | undefined {
-  switch (Math.min(treeDepth ?? 0, 3)) {
-    case 1:
-      return "ml-3";
-    case 2:
-      return "ml-6";
-    case 3:
-      return "ml-9";
-    default:
-      return undefined;
-  }
-}
-
-function SubagentSection({
-  state,
-  onInspect,
-}: {
-  state: SubagentProgressState;
-  onInspect: (item: SubagentProgressItem) => void;
-}) {
-  const providers = useServerProviders();
-  const [expanded, setExpanded] = useState(false);
-  const shouldCollapse = state.items.length > COLLAPSED_SUBAGENT_LIMIT;
-  const visibleItems = useMemo(
-    () =>
-      shouldCollapse && !expanded ? state.items.slice(0, COLLAPSED_SUBAGENT_LIMIT) : state.items,
-    [expanded, shouldCollapse, state.items],
-  );
-
-  return (
-    <section className="min-w-0 space-y-1.5">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-            <BotIcon className="size-3 text-muted-foreground/85" aria-hidden="true" />
-            <span>Subagents</span>
-          </div>
-          <div className="mt-0.5 truncate text-[11px] text-muted-foreground/80">
-            {state.summary}
-          </div>
-        </div>
-        <span className={badgeClassName(state.badge.tone, state.badge.pulse)}>
-          {state.badge.label}
-        </span>
-      </div>
-
-      <div className={cn("space-y-1 pr-1", expanded && "max-h-56 overflow-y-auto")}>
-        {visibleItems.map((item) => {
-          const details = deriveSubagentDisplayDetails(item);
-          const displayName = formatSubagentDisplayName(item);
-          const showSubagentChip = shouldShowSubagentDisplayChip(item);
-          const transcriptAvailable = item.agentThreadId !== null;
-          const active = isActiveSubagentStatus(item.status);
-          const modelLabel = resolveSubagentModelLabel(providers, item.model);
-          const hasModelMeta = Boolean(modelLabel ?? item.reasoningEffort);
-          const metaParts = formatSubagentMetaParts(item, {
-            context: details.context,
-            elapsed: active ? formatElapsedDurationLabel(item.createdAt) : null,
-            includeCurrentTool: false,
-          });
-          // The step the provider reports is the freshest signal; the agent's
-          // streamed prose is the fallback when there is no task stream.
-          const activityLine = active
-            ? (item.telemetry?.step ??
-              (item.liveBody ? normalizeSubagentInlineText(item.liveBody) : null))
-            : null;
-          return (
-            <div
-              key={item.id}
-              className={cn(
-                "min-w-0 rounded-md transition-colors",
-                subagentTreeIndentClass(item.treeDepth),
-                (item.status === "starting" ||
-                  item.status === "running" ||
-                  item.status === "waiting") &&
-                  "bg-primary/10",
-                item.status === "completed" && "bg-success/10",
-                (item.status === "failed" || item.status === "interrupted") && "bg-destructive/10",
-              )}
-              data-subagent-agent-path={item.agentPath ?? undefined}
-              data-subagent-tree-depth={item.treeDepth ?? 0}
-            >
-              <button
-                type="button"
-                className={cn(
-                  "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-md px-2 py-2 text-left",
-                  transcriptAvailable && "transition-colors hover:bg-foreground/5",
-                )}
-                disabled={!transcriptAvailable}
-                aria-haspopup={transcriptAvailable ? "dialog" : undefined}
-                aria-label={transcriptAvailable ? `Inspect ${displayName} transcript` : undefined}
-                title={
-                  item.agentPath ?? (transcriptAvailable ? "Open read-only transcript" : undefined)
-                }
-                onClick={() => onInspect(item)}
-              >
-                <div className="mt-0.5">{subagentStatusIcon(item.status)}</div>
-                <div className="min-w-0">
-                  <div className="flex min-w-0 items-start justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <div className="truncate text-[12px] leading-snug font-medium text-foreground/90">
-                        {displayName}
-                      </div>
-                      {showSubagentChip ? (
-                        <span className="shrink-0 rounded border border-border/60 bg-background/65 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/75 uppercase">
-                          Subagent
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <span className="rounded border border-border/60 bg-background/65 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80">
-                        {item.statusLabel}
-                      </span>
-                      {transcriptAvailable ? (
-                        <ChevronRightIcon
-                          className="size-3 text-muted-foreground/60 transition-colors"
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {details.goal ? (
-                    <div
-                      className="mt-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-1.5"
-                      title={details.title ?? undefined}
-                    >
-                      <div className="mt-0.5 rounded bg-primary/15 px-1 py-0.5 text-[9px] leading-none font-semibold tracking-[0.08em] text-primary-readable uppercase">
-                        Goal
-                      </div>
-                      <div
-                        className="line-clamp-2 text-[11px] leading-4 text-foreground/80"
-                        data-subagent-progress-goal="true"
-                      >
-                        {details.goal}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {hasModelMeta || metaParts.length > 0 ? (
-                    <div
-                      className="mt-1 flex min-w-0 items-baseline gap-1.5 font-mono text-[10px] leading-4"
-                      title={[modelLabel, item.reasoningEffort, ...metaParts]
-                        .filter(Boolean)
-                        .join(" · ")}
-                      data-subagent-progress-meta="true"
-                    >
-                      <SubagentModelMeta
-                        modelLabel={modelLabel}
-                        reasoningEffort={item.reasoningEffort}
-                      />
-                      {hasModelMeta && metaParts.length > 0 ? (
-                        <span className="text-muted-foreground/30">·</span>
-                      ) : null}
-                      {metaParts.length > 0 ? (
-                        <span className="min-w-0 truncate text-muted-foreground/60">
-                          {metaParts.join(" · ")}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {activityLine ? (
-                    <div
-                      className="mt-1 line-clamp-1 text-[11px] leading-4 text-muted-foreground/75"
-                      data-subagent-progress-live="true"
-                    >
-                      {activityLine}
-                    </div>
-                  ) : null}
-                </div>
-              </button>
-            </div>
-          );
-        })}
-      </div>
-
-      {shouldCollapse ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          className="h-5 w-full justify-center text-[11px] text-muted-foreground/80 hover:text-foreground"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "Show less" : `Show all ${state.items.length} subagents`}
-        </Button>
-      ) : null}
-    </section>
-  );
-}
-
 function isInformativeBackgroundRunCommand(commandText: string): boolean {
   return (
     commandText.includes(" ") ||
@@ -1191,11 +862,7 @@ function BackgroundRunsSection({
 }
 
 export const ThreadActivityPopover = memo(function ThreadActivityPopover({
-  activeThreadEnvironmentId,
-  activeThreadId,
   taskProgress,
-  subagentProgress,
-  threadCwd,
   backgroundRuns,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
@@ -1204,140 +871,91 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   onDismissProposedPlan,
 }: ThreadActivityPopoverProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const popoverLayout = useActivityPopoverAnchorLayout(popoverOpen);
   const triggerState = deriveThreadActivityTriggerState({
     taskProgress,
-    subagentProgress,
     backgroundRuns,
   });
-  const selectedSubagent =
-    subagentProgress?.items.find((item) => item.agentThreadId === selectedAgentId) ?? null;
-
-  const closeSubagentInspector = useCallback(() => {
-    setSelectedAgentId(null);
-  }, []);
-
-  const inspectSubagent = useCallback((item: SubagentProgressItem) => {
-    if (!item.agentThreadId) {
-      return;
-    }
-    setSelectedAgentId(item.agentThreadId);
-    setPopoverOpen(false);
-  }, []);
 
   if (!triggerState) {
     return null;
   }
 
   return (
-    <>
-      <Tooltip>
-        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-          <TooltipTrigger
-            render={
-              <PopoverTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    ref={popoverLayout.triggerRef}
-                    className={cn(
-                      "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
-                      triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
-                      triggerState.mode === "mixed" && "max-w-44",
-                    )}
-                    aria-label={triggerState.ariaLabel}
-                  />
+    <Tooltip>
+      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+        <TooltipTrigger
+          render={
+            <PopoverTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  ref={popoverLayout.triggerRef}
+                  className={cn(
+                    "min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
+                    triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
+                    triggerState.mode === "mixed" && "max-w-44",
+                  )}
+                  aria-label={triggerState.ariaLabel}
+                />
+              }
+            />
+          }
+        >
+          <TriggerContent state={triggerState} />
+        </TooltipTrigger>
+        <TooltipPopup side="bottom" sideOffset={8} className="max-w-72">
+          {triggerState.tooltipText}
+        </TooltipPopup>
+        <PopoverPopup
+          key={popoverLayout.layoutKey}
+          align="end"
+          positionerClassName="transition-none"
+          side="bottom"
+          sideOffset={8}
+          className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(3)]"
+          style={popoverLayout.widthStyle}
+        >
+          <div className="min-w-0 space-y-2.5">
+            {taskProgress ? (
+              <TaskSection
+                taskProgress={taskProgress}
+                onViewProposedPlan={
+                  onViewProposedPlan
+                    ? () => {
+                        setPopoverOpen(false);
+                        onViewProposedPlan();
+                      }
+                    : undefined
+                }
+                onImplementProposedPlan={
+                  onImplementProposedPlan
+                    ? () => {
+                        setPopoverOpen(false);
+                        onImplementProposedPlan();
+                      }
+                    : undefined
+                }
+                onDismissProposedPlan={
+                  onDismissProposedPlan
+                    ? () => {
+                        setPopoverOpen(false);
+                        onDismissProposedPlan();
+                      }
+                    : undefined
                 }
               />
-            }
-          >
-            <TriggerContent state={triggerState} />
-          </TooltipTrigger>
-          <TooltipPopup side="bottom" sideOffset={8} className="max-w-72">
-            {triggerState.tooltipText}
-          </TooltipPopup>
-          <PopoverPopup
-            key={popoverLayout.layoutKey}
-            align="end"
-            positionerClassName="transition-none"
-            side="bottom"
-            sideOffset={8}
-            className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(3)]"
-            style={popoverLayout.widthStyle}
-          >
-            <div className="min-w-0 space-y-2.5">
-              {taskProgress ? (
-                <TaskSection
-                  taskProgress={taskProgress}
-                  onViewProposedPlan={
-                    onViewProposedPlan
-                      ? () => {
-                          setPopoverOpen(false);
-                          onViewProposedPlan();
-                        }
-                      : undefined
-                  }
-                  onImplementProposedPlan={
-                    onImplementProposedPlan
-                      ? () => {
-                          setPopoverOpen(false);
-                          onImplementProposedPlan();
-                        }
-                      : undefined
-                  }
-                  onDismissProposedPlan={
-                    onDismissProposedPlan
-                      ? () => {
-                          setPopoverOpen(false);
-                          onDismissProposedPlan();
-                        }
-                      : undefined
-                  }
-                />
-              ) : null}
-              {subagentProgress ? (
-                <SubagentSection state={subagentProgress} onInspect={inspectSubagent} />
-              ) : null}
-              <BackgroundRunsSection
-                backgroundRuns={backgroundRuns}
-                onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
-                onStopBackgroundRun={onStopBackgroundRun}
-              />
-            </div>
-          </PopoverPopup>
-        </Popover>
-      </Tooltip>
-      <Dialog
-        open={selectedSubagent !== null}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) {
-            closeSubagentInspector();
-          }
-        }}
-      >
-        {selectedSubagent ? (
-          <DialogPopup
-            bottomStickOnMobile={false}
-            showCloseButton={false}
-            className="h-[min(82dvh,52rem)] max-h-[calc(100dvh-2rem)] max-w-3xl overflow-hidden rounded-lg"
-          >
-            <DialogTitle className="sr-only">
-              {formatSubagentDisplayName(selectedSubagent)} transcript
-            </DialogTitle>
-            <SubagentInspector
-              environmentId={activeThreadEnvironmentId}
-              threadId={activeThreadId}
-              item={selectedSubagent}
-              details={deriveSubagentDisplayDetails(selectedSubagent)}
-              cwd={threadCwd ?? undefined}
-              onClose={closeSubagentInspector}
+            ) : null}
+            <BackgroundRunsSection
+              backgroundRuns={backgroundRuns}
+              onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
+              onStopBackgroundRun={onStopBackgroundRun}
             />
-          </DialogPopup>
-        ) : null}
-      </Dialog>
-    </>
+          </div>
+        </PopoverPopup>
+      </Popover>
+    </Tooltip>
   );
 });

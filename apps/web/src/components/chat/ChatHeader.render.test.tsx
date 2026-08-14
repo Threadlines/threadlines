@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { EnvironmentId } from "@threadlines/contracts";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -10,7 +10,6 @@ const TEST_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
 function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> = {}) {
   const props = {
-    activeThreadId: ThreadId.make("thread-chat-header-test"),
     activeThreadEnvironmentId: TEST_ENVIRONMENT_ID,
     activeThreadTitle: "General chat",
     activeProjectName: "General Chats",
@@ -33,15 +32,14 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     liveAgents: null,
     fileBrowserAvailable: false,
     taskProgress: null,
-    subagentProgress: null,
     forkContext: null,
     backgroundRuns: [],
     onRunProjectScript: vi.fn(),
     onAddProjectScript: vi.fn(async () => {}),
     onUpdateProjectScript: vi.fn(async () => {}),
     onDeleteProjectScript: vi.fn(async () => {}),
-    agentsPanelOpen: false,
-    onToggleAgentsPanel: vi.fn(),
+    onToggleBackgroundRunTerminal: vi.fn(),
+    onStopBackgroundRun: vi.fn(),
     onOpenForkSourceThread: vi.fn(),
     onToggleTerminal: vi.fn(),
     onToggleRail: vi.fn(),

@@ -24,9 +24,8 @@ import { SidebarOpenTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import { ThreadActivityChip, type ThreadTaskProgressState } from "./ThreadActivityPopover";
+import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
-import type { SubagentProgressState } from "../../session-logic";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
 import { LiveNode } from "../ui/threadline";
 import { cn } from "../../lib/utils";
@@ -38,7 +37,6 @@ export interface ForkHeaderContext {
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
-  activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
@@ -80,16 +78,17 @@ interface ChatHeaderProps {
   /** False for General Chats: their scratch workspace has no files worth browsing. */
   fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
-  subagentProgress: SubagentProgressState | null;
   forkContext: ForkHeaderContext | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
-  /** Whether the activity chip's panel is the one showing in the right slot. */
-  agentsPanelOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
-  onToggleAgentsPanel: () => void;
+  onToggleBackgroundRunTerminal: (terminalId: string) => void;
+  onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  onViewProposedPlan?: (() => void) | undefined;
+  onImplementProposedPlan?: (() => void) | undefined;
+  onDismissProposedPlan?: (() => void) | undefined;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
   onToggleRail: () => void;
@@ -161,15 +160,17 @@ export const ChatHeader = memo(function ChatHeader({
   liveAgents,
   fileBrowserAvailable,
   taskProgress,
-  subagentProgress,
   forkContext,
   backgroundRuns,
-  agentsPanelOpen,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
-  onToggleAgentsPanel,
+  onToggleBackgroundRunTerminal,
+  onStopBackgroundRun,
+  onViewProposedPlan,
+  onImplementProposedPlan,
+  onDismissProposedPlan,
   onOpenForkSourceThread,
   onToggleTerminal,
   onToggleRail,
@@ -242,12 +243,14 @@ export const ChatHeader = memo(function ChatHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
-        <ThreadActivityChip
+        <ThreadActivityPopover
           taskProgress={taskProgress}
-          subagentProgress={subagentProgress}
           backgroundRuns={backgroundRuns}
-          pressed={agentsPanelOpen}
-          onClick={onToggleAgentsPanel}
+          onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
+          onStopBackgroundRun={onStopBackgroundRun}
+          onViewProposedPlan={onViewProposedPlan}
+          onImplementProposedPlan={onImplementProposedPlan}
+          onDismissProposedPlan={onDismissProposedPlan}
         />
         {activeProjectScripts && (
           <ProjectScriptsControl
