@@ -13,16 +13,16 @@ import { SourceControlIcon } from "../Icons";
 
 export const DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" as const;
 /** Where pairing lives, for surfaces that need to route a user to it. */
-export const DEVICES_SETTINGS_SECTION_PATH = "/settings/connections" as const;
+export const CONNECTIONS_SETTINGS_SECTION_PATH = "/settings/connections" as const;
 export const HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" as const;
 
 export const VISIBLE_SETTINGS_SECTION_PATHS = [
   DEFAULT_SETTINGS_SECTION_PATH,
   "/settings/providers",
-  "/settings/plugins",
-  "/settings/instructions",
-  "/settings/source-control",
   "/settings/connections",
+  "/settings/source-control",
+  "/settings/instructions",
+  "/settings/plugins",
   "/settings/keybindings",
   "/settings/archived",
 ] as const;
@@ -32,10 +32,10 @@ export type SettingsSectionPath = (typeof VISIBLE_SETTINGS_SECTION_PATHS)[number
 export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
   HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
   "/settings/providers",
-  "/settings/plugins",
-  "/settings/instructions",
-  "/settings/source-control",
   "/settings/connections",
+  "/settings/source-control",
+  "/settings/instructions",
+  "/settings/plugins",
   "/settings/archived",
 ] as const satisfies ReadonlyArray<SettingsSectionPath>;
 
@@ -48,10 +48,10 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
-  { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
-  { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
+  { label: "Connections", to: CONNECTIONS_SETTINGS_SECTION_PATH, icon: SmartphoneIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
-  { label: "Devices", to: DEVICES_SETTINGS_SECTION_PATH, icon: SmartphoneIcon },
+  { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
+  { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
 ];

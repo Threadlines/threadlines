@@ -14,9 +14,17 @@ import {
 } from "./settingsNavigation";
 
 describe("SETTINGS_NAV_ITEMS", () => {
-  it("keeps device connection settings visible in the settings navigation", () => {
-    expect(SETTINGS_NAV_ITEMS.map((item) => item.label)).toContain("Devices");
-    expect(SETTINGS_NAV_ITEMS.map((item) => item.to)).toContain("/settings/connections");
+  it("shows settings sections in their intended order", () => {
+    expect(SETTINGS_NAV_ITEMS.map((item) => item.label)).toEqual([
+      "General",
+      "Providers",
+      "Connections",
+      "Source Control",
+      "Agent Instructions",
+      "Plugins",
+      "Keybindings",
+      "Archives",
+    ]);
   });
 
   it("matches the visible settings section paths", () => {
@@ -27,10 +35,10 @@ describe("SETTINGS_NAV_ITEMS", () => {
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
       "/settings/general",
       "/settings/providers",
-      "/settings/plugins",
-      "/settings/instructions",
-      "/settings/source-control",
       "/settings/connections",
+      "/settings/source-control",
+      "/settings/instructions",
+      "/settings/plugins",
       "/settings/archived",
     ]);
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([

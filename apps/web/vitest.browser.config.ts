@@ -30,6 +30,15 @@ export default mergeConfig(
     },
     test: {
       include: ["src/**/*.browser.tsx"],
+      // Locally, cap parallel browser tabs at half the cores. Each tab is a
+      // full Chromium renderer; saturating every core pages out low-memory
+      // machines and turns fast specs into spurious 30s timeouts.
+      // THREADLINES_TEST_WORKERS lowers the cap further per machine.
+      maxWorkers: process.env.CI
+        ? undefined
+        : process.env.THREADLINES_TEST_WORKERS
+          ? Number(process.env.THREADLINES_TEST_WORKERS)
+          : "50%",
       browser: {
         enabled: true,
         provider: playwright(),

@@ -64,7 +64,7 @@ describe("HostedStaticOnboardingState", () => {
     await expect
       .element(page.getByRole("link", { name: "threadlines.dev/download" }))
       .toHaveAttribute("href", "https://threadlines.dev/download");
-    await expect.element(page.getByText("Settings → Devices → Add device")).toBeVisible();
+    await expect.element(page.getByText("Settings → Connections → Add device")).toBeVisible();
     await expect
       .element(page.getByText("Scan the QR code it shows with this phone’s camera"))
       .toBeVisible();

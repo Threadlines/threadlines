@@ -3,6 +3,7 @@ import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
   createThreadJumpHintVisibilityController,
+  canMarkThreadDone,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
@@ -32,6 +33,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@threadlines/contracts";
 import {
   DEFAULT_INTERACTION_MODE,
@@ -997,8 +999,10 @@ describe("sortProjectsForSidebar", () => {
 describe("inbox done lifecycle", () => {
   const NOW = "2026-07-28T12:00:00.000Z";
   const base = {
+    hasActionableProposedPlan: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    interactionMode: "default" as const,
     session: null,
     latestUserMessageAt: null,
     latestTurn: null,
@@ -1026,6 +1030,69 @@ describe("inbox done lifecycle", () => {
     expect(isThreadDone(running, doneMark, { now: NOW })).toBe(false);
   });
 
+  it("refuses to hide attention states until they are inspected", () => {
+    const settledTurn = {
+      turnId: "turn-settled" as TurnId,
+      state: "completed",
+      requestedAt: "2026-07-28T11:00:00.000Z",
+      startedAt: "2026-07-28T11:00:00.000Z",
+      completedAt: "2026-07-28T11:05:00.000Z",
+      assistantMessageId: null,
+    } as const;
+    const settledSession = {
+      status: "ready",
+      orchestrationStatus: "ready",
+      pendingBackgroundTaskCount: 0,
+    } as const;
+
+    expect(
+      canMarkThreadDone(
+        {
+          ...base,
+          interactionMode: "plan",
+          hasActionableProposedPlan: true,
+          latestTurn: settledTurn,
+          session: settledSession as never,
+          lastVisitedAt: "2026-07-28T11:06:00.000Z",
+        },
+        { now: NOW },
+      ),
+    ).toBe(false);
+    expect(
+      canMarkThreadDone(
+        {
+          ...base,
+          latestTurn: settledTurn,
+          session: { ...settledSession, pendingBackgroundTaskCount: 1 } as never,
+          lastVisitedAt: "2026-07-28T11:06:00.000Z",
+        },
+        { now: NOW },
+      ),
+    ).toBe(false);
+    expect(
+      canMarkThreadDone(
+        {
+          ...base,
+          latestTurn: settledTurn,
+          session: settledSession as never,
+          lastVisitedAt: "2026-07-28T11:04:00.000Z",
+        },
+        { now: NOW },
+      ),
+    ).toBe(false);
+    expect(
+      canMarkThreadDone(
+        {
+          ...base,
+          latestTurn: settledTurn,
+          session: settledSession as never,
+          lastVisitedAt: "2026-07-28T11:06:00.000Z",
+        },
+        { now: NOW },
+      ),
+    ).toBe(true);
+  });
+
   it("treats a just-sent message as pending work until a turn adopts it", () => {
     // Between send and adoption there is no turn and no running session --
     // the gap where marking Done would hide a message about to run.
@@ -1043,11 +1110,23 @@ describe("inbox done lifecycle", () => {
     ).toBe(true);
   });
 
-  it("lets a failed thread be marked done", () => {
-    // "I saw it, I'm done with it" must be expressible for failures, or the
-    // Done list can never hold anything that went wrong.
-    const failed = { ...base, session: { status: "error" } as never };
-    expect(isThreadDone(failed, doneMark, { now: NOW })).toBe(true);
+  it("lets a failed thread be marked done only after the failure was inspected", () => {
+    // "I saw it, I'm done with it" must remain expressible for failures, but
+    // the first hover after a failure must not be able to dismiss it unseen.
+    const failed = {
+      ...base,
+      session: {
+        status: "error",
+        orchestrationStatus: "error",
+        updatedAt: "2026-07-28T11:55:00.000Z",
+      } as never,
+    };
+    expect(isThreadDone(failed, doneMark, { now: NOW })).toBe(false);
+    expect(
+      isThreadDone({ ...failed, lastVisitedAt: "2026-07-28T11:56:00.000Z" }, doneMark, {
+        now: NOW,
+      }),
+    ).toBe(true);
   });
 
   it("keeps a thread live without an explicit done mark", () => {
@@ -1082,9 +1161,9 @@ describe("inbox done lifecycle", () => {
     ).toBe(false);
   });
 
-  it("never auto-files a completion the user has not seen", () => {
-    // Filing unread work is the sidebar reading your mail for you. Only an
-    // explicit Done may put an unseen completion in the tail.
+  it("never files a completion the user has not seen", () => {
+    // Filing unread work is the sidebar reading your mail for you. The row
+    // should offer Wrap up only after the completed thread has been inspected.
     const unseen = {
       ...base,
       latestTurn: { completedAt: "2026-07-24T12:00:00.000Z" } as never,
@@ -1093,7 +1172,7 @@ describe("inbox done lifecycle", () => {
     expect(isThreadDone(unseen, null, { now: NOW, autoDoneAfterDays: 2 })).toBe(false);
     expect(
       isThreadDone(unseen, { state: "done", at: NOW }, { now: NOW, autoDoneAfterDays: 2 }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 

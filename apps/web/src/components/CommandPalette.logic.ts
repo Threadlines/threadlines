@@ -13,7 +13,7 @@ import {
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
 import {
-  DEVICES_SETTINGS_SECTION_PATH,
+  CONNECTIONS_SETTINGS_SECTION_PATH,
   type SettingsSectionPath,
 } from "./settings/settingsNavigation";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -468,7 +468,7 @@ export function resolveAddProjectUnavailableGuidance(input: { readonly isHostedS
     type: "warning",
     title: "Pair a computer to add projects",
     description:
-      "Threadlines browses projects on the computer running the desktop app. Pair one from Devices, then add a project.",
-    action: { label: "Open Devices", to: DEVICES_SETTINGS_SECTION_PATH },
+      "Threadlines browses projects on the computer running the desktop app. Pair one from Connections, then add a project.",
+    action: { label: "Open Connections", to: CONNECTIONS_SETTINGS_SECTION_PATH },
   };
 }

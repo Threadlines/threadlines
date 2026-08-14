@@ -1,6 +1,7 @@
 import {
   ChevronDownIcon,
   ChevronsUpIcon,
+  ArrowLeftIcon,
   MessageCirclePlusIcon,
   MessagesSquareIcon,
   SearchIcon,
@@ -61,6 +62,7 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { useNavigateBackWithinApp } from "../hooks/useNavigateBackWithinApp";
 import {
   buildThreadRouteParams,
   resolveThreadRouteRef,
@@ -352,7 +354,10 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const navigateBackWithinApp = useNavigateBackWithinApp();
   const { isMobile, setOpenMobile } = useSidebar();
+  const isOnUsage = pathname === "/usage";
   // On mobile, /settings renders a full-page section index, so the sheet
   // closes to reveal it; the sheet itself never hosts settings navigation.
   const handleSettingsClick = useCallback(() => {
@@ -361,6 +366,12 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
     }
     void navigate({ to: "/settings" });
   }, [isMobile, navigate, setOpenMobile]);
+  const handleBackClick = useCallback(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+    navigateBackWithinApp();
+  }, [isMobile, navigateBackWithinApp, setOpenMobile]);
 
   return (
     <SidebarFooter className="p-2">
@@ -374,10 +385,14 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
           <SidebarMenuButton
             size="sm"
             className="flex-1 gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-            onClick={handleSettingsClick}
+            onClick={isOnUsage ? handleBackClick : handleSettingsClick}
           >
-            <SettingsIcon className="size-3.5" />
-            <span className="text-xs">Settings</span>
+            {isOnUsage ? (
+              <ArrowLeftIcon className="size-3.5" />
+            ) : (
+              <SettingsIcon className="size-3.5" />
+            )}
+            <span className="text-xs">{isOnUsage ? "Back" : "Settings"}</span>
           </SidebarMenuButton>
           <SidebarVersionTag />
         </SidebarMenuItem>
@@ -618,7 +633,7 @@ export default function Sidebar() {
           projectKey,
           projectLabel: sidebarProjectByKey.get(projectKey)?.displayName ?? null,
           isDone,
-          canMarkDone: canMarkThreadDone(thread, { now: nowIso }),
+          canMarkDone: canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
           doneAt: isDone ? resolveDoneTimestamp(thread, override) : null,
         };
       }),

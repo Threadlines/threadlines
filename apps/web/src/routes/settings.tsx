@@ -3,12 +3,10 @@ import {
   Outlet,
   createFileRoute,
   redirect,
-  useCanGoBack,
   useLocation,
   useNavigate,
-  useRouter,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import {
@@ -23,6 +21,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
+import { useNavigateBackWithinApp } from "../hooks/useNavigateBackWithinApp";
 
 function isEditableElementTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -50,8 +49,7 @@ function SettingsContentLayout() {
   const location = useLocation();
   const { authGateState } = Route.useRouteContext();
   const navigate = useNavigate();
-  const router = useRouter();
-  const canGoBack = useCanGoBack();
+  const navigateBackWithinApp = useNavigateBackWithinApp();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const isHostedStatic = authGateState.status === "hosted-static";
   const showRestoreDefaults = location.pathname === "/settings/general" && !isHostedStatic;
@@ -63,16 +61,6 @@ function SettingsContentLayout() {
     ? "Settings"
     : (settingsSectionLabelForPath(location.pathname) ?? "Settings");
   const handleRestored = () => setRestoreSignal((value) => value + 1);
-  const navigateBackWithinApp = useCallback(() => {
-    if (canGoBack) {
-      // Through the router's history (not window.history) so hash and memory
-      // histories stay within the app document.
-      router.history.back();
-      return;
-    }
-    void navigate({ to: "/" });
-  }, [canGoBack, navigate, router]);
-
   useEffect(() => {
     rememberVisibleSettingsSection(location.pathname);
   }, [location.pathname]);

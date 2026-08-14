@@ -13,7 +13,7 @@ import { APP_BASE_NAME, APP_DISPLAY_NAME, DESKTOP_DOWNLOAD_URL } from "../brandi
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
-import { DEVICES_SETTINGS_SECTION_PATH } from "./settings/settingsNavigation";
+import { CONNECTIONS_SETTINGS_SECTION_PATH } from "./settings/settingsNavigation";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
@@ -153,7 +153,7 @@ export function AccessRemovedState() {
       icon={<WifiOffIcon className="size-5" />}
       title="Access removed"
       description="This device was disconnected from the computer. Pair again to reconnect."
-      detail="On the computer, open Settings, then Devices, then Add device to create a new setup link."
+      detail="On the computer, open Settings, then Connections, then Add device to create a new setup link."
       action={
         <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
           <RefreshCwIcon className="size-3.5" />
@@ -216,7 +216,7 @@ const PAIRING_STEPS = [
     body: (
       <>
         In the desktop app, open{" "}
-        <span className="font-medium text-foreground">Settings → Devices → Add device</span>
+        <span className="font-medium text-foreground">Settings → Connections → Add device</span>
       </>
     ),
   },
@@ -255,7 +255,7 @@ function HostedStaticPhoneOnboardingState() {
         </ol>
       }
       action={
-        <Button size="sm" render={<Link to={DEVICES_SETTINGS_SECTION_PATH} />}>
+        <Button size="sm" render={<Link to={CONNECTIONS_SETTINGS_SECTION_PATH} />}>
           I have a setup link
         </Button>
       }
@@ -266,7 +266,7 @@ function HostedStaticPhoneOnboardingState() {
 /**
  * The same cold start on a computer, where installing the desktop app is
  * something this browser's machine can actually do. The desktop app is the
- * only place that mints a setup link (Settings, then Devices, then Add
+ * only place that mints a setup link (Settings, then Connections, then Add
  * device), so the copy names that path rather than implying this browser can
  * start pairing on its own.
  */
@@ -276,7 +276,7 @@ function HostedStaticDesktopOnboardingState() {
       icon={<MonitorIcon className="size-5" />}
       title="Open the desktop app to get started"
       description="Threadlines runs on your computer. Install the desktop app there, then pair this browser so it can reach your projects and threads."
-      detail="The desktop app creates the setup link: open Settings, then Devices, then Add device. Paste that link here to finish pairing."
+      detail="The desktop app creates the setup link: open Settings, then Connections, then Add device. Paste that link here to finish pairing."
       action={
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button
@@ -288,7 +288,11 @@ function HostedStaticDesktopOnboardingState() {
               </a>
             }
           />
-          <Button size="sm" variant="outline" render={<Link to={DEVICES_SETTINGS_SECTION_PATH} />}>
+          <Button
+            size="sm"
+            variant="outline"
+            render={<Link to={CONNECTIONS_SETTINGS_SECTION_PATH} />}
+          >
             <SmartphoneIcon className="size-3.5" />
             Pair this browser
           </Button>

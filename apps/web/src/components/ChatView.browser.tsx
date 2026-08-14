@@ -2261,6 +2261,63 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("swaps the sidebar Settings action for a history-aware Back action on Usage", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-usage-sidebar-back" as MessageId,
+        targetText: "usage sidebar back",
+      }),
+    });
+
+    try {
+      const initialPathname = mounted.router.state.location.pathname;
+      const usageButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-usage-meter"]'),
+        "Unable to find the sidebar Usage button.",
+      );
+      usageButton.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/usage",
+        "Expected the Usage route.",
+      );
+
+      const footer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-slot="sidebar-footer"]'),
+        "Unable to find the sidebar footer.",
+      );
+      const backButton = await waitForElement(
+        () =>
+          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find(
+            (button) => button.textContent?.trim() === "Back",
+          ) ?? null,
+        "Unable to find the Usage Back button.",
+      );
+      expect(
+        Array.from(footer.querySelectorAll("button")).some(
+          (button) => button.textContent?.trim() === "Settings",
+        ),
+      ).toBe(false);
+
+      backButton.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === initialPathname,
+        "Expected Back to return to the route that opened Usage.",
+      );
+      await waitForElement(
+        () =>
+          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find(
+            (button) => button.textContent?.trim() === "Settings",
+          ) ?? null,
+        "Expected Settings to return after leaving Usage.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders locked single-environment mobile run context as a static workspace label", async () => {
     const mounted = await mountChatView({
       viewport: COMPACT_FOOTER_VIEWPORT,
@@ -5887,21 +5944,56 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("lists every open thread once, floats pins to the top, and refuses Done on running work", async () => {
+  it("lists every open thread once, floats pins to the top, and refuses Done on active statuses", async () => {
     const pinnedThreadId = "thread-pinned-inbox" as ThreadId;
+    const backgroundThreadId = "thread-background-inbox" as ThreadId;
+    const completedThreadId = "thread-completed-inbox" as ThreadId;
     const runningSnapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-running-pin-test" as MessageId,
       targetText: "running pin target",
       sessionStatus: "running",
       sessionActiveTurnId: "turn-running-pin-test" as TurnId,
     });
-    const withPinnedThread = addThreadToSnapshot(runningSnapshot, pinnedThreadId);
+    const withPinnedThread = addThreadToSnapshot(
+      addThreadToSnapshot(addThreadToSnapshot(runningSnapshot, pinnedThreadId), backgroundThreadId),
+      completedThreadId,
+    );
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: {
         ...withPinnedThread,
         threads: withPinnedThread.threads.map((thread) =>
-          thread.id === pinnedThreadId ? { ...thread, pinnedAt: NOW_ISO } : thread,
+          thread.id === pinnedThreadId
+            ? { ...thread, pinnedAt: NOW_ISO }
+            : thread.id === backgroundThreadId
+              ? {
+                  ...thread,
+                  latestTurn: {
+                    turnId: "turn-background-inbox" as TurnId,
+                    state: "completed",
+                    requestedAt: NOW_ISO,
+                    startedAt: NOW_ISO,
+                    completedAt: NOW_ISO,
+                    assistantMessageId: null,
+                  },
+                  session: thread.session
+                    ? { ...thread.session, pendingBackgroundTaskCount: 1 }
+                    : thread.session,
+                }
+              : thread.id === completedThreadId
+                ? {
+                    ...thread,
+                    latestTurn: {
+                      turnId: "turn-completed-inbox" as TurnId,
+                      state: "completed",
+                      requestedAt: NOW_ISO,
+                      startedAt: NOW_ISO,
+                      completedAt: NOW_ISO,
+                      assistantMessageId: null,
+                    },
+                    lastSeenAt: "2026-01-01T00:00:00.000Z",
+                  }
+                : thread,
         ),
       },
     });
@@ -5915,6 +6007,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${pinnedThreadId}"]`),
         "Unable to find the pinned thread's row.",
       );
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(`[data-testid="thread-row-${backgroundThreadId}"]`),
+        "Unable to find the background thread's row.",
+      );
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(`[data-testid="thread-row-${completedThreadId}"]`),
+        "Unable to find the completed thread's row.",
+      );
 
       expect(
         pinnedRow.compareDocumentPosition(runningRow) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -5926,11 +6028,19 @@ describe("ChatView timeline estimator parity (full app)", () => {
       ).toBe(1);
       expect(
         document.querySelector(`[data-testid="thread-done-${THREAD_ID}"]`),
-        "A running thread cannot be marked done.",
+        "A running thread cannot be wrapped up.",
+      ).toBeNull();
+      expect(
+        document.querySelector(`[data-testid="thread-done-${backgroundThreadId}"]`),
+        "A background thread cannot be wrapped up before inspection.",
+      ).toBeNull();
+      expect(
+        document.querySelector(`[data-testid="thread-done-${completedThreadId}"]`),
+        "A completed-unseen thread cannot be wrapped up before inspection.",
       ).toBeNull();
       expect(
         document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
-        "A settled thread offers Done.",
+        "A settled inspected thread offers Wrap up.",
       ).not.toBeNull();
     } finally {
       await mounted.cleanup();

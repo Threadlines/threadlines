@@ -250,8 +250,13 @@ function EditableHarness({
   );
 }
 
-/** Wait until the editor has adopted the file's document (attach is async). */
-async function waitForEditorDocument(editor: Editor<undefined>, timeoutMs = 15_000) {
+/**
+ * Wait until the editor has adopted the file's document (attach is async).
+ * Attach spins up highlight workers, so under a saturated host it can take
+ * far longer than the isolated-run norm; keep this below testTimeout so the
+ * specific error survives, but leave generous headroom.
+ */
+async function waitForEditorDocument(editor: Editor<undefined>, timeoutMs = 25_000) {
   const deadline = performance.now() + timeoutMs;
   const ready = () => {
     try {

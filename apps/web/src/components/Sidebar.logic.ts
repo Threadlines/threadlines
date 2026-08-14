@@ -550,8 +550,25 @@ export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
 type InboxLifecycleInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "latestUserMessageAt" | "latestTurn"
->;
+  | "hasActionableProposedPlan"
+  | "hasPendingApprovals"
+  | "hasPendingUserInput"
+  | "interactionMode"
+  | "session"
+  | "latestUserMessageAt"
+  | "latestTurn"
+> & {
+  lastVisitedAt?: string | undefined;
+};
+
+function hasUnseenSessionFailure(thread: InboxLifecycleInput): boolean {
+  if (thread.session?.status !== "error") return false;
+  const failedAt = Date.parse(thread.session.updatedAt);
+  if (Number.isNaN(failedAt)) return false;
+  if (thread.lastVisitedAt == null) return true;
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  return Number.isNaN(lastVisitedAt) || failedAt > lastVisitedAt;
+}
 
 /**
  * A user message no turn has picked up yet: strictly newer than every
@@ -582,18 +599,25 @@ export function hasQueuedTurnStart(
 
 /**
  * Whether Done is allowed right now. Work that is moving, blocked on the
- * user, or queued cannot be waved away: hiding a pending approval defeats
- * the approval, and hiding a running turn hides where its result will land.
- * A failed thread CAN be marked done -- that is "I saw it, I'm done with it".
+ * user, waiting in the background, unread, or queued cannot be waved away:
+ * hiding a pending approval defeats the approval, and hiding an unread
+ * completion or background wakeup hides where its result will land.
+ * A failed thread CAN be marked done after it has been inspected -- that is
+ * "I saw it, I'm done with it" rather than an accidental dismissal.
  */
 export function canMarkThreadDone(
   thread: InboxLifecycleInput,
   options: { readonly now: string },
 ): boolean {
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
-  // The same in-flight resolution the status pill uses, so "can't be marked
-  // done" and "shows as working" can never disagree about what running means.
-  if (getThreadInFlightStatus(thread) !== null) return false;
+  // The same status resolution the row uses, so "can't be marked done" and
+  // "shows a status that deserves attention" can never drift apart.
+  const status = resolveThreadStatusPill({ thread });
+  if (status !== null) {
+    if (status.label !== "Failed") return false;
+    // Failed persists as a diagnostic status after a visit, unlike Completed,
+    // so compare its session timestamp explicitly before allowing dismissal.
+    if (hasUnseenSessionFailure(thread)) return false;
+  }
   if (hasQueuedTurnStart(thread, options)) return false;
   return true;
 }

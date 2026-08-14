@@ -11,13 +11,13 @@ import {
   formatPercent,
 } from "@threadlines/shared/usageFormat";
 import { useQuery } from "@tanstack/react-query";
-import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
 import { ArrowLeftIcon, RotateCwIcon } from "lucide-react";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { useNavigateBackWithinApp } from "../../hooks/useNavigateBackWithinApp";
 import { cn } from "../../lib/utils";
 import {
   deriveUsageWindow,
@@ -93,18 +93,7 @@ export function UsageView() {
   const [windowDays, setWindowDays] = useState<UsageWindowDays>(DEFAULT_WINDOW_DAYS);
   const [chartMode, setChartMode] = useState<UsageChartMode>("cost");
   const [breakdown, setBreakdown] = useState<UsageBreakdown>("models");
-  const navigate = useNavigate();
-  const router = useRouter();
-  const canGoBack = useCanGoBack();
-  const handleBackClick = useCallback(() => {
-    if (canGoBack) {
-      // Through the router's history so memory/hash histories stay inside the
-      // current app document, matching Settings' back behavior.
-      router.history.back();
-      return;
-    }
-    void navigate({ to: "/" });
-  }, [canGoBack, navigate, router]);
+  const handleBackClick = useNavigateBackWithinApp();
   // One slow clock for the whole page: scan freshness is the only honest signal
   // about a warm scan, and it must not go stale on screen.
   useRelativeTimeTick(FRESHNESS_TICK_MS);

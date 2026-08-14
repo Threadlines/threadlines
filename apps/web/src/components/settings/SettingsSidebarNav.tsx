@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { ArrowLeftIcon } from "lucide-react";
-import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 
 import {
   SidebarContent,
@@ -19,6 +19,7 @@ import {
   SETTINGS_NAV_ITEMS,
   type SettingsSectionPath,
 } from "./settingsNavigation";
+import { useNavigateBackWithinApp } from "../../hooks/useNavigateBackWithinApp";
 
 /**
  * Desktop-only settings section rail. Mobile viewports never render this:
@@ -27,8 +28,7 @@ import {
  */
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
-  const router = useRouter();
-  const canGoBack = useCanGoBack();
+  const handleBackClick = useNavigateBackWithinApp();
   const navItems =
     typeof window !== "undefined" && isHostedStaticApp(new URL(window.location.href))
       ? HOSTED_STATIC_SETTINGS_NAV_ITEMS
@@ -39,16 +39,6 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     },
     [navigate],
   );
-  const handleBackClick = useCallback(() => {
-    if (canGoBack) {
-      // Through the router's history (not window.history) so hash and memory
-      // histories stay within the app document.
-      router.history.back();
-      return;
-    }
-    void navigate({ to: "/" });
-  }, [canGoBack, navigate, router]);
-
   return (
     <>
       <SidebarContent className="overflow-x-hidden">
