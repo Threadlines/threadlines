@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -89,6 +90,14 @@ function addScopedListener<Args extends ReadonlyArray<unknown>>(
   ).pipe(Effect.asVoid);
 }
 
+/**
+ * How long a quit may wait for the backend to stop before we stop asking
+ * nicely. A shutdown that never completes leaves a windowless process holding
+ * the single-instance lock, which makes every later launch look like a dead
+ * app, so the failsafe has to win eventually.
+ */
+export const DESKTOP_SHUTDOWN_FAILSAFE_DURATION = Duration.seconds(15);
+
 const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdownAndWait")(
   function* (): Effect.fn.Return<void, never, DesktopShutdown> {
     const shutdown = yield* DesktopShutdown;
@@ -96,6 +105,26 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
     yield* shutdown.awaitComplete;
   },
 );
+
+/**
+ * Requests shutdown and waits for it, but never forever: on timeout the process
+ * is forced down so it cannot linger holding the single-instance lock. A
+ * shutdown that completes in time is untouched.
+ */
+export const requestDesktopShutdownAndWaitWithFailsafe = Effect.fn(
+  "desktop.lifecycle.requestShutdownAndWaitWithFailsafe",
+)(function* (): Effect.fn.Return<void, never, DesktopShutdown | ElectronApp.ElectronApp> {
+  const electronApp = yield* ElectronApp.ElectronApp;
+  yield* requestDesktopShutdownAndWait().pipe(
+    Effect.timeoutOrElse({
+      duration: DESKTOP_SHUTDOWN_FAILSAFE_DURATION,
+      orElse: () =>
+        logLifecycleError("shutdown did not complete before the failsafe; forcing exit", {
+          failsafeMs: Duration.toMillis(DESKTOP_SHUTDOWN_FAILSAFE_DURATION),
+        }).pipe(Effect.andThen(electronApp.exit(1))),
+    }),
+  );
+});
 
 function handleBeforeQuit(
   event: Electron.Event,
@@ -120,7 +149,7 @@ function handleBeforeQuit(
       const state = yield* DesktopState.DesktopState;
       yield* Ref.set(state.quitting, true);
       yield* logLifecycleInfo("before-quit received");
-      yield* requestDesktopShutdownAndWait();
+      yield* requestDesktopShutdownAndWaitWithFailsafe();
     }).pipe(Effect.withSpan("desktop.lifecycle.beforeQuit")),
   ).finally(() => {
     markQuitAllowed();
@@ -145,7 +174,7 @@ function quitFromSignal(
       const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
       if (wasQuitting) return;
       yield* logLifecycleInfo("process signal received", { signal });
-      yield* requestDesktopShutdownAndWait();
+      yield* requestDesktopShutdownAndWaitWithFailsafe();
       yield* electronApp.quit;
     }).pipe(Effect.withSpan("desktop.lifecycle.processSignal")),
   );
@@ -162,7 +191,7 @@ export const layer = Layer.succeed(
       yield* Effect.gen(function* () {
         yield* Effect.yieldNow;
         yield* Ref.set(state.quitting, true);
-        yield* requestDesktopShutdownAndWait();
+        yield* requestDesktopShutdownAndWaitWithFailsafe();
         if (environment.isDevelopment) {
           yield* electronApp.exit(75);
           return;
@@ -207,6 +236,15 @@ export const layer = Layer.succeed(
       });
       yield* electronApp.on("activate", () => {
         void runEffect(desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.activate")));
+      });
+      // Only ever fires in the process holding the single-instance lock: a
+      // second launch hands its argv over and exits, and we surface the window
+      // it was asking for. `activate` is backend-ready-aware, so a launch
+      // during startup no-ops and the window arrives at readiness.
+      yield* electronApp.on("second-instance", () => {
+        void runEffect(
+          desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
+        );
       });
       yield* electronApp.on("window-all-closed", () => {
         void runEffect(
