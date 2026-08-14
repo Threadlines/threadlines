@@ -157,7 +157,7 @@ function TabStripItem({
             "pr-3.5 pl-1.5",
         active
           ? "bg-background text-foreground"
-          : "text-muted-foreground/80 hover:bg-accent hover:text-foreground",
+          : "bg-muted/50 text-muted-foreground/80 hover:bg-accent hover:text-foreground",
       )}
       {...(measuring
         ? {}

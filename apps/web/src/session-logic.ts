@@ -1062,13 +1062,11 @@ function readTurnActivityModelSelection(
 /**
  * What each turn was dispatched with, keyed by turn.
  *
- * A spawned agent inherits the parent turn's model and effort unless the spawn
- * overrode them, and only Codex's `spawnAgent` item states an override. Its
- * other agent lifecycle items — `wait`, `sendInput`, `closeAgent`, and the
- * `subAgentActivity` spawn rows — report `model: null`, so a Codex child would
- * otherwise have no model or effort to show. The turn lifecycle activities
- * carry the dispatched selection for every turn, which is exactly what the
- * child inherited.
+ * Some provider lifecycle items need the parent turn's dispatched selection as
+ * a seed when they first reveal a child. A native Codex `subAgentActivity`
+ * spawn is different: its omitted model and effort mean unknown, and later
+ * coordination items (`wait`, `sendInput`, `closeAgent`) must not retroactively
+ * replace that omission with the parent turn's settings.
  *
  * `provider.turn.preparing` is the only activity that always carries the
  * selection, and it is projected *before* the provider hands back a turn id, so
@@ -1346,6 +1344,13 @@ function collectSubagentActivityRecords(
         item.type === "subAgentActivity" || turnId === null
           ? undefined
           : turnModelSelections.get(turnId);
+      // Inheritance is only a seed for a newly discovered child. Once a native
+      // spawn has established the record, later coordination items such as
+      // `wait` must preserve its deliberately omitted model and effort rather
+      // than filling them from the parent turn.
+      const previousOrInheritedModel = previous === undefined ? inherited?.model : previous.model;
+      const previousOrInheritedReasoningEffort =
+        previous === undefined ? inherited?.reasoningEffort : previous.reasoningEffort;
 
       byAgentId.set(agentId, {
         id: agentId,
@@ -1365,14 +1370,8 @@ function collectSubagentActivityRecords(
         statusLabel: subagentProgressStatusLabel(status),
         resolvedModel: resolvedModel ?? previous?.resolvedModel ?? null,
         model:
-          resolvedModel ??
-          previous?.resolvedModel ??
-          model ??
-          previous?.model ??
-          inherited?.model ??
-          null,
-        reasoningEffort:
-          reasoningEffort ?? previous?.reasoningEffort ?? inherited?.reasoningEffort ?? null,
+          resolvedModel ?? previous?.resolvedModel ?? model ?? previousOrInheritedModel ?? null,
+        reasoningEffort: reasoningEffort ?? previousOrInheritedReasoningEffort ?? null,
         liveBody,
         liveBodyUpdatedAt,
         // Claude supplies a dedicated task stream. Codex child work arrives as

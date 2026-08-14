@@ -209,6 +209,34 @@ export function defaultMainWindowSize(workArea: { width: number; height: number 
   };
 }
 
+/**
+ * Whether an already-open window is pointing at a backend that has moved.
+ *
+ * A backend restart normally reuses its port and the window must not flash, so
+ * this is false unless the origin actually changed. Development windows load
+ * the Vite dev server rather than the backend, so they are never re-pointed.
+ *
+ * Pure, and exported, because the cost of getting it wrong is either a stranded
+ * window or a reload on every readiness ping.
+ */
+export function shouldRepointMainWindow(input: {
+  readonly isDevelopment: boolean;
+  readonly currentUrl: string;
+  readonly backendHttpBaseUrl: URL;
+}): boolean {
+  if (input.isDevelopment) {
+    return false;
+  }
+
+  try {
+    // A window that has not committed a URL yet reports an empty string, and it
+    // was created with the current backend URL anyway.
+    return new URL(input.currentUrl).origin !== input.backendHttpBaseUrl.origin;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeRestoredDimension(value: unknown, minimum: number): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
@@ -705,6 +733,32 @@ const make = Effect.gen(function* () {
     yield* createMain;
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
+  // The backend can come back on a different port when its previous one was
+  // taken while it was down, which leaves an open window loaded from an origin
+  // that no longer answers.
+  const repointMainWindowIfBackendMoved = Effect.gen(function* () {
+    const existingWindow = yield* electronWindow.currentMainOrFirst;
+    if (Option.isNone(existingWindow)) return;
+
+    const window = existingWindow.value;
+    if (window.isDestroyed()) return;
+
+    const backendConfig = yield* serverExposure.backendConfig;
+    const shouldRepoint = shouldRepointMainWindow({
+      isDevelopment: environment.isDevelopment,
+      currentUrl: window.webContents.getURL(),
+      backendHttpBaseUrl: backendConfig.httpBaseUrl,
+    });
+    if (!shouldRepoint) return;
+
+    yield* logWindowInfo("reloading main window at relocated backend", {
+      url: backendConfig.httpBaseUrl.href,
+    });
+    yield* Effect.sync(() => {
+      void window.loadURL(backendConfig.httpBaseUrl.href);
+    });
+  }).pipe(Effect.withSpan("desktop.window.repointMainWindowIfBackendMoved"));
+
   return DesktopWindow.of({
     createMain,
     ensureMain,
@@ -721,6 +775,7 @@ const make = Effect.gen(function* () {
     handleBackendReady: Effect.gen(function* () {
       yield* Ref.set(state.backendReady, true);
       yield* logWindowInfo("backend ready", { source: "http" });
+      yield* repointMainWindowIfBackendMoved;
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.handleBackendReady")),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action, payload) {

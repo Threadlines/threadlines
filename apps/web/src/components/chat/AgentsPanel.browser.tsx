@@ -1540,6 +1540,41 @@ describe("AgentsPanel", () => {
     }
   });
 
+  it("gives an inactive tab distinct resting and hover surfaces", async () => {
+    const mounted = await render(
+      <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>
+        <ChatRightPanel
+          openTabs={["sourceControl", "agents"]}
+          availableTabs={["sourceControl", "diff", "agents"]}
+          activeTab="sourceControl"
+          onSelectTab={vi.fn()}
+          onCloseTab={vi.fn()}
+        >
+          <div />
+        </ChatRightPanel>
+      </main>,
+    );
+
+    try {
+      await expect.element(page.getByRole("tab", { name: "Agents" })).toBeVisible();
+      const panel = document.querySelector("[data-chat-right-panel='true']") as HTMLElement;
+      const inactiveTab = document.querySelector("[data-right-panel-tab='agents']") as HTMLElement;
+      const panelBackground = getComputedStyle(panel).backgroundColor;
+      const restingBackground = getComputedStyle(inactiveTab).backgroundColor;
+
+      expect(restingBackground).not.toBe(panelBackground);
+
+      await page.getByRole("tab", { name: "Agents" }).hover();
+      await vi.waitFor(() => {
+        if (getComputedStyle(inactiveTab).backgroundColor === restingBackground) {
+          throw new Error("The inactive tab never gained its separate hover surface.");
+        }
+      });
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("parks the + at the strip's left edge while the launcher is showing", async () => {
     const mounted = await render(
       <main style={{ boxSizing: "border-box", height: 640, width: 330 }}>

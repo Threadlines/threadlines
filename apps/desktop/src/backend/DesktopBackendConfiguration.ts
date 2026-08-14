@@ -7,10 +7,18 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
+import * as NetService from "@threadlines/shared/Net";
+
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import {
+  canBindDesktopBackendPort,
+  desktopBackendPortProbeHosts,
+  scanForDesktopBackendPort,
+} from "./backendPort.ts";
 
 export interface DesktopBackendConfigurationShape {
   readonly resolve: Effect.Effect<DesktopBackendManager.DesktopBackendStartConfig>;
@@ -72,9 +80,8 @@ const DESKTOP_BACKEND_ENV_NAMES = [
 const backendChildEnvPatch = (): Record<string, string | undefined> =>
   Object.fromEntries(DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]));
 
-const { logWarning: logBackendConfigurationWarning } = DesktopObservability.makeComponentLogger(
-  "desktop-backend-configuration",
-);
+const { logInfo: logBackendConfigurationInfo, logWarning: logBackendConfigurationWarning } =
+  DesktopObservability.makeComponentLogger("desktop-backend-configuration");
 
 const readPersistedBackendObservabilitySettings: Effect.Effect<
   BackendObservabilitySettings,
@@ -121,6 +128,58 @@ const getOrCreateBootstrapToken = Effect.fn("desktop.backendConfiguration.bootst
     return token;
   },
 );
+
+/**
+ * Re-checks the stored backend port before every (re)start.
+ *
+ * The bootstrap scan probes a port and binds it moments later, so a second
+ * instance starting at the same time can win the port in between. Without this
+ * the restart loop would retry the same dead port forever, because the port was
+ * chosen once and then treated as settled.
+ *
+ * Only a scanned port may be moved. An explicitly configured port is the user's
+ * instruction, so it is left alone and its bind failure stays visible.
+ */
+const ensureBackendPortIsBindable = Effect.fn(
+  "desktop.backendConfiguration.ensureBackendPortIsBindable",
+)(function* (): Effect.fn.Return<
+  void,
+  never,
+  | DesktopAppSettings.DesktopAppSettings
+  | DesktopServerExposure.DesktopServerExposure
+  | NetService.NetService
+> {
+  const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+  const current = yield* serverExposure.backendConfig;
+  if (!current.portSelectedByScan) {
+    return;
+  }
+
+  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const settings = yield* desktopSettings.get;
+  const probeHosts = desktopBackendPortProbeHosts(settings.serverExposureMode);
+  if (yield* canBindDesktopBackendPort({ port: current.port, probeHosts })) {
+    return;
+  }
+
+  const rescanned = yield* scanForDesktopBackendPort({ probeHosts }).pipe(Effect.option);
+  if (Option.isNone(rescanned)) {
+    yield* logBackendConfigurationWarning(
+      "backend port is no longer available and no replacement port could be found",
+      { port: current.port },
+    );
+    return;
+  }
+
+  yield* serverExposure.configureFromSettings({ port: rescanned.value, selectedByScan: true });
+  yield* logBackendConfigurationInfo(
+    "selected a new backend port after the previous one was taken",
+    {
+      previousPort: current.port,
+      port: rescanned.value,
+    },
+  );
+});
 
 const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolveStartConfig")(
   function* (input: {
@@ -176,10 +235,17 @@ export const layer = Layer.effect(
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const fileSystem = yield* FileSystem.FileSystem;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+    const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+    const net = yield* NetService.NetService;
     const tokenRef = yield* Ref.make(Option.none<string>());
 
     return DesktopBackendConfiguration.of({
       resolve: Effect.gen(function* () {
+        yield* ensureBackendPortIsBindable().pipe(
+          Effect.provideService(DesktopAppSettings.DesktopAppSettings, desktopSettings),
+          Effect.provideService(DesktopServerExposure.DesktopServerExposure, serverExposure),
+          Effect.provideService(NetService.NetService, net),
+        );
         const bootstrapToken = yield* getOrCreateBootstrapToken(tokenRef);
         const observabilitySettings = yield* readPersistedBackendObservabilitySettings.pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),

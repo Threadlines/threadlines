@@ -45,7 +45,13 @@ const trimNonEmpty = (value: string | undefined): string | undefined => {
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
 };
 
-const firstEnvAlias = (
+/**
+ * Returns the first trimmed non-empty value among `names`, mirroring
+ * `DesktopConfig`'s `THREADLINES_` → `BADCODE_` → `T3CODE_` alias order. Shared
+ * with the other module-load-time desktop gates so alias handling stays in one
+ * place.
+ */
+export const readDesktopEnvAlias = (
   env: Readonly<Record<string, string | undefined>>,
   names: ReadonlyArray<string>,
 ): string | undefined => {
@@ -58,7 +64,17 @@ const firstEnvAlias = (
   return undefined;
 };
 
-const isParsableUrl = (value: string): boolean => URL.canParse(value);
+/**
+ * Development is defined by Vite handing the main process a usable dev-server
+ * URL. Shared so every module-load-time gate splits the dev and release lanes
+ * on exactly the same signal.
+ */
+export const isDesktopDevelopmentEnv = (
+  env: Readonly<Record<string, string | undefined>>,
+): boolean => {
+  const devServerUrl = trimNonEmpty(env["VITE_DEV_SERVER_URL"]);
+  return devServerUrl !== undefined && URL.canParse(devServerUrl);
+};
 
 /**
  * Reads the userData-relevant configuration straight from an environment
@@ -69,17 +85,16 @@ const isParsableUrl = (value: string): boolean => URL.canParse(value);
 export const readDesktopUserDataConfigFromEnv = (
   env: Readonly<Record<string, string | undefined>>,
 ): DesktopUserDataConfig => {
-  const devServerUrl = trimNonEmpty(env["VITE_DEV_SERVER_URL"]);
   return {
-    isDevelopment: devServerUrl !== undefined && isParsableUrl(devServerUrl),
+    isDevelopment: isDesktopDevelopmentEnv(env),
     windowsAppDataDirectory: trimNonEmpty(env["APPDATA"]),
     xdgConfigHome: trimNonEmpty(env["XDG_CONFIG_HOME"]),
-    appDataDirectoryOverride: firstEnvAlias(env, [
+    appDataDirectoryOverride: readDesktopEnvAlias(env, [
       "THREADLINES_DESKTOP_APP_DATA_DIR",
       "BADCODE_DESKTOP_APP_DATA_DIR",
       "T3CODE_DESKTOP_APP_DATA_DIR",
     ]),
-    userDataDirNameOverride: firstEnvAlias(env, [
+    userDataDirNameOverride: readDesktopEnvAlias(env, [
       "THREADLINES_DESKTOP_USER_DATA_DIR_NAME",
       "BADCODE_DESKTOP_USER_DATA_DIR_NAME",
       "T3CODE_DESKTOP_USER_DATA_DIR_NAME",
