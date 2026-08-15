@@ -277,6 +277,14 @@ export interface ProviderBackgroundRunsResult {
   /** Provider-tracked background runs that are safe to render in the header. */
   runs: ProviderBackgroundRunState[];
   /**
+   * Runs that are already shown as subagent rows, keyed by the tool call that
+   * launched them. They are kept out of `runs` so the same work is never
+   * listed twice, but the agents panel still needs them: the subagent row has
+   * no stop handle of its own, and this is where the command hints and PIDs
+   * that resolve one live.
+   */
+  promotedSubagentRuns: ReadonlyMap<string, ProviderBackgroundRunState>;
+  /**
    * URLs, PIDs, and command hints used to seed server-side process detection.
    * Includes unconfirmed prose mentions: those feed detection so a real
    * listener gets promoted to a stoppable `detected` run, but they are never
@@ -987,10 +995,14 @@ export function deriveProviderBackgroundRuns(input: {
   pendingBackgroundTaskCount: number;
   activeSubagentCount?: number | undefined;
   activeCommandTurnId?: TurnId | null | undefined;
+  /** Tool calls the thread already tracks as subagents, live or in history. A
+   *  task launched by one of these is that agent, not a separate run. */
+  subagentSpawnCallIds?: ReadonlySet<string> | undefined;
 }): ProviderBackgroundRunsResult {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
   const activeCommandDetectionRunsByKey = new Map<string, ProviderBackgroundRunState>();
   const suppressedSubagentTaskIds = new Set<string>();
+  const promotedToolUseIdByTaskId = new Map<string, string>();
   const activeTaskScopesByTaskId = new Map<
     string,
     {
@@ -1024,6 +1036,7 @@ export function deriveProviderBackgroundRuns(input: {
     if (activity.kind === "task.completed") {
       activeRunsByTaskId.delete(taskId);
       suppressedSubagentTaskIds.delete(taskId);
+      promotedToolUseIdByTaskId.delete(taskId);
       activeTaskScopesByTaskId.delete(taskId);
       continue;
     }
@@ -1058,6 +1071,14 @@ export function deriveProviderBackgroundRuns(input: {
           : Math.max(taskScope.maxSequence, activity.sequence);
     }
     activeTaskScopesByTaskId.set(taskId, taskScope);
+
+    // A task launched by a tool call the thread already tracks as a subagent
+    // is that agent's own work. Sticky per task, because a progress activity
+    // may omit the tool_use id the start edge carried.
+    const promotedToolUseId = asBackgroundRunString(payload?.toolUseId);
+    if (promotedToolUseId && input.subagentSpawnCallIds?.has(promotedToolUseId)) {
+      promotedToolUseIdByTaskId.set(taskId, promotedToolUseId);
+    }
 
     const previous = activeRunsByTaskId.get(taskId);
     const description = asBackgroundRunString(payload?.description);
@@ -1170,7 +1191,21 @@ export function deriveProviderBackgroundRuns(input: {
       },
     ];
   }
-  const taskBackedRuns = runs;
+  // Split out the runs the agents panel is already showing as subagent rows.
+  // They stay in the detection seeds below — the subagent row's stop arm goes
+  // through the same pid/command resolution a run row's does.
+  const promotedSubagentRuns = new Map<string, ProviderBackgroundRunState>();
+  const promotedRunIdsByToolUseId = new Map(
+    [...promotedToolUseIdByTaskId].map(([taskId, toolUseId]) => [`provider:${taskId}`, toolUseId]),
+  );
+  const taskBackedRuns = runs.filter((run) => {
+    const toolUseId = promotedRunIdsByToolUseId.get(run.id);
+    if (toolUseId === undefined) {
+      return true;
+    }
+    promotedSubagentRuns.set(toolUseId, run);
+    return false;
+  });
   const commandDetectionRuns = [...activeCommandDetectionRunsByKey.values()].filter(
     (commandRun) =>
       !taskBackedRuns.some(
@@ -1181,7 +1216,7 @@ export function deriveProviderBackgroundRuns(input: {
   );
   runs = taskBackedRuns;
   const hiddenSubagentTaskCount = Math.max(
-    suppressedSubagentTaskIds.size,
+    suppressedSubagentTaskIds.size + promotedSubagentRuns.size,
     input.activeSubagentCount ?? 0,
   );
   const missingProviderCount = Math.max(
@@ -1211,12 +1246,13 @@ export function deriveProviderBackgroundRuns(input: {
   // confirmed listener is promoted to a stoppable `detected` run elsewhere. We
   // deliberately never render the mention itself, because an unverified
   // localhost reference in prose is not a live background process.
+  const seededRuns = [...runs, ...promotedSubagentRuns.values()];
   const knownUrls = new Set([
-    ...runs.flatMap((run) => run.urls),
+    ...seededRuns.flatMap((run) => run.urls),
     ...commandDetectionRuns.flatMap((run) => run.urls),
   ]);
   const knownPids = new Set([
-    ...runs.flatMap((run) => run.pids),
+    ...seededRuns.flatMap((run) => run.pids),
     ...commandDetectionRuns.flatMap((run) => run.pids),
   ]);
   const previewMessage = input.messages
@@ -1244,15 +1280,15 @@ export function deriveProviderBackgroundRuns(input: {
     pids: [...new Set([...knownPids, ...mentionedPids])],
     commandHints: [
       ...new Set([
-        ...runs.flatMap((run) => run.commandHints),
+        ...seededRuns.flatMap((run) => run.commandHints),
         ...commandDetectionRuns.flatMap((run) => run.commandHints),
-        ...(runs.length > 0 ? commandActivityHints : []),
+        ...(seededRuns.length > 0 ? commandActivityHints : []),
         ...mentionedCommandHints,
       ]),
     ],
   };
 
-  return { runs, detectionSeeds };
+  return { runs, promotedSubagentRuns, detectionSeeds };
 }
 
 function isSubagentProviderTask(input: {

@@ -250,6 +250,7 @@ import {
   deriveProviderSendPreflight,
   type ProviderSendPreflightPrompt,
   filterUnresolvedProviderBackgroundRuns,
+  type ProviderBackgroundRunState,
   hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
   isScrollMetricsAtEnd,
@@ -344,6 +345,33 @@ const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const EMPTY_SUBAGENT_ITEMS: ReadonlyArray<SubagentProgressItem> = [];
+/** A provider-tracked run as the run list renders it. The provider never gives
+ *  us a pid or a terminal for one, so stopping it goes through the command and
+ *  URL hints — which is also what decides whether it can be stopped at all. */
+function toThreadBackgroundRunItem<Run extends ProviderBackgroundRunState>(
+  run: Run,
+): Run & {
+  terminalId: null;
+  pid: null;
+  port: null;
+  elapsed: null;
+  canStop: boolean;
+  cwd: null;
+} {
+  return {
+    ...run,
+    terminalId: null,
+    pid: null,
+    port: null,
+    elapsed: null,
+    canStop:
+      run.command !== null ||
+      run.commandHints.length > 0 ||
+      run.urls.length > 0 ||
+      run.pids.length > 0,
+    cwd: null,
+  };
+}
 const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_PROVIDER_DRIVER = ProviderDriverKind.make("claudeAgent");
 const LAYOUT_STICK_TO_BOTTOM_FRAME_COUNT = 4;
@@ -2956,6 +2984,19 @@ export default function ChatView(props: ChatViewProps) {
     },
     [performCloseTerminal],
   );
+  // A tool call the thread already tracks as an agent is not a separate
+  // background run. History is consulted alongside the live turn so a promoted
+  // agent stays promoted after its spawning turn settles.
+  const subagentSpawnCallIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of subagentProgress?.items ?? []) {
+      if (item.spawnCallId) ids.add(item.spawnCallId);
+    }
+    for (const entry of subagentHistory) {
+      if (entry.item.spawnCallId) ids.add(entry.item.spawnCallId);
+    }
+    return ids;
+  }, [subagentHistory, subagentProgress?.items]);
   const providerBackgroundSnapshot = useMemo(
     () =>
       deriveProviderBackgroundRuns({
@@ -2966,6 +3007,7 @@ export default function ChatView(props: ChatViewProps) {
         activeCommandTurnId: activeTurnInProgress
           ? (activeThread?.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null)
           : null,
+        subagentSpawnCallIds,
       }),
     [
       activeLatestTurn?.turnId,
@@ -2973,25 +3015,23 @@ export default function ChatView(props: ChatViewProps) {
       activeThread?.session?.activeTurnId,
       activeTurnInProgress,
       subagentProgress?.activeCount,
+      subagentSpawnCallIds,
       threadActivities,
       timelineMessages,
     ],
   );
   const providerBackgroundRuns = useMemo(
+    () => providerBackgroundSnapshot.runs.map(toThreadBackgroundRunItem),
+    [providerBackgroundSnapshot],
+  );
+  const promotedSubagentRuns = useMemo(
     () =>
-      providerBackgroundSnapshot.runs.map((run) => ({
-        ...run,
-        terminalId: null,
-        pid: null,
-        port: null,
-        elapsed: null,
-        canStop:
-          run.command !== null ||
-          run.commandHints.length > 0 ||
-          run.urls.length > 0 ||
-          run.pids.length > 0,
-        cwd: null,
-      })),
+      new Map(
+        [...providerBackgroundSnapshot.promotedSubagentRuns].map(([spawnCallId, run]) => [
+          spawnCallId,
+          toThreadBackgroundRunItem(run),
+        ]),
+      ),
     [providerBackgroundSnapshot],
   );
   const backgroundRunDetectionUrls = useMemo(
@@ -3308,6 +3348,7 @@ export default function ChatView(props: ChatViewProps) {
       threadId: activeThreadId,
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       backgroundRuns,
+      subagentRuns: promotedSubagentRuns,
       history: subagentHistory,
       workEntries: workLogEntries,
       providerLabel: activeProviderDriver,
@@ -3323,6 +3364,7 @@ export default function ChatView(props: ChatViewProps) {
     backgroundRuns,
     environmentId,
     gitCwd,
+    promotedSubagentRuns,
     stopBackgroundRun,
     subagentHistory,
     subagentProgress?.items,

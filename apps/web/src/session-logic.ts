@@ -218,6 +218,11 @@ export interface SubagentProgressItem {
    *  from the spawning tool call id this record is keyed by; Codex addresses
    *  transcripts by the child thread id, which is already the record id. */
   transcriptAgentId: string | null;
+  /** Tool call that spawned this agent. Providers that launch an agent through
+   *  an ordinary tool (a background `codex exec`) also report it on the task
+   *  stream under the same id, which is how the plain run row is matched to
+   *  this record. */
+  spawnCallId?: string | null;
   /** Stable V2 hierarchy path (for example `/root/research/database`). */
   agentPath?: string | null;
   parentAgentPath?: string | null;
@@ -1143,6 +1148,7 @@ function collectSubagentActivityRecords(
       id: agentId,
       agentThreadId: subagent.agentThreadId,
       transcriptAgentId: subagent.transcriptAgentId,
+      spawnCallId: subagent.spawnCallId,
       agentPath: subagent.agentPath,
       parentAgentPath: subagent.parentAgentPath,
       treeDepth: subagent.treeDepth,
@@ -1353,6 +1359,7 @@ function collectSubagentActivityRecords(
         transcriptAgentId: pendingAgent
           ? null
           : (taskIdByToolUseId.get(agentId) ?? previous?.transcriptAgentId ?? agentId),
+        spawnCallId: toolCallId,
         agentPath: pathMetadata?.agentPath ?? null,
         parentAgentPath: pathMetadata?.parentAgentPath ?? null,
         treeDepth: pathMetadata?.treeDepth ?? 0,
