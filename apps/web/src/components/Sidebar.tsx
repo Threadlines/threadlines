@@ -637,11 +637,6 @@ export default function Sidebar() {
     ],
   );
 
-  const scopedProjectKeyValue =
-    inboxProjectScopeKey !== null && sidebarProjectByKey.has(inboxProjectScopeKey)
-      ? inboxProjectScopeKey
-      : null;
-
   // Every machine the inbox knows about: this device, plus whatever has been
   // added under "Add computer". Ordered with this device first, the rest by
   // name, so the list does not reshuffle as machines connect and drop.
@@ -680,6 +675,27 @@ export default function Sidebar() {
     environmentScopeOptions.some((option) => option.environmentId === inboxEnvironmentScopeId)
       ? inboxEnvironmentScopeId
       : null;
+
+  // The two scopes compose as an intersection, so the project scope only
+  // holds while its project actually lives on the scoped machine — otherwise
+  // it lapses to All projects rather than pinning the list to an empty cross.
+  const scopedProjectKeyValue = (() => {
+    if (inboxProjectScopeKey === null) {
+      return null;
+    }
+    const project = sidebarProjectByKey.get(inboxProjectScopeKey);
+    if (!project) {
+      return null;
+    }
+    if (
+      scopedEnvironmentIdValue !== null &&
+      !project.memberProjects.some((member) => member.environmentId === scopedEnvironmentIdValue)
+    ) {
+      return null;
+    }
+    return inboxProjectScopeKey;
+  })();
+
   const machineScopedEntries = useMemo(
     () =>
       scopedEnvironmentIdValue === null
@@ -751,14 +767,24 @@ export default function Sidebar() {
         );
       }
     }
+    // A machine filter narrows the project list with it: offering a project
+    // that has no checkout on the scoped machine could only produce an empty
+    // intersection.
     return buildProjectScopeOptions({
       projects: sidebarProjects
         .filter((project) => project.kind !== "general-chat")
+        .filter(
+          (project) =>
+            scopedEnvironmentIdValue === null ||
+            project.memberProjects.some(
+              (member) => member.environmentId === scopedEnvironmentIdValue,
+            ),
+        )
         .map((project) => ({ key: project.projectKey, label: project.displayName })),
       lastActivityMsByKey,
       needsYouCountByKey,
     });
-  }, [machineScopedEntries, sidebarProjects]);
+  }, [machineScopedEntries, scopedEnvironmentIdValue, sidebarProjects]);
 
   const { liveEntries, doneEntries } = useMemo(() => {
     const scoped =
@@ -781,19 +807,6 @@ export default function Sidebar() {
     ).map(lookup);
     return { liveEntries, doneEntries };
   }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue]);
-
-  // A machine name on every row is noise while there is only one machine in
-  // the list -- and while a machine filter is on, every row is that machine.
-  const showThreadEnvironmentLabels = useMemo(() => {
-    const environmentIds = new Set<EnvironmentId>();
-    for (const entry of [...liveEntries, ...doneEntries]) {
-      environmentIds.add(entry.thread.environmentId);
-      if (environmentIds.size > 1) {
-        return true;
-      }
-    }
-    return false;
-  }, [doneEntries, liveEntries]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and anything with a status stays put.
@@ -1623,7 +1636,6 @@ export default function Sidebar() {
                           thread={entry.thread}
                           status={entry.status}
                           projectLabel={scopedProjectKeyValue === null ? entry.projectLabel : null}
-                          showEnvironmentLabel={showThreadEnvironmentLabels}
                           isActive={routeThreadKey === entry.threadKey}
                           jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
                           canMarkDone={entry.canMarkDone}
@@ -1719,7 +1731,6 @@ export default function Sidebar() {
                             projectLabel={
                               scopedProjectKeyValue === null ? entry.projectLabel : null
                             }
-                            showEnvironmentLabel={showThreadEnvironmentLabels}
                             doneAt={entry.doneAt}
                             isActive={routeThreadKey === entry.threadKey}
                             appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}

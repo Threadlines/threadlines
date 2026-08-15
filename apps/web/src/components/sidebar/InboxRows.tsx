@@ -143,11 +143,11 @@ function useThreadProject(thread: SidebarThreadSummary): { cwd: string; name: st
 /**
  * Which machine a thread is running on, when that is a question worth asking.
  *
- * The cloud marks anything not on this device. The name beside it only appears
- * once the list actually spans machines -- with one remote paired, every cloud
- * in the list means the same thing and spelling it out on every row is noise.
+ * The cloud alone marks anything not on this device: the row's meta strip is
+ * contested space, and the machine's name lives one hover away in the tooltip
+ * and the hover card, which use the same cloud glyph for the same fact.
  */
-function ThreadEnvironmentBadge(props: { thread: SidebarThreadSummary; showLabel: boolean }) {
+function ThreadEnvironmentBadge(props: { thread: SidebarThreadSummary }) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const runtimeLabel = useSavedEnvironmentRuntimeStore(
     (state) => state.byId[props.thread.environmentId]?.descriptor?.label ?? null,
@@ -161,21 +161,14 @@ function ThreadEnvironmentBadge(props: { thread: SidebarThreadSummary; showLabel
 
   const label = runtimeLabel ?? savedLabel ?? "Remote";
   return (
-    <span className="inline-flex min-w-0 items-center gap-1">
-      <Tooltip>
-        <TooltipTrigger
-          render={<span aria-label={label} className="inline-flex items-center justify-center" />}
-        >
-          <CloudIcon className="block size-3 text-muted-foreground/50" />
-        </TooltipTrigger>
-        <TooltipPopup side="top">{label}</TooltipPopup>
-      </Tooltip>
-      {props.showLabel ? (
-        <span className="max-w-[12ch] truncate font-mono text-[10px] leading-none text-muted-foreground/50">
-          {label}
-        </span>
-      ) : null}
-    </span>
+    <Tooltip>
+      <TooltipTrigger
+        render={<span aria-label={label} className="inline-flex items-center justify-center" />}
+      >
+        <CloudIcon className="block size-3 text-muted-foreground/50" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -206,8 +199,6 @@ export interface InboxThreadRowProps {
   status: ThreadStatusPill | null;
   /** Null while the list is scoped to one project: the label is implied. */
   projectLabel: string | null;
-  /** True only while the list spans machines; see {@link ThreadEnvironmentBadge}. */
-  showEnvironmentLabel: boolean;
   isActive: boolean;
   jumpLabel: string | null;
   /** False while the thread is moving or blocked: live work can't be waved away. */
@@ -254,7 +245,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     thread,
     status,
     projectLabel,
-    showEnvironmentLabel,
     isActive,
     jumpLabel,
     canMarkDone,
@@ -595,7 +585,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   />
                 </span>
               ) : null}
-              <ThreadEnvironmentBadge thread={thread} showLabel={showEnvironmentLabel} />
+              <ThreadEnvironmentBadge thread={thread} />
               {prStatus ? (
                 <Tooltip>
                   <TooltipTrigger
@@ -638,8 +628,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
 export interface InboxDoneRowProps {
   thread: SidebarThreadSummary;
   projectLabel: string | null;
-  /** True only while the list spans machines; see {@link ThreadEnvironmentBadge}. */
-  showEnvironmentLabel: boolean;
   doneAt: string | null;
   isActive: boolean;
   appSettingsConfirmThreadArchive: boolean;
@@ -664,7 +652,6 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
   const {
     thread,
     projectLabel,
-    showEnvironmentLabel,
     doneAt,
     isActive,
     appSettingsConfirmThreadArchive,
@@ -826,7 +813,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
             {thread.title}
           </span>
           <span className={ROW_META_SLOT_CLASS_NAME}>
-            <ThreadEnvironmentBadge thread={thread} showLabel={showEnvironmentLabel} />
+            <ThreadEnvironmentBadge thread={thread} />
             {terminalStatus ? (
               <span
                 role="img"
