@@ -4227,7 +4227,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
     yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
       fallbackErrorMessage: "git worktree add failed",
-    });
+    }).pipe(
+      Effect.catchIf(
+        // A worktree whose folder was deleted out-of-band leaves its
+        // registration behind, and git refuses to reuse the path ("missing but
+        // already registered worktree"). Recreating at the same path is exactly
+        // the recovery this serves, so clear the dead registrations — prune
+        // only ever removes entries whose directories are gone — and retry.
+        (error) => /missing but already registered/iu.test(error.detail ?? ""),
+        () =>
+          executeGit("GitVcsDriver.createWorktree.prune", input.cwd, ["worktree", "prune"], {
+            fallbackErrorMessage: "git worktree prune failed",
+          }).pipe(
+            Effect.andThen(
+              executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
+                fallbackErrorMessage: "git worktree add failed",
+              }),
+            ),
+          ),
+      ),
+    );
 
     const expectedRef = `refs/heads/${targetBranch}`;
     const readCreatedWorktreeHead = Effect.fn("GitVcsDriver.createWorktree.readHead")(function* () {

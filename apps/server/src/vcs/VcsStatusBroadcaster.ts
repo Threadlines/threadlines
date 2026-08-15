@@ -165,11 +165,39 @@ function fingerprintStatusPart(status: unknown): string {
   return JSON.stringify(status);
 }
 
+/**
+ * Canonical cache/stream key for a checkout path.
+ *
+ * `realPath` alone is unstable across existence: on macOS `/tmp/x` resolves to
+ * `/private/tmp/x` while the directory exists but stays `/tmp/x` once it is
+ * deleted. A subscription opened while the checkout was missing would then key
+ * differently from the statuses published after the folder is recreated — and
+ * never hear them. When the leaf is gone, canonicalize the nearest existing
+ * ancestor and reattach the missing remainder so the key survives
+ * delete/recreate cycles.
+ */
 const normalizeCwd = (cwd: string) =>
-  Effect.service(FileSystem.FileSystem).pipe(
-    Effect.flatMap((fs) => fs.realPath(cwd)),
-    Effect.orElseSucceed(() => cwd),
-  );
+  Effect.gen(function* () {
+    const fs = yield* Effect.service(FileSystem.FileSystem);
+    const resolved = yield* fs.realPath(cwd).pipe(Effect.orElseSucceed(() => null));
+    if (resolved !== null) {
+      return resolved;
+    }
+    let prefix = cwd.replace(/[/\\]+$/u, "");
+    let suffix = "";
+    while (true) {
+      const cut = Math.max(prefix.lastIndexOf("/"), prefix.lastIndexOf("\\"));
+      if (cut <= 0) {
+        return cwd;
+      }
+      suffix = prefix.slice(cut) + suffix;
+      prefix = prefix.slice(0, cut);
+      const resolvedPrefix = yield* fs.realPath(prefix).pipe(Effect.orElseSucceed(() => null));
+      if (resolvedPrefix !== null) {
+        return resolvedPrefix + suffix;
+      }
+    }
+  });
 
 export const layer = Layer.effect(
   VcsStatusBroadcaster,
@@ -547,7 +575,13 @@ export const layer = Layer.effect(
         while (true) {
           const presence = yield* checkoutPresence(cwd).pipe(withFileSystem);
           if (presence !== "missing") {
-            announced = presence === "present" ? false : announced;
+            if (announced && presence === "present") {
+              announced = false;
+              // The folder came back — recreated by the app or by hand. Push a
+              // fresh status so the recovery surfaces clear now rather than at
+              // the next scheduled refresh.
+              yield* refreshLocalStatus(cwd).pipe(Effect.ignoreCause({ log: true }));
+            }
             yield* Effect.sleep(CHECKOUT_PRESENCE_POLL_INTERVAL);
             continue;
           }

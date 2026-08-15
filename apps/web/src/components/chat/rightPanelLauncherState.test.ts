@@ -99,6 +99,26 @@ describe("buildRightPanelLauncherStates", () => {
     expect(states.diff).toEqual({ description: "No changes to review.", empty: true });
   });
 
+  it("says the folder is missing instead of describing a tree that is not there", () => {
+    const states = buildRightPanelLauncherStates({
+      workingTreeFileCount: null,
+      diffHasExplicitTarget: false,
+      checkoutMissing: true,
+      ...EMPTY_THREAD,
+    });
+
+    // Source stays lit — the recovery actions live behind it — but neither git
+    // surface may claim working-tree facts about a deleted checkout.
+    expect(states.sourceControl).toEqual({
+      description: "This thread's folder is missing.",
+      empty: false,
+    });
+    expect(states.diff).toEqual({
+      description: "This thread's folder is missing.",
+      empty: true,
+    });
+  });
+
   it("reports the same change count on both git surfaces and dims neither", () => {
     const states = buildRightPanelLauncherStates({
       workingTreeFileCount: 12,

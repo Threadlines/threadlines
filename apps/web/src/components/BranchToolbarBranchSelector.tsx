@@ -261,8 +261,12 @@ export function BranchToolbarBranchSelector({
     () => branchesSearchData?.pages.flatMap((page) => page.refs) ?? [],
     [branchesSearchData?.pages],
   );
+  // With the checkout deleted, `refs` list the project root's branches, whose
+  // current branch is the root's, not this thread's. Skipping that fallback
+  // lets the label resolve from the thread's own recorded branch instead.
   const currentGitBranch =
-    branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
+    branchStatusQuery.data?.refName ??
+    (selectedCheckoutMissing ? null : (refs.find((refName) => refName.current)?.name ?? null));
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(branchStatusQuery.data?.sourceControlProvider),
     [branchStatusQuery.data?.sourceControlProvider],
