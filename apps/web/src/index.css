@@ -224,11 +224,10 @@
   --muted-foreground: oklch(0.5 0 0);
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--foreground);
-  /* Resting fill of the chosen row in value pickers. Deliberately NOT another
-     alpha of the hover wash: two strengths of one grey read as the same state.
-     On dark it darkens (recessed, "set") while hover lightens; on light both
-     must darken, so the full-strength text carries most of the difference. */
-  --pick-selected: --alpha(var(--color-black) / 6%);
+  /* Resting fill of the chosen row in value pickers. Kept faint on purpose:
+     the selected row is set apart from the borderless hover wash by a hairline
+     inset ring (--border), a difference in structure rather than in shade. */
+  --pick-selected: --alpha(var(--color-black) / 3%);
   --control-active: --alpha(var(--color-black) / 9%);
   --destructive: var(--color-red-500);
   --border: --alpha(var(--color-black) / 8%);
@@ -289,7 +288,7 @@
     --muted-foreground: oklch(0.68 0 0);
     --accent: --alpha(var(--color-white) / 9%);
     --accent-foreground: var(--foreground);
-    --pick-selected: --alpha(var(--color-black) / 26%);
+    --pick-selected: --alpha(var(--color-white) / 4%);
     --control-active: --alpha(var(--color-white) / 17%);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
     --border: --alpha(var(--color-white) / 14%);
