@@ -49,6 +49,7 @@ import {
   type ProviderUserInputAnswers,
   type RuntimeSessionExitKind,
   type ServerProviderModel,
+  type SubagentMetadataUpdatedPayload,
   type RuntimeContentStreamKind,
   RuntimeItemId,
   RuntimeRequestId,
@@ -65,6 +66,7 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
@@ -91,6 +93,19 @@ import {
   locateClaudeSubagentTranscript,
   readClaudeSubagentTranscriptEntries,
 } from "../Drivers/ClaudeSubagentTranscripts.ts";
+import {
+  codexExecAgentId,
+  codexExecSessionsRoot,
+  findCodexExecRollout,
+  locateCodexExecRolloutBySessionId,
+  mapCodexExecRolloutTranscript,
+  matchCodexExecCommand,
+  parseCodexExecAgentId,
+  readCodexExecFinalMessage,
+  readCodexExecRolloutLines,
+  readCodexExecTurnContext,
+  type CodexExecInvocation,
+} from "../Drivers/CodexExecRollouts.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
   claudeModelSupportsAutoRuntimeMode,
@@ -263,6 +278,17 @@ interface ToolInFlight {
   readonly lastEmittedInputFingerprint?: string;
 }
 
+/** A background `codex exec` run promoted to a subagent row, from the moment
+ *  its task starts until its rollout is found and its task settles. */
+interface CodexExecRun {
+  readonly taskId: string;
+  readonly toolUseId: string;
+  readonly startedAtMs: number;
+  readonly cwd: string;
+  rolloutPath: string | null;
+  settled: boolean;
+}
+
 type ClaudeTaskStatus = "pending" | "running" | "completed" | "failed" | "killed" | "paused";
 
 interface ClaudeTaskSnapshot {
@@ -343,6 +369,15 @@ interface ClaudeSessionContext {
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
   readonly tasks: Map<string, ClaudeTaskSnapshot>;
+  /** Shell commands of in-flight Bash tool calls, keyed by tool_use id. A
+   *  `task_started` names the tool that launched it but not what it runs, so
+   *  the command has to be remembered from the tool call itself. Bounded FIFO. */
+  readonly bashCommandsByToolUseId: Map<string, string>;
+  /** Background `codex exec` runs promoted to subagent rows, keyed by task id. */
+  readonly codexExecRuns: Map<string, CodexExecRun>;
+  /** Rollout files already attributed to a run in this session, so two
+   *  concurrent `codex exec` calls never settle onto the same file. */
+  readonly claimedCodexExecRolloutPaths: Set<string>;
   /** Task ids whose lifecycle start edge was already emitted in this Claude
    *  process. Kept separate from task metadata so reordered progress cannot
    *  suppress the real start edge. */
@@ -1950,6 +1985,54 @@ const SUBAGENT_AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
  *  past any real session's subagent count while bounding a runaway. */
 const SUBAGENT_SPAWN_ANCESTRY_MAX_ENTRIES = 1_024;
 
+/** Role recorded on a promoted `codex exec` row. The agents panel renders the
+ *  role as the row's name, so this is what the row reads as. */
+const CODEX_EXEC_SUBAGENT_ROLE = "codex";
+/** Shell commands remembered per session for task correlation; oldest evict
+ *  first. A turn issues a handful of Bash calls, so this is generous. */
+const CODEX_EXEC_COMMAND_MAX_ENTRIES = 32;
+/** Gaps between rollout lookups, i.e. 1s/3s/7s/15s/30s after the task starts.
+ *  Codex writes `session_meta` on startup, so the first attempt usually wins;
+ *  the tail covers a cold binary or a loaded machine. */
+const CODEX_EXEC_ROLLOUT_POLL_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
+/** How far before the task's start a rollout may have been last written and
+ *  still be this run's. Covers clock skew between the task edge and the file. */
+const CODEX_EXEC_ROLLOUT_START_SLACK_MS = 10_000;
+
+/**
+ * Runs a `codex exec` promotion step for effect, swallowing every outcome.
+ *
+ * Promotion is a presentation nicety layered onto ordinary task handling: a
+ * missing rollout directory, an unreadable file or an unexpected record shape
+ * must leave the task stream exactly as it was, with the run shown the old way.
+ */
+function guardCodexExecFailure<A, E, R>(
+  label: string,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<void, never, R> {
+  return effect.pipe(
+    Effect.asVoid,
+    Effect.catchCause((cause) => Effect.logDebug(label, { cause })),
+  );
+}
+
+/** Remembers a Bash-shaped tool call's command line so a later `task_started`
+ *  that names only the tool_use id can tell what was launched. */
+function rememberShellCommand(context: ClaudeSessionContext, tool: ToolInFlight): void {
+  const command = tool.input.command;
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return;
+  }
+  context.bashCommandsByToolUseId.set(tool.itemId, command);
+  while (context.bashCommandsByToolUseId.size > CODEX_EXEC_COMMAND_MAX_ENTRIES) {
+    const oldest = context.bashCommandsByToolUseId.keys().next();
+    if (oldest.done) {
+      return;
+    }
+    context.bashCommandsByToolUseId.delete(oldest.value);
+  }
+}
+
 function capTranscriptText(value: string, maxChars: number): string {
   const trimmed = value.trim();
   return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
@@ -3439,6 +3522,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ? toolInputFingerprint(parsedInput)
             : undefined;
         context.inFlightTools.set(event.index, nextTool);
+        if (parsedInput) {
+          rememberShellCommand(context, nextTool);
+        }
 
         if (
           !parsedInput ||
@@ -3569,6 +3655,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(inputFingerprint ? { lastEmittedInputFingerprint: inputFingerprint } : {}),
       };
       context.inFlightTools.set(index, tool);
+      rememberShellCommand(context, tool);
 
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
@@ -3712,6 +3799,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         payload: message,
       },
     });
+    // A `codex exec` launched into the background is a second agent, not a
+    // shell command; promoting it here gives it the same row every other
+    // subagent gets. Never allowed to disturb the task stream above.
+    yield* guardCodexExecFailure(
+      "claude.codex-exec.promote-failed",
+      promoteCodexExecTask(context, task),
+    );
     return true;
   });
 
@@ -3759,7 +3853,221 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         payload: message,
       },
     });
+    // Settles alongside the single task completion, so a promoted row leaves
+    // "running" exactly when the task does — including when its rollout was
+    // never found and the row has nothing else to settle on.
+    yield* guardCodexExecFailure(
+      "claude.codex-exec.settle-failed",
+      settleCodexExecRun(context, { taskId: task.taskId, status: task.status }),
+    );
     return true;
+  });
+
+  const emitSubagentMetadata = (
+    context: ClaudeSessionContext,
+    payload: SubagentMetadataUpdatedPayload,
+  ) =>
+    Effect.gen(function* () {
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "subagent.metadata.updated",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        payload,
+        providerRefs: nativeProviderRefs(context),
+      });
+    });
+
+  /**
+   * Attribute a started `codex exec` run to the rollout file it is writing and
+   * report what that file says about the run.
+   *
+   * Returns false while the file has not appeared yet, which is the normal
+   * state for the first second or two of a run.
+   */
+  const resolveCodexExecRollout = Effect.fn("resolveCodexExecRollout")(function* (
+    context: ClaudeSessionContext,
+    run: CodexExecRun,
+  ) {
+    const match = yield* findCodexExecRollout({
+      sessionsRoot: codexExecSessionsRoot(claudeEnvironment, path),
+      cwd: run.cwd,
+      notBeforeMs: run.startedAtMs - CODEX_EXEC_ROLLOUT_START_SLACK_MS,
+      claimedPaths: context.claimedCodexExecRolloutPaths,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (!match) {
+      return false;
+    }
+    context.claimedCodexExecRolloutPaths.add(match.rolloutPath);
+    run.rolloutPath = match.rolloutPath;
+
+    const lines = yield* readCodexExecRolloutLines(match.rolloutPath).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+    );
+    const turnContext = readCodexExecTurnContext(lines);
+    const agentId = codexExecAgentId(match.sessionId);
+    yield* emitSubagentMetadata(context, {
+      callId: run.toolUseId,
+      agentThreadId: agentId,
+      transcriptAgentId: agentId,
+      status: "running",
+      ...(turnContext?.model
+        ? {
+            model: turnContext.model,
+            resolvedModel: turnContext.model,
+            modelSource: "provider" as const,
+          }
+        : {}),
+      ...(turnContext?.reasoningEffort
+        ? {
+            reasoningEffort: turnContext.reasoningEffort,
+            reasoningEffortSource: "provider" as const,
+          }
+        : {}),
+    });
+    return true;
+  });
+
+  /** Backs off while the rollout has not appeared. Forked as a child of the
+   *  session's stream fiber, so it dies when the session does. */
+  const pollCodexExecRollout = Effect.fn("pollCodexExecRollout")(function* (
+    context: ClaudeSessionContext,
+    run: CodexExecRun,
+  ) {
+    for (const delay of CODEX_EXEC_ROLLOUT_POLL_DELAYS_MS) {
+      yield* Effect.sleep(Duration.millis(delay));
+      if (run.settled || run.rolloutPath !== null || context.stopped) {
+        return;
+      }
+      if (yield* resolveCodexExecRollout(context, run)) {
+        return;
+      }
+    }
+  });
+
+  /**
+   * Promote a background `codex exec` command into a subagent row.
+   *
+   * The row is emitted before anything is known beyond the command line, so it
+   * appears the moment the task starts; the rollout poll fills in the model,
+   * the effort and the transcript id as soon as codex has written them.
+   */
+  const startCodexExecRun = Effect.fn("startCodexExecRun")(function* (
+    context: ClaudeSessionContext,
+    input: {
+      readonly taskId: string;
+      readonly toolUseId: string;
+      readonly description?: string;
+      readonly invocation: CodexExecInvocation;
+    },
+  ) {
+    const cwd = context.session.cwd;
+    if (!cwd || context.codexExecRuns.has(input.taskId)) {
+      return;
+    }
+    const run: CodexExecRun = {
+      taskId: input.taskId,
+      toolUseId: input.toolUseId,
+      startedAtMs: Date.now(),
+      cwd,
+      rolloutPath: null,
+      settled: false,
+    };
+    context.codexExecRuns.set(input.taskId, run);
+
+    const objective = input.description ?? input.invocation.prompt;
+    const { model, reasoningEffort } = input.invocation;
+    yield* emitSubagentMetadata(context, {
+      callId: input.toolUseId,
+      status: "running",
+      agentRole: CODEX_EXEC_SUBAGENT_ROLE,
+      ...(objective ? { objective } : {}),
+      ...(model ? { model, modelSource: "explicit" as const } : {}),
+      ...(reasoningEffort ? { reasoningEffort, reasoningEffortSource: "explicit" as const } : {}),
+    });
+    yield* Effect.forkChild(pollCodexExecRollout(context, run));
+  });
+
+  /** Settles a promoted run's row when its task ends, with codex's own last
+   *  message as the result when the rollout can be read. */
+  const settleCodexExecRun = Effect.fn("settleCodexExecRun")(function* (
+    context: ClaudeSessionContext,
+    input: {
+      readonly taskId: string;
+      readonly status: "completed" | "failed" | "stopped";
+    },
+  ) {
+    const run = context.codexExecRuns.get(input.taskId);
+    if (!run || run.settled) {
+      return;
+    }
+    run.settled = true;
+    context.codexExecRuns.delete(input.taskId);
+    // Codex writes its final message before the shell exits, so the file that
+    // never showed up during the poll is usually there by now.
+    if (run.rolloutPath === null) {
+      yield* resolveCodexExecRollout(context, run);
+    }
+    const resultBody =
+      run.rolloutPath === null
+        ? null
+        : readCodexExecFinalMessage(
+            yield* readCodexExecRolloutLines(run.rolloutPath).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+            ),
+          );
+    const createdAt = yield* nowIso;
+    yield* emitSubagentMetadata(context, {
+      callId: run.toolUseId,
+      status:
+        input.status === "failed"
+          ? "failed"
+          : input.status === "stopped"
+            ? "interrupted"
+            : "completed",
+      ...(resultBody ? { resultBody, resultCreatedAt: createdAt } : {}),
+    });
+  });
+
+  /**
+   * Whether a started background task is a `codex exec` run, and if so, the
+   * row it should be promoted to.
+   *
+   * Every failure here degrades to today's behavior — a plain background run
+   * row — rather than disturbing task handling, which is why the whole path is
+   * guarded rather than allowed to fail the message.
+   */
+  const promoteCodexExecTask = Effect.fn("promoteCodexExecTask")(function* (
+    context: ClaudeSessionContext,
+    task: {
+      readonly taskId: string;
+      readonly description?: string;
+      readonly toolUseId?: string;
+      readonly subagentType?: string;
+      readonly taskType?: string;
+    },
+  ) {
+    if (task.taskType !== "local_bash" || task.subagentType !== undefined || !task.toolUseId) {
+      return;
+    }
+    const command = context.bashCommandsByToolUseId.get(task.toolUseId);
+    const invocation = command ? matchCodexExecCommand(command) : null;
+    if (!invocation) {
+      return;
+    }
+    yield* startCodexExecRun(context, {
+      taskId: task.taskId,
+      toolUseId: task.toolUseId,
+      ...(task.description ? { description: task.description } : {}),
+      invocation,
+    });
   });
 
   // A background subagent's Task tool_result is only a launch acknowledgment;
@@ -5747,6 +6055,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         subagentSpawnAncestry: new Map(),
         fileChangeStatsByToolUseId,
         tasks: new Map(),
+        bashCommandsByToolUseId: new Map(),
+        codexExecRuns: new Map(),
+        claimedCodexExecRolloutPaths: new Set(),
         startedTaskIds: new Set(),
         backgroundTaskSnapshotObserved: false,
         planTracker: new Map(),
@@ -6093,6 +6404,47 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const readCodexExecTranscript = Effect.fn("readCodexExecTranscript")(function* (
+    sessionId: string,
+    input: {
+      readonly limit?: number | undefined;
+      readonly offset?: number | undefined;
+      readonly fromEnd?: boolean | undefined;
+    },
+    requestError: (detail: string) => ProviderAdapterRequestError,
+  ): Effect.fn.Return<ProviderSubagentTranscriptResult, ProviderAdapterRequestError> {
+    const rolloutPath = yield* locateCodexExecRolloutBySessionId({
+      sessionsRoot: codexExecSessionsRoot(claudeEnvironment, path),
+      sessionId,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (rolloutPath === null) {
+      return yield* requestError("No transcript found for this codex run yet.");
+    }
+    const transcript = mapCodexExecRolloutTranscript(
+      yield* readCodexExecRolloutLines(rolloutPath).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      ),
+    );
+    const description = transcript.prompt ?? transcript.cwd;
+    return {
+      ...pageClaudeSubagentTranscriptEntries(transcript.entries, {
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.offset !== undefined ? { offset: input.offset } : {}),
+        ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+      }),
+      agent: {
+        id: codexExecAgentId(sessionId),
+        agentType: CODEX_EXEC_SUBAGENT_ROLE,
+        ...(description ? { description } : {}),
+        ...(transcript.model ? { model: transcript.model } : {}),
+      },
+    };
+  });
+
   const readSubagentTranscript: NonNullable<ClaudeAdapterShape["readSubagentTranscript"]> =
     Effect.fn("readSubagentTranscript")(function* (threadId, input) {
       const requestError = (detail: string) =>
@@ -6101,6 +6453,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           method: "readSubagentTranscript",
           detail,
         });
+      // A promoted `codex exec` run's transcript is the rollout codex wrote,
+      // not a Claude subagent file. It resolves from the id alone, so it keeps
+      // working across a server restart, when nothing remembers the run.
+      const codexExecSessionId = parseCodexExecAgentId(input.agentId);
+      if (codexExecSessionId !== null) {
+        return yield* readCodexExecTranscript(codexExecSessionId, input, requestError);
+      }
       if (!SUBAGENT_AGENT_ID_PATTERN.test(input.agentId)) {
         return yield* requestError(`Invalid subagent id '${input.agentId}'.`);
       }

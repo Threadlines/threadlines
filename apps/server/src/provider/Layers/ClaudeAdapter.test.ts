@@ -7393,3 +7393,275 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 });
+
+/**
+ * A Claude thread that shells out to `codex exec` in the background is running
+ * a second agent, and the panel should say so. These cover the promotion arc:
+ * the row appears on the task edge, gains the rollout's identity and settings
+ * once codex has written them, and settles with the task.
+ */
+describe("ClaudeAdapterLive codex exec promotion", () => {
+  const CODEX_SESSION_ID = "019fea48-4154-7982-876b-43e4c551eb65";
+
+  function makeCodexHome(): { readonly codexHome: string; readonly cleanup: () => void } {
+    const codexHome = mkdtempSync(path.join(os.tmpdir(), "claude-adapter-codex-home-"));
+    return { codexHome, cleanup: () => rmSync(codexHome, { recursive: true, force: true }) };
+  }
+
+  function seedRollout(codexHome: string, cwd: string): void {
+    const now = new Date();
+    const directory = path.join(
+      codexHome,
+      "sessions",
+      String(now.getFullYear()),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    );
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, `rollout-now-${CODEX_SESSION_ID}.jsonl`),
+      [
+        JSON.stringify({
+          // A just-started run's recorded start time; the correlation gate
+          // rejects rollouts that began before the task did.
+          timestamp: now.toISOString(),
+          type: "session_meta",
+          payload: {
+            session_id: CODEX_SESSION_ID,
+            cwd,
+            originator: "codex_exec",
+            source: "exec",
+          },
+        }),
+        JSON.stringify({
+          type: "turn_context",
+          payload: { model: "gpt-5.6-sol", effort: "medium" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", last_agent_message: "Reviewed the adapter." },
+        }),
+        "",
+      ].join("\n"),
+    );
+  }
+
+  function emitBashToolUse(
+    harness: ReturnType<typeof makeHarness>,
+    input: { readonly toolUseId: string; readonly command: string },
+  ): void {
+    harness.query.emit({
+      type: "stream_event",
+      session_id: "sdk-session-codex-exec",
+      uuid: `${input.toolUseId}-start`,
+      parent_tool_use_id: null,
+      event: {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: input.toolUseId,
+          name: "Bash",
+          input: { command: input.command, run_in_background: true },
+        },
+      },
+    } as unknown as SDKMessage);
+  }
+
+  function emitMarkerTask(harness: ReturnType<typeof makeHarness>): void {
+    harness.query.emit({
+      type: "system",
+      subtype: "task_started",
+      task_id: "task-marker",
+      description: "Marker task",
+      session_id: "sdk-session-codex-exec",
+      uuid: "task-marker-started",
+    } as unknown as SDKMessage);
+  }
+
+  const subagentMetadata = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+    events.flatMap((event) => (event.type === "subagent.metadata.updated" ? [event.payload] : []));
+
+  const collectUntilMarker = (adapter: ClaudeAdapterShape) =>
+    adapter.streamEvents.pipe(
+      Stream.takeUntil(
+        (event) => event.type === "task.started" && event.payload.taskId === "task-marker",
+      ),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+
+  function makeCodexExecHarness(): {
+    readonly harness: ReturnType<typeof makeHarness>;
+    readonly codexHome: string;
+    readonly cwd: string;
+    readonly cleanup: () => void;
+  } {
+    const { codexHome, cleanup } = makeCodexHome();
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "claude-adapter-codex-cwd-"));
+    return {
+      harness: makeHarness({
+        cwd,
+        environment: { ...missingClaudeConfigEnvironment(), CODEX_HOME: codexHome },
+      }),
+      codexHome,
+      cwd,
+      cleanup: () => {
+        cleanup();
+        rmSync(cwd, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it.effect("promotes a background codex exec run and settles it with the task", () => {
+    const fixture = makeCodexExecHarness();
+    seedRollout(fixture.codexHome, fixture.cwd);
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* collectUntilMarker(adapter);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: fixture.cwd,
+        runtimeMode: "full-access",
+      });
+
+      emitBashToolUse(fixture.harness, {
+        toolUseId: "tool-codex-exec",
+        command: `codex exec -m gpt-5.6-sol "Review the adapter"`,
+      });
+      fixture.harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-codex-exec",
+        description: "Review the adapter",
+        task_type: "local_bash",
+        tool_use_id: "tool-codex-exec",
+        session_id: "sdk-session-codex-exec",
+        uuid: "task-codex-exec-started",
+      } as unknown as SDKMessage);
+      fixture.harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-codex-exec",
+        tool_use_id: "tool-codex-exec",
+        status: "completed",
+        summary: "codex exec finished",
+        session_id: "sdk-session-codex-exec",
+        uuid: "task-codex-exec-completed",
+      } as unknown as SDKMessage);
+      emitMarkerTask(fixture.harness);
+
+      const metadata = subagentMetadata(Array.from(yield* Fiber.join(runtimeEventsFiber)));
+      // Row first, identity second, settlement last.
+      assert.deepEqual(metadata[0], {
+        callId: "tool-codex-exec",
+        status: "running",
+        agentRole: "codex",
+        objective: "Review the adapter",
+        model: "gpt-5.6-sol",
+        modelSource: "explicit",
+      });
+      assert.deepEqual(metadata[1], {
+        callId: "tool-codex-exec",
+        agentThreadId: `codex-exec:${CODEX_SESSION_ID}`,
+        transcriptAgentId: `codex-exec:${CODEX_SESSION_ID}`,
+        status: "running",
+        model: "gpt-5.6-sol",
+        resolvedModel: "gpt-5.6-sol",
+        modelSource: "provider",
+        reasoningEffort: "medium",
+        reasoningEffortSource: "provider",
+      });
+      assert.equal(metadata.length, 3);
+      assert.equal(metadata[2]?.callId, "tool-codex-exec");
+      assert.equal(metadata[2]?.status, "completed");
+      assert.equal(metadata[2]?.resultBody, "Reviewed the adapter.");
+
+      // The rollout the row was linked to also serves its transcript.
+      const transcript = yield* adapter.readSubagentTranscript!(THREAD_ID, {
+        threadId: THREAD_ID,
+        agentId: `codex-exec:${CODEX_SESSION_ID}`,
+      });
+      assert.equal(transcript.agent?.model, "gpt-5.6-sol");
+      assert.equal(transcript.agent?.agentType, "codex");
+    }).pipe(Effect.provide(fixture.harness.layer), Effect.ensuring(Effect.sync(fixture.cleanup)));
+  });
+
+  it.effect("leaves ordinary background commands alone", () => {
+    const fixture = makeCodexExecHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* collectUntilMarker(adapter);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: fixture.cwd,
+        runtimeMode: "full-access",
+      });
+
+      emitBashToolUse(fixture.harness, {
+        toolUseId: "tool-dev-server",
+        command: `echo "codex exec go" && pnpm dev`,
+      });
+      fixture.harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-dev-server",
+        description: "Run the dev server",
+        task_type: "local_bash",
+        tool_use_id: "tool-dev-server",
+        session_id: "sdk-session-codex-exec",
+        uuid: "task-dev-server-started",
+      } as unknown as SDKMessage);
+      emitMarkerTask(fixture.harness);
+
+      assert.deepEqual(subagentMetadata(Array.from(yield* Fiber.join(runtimeEventsFiber))), []);
+    }).pipe(Effect.provide(fixture.harness.layer), Effect.ensuring(Effect.sync(fixture.cleanup)));
+  });
+
+  it.effect("settles a promoted row even when no rollout is ever found", () => {
+    const fixture = makeCodexExecHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* collectUntilMarker(adapter);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: fixture.cwd,
+        runtimeMode: "full-access",
+      });
+
+      emitBashToolUse(fixture.harness, {
+        toolUseId: "tool-codex-exec",
+        command: `codex exec "Review the adapter"`,
+      });
+      fixture.harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-codex-exec",
+        description: "Review the adapter",
+        task_type: "local_bash",
+        tool_use_id: "tool-codex-exec",
+        session_id: "sdk-session-codex-exec",
+        uuid: "task-codex-exec-started",
+      } as unknown as SDKMessage);
+      fixture.harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-codex-exec",
+        patch: { status: "failed", error: "codex exited 1" },
+        session_id: "sdk-session-codex-exec",
+        uuid: "task-codex-exec-failed",
+      } as unknown as SDKMessage);
+      emitMarkerTask(fixture.harness);
+
+      const metadata = subagentMetadata(Array.from(yield* Fiber.join(runtimeEventsFiber)));
+      assert.equal(metadata.length, 2);
+      assert.deepEqual(metadata[1], { callId: "tool-codex-exec", status: "failed" });
+    }).pipe(Effect.provide(fixture.harness.layer), Effect.ensuring(Effect.sync(fixture.cleanup)));
+  });
+});

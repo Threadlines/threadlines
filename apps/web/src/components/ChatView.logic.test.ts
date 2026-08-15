@@ -1398,6 +1398,50 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(detectionSeeds.commandHints[0]).toContain("scripts/dev-runner.ts");
     expect(detectionSeeds.commandHints[0]).toContain("threadlines-activity-preview-280");
   });
+
+  it("moves a task the thread already tracks as a subagent off the run list", () => {
+    const activities = [
+      taskActivity(
+        "task.started",
+        {
+          taskId: "task-codex-exec",
+          taskType: "local_bash",
+          description: "Review the adapter",
+          toolUseId: "tool-codex-exec",
+          detail: "codex exec running at http://localhost:5959",
+        },
+        1,
+      ),
+      taskActivity("task.progress", { taskId: "task-codex-exec", detail: "Still reviewing" }, 2),
+    ];
+
+    const promoted = deriveProviderBackgroundRuns({
+      activities,
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+      activeSubagentCount: 1,
+      subagentSpawnCallIds: new Set(["tool-codex-exec"]),
+    });
+
+    // The row is gone from the run list, but its stop handles survive: the
+    // agent row it moved to has no other way to stop the process.
+    expect(promoted.runs).toEqual([]);
+    expect(promoted.promotedSubagentRuns.get("tool-codex-exec")).toMatchObject({
+      id: "provider:task-codex-exec",
+      label: "Still reviewing",
+      urls: ["http://localhost:5959"],
+    });
+    expect(promoted.detectionSeeds.urls).toEqual(["http://localhost:5959"]);
+
+    // Without the subagent record it is an ordinary background run.
+    const plain = deriveProviderBackgroundRuns({
+      activities,
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+    expect(plain.runs).toHaveLength(1);
+    expect(plain.promotedSubagentRuns.size).toBe(0);
+  });
 });
 
 describe("backgroundRunCommandsMatch", () => {

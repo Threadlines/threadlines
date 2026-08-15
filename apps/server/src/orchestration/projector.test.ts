@@ -154,11 +154,23 @@ describe("orchestration projector", () => {
         payload: {
           callId: "spawn-call-1",
           agentThreadId: "agent-thread-1",
+          transcriptAgentId: "codex-exec:agent-thread-1",
           agentPath: "/root/durable_identity",
           agentNickname: "Identity",
           model: "gpt-5.6-sol-2026-08-01",
           modelSource: "provider",
           status: "running",
+        },
+      },
+      // A provider that settles an agent out-of-band states only the spawn call
+      // and the outcome; everything already known has to survive it.
+      {
+        id: "settle-metadata",
+        payload: {
+          callId: "spawn-call-1",
+          status: "completed",
+          resultBody: "Traced it.",
+          resultCreatedAt: "2026-08-13T12:00:09.000Z",
         },
       },
     ];
@@ -196,7 +208,7 @@ describe("orchestration projector", () => {
         projectEvent(
           model,
           makeEvent({
-            sequence: index + 4,
+            sequence: index + metadataActivities.length + 2,
             type: "thread.activity-appended",
             aggregateKind: "thread",
             aggregateId: "thread-subagents",
@@ -211,7 +223,7 @@ describe("orchestration projector", () => {
                 summary: `Filler ${index}`,
                 payload: {},
                 turnId: null,
-                sequence: index + 4,
+                sequence: index + metadataActivities.length + 2,
                 createdAt: "2026-08-13T12:01:00.000Z",
               },
             },
@@ -229,16 +241,19 @@ describe("orchestration projector", () => {
       expect.objectContaining({
         id: "agent-thread-1",
         agentThreadId: "agent-thread-1",
+        transcriptAgentId: "codex-exec:agent-thread-1",
         spawnCallId: "spawn-call-1",
         nickname: "Identity",
         role: "durable_identity",
         objective: "Trace durable identity",
-        status: "running",
+        status: "completed",
         requestedModel: "gpt-5.6-sol",
         resolvedModel: "gpt-5.6-sol-2026-08-01",
         reasoningEffort: "high",
         modelProvenance: "explicit",
         reasoningEffortProvenance: "explicit",
+        resultBody: "Traced it.",
+        resultCreatedAt: "2026-08-13T12:00:09.000Z",
       }),
     ]);
   });

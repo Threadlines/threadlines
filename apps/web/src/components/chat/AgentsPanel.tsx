@@ -32,6 +32,10 @@ export interface AgentsPanelProps {
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Background runs already listed above as subagents, keyed by the tool call
+   *  that launched them. They are not rendered as rows; they only give the
+   *  matching agent row a stop handle. */
+  subagentRuns?: ReadonlyMap<string, ThreadBackgroundRunItem> | undefined;
   /** Every agent the thread has run, from its durable activity projection. Keeps
    *  the panel populated (and receipts resolvable) after the turn ends. */
   history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
@@ -143,7 +147,9 @@ function BranchRow({
       ? `Open ${branch.name} transcript`
       : `${branch.terminalVisible ? "Close" : "Open"} ${branch.name} terminal`;
 
-  const canStop = branch.kind === "run" && branch.run.canStop;
+  // An agent the provider launched as a background shell command borrows the
+  // run rows' stop arm — same control, same placement, same behavior.
+  const canStop = branch.kind === "run" ? branch.run.canStop : branch.stoppableRun !== null;
   const flat = variant === "flat";
   // Flat rows carry no trunk to hang a status dot off, and a filed-away agent
   // that simply finished has nothing to say with one. Anything else does.
@@ -295,6 +301,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   threadId,
   subagents,
   backgroundRuns,
+  subagentRuns,
   history,
   workEntries = EMPTY_WORK_ENTRIES,
   providerLabel,
@@ -308,8 +315,8 @@ export const AgentsPanel = memo(function AgentsPanel({
   const selectedAgentId = useSelectedAgentId();
 
   const view = useMemo(
-    () => buildAgentsPanelView({ subagents, backgroundRuns, history, providerLabel }),
-    [backgroundRuns, history, providerLabel, subagents],
+    () => buildAgentsPanelView({ subagents, backgroundRuns, subagentRuns, history, providerLabel }),
+    [backgroundRuns, history, providerLabel, subagentRuns, subagents],
   );
   const headerMeta = useMemo(() => formatAgentsHeaderMeta({ subagents }), [subagents]);
   const headerSummary = useMemo(
@@ -345,8 +352,9 @@ export const AgentsPanel = memo(function AgentsPanel({
 
   const handleStop = useCallback(
     (branch: AgentBranch) => {
-      if (branch.kind === "run") {
-        onStopBackgroundRun(branch.run);
+      const run = branch.kind === "run" ? branch.run : branch.stoppableRun;
+      if (run) {
+        onStopBackgroundRun(run);
       }
     },
     [onStopBackgroundRun],

@@ -23,6 +23,9 @@ export interface AgentsPanelSource {
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Runs the panel lists as subagents rather than as runs, keyed by the tool
+   *  call that launched them. They carry the stop handle those agent rows use. */
+  subagentRuns: ReadonlyMap<string, ThreadBackgroundRunItem>;
   /** Every agent the thread has run, live or long finished. Published alongside
    *  the live items so the panel and the conversation's receipts resolve the
    *  same set of agents. */
