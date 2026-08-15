@@ -164,6 +164,70 @@ export function focusRightPanelTabState(
   };
 }
 
+/**
+ * The first agent of a batch just spawned: surface the Agents tab without
+ * taking anything away from the user.
+ *
+ * - Sidebar hidden, or open on the launcher: the Agents tab is the most useful
+ *   thing to be looking at, so it opens focused.
+ * - Sidebar open on another tab: the Agents tab joins the strip in the
+ *   background — its live node advertises the running agent — and focus stays
+ *   exactly where the user put it.
+ *
+ * Deciding *when* to call this (the 0→running edge, once per batch, wide
+ * layouts only) is the caller's job; this is only what opening looks like.
+ */
+export function autoOpenAgentsTabState(state: RightPanelTabsState): RightPanelTabsState {
+  if (state.visible && state.activeTab !== null && state.activeTab !== "agents") {
+    return state.openTabs.includes("agents")
+      ? state
+      : { ...state, openTabs: orderedTabs([...state.openTabs, "agents"]) };
+  }
+  return focusRightPanelTabState(state, "agents");
+}
+
+/** Mutable per-thread state for the auto-open trigger. */
+export interface AgentsAutoOpenEdge {
+  threadKey: string | null;
+  sawIdle: boolean;
+}
+
+/**
+ * Advances the auto-open edge detector and returns whether this observation is
+ * a fresh spawn — an idle→running transition seen while the thread was on
+ * screen. Idle is only believed while `agentsKnown` (the thread's detail data
+ * has actually loaded): before that, "no agents" just means the data has not
+ * arrived, and counting it made every load of a thread with a live agent read
+ * as a spawn. A thread switch re-arms nothing — landing on a thread whose
+ * agents are already running is not a spawn either — and a returned true
+ * consumes the edge, so one batch of spawns triggers exactly once.
+ */
+export function advanceAgentsAutoOpenEdge(
+  edge: AgentsAutoOpenEdge,
+  input: {
+    readonly threadKey: string | null;
+    readonly agentsKnown: boolean;
+    readonly agentsRunning: boolean;
+  },
+): boolean {
+  if (edge.threadKey !== input.threadKey) {
+    edge.threadKey = input.threadKey;
+    edge.sawIdle = false;
+  }
+  if (!input.agentsKnown) {
+    return false;
+  }
+  if (!input.agentsRunning) {
+    edge.sawIdle = true;
+    return false;
+  }
+  if (!edge.sawIdle) {
+    return false;
+  }
+  edge.sawIdle = false;
+  return true;
+}
+
 /** Open-or-retarget the single Diff tab. */
 export function retargetRightPanelDiffState(
   state: RightPanelTabsState,
@@ -452,6 +516,18 @@ export function useRightPanelTabs(threadKey: string | null): {
 
 export function focusRightPanelTab(threadKey: string | null, tab: RightPanelTab): void {
   mutate(threadKey, (state) => focusRightPanelTabState(state, tab));
+}
+
+/** Returns "agents" when the tab came up focused and the URL should follow;
+ *  null when it only joined the strip in the background (or was already up). */
+export function autoOpenAgentsTab(threadKey: string | null): RightPanelTab | null {
+  const previous = readState(threadKey);
+  const next = mutate(threadKey, autoOpenAgentsTabState);
+  const focused =
+    next.visible &&
+    next.activeTab === "agents" &&
+    !(previous.visible && previous.activeTab === "agents");
+  return focused ? "agents" : null;
 }
 
 export function retargetRightPanelDiff(

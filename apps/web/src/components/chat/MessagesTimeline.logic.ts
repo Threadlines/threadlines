@@ -67,6 +67,12 @@ export type MessagesTimelineRow =
        *  in the same turn would repeat the same bars and count. Empty means this
        *  group shows no tracker at all. */
       trackerTurnIds: TurnId[];
+      /** Spawn call ids the tracker falls back to when the group has no turn to
+       *  key on. A background agent keeps streaming after its spawning turn
+       *  settles, and that activity arrives turnless — without this the group
+       *  at the tail of the conversation would show nothing at all while the
+       *  agent works. Only populated when `trackerTurnIds` is empty. */
+      trackerAgentSpawnIds: string[];
       isLive: boolean;
       liveStartedAt: string | null;
     }
@@ -319,6 +325,10 @@ export function deriveMessagesTimelineRows(input: {
         trackedTurnIds.add(turnId);
         trackerTurnIds.push(turnId);
       }
+      const trackerAgentSpawnIds =
+        trackerTurnIds.length === 0
+          ? deriveTrackerAgentSpawnIds(groupedEntries, agentAnchorEntries)
+          : [];
       nextRows.push({
         kind: "work",
         id: timelineEntry.id,
@@ -326,6 +336,7 @@ export function deriveMessagesTimelineRows(input: {
         groupedEntries,
         agentAnchorEntries,
         trackerTurnIds,
+        trackerAgentSpawnIds,
         isLive: false,
         liveStartedAt: null,
       });
@@ -478,6 +489,25 @@ function isAgentLifecycleEntry(entry: TimelineEntry): boolean {
     (activityKind === "task.progress" || activityKind === "task.completed") &&
     subagentTask !== undefined
   );
+}
+
+/** The spawn call ids a turnless group's rows reference: an agent's own task
+ *  rows name their spawn through `subagentTask.toolUseId`, and the spawn's
+ *  collab tool item names itself through `toolCallId`. */
+function deriveTrackerAgentSpawnIds(
+  groupedEntries: ReadonlyArray<WorkLogEntry>,
+  agentAnchorEntries: ReadonlyArray<WorkLogEntry>,
+): string[] {
+  const spawnIds: string[] = [];
+  for (const entry of [...groupedEntries, ...agentAnchorEntries]) {
+    const spawnId =
+      entry.subagentTask?.toolUseId ??
+      (entry.itemType === "collab_agent_tool_call" ? entry.toolCallId : undefined);
+    if (spawnId && !spawnIds.includes(spawnId)) {
+      spawnIds.push(spawnId);
+    }
+  }
+  return spawnIds;
 }
 
 function deriveVisibleTimelineEntries(input: {
@@ -671,6 +701,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.liveStartedAt === bw.liveStartedAt &&
         a.trackerTurnIds.length === bw.trackerTurnIds.length &&
         a.trackerTurnIds.every((turnId, index) => turnId === bw.trackerTurnIds[index]) &&
+        a.trackerAgentSpawnIds.length === bw.trackerAgentSpawnIds.length &&
+        a.trackerAgentSpawnIds.every(
+          (spawnId, index) => spawnId === bw.trackerAgentSpawnIds[index],
+        ) &&
         Equal.equals(a.groupedEntries, bw.groupedEntries) &&
         Equal.equals(a.agentAnchorEntries, bw.agentAnchorEntries)
       );

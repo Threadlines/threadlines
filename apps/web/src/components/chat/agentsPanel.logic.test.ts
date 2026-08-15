@@ -676,6 +676,33 @@ describe("selectTurnAgents", () => {
     expect(selected.map((item) => item.status)).toEqual(["running", "running"]);
     expect(selected.map((item) => item.agentThreadId)).toEqual(["shared", "extra"]);
   });
+
+  /** A background agent between turns: its activity group carries no turn, so
+   *  the tracker names it through the spawn call id its rows reference. */
+  it("selects turnless agents through the spawn-call fallback", () => {
+    const selected = selectTurnAgents({
+      live: [
+        buildSubagent({ id: "toolu_spawn", turnId: TURN_ONE, spawnCallId: "toolu_spawn" }),
+        buildSubagent({ id: "unrelated", turnId: TURN_TWO, spawnCallId: "toolu_other" }),
+      ],
+      history: undefined,
+      turnIds: new Set(),
+      spawnCallIds: new Set(["toolu_spawn"]),
+    });
+
+    expect(selected.map((item) => item.id)).toEqual(["toolu_spawn"]);
+  });
+
+  it("does not double-select an agent matched by both turn and spawn id", () => {
+    const selected = selectTurnAgents({
+      live: [buildSubagent({ id: "toolu_spawn", turnId: TURN_ONE, spawnCallId: "toolu_spawn" })],
+      history: undefined,
+      turnIds: new Set([TURN_ONE]),
+      spawnCallIds: new Set(["toolu_spawn"]),
+    });
+
+    expect(selected.map((item) => item.id)).toEqual(["toolu_spawn"]);
+  });
 });
 
 describe("formatAgentsHeaderMeta", () => {

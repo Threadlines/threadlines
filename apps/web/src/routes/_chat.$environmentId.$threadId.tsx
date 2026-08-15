@@ -2,7 +2,7 @@ import { scopeProjectRef } from "@threadlines/client-runtime";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import ChatView from "../components/ChatView";
 import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
@@ -34,7 +34,10 @@ import {
 } from "../rightPanelLayout";
 import {
   activeRightPanelTabFromSearch,
+  advanceAgentsAutoOpenEdge,
+  autoOpenAgentsTab,
   availableRightPanelTabs,
+  type AgentsAutoOpenEdge,
   closeRightPanelTab,
   focusRightPanelTab,
   hideRightPanel,
@@ -330,6 +333,35 @@ function ChatThreadRouteView() {
     () => (agentsSource && hasRunningAgentActivity(agentsSource) ? ["agents"] : []),
     [agentsSource],
   );
+  // A fresh delegation surfaces the Agents tab: focused when the sidebar had
+  // nothing better to show, in the background (live node only) when the user is
+  // mid-something on another tab. The edge detector owns what counts as a
+  // fresh spawn; closing the tab or hiding the sidebar while those agents
+  // still run is a choice this effect does not override, and sheet layouts
+  // opt out entirely — there the panel would cover the conversation.
+  const agentsRunning = liveTabs.includes("agents");
+  const agentsKnown = agentsSource !== null && agentsSource.hydrated;
+  const agentsAutoOpenRef = useRef<AgentsAutoOpenEdge>({ threadKey: null, sawIdle: false });
+  useEffect(() => {
+    const spawned = advanceAgentsAutoOpenEdge(agentsAutoOpenRef.current, {
+      threadKey: currentThreadKey,
+      agentsKnown,
+      agentsRunning,
+    });
+    if (!spawned || shouldUseDiffSheet || !availableTabs.includes("agents")) {
+      return;
+    }
+    if (autoOpenAgentsTab(currentThreadKey) === "agents") {
+      navigateToTab("agents");
+    }
+  }, [
+    agentsKnown,
+    agentsRunning,
+    availableTabs,
+    currentThreadKey,
+    navigateToTab,
+    shouldUseDiffSheet,
+  ]);
   // What the launcher's rows say. Only assembled while the launcher is the
   // thing on screen, since that is the only place it is read.
   const launcherSurfaceStates = useRightPanelLauncherStates({

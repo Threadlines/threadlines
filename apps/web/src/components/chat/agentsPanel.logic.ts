@@ -567,6 +567,26 @@ export function selectSubagentsForTurns(
   return subagents.filter((item) => item.turnId !== null && turnIds.has(item.turnId));
 }
 
+/** The subagents a turnless activity group references by spawn call. A
+ *  background agent's stream lands between turns, so the group at the tail of
+ *  the conversation can only name its agents through the spawn ids its rows
+ *  carry. Matches every identity a roster item answers to: Claude reuses the
+ *  spawn tool_use id as the agent id, Codex children have their own ids. */
+function selectSubagentsForSpawnIds(
+  subagents: ReadonlyArray<SubagentProgressItem>,
+  spawnCallIds: ReadonlySet<string>,
+): ReadonlyArray<SubagentProgressItem> {
+  if (spawnCallIds.size === 0) {
+    return [];
+  }
+  return subagents.filter(
+    (item) =>
+      (item.spawnCallId != null && spawnCallIds.has(item.spawnCallId)) ||
+      spawnCallIds.has(item.id) ||
+      (item.agentThreadId !== null && spawnCallIds.has(item.agentThreadId)),
+  );
+}
+
 /**
  * The agents a turn's activity row summarizes.
  *
@@ -585,18 +605,30 @@ export function selectTurnAgents(input: {
   readonly live: ReadonlyArray<SubagentProgressItem>;
   readonly history: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
   readonly turnIds: ReadonlySet<TurnId>;
+  /** Spawn-call fallback for turnless groups; see selectSubagentsForSpawnIds. */
+  readonly spawnCallIds?: ReadonlySet<string>;
 }): ReadonlyArray<SubagentProgressItem> {
-  const live = selectSubagentsForTurns(input.live, input.turnIds);
+  const spawnCallIds = input.spawnCallIds ?? new Set<string>();
+  const select = (subagents: ReadonlyArray<SubagentProgressItem>) => {
+    const byTurn = selectSubagentsForTurns(subagents, input.turnIds);
+    const turnIdentities = new Set(byTurn.map(subagentIdentity));
+    return [
+      ...byTurn,
+      ...selectSubagentsForSpawnIds(subagents, spawnCallIds).filter(
+        (item) => !turnIdentities.has(subagentIdentity(item)),
+      ),
+    ];
+  };
+  const live = select(input.live);
   if (input.history === undefined || input.history.length === 0) {
     return live;
   }
   const liveIdentities = new Set(live.map(subagentIdentity));
   return [
     ...live,
-    ...selectSubagentsForTurns(
-      input.history.map((entry) => entry.item),
-      input.turnIds,
-    ).filter((item) => !liveIdentities.has(subagentIdentity(item))),
+    ...select(input.history.map((entry) => entry.item)).filter(
+      (item) => !liveIdentities.has(subagentIdentity(item)),
+    ),
   ];
 }
 

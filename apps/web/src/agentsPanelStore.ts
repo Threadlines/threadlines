@@ -40,6 +40,11 @@ export interface AgentsPanelSource {
    *  say it is waiting rather than claim the thread has never run an agent
    *  while the provider handoff is still in flight. */
   turnInFlight: boolean;
+  /** Whether the thread's detail snapshot has synced. Until it has, empty
+   *  agent state only means the data has not arrived — consumers that react
+   *  to idle→running transitions (the Agents tab auto-open) must not read an
+   *  unhydrated publish as observed idleness. */
+  hydrated: boolean;
   threadCwd: string | null;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;

@@ -100,6 +100,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import {
+  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
   selectWorkspaceProjectsAcrossEnvironments,
@@ -3336,6 +3337,16 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadId, activeThreadRef, requestCloseTerminal, setThreadError],
   );
 
+  // The detail-only activity slice exists in the store (even empty) exactly
+  // from the thread's first detail snapshot, which is the honest "the agent
+  // state below reflects loaded data" signal for consumers of the publish.
+  const threadDetailHydrated = useStore((state) =>
+    activeThreadRef
+      ? selectEnvironmentState(state, activeThreadRef.environmentId).activityIdsByThreadId[
+          activeThreadRef.threadId
+        ] !== undefined
+      : false,
+  );
   // The agents panel mounts in the route's right-panel slot, beside the chat
   // column, so the live turn state it renders has to be published out of here.
   useEffect(() => {
@@ -3353,6 +3364,7 @@ export default function ChatView(props: ChatViewProps) {
       workEntries: workLogEntries,
       providerLabel: activeProviderDriver,
       turnInFlight: activeTurnInProgress,
+      hydrated: threadDetailHydrated,
       threadCwd: gitCwd,
       onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
       onStopBackgroundRun: stopBackgroundRun,
@@ -3368,6 +3380,7 @@ export default function ChatView(props: ChatViewProps) {
     stopBackgroundRun,
     subagentHistory,
     subagentProgress?.items,
+    threadDetailHydrated,
     toggleBackgroundRunTerminal,
     workLogEntries,
   ]);
