@@ -15,6 +15,7 @@ import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
+import { TooltipWrapper } from "../ui/tooltip";
 import {
   Menu,
   MENU_PICK_ITEM_CLASS_NAME,
@@ -175,28 +176,33 @@ export function DraftEmptyState({
                     />
                     <span className="max-w-56 flex-1 truncate">{snapshot.displayName}</span>
                     {hasRemoteMachines ? (
-                      <span
-                        title={
+                      // Instant tooltip: the glyphs are the only thing naming
+                      // the machines, so a hover dwell reads as unlabelled.
+                      <TooltipWrapper
+                        delay={0}
+                        side="right"
+                        tooltip={
                           hasLocal && hasRemote
                             ? `On this device and ${remoteNames}`
                             : hasRemote
                               ? `On ${remoteNames}`
                               : "On this device"
                         }
-                        className="inline-flex shrink-0 items-center gap-0.5"
                       >
-                        {hasLocal ? (
-                          <MonitorIcon className="size-3 text-muted-foreground/50" />
-                        ) : null}
-                        {hasRemote ? (
-                          <CloudIcon className="size-3 text-muted-foreground/50" />
-                        ) : null}
-                        {remoteCount > 1 ? (
-                          <span className="font-mono text-[10px] leading-none text-muted-foreground/50">
-                            {remoteCount}
-                          </span>
-                        ) : null}
-                      </span>
+                        <span className="inline-flex shrink-0 items-center gap-0.5">
+                          {hasLocal ? (
+                            <MonitorIcon className="size-3 text-muted-foreground/50" />
+                          ) : null}
+                          {hasRemote ? (
+                            <CloudIcon className="size-3 text-muted-foreground/50" />
+                          ) : null}
+                          {remoteCount > 1 ? (
+                            <span className="font-mono text-[10px] leading-none text-muted-foreground/50">
+                              {remoteCount}
+                            </span>
+                          ) : null}
+                        </span>
+                      </TooltipWrapper>
                     ) : null}
                   </MenuItem>
                 );

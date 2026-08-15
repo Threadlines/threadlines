@@ -61,10 +61,10 @@ export const ModelListRow = memo(function ModelListRow(props: {
         // Single-line rows keep a compact fixed height; rows with a
         // description or provider footer grow to two lines.
         props.model.description || props.showProvider ? "py-1.5" : "h-8 py-0",
-        // Selection is the house resting fill plus the primary-tinted name —
-        // the tint alone says "this is the one" and the fill matches every
-        // other picker; hover/keyboard highlight stays the stronger grey.
-        "hover:bg-muted data-highlighted:bg-muted data-selected:bg-pick-selected data-selected:text-foreground data-selected:inset-ring data-selected:inset-ring-border [&[data-highlighted][data-selected]]:bg-muted",
+        // Selection styling (fill + hairline ring) comes from ComboboxItem;
+        // the primary-tinted name below is this row's own "this is the one"
+        // mark. Hover/keyboard highlight stays the stronger grey.
+        "hover:bg-muted data-highlighted:bg-muted [&[data-highlighted][data-selected]]:bg-muted",
       )}
     >
       <div className="min-w-0 flex-1 text-left">
