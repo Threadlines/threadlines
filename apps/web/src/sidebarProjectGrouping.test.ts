@@ -15,6 +15,11 @@ const remoteEnvId = EnvironmentId.make("env-remote");
 // identity the grouping collapses on.
 const SHARED_REPO = {
   canonicalKey: "github.com/example/shared",
+  locator: {
+    source: "git-remote" as const,
+    remoteName: "origin",
+    remoteUrl: "https://github.com/example/shared.git",
+  },
   displayName: "shared",
   name: "shared",
 };
