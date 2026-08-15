@@ -422,6 +422,13 @@ const VcsStatusChangeRequest = Schema.Struct({
 
 const VcsStatusLocalShape = {
   isRepo: Schema.Boolean,
+  /**
+   * The directory the status was asked for no longer exists. Distinct from
+   * `isRepo: false`, which means the directory is there but holds no
+   * repository: only the latter is an invitation to run `git init`. Absent on
+   * statuses from servers that predate the distinction.
+   */
+  pathMissing: Schema.optional(Schema.Boolean),
   /** Resolved repository root used for status and source-control actions. */
   repositoryRoot: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Whether the opened working directory is the repository root or a nested path within it. */
@@ -695,6 +702,68 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
 }) {
   override get message(): string {
     return `Git command failed in ${this.operation}: ${this.command} (${this.cwd}) - ${this.detail}`;
+  }
+}
+
+/**
+ * A thread's checkout directory is gone.
+ *
+ * Raised by the pre-flight that runs before any provider session starts or
+ * resumes, so a session is never spawned into a directory that no longer
+ * exists. Kept distinct from the provider process errors it used to masquerade
+ * as: spawning into a missing cwd fails with the same `ENOENT` a missing
+ * executable does, and the provider SDKs report that as a missing binary, which
+ * sends the user looking for the wrong problem.
+ */
+export class CheckoutMissingError extends Schema.TaggedErrorClass<CheckoutMissingError>()(
+  "CheckoutMissingError",
+  {
+    threadId: TrimmedNonEmptyStringSchema,
+    /** Absolute path that no longer exists. */
+    cwd: TrimmedNonEmptyStringSchema,
+    /** Branch the checkout held, when known; decides whether it can be recreated. */
+    branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+    /** Project root the thread can fall back to, when known. */
+    projectCwd: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `This thread's folder no longer exists: ${this.cwd}`;
+  }
+}
+
+/**
+ * A worktree removal was refused because something still runs in it.
+ *
+ * Removing the folder out from under a live session is what bricks a thread, so
+ * the app declines instead of doing it and names who is still there. There is
+ * deliberately no force flag: the caller stops or moves those threads first,
+ * which the existing UI already allows.
+ */
+export class VcsWorktreeInUseError extends Schema.TaggedErrorClass<VcsWorktreeInUseError>()(
+  "VcsWorktreeInUseError",
+  {
+    /** Absolute path of the worktree that was not removed. */
+    worktreePath: TrimmedNonEmptyStringSchema,
+    /** Threads still bound to that path, newest-known title first. */
+    blockingThreads: Schema.Array(
+      Schema.Struct({
+        threadId: TrimmedNonEmptyStringSchema,
+        title: Schema.NullOr(Schema.String),
+        /** True when the thread also has a provider session running there. */
+        hasLiveSession: Schema.Boolean,
+      }),
+    ),
+  },
+) {
+  override get message(): string {
+    const names = this.blockingThreads
+      .map((thread) => thread.title?.trim() || thread.threadId)
+      .join(", ");
+    return names.length > 0
+      ? `${this.worktreePath} is still used by ${names}.`
+      : `${this.worktreePath} is still in use.`;
   }
 }
 

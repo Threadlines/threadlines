@@ -58,6 +58,9 @@ const environmentRuntimeMock = vi.hoisted(() => ({
 }));
 
 vi.mock("~/lib/gitStatusState", () => ({
+  // Read synchronously by the draft seeder to skip a checkout already known
+  // to be missing; these suites never exercise a deleted checkout.
+  getGitStatusSnapshot: () => ({ data: null, error: null, cause: null, isPending: false }),
   GIT_STATUS_STALE_MESSAGE: "Source control status isn't updating.",
   useGitStatus: () => ({
     data: gitStatusMock.data,

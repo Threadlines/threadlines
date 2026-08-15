@@ -30,6 +30,7 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -77,6 +78,12 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 
 const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
   Effect.runSync(deriveServerPaths(baseDir, devUrl).pipe(Effect.provide(NodeServices.layer)));
+
+// Real directories, not invented paths: the reactor refuses to start a provider
+// session in a checkout that is not on disk, so a fabricated workspace root
+// would make every turn in this suite fail the pre-flight.
+const PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-project-"));
+const PROJECT_WORKTREE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-worktree-"));
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -167,6 +174,8 @@ describe("ProviderCommandReactor", () => {
     const { stateDir } = deriveServerPathsSync(baseDir, undefined);
     createdStateDirs.add(stateDir);
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
+    // Feed for the broadcaster's confirmed-missing-checkout signal.
+    const missingCheckouts = Effect.runSync(Queue.unbounded<{ readonly cwd: string }>());
     let nextSessionIndex = 1;
     const runtimeSessions: Array<ProviderSession> = [];
     const seedBuildInputs: ThreadContextSeedBuildInput[] = [];
@@ -343,6 +352,19 @@ describe("ProviderCommandReactor", () => {
         pr: null,
       }),
     );
+    // Pushed by the reactor when it finds a checkout missing, so the thread
+    // view's recovery affordance does not wait on the watcher's next pass.
+    const refreshLocalStatus = vi.fn((_: string) =>
+      Effect.succeed({
+        isRepo: false,
+        pathMissing: true,
+        hasPrimaryRemote: false,
+        isDefaultRef: false,
+        refName: null,
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+      }),
+    );
     const generateBranchName = vi.fn<TextGenerationShape["generateBranchName"]>((_) =>
       Effect.fail(
         new TextGenerationError({
@@ -462,12 +484,14 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(
         Layer.succeed(VcsStatusBroadcaster, {
           getStatus: () => Effect.die("getStatus should not be called in this test"),
-          refreshLocalStatus: () =>
-            Effect.die("refreshLocalStatus should not be called in this test"),
+          refreshLocalStatus,
           refreshStatus,
           streamStatus: () => Stream.die("streamStatus should not be called in this test"),
           observeLocalStatus: () =>
             Stream.die("observeLocalStatus should not be called in this test"),
+          // Consumed by the reactor's missing-checkout watcher on start; tests
+          // that exercise it push through `missingCheckouts` below.
+          observeMissingCheckouts: () => Stream.fromQueue(missingCheckouts),
         }),
       ),
       Layer.provideMerge(
@@ -495,7 +519,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-project-create"),
         projectId: asProjectId("project-1"),
         title: "Provider Project",
-        workspaceRoot: "/tmp/provider-project",
+        workspaceRoot: PROJECT_ROOT,
         defaultModelSelection: modelSelection,
         createdAt: now,
       }),
@@ -534,14 +558,110 @@ describe("ProviderCommandReactor", () => {
       stopSession,
       renameBranch,
       refreshStatus,
+      refreshLocalStatus,
       generateBranchName,
       generateThreadTitle,
       seedBuildInputs,
       runtimeSessions,
       stateDir,
+      missingCheckouts,
       drain,
     };
   }
+
+  // The incident this guards: an agent merged its PR and deleted the worktree
+  // it was running in. The next turn spawned into a directory that was gone and
+  // surfaced as "Claude Code native binary not found", with a Retry that failed
+  // the same way. The session must never be started at all.
+  it("refuses to start a session in a checkout that no longer exists", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const deletedWorktree = path.join(PROJECT_WORKTREE_ROOT, "deleted-by-agent");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-dead-checkout"),
+        threadId: ThreadId.make("thread-1"),
+        branch: "feature/merged",
+        worktreePath: deletedWorktree,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-dead-checkout"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-dead-checkout"),
+          role: "user",
+          text: "Keep going.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const model = await harness.readModel();
+      return (
+        model.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.activities ?? []
+      ).some((activity) => activity.kind === "thread.checkout.missing");
+    });
+
+    // The adapter is never reached: no process is spawned in a directory that
+    // is not there, so nothing can misreport it as a missing binary.
+    expect(harness.startSession.mock.calls.length).toBe(0);
+    // The checkout's status is refreshed so the thread view can show the
+    // recovery actions straight away rather than on the watcher's next pass.
+    expect(harness.refreshLocalStatus.mock.calls[0]?.[0]).toBe(deletedWorktree);
+
+    const model = await harness.readModel();
+    const activity = (
+      model.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.activities ?? []
+    ).find((entry) => entry.kind === "thread.checkout.missing");
+    expect(activity?.payload).toMatchObject({
+      cwd: deletedWorktree,
+      branch: "feature/merged",
+      projectCwd: PROJECT_ROOT,
+    });
+    // No generic provider failure alongside it: the thread view keys the
+    // recovery affordance off this activity instead of a dead-end Retry.
+    expect(
+      (
+        model.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.activities ?? []
+      ).some((entry) => entry.kind === "provider.turn.start.failed"),
+    ).toBe(false);
+  });
+
+  it("announces a checkout the watcher saw disappear without waiting for a turn", async () => {
+    const harness = await createHarness();
+    const deletedWorktree = path.join(PROJECT_WORKTREE_ROOT, "vanished");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-watched-checkout"),
+        threadId: ThreadId.make("thread-1"),
+        branch: "feature/watched",
+        worktreePath: deletedWorktree,
+      }),
+    );
+
+    await Effect.runPromise(Queue.offer(harness.missingCheckouts, { cwd: deletedWorktree }));
+
+    await waitFor(async () => {
+      const model = await harness.readModel();
+      return (
+        model.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.activities ?? []
+      ).some((activity) => activity.kind === "thread.checkout.missing");
+    });
+
+    expect(harness.startSession.mock.calls.length).toBe(0);
+  });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
@@ -560,7 +680,7 @@ describe("ProviderCommandReactor", () => {
           skills: [
             {
               name: "review",
-              path: "/tmp/provider-project/.codex/skills/review/SKILL.md",
+              path: `${PROJECT_ROOT}/.codex/skills/review/SKILL.md`,
             },
           ],
         },
@@ -579,13 +699,13 @@ describe("ProviderCommandReactor", () => {
       skills: [
         {
           name: "review",
-          path: "/tmp/provider-project/.codex/skills/review/SKILL.md",
+          path: `${PROJECT_ROOT}/.codex/skills/review/SKILL.md`,
         },
       ],
     });
     expect(harness.startSession.mock.calls[0]?.[0]).toEqual(ThreadId.make("thread-1"));
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/provider-project",
+      cwd: PROJECT_ROOT,
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
         model: "gpt-5-codex",
@@ -1118,7 +1238,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-thread-branch"),
         threadId: ThreadId.make("thread-1"),
         branch: "t3code/1234abcd",
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: PROJECT_WORKTREE_ROOT,
       }),
     );
 
@@ -1159,7 +1279,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
       message: "Add a safer reconnect backoff.",
     });
-    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
+    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe(PROJECT_WORKTREE_ROOT);
   });
 
   it("forwards codex model options through session start and turn send", async () => {
@@ -2024,7 +2144,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/provider-project",
+      cwd: PROJECT_ROOT,
     });
 
     await Effect.runPromise(
@@ -2032,7 +2152,7 @@ describe("ProviderCommandReactor", () => {
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-worktree-change"),
         threadId: ThreadId.make("thread-1"),
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: PROJECT_WORKTREE_ROOT,
       }),
     );
 
@@ -2058,7 +2178,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       threadId: ThreadId.make("thread-1"),
-      cwd: "/tmp/provider-project-worktree",
+      cwd: PROJECT_WORKTREE_ROOT,
       resumeCursor: { opaque: "resume-1" },
       modelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -2073,7 +2193,7 @@ describe("ProviderCommandReactor", () => {
       const snapshot = await harness.readModel();
       return (
         snapshot.threads.find((thread) => thread.id === ThreadId.make("thread-1"))?.session
-          ?.checkoutCwd === "/tmp/provider-project-worktree"
+          ?.checkoutCwd === PROJECT_WORKTREE_ROOT
       );
     });
   });
@@ -2121,7 +2241,7 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/provider-project",
+      cwd: PROJECT_ROOT,
     });
 
     // A subagent is still running inside the live runtime, and the user queues
@@ -2132,7 +2252,7 @@ describe("ProviderCommandReactor", () => {
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-worktree-change-defer"),
         threadId,
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: PROJECT_WORKTREE_ROOT,
       }),
     );
 
@@ -2168,8 +2288,8 @@ describe("ProviderCommandReactor", () => {
     expect(deferredActivities?.[0]).toMatchObject({
       tone: "info",
       payload: {
-        fromCwd: "/tmp/provider-project",
-        toCwd: "/tmp/provider-project-worktree",
+        fromCwd: PROJECT_ROOT,
+        toCwd: PROJECT_WORKTREE_ROOT,
         pendingBackgroundTaskCount: 1,
       },
     });
@@ -2195,7 +2315,7 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
-      cwd: "/tmp/provider-project-worktree",
+      cwd: PROJECT_WORKTREE_ROOT,
     });
   });
 
@@ -2250,14 +2370,14 @@ describe("ProviderCommandReactor", () => {
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-worktree-change-idle-apply"),
         threadId,
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: PROJECT_WORKTREE_ROOT,
       }),
     );
     await waitFor(async () => {
       const snapshot = await harness.readModel();
       return (
         snapshot.threads.find((thread) => thread.id === threadId)?.worktreePath ===
-        "/tmp/provider-project-worktree"
+        PROJECT_WORKTREE_ROOT
       );
     });
     expect(harness.startSession.mock.calls.length).toBe(1);
@@ -2268,7 +2388,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       threadId,
-      cwd: "/tmp/provider-project-worktree",
+      cwd: PROJECT_WORKTREE_ROOT,
       resumeCursor: { opaque: "resume-1" },
     });
     expect(harness.sendTurn.mock.calls.length).toBe(1);
@@ -2280,7 +2400,7 @@ describe("ProviderCommandReactor", () => {
       const snapshot = await harness.readModel();
       return (
         snapshot.threads.find((thread) => thread.id === threadId)?.session?.checkoutCwd ===
-        "/tmp/provider-project-worktree"
+        PROJECT_WORKTREE_ROOT
       );
     });
   });
@@ -2334,13 +2454,13 @@ describe("ProviderCommandReactor", () => {
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-worktree-change-idle-pick"),
         threadId,
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: PROJECT_WORKTREE_ROOT,
       }),
     );
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       threadId,
-      cwd: "/tmp/provider-project-worktree",
+      cwd: PROJECT_WORKTREE_ROOT,
       resumeCursor: { opaque: "resume-1" },
     });
     expect(harness.sendTurn.mock.calls.length).toBe(1);
@@ -2382,7 +2502,7 @@ describe("ProviderCommandReactor", () => {
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-worktree-change-while-running"),
         threadId,
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: PROJECT_WORKTREE_ROOT,
       }),
     );
 
@@ -3315,7 +3435,7 @@ describe("ProviderCommandReactor", () => {
       status: "ready",
       runtimeMode: "approval-required",
       threadId: ThreadId.make("thread-1"),
-      cwd: "/tmp/provider-project",
+      cwd: PROJECT_ROOT,
       resumeCursor: { opaque: "resume-without-instance" },
       createdAt: now,
       updatedAt: now,

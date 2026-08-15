@@ -533,6 +533,9 @@ function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
 function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
   return {
     isRepo: status.isRepo,
+    // Dropping this on a remote update would flip a deleted checkout back to a
+    // plain "not a repo", collapsing the recovery UI moments after it appeared.
+    ...(status.pathMissing === undefined ? {} : { pathMissing: status.pathMissing }),
     ...(status.repositoryRoot === undefined ? {} : { repositoryRoot: status.repositoryRoot }),
     ...(status.repositoryRootRelation === undefined
       ? {}

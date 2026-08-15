@@ -11,6 +11,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 const gitStatusRef = vi.hoisted(() => ({ current: null as string | null }));
 
 vi.mock("../../lib/gitStatusState", () => ({
+  // Read synchronously by the draft seeder to skip a checkout already known
+  // to be missing; these suites never exercise a deleted checkout.
+  getGitStatusSnapshot: () => ({ data: null, error: null, cause: null, isPending: false }),
   useGitStatus: () => ({
     data: gitStatusRef.current === null ? null : { refName: gitStatusRef.current },
     error: null,

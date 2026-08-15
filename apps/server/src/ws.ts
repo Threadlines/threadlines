@@ -115,6 +115,7 @@ import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
 import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths.ts";
 import { VcsStatusBroadcaster } from "./vcs/VcsStatusBroadcaster.ts";
+import { ensureWorktreeRemovable } from "./vcs/WorktreeRemovalGuard.ts";
 import { VcsProvisioningService } from "./vcs/VcsProvisioningService.ts";
 import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
@@ -1934,7 +1935,20 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
-            gitWorkflow.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            // Guarded before the git call, not after: once the directory is
+            // gone the thread that lived in it has no way back.
+            ensureWorktreeRemovable({
+              worktreePath: input.path,
+              readThreads: projectionSnapshotQuery
+                .getShellSnapshot()
+                .pipe(Effect.map((snapshot) => snapshot.threads)),
+            }).pipe(
+              Effect.andThen(
+                gitWorkflow
+                  .removeWorktree(input)
+                  .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+              ),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>

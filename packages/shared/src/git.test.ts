@@ -357,4 +357,29 @@ describe("applyGitStatusStreamEvent", () => {
       pr: null,
     });
   });
+
+  // A deleted checkout's status must not flip back to a plain "not a repo" the
+  // first time a remote update rebuilds the local part — that collapses the
+  // whole missing-checkout recovery UI moments after it appears.
+  it("keeps pathMissing across a remote update", () => {
+    const current: VcsStatusResult = {
+      isRepo: false,
+      pathMissing: true,
+      hasPrimaryRemote: false,
+      isDefaultRef: false,
+      refName: null,
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: false,
+      aheadCount: 0,
+      behindCount: 0,
+      pr: null,
+    };
+
+    const updated = applyGitStatusStreamEvent(current, {
+      _tag: "remoteUpdated",
+      remote: { hasUpstream: false, aheadCount: 0, behindCount: 0, pr: null },
+    });
+    expect(updated.pathMissing).toBe(true);
+  });
 });

@@ -565,6 +565,158 @@ describe("VcsStatusBroadcaster", () => {
     }).pipe(Effect.provide(makeTestLayer(state)));
   });
 
+  // Deleting a checkout out of band (an agent's own `git worktree remove`, or
+  // the user in a terminal) used to be discovered only when the next turn
+  // crashed inside the provider SDK. The watcher reports it directly.
+  it.live("reports a watched checkout that disappears", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-vcs-checkout-gone-",
+      });
+      const resolvedParent = yield* fileSystem.realPath(parent);
+      const repoDir = path.join(parent, "worktree");
+      yield* fileSystem.makeDirectory(path.join(repoDir, ".git"), { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(repoDir, ".git", "HEAD"),
+        "ref: refs/heads/main\n",
+      );
+
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const missing = yield* Deferred.make<{ readonly cwd: string }>();
+      yield* Stream.runForEach(broadcaster.observeMissingCheckouts(), (observation) =>
+        Deferred.succeed(missing, observation).pipe(Effect.ignore),
+      ).pipe(Effect.forkScoped);
+      // Subscribing is what starts the per-cwd monitor that watches presence.
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd: repoDir }), () => Effect.void).pipe(
+        Effect.forkScoped,
+      );
+      yield* Effect.sleep(Duration.millis(200));
+
+      // Nothing is reported while the checkout is still there.
+      assert.isTrue(Option.isNone(yield* Deferred.poll(missing)));
+
+      yield* Effect.promise(() => NodeFS.rm(repoDir, { recursive: true, force: true }));
+
+      const observed = yield* Deferred.await(missing).pipe(Effect.timeout(Duration.seconds(20)));
+      // Monitors are keyed by the resolved real path (temp dirs are symlinked
+      // on macOS), so compare against that rather than the path as handed in.
+      assert.strictEqual(observed.cwd, path.join(resolvedParent, "worktree"));
+    }).pipe(Effect.provide(makeTestLayer(state)));
+  });
+
+  // A subscription opened while the checkout is already gone must share its
+  // cache/stream key with the statuses published once the folder is recreated.
+  // `realPath` alone can't provide that: it resolves /tmp/x to /private/tmp/x
+  // only while the directory exists, so a missing-at-subscribe path would key
+  // on its raw form and never hear another update after recreation.
+  it.live("keys a checkout that is missing at subscribe time like one that exists", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // The temp parent is symlinked on macOS, which is exactly the class of
+      // path this guards: the canonical form differs from the requested one.
+      const parent = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-vcs-checkout-key-",
+      });
+      const resolvedParent = yield* fileSystem.realPath(parent);
+      const repoDir = path.join(parent, "worktree");
+
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const missing = yield* Deferred.make<{ readonly cwd: string }>();
+      yield* Stream.runForEach(broadcaster.observeMissingCheckouts(), (observation) =>
+        Deferred.succeed(missing, observation).pipe(Effect.ignore),
+      ).pipe(Effect.forkScoped);
+      // Subscribe while the directory does not exist yet.
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd: repoDir }), () => Effect.void).pipe(
+        Effect.forkScoped,
+      );
+      yield* Effect.sleep(Duration.millis(200));
+
+      // Create the checkout, let a presence poll see it, then delete it: the
+      // announced key must be the canonical path, proving the monitor key did
+      // not stick to the raw form from the missing-at-subscribe moment.
+      yield* fileSystem.makeDirectory(path.join(repoDir, ".git"), { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(repoDir, ".git", "HEAD"),
+        "ref: refs/heads/main\n",
+      );
+      yield* Effect.sleep(Duration.seconds(3));
+      yield* Effect.promise(() => NodeFS.rm(repoDir, { recursive: true, force: true }));
+
+      const observed = yield* Deferred.await(missing).pipe(Effect.timeout(Duration.seconds(20)));
+      assert.strictEqual(observed.cwd, path.join(resolvedParent, "worktree"));
+    }).pipe(Effect.provide(makeTestLayer(state)));
+  });
+
+  // Git renames paths in place during ordinary operations. A directory that
+  // reads as missing for an instant must not be announced as deleted.
+  it.live("does not report a checkout that reappears inside the confirmation window", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-vcs-checkout-blip-",
+      });
+      const repoDir = path.join(parent, "worktree");
+      const makeCheckout = Effect.gen(function* () {
+        yield* fileSystem.makeDirectory(path.join(repoDir, ".git"), { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(repoDir, ".git", "HEAD"),
+          "ref: refs/heads/main\n",
+        );
+      });
+      yield* makeCheckout;
+
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const missing = yield* Deferred.make<{ readonly cwd: string }>();
+      yield* Stream.runForEach(broadcaster.observeMissingCheckouts(), (observation) =>
+        Deferred.succeed(missing, observation).pipe(Effect.ignore),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd: repoDir }), () => Effect.void).pipe(
+        Effect.forkScoped,
+      );
+      yield* Effect.sleep(Duration.millis(200));
+
+      // Gone and back well inside the confirmation window.
+      yield* Effect.promise(() => NodeFS.rm(repoDir, { recursive: true, force: true }));
+      yield* Effect.sleep(Duration.millis(150));
+      yield* makeCheckout;
+
+      // Past a full poll plus confirmation window with nothing announced.
+      yield* Effect.sleep(Duration.seconds(6));
+      assert.isTrue(Option.isNone(yield* Deferred.poll(missing)));
+    }).pipe(Effect.provide(makeTestLayer(state)));
+  });
+
   it.effect("stops the remote poller after the last stream subscriber disconnects", () => {
     const state = {
       currentLocalStatus: baseLocalStatus,

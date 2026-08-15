@@ -137,6 +137,7 @@ describe("ThreadDiffStatBaselineReactor", () => {
         Stream.fromIterable(input.observations).pipe(
           Stream.ensuring(Deferred.succeed(streamDone, undefined)),
         ),
+      observeMissingCheckouts: () => Stream.empty,
     };
 
     const layer = ThreadDiffStatBaselineReactorLive.pipe(

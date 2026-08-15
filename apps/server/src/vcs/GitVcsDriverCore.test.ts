@@ -830,6 +830,39 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* fileSystem.exists(worktreePath), false);
       }),
     );
+
+    // A worktree whose folder was deleted out-of-band leaves its registration
+    // behind, and `git worktree add` refuses to reuse the path. Recreating at
+    // the same path is the recovery flow for a thread whose checkout was
+    // deleted, so the driver clears the dead registration and retries.
+    it.effect("recreates a worktree over a stale registration whose folder was deleted", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "doomed");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "feature/doomed",
+        });
+        // Delete the folder directly, the way an agent or a terminal would —
+        // not through removeWorktree — so the registration stays behind.
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.remove(worktreePath, { recursive: true });
+
+        const recreated = yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: "feature/doomed",
+        });
+        assert.equal(recreated.worktree.path, worktreePath);
+        assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/doomed");
+      }),
+    );
   });
 
   describe("commit context", () => {

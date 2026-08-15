@@ -102,13 +102,24 @@ function changedFilesDescription(fileCount: number): string {
   return `${pluralize(fileCount, "file")} changed.`;
 }
 
+/** What both tree-backed rows say when the checkout folder itself is gone. */
+const MISSING_CHECKOUT_DESCRIPTION = "This thread's folder is missing.";
+
 /**
  * Source reports the working tree but is never dimmed by it: switching branches,
  * committing, pushing and opening a pull request are all reasons to go there
  * with nothing changed, so a clean tree is a fact about the tree rather than a
  * surface with nothing in it.
  */
-function sourceControlState(fileCount: number | null): RightPanelSurfaceState {
+function sourceControlState(
+  fileCount: number | null,
+  checkoutMissing: boolean,
+): RightPanelSurfaceState {
+  // Source is where the recovery actions live, so the row stays lit — but it
+  // must not describe a working tree that is not there.
+  if (checkoutMissing) {
+    return { description: MISSING_CHECKOUT_DESCRIPTION, empty: false };
+  }
   if (fileCount === null) {
     return staticState("sourceControl");
   }
@@ -132,7 +143,11 @@ function diffState(input: {
   readonly fileCount: number | null;
   readonly reviewableTurnCount: number | null;
   readonly hasExplicitTarget: boolean;
+  readonly checkoutMissing: boolean;
 }): RightPanelSurfaceState {
+  if (input.checkoutMissing) {
+    return { description: MISSING_CHECKOUT_DESCRIPTION, empty: true };
+  }
   // A tab aimed at one file or one turn is not the working tree's story at all.
   if (input.hasExplicitTarget || input.fileCount === null) {
     return staticState("diff");
@@ -196,13 +211,18 @@ export function buildRightPanelLauncherStates(input: {
    *  tree, so a clean tree says nothing about whether it is empty. */
   readonly diffHasExplicitTarget: boolean;
   readonly agents: RightPanelLauncherAgentsInput | null;
+  /** The checkout folder itself no longer exists; the tree-backed rows must
+   *  not describe a working tree that is not there. */
+  readonly checkoutMissing?: boolean;
 }): RightPanelLauncherStates {
+  const checkoutMissing = input.checkoutMissing === true;
   return {
-    sourceControl: sourceControlState(input.workingTreeFileCount),
+    sourceControl: sourceControlState(input.workingTreeFileCount, checkoutMissing),
     diff: diffState({
       fileCount: input.workingTreeFileCount,
       reviewableTurnCount: input.reviewableTurnCount,
       hasExplicitTarget: input.diffHasExplicitTarget,
+      checkoutMissing,
     }),
     agents: agentsState(input.agents),
   };
@@ -234,6 +254,7 @@ export function useRightPanelLauncherStates(input: {
   const workingTreeFileCount = resolveWorkingTreeFileCount(gitStatus.data);
   const reviewableTurnCount = countReviewableTurnDiffs(input.turnDiffSummaries);
   const diffHasExplicitTarget = rightPanelDiffTargetIsExplicit(input.diffTarget);
+  const checkoutMissing = gitStatus.data?.pathMissing === true;
   return useMemo(
     () =>
       enabled
@@ -242,8 +263,16 @@ export function useRightPanelLauncherStates(input: {
             reviewableTurnCount,
             diffHasExplicitTarget,
             agents,
+            checkoutMissing,
           })
         : undefined,
-    [agents, diffHasExplicitTarget, enabled, reviewableTurnCount, workingTreeFileCount],
+    [
+      agents,
+      checkoutMissing,
+      diffHasExplicitTarget,
+      enabled,
+      reviewableTurnCount,
+      workingTreeFileCount,
+    ],
   );
 }

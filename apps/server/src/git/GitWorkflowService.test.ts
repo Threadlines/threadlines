@@ -1,6 +1,9 @@
 import { assert, describe, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
@@ -9,6 +12,7 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 function makeLayer(input: { readonly detect: VcsDriverRegistry.VcsDriverRegistryShape["detect"] }) {
   return GitWorkflowService.layer.pipe(
+    Layer.provideMerge(NodeServices.layer),
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         detect: input.detect,
@@ -43,6 +47,7 @@ describe("GitWorkflowService", () => {
       }),
     );
     const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provideMerge(NodeServices.layer),
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           detect: () => Effect.succeed(makeGitHandle("/repo")),
@@ -67,7 +72,7 @@ describe("GitWorkflowService", () => {
   it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
-      const status = yield* workflow.localStatus({ cwd: "/not-a-repo" });
+      const status = yield* workflow.localStatus({ cwd: NodeOS.tmpdir() });
 
       assert.deepStrictEqual(status, {
         isRepo: false,
@@ -94,7 +99,7 @@ describe("GitWorkflowService", () => {
   it.effect("returns an empty full status when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
-      const status = yield* workflow.status({ cwd: "/not-a-repo" });
+      const status = yield* workflow.status({ cwd: NodeOS.tmpdir() });
 
       assert.deepStrictEqual(status, {
         isRepo: false,
@@ -123,12 +128,53 @@ describe("GitWorkflowService", () => {
     ),
   );
 
+  // Both cases reach here as "no driver handle", but they mean opposite things
+  // to the user: an empty directory invites `git init`, a deleted checkout must
+  // not. Offering to initialize a repository at a path the user's agent removed
+  // would quietly replace their work with an unrelated empty repo.
+  it.effect("marks a status whose directory no longer exists", () =>
+    Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const gone = NodePath.join(NodeOS.tmpdir(), "threadlines-definitely-not-here");
+
+      const local = yield* workflow.localStatus({ cwd: gone });
+      const full = yield* workflow.status({ cwd: gone });
+
+      assert.isFalse(local.isRepo);
+      assert.isTrue(local.pathMissing);
+      assert.isTrue(full.pathMissing);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          detect: () => Effect.succeed(null),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("leaves pathMissing unset for a directory that is simply not a repository", () =>
+    Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const status = yield* workflow.localStatus({ cwd: NodeOS.tmpdir() });
+
+      assert.isFalse(status.isRepo);
+      assert.isUndefined(status.pathMissing);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          detect: () => Effect.succeed(null),
+        }),
+      ),
+    ),
+  );
+
   it.effect("does not call GitManager status methods when no VCS repository is detected", () => {
     const localStatus = vi.fn();
     const remoteStatus = vi.fn();
     const status = vi.fn();
 
     const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provideMerge(NodeServices.layer),
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           detect: () => Effect.succeed(null),
@@ -215,6 +261,7 @@ describe("GitWorkflowService", () => {
     });
 
     const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provideMerge(NodeServices.layer),
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           resolve: () => Effect.succeed(makeGitHandle()),
@@ -252,6 +299,7 @@ describe("GitWorkflowService", () => {
     const mergeRef = vi.fn();
     const pushCurrentBranch = vi.fn();
     const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provideMerge(NodeServices.layer),
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           resolve: () => Effect.succeed(makeGitHandle()),

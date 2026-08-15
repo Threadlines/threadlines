@@ -107,6 +107,7 @@ import { copyTextToClipboard } from "~/lib/clipboard";
 import { cn, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useSettings } from "~/hooks/useSettings";
+import { useCheckoutRecovery } from "~/hooks/useCheckoutRecovery";
 import { readLocalApi } from "~/localApi";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import {
@@ -2145,6 +2146,17 @@ export function SourceControlPanel({
   // render model while its API is absent, otherwise that stale `isRepo` value
   // enables graph, stash, and branch queries against a missing connection.
   const status = environmentApiAvailable ? gitStatus.data : null;
+  // A deleted checkout reaches this panel as a status with no repository, which
+  // used to read as "not a repo yet" and offered to initialize one. The same
+  // hook the composer notice uses tells the two apart and carries the actions.
+  const checkoutRecoveryView = useCheckoutRecovery({
+    environmentId,
+    threadId: activeThreadRef?.threadId ?? null,
+    cwd,
+    projectCwd: reviewProject?.cwd ?? null,
+    branch: reviewThread?.branch ?? null,
+    status,
+  });
   const parentRepositoryRoot =
     status?.isRepo && status.repositoryRootRelation === "ancestor"
       ? (status.repositoryRoot ?? null)
@@ -4349,7 +4361,43 @@ export function SourceControlPanel({
             </div>
           </section>
         ) : null}
-        {status?.isRepo === false ? (
+        {checkoutRecoveryView.recovery ? (
+          <section className="mb-3 border-b border-border pb-3 text-xs">
+            <p className="font-medium text-foreground">This thread's folder no longer exists.</p>
+            <p className="mt-1 font-mono text-muted-foreground/70">
+              {checkoutRecoveryView.recovery.cwd}
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {checkoutRecoveryView.recovery.canSwitchToProjectRoot ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  disabled={checkoutRecoveryView.isBusy}
+                  onClick={checkoutRecoveryView.onSwitchToProjectRoot}
+                >
+                  Switch to local checkout
+                </Button>
+              ) : null}
+              {checkoutRecoveryView.recovery.canRecreateWorktree ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  disabled={checkoutRecoveryView.isBusy}
+                  onClick={checkoutRecoveryView.onRecreateWorktree}
+                >
+                  Recreate worktree
+                </Button>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
+        {/* Only offered for a folder that exists but holds no repository.
+            A checkout that was deleted gets the recovery section above: running
+            `git init` there would recreate the directory as an unrelated empty
+            repository and quietly strand the thread's real work. */}
+        {status?.isRepo === false && !checkoutRecoveryView.recovery ? (
           <section className="mb-3 rounded-md border border-border/70 bg-background/40 px-3 py-3 text-xs">
             <p className="font-medium text-foreground">No Git repository</p>
             <p className="mt-1 text-muted-foreground/70">
