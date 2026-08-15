@@ -9,6 +9,7 @@ import {
   type PersistedUiState,
   persistState,
   readLegacyInboxState,
+  readPersistedState,
   reorderProjects,
   resolveSeenOverlay,
   setDefaultAdvertisedEndpointKey,
@@ -28,6 +29,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadChangedFilesExpandedById: {},
     doneThreadOverlays: {},
     inboxProjectScopeKey: null,
+    inboxEnvironmentScopeId: null,
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -522,6 +524,25 @@ describe("uiStateStore persistence round-trip", () => {
       [otherThreadId]: { state: "active", at: "2026-02-25T12:31:00.000Z" },
     });
     expect(remaining.threadLastVisitedAtById).toEqual({});
+  });
+
+  it("carries the inbox machine filter across a restart, and drops a junk value", () => {
+    const state = makeUiState({
+      inboxProjectScopeKey: "github.com/example/repo",
+      inboxEnvironmentScopeId: "env-macbook",
+    });
+    persistState(state);
+
+    expect(readPersistedState().inboxEnvironmentScopeId).toBe("env-macbook");
+    expect(readPersistedState().inboxProjectScopeKey).toBe("github.com/example/repo");
+
+    // An empty or non-string value is "no filter", never a scope nothing can
+    // match -- that would hide the whole inbox behind a filter with no name.
+    window.localStorage.setItem(
+      PERSISTED_STATE_KEY,
+      JSON.stringify({ inboxEnvironmentScopeId: "" } satisfies PersistedUiState),
+    );
+    expect(readPersistedState().inboxEnvironmentScopeId).toBe(null);
   });
 
   it("preserves all-collapsed project state across restart", () => {

@@ -66,6 +66,7 @@
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
+  --color-pick-selected: var(--pick-selected);
   --color-muted-foreground: var(--muted-foreground);
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -223,6 +224,10 @@
   --muted-foreground: oklch(0.5 0 0);
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--foreground);
+  /* Resting fill of the chosen row in value pickers. Kept faint on purpose:
+     the selected row is set apart from the borderless hover wash by a hairline
+     inset ring (--border), a difference in structure rather than in shade. */
+  --pick-selected: --alpha(var(--color-black) / 3%);
   --control-active: --alpha(var(--color-black) / 9%);
   --destructive: var(--color-red-500);
   --border: --alpha(var(--color-black) / 8%);
@@ -283,6 +288,7 @@
     --muted-foreground: oklch(0.68 0 0);
     --accent: --alpha(var(--color-white) / 9%);
     --accent-foreground: var(--foreground);
+    --pick-selected: --alpha(var(--color-white) / 4%);
     --control-active: --alpha(var(--color-white) / 17%);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
     --border: --alpha(var(--color-white) / 14%);

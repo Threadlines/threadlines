@@ -124,6 +124,19 @@ function backgroundRunBranchStatus(run: ThreadBackgroundRunItem): AgentBranchSta
   return /\b(waiting|blocked|paused)\b/iu.test(run.statusLabel) ? "waiting" : "running";
 }
 
+/**
+ * The runs the panel — and every indicator that advertises it — counts: work an
+ * agent started, or that detection attributed to one. A terminal the user
+ * opened themselves is the thread's own shell, not the turn's orchestration;
+ * the terminal strip and the header's activity popover are its surfaces, and
+ * counting it here made a hand-run dev server read as an agent.
+ */
+function agentInitiatedRuns(
+  runs: ReadonlyArray<ThreadBackgroundRunItem>,
+): ReadonlyArray<ThreadBackgroundRunItem> {
+  return runs.filter((run) => run.source !== "terminal");
+}
+
 /** `codex · detected`. The provider is dropped when it is not known. */
 function backgroundRunTag(
   run: ThreadBackgroundRunItem,
@@ -239,7 +252,7 @@ export function buildAgentBranches(input: {
       branch: subagentBranch(item, input.nowMs, input.subagentRuns) as AgentBranch,
       startedAtMs: parseTimestamp(item.createdAt),
     })),
-    ...input.backgroundRuns.map((run) => ({
+    ...agentInitiatedRuns(input.backgroundRuns).map((run) => ({
       branch: runBranch(run, input.providerLabel) as AgentBranch,
       startedAtMs: null,
     })),
@@ -491,7 +504,7 @@ export function summarizeLiveAgents(input: {
 }): LiveAgentIndicator | null {
   const statuses = [
     ...input.subagents.map((item) => subagentBranchStatus(item.status)),
-    ...input.backgroundRuns.map(backgroundRunBranchStatus),
+    ...agentInitiatedRuns(input.backgroundRuns).map(backgroundRunBranchStatus),
   ].filter(isLiveAgentBranchStatus);
   if (statuses.length === 0) {
     return null;
@@ -532,7 +545,9 @@ export function hasRunningAgentActivity(input: {
 }): boolean {
   return (
     input.subagents.some((item) => subagentBranchStatus(item.status) === "running") ||
-    input.backgroundRuns.some((run) => backgroundRunBranchStatus(run) === "running")
+    agentInitiatedRuns(input.backgroundRuns).some(
+      (run) => backgroundRunBranchStatus(run) === "running",
+    )
   );
 }
 

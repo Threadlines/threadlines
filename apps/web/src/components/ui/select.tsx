@@ -174,45 +174,23 @@ function SelectPopup({
   );
 }
 
-function SelectItem({
-  className,
-  children,
-  hideIndicator = false,
-  ...props
-}: SelectPrimitive.Item.Props & {
-  hideIndicator?: boolean;
-}) {
+/**
+ * Selection follows the house picker treatment (see MENU_PICK_ITEM_* in
+ * ui/menu): rows rest muted, the selected row carries a neutral fill and
+ * full-strength text, hover is the stronger fill. No indicator column — the
+ * check cost every row a gutter and the trigger already names the value.
+ */
+function SelectItem({ className, children, ...props }: SelectPrimitive.Item.Props) {
   return (
     <SelectPrimitive.Item
       className={cn(
-        "grid min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 text-base outline-none data-disabled:pointer-events-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
-        hideIndicator ? "grid-cols-[1fr] ps-3 pe-3" : "grid-cols-[1rem_1fr] ps-2 pe-4",
+        "flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-3 pe-3 text-base text-muted-foreground outline-none data-disabled:pointer-events-none data-selected:bg-pick-selected data-selected:text-foreground data-selected:inset-ring data-selected:inset-ring-border data-highlighted:bg-foreground/12 data-highlighted:text-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       data-slot="select-item"
       {...props}
     >
-      {hideIndicator ? null : (
-        <SelectPrimitive.ItemIndicator className="col-start-1" data-slot="select-item-indicator">
-          <svg
-            fill="none"
-            height="24"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            viewBox="0 0 24 24"
-            width="24"
-            xmlns="http://www.w3.org/1500/svg"
-          >
-            <path d="M5.252 12.7 10.2 18.63 18.748 5.37" />
-          </svg>
-        </SelectPrimitive.ItemIndicator>
-      )}
-      <SelectPrimitive.ItemText
-        className={cn("min-w-0", hideIndicator ? "col-start-1" : "col-start-2")}
-        data-slot="select-item-text"
-      >
+      <SelectPrimitive.ItemText className="min-w-0" data-slot="select-item-text">
         {children}
       </SelectPrimitive.ItemText>
     </SelectPrimitive.Item>

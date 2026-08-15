@@ -242,6 +242,7 @@ export function NoActiveThreadState() {
                                 <ProjectFavicon
                                   cwd={project.cwd}
                                   environmentId={project.environmentId}
+                                  name={project.name}
                                 />
                                 <span className="max-w-56 truncate">{project.name}</span>
                               </MenuItem>

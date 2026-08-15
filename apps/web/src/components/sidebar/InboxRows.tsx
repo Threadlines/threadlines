@@ -8,6 +8,7 @@ import {
   GitBranchIcon,
 } from "lucide-react";
 import React, { memo, useCallback, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -117,18 +118,57 @@ function RowFloatingActions(props: {
 }
 
 /**
- * The thread's own project cwd. Grouped projects put threads from several
- * checkouts under one name, so the row asks for its own rather than the
- * group's -- the favicon and the git status both depend on the right one.
+ * The thread's own project. Grouped projects put threads from several checkouts
+ * under one name, so the row asks for its own rather than the group's -- the
+ * favicon, its monogram fallback, and the git status all depend on the right
+ * one.
  */
-function useThreadProjectCwd(thread: SidebarThreadSummary): string | null {
+function useThreadProject(thread: SidebarThreadSummary): { cwd: string; name: string } | null {
   return useStore(
-    useMemo(
-      () => (state: import("../../store").AppState) =>
-        selectProjectByRef(state, scopeProjectRef(thread.environmentId, thread.projectId))?.cwd ??
-        null,
-      [thread.environmentId, thread.projectId],
+    useShallow(
+      useMemo(
+        () => (state: import("../../store").AppState) => {
+          const project = selectProjectByRef(
+            state,
+            scopeProjectRef(thread.environmentId, thread.projectId),
+          );
+          return project ? { cwd: project.cwd, name: project.name } : null;
+        },
+        [thread.environmentId, thread.projectId],
+      ),
     ),
+  );
+}
+
+/**
+ * Which machine a thread is running on, when that is a question worth asking.
+ *
+ * The cloud alone marks anything not on this device: the row's meta strip is
+ * contested space, and the machine's name lives one hover away in the tooltip
+ * and the hover card, which use the same cloud glyph for the same fact.
+ */
+function ThreadEnvironmentBadge(props: { thread: SidebarThreadSummary }) {
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const runtimeLabel = useSavedEnvironmentRuntimeStore(
+    (state) => state.byId[props.thread.environmentId]?.descriptor?.label ?? null,
+  );
+  const savedLabel = useSavedEnvironmentRegistryStore(
+    (state) => state.byId[props.thread.environmentId]?.label ?? null,
+  );
+  if (primaryEnvironmentId === null || props.thread.environmentId === primaryEnvironmentId) {
+    return null;
+  }
+
+  const label = runtimeLabel ?? savedLabel ?? "Remote";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={<span aria-label={label} className="inline-flex items-center justify-center" />}
+      >
+        <CloudIcon className="block size-3 text-muted-foreground/50" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -231,21 +271,9 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const isRemoteThread =
-    primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
-  const remoteEnvLabel = useSavedEnvironmentRuntimeStore(
-    (s) => s.byId[thread.environmentId]?.descriptor?.label ?? null,
-  );
-  const remoteEnvSavedLabel = useSavedEnvironmentRegistryStore(
-    (s) => s.byId[thread.environmentId]?.label ?? null,
-  );
-  const threadEnvironmentLabel = isRemoteThread
-    ? (remoteEnvLabel ?? remoteEnvSavedLabel ?? "Remote")
-    : null;
-  const threadProjectCwd = useThreadProjectCwd(thread);
+  const threadProject = useThreadProject(thread);
   const gitCwd = resolveThreadWorkingCwd({
-    projectCwd: threadProjectCwd,
+    projectCwd: threadProject?.cwd ?? null,
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
   });
@@ -436,10 +464,11 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 <PinIcon className="size-2.5" />
               </span>
             ) : null}
-            {threadProjectCwd ? (
+            {threadProject ? (
               <ProjectFavicon
-                cwd={threadProjectCwd}
+                cwd={threadProject.cwd}
                 environmentId={thread.environmentId}
+                name={threadProject.name}
                 className="size-3 shrink-0"
               />
             ) : null}
@@ -556,21 +585,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   />
                 </span>
               ) : null}
-              {isRemoteThread ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <span
-                        aria-label={threadEnvironmentLabel ?? "Remote"}
-                        className="inline-flex items-center justify-center"
-                      />
-                    }
-                  >
-                    <CloudIcon className="block size-3 text-muted-foreground/50" />
-                  </TooltipTrigger>
-                  <TooltipPopup side="top">{threadEnvironmentLabel}</TooltipPopup>
-                </Tooltip>
-              ) : null}
+              <ThreadEnvironmentBadge thread={thread} />
               {prStatus ? (
                 <Tooltip>
                   <TooltipTrigger
@@ -650,7 +665,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
-  const threadProjectCwd = useThreadProjectCwd(thread);
+  const threadProject = useThreadProject(thread);
   // Wrapping a thread settles the conversation, not its terminals: a dev
   // server started there keeps running, and this is the icon that finds it.
   const runningTerminalIds = useTerminalStateStore(
@@ -777,15 +792,16 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
               on every row cost the title half its width to repeat what a glyph
               says at a glance. The name still lives in the hover card, and in
               the accessible label here. */}
-          {projectLabel && threadProjectCwd ? (
+          {projectLabel && threadProject ? (
             <span
               role="img"
               aria-label={projectLabel}
               className="inline-flex shrink-0 items-center opacity-70"
             >
               <ProjectFavicon
-                cwd={threadProjectCwd}
+                cwd={threadProject.cwd}
                 environmentId={thread.environmentId}
+                name={threadProject.name}
                 className="size-3.5 shrink-0"
               />
             </span>
@@ -797,6 +813,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
             {thread.title}
           </span>
           <span className={ROW_META_SLOT_CLASS_NAME}>
+            <ThreadEnvironmentBadge thread={thread} />
             {terminalStatus ? (
               <span
                 role="img"

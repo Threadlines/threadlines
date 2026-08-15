@@ -54,12 +54,14 @@ function buildHistoryEntry(entry: {
   return { item: entry.item, resultBody: entry.resultBody ?? null };
 }
 
-const TERMINAL_RUN: ThreadBackgroundRunItem = {
-  id: "terminal:default",
-  source: "terminal",
+// An agent-started run in a managed terminal: the kind the panel lists.
+const PROVIDER_RUN: ThreadBackgroundRunItem = {
+  id: "provider:default",
+  source: "provider",
+  providerKind: "command",
   terminalId: "default",
   terminalVisible: false,
-  label: "Terminal 1",
+  label: "Dev server",
   command: "vp run dev",
   detail: "Terminal 1 - C:\\repo",
   cwd: "C:\\repo",
@@ -69,6 +71,16 @@ const TERMINAL_RUN: ThreadBackgroundRunItem = {
   port: null,
   elapsed: "2m",
   canStop: true,
+};
+
+// The user's own shell: present in the thread, absent from this panel.
+const TERMINAL_RUN: ThreadBackgroundRunItem = {
+  ...PROVIDER_RUN,
+  id: "terminal:default",
+  source: "terminal",
+  providerKind: undefined,
+  label: "Terminal 1",
+  command: "vp run dev:desktop",
 };
 
 function renderPanel(
@@ -132,7 +144,9 @@ describe("AgentsPanel", () => {
           statusLabel: "Done",
         }),
       ],
-      backgroundRuns: [TERMINAL_RUN],
+      // The user's own terminal rides along and must not appear: only the
+      // provider's run draws a branch.
+      backgroundRuns: [PROVIDER_RUN, TERMINAL_RUN],
     });
 
     try {
@@ -152,7 +166,7 @@ describe("AgentsPanel", () => {
 
       // A run is transcript-less, so it says where it came from instead.
       const tags = [...document.querySelectorAll("[data-agent-branch-tag='true']")];
-      expect(tags.map((tag) => tag.textContent)).toEqual(["terminal"]);
+      expect(tags.map((tag) => tag.textContent)).toEqual(["codex · provider"]);
     } finally {
       await mounted.unmount();
     }
@@ -182,12 +196,12 @@ describe("AgentsPanel", () => {
   it("toggles the terminal when a run branch is pressed instead of drilling in", async () => {
     const onToggleBackgroundRunTerminal = vi.fn();
     const mounted = await renderPanel(
-      { backgroundRuns: [TERMINAL_RUN] },
+      { backgroundRuns: [PROVIDER_RUN] },
       onToggleBackgroundRunTerminal,
     );
 
     try {
-      await page.getByRole("button", { name: "Open Terminal 1 terminal" }).click();
+      await page.getByRole("button", { name: "Open Dev server terminal" }).click();
       expect(onToggleBackgroundRunTerminal).toHaveBeenCalledWith("default");
       // Still the tree: a run never replaces the panel with a transcript.
       expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
@@ -771,7 +785,7 @@ describe("AgentsPanel", () => {
   it("marks a spawned agent with the thread provider's glyph but leaves runs their tag", async () => {
     const mounted = await renderPanel({
       subagents: [buildSubagent({ label: "Router sweep" })],
-      backgroundRuns: [TERMINAL_RUN],
+      backgroundRuns: [PROVIDER_RUN],
       providerLabel: "claudeAgent",
     });
 
@@ -785,7 +799,9 @@ describe("AgentsPanel", () => {
       const runRow = rows.find((row) => row.getAttribute("data-agent-branch-kind") === "run");
       expect(subagentRow?.querySelector("[data-agent-branch-provider='true'] svg")).not.toBeNull();
       expect(runRow?.querySelector("[data-agent-branch-provider='true']")).toBeNull();
-      expect(runRow?.querySelector("[data-agent-branch-tag='true']")?.textContent).toBe("terminal");
+      expect(runRow?.querySelector("[data-agent-branch-tag='true']")?.textContent).toBe(
+        "claudeagent · provider",
+      );
     } finally {
       await mounted.unmount();
     }

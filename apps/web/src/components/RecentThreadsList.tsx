@@ -108,7 +108,11 @@ export function RecentThreadsList({
                 </span>
               ) : project ? (
                 <span className="flex max-w-28 shrink-0 items-center gap-1.5 text-xs text-muted-foreground/60">
-                  <ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />
+                  <ProjectFavicon
+                    cwd={project.cwd}
+                    environmentId={project.environmentId}
+                    name={project.name}
+                  />
                   <span className="truncate">{project.name}</span>
                 </span>
               ) : null}

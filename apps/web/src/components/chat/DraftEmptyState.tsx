@@ -1,18 +1,25 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
-import { CheckIcon, MessagesSquareIcon } from "lucide-react";
+import { CloudIcon, MessagesSquareIcon, MonitorIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { useSavedEnvironmentRegistryStore } from "../../environments/runtime";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
+import { useSidebarProjectSnapshots } from "../../hooks/useSidebarProjectSnapshots";
 import { startNewGeneralChatThread } from "../../lib/chatThreadActions";
 import { resolveGeneralChatsProjectRef } from "../../lib/generalChats";
+import { orderSnapshotsByProjectRefs } from "../../sidebarProjectGrouping";
 import { selectGeneralChatsProjectAcrossEnvironments, useStore } from "../../store";
+import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
+import { TooltipWrapper } from "../ui/tooltip";
 import {
   Menu,
+  MENU_PICK_ITEM_CLASS_NAME,
+  MENU_PICK_ITEM_SELECTED_CLASS_NAME,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
@@ -60,6 +67,24 @@ export function DraftEmptyState({
           ) ?? null),
     [currentProjectKey, orderedProjects],
   );
+  // The menu lists projects, not checkouts: a repo cloned on this machine and
+  // on a remote one is one entry here, exactly as it is in the sidebar. Which
+  // machine a thread runs on is the Run on selector's question, not this one's.
+  const projectSnapshots = useSidebarProjectSnapshots();
+  // "Where does this project live?" only exists once a second machine does.
+  const hasRemoteMachines = useSavedEnvironmentRegistryStore(
+    (state) => Object.keys(state.byId).length > 0,
+  );
+  const menuSnapshots = useMemo(
+    () =>
+      orderSnapshotsByProjectRefs({
+        snapshots: projectSnapshots,
+        orderedProjectRefs: orderedProjects.map((project) =>
+          scopeProjectRef(project.environmentId, project.id),
+        ),
+      }),
+    [orderedProjects, projectSnapshots],
+  );
 
   return (
     <div className="flex w-full max-w-xl flex-col items-center">
@@ -86,6 +111,7 @@ export function DraftEmptyState({
                 <ProjectFavicon
                   cwd={currentProject.cwd}
                   environmentId={currentProject.environmentId}
+                  name={currentProjectName ?? currentProject.name}
                 />
               ) : null}
               {targetName}
@@ -96,15 +122,16 @@ export function DraftEmptyState({
               <>
                 <MenuGroup>
                   <MenuItem
+                    className={cn(
+                      MENU_PICK_ITEM_CLASS_NAME,
+                      isGeneralChat && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+                    )}
                     onClick={() => {
                       void startNewGeneralChatThread(handleNewThread, generalChatsRef);
                     }}
                   >
                     <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
                     <span className="flex-1">General chat</span>
-                    {isGeneralChat ? (
-                      <CheckIcon className="size-3.5 text-muted-foreground" />
-                    ) : null}
                   </MenuItem>
                 </MenuGroup>
                 <MenuSeparator />
@@ -112,22 +139,70 @@ export function DraftEmptyState({
             ) : null}
             <MenuGroup>
               <MenuGroupLabel>Switch project</MenuGroupLabel>
-              {orderedProjects.map((project) => {
-                const projectRef = scopeProjectRef(project.environmentId, project.id);
+              {menuSnapshots.map((snapshot) => {
+                const projectRef = scopeProjectRef(snapshot.environmentId, snapshot.id);
                 const isCurrentProject =
-                  currentProjectKey !== null && scopedProjectKey(projectRef) === currentProjectKey;
+                  currentProjectKey !== null &&
+                  snapshot.memberProjectRefs.some(
+                    (memberRef) => scopedProjectKey(memberRef) === currentProjectKey,
+                  );
+                // Where the project lives, in the glyph vocabulary the rest of
+                // the app speaks: monitor for this device, cloud for another
+                // machine, both for a repo on both, and a count when it spans
+                // several remotes. Glyphs instead of the machine's name — the
+                // name truncated to nothing at this row width, and hover still
+                // spells it out. With no remote machine connected the question
+                // does not exist, so no row carries a glyph at all.
+                const remoteNames = snapshot.remoteEnvironmentLabels.join(", ");
+                const remoteCount = snapshot.remoteEnvironmentLabels.length;
+                const hasLocal = snapshot.environmentPresence !== "remote-only";
+                const hasRemote = snapshot.environmentPresence !== "local-only";
                 return (
                   <MenuItem
-                    key={`${project.environmentId}:${project.id}`}
+                    key={snapshot.projectKey}
+                    className={cn(
+                      MENU_PICK_ITEM_CLASS_NAME,
+                      isCurrentProject && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+                    )}
                     onClick={() => {
                       void handleNewThread(projectRef);
                     }}
-                    title={project.cwd}
+                    title={snapshot.cwd}
                   >
-                    <ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />
-                    <span className="max-w-56 flex-1 truncate">{project.name}</span>
-                    {isCurrentProject ? (
-                      <CheckIcon className="size-3.5 text-muted-foreground" />
+                    <ProjectFavicon
+                      cwd={snapshot.cwd}
+                      environmentId={snapshot.environmentId}
+                      name={snapshot.displayName}
+                    />
+                    <span className="max-w-56 flex-1 truncate">{snapshot.displayName}</span>
+                    {hasRemoteMachines ? (
+                      // Instant tooltip: the glyphs are the only thing naming
+                      // the machines, so a hover dwell reads as unlabelled.
+                      <TooltipWrapper
+                        delay={0}
+                        side="right"
+                        tooltip={
+                          hasLocal && hasRemote
+                            ? `On this device and ${remoteNames}`
+                            : hasRemote
+                              ? `On ${remoteNames}`
+                              : "On this device"
+                        }
+                      >
+                        <span className="inline-flex shrink-0 items-center gap-0.5">
+                          {hasLocal ? (
+                            <MonitorIcon className="size-3 text-muted-foreground/50" />
+                          ) : null}
+                          {hasRemote ? (
+                            <CloudIcon className="size-3 text-muted-foreground/50" />
+                          ) : null}
+                          {remoteCount > 1 ? (
+                            <span className="font-mono text-[10px] leading-none text-muted-foreground/50">
+                              {remoteCount}
+                            </span>
+                          ) : null}
+                        </span>
+                      </TooltipWrapper>
                     ) : null}
                   </MenuItem>
                 );

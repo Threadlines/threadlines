@@ -90,7 +90,7 @@ vi.mock("../../environments/runtime", () => {
   } as never;
   const notUsed = () => undefined as never;
   return {
-    environmentUsesRelayTransport: () => false,
+    environmentRequiresRpcAssetTransport: () => false,
     getEnvironmentHttpBaseUrl: () => "http://localhost:3000",
     getSavedEnvironmentRecord: () => null,
     getSavedEnvironmentRuntimeState: () => null,

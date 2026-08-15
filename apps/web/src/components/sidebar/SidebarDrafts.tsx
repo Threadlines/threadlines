@@ -69,10 +69,18 @@ function draftProjectRefKey(session: DraftSessionState): string {
  * it cannot belong to a scope it has no key for.
  */
 function draftSessionMatchesScope(input: {
+  session: DraftSessionState;
   project: SidebarDraftProjectInfo | undefined;
   scopedProjectKey: string | null;
+  scopedEnvironmentId: string | null;
 }): boolean {
   if (input.project?.isGeneralChat === true) {
+    return false;
+  }
+  if (
+    input.scopedEnvironmentId !== null &&
+    input.session.environmentId !== input.scopedEnvironmentId
+  ) {
     return false;
   }
   if (input.scopedProjectKey === null) {
@@ -94,6 +102,7 @@ export function countVisibleDraftSessions(input: {
   store: DraftSessionSlices;
   projectInfoByScopedRef: SidebarDraftProjectInfoByScopedRef;
   scopedProjectKey: string | null;
+  scopedEnvironmentId: string | null;
   routeDraftId: string | null;
   frozenOpenDraftRow: SidebarDraftRowData | null;
 }): number {
@@ -104,8 +113,10 @@ export function countVisibleDraftSessions(input: {
     }
     if (
       !draftSessionMatchesScope({
+        session,
         project: input.projectInfoByScopedRef.get(draftProjectRefKey(session)),
         scopedProjectKey: input.scopedProjectKey,
+        scopedEnvironmentId: input.scopedEnvironmentId,
       })
     ) {
       continue;
@@ -261,6 +272,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
             <ProjectFavicon
               environmentId={session.environmentId}
               cwd={project.cwd}
+              name={project.displayName}
               className="size-3.5 shrink-0 opacity-70"
             />
           ) : null}
@@ -301,6 +313,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
 export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectInfoByScopedRef: SidebarDraftProjectInfoByScopedRef;
   scopedProjectKey: string | null;
+  scopedEnvironmentId: string | null;
   routeDraftId: string | null;
   /** From {@link useFrozenOpenDraftRow}, owned by the sidebar. */
   frozenOpenDraftRow: SidebarDraftRowData | null;
@@ -314,6 +327,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenOpenDraftRow,
     projectInfoByScopedRef,
     routeDraftId,
+    scopedEnvironmentId,
     scopedProjectKey: scopeKey,
   } = props;
   const drafts = useMemo(() => {
@@ -327,8 +341,10 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       }
       if (
         !draftSessionMatchesScope({
+          session,
           project: projectInfoByScopedRef.get(draftProjectRefKey(session)),
           scopedProjectKey: scopeKey,
+          scopedEnvironmentId,
         })
       ) {
         continue;
@@ -356,6 +372,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenOpenDraftRow,
     projectInfoByScopedRef,
     routeDraftId,
+    scopedEnvironmentId,
     scopeKey,
   ]);
   const handleDiscardOpenChange = useCallback((open: boolean) => {

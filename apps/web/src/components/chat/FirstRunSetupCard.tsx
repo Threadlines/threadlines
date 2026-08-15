@@ -178,7 +178,11 @@ export function FirstRunSetupCard({
   const projectDescription: ReactNode =
     projectRow.state === "ready" && projectCwd && projectEnvironmentId ? (
       <span className="inline-flex min-w-0 items-center gap-1.5">
-        <ProjectFavicon cwd={projectCwd} environmentId={projectEnvironmentId} />
+        <ProjectFavicon
+          cwd={projectCwd}
+          environmentId={projectEnvironmentId}
+          {...(projectName ? { name: projectName } : {})}
+        />
         <span className="min-w-0 truncate">{projectRow.description}</span>
       </span>
     ) : (

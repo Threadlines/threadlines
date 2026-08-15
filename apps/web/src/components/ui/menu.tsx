@@ -158,12 +158,12 @@ function MenuRadioItem({
   // Base UI leaves radio menus open after a pick; our menus render a backdrop,
   // so staying open would swallow the user's next click outside the menu.
   closeOnClick = true,
-  // "check" reserves an indicator column and ticks the selected entry.
-  // "fill" marks it the way the sidebar's project menu does: selection is a
-  // resting fill, hover a stronger one, both neutral alphas of the foreground
-  // so "which is selected" and "which is under the cursor" never read as the
-  // same state.
-  variant = "check",
+  // "fill" is the house selection treatment (see MENU_PICK_ITEM_*): selection
+  // is a resting fill with full-strength text against muted siblings, hover a
+  // stronger fill — no indicator column to spend width on or misalign rows.
+  // "check" reserves an indicator column and ticks the selected entry; keep it
+  // only where a menu truly cannot use the fill.
+  variant = "fill",
   ...props
 }: MenuPrimitive.RadioItem.Props & { variant?: "check" | "fill" }) {
   return (
@@ -173,7 +173,7 @@ function MenuRadioItem({
         "min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-2 pe-4 text-base text-foreground outline-none data-disabled:pointer-events-none data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         variant === "check"
           ? "grid grid-cols-[1rem_1fr] data-highlighted:bg-accent data-highlighted:text-accent-foreground"
-          : "flex data-checked:bg-foreground/6 data-highlighted:bg-foreground/12",
+          : "flex text-muted-foreground data-checked:bg-pick-selected data-checked:text-foreground data-checked:inset-ring data-checked:inset-ring-border data-highlighted:bg-foreground/12 data-highlighted:text-foreground",
         className,
       )}
       data-slot="menu-radio-item"
@@ -204,6 +204,19 @@ function MenuRadioItem({
     </MenuPrimitive.RadioItem>
   );
 }
+
+/**
+ * The house selection treatment for value-picking menus built from plain
+ * MenuItems (MenuRadioItem's "fill" variant applies the same rules itself):
+ * rows rest muted, the selected row carries a neutral fill and full-strength
+ * text, and hover is a stronger fill — visibly a different state from
+ * selection. No check glyph: every picker's trigger already names the current
+ * value, and an indicator column costs width and row alignment.
+ */
+export const MENU_PICK_ITEM_CLASS_NAME =
+  "gap-2 text-muted-foreground data-highlighted:bg-foreground/12 data-highlighted:text-foreground";
+export const MENU_PICK_ITEM_SELECTED_CLASS_NAME =
+  "bg-pick-selected text-foreground inset-ring inset-ring-border";
 
 function MenuGroupLabel({
   className,

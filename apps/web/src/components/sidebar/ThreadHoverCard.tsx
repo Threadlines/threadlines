@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
-import { GitBranchIcon, LaptopIcon, ServerIcon } from "lucide-react";
+import { CloudIcon, GitBranchIcon, MonitorIcon } from "lucide-react";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
@@ -148,15 +148,24 @@ function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
       <HoverCardDetails>
         {project ? (
           <HoverCardDetailRow
-            icon={<ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />}
+            icon={
+              <ProjectFavicon
+                cwd={project.cwd}
+                environmentId={project.environmentId}
+                name={project.name}
+              />
+            }
           >
             {project.name}
           </HoverCardDetailRow>
         ) : null}
         {environmentLabel ? (
           <HoverCardDetailRow
+            // The same pair every machine surface uses: a monitor for this
+            // device, a cloud for any other machine — the row's cloud badge
+            // and this line must read as the same fact.
             icon={
-              isRemote ? <ServerIcon className="size-3.5" /> : <LaptopIcon className="size-3.5" />
+              isRemote ? <CloudIcon className="size-3.5" /> : <MonitorIcon className="size-3.5" />
             }
           >
             {environmentLabel}
