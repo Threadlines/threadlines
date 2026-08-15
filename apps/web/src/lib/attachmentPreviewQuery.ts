@@ -1,7 +1,10 @@
 import type { EnvironmentId } from "@threadlines/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { ensureEnvironmentApi } from "~/environmentApi";
-import { environmentUsesRelayTransport, resolveEnvironmentHttpUrl } from "~/environments/runtime";
+import {
+  environmentRequiresRpcAssetTransport,
+  resolveEnvironmentHttpUrl,
+} from "~/environments/runtime";
 
 export const attachmentPreviewQueryKeys = {
   preview: (environmentId: EnvironmentId, attachmentId: string) =>
@@ -10,9 +13,9 @@ export const attachmentPreviewQueryKeys = {
 
 /**
  * Fetches stored attachment bytes over the environment's WebSocket RPC and
- * yields a data URL. Relay-paired environments (phonelink) cannot reach the
- * server's `/attachments` HTTP route — the relay only carries the WebSocket —
- * so this is their only preview transport.
+ * yields a data URL. Saved environments authenticate over that WebSocket, and
+ * the browser cannot attach that credential to a cross-origin `/attachments`
+ * request, so this is their only preview transport.
  */
 export function chatAttachmentPreviewQueryOptions(input: {
   environmentId: EnvironmentId;
@@ -36,15 +39,15 @@ export function attachmentPreviewRoutePath(attachmentId: string): string {
 }
 
 /**
- * Loads a stored attachment's raw bytes: over HTTP against the environment's
- * `/attachments` route, or over the WebSocket RPC for relay-paired
- * environments where that route is unreachable.
+ * Loads a stored attachment's raw bytes: over HTTP against the primary
+ * environment's `/attachments` route, or over the WebSocket RPC for saved
+ * environments, whose route the browser cannot authenticate against.
  */
 export async function loadChatAttachmentBlob(input: {
   environmentId: EnvironmentId;
   attachmentId: string;
 }): Promise<Blob> {
-  if (environmentUsesRelayTransport(input.environmentId)) {
+  if (environmentRequiresRpcAssetTransport(input.environmentId)) {
     const api = ensureEnvironmentApi(input.environmentId);
     const attachment = await api.attachments.read({ attachmentId: input.attachmentId });
     const binary = atob(attachment.base64);

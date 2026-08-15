@@ -79,6 +79,7 @@ function renderDraftBlock(input: {
         store,
         projectInfoByScopedRef: PROJECT_INFO,
         scopedProjectKey: null,
+        scopedEnvironmentId: null,
         routeDraftId,
         frozenOpenDraftRow,
       }),
@@ -92,6 +93,7 @@ function renderDraftBlock(input: {
         <SidebarDraftBlock
           projectInfoByScopedRef={PROJECT_INFO}
           scopedProjectKey={null}
+          scopedEnvironmentId={null}
           routeDraftId={routeDraftId}
           frozenOpenDraftRow={frozenOpenDraftRow}
           onNavigateToDraft={input.onNavigateToDraft ?? vi.fn()}

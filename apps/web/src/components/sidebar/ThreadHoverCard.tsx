@@ -148,7 +148,13 @@ function ThreadHoverCardContent({ thread, status }: ThreadHoverCardPayload) {
       <HoverCardDetails>
         {project ? (
           <HoverCardDetailRow
-            icon={<ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />}
+            icon={
+              <ProjectFavicon
+                cwd={project.cwd}
+                environmentId={project.environmentId}
+                name={project.name}
+              />
+            }
           >
             {project.name}
           </HoverCardDetailRow>

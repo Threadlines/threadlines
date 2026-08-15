@@ -5,8 +5,10 @@ import { useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
+import { useSidebarProjectSnapshots } from "../../hooks/useSidebarProjectSnapshots";
 import { startNewGeneralChatThread } from "../../lib/chatThreadActions";
 import { resolveGeneralChatsProjectRef } from "../../lib/generalChats";
+import { orderSnapshotsByProjectRefs } from "../../sidebarProjectGrouping";
 import { selectGeneralChatsProjectAcrossEnvironments, useStore } from "../../store";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
@@ -60,6 +62,20 @@ export function DraftEmptyState({
           ) ?? null),
     [currentProjectKey, orderedProjects],
   );
+  // The menu lists projects, not checkouts: a repo cloned on this machine and
+  // on a remote one is one entry here, exactly as it is in the sidebar. Which
+  // machine a thread runs on is the Run on selector's question, not this one's.
+  const projectSnapshots = useSidebarProjectSnapshots();
+  const menuSnapshots = useMemo(
+    () =>
+      orderSnapshotsByProjectRefs({
+        snapshots: projectSnapshots,
+        orderedProjectRefs: orderedProjects.map((project) =>
+          scopeProjectRef(project.environmentId, project.id),
+        ),
+      }),
+    [orderedProjects, projectSnapshots],
+  );
 
   return (
     <div className="flex w-full max-w-xl flex-col items-center">
@@ -86,6 +102,7 @@ export function DraftEmptyState({
                 <ProjectFavicon
                   cwd={currentProject.cwd}
                   environmentId={currentProject.environmentId}
+                  name={currentProjectName ?? currentProject.name}
                 />
               ) : null}
               {targetName}
@@ -112,20 +129,39 @@ export function DraftEmptyState({
             ) : null}
             <MenuGroup>
               <MenuGroupLabel>Switch project</MenuGroupLabel>
-              {orderedProjects.map((project) => {
-                const projectRef = scopeProjectRef(project.environmentId, project.id);
+              {menuSnapshots.map((snapshot) => {
+                const projectRef = scopeProjectRef(snapshot.environmentId, snapshot.id);
                 const isCurrentProject =
-                  currentProjectKey !== null && scopedProjectKey(projectRef) === currentProjectKey;
+                  currentProjectKey !== null &&
+                  snapshot.memberProjectRefs.some(
+                    (memberRef) => scopedProjectKey(memberRef) === currentProjectKey,
+                  );
+                // A project that only exists on another machine says so; one
+                // that lives on both says nothing, because picking it here does
+                // not pick a machine.
+                const remoteOnlyLabel =
+                  snapshot.environmentPresence === "remote-only"
+                    ? snapshot.remoteEnvironmentLabels.join(", ")
+                    : "";
                 return (
                   <MenuItem
-                    key={`${project.environmentId}:${project.id}`}
+                    key={snapshot.projectKey}
                     onClick={() => {
                       void handleNewThread(projectRef);
                     }}
-                    title={project.cwd}
+                    title={snapshot.cwd}
                   >
-                    <ProjectFavicon cwd={project.cwd} environmentId={project.environmentId} />
-                    <span className="max-w-56 flex-1 truncate">{project.name}</span>
+                    <ProjectFavicon
+                      cwd={snapshot.cwd}
+                      environmentId={snapshot.environmentId}
+                      name={snapshot.displayName}
+                    />
+                    <span className="max-w-56 flex-1 truncate">{snapshot.displayName}</span>
+                    {remoteOnlyLabel ? (
+                      <span className="max-w-24 shrink-0 truncate font-mono text-[10px] text-muted-foreground/60">
+                        {remoteOnlyLabel}
+                      </span>
+                    ) : null}
                     {isCurrentProject ? (
                       <CheckIcon className="size-3.5 text-muted-foreground" />
                     ) : null}

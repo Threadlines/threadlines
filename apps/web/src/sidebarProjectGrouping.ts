@@ -1,4 +1,4 @@
-import { scopeProjectRef } from "@threadlines/client-runtime";
+import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ScopedProjectRef } from "@threadlines/contracts";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -37,6 +37,39 @@ export function buildPhysicalToLogicalProjectKeyMap(input: {
     );
   }
   return mapping;
+}
+
+/**
+ * Puts logical projects in the order a list of physical projects is already in,
+ * keeping each one at the position of its first member.
+ *
+ * Project pickers order their physical list by activity (or by the user's
+ * manual order). Grouping several checkouts into one row must not re-sort that
+ * list: the same repo on two machines collapses onto whichever of them was
+ * touched most recently, and everything else keeps its place.
+ */
+export function orderSnapshotsByProjectRefs(input: {
+  snapshots: ReadonlyArray<SidebarProjectSnapshot>;
+  orderedProjectRefs: ReadonlyArray<ScopedProjectRef>;
+}): SidebarProjectSnapshot[] {
+  const snapshotByScopedRef = new Map<string, SidebarProjectSnapshot>();
+  for (const snapshot of input.snapshots) {
+    for (const memberRef of snapshot.memberProjectRefs) {
+      snapshotByScopedRef.set(scopedProjectKey(memberRef), snapshot);
+    }
+  }
+
+  const ordered: SidebarProjectSnapshot[] = [];
+  const seen = new Set<string>();
+  for (const projectRef of input.orderedProjectRefs) {
+    const snapshot = snapshotByScopedRef.get(scopedProjectKey(projectRef));
+    if (!snapshot || seen.has(snapshot.projectKey)) {
+      continue;
+    }
+    seen.add(snapshot.projectKey);
+    ordered.push(snapshot);
+  }
+  return ordered;
 }
 
 export function buildSidebarProjectSnapshots(input: {

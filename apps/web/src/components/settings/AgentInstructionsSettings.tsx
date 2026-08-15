@@ -462,7 +462,13 @@ export function AgentInstructionsSettingsPanel() {
                   <SelectValue>
                     <span className="flex min-w-0 items-center gap-1.5">
                       {selectedProjectEnvironmentId ? (
-                        <ProjectFavicon environmentId={selectedProjectEnvironmentId} cwd={cwd} />
+                        <ProjectFavicon
+                          environmentId={selectedProjectEnvironmentId}
+                          cwd={cwd}
+                          name={
+                            projectOptions.find((project) => project.value === cwd)?.label ?? ""
+                          }
+                        />
                       ) : null}
                       <span className="truncate">
                         {projectOptions.find((project) => project.value === cwd)?.label ??
@@ -481,6 +487,7 @@ export function AgentInstructionsSettingsPanel() {
                             <ProjectFavicon
                               environmentId={projectEnvironmentId}
                               cwd={project.value}
+                              name={project.label}
                             />
                           ) : null}
                           <span className="truncate">{project.label}</span>

@@ -1,5 +1,5 @@
 export {
-  environmentUsesRelayTransport,
+  environmentRequiresRpcAssetTransport,
   getEnvironmentHttpBaseUrl,
   getSavedEnvironmentRecord,
   getSavedEnvironmentRuntimeState,

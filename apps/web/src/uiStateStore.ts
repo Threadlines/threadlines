@@ -31,6 +31,7 @@ export interface PersistedUiState {
   /** Legacy, see `doneThreadOverrides`. */
   threadLastVisitedAtById?: Record<string, string>;
   inboxProjectScopeKey?: string | null;
+  inboxEnvironmentScopeId?: string | null;
 }
 
 export interface UiProjectState {
@@ -79,6 +80,8 @@ export interface UiInboxState {
   doneThreadOverlays: Record<string, ThreadDoneOverlayWrite>;
   /** Which project chip is selected; null is All. */
   inboxProjectScopeKey: string | null;
+  /** Which machine the list is narrowed to; null is All machines. */
+  inboxEnvironmentScopeId: string | null;
 }
 
 export interface UiEndpointState {
@@ -111,6 +114,7 @@ const initialState: UiState = {
   threadChangedFilesExpandedById: {},
   doneThreadOverlays: {},
   inboxProjectScopeKey: null,
+  inboxEnvironmentScopeId: null,
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -127,7 +131,7 @@ const currentProjectCwdsByLogicalKey = new Map<string, string[]>();
 const currentLogicalKeyByPhysicalKey = new Map<string, string>();
 let legacyKeysCleanedUp = false;
 
-function readPersistedState(): UiState {
+export function readPersistedState(): UiState {
   if (typeof window === "undefined") {
     return initialState;
   }
@@ -159,6 +163,11 @@ function readPersistedState(): UiState {
       inboxProjectScopeKey:
         typeof parsed.inboxProjectScopeKey === "string" && parsed.inboxProjectScopeKey.length > 0
           ? parsed.inboxProjectScopeKey
+          : null,
+      inboxEnvironmentScopeId:
+        typeof parsed.inboxEnvironmentScopeId === "string" &&
+        parsed.inboxEnvironmentScopeId.length > 0
+          ? parsed.inboxEnvironmentScopeId
           : null,
     };
   } catch {
@@ -358,6 +367,7 @@ export function persistState(state: UiState): void {
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
         inboxProjectScopeKey: state.inboxProjectScopeKey,
+        inboxEnvironmentScopeId: state.inboxEnvironmentScopeId,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -869,6 +879,7 @@ interface UiStateStore extends UiState {
   resolveDoneOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
   resolveSeenOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
   setInboxProjectScope: (projectKey: string | null) => void;
+  setInboxEnvironmentScope: (environmentId: string | null) => void;
   clearThreadUi: (threadKey: string) => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
@@ -900,6 +911,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
       state.inboxProjectScopeKey === projectKey
         ? state
         : { ...state, inboxProjectScopeKey: projectKey },
+    ),
+  setInboxEnvironmentScope: (environmentId) =>
+    set((state) =>
+      state.inboxEnvironmentScopeId === environmentId
+        ? state
+        : { ...state, inboxEnvironmentScopeId: environmentId },
     ),
   clearThreadUi: (threadKey) => set((state) => clearThreadUi(state, threadKey)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>

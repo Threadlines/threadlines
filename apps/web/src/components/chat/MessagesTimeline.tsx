@@ -47,7 +47,7 @@ import {
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
 import { type ChatAttachment, type TurnDiffSummary } from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
-import { environmentUsesRelayTransport } from "../../environments/runtime";
+import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -1837,11 +1837,12 @@ const EMPTY_IMAGE_PREVIEW_ITEMS: ReadonlyArray<TimelineImagePreviewItem> = [];
 
 /**
  * Message attachments carry HTTP preview URLs against the environment's base
- * URL. Relay-paired environments (phonelink) can't reach that route — the
- * relay tunnels only the WebSocket — so swap those previews for data URLs
- * fetched over the RPC channel. Locally-echoed blob/data previews (composer
- * handoff) pass through untouched. Only chat attachments belong here: work
- * entry images may carry foreign http URLs that are not stored attachments.
+ * URL. A saved environment's route is cross-origin and authenticated over its
+ * WebSocket, which the browser cannot attach to an `<img>` request, so swap
+ * those previews for data URLs fetched over the RPC channel. Locally-echoed
+ * blob/data previews (composer handoff) pass through untouched. Only chat
+ * attachments belong here: work entry images may carry foreign http URLs that
+ * are not stored attachments.
  */
 function useResolvedAttachmentPreviews(
   images: ReadonlyArray<TimelineImagePreviewItem>,
@@ -1849,7 +1850,7 @@ function useResolvedAttachmentPreviews(
   const ctx = use(TimelineRowCtx);
   const environmentId = ctx.activeThreadEnvironmentId;
   const rpcImages =
-    images.length > 0 && environmentUsesRelayTransport(environmentId)
+    images.length > 0 && environmentRequiresRpcAssetTransport(environmentId)
       ? images.filter((image) => image.previewUrl && /^https?:/i.test(image.previewUrl))
       : EMPTY_IMAGE_PREVIEW_ITEMS;
   const previewQueries = useQueries({

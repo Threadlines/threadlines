@@ -25,6 +25,7 @@ import {
 } from "@threadlines/client-runtime";
 import { Link, useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { usePrimaryEnvironmentId } from "../environments/primary";
+import type { EnvironmentId } from "@threadlines/contracts";
 import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -115,7 +116,8 @@ import {
   useFrozenOpenDraftRow,
   type SidebarDraftProjectInfo,
 } from "./sidebar/SidebarDrafts";
-import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
+import { ProjectScopeMenu, type EnvironmentScopeOption } from "./sidebar/ProjectScopeMenu";
+import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
@@ -132,11 +134,8 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import type { SidebarThreadSummary } from "../types";
-import {
-  buildPhysicalToLogicalProjectKeyMap,
-  buildSidebarProjectSnapshots,
-  type SidebarProjectSnapshot,
-} from "../sidebarProjectGrouping";
+import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
+import { useSidebarProjectSnapshots } from "~/hooks/useSidebarProjectSnapshots";
 import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
@@ -427,6 +426,8 @@ export default function Sidebar() {
   const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
   const inboxProjectScopeKey = useUiStateStore((store) => store.inboxProjectScopeKey);
   const setInboxProjectScope = useUiStateStore((store) => store.setInboxProjectScope);
+  const inboxEnvironmentScopeId = useUiStateStore((store) => store.inboxEnvironmentScopeId);
+  const setInboxEnvironmentScope = useUiStateStore((store) => store.setInboxEnvironmentScope);
   const navigate = useNavigate();
   const router = useRouter();
   const pathname = useLocation({ select: (loc) => loc.pathname });
@@ -530,26 +531,7 @@ export default function Sidebar() {
       ),
     [projects],
   );
-  const sidebarProjects = useMemo<SidebarProjectSnapshot[]>(
-    () =>
-      buildSidebarProjectSnapshots({
-        projects,
-        settings: projectGroupingSettings,
-        primaryEnvironmentId,
-        resolveEnvironmentLabel: (environmentId) => {
-          const rt = savedEnvironmentRuntimeById[environmentId];
-          const saved = savedEnvironmentRegistry[environmentId];
-          return rt?.descriptor?.label ?? saved?.label ?? null;
-        },
-      }),
-    [
-      projects,
-      projectGroupingSettings,
-      primaryEnvironmentId,
-      savedEnvironmentRegistry,
-      savedEnvironmentRuntimeById,
-    ],
-  );
+  const sidebarProjects = useSidebarProjectSnapshots();
   const sidebarProjectByKey = useMemo(
     () => new Map(sidebarProjects.map((project) => [project.projectKey, project] as const)),
     [sidebarProjects],
@@ -660,6 +642,52 @@ export default function Sidebar() {
       ? inboxProjectScopeKey
       : null;
 
+  // Every machine the inbox knows about: this device, plus whatever has been
+  // added under "Add computer". Ordered with this device first, the rest by
+  // name, so the list does not reshuffle as machines connect and drop.
+  const environmentScopeOptions = useMemo<EnvironmentScopeOption[]>(() => {
+    const resolveLabel = (environmentId: EnvironmentId, isPrimary: boolean) =>
+      resolveEnvironmentOptionLabel({
+        isPrimary,
+        environmentId,
+        runtimeLabel: savedEnvironmentRuntimeById[environmentId]?.descriptor?.label ?? null,
+        savedLabel: savedEnvironmentRegistry[environmentId]?.label ?? null,
+      });
+    const savedOptions = Object.values(savedEnvironmentRegistry)
+      .filter((record) => record.environmentId !== primaryEnvironmentId)
+      .map((record) => ({
+        environmentId: record.environmentId,
+        label: resolveLabel(record.environmentId, false),
+        isPrimary: false,
+      }))
+      .toSorted((left, right) => left.label.localeCompare(right.label));
+    return primaryEnvironmentId === null
+      ? savedOptions
+      : [
+          {
+            environmentId: primaryEnvironmentId,
+            label: resolveLabel(primaryEnvironmentId, true),
+            isPrimary: true,
+          },
+          ...savedOptions,
+        ];
+  }, [primaryEnvironmentId, savedEnvironmentRegistry, savedEnvironmentRuntimeById]);
+  // A machine that has been removed since the filter was set stops filtering,
+  // rather than hiding the whole inbox behind a scope nothing can match.
+  const scopedEnvironmentIdValue =
+    inboxEnvironmentScopeId !== null &&
+    environmentScopeOptions.length > 1 &&
+    environmentScopeOptions.some((option) => option.environmentId === inboxEnvironmentScopeId)
+      ? inboxEnvironmentScopeId
+      : null;
+  const machineScopedEntries = useMemo(
+    () =>
+      scopedEnvironmentIdValue === null
+        ? entries
+        : entries.filter((entry) => entry.thread.environmentId === scopedEnvironmentIdValue),
+    [entries, scopedEnvironmentIdValue],
+  );
+
   // Everything a draft row needs about its project, resolved once here: a
   // draft carries a scoped project ref, and the rows want the grouped display
   // name, the checkout the favicon comes from, and the logical key the inbox
@@ -698,6 +726,7 @@ export default function Sidebar() {
       store,
       projectInfoByScopedRef: draftProjectInfoByScopedRef,
       scopedProjectKey: scopedProjectKeyValue,
+      scopedEnvironmentId: scopedEnvironmentIdValue,
       routeDraftId,
       frozenOpenDraftRow,
     }),
@@ -706,7 +735,7 @@ export default function Sidebar() {
   const scopeOptions = useMemo(() => {
     const lastActivityMsByKey = new Map<string, number>();
     const needsYouCountByKey = new Map<string, number>();
-    for (const entry of entries) {
+    for (const entry of machineScopedEntries) {
       const activityAt =
         toSortableTimestamp(
           entry.thread.latestUserMessageAt ?? entry.thread.updatedAt ?? entry.thread.createdAt,
@@ -729,13 +758,13 @@ export default function Sidebar() {
       lastActivityMsByKey,
       needsYouCountByKey,
     });
-  }, [entries, sidebarProjects]);
+  }, [machineScopedEntries, sidebarProjects]);
 
   const { liveEntries, doneEntries } = useMemo(() => {
     const scoped =
       scopedProjectKeyValue === null
-        ? entries
-        : entries.filter((entry) => entry.projectKey === scopedProjectKeyValue);
+        ? machineScopedEntries
+        : machineScopedEntries.filter((entry) => entry.projectKey === scopedProjectKeyValue);
     const entryByThreadKey = new Map(scoped.map((entry) => [entry.threadKey, entry] as const));
     const lookup = (thread: SidebarThreadSummary) =>
       entryByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))!;
@@ -751,7 +780,20 @@ export default function Sidebar() {
         ),
     ).map(lookup);
     return { liveEntries, doneEntries };
-  }, [doneThreadOverlays, entries, scopedProjectKeyValue]);
+  }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue]);
+
+  // A machine name on every row is noise while there is only one machine in
+  // the list -- and while a machine filter is on, every row is that machine.
+  const showThreadEnvironmentLabels = useMemo(() => {
+    const environmentIds = new Set<EnvironmentId>();
+    for (const entry of [...liveEntries, ...doneEntries]) {
+      environmentIds.add(entry.thread.environmentId);
+      if (environmentIds.size > 1) {
+        return true;
+      }
+    }
+    return false;
+  }, [doneEntries, liveEntries]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and anything with a status stays put.
@@ -791,7 +833,7 @@ export default function Sidebar() {
   useEffect(() => {
     setRevealedLiveCount(0);
     setRevealedDoneCount(0);
-  }, [scopedProjectKeyValue]);
+  }, [scopedEnvironmentIdValue, scopedProjectKeyValue]);
 
   const orderedThreadKeys = useMemo(
     () => [
@@ -1256,6 +1298,13 @@ export default function Sidebar() {
     [setInboxProjectScope],
   );
 
+  const handleEnvironmentScopeChange = useCallback(
+    (environmentId: string | null) => {
+      setInboxEnvironmentScope(environmentId);
+    },
+    [setInboxEnvironmentScope],
+  );
+
   const getCurrentSidebarShortcutContext = useCallback(
     () => ({
       terminalFocus: isTerminalFocused(),
@@ -1527,6 +1576,9 @@ export default function Sidebar() {
                     projectByKey={sidebarProjectByKey}
                     scopedProjectKey={scopedProjectKeyValue}
                     onScopeChange={handleScopeChange}
+                    environmentOptions={environmentScopeOptions}
+                    scopedEnvironmentId={scopedEnvironmentIdValue}
+                    onEnvironmentScopeChange={handleEnvironmentScopeChange}
                     onAddProject={openAddProjectCommandPalette}
                     onNewThread={handleComposeClick}
                     newThreadShortcutLabel={newThreadShortcutLabel}
@@ -1537,6 +1589,7 @@ export default function Sidebar() {
                   <SidebarDraftBlock
                     projectInfoByScopedRef={draftProjectInfoByScopedRef}
                     scopedProjectKey={scopedProjectKeyValue}
+                    scopedEnvironmentId={scopedEnvironmentIdValue}
                     routeDraftId={routeDraftId}
                     frozenOpenDraftRow={frozenOpenDraftRow}
                     onNavigateToDraft={navigateToDraft}
@@ -1570,6 +1623,7 @@ export default function Sidebar() {
                           thread={entry.thread}
                           status={entry.status}
                           projectLabel={scopedProjectKeyValue === null ? entry.projectLabel : null}
+                          showEnvironmentLabel={showThreadEnvironmentLabels}
                           isActive={routeThreadKey === entry.threadKey}
                           jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
                           canMarkDone={entry.canMarkDone}
@@ -1665,6 +1719,7 @@ export default function Sidebar() {
                             projectLabel={
                               scopedProjectKeyValue === null ? entry.projectLabel : null
                             }
+                            showEnvironmentLabel={showThreadEnvironmentLabels}
                             doneAt={entry.doneAt}
                             isActive={routeThreadKey === entry.threadKey}
                             appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}

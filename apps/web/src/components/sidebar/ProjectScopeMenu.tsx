@@ -1,12 +1,19 @@
 import {
   ChevronsUpDownIcon,
+  CloudIcon,
   EllipsisIcon,
   FolderIcon,
   FolderPlusIcon,
+  MonitorIcon,
+  MonitorSmartphoneIcon,
   SquarePenIcon,
 } from "lucide-react";
 import React, { memo, useCallback, useState } from "react";
-import type { ContextMenuItem, SidebarProjectGroupingMode } from "@threadlines/contracts";
+import type {
+  ContextMenuItem,
+  EnvironmentId,
+  SidebarProjectGroupingMode,
+} from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
 
 import { cn, newCommandId } from "../../lib/utils";
@@ -37,7 +44,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -78,11 +85,22 @@ const SCOPE_ITEM_CLASS_NAME = "gap-2 data-highlighted:bg-foreground/12";
  */
 const SCOPE_ITEM_SELECTED = "bg-foreground/6 text-foreground";
 
+/** One machine the inbox can be narrowed to. */
+export interface EnvironmentScopeOption {
+  environmentId: EnvironmentId;
+  label: string;
+  isPrimary: boolean;
+}
+
 export interface ProjectScopeMenuProps {
   options: readonly ProjectScopeOption[];
   projectByKey: ReadonlyMap<string, SidebarProjectSnapshot>;
   scopedProjectKey: string | null;
   onScopeChange: (projectKey: string | null) => void;
+  /** Empty or single-entry while only one machine is known: no filter is offered. */
+  environmentOptions: readonly EnvironmentScopeOption[];
+  scopedEnvironmentId: string | null;
+  onEnvironmentScopeChange: (environmentId: string | null) => void;
   onAddProject: () => void;
   onNewThread: () => void;
   newThreadShortcutLabel: string | null;
@@ -103,6 +121,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     projectByKey,
     scopedProjectKey,
     onScopeChange,
+    environmentOptions,
+    scopedEnvironmentId,
+    onEnvironmentScopeChange,
     onAddProject,
     onNewThread,
     newThreadShortcutLabel,
@@ -466,6 +487,14 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
   const scopedProject =
     scopedProjectKey === null ? null : (projectByKey.get(scopedProjectKey) ?? null);
+  // One machine is not a choice: the section only appears once there is
+  // somewhere else the work could be.
+  const showEnvironmentScope = environmentOptions.length > 1;
+  const scopedEnvironmentLabel =
+    showEnvironmentScope && scopedEnvironmentId !== null
+      ? (environmentOptions.find((option) => option.environmentId === scopedEnvironmentId)?.label ??
+        null)
+      : null;
 
   return (
     <>
@@ -489,6 +518,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
               <ProjectFavicon
                 cwd={scopedProject.cwd}
                 environmentId={scopedProject.environmentId}
+                name={scopedProject.displayName}
                 className="size-3.5 shrink-0"
               />
             ) : (
@@ -496,6 +526,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             )}
             <span className="min-w-0 flex-1 truncate text-left">
               {scopedProject?.displayName ?? "All projects"}
+              {scopedEnvironmentLabel ? ` · ${scopedEnvironmentLabel}` : ""}
             </span>
             <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
           </MenuTrigger>
@@ -536,6 +567,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                     <ProjectFavicon
                       cwd={project.cwd}
                       environmentId={project.environmentId}
+                      name={project.displayName}
                       className="size-3.5 shrink-0"
                     />
                   ) : (
@@ -567,6 +599,45 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 </MenuItem>
               );
             })}
+            {showEnvironmentScope ? (
+              <>
+                <MenuSeparator />
+                <MenuGroupLabel>Machine</MenuGroupLabel>
+                <MenuItem
+                  data-testid="inbox-machine-scope-all"
+                  className={cn(
+                    SCOPE_ITEM_CLASS_NAME,
+                    scopedEnvironmentId === null && SCOPE_ITEM_SELECTED,
+                  )}
+                  onClick={() => {
+                    onEnvironmentScopeChange(null);
+                  }}
+                >
+                  <MonitorSmartphoneIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                  <span className="min-w-0 flex-1 truncate">All machines</span>
+                </MenuItem>
+                {environmentOptions.map((option) => (
+                  <MenuItem
+                    key={option.environmentId}
+                    data-testid={`inbox-machine-scope-${option.environmentId}`}
+                    className={cn(
+                      SCOPE_ITEM_CLASS_NAME,
+                      scopedEnvironmentId === option.environmentId && SCOPE_ITEM_SELECTED,
+                    )}
+                    onClick={() => {
+                      onEnvironmentScopeChange(option.environmentId);
+                    }}
+                  >
+                    {option.isPrimary ? (
+                      <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                    ) : (
+                      <CloudIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  </MenuItem>
+                ))}
+              </>
+            ) : null}
             <MenuSeparator />
             <MenuItem onClick={onAddProject}>
               <FolderPlusIcon />

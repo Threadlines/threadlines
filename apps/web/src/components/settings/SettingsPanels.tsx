@@ -2218,7 +2218,13 @@ export function ArchivedThreadsPanel() {
           <SettingsSection
             key={project.id}
             title={project.name}
-            icon={<ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />}
+            icon={
+              <ProjectFavicon
+                environmentId={project.environmentId}
+                cwd={project.cwd}
+                name={project.name}
+              />
+            }
           >
             {projectThreads.map((thread) => (
               <SettingsRow

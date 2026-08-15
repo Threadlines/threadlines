@@ -203,13 +203,19 @@ export function getSavedEnvironmentRecord(
 }
 
 /**
- * Relay-paired environments (phonelink) tunnel only the WebSocket; their
- * `httpBaseUrl` points at the relay origin, which serves no server routes.
- * Callers that would fetch server HTTP resources (attachment previews,
- * favicons, …) must use an RPC transport instead when this returns true.
+ * Whether server-held bytes (attachment previews, favicons, …) must travel
+ * over the WebSocket RPC instead of a plain `<img src>` / `fetch`.
+ *
+ * True for every saved environment, relay-paired or direct. A saved
+ * environment authenticates over its WebSocket, and the browser cannot attach
+ * that credential to a cross-origin request: no cookie is scoped to the other
+ * machine's origin and no bearer header rides along, so the request comes back
+ * 401. Relay-paired environments (phonelink) can't even reach the route — the
+ * relay tunnels only the WebSocket. Only the primary environment, which is
+ * same-origin, keeps the direct HTTP path.
  */
-export function environmentUsesRelayTransport(environmentId: EnvironmentId): boolean {
-  return getSavedEnvironmentRecord(environmentId)?.relay != null;
+export function environmentRequiresRpcAssetTransport(environmentId: EnvironmentId): boolean {
+  return getSavedEnvironmentRecord(environmentId) != null;
 }
 
 export function getEnvironmentHttpBaseUrl(environmentId: EnvironmentId): string | null {

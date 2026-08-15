@@ -116,10 +116,11 @@ export function projectReadFileQueryOptions(input: {
 const PROJECT_FAVICON_STALE_TIME = 60 * 60_000;
 
 /**
- * Fetches the project favicon over the environment's WebSocket RPC and
- * yields a data URL, or null when the project has no icon. Used instead of
- * the `/api/project-favicon` HTTP route for relay-paired environments
- * (phonelink), where the relay carries only the WebSocket.
+ * Fetches the project favicon over the environment's WebSocket RPC and yields
+ * a data URL, or null when the project has no icon. The only favicon
+ * transport: the `/api/project-favicon` HTTP route is unauthenticated
+ * cross-origin for saved environments, and answers "no icon" with a fallback
+ * SVG that the caller cannot tell apart from a real one.
  */
 export function projectFaviconQueryOptions(input: {
   environmentId: EnvironmentId;
