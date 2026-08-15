@@ -44,7 +44,15 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -600,7 +608,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
               );
             })}
             {showEnvironmentScope ? (
-              <>
+              <MenuGroup>
                 <MenuSeparator />
                 <MenuGroupLabel>Machine</MenuGroupLabel>
                 <MenuItem
@@ -636,7 +644,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                     <span className="min-w-0 flex-1 truncate">{option.label}</span>
                   </MenuItem>
                 ))}
-              </>
+              </MenuGroup>
             ) : null}
             <MenuSeparator />
             <MenuItem onClick={onAddProject}>
