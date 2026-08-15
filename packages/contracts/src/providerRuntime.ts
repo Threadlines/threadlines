@@ -14,6 +14,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { OrchestrationSubagentStatus } from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -345,15 +346,27 @@ export const SubagentMetadataUpdatedPayload = Schema.Struct({
   callId: Schema.optional(TrimmedNonEmptyStringSchema),
   agentThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
   parentAgentThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Provider id the transcript route addresses this agent by, when it differs
+   *  from `agentThreadId`. */
+  transcriptAgentId: Schema.optional(TrimmedNonEmptyStringSchema),
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
   agentNickname: Schema.optional(TrimmedNonEmptyStringSchema),
   agentRole: Schema.optional(TrimmedNonEmptyStringSchema),
   taskName: Schema.optional(TrimmedNonEmptyStringSchema),
   objective: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Lifecycle state, for providers whose subagents have no separate activity
+   *  stream to infer it from. Absent leaves the projected status untouched. */
+  status: Schema.optional(OrchestrationSubagentStatus),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The model the provider actually ran, when it is known separately from the
+   *  requested one. */
+  resolvedModel: Schema.optional(TrimmedNonEmptyStringSchema),
   reasoningEffort: Schema.optional(TrimmedNonEmptyStringSchema),
   modelSource: Schema.optional(SubagentMetadataProvenance),
   reasoningEffortSource: Schema.optional(SubagentMetadataProvenance),
+  /** The agent's final report, when the provider can recover one. */
+  resultBody: Schema.optional(Schema.String),
+  resultCreatedAt: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type SubagentMetadataUpdatedPayload = typeof SubagentMetadataUpdatedPayload.Type;
 

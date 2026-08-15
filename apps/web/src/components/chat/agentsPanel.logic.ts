@@ -59,6 +59,11 @@ export interface AgentSubagentBranch extends AgentBranchBase {
   readonly item: SubagentProgressItem;
   /** Only a subagent the provider can serve a transcript for can drill in. */
   readonly transcriptAvailable: boolean;
+  /** The background run this agent is, for agents the provider launched as a
+   *  shell command (a `codex exec` in the background). It carries the only
+   *  stop handle the row has, so the row lends it the run rows' stop arm.
+   *  Null once the agent has settled, and for every provider-native agent. */
+  readonly stoppableRun: ThreadBackgroundRunItem | null;
 }
 
 export interface AgentRunBranch extends AgentBranchBase {
@@ -159,10 +164,13 @@ function agentIdentityMetaParts(item: SubagentProgressItem): ReadonlyArray<strin
 function subagentBranch(
   item: SubagentProgressItem,
   nowMs: number | undefined,
+  runsBySpawnCallId?: ReadonlyMap<string, ThreadBackgroundRunItem>,
 ): AgentSubagentBranch {
   const status = subagentBranchStatus(item.status);
   const details = deriveSubagentDisplayDetails(item);
   const live = isLiveAgentBranchStatus(status);
+  const stoppableRun =
+    live && item.spawnCallId ? (runsBySpawnCallId?.get(item.spawnCallId) ?? null) : null;
   return {
     kind: "subagent",
     key: `subagent:${item.id}`,
@@ -192,6 +200,7 @@ function subagentBranch(
     depth: Math.min(Math.max(item.treeDepth ?? 0, 0), MAX_BRANCH_DEPTH),
     item,
     transcriptAvailable: item.agentThreadId !== null,
+    stoppableRun: stoppableRun !== null && stoppableRun.canStop ? stoppableRun : null,
   };
 }
 
@@ -232,12 +241,15 @@ function runBranch(
 export function buildAgentBranches(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
   readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Background runs that are already listed as subagents, keyed by the tool
+   *  call that launched them. Lends each matching row its stop handle. */
+  readonly subagentRuns?: ReadonlyMap<string, ThreadBackgroundRunItem> | undefined;
   readonly providerLabel?: string | null | undefined;
   readonly nowMs?: number | undefined;
 }): ReadonlyArray<AgentBranch> {
   const branches: Array<{ branch: AgentBranch; startedAtMs: number | null }> = [
     ...input.subagents.map((item) => ({
-      branch: subagentBranch(item, input.nowMs) as AgentBranch,
+      branch: subagentBranch(item, input.nowMs, input.subagentRuns) as AgentBranch,
       startedAtMs: parseTimestamp(item.createdAt),
     })),
     ...agentInitiatedRuns(input.backgroundRuns).map((run) => ({
@@ -307,6 +319,8 @@ function historyBranch(
     depth: Math.min(Math.max(item.treeDepth ?? 0, 0), MAX_BRANCH_DEPTH),
     item,
     transcriptAvailable: item.agentThreadId !== null,
+    // A filed-away agent is not running, so there is nothing to stop.
+    stoppableRun: null,
   };
 }
 
@@ -374,6 +388,7 @@ function providerDisplayLabel(providerLabel: string | null | undefined): string 
 export function buildAgentsPanelView(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
   readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  readonly subagentRuns?: ReadonlyMap<string, ThreadBackgroundRunItem> | undefined;
   readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
   readonly providerLabel?: string | null | undefined;
   readonly nowMs?: number | undefined;

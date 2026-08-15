@@ -104,6 +104,41 @@ describe("buildAgentBranches", () => {
     ]);
   });
 
+  it("lends a live agent the stop handle of the run it was promoted from", () => {
+    const run = buildRun({ id: "provider:task-codex-exec", source: "provider" });
+    const branches = buildAgentBranches({
+      subagents: [
+        buildSubagent({ id: "live", spawnCallId: "tool-codex-exec" }),
+        buildSubagent({
+          id: "settled",
+          status: "completed",
+          statusLabel: "Done",
+          spawnCallId: "tool-codex-exec-done",
+        }),
+        buildSubagent({ id: "native", spawnCallId: "tool-native" }),
+      ],
+      backgroundRuns: [],
+      subagentRuns: new Map([
+        ["tool-codex-exec", run],
+        // A settled agent's process is already gone, so its row never offers
+        // a stop even when a run is still listed against it.
+        ["tool-codex-exec-done", buildRun({ id: "provider:task-done", source: "provider" })],
+      ]),
+    });
+
+    const stoppable = Object.fromEntries(
+      branches.map((branch) => [
+        branch.key,
+        branch.kind === "subagent" ? (branch.stoppableRun?.id ?? null) : null,
+      ]),
+    );
+    expect(stoppable).toEqual({
+      "subagent:live": "provider:task-codex-exec",
+      "subagent:native": null,
+      "subagent:settled": null,
+    });
+  });
+
   it("treats a started agent as running and an interrupted one as failed", () => {
     const branches = buildAgentBranches({
       subagents: [
