@@ -96,17 +96,47 @@ function sanitizeClaudeSubagentResultText(value: string | null): string | null {
     return null;
   }
 
-  const withoutUsage = value.replace(/\s*<usage>[\s\S]*?<\/usage>\s*$/iu, "").trimEnd();
-  // The parenthetical wording varies by harness version ("use SendMessage
-  // with ..." vs "internal ID - do not mention to user. Use SendMessage ...").
-  const withoutContinuationFooter = withoutUsage
-    .replace(
-      /\s*agentId:\s*[A-Za-z0-9_-]+\s*\([^()]*?use\s+SendMessage\s+with\s+to:\s*['"`][^'"`]+['"`],\s*summary:\s*['"`][\s\S]*?['"`]\s+to\s+continue\s+this\s+agent\.?\)\s*$/iu,
-      "",
-    )
-    .trim();
+  const withoutFooter = stripClaudeContinuationFooter(stripTrailingUsageBlocks(value)).trim();
+  return withoutFooter.length > 0 ? withoutFooter : null;
+}
 
-  return withoutContinuationFooter.length > 0 ? withoutContinuationFooter : null;
+/** Strips trailing `<usage>…</usage>` blocks (and the whitespace around them)
+ *  by index arithmetic. The result text is provider-influenced input, so this
+ *  deliberately avoids a backtracking regex over the whole string. */
+function stripTrailingUsageBlocks(value: string): string {
+  let result = value.trimEnd();
+  for (;;) {
+    const lower = result.toLowerCase();
+    if (!lower.endsWith("</usage>")) {
+      return result;
+    }
+    const open = lower.lastIndexOf("<usage>", result.length - "</usage>".length);
+    if (open === -1) {
+      return result;
+    }
+    result = result.slice(0, open).trimEnd();
+  }
+}
+
+/** The footer is one short parenthetical; anchoring the pattern to a bounded
+ *  slice from the last `agentId:` keeps the regex input — and its worst
+ *  case — small. The parenthetical wording varies by harness version ("use
+ *  SendMessage with ..." vs "internal ID - do not mention to user. Use
+ *  SendMessage ..."). */
+const AGENT_CONTINUATION_FOOTER_PATTERN =
+  /^agentId:\s*[A-Za-z0-9_-]+\s*\([^()]*?use\s+SendMessage\s+with\s+to:\s*['"`][^'"`]+['"`],\s*summary:\s*['"`][\s\S]*?['"`]\s+to\s+continue\s+this\s+agent\.?\)$/iu;
+
+const AGENT_CONTINUATION_FOOTER_MAX_CHARS = 600;
+
+function stripClaudeContinuationFooter(value: string): string {
+  const trimmed = value.trimEnd();
+  const start = trimmed.toLowerCase().lastIndexOf("agentid:");
+  if (start === -1 || trimmed.length - start > AGENT_CONTINUATION_FOOTER_MAX_CHARS) {
+    return trimmed;
+  }
+  return AGENT_CONTINUATION_FOOTER_PATTERN.test(trimmed.slice(start))
+    ? trimmed.slice(0, start).trimEnd()
+    : trimmed;
 }
 
 /** The Task tool_result for a `run_in_background` launch is an acknowledgment
