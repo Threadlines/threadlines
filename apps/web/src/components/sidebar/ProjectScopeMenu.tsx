@@ -46,6 +46,8 @@ import {
 import { Input } from "../ui/input";
 import {
   Menu,
+  MENU_PICK_ITEM_CLASS_NAME,
+  MENU_PICK_ITEM_SELECTED_CLASS_NAME,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
@@ -85,13 +87,8 @@ function formatProjectMemberActionLabel(
   return member.environmentLabel ? `${member.environmentLabel} — ${member.cwd}` : member.cwd;
 }
 
-const SCOPE_ITEM_CLASS_NAME = "gap-2 data-highlighted:bg-foreground/12";
-/**
- * Selection is a resting fill; hover is a stronger one. Both are neutral
- * alphas of the foreground, so "which is selected" and "which is under the
- * cursor" never read as the same state.
- */
-const SCOPE_ITEM_SELECTED = "bg-foreground/6 text-foreground";
+const SCOPE_ITEM_CLASS_NAME = MENU_PICK_ITEM_CLASS_NAME;
+const SCOPE_ITEM_SELECTED = MENU_PICK_ITEM_SELECTED_CLASS_NAME;
 
 /** One machine the inbox can be narrowed to. */
 export interface EnvironmentScopeOption {
