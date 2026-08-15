@@ -169,20 +169,39 @@ describe("buildAgentBranches", () => {
       backgroundRuns: [
         buildRun({ id: "detected-run" }),
         buildRun({
-          id: "terminal-run",
-          source: "terminal",
+          id: "provider-run",
+          source: "provider",
+          providerKind: "command",
           terminalId: "terminal-a",
           terminalVisible: true,
-          label: "Terminal 1",
+          label: "Dev server task",
         }),
       ],
       providerLabel: "codex",
     });
 
-    expect(branches.map((branch) => branch.tag)).toEqual(["codex · detected", "terminal"]);
-    const terminalBranch = branches.find((branch) => branch.key === "run:terminal-run");
-    expect(terminalBranch?.kind === "run" && terminalBranch.terminalId).toBe("terminal-a");
-    expect(terminalBranch?.kind === "run" && terminalBranch.terminalVisible).toBe(true);
+    expect(branches.map((branch) => branch.tag)).toEqual(["codex · detected", "codex · provider"]);
+    const providerBranch = branches.find((branch) => branch.key === "run:provider-run");
+    expect(providerBranch?.kind === "run" && providerBranch.terminalId).toBe("terminal-a");
+    expect(providerBranch?.kind === "run" && providerBranch.terminalVisible).toBe(true);
+  });
+
+  it("leaves the user's own terminals out: a hand-run shell is not orchestration", () => {
+    const branches = buildAgentBranches({
+      subagents: [],
+      backgroundRuns: [
+        buildRun({ id: "detected-run" }),
+        buildRun({
+          id: "terminal-run",
+          source: "terminal",
+          terminalId: "terminal-a",
+          label: "vp run dev:desktop",
+        }),
+      ],
+      providerLabel: "codex",
+    });
+
+    expect(branches.map((branch) => branch.key)).toEqual(["run:detected-run"]);
   });
 
   it("names a run's served URL as its latest output", () => {
@@ -283,9 +302,7 @@ describe("buildAgentsPanelView", () => {
     it("counts a background run as a run rather than as an agent", () => {
       const view = viewOf({
         subagents: [buildSubagent({ id: "a", agentThreadId: "a", status: "running" })],
-        backgroundRuns: [
-          buildRun({ id: "terminal:default", source: "terminal", terminalId: "default" }),
-        ],
+        backgroundRuns: [buildRun({ id: "detected:default" })],
       });
 
       expect(formatAgentsPanelSummary(view, "claude")).toBe("Claude · 1 running · 1 run");
@@ -508,7 +525,12 @@ describe("summarizeLiveAgents", () => {
           buildSubagent({ id: "b", status: "waiting" }),
           buildSubagent({ id: "c", status: "completed" }),
         ],
-        backgroundRuns: [buildRun({ id: "run" })],
+        // The user's own terminal does not make the count: the indicator
+        // advertises the agents panel, which no longer lists it.
+        backgroundRuns: [
+          buildRun({ id: "run" }),
+          buildRun({ id: "shell", source: "terminal", terminalId: "default" }),
+        ],
       }),
     ).toEqual({ count: 3, waitingCount: 1 });
   });
