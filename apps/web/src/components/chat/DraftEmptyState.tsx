@@ -1,6 +1,6 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
-import { CheckIcon, MessagesSquareIcon } from "lucide-react";
+import { CheckIcon, CloudIcon, MessagesSquareIcon, MonitorIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -136,13 +136,12 @@ export function DraftEmptyState({
                   snapshot.memberProjectRefs.some(
                     (memberRef) => scopedProjectKey(memberRef) === currentProjectKey,
                   );
-                // A project that only exists on another machine says so; one
-                // that lives on both says nothing, because picking it here does
-                // not pick a machine.
-                const remoteOnlyLabel =
-                  snapshot.environmentPresence === "remote-only"
-                    ? snapshot.remoteEnvironmentLabels.join(", ")
-                    : "";
+                // Where the project lives, in the glyph vocabulary the rest of
+                // the app speaks: a cloud for another machine, monitor+cloud
+                // for a repo on both. Glyphs instead of the machine's name —
+                // the name truncated to nothing at this row width, and hover
+                // still spells it out. Local-only rows stay unmarked.
+                const remoteNames = snapshot.remoteEnvironmentLabels.join(", ");
                 return (
                   <MenuItem
                     key={snapshot.projectKey}
@@ -157,9 +156,20 @@ export function DraftEmptyState({
                       name={snapshot.displayName}
                     />
                     <span className="max-w-56 flex-1 truncate">{snapshot.displayName}</span>
-                    {remoteOnlyLabel ? (
-                      <span className="max-w-24 shrink-0 truncate font-mono text-[10px] text-muted-foreground/60">
-                        {remoteOnlyLabel}
+                    {snapshot.environmentPresence === "remote-only" ? (
+                      <span
+                        title={`On ${remoteNames}`}
+                        className="inline-flex shrink-0 items-center"
+                      >
+                        <CloudIcon className="size-3 text-muted-foreground/50" />
+                      </span>
+                    ) : snapshot.environmentPresence === "mixed" ? (
+                      <span
+                        title={`On this device and ${remoteNames}`}
+                        className="inline-flex shrink-0 items-center gap-0.5"
+                      >
+                        <MonitorIcon className="size-3 text-muted-foreground/50" />
+                        <CloudIcon className="size-3 text-muted-foreground/50" />
                       </span>
                     ) : null}
                     {isCurrentProject ? (
