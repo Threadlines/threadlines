@@ -474,6 +474,13 @@ const make = Effect.gen(function* () {
       return;
     }
     reportedMissingCheckouts.set(input.threadId, input.payload.cwd);
+    // The thread view decides to show the recovery actions from this checkout's
+    // VCS status, which may still be a healthy snapshot taken before the folder
+    // was deleted. Refresh it here so the affordance appears with the failure
+    // instead of waiting for the watcher's next pass.
+    yield* vcsStatusBroadcaster
+      .refreshLocalStatus(input.payload.cwd)
+      .pipe(Effect.ignoreCause({ log: true }));
     yield* orchestrationEngine
       .dispatch({
         type: "thread.activity.append",

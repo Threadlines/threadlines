@@ -352,6 +352,19 @@ describe("ProviderCommandReactor", () => {
         pr: null,
       }),
     );
+    // Pushed by the reactor when it finds a checkout missing, so the thread
+    // view's recovery affordance does not wait on the watcher's next pass.
+    const refreshLocalStatus = vi.fn((_: string) =>
+      Effect.succeed({
+        isRepo: false,
+        pathMissing: true,
+        hasPrimaryRemote: false,
+        isDefaultRef: false,
+        refName: null,
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+      }),
+    );
     const generateBranchName = vi.fn<TextGenerationShape["generateBranchName"]>((_) =>
       Effect.fail(
         new TextGenerationError({
@@ -471,8 +484,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(
         Layer.succeed(VcsStatusBroadcaster, {
           getStatus: () => Effect.die("getStatus should not be called in this test"),
-          refreshLocalStatus: () =>
-            Effect.die("refreshLocalStatus should not be called in this test"),
+          refreshLocalStatus,
           refreshStatus,
           streamStatus: () => Stream.die("streamStatus should not be called in this test"),
           observeLocalStatus: () =>
@@ -546,6 +558,7 @@ describe("ProviderCommandReactor", () => {
       stopSession,
       renameBranch,
       refreshStatus,
+      refreshLocalStatus,
       generateBranchName,
       generateThreadTitle,
       seedBuildInputs,
@@ -602,6 +615,9 @@ describe("ProviderCommandReactor", () => {
     // The adapter is never reached: no process is spawned in a directory that
     // is not there, so nothing can misreport it as a missing binary.
     expect(harness.startSession.mock.calls.length).toBe(0);
+    // The checkout's status is refreshed so the thread view can show the
+    // recovery actions straight away rather than on the watcher's next pass.
+    expect(harness.refreshLocalStatus.mock.calls[0]?.[0]).toBe(deletedWorktree);
 
     const model = await harness.readModel();
     const activity = (
