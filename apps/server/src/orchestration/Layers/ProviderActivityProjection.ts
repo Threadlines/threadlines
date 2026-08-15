@@ -734,6 +734,9 @@ export function projectRuntimeEventToActivities(
               : {}),
             ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
             ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
+            ...(event.payload.ownerAgentToolUseId
+              ? { ownerAgentToolUseId: event.payload.ownerAgentToolUseId }
+              : {}),
           },
         }),
       ];
@@ -758,6 +761,9 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
             ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
+            ...(event.payload.ownerAgentToolUseId
+              ? { ownerAgentToolUseId: event.payload.ownerAgentToolUseId }
+              : {}),
           },
         }),
       ];
@@ -780,6 +786,9 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.ownerAgentToolUseId
+              ? { ownerAgentToolUseId: event.payload.ownerAgentToolUseId }
+              : {}),
           },
         }),
       ];

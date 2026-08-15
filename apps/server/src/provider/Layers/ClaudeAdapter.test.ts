@@ -2913,6 +2913,150 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect(
+    "attributes an agent's background task to its spawn through forwarded tool uses",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "delegate and test",
+          attachments: [],
+        });
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-owned-task",
+          uuid: "stream-owned-task-1",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "tool-task-owner",
+              name: "Task",
+              input: {
+                description: "Fix the reactor",
+                prompt: "Fix it and run the tests",
+                subagent_type: "claude",
+              },
+            },
+          },
+        } as unknown as SDKMessage);
+
+        // The agent's forwarded envelope carries the tool_use that will start
+        // the background task.
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-owned-task",
+          uuid: "assistant-owned-task-1",
+          parent_tool_use_id: "tool-task-owner",
+          message: {
+            id: "subagent-message-owner",
+            content: [
+              { type: "text", text: "Kicking off the test suite in the background." },
+              {
+                type: "tool_use",
+                id: "subagent-inner-bash",
+                name: "Bash",
+                input: { command: "vp test", run_in_background: true },
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+
+        // The task stream names the originating tool_use but not whose
+        // conversation issued it; the owners map is what attributes it.
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-owned-bash",
+          description: "Run reactor tests",
+          tool_use_id: "subagent-inner-bash",
+          task_type: "local_bash",
+          session_id: "sdk-session-owned-task",
+          uuid: "owned-task-started",
+        } as unknown as SDKMessage);
+
+        // A task the main model started stays unowned.
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-main-bash",
+          description: "Run dev server",
+          tool_use_id: "toolu-main-bash",
+          task_type: "local_bash",
+          session_id: "sdk-session-owned-task",
+          uuid: "main-task-started",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-owned-bash",
+          status: "completed",
+          summary: 'Background command "Run reactor tests" completed (exit code 0)',
+          session_id: "sdk-session-owned-task",
+          uuid: "owned-task-notification",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-owned-task",
+          uuid: "result-owned-task-1",
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const startedEvents = runtimeEvents.filter((event) => event.type === "task.started");
+        const ownedStarted = startedEvents.find(
+          (event) =>
+            event.type === "task.started" && String(event.payload.taskId) === "task-owned-bash",
+        );
+        assert.equal(ownedStarted?.type, "task.started");
+        if (ownedStarted?.type === "task.started") {
+          assert.equal(ownedStarted.payload.ownerAgentToolUseId, "tool-task-owner");
+        }
+        const mainStarted = startedEvents.find(
+          (event) =>
+            event.type === "task.started" && String(event.payload.taskId) === "task-main-bash",
+        );
+        assert.equal(mainStarted?.type, "task.started");
+        if (mainStarted?.type === "task.started") {
+          assert.isUndefined(mainStarted.payload.ownerAgentToolUseId);
+        }
+        const ownedCompleted = runtimeEvents.find(
+          (event) =>
+            event.type === "task.completed" && String(event.payload.taskId) === "task-owned-bash",
+        );
+        assert.equal(ownedCompleted?.type, "task.completed");
+        if (ownedCompleted?.type === "task.completed") {
+          assert.equal(ownedCompleted.payload.ownerAgentToolUseId, "tool-task-owner");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("routes nested subagent text (depth 2+) to the top-level collab tool item", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

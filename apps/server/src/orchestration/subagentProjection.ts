@@ -5,6 +5,12 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@threadlines/contracts";
+import {
+  claudeSubagentActivityItem,
+  isClaudeSubagentToolName,
+  isSpawnAgentTool,
+} from "@threadlines/shared/claudeSubagentActivity";
+import { isRootAgentPath } from "@threadlines/shared/subagentPath";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -42,7 +48,7 @@ function lifecycleStatus(input: {
   readonly agentState: string | null;
 }): OrchestrationSubagentStatus {
   const status = input.agentState?.toLowerCase() ?? input.itemStatus?.toLowerCase() ?? null;
-  if (status === "failed" || status === "error") return "failed";
+  if (status === "failed" || status === "error" || status === "errored") return "failed";
   if (status === "interrupted" || status === "cancelled" || status === "canceled") {
     return "interrupted";
   }
@@ -130,8 +136,20 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
   const payload = record(activity.payload);
   if (text(payload?.itemType) !== "collab_agent_tool_call") return [];
   const data = record(payload?.data);
-  const item = record(data?.item);
+  // Claude's Agent/Task tool rows carry no nested item; the shared shaper
+  // reconstructs the same collab item the Codex driver emits natively.
+  const item =
+    record(data?.item) ??
+    (payload
+      ? claudeSubagentActivityItem({
+          activityId: activity.id,
+          activityKind: activity.kind,
+          payload,
+          data,
+        })
+      : null);
   if (!item) return [];
+  if (isRootAgentPath(text(item.agentPath))) return [];
   const tool = text(item.tool);
   const nativeAgentId = text(item.agentThreadId);
   const receivers = Array.isArray(item.receiverThreadIds)
@@ -143,7 +161,7 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
     ...new Set([...(nativeAgentId ? [nativeAgentId] : []), ...receivers, ...stateAgentIds]),
   ];
   const spawnCallId =
-    tool === "spawnAgent"
+    isSpawnAgentTool(tool) || isClaudeSubagentToolName(tool)
       ? (text(item.id) ?? text(data?.itemId) ?? text(payload?.toolCallId))
       : null;
   const ids =
@@ -233,11 +251,77 @@ function mergeSubagent(
   };
 }
 
+/** Settles a spawned agent's status from a task.completed activity that links
+ *  back via toolUseId (the spawn call id doubles as the agent id for Claude).
+ *  Update-only: background command tasks share the activity kind, so a
+ *  completion that matches no known agent must not invent a roster row. */
+function settleTaskCompletion(
+  current: ReadonlyArray<OrchestrationSubagent>,
+  activity: OrchestrationThreadActivity,
+): ReadonlyArray<OrchestrationSubagent> {
+  const payload = record(activity.payload);
+  const toolUseId = text(payload?.toolUseId);
+  // A completion synthesized after a session restart carries only the taskId;
+  // the transcript link learned from the task stream is what still names the
+  // agent then.
+  const taskId = text(payload?.taskId);
+  if (!toolUseId && !taskId) return current;
+  const index = current.findIndex(
+    (entry) =>
+      (toolUseId !== null &&
+        (entry.agentThreadId === toolUseId ||
+          entry.spawnCallId === toolUseId ||
+          entry.id === toolUseId)) ||
+      (taskId !== null && entry.transcriptAgentId === taskId),
+  );
+  const existing = index >= 0 ? current[index] : undefined;
+  if (!existing) return current;
+  const rawStatus = text(payload?.status);
+  const status: OrchestrationSubagentStatus =
+    rawStatus === "failed" ? "failed" : rawStatus === "stopped" ? "interrupted" : "completed";
+  if (existing.status === status && existing.updatedAt >= activity.createdAt) return current;
+  const next = [...current];
+  next[index] = { ...existing, status, updatedAt: activity.createdAt };
+  return next;
+}
+
+/** Claude addresses an agent's on-disk transcript by the task id it reports on
+ *  the task stream, not by the spawning tool_use id this roster is keyed by.
+ *  The task stream is the only place the two are linked, so the link is folded
+ *  in here. Update-only for the same reason completions are: background
+ *  command tasks share these activity kinds and must not become roster rows. */
+function linkTaskTranscript(
+  current: ReadonlyArray<OrchestrationSubagent>,
+  activity: OrchestrationThreadActivity,
+): ReadonlyArray<OrchestrationSubagent> {
+  const payload = record(activity.payload);
+  const taskId = text(payload?.taskId);
+  const toolUseId = text(payload?.toolUseId);
+  if (!taskId || !toolUseId) return current;
+  const index = current.findIndex(
+    (entry) =>
+      entry.agentThreadId === toolUseId ||
+      entry.spawnCallId === toolUseId ||
+      entry.id === toolUseId,
+  );
+  const existing = index >= 0 ? current[index] : undefined;
+  if (!existing || existing.transcriptAgentId === taskId) return current;
+  const next = [...current];
+  next[index] = { ...existing, transcriptAgentId: taskId };
+  return next;
+}
+
 /** Fold one timeline activity into the uncapped durable child-agent roster. */
 export function projectSubagentActivity(
   current: ReadonlyArray<OrchestrationSubagent>,
   activity: OrchestrationThreadActivity,
 ): ReadonlyArray<OrchestrationSubagent> {
+  if (activity.kind === "task.started" || activity.kind === "task.progress") {
+    return linkTaskTranscript(current, activity);
+  }
+  if (activity.kind === "task.completed") {
+    return linkTaskTranscript(settleTaskCompletion(current, activity), activity);
+  }
   const patches = patchForActivity(activity);
   if (patches.length === 0) return current;
   const next = [...current];

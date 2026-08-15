@@ -4,6 +4,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   EMPTY_RIGHT_PANEL_TABS_STATE,
   activeRightPanelTabFromSearch,
+  advanceAgentsAutoOpenEdge,
+  autoOpenAgentsTabState,
+  type AgentsAutoOpenEdge,
   availableRightPanelTabs,
   closeRightPanelTabState,
   focusRightPanelTabState,
@@ -300,5 +303,98 @@ describe("reconcileRightPanelTabsState", () => {
 
     expect(state.visible).toBe(true);
     expect(state.activeTab).toBe("sourceControl");
+  });
+});
+
+describe("autoOpenAgentsTabState", () => {
+  it("opens the agents tab focused when the sidebar is hidden", () => {
+    const state = autoOpenAgentsTabState(EMPTY_RIGHT_PANEL_TABS_STATE);
+
+    expect(state.visible).toBe(true);
+    expect(state.openTabs).toEqual(["agents"]);
+    expect(state.activeTab).toBe("agents");
+  });
+
+  it("opens focused from the launcher", () => {
+    const launcher: RightPanelTabsState = {
+      ...EMPTY_RIGHT_PANEL_TABS_STATE,
+      visible: true,
+    };
+
+    const state = autoOpenAgentsTabState(launcher);
+    expect(state.activeTab).toBe("agents");
+  });
+
+  it("joins the strip in the background while another tab has focus", () => {
+    const onSource = openedOn("sourceControl");
+
+    const state = autoOpenAgentsTabState(onSource);
+    expect(state.openTabs).toEqual(["sourceControl", "agents"]);
+    expect(state.activeTab).toBe("sourceControl");
+  });
+
+  it("changes nothing when the agents tab is already in the strip behind another", () => {
+    const withAgents = focusRightPanelTabState(openedOn("agents"), "sourceControl");
+
+    expect(autoOpenAgentsTabState(withAgents)).toBe(withAgents);
+  });
+
+  it("re-shows a hidden sidebar focused on agents", () => {
+    const hidden = hideRightPanelState(openedOn("sourceControl"));
+
+    const state = autoOpenAgentsTabState(hidden);
+    expect(state.visible).toBe(true);
+    expect(state.activeTab).toBe("agents");
+    expect(state.openTabs).toEqual(["sourceControl", "agents"]);
+  });
+});
+
+describe("advanceAgentsAutoOpenEdge", () => {
+  const freshEdge = (): AgentsAutoOpenEdge => ({ threadKey: null, sawIdle: false });
+  const step = (
+    edge: AgentsAutoOpenEdge,
+    agentsKnown: boolean,
+    agentsRunning: boolean,
+    threadKey = "thread-1",
+  ) => advanceAgentsAutoOpenEdge(edge, { threadKey, agentsKnown, agentsRunning });
+
+  it("triggers on a spawn observed after real idleness", () => {
+    const edge = freshEdge();
+    expect(step(edge, true, false)).toBe(false);
+    expect(step(edge, true, true)).toBe(true);
+  });
+
+  it("consumes the edge: one batch triggers once", () => {
+    const edge = freshEdge();
+    step(edge, true, false);
+    expect(step(edge, true, true)).toBe(true);
+    expect(step(edge, true, true)).toBe(false);
+    // A second spawn while the first batch still runs is the same story.
+    expect(step(edge, true, true)).toBe(false);
+    // Settling and spawning again is a new batch.
+    step(edge, true, false);
+    expect(step(edge, true, true)).toBe(true);
+  });
+
+  it("never reads a pre-hydration empty publish as idleness", () => {
+    // The sequence a reload of a thread with a live agent produces: the chat
+    // column publishes empty agent state before the detail snapshot arrives,
+    // then the loaded state reports the agent running.
+    const edge = freshEdge();
+    expect(step(edge, false, false)).toBe(false);
+    expect(step(edge, true, true)).toBe(false);
+  });
+
+  it("does not treat landing on a thread with running agents as a spawn", () => {
+    const edge = freshEdge();
+    step(edge, true, false, "thread-1");
+    expect(step(edge, true, true, "thread-2")).toBe(false);
+  });
+
+  it("re-arms per thread after a switch", () => {
+    const edge = freshEdge();
+    step(edge, true, false, "thread-1");
+    step(edge, true, false, "thread-2");
+    expect(step(edge, true, true, "thread-2")).toBe(true);
   });
 });

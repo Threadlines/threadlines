@@ -312,6 +312,11 @@ interface ClaudeTaskSnapshot {
   /** SDK task type (e.g. "local_agent", "local_bash"), so notification
    *  handling can tell agent tasks from background commands. */
   readonly taskType?: string;
+  /** Spawn tool call of the subagent this task ran inside, when it was
+   *  started by a tool_use issued in an agent's own conversation rather than
+   *  by the main model. Learned at task_started and replayed on later task
+   *  events, which do not restate the originating tool. */
+  readonly ownerAgentToolUseId?: string;
 }
 
 type ClaudeStructuredAgentToolResult =
@@ -374,6 +379,13 @@ interface ClaudeSessionContext {
    *  parent_tool_use_id (Claude Code 2.1.219+); without this map they match
    *  no known tool and their text would be dropped. Bounded FIFO. */
   readonly subagentSpawnAncestry: Map<string, string>;
+  /** Every tool_use id observed inside a subagent's forwarded conversation,
+   *  mapped to the top-level collab tool item that owns the agent. The task
+   *  stream reports a task's originating tool_use id but not whose
+   *  conversation issued it, so this map is what tells an agent's background
+   *  task (e.g. a test run it kicked off) from the main model's. Bounded
+   *  FIFO. */
+  readonly subagentToolUseOwners: Map<string, string>;
   /** Per-file +/- counts captured by the PostToolUse hook, keyed by tool_use_id.
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
@@ -1993,6 +2005,10 @@ const SUBAGENT_AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 /** Spawn-ancestry entries kept per session; oldest evict first. Sized well
  *  past any real session's subagent count while bounding a runaway. */
 const SUBAGENT_SPAWN_ANCESTRY_MAX_ENTRIES = 1_024;
+/** Inner tool_use ids per session worth remembering for task ownership. A
+ *  long-running agent fleet can issue thousands of tools; the map only has to
+ *  outlive the window between a tool_use and its task_started. */
+const SUBAGENT_TOOL_USE_OWNERS_MAX_ENTRIES = 8_192;
 
 /** Role recorded on a promoted `codex exec` row. The agents panel renders the
  *  role as the row's name, so this is what the row reads as. */
@@ -2047,10 +2063,13 @@ function capTranscriptText(value: string, maxChars: number): string {
   return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
 }
 
-/** Records Agent spawns found in a forwarded subagent message so the nested
- *  agent's own forwarded messages (keyed by the spawn's tool_use id) resolve
- *  to the top-level collab tool item. Chains transitively: a depth-3 spawn
- *  recorded from a depth-2 message maps to the same top-level item. */
+/** Records the tool_use blocks found in a forwarded subagent message: Agent
+ *  spawns feed the ancestry map so the nested agent's own forwarded messages
+ *  (keyed by the spawn's tool_use id) resolve to the top-level collab tool
+ *  item — chaining transitively, a depth-3 spawn recorded from a depth-2
+ *  message maps to the same top-level item — and every tool_use id feeds the
+ *  owners map so background tasks those tools start are attributed to the
+ *  agent instead of the main model. */
 function recordSubagentSpawns(
   context: ClaudeSessionContext,
   content: unknown,
@@ -2067,6 +2086,13 @@ function recordSubagentSpawns(
     if (type !== "tool_use" || typeof name !== "string" || typeof id !== "string") {
       continue;
     }
+    if (context.subagentToolUseOwners.size >= SUBAGENT_TOOL_USE_OWNERS_MAX_ENTRIES) {
+      const oldest = context.subagentToolUseOwners.keys().next().value;
+      if (oldest !== undefined) {
+        context.subagentToolUseOwners.delete(oldest);
+      }
+    }
+    context.subagentToolUseOwners.set(id, topLevelItemId);
     if (classifyToolItemType(name) !== "collab_agent_tool_call") {
       continue;
     }
@@ -3765,6 +3791,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       readonly toolUseId?: string;
       readonly subagentType?: string;
       readonly taskType?: string;
+      readonly ownerAgentToolUseId?: string;
     },
     message: SDKMessage,
   ) {
@@ -3778,6 +3805,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
       ...(task.subagentType ? { subagentType: task.subagentType } : {}),
       ...(task.taskType ? { taskType: task.taskType } : {}),
+      ...(task.ownerAgentToolUseId ? { ownerAgentToolUseId: task.ownerAgentToolUseId } : {}),
       status: "running",
     });
     if (context.startedTaskIds.has(task.taskId)) {
@@ -3799,6 +3827,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(task.taskType ? { taskType: task.taskType } : {}),
         ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
         ...(task.subagentType ? { subagentType: task.subagentType } : {}),
+        ...(task.ownerAgentToolUseId ? { ownerAgentToolUseId: task.ownerAgentToolUseId } : {}),
         ...(context.backgroundTaskSnapshotObserved ? { pendingCountManagedBySnapshot: true } : {}),
       },
       providerRefs: nativeProviderRefs(context),
@@ -3839,6 +3868,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       status:
         task.status === "completed" ? "completed" : task.status === "failed" ? "failed" : "killed",
     });
+    const ownerAgentToolUseId = previous?.ownerAgentToolUseId;
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
       type: "task.completed",
@@ -3853,6 +3883,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(task.summary ? { summary: task.summary } : {}),
         ...(task.usage !== undefined ? { usage: task.usage } : {}),
         ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
+        ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
         ...(context.backgroundTaskSnapshotObserved ? { pendingCountManagedBySnapshot: true } : {}),
       },
       providerRefs: nativeProviderRefs(context),
@@ -4788,6 +4819,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const toolUseId = nonEmptyString(message.tool_use_id);
         const subagentType = nonEmptyString(message.subagent_type);
         const taskType = nonEmptyString(message.task_type);
+        const ownerAgentToolUseId = toolUseId
+          ? context.subagentToolUseOwners.get(toolUseId)
+          : undefined;
         yield* emitTaskStartedOnce(
           context,
           {
@@ -4796,6 +4830,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(toolUseId ? { toolUseId } : {}),
             ...(subagentType ? { subagentType } : {}),
             ...(taskType ? { taskType } : {}),
+            ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
           },
           message,
         );
@@ -4809,11 +4844,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
         const toolUseId = nonEmptyString(message.tool_use_id) ?? previous?.toolUseId;
         const subagentType = nonEmptyString(message.subagent_type) ?? previous?.subagentType;
+        const ownerAgentToolUseId =
+          (toolUseId ? context.subagentToolUseOwners.get(toolUseId) : undefined) ??
+          previous?.ownerAgentToolUseId;
         context.tasks.set(message.task_id, {
           ...previous,
           ...(description ? { description } : {}),
           ...(toolUseId ? { toolUseId } : {}),
           ...(subagentType ? { subagentType } : {}),
+          ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
           status: "running",
         });
         yield* offerRuntimeEvent({
@@ -4827,6 +4866,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
             ...(toolUseId ? { toolUseId } : {}),
             ...(subagentType ? { subagentType } : {}),
+            ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
           },
         });
         return;
@@ -4877,6 +4917,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             taskId: RuntimeTaskId.make(message.task_id),
             description: description ?? describeClaudeTaskStatus(status),
             ...(error ? { summary: error } : {}),
+            ...(previous?.ownerAgentToolUseId
+              ? { ownerAgentToolUseId: previous.ownerAgentToolUseId }
+              : {}),
           },
         });
         return;
@@ -6109,6 +6152,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         completedCollabAgentItemIds: new Set(),
         structuredCompletedCollabAgentItemIds: new Set(),
         subagentSpawnAncestry: new Map(),
+        subagentToolUseOwners: new Map(),
         fileChangeStatsByToolUseId,
         tasks: new Map(),
         bashCommandsByToolUseId: new Map(),

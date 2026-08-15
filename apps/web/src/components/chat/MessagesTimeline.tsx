@@ -2626,7 +2626,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     () => [...row.groupedEntries, ...row.agentAnchorEntries],
     [row.agentAnchorEntries, row.groupedEntries],
   );
-  const turnAgentTracker = useTurnAgentTracker(row.trackerTurnIds);
+  const turnAgentTracker = useTurnAgentTracker(row.trackerTurnIds, row.trackerAgentSpawnIds);
   const isLiveActivity = isWorking && row.isLive;
 
   useEffect(() => {
@@ -2856,9 +2856,13 @@ interface TurnAgentTracker {
  *  groups shows one tracker rather than the same one repeated down the turn.
  *  Derived once by the group so the receipt and the group's own render decision
  *  cannot disagree about whether there is a tracker to show. */
-function useTurnAgentTracker(trackerTurnIds: ReadonlyArray<TurnId>): TurnAgentTracker {
+function useTurnAgentTracker(
+  trackerTurnIds: ReadonlyArray<TurnId>,
+  trackerAgentSpawnIds: ReadonlyArray<string> = [],
+): TurnAgentTracker {
   const { turnAgents } = use(TimelineRowCtx);
   const turnIds = useMemo(() => new Set(trackerTurnIds), [trackerTurnIds]);
+  const spawnCallIds = useMemo(() => new Set(trackerAgentSpawnIds), [trackerAgentSpawnIds]);
   const turnSubagents = useMemo(
     () =>
       turnAgents
@@ -2866,9 +2870,10 @@ function useTurnAgentTracker(trackerTurnIds: ReadonlyArray<TurnId>): TurnAgentTr
             live: turnAgents.subagents,
             history: turnAgents.history,
             turnIds,
+            spawnCallIds,
           })
         : [],
-    [turnAgents, turnIds],
+    [turnAgents, turnIds, spawnCallIds],
   );
   return {
     // An empty selection summarizes to null on its own, so a turn that ran no
@@ -2899,12 +2904,27 @@ function ActivityReceipt({
   const actionCount = entries.length;
   const duration = formatActivityDuration(durationEntries);
   const { summary: agentSummary, liveStatus: liveAgentStatus } = tracker;
+  // A group whose visible work is all delegation reads as the agents' receipt,
+  // not the main model's: "Activity · 0 actions" would claim the model did the
+  // work the rail attributes to its agents.
+  const liveAgentCount =
+    agentSummary?.segments.filter(
+      (segment) => segment.status === "running" || segment.status === "waiting",
+    ).length ?? 0;
+  const heading =
+    actionCount > 0 || !agentSummary
+      ? "Activity"
+      : liveAgentCount > 0
+        ? liveAgentCount > 1
+          ? "Agents working"
+          : "Agent working"
+        : "Agent activity";
 
   return (
     <div className="flex min-w-0 items-start justify-between gap-3 py-1">
       <div className="min-w-0">
         <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-5 text-muted-foreground/80">
-          <span className="font-medium text-foreground/75">Activity</span>
+          <span className="font-medium text-foreground/75">{heading}</span>
           {/* A turn that only delegated took no actions of its own, and "0
               actions" would read as if nothing happened. */}
           {actionCount > 0 ? (

@@ -589,6 +589,11 @@ const TaskStartedPayload = Schema.Struct({
   /** Authoritative live-task snapshots own this provider's pending count, so
    *  this edge enriches lifecycle UI without incrementing it. */
   pendingCountManagedBySnapshot: Schema.optional(Schema.Boolean),
+  /** Spawn tool call of the agent this task ran INSIDE, when the task was
+   *  started by a subagent rather than the main model (e.g. a background test
+   *  run the agent kicked off). Lets consumers attribute the task's rows to
+   *  the agent instead of narrating them as the conversation's own work. */
+  ownerAgentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
@@ -613,6 +618,8 @@ const TaskProgressPayload = Schema.Struct({
   lastToolName: Schema.optional(TrimmedNonEmptyStringSchema),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
   subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** See TaskStartedPayload.ownerAgentToolUseId. */
+  ownerAgentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
@@ -627,6 +634,8 @@ const TaskCompletedPayload = Schema.Struct({
   /** Authoritative live-task snapshots own this provider's pending count, so
    *  this edge enriches lifecycle UI without decrementing it. */
   pendingCountManagedBySnapshot: Schema.optional(Schema.Boolean),
+  /** See TaskStartedPayload.ownerAgentToolUseId. */
+  ownerAgentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 

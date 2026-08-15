@@ -43,6 +43,10 @@
       "types": "./src/subagentPath.ts",
       "import": "./src/subagentPath.ts"
     },
+    "./claudeSubagentActivity": {
+      "types": "./src/claudeSubagentActivity.ts",
+      "import": "./src/claudeSubagentActivity.ts"
+    },
     "./logging": {
       "types": "./src/logging.ts",
       "import": "./src/logging.ts"

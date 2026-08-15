@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { WorkLogEntry } from "../../session-logic";
+import { EventId, type OrchestrationThreadActivity } from "@threadlines/contracts";
+import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
@@ -1098,5 +1099,206 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("agent lifecycle parking through the real work-log derivation", () => {
+  const makeActivity = (overrides: {
+    id: string;
+    kind?: string;
+    summary?: string;
+    tone?: OrchestrationThreadActivity["tone"];
+    payload?: Record<string, unknown>;
+    turnId?: string | null;
+    createdAt?: string;
+  }): OrchestrationThreadActivity => ({
+    id: EventId.make(overrides.id),
+    kind: overrides.kind ?? "tool.started",
+    summary: overrides.summary ?? "Tool call",
+    tone: overrides.tone ?? "tool",
+    payload: overrides.payload ?? {},
+    turnId: (overrides.turnId ?? null) as OrchestrationThreadActivity["turnId"],
+    createdAt: overrides.createdAt ?? "2026-08-15T00:00:00.000Z",
+  });
+
+  const SPAWN_TOOL_USE_ID = "toolu_01GSFNVFM8ppotb3KXjK3ASy";
+
+  /** A Claude subagent's per-tool progress tick, as projected on the parent
+   *  thread: unique activity id, no turn (the agent runs between turns), and
+   *  the agent's identity in `subagentType`. */
+  const agentTaskProgress = (id: string, detail: string): OrchestrationThreadActivity =>
+    makeActivity({
+      id,
+      kind: "task.progress",
+      summary: "Reasoning update",
+      tone: "thinking",
+      payload: {
+        taskId: "a46aeb71b8e19f84b",
+        detail,
+        lastToolName: "Bash",
+        toolUseId: SPAWN_TOOL_USE_ID,
+        subagentType: "claude",
+      },
+      createdAt: "2026-08-15T00:02:00.000Z",
+    });
+
+  it("parks a background agent's task stream as anchors instead of inline rows", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "main-command",
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "toolu_main",
+          status: "completed",
+          data: { command: "grep -n checkoutCwd apps/web/src/store.ts" },
+        },
+        turnId: "22222222-2222-4222-8222-222222222222",
+      }),
+      makeActivity({
+        id: "agent-spawn",
+        kind: "tool.updated",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: SPAWN_TOOL_USE_ID,
+          status: "inProgress",
+          detail: "claude: Fix missing-worktree bug trio",
+          data: {
+            toolName: "Agent",
+            input: { description: "Fix missing-worktree bug trio", subagent_type: "claude" },
+          },
+        },
+        turnId: "22222222-2222-4222-8222-222222222222",
+        createdAt: "2026-08-15T00:01:00.000Z",
+      }),
+      agentTaskProgress("agent-step-1", "Running List provider dirs"),
+      agentTaskProgress("agent-step-2", "Editing packages/contracts/src/rpc.ts"),
+      // A background task the agent started inside its own conversation (a
+      // test run): owned rows belong to the agent's lane, not the feed.
+      makeActivity({
+        id: "agent-owned-task",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: {
+          taskId: "bb6wn5cu6",
+          status: "completed",
+          detail: "Run reactor tests",
+          toolUseId: "toolu_inner_bash",
+          ownerAgentToolUseId: SPAWN_TOOL_USE_ID,
+        },
+        createdAt: "2026-08-15T00:02:30.000Z",
+      }),
+      // A plain background command task carries no agent identity and must
+      // keep narrating inline.
+      makeActivity({
+        id: "bash-task",
+        kind: "task.progress",
+        summary: "Reasoning update",
+        tone: "thinking",
+        payload: { taskId: "bash-1", detail: "Running dev server" },
+        createdAt: "2026-08-15T00:03:00.000Z",
+      }),
+    ];
+
+    const workEntries = deriveWorkLogEntries(activities);
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: workEntries.map((entry) => ({
+        id: entry.id,
+        kind: "work" as const,
+        createdAt: entry.createdAt,
+        entry,
+      })),
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRow = rows.find((row) => row.kind === "work");
+    expect(workRow?.kind).toBe("work");
+    if (workRow?.kind !== "work") return;
+
+    const groupedIds = workRow.groupedEntries.map((entry) => entry.id);
+    const anchorIds = workRow.agentAnchorEntries.map((entry) => entry.id);
+
+    expect(groupedIds).toContain("main-command");
+    expect(groupedIds).toContain("bash-task");
+    expect(groupedIds).not.toContain("agent-step-1");
+    expect(groupedIds).not.toContain("agent-step-2");
+    expect(groupedIds).not.toContain("agent-owned-task");
+    expect(anchorIds).toContain("agent-spawn");
+    expect(anchorIds).toContain("agent-step-1");
+    expect(anchorIds).toContain("agent-step-2");
+    expect(anchorIds).toContain("agent-owned-task");
+  });
+});
+
+describe("tracker spawn-id fallback for turnless groups", () => {
+  const spawnAnchor: WorkLogEntry = {
+    id: "spawn",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    label: "Subagent task",
+    tone: "tool",
+    itemType: "collab_agent_tool_call",
+    toolCallId: "toolu_spawn",
+  };
+  const agentStep: WorkLogEntry = {
+    id: "agent-step",
+    createdAt: "2026-08-15T00:01:00.000Z",
+    label: "Running List provider dirs",
+    tone: "thinking",
+    activityKind: "task.progress",
+    subagentTask: { subagentType: "claude", toolUseId: "toolu_spawn" },
+  };
+
+  it("names the spawns of a turnless all-anchor group so its tracker can render", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [spawnAnchor, agentStep].map((entry) => ({
+        id: entry.id,
+        kind: "work" as const,
+        createdAt: entry.createdAt,
+        entry,
+      })),
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRow = rows.find((row) => row.kind === "work");
+    expect(workRow?.kind).toBe("work");
+    if (workRow?.kind !== "work") return;
+    expect(workRow.groupedEntries).toEqual([]);
+    expect(workRow.trackerTurnIds).toEqual([]);
+    expect(workRow.trackerAgentSpawnIds).toEqual(["toolu_spawn"]);
+  });
+
+  it("keeps the spawn fallback off groups that already track a turn", () => {
+    const turnedSpawn: WorkLogEntry = {
+      ...spawnAnchor,
+      turnId: "33333333-3333-4333-8333-333333333333" as NonNullable<WorkLogEntry["turnId"]>,
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [turnedSpawn, agentStep].map((entry) => ({
+        id: entry.id,
+        kind: "work" as const,
+        createdAt: entry.createdAt,
+        entry,
+      })),
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRow = rows.find((row) => row.kind === "work");
+    if (workRow?.kind !== "work") return;
+    expect(workRow.trackerTurnIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
+    expect(workRow.trackerAgentSpawnIds).toEqual([]);
   });
 });
