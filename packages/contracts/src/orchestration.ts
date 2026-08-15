@@ -474,6 +474,31 @@ export const ThreadCheckoutSwitchDeferredPayload = Schema.Struct({
 });
 export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDeferredPayload.Type;
 
+/**
+ * Payload of the `thread.checkout.missing` activity: the folder this thread
+ * works in is gone.
+ *
+ * Emitted from two directions — the pre-flight that refuses to start a provider
+ * session in a directory that no longer exists, and the status watcher that
+ * notices an out-of-band deletion between turns. Both carry the same payload so
+ * the recovery affordance in the thread view reads one shape, and so the
+ * watcher can surface it without waiting for a turn to fail.
+ *
+ * `branch` decides whether recreating the worktree is offered at all: with the
+ * branch still in the repository the folder can be recreated exactly as it was;
+ * without it the only way out is moving the thread to the project root.
+ */
+export const ThreadCheckoutMissingActivityKind = "thread.checkout.missing";
+export const ThreadCheckoutMissingPayload = Schema.Struct({
+  /** Absolute path of the checkout that is no longer on disk. */
+  cwd: TrimmedNonEmptyString,
+  /** Branch the missing checkout held, when the thread recorded one. */
+  branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /** Project root to fall back to. Absent when the project could not be resolved. */
+  projectCwd: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+});
+export type ThreadCheckoutMissingPayload = typeof ThreadCheckoutMissingPayload.Type;
+
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
 export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Type;
 

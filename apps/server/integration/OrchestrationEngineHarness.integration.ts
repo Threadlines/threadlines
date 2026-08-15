@@ -360,6 +360,7 @@ export const makeOrchestrationIntegrationHarness = (
           refreshStatus: () => Effect.die("refreshStatus should not be called in this test"),
           streamStatus: () => Stream.empty,
           observeLocalStatus: () => Stream.empty,
+          observeMissingCheckouts: () => Stream.empty,
         }),
       ),
       Layer.provideMerge(

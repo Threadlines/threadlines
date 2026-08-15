@@ -3394,6 +3394,13 @@ function classifySummarizableActivityEntry(
     return null;
   }
 
+  // A warning is a message to the user, never routine activity. The keyword
+  // heuristics below would happily fold "This thread's folder no longer
+  // exists" into "Explored project" because it mentions a folder.
+  if (entry.tone === "warning" || entry.tone === "error") {
+    return null;
+  }
+
   if (isCommandWorkEntry(entry) && entry.command) {
     const summary = classifyCommandActivity(entry.command);
     // Consequential commands (anything that isn't routine exploration or

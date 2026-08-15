@@ -26,6 +26,8 @@ import {
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { planCliSpawn } from "../../cliSpawn.ts";
+import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
+import { MANAGED_WORKTREE_INSTRUCTION } from "@threadlines/shared/contextSeed";
 import { normalizeModelSlug } from "@threadlines/shared/model";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import * as DateTime from "effect/DateTime";
@@ -34,6 +36,7 @@ import * as Duration from "effect/Duration";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -525,6 +528,8 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
+  /** Session runs in a git worktree Threadlines created and must not delete. */
+  readonly managedWorktree?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -542,6 +547,7 @@ function buildCodexCollaborationMode(input: {
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
+        ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
     },
   };
@@ -558,6 +564,8 @@ export function buildTurnStartParams(input: {
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
+  /** Session runs in a git worktree Threadlines created and must not delete. */
+  readonly managedWorktree?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -581,6 +589,7 @@ export function buildTurnStartParams(input: {
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
+    ...(input.managedWorktree ? { managedWorktree: true } : {}),
   });
 
   return decodeCodexTurnStartParams({
@@ -1416,11 +1425,18 @@ export const makeCodexSessionRuntime = (
 ): Effect.Effect<
   CodexSessionRuntimeShape,
   CodexErrors.CodexAppServerError,
-  ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Scope.Scope
 > =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
+    const fileSystem = yield* FileSystem.FileSystem;
+    // Resolved once per session: the checkout cannot change kind underneath a
+    // running runtime, and every turn asks the same question.
+    const runsInManagedWorktree = yield* isLinkedWorktreeCheckout(options.cwd).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.cached,
+    );
     const events = yield* Queue.unbounded<ProviderEvent>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
@@ -2135,6 +2151,7 @@ export const makeCodexSessionRuntime = (
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+            ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(
             "start a Codex turn",

@@ -24,6 +24,7 @@ import type {
 import { mergeGitStatusParts } from "@threadlines/shared/git";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import { checkoutPresence } from "./CheckoutPresence.ts";
 
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.minutes(2);
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.minutes(2);
@@ -41,6 +42,14 @@ const GIT_DIR_RESOLVE_RETRY_INTERVAL = Duration.seconds(30);
 // watcher cannot catch them).
 const SNAPSHOT_LOCAL_REVALIDATE_AGE = Duration.seconds(1);
 const SNAPSHOT_REMOTE_REVALIDATE_AGE = Duration.seconds(30);
+// How often a watched checkout is confirmed to still be on disk. A single stat
+// per subscribed cwd, so the cost is irrelevant next to the git commands the
+// same monitor already runs.
+const CHECKOUT_PRESENCE_POLL_INTERVAL = Duration.seconds(2);
+// Git rewrites paths in place during ordinary operations, so a directory that
+// reads as missing once is not news. It has to still be missing after this
+// window before anyone is told about it.
+const CHECKOUT_MISSING_CONFIRMATION_WINDOW = Duration.seconds(2);
 
 interface VcsStatusChange {
   readonly cwd: string;
@@ -59,6 +68,18 @@ export interface VcsLocalStatusObservation {
   /** Normalized (real) path of the checkout the status was taken in. */
   readonly cwd: string;
   readonly local: VcsStatusLocalResult;
+}
+
+/**
+ * A watched checkout that is confirmed gone from disk.
+ *
+ * Published once per disappearance, not once per check, so consumers can react
+ * directly (a thread whose folder vanished needs to say so now, not when its
+ * next turn crashes) without debouncing again themselves.
+ */
+export interface VcsCheckoutMissingObservation {
+  /** Path that was being watched, as the subscriber asked for it. */
+  readonly cwd: string;
 }
 
 interface CachedValue<T> {
@@ -127,6 +148,12 @@ export interface VcsStatusBroadcasterShape {
    * nothing is subscribed are dropped.
    */
   readonly observeLocalStatus: () => Stream.Stream<VcsLocalStatusObservation>;
+  /**
+   * Checkouts that disappeared while being watched. Hot, like
+   * {@link observeLocalStatus}: a disappearance with no subscriber is dropped,
+   * and the next turn's pre-flight catches it instead.
+   */
+  readonly observeMissingCheckouts: () => Stream.Stream<VcsCheckoutMissingObservation>;
 }
 
 export class VcsStatusBroadcaster extends Context.Service<
@@ -138,11 +165,39 @@ function fingerprintStatusPart(status: unknown): string {
   return JSON.stringify(status);
 }
 
+/**
+ * Canonical cache/stream key for a checkout path.
+ *
+ * `realPath` alone is unstable across existence: on macOS `/tmp/x` resolves to
+ * `/private/tmp/x` while the directory exists but stays `/tmp/x` once it is
+ * deleted. A subscription opened while the checkout was missing would then key
+ * differently from the statuses published after the folder is recreated — and
+ * never hear them. When the leaf is gone, canonicalize the nearest existing
+ * ancestor and reattach the missing remainder so the key survives
+ * delete/recreate cycles.
+ */
 const normalizeCwd = (cwd: string) =>
-  Effect.service(FileSystem.FileSystem).pipe(
-    Effect.flatMap((fs) => fs.realPath(cwd)),
-    Effect.orElseSucceed(() => cwd),
-  );
+  Effect.gen(function* () {
+    const fs = yield* Effect.service(FileSystem.FileSystem);
+    const resolved = yield* fs.realPath(cwd).pipe(Effect.orElseSucceed(() => null));
+    if (resolved !== null) {
+      return resolved;
+    }
+    let prefix = cwd.replace(/[/\\]+$/u, "");
+    let suffix = "";
+    while (true) {
+      const cut = Math.max(prefix.lastIndexOf("/"), prefix.lastIndexOf("\\"));
+      if (cut <= 0) {
+        return cwd;
+      }
+      suffix = prefix.slice(cut) + suffix;
+      prefix = prefix.slice(0, cut);
+      const resolvedPrefix = yield* fs.realPath(prefix).pipe(Effect.orElseSucceed(() => null));
+      if (resolvedPrefix !== null) {
+        return resolvedPrefix + suffix;
+      }
+    }
+  });
 
 export const layer = Layer.effect(
   VcsStatusBroadcaster,
@@ -156,6 +211,10 @@ export const layer = Layer.effect(
     );
     const localObservationsPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<VcsLocalStatusObservation>(),
+      (pubsub) => PubSub.shutdown(pubsub),
+    );
+    const missingCheckoutsPubSub = yield* Effect.acquireRelease(
+      PubSub.unbounded<VcsCheckoutMissingObservation>(),
       (pubsub) => PubSub.shutdown(pubsub),
     );
     const broadcasterScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -496,14 +555,67 @@ export const layer = Layer.effect(
       });
     };
 
+    /**
+     * Notices when a watched checkout is deleted out from under Threadlines.
+     *
+     * The git-dir watcher cannot carry this: `fs.watch` handles die with the
+     * directory they watch, and the deletion of a linked worktree touches the
+     * shared git dir in ways that are indistinguishable from ordinary activity.
+     * A stat every couple of seconds is both cheaper to reason about and the
+     * only check that still works once the directory is gone.
+     *
+     * A single missing reading is never enough: git renames paths in place
+     * during normal operations, so the path has to still be missing after the
+     * confirmation window. One announcement per disappearance — the flag resets
+     * only when the directory comes back, so recreating the worktree re-arms it.
+     */
+    const makeCheckoutPresenceLoop = (cwd: string): Effect.Effect<void, never> =>
+      Effect.gen(function* () {
+        let announced = false;
+        while (true) {
+          const presence = yield* checkoutPresence(cwd).pipe(withFileSystem);
+          if (presence !== "missing") {
+            if (announced && presence === "present") {
+              announced = false;
+              // The folder came back — recreated by the app or by hand. Push a
+              // fresh status so the recovery surfaces clear now rather than at
+              // the next scheduled refresh.
+              yield* refreshLocalStatus(cwd).pipe(Effect.ignoreCause({ log: true }));
+            }
+            yield* Effect.sleep(CHECKOUT_PRESENCE_POLL_INTERVAL);
+            continue;
+          }
+          if (announced) {
+            yield* Effect.sleep(CHECKOUT_PRESENCE_POLL_INTERVAL);
+            continue;
+          }
+          yield* Effect.sleep(CHECKOUT_MISSING_CONFIRMATION_WINDOW);
+          const confirmed = yield* checkoutPresence(cwd).pipe(withFileSystem);
+          if (confirmed === "missing") {
+            announced = true;
+            yield* Effect.logWarning("VCS checkout disappeared", { cwd });
+            yield* PubSub.publish(missingCheckoutsPubSub, { cwd });
+            // Push the absence into the status feed too, so every open source
+            // control surface stops claiming the folder just isn't a repo.
+            yield* refreshLocalStatus(cwd).pipe(Effect.ignoreCause({ log: true }));
+          }
+          yield* Effect.sleep(CHECKOUT_PRESENCE_POLL_INTERVAL);
+        }
+      });
+
     // One background monitor per subscribed cwd: the periodic remote-status
-    // poller plus the git dir watcher that reacts to local git activity.
+    // poller, the git dir watcher that reacts to local git activity, and the
+    // presence check that catches the checkout being deleted entirely.
     const makeCwdMonitor = (
       cwd: string,
       automaticRemoteRefreshInterval: Effect.Effect<Duration.Duration, never>,
     ): Effect.Effect<void, never> =>
       Effect.all(
-        [makeRemoteRefreshLoop(cwd, automaticRemoteRefreshInterval), makeGitDirWatchLoop(cwd)],
+        [
+          makeRemoteRefreshLoop(cwd, automaticRemoteRefreshInterval),
+          makeGitDirWatchLoop(cwd),
+          makeCheckoutPresenceLoop(cwd),
+        ],
         { concurrency: "unbounded" },
       ).pipe(Effect.asVoid);
 
@@ -628,12 +740,18 @@ export const layer = Layer.effect(
         PubSub.subscribe(localObservationsPubSub).pipe(Effect.map(Stream.fromSubscription)),
       );
 
+    const observeMissingCheckouts: VcsStatusBroadcasterShape["observeMissingCheckouts"] = () =>
+      Stream.unwrap(
+        PubSub.subscribe(missingCheckoutsPubSub).pipe(Effect.map(Stream.fromSubscription)),
+      );
+
     return VcsStatusBroadcaster.of({
       getStatus,
       refreshLocalStatus,
       refreshStatus,
       streamStatus,
       observeLocalStatus,
+      observeMissingCheckouts,
     });
   }),
 );

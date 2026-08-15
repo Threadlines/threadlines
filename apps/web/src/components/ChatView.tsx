@@ -41,6 +41,9 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
+import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
+import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
+import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
@@ -2412,6 +2415,14 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+  // Watched separately from the thread's own checkout: when that checkout is
+  // gone, the project root's status is what tells us whether there is still a
+  // repository to fall back to. Same key as every other subscriber of this
+  // path, so it costs a ref-count rather than a second subscription.
+  const projectRootStatusQuery = useGitStatus({
+    environmentId,
+    cwd: activeProject?.cwd ?? null,
+  });
   const keybindings = useServerKeybindings();
   const availableEditors = useServerAvailableEditors();
   // Prefer an instance-id match so a custom Codex instance (e.g.
@@ -2638,8 +2649,13 @@ export default function ChatView(props: ChatViewProps) {
     terminalLaunchContext?.threadId === activeThreadId
       ? terminalLaunchContext
       : (storeServerTerminalLaunchContext ?? null);
-  // Default true while loading to avoid toolbar flicker.
-  const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  // Stays true for a checkout that was deleted, as long as the project root is
+  // still a repository: hiding the picker there would remove the only way back
+  // to a working checkout at exactly the moment the user needs it.
+  const isGitRepo = shouldShowCheckoutPicker({
+    selectedStatus: gitStatusQuery.data,
+    projectRootStatus: projectRootStatusQuery.data,
+  });
   const browserPanelState = useBrowserPanelStore((store) =>
     selectThreadBrowserState(store.browserStateByThreadKey, routeThreadRef),
   );
@@ -5371,6 +5387,33 @@ export default function ChatView(props: ChatViewProps) {
     turnRetryDispatchingThreadId,
   ]);
 
+  // The thread's folder can vanish underneath it (an agent removing its own
+  // worktree after a merge, or the user deleting it in a terminal). The hook
+  // owns the detection and both ways out; this surface only renders them.
+  const checkoutRecoveryView = useCheckoutRecovery({
+    environmentId,
+    threadId: activeThread?.id ?? null,
+    cwd: gitCwd,
+    projectCwd: activeProject?.cwd ?? null,
+    branch: activeThread?.branch ?? null,
+    status: gitStatusQuery.data,
+  });
+  const checkoutRecovery = checkoutRecoveryView.recovery;
+  const checkoutMissingNotice = useMemo(
+    () =>
+      checkoutRecovery
+        ? buildCheckoutMissingNotice({
+            recovery: checkoutRecovery,
+            actions: {
+              isBusy: checkoutRecoveryView.isBusy,
+              onSwitchToProjectRoot: checkoutRecoveryView.onSwitchToProjectRoot,
+              onRecreateWorktree: checkoutRecoveryView.onRecreateWorktree,
+            },
+          })
+        : null,
+    [checkoutRecovery, checkoutRecoveryView],
+  );
+
   const providerStatusNotice = useProviderStatusNotice({
     status: activeProviderStatus,
     activeTurnInProgress,
@@ -5392,7 +5435,13 @@ export default function ChatView(props: ChatViewProps) {
   const threadErrorNotice = useMemo(
     () =>
       buildThreadErrorNotice({
-        error: threadErrorNoticeVisible ? (activeThread?.error ?? null) : null,
+        // A missing checkout has its own notice with actions that can actually
+        // work; showing "Turn failed … Retry" beside it would only offer the
+        // user the one button guaranteed to fail again.
+        error:
+          threadErrorNoticeVisible && checkoutRecovery === null
+            ? (activeThread?.error ?? null)
+            : null,
         authReconnect: providerAuthReconnectPrompt,
         usageReset: threadErrorUsageResetAction,
         retry: threadErrorRetryAction,
@@ -5404,6 +5453,7 @@ export default function ChatView(props: ChatViewProps) {
       activeProviderLabel,
       activeThread?.error,
       activeThread?.id,
+      checkoutRecovery,
       composerSignInView,
       providerAuthReconnectPrompt,
       setThreadError,
@@ -5437,6 +5487,7 @@ export default function ChatView(props: ChatViewProps) {
   const composerNotices = useMemo(
     () =>
       selectComposerNotices([
+        checkoutMissingNotice,
         threadErrorNotice,
         sendPreflightNotice,
         providerStatusNotice,
@@ -5444,6 +5495,7 @@ export default function ChatView(props: ChatViewProps) {
         ...infrastructureComposerNotices,
       ]),
     [
+      checkoutMissingNotice,
       infrastructureComposerNotices,
       providerStatusNotice,
       sendPreflightNotice,
