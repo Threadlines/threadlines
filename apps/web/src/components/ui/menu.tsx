@@ -173,7 +173,7 @@ function MenuRadioItem({
         "min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-2 pe-4 text-base text-foreground outline-none data-disabled:pointer-events-none data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         variant === "check"
           ? "grid grid-cols-[1rem_1fr] data-highlighted:bg-accent data-highlighted:text-accent-foreground"
-          : "flex text-muted-foreground data-checked:bg-foreground/8 data-checked:text-foreground data-highlighted:bg-foreground/12 data-highlighted:text-foreground",
+          : "flex text-muted-foreground data-checked:bg-pick-selected data-checked:text-foreground data-highlighted:bg-foreground/12 data-highlighted:text-foreground",
         className,
       )}
       data-slot="menu-radio-item"
@@ -215,7 +215,7 @@ function MenuRadioItem({
  */
 export const MENU_PICK_ITEM_CLASS_NAME =
   "gap-2 text-muted-foreground data-highlighted:bg-foreground/12 data-highlighted:text-foreground";
-export const MENU_PICK_ITEM_SELECTED_CLASS_NAME = "bg-foreground/8 text-foreground";
+export const MENU_PICK_ITEM_SELECTED_CLASS_NAME = "bg-pick-selected text-foreground";
 
 function MenuGroupLabel({
   className,

@@ -64,7 +64,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
         // Selection is the house resting fill plus the primary-tinted name —
         // the tint alone says "this is the one" and the fill matches every
         // other picker; hover/keyboard highlight stays the stronger grey.
-        "hover:bg-muted data-highlighted:bg-muted data-selected:bg-foreground/8 data-selected:text-foreground [&[data-highlighted][data-selected]]:bg-muted",
+        "hover:bg-muted data-highlighted:bg-muted data-selected:bg-pick-selected data-selected:text-foreground [&[data-highlighted][data-selected]]:bg-muted",
       )}
     >
       <div className="min-w-0 flex-1 text-left">
