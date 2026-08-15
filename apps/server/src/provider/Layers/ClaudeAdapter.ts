@@ -63,7 +63,16 @@ import {
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
 } from "@threadlines/shared/model";
-import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import {
+  MANAGED_WORKTREE_INSTRUCTION,
+  renderThreadContextSeed,
+  withContextSeedPreamble,
+} from "@threadlines/shared/contextSeed";
+import {
+  classifySpawnFailure,
+  isLinkedWorktreeCheckout,
+  missingWorkingDirectoryDetail,
+} from "../../vcs/CheckoutPresence.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -5268,6 +5277,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  /**
+   * Replaces a process failure's detail when the session's working directory
+   * turned out to be gone.
+   *
+   * The SDK reports a spawn that failed because its `cwd` does not exist as a
+   * missing Claude binary — the errno is the same, and it only checks its own
+   * executable. Left alone, a deleted worktree reads as a broken install and
+   * sends the user to reinstall a CLI that is sitting right where it should be.
+   * A directory that is confirmed gone outranks whatever the SDK guessed.
+   */
+  const withMissingCheckoutDetail = (
+    error: ProviderAdapterProcessError,
+    cwd: string | undefined,
+  ): Effect.Effect<ProviderAdapterProcessError> =>
+    classifySpawnFailure({ cwd, error: error.cause ?? error, errorHidesErrno: true }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.map((classification) =>
+        classification === "missing-working-directory" && cwd !== undefined
+          ? new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: error.threadId,
+              detail: missingWorkingDirectoryDetail(cwd),
+              ...(error.cause !== undefined ? { cause: error.cause } : {}),
+            })
+          : error,
+      ),
+    );
+
   const runSdkStream = (
     context: ClaudeSessionContext,
   ): Effect.Effect<void, ProviderAdapterProcessError> =>
@@ -5276,6 +5313,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     ).pipe(
       Stream.takeWhile(() => !context.stopped),
       Stream.runForEach((message) => handleSdkMessage(context, message)),
+      Effect.catch((error) =>
+        withMissingCheckoutDetail(error, context.session.cwd).pipe(Effect.flatMap(Effect.fail)),
+      ),
     );
 
   const handleStreamExit = Effect.fn("handleStreamExit")(function* (
@@ -5921,6 +5961,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // and with a credential that names the thread, because the tools take no
       // thread argument and must not.
       const browserCredential = yield* mcpSessionRegistry.credentialFor(threadId);
+      // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
+      // it deletes the session's own working directory, so a session running in
+      // a Threadlines-managed worktree is told once, up front, not to.
+      const runsInManagedWorktree = input.cwd
+        ? yield* isLinkedWorktreeCheckout(input.cwd).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+          )
+        : false;
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         mcpServers: {
@@ -5932,7 +5980,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          ...(runsInManagedWorktree ? { append: MANAGED_WORKTREE_INSTRUCTION } : {}),
+        },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         ...(effectiveEffort
           ? {
@@ -6012,7 +6064,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             detail: toMessage(cause, "Failed to start Claude runtime session."),
             cause,
           }),
-      });
+      }).pipe(
+        Effect.catch((error) =>
+          withMissingCheckoutDetail(error, input.cwd).pipe(Effect.flatMap(Effect.fail)),
+        ),
+      );
 
       const session: ProviderSession = {
         threadId,

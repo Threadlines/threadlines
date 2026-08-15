@@ -34,6 +34,7 @@ import {
   VcsSwitchRefInput,
   VcsSwitchRefResult,
   GitCommandError,
+  VcsWorktreeInUseError,
   GitGenerateCommitMessageInput,
   GitGenerateCommitMessageResult,
   VcsCreateRefInput,
@@ -923,7 +924,9 @@ export const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
 
 export const WsVcsRemoveWorktreeRpc = Rpc.make(WS_METHODS.vcsRemoveWorktree, {
   payload: VcsRemoveWorktreeInput,
-  error: GitCommandError,
+  // Removal is refused outright while a thread still works in the folder, so
+  // callers get a distinct error naming them rather than a git failure.
+  error: Schema.Union([GitCommandError, VcsWorktreeInUseError]),
 });
 
 export const WsVcsCreateRefRpc = Rpc.make(WS_METHODS.vcsCreateRef, {

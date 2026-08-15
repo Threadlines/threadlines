@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   type ChatAttachment,
   type ChatSkillReference,
+  CheckoutMissingError,
   CommandId,
   EventId,
   type MessageId,
@@ -17,6 +18,8 @@ import {
   type ProviderSessionForkFrom,
   type RuntimeMode,
   type ThreadContextSeed,
+  ThreadCheckoutMissingActivityKind,
+  type ThreadCheckoutMissingPayload,
   ThreadCheckoutSwitchDeferredActivityKind,
   type ThreadCheckoutSwitchDeferredPayload,
   ThreadForkContextPayload,
@@ -39,6 +42,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -77,8 +81,10 @@ import {
   ServerSettingsService,
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
+import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isCheckoutMissingError = Schema.is(CheckoutMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isThreadForkContextPayload = Schema.is(ThreadForkContextPayload);
 
@@ -331,6 +337,11 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const fileSystem = yield* FileSystem.FileSystem;
+
+  /** Checkout existence check, bound to the layer's filesystem. Never fails. */
+  const checkoutPresenceFor = (cwd: string) =>
+    checkoutPresence(cwd).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -353,6 +364,13 @@ const make = Effect.gen(function* () {
    * on the leading edge of a streak.
    */
   const deferredCheckoutSwitchThreads = new Set<ThreadId>();
+
+  /**
+   * Checkout path most recently reported missing per thread, so the same dead
+   * folder is announced once rather than on every retry. Cleared as soon as the
+   * thread starts a session somewhere that exists.
+   */
+  const reportedMissingCheckouts = new Map<ThreadId, string>();
 
   const noteCheckoutSwitchDeferred = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -432,6 +450,58 @@ const make = Effect.gen(function* () {
       },
       createdAt: input.createdAt,
     });
+
+  /**
+   * Records that a thread's checkout is gone, so the thread view can offer the
+   * way out (switch to the project root, or recreate the worktree) instead of a
+   * Retry that is guaranteed to fail the same way.
+   *
+   * Idempotent per checkout: the same path is only reported once per streak, so
+   * a user retrying, or the watcher and the pre-flight both noticing, does not
+   * stack duplicate rows in the conversation. The record clears once the thread
+   * is running somewhere that exists again.
+   */
+  const noteCheckoutMissing = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly payload: ThreadCheckoutMissingPayload;
+    readonly createdAt: string;
+  }) {
+    const alreadyReported = reportedMissingCheckouts.get(input.threadId);
+    if (
+      alreadyReported !== undefined &&
+      areFilesystemPathsEqual(alreadyReported, input.payload.cwd)
+    ) {
+      return;
+    }
+    reportedMissingCheckouts.set(input.threadId, input.payload.cwd);
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("thread-checkout-missing"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "warning",
+          kind: ThreadCheckoutMissingActivityKind,
+          summary: "This thread's folder no longer exists",
+          payload: input.payload,
+          turnId: null,
+          createdAt: input.createdAt,
+        },
+        createdAt: input.createdAt,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+  });
+
+  /** Extracts the missing-checkout failure out of a turn/follow-up cause. */
+  const checkoutMissingFromCause = (cause: Cause.Cause<unknown>): CheckoutMissingError | null => {
+    for (const reason of cause.reasons) {
+      if (Cause.isFailReason(reason) && isCheckoutMissingError(reason.error)) {
+        return reason.error;
+      }
+    }
+    return null;
+  };
 
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
@@ -776,6 +846,26 @@ const make = Effect.gen(function* () {
             thread,
             projects: project ? [project] : [],
           });
+
+    // Every provider start, restart and handoff funnels through here with the
+    // checkout already resolved, so this is the one place that has to confirm
+    // the directory is still on disk. Spawning into a directory that is gone
+    // fails deep inside the provider SDK with an errno that reads as a missing
+    // binary, which is how a deleted worktree used to present itself as a
+    // broken Claude install. `checkoutPresence` only answers "missing" when it
+    // is sure; a stat that fails for any other reason lets the start proceed.
+    if (effectiveCwd !== undefined && project?.kind !== "general-chat") {
+      const presence = yield* checkoutPresenceFor(effectiveCwd);
+      if (presence === "missing") {
+        return yield* new CheckoutMissingError({
+          threadId,
+          cwd: effectiveCwd,
+          branch: thread.branch ?? null,
+          projectCwd: project?.workspaceRoot ?? null,
+        });
+      }
+      reportedMissingCheckouts.delete(threadId);
+    }
 
     const startProviderSession = (
       input?: {
@@ -1417,6 +1507,34 @@ const make = Effect.gen(function* () {
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
+      }
+      // A checkout that is gone is not a provider failure and has no useful
+      // Retry: report it as the recoverable condition it is so the thread view
+      // can offer switching checkouts or recreating the folder.
+      const checkoutMissing = checkoutMissingFromCause(cause);
+      if (checkoutMissing) {
+        // The session still has to be released from "starting" so the composer
+        // is usable again; the recovery activity is what the thread view reads
+        // to replace the useless Retry with the two actions that can work.
+        return setThreadSessionErrorOnTurnStartFailure({
+          threadId: event.payload.threadId,
+          detail: checkoutMissing.message,
+          createdAt: event.payload.createdAt,
+        }).pipe(
+          Effect.flatMap(() =>
+            noteCheckoutMissing({
+              threadId: event.payload.threadId,
+              payload: {
+                cwd: checkoutMissing.cwd,
+                ...(checkoutMissing.branch !== undefined ? { branch: checkoutMissing.branch } : {}),
+                ...(checkoutMissing.projectCwd !== undefined
+                  ? { projectCwd: checkoutMissing.projectCwd }
+                  : {}),
+              },
+              createdAt: event.payload.createdAt,
+            }),
+          ),
+        );
       }
       const detail = formatFailureDetail(cause);
       return setThreadSessionErrorOnTurnStartFailure({
@@ -2284,6 +2402,51 @@ const make = Effect.gen(function* () {
     processDomainEventSafely(event),
   );
 
+  /**
+   * Fans a confirmed checkout disappearance out to every thread working in it.
+   *
+   * One deleted folder usually strands several threads, and each needs its own
+   * record: the recovery actions (move to the project root, recreate the
+   * worktree) are per-thread. Threads already reported for this same path are
+   * skipped by `noteCheckoutMissing`, so a repeated signal is harmless.
+   */
+  const announceMissingCheckoutToThreads = Effect.fnUntraced(function* (observation: {
+    readonly cwd: string;
+  }) {
+    const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "provider command reactor could not resolve threads for missing checkout",
+          {
+            cwd: observation.cwd,
+            cause: Cause.pretty(cause),
+          },
+        ).pipe(Effect.as(null)),
+      ),
+    );
+    if (snapshot === null) {
+      return;
+    }
+    const createdAt = yield* nowIso;
+    for (const thread of snapshot.threads) {
+      const threadCwd = thread.effectiveCwd ?? thread.worktreePath;
+      if (threadCwd === null || !areFilesystemPathsEqual(threadCwd, observation.cwd)) {
+        continue;
+      }
+      const projectCwd =
+        snapshot.projects.find((project) => project.id === thread.projectId)?.workspaceRoot ?? null;
+      yield* noteCheckoutMissing({
+        threadId: thread.id,
+        payload: {
+          cwd: threadCwd,
+          branch: thread.branch,
+          projectCwd,
+        },
+        createdAt,
+      });
+    }
+  });
+
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
@@ -2309,6 +2472,16 @@ const make = Effect.gen(function* () {
 
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
+    );
+
+    // A checkout deleted between turns is reported the moment the watcher
+    // confirms it, so the thread shows its way out immediately instead of
+    // waiting for the user to send a message that is guaranteed to fail.
+    yield* Effect.forkScoped(
+      Stream.runForEach(
+        vcsStatusBroadcaster.observeMissingCheckouts(),
+        announceMissingCheckoutToThreads,
+      ),
     );
   });
 

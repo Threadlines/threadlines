@@ -158,6 +158,36 @@ export function hasActiveThreadTurn(
   return session.orchestrationStatus === "running" || session.orchestrationStatus === "starting";
 }
 
+/**
+ * Which checkout the picker lists refs from.
+ *
+ * Normally the thread's own. When that folder has been deleted, listing refs
+ * there returns nothing, which left the picker on screen but empty: no project
+ * root, no other worktrees, nothing to switch to. Falling back to the project
+ * root keeps the valid alternatives listed so there is always a way out.
+ */
+export function resolveCheckoutPickerRefsCwd(input: {
+  readonly selectedCwd: string | null;
+  readonly projectCwd: string | null;
+  readonly selectedCheckoutMissing: boolean;
+}): string | null {
+  if (input.selectedCheckoutMissing && input.projectCwd) {
+    return input.projectCwd;
+  }
+  return input.selectedCwd;
+}
+
+/**
+ * Marks the picker's current selection as a folder that is no longer there.
+ *
+ * Plain trailing text rather than a badge or colour: the picker's job here is
+ * to say what is selected and let the user pick something else, and the
+ * recovery actions live in the notice above the composer.
+ */
+export function annotateMissingCheckoutLabel(label: string, missing: boolean): string {
+  return missing ? `${label} (missing)` : label;
+}
+
 /** How a checkout reads in prose: worktrees by name, the project root by role. */
 export function resolveCheckoutDisplayLabel(
   checkoutCwd: string,

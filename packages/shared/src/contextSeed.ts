@@ -19,6 +19,22 @@ import type {
   ThreadContextSeedEntry,
 } from "@threadlines/contracts";
 
+/**
+ * Told to every session whose working directory is a git worktree Threadlines
+ * created.
+ *
+ * Agents routinely tidy up after themselves once a branch is merged, and
+ * `git worktree remove` looks like part of that tidying. It is not: the folder
+ * is the session's own working directory and the thread it belongs to, so
+ * deleting it strands the conversation with nowhere to run. Threadlines owns
+ * that lifecycle and removes worktrees on the user's behalf.
+ *
+ * One sentence on purpose. It is prepended to every provider's instructions,
+ * where every extra line competes with the user's actual task.
+ */
+export const MANAGED_WORKTREE_INSTRUCTION =
+  "Your working directory is a git worktree that Threadlines created and manages; never remove or prune it, including as post-merge cleanup.";
+
 const ROLE_LABEL: Record<string, string> = {
   user: "User",
   assistant: "Assistant",

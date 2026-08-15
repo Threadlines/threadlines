@@ -1,8 +1,10 @@
 import { EnvironmentId, type VcsRef } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  annotateMissingCheckoutLabel,
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
+  resolveCheckoutPickerRefsCwd,
   resolveEnvironmentOptionLabel,
   resolveActiveWorktreePath,
   resolveBranchSelectionTarget,
@@ -578,5 +580,50 @@ describe("shouldIncludeBranchPickerItem", () => {
         checkoutPullRequestItemValue: "__checkout_pull_request__:1359",
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveCheckoutPickerRefsCwd", () => {
+  // The picker used to list refs from the thread's own checkout only. Once that
+  // folder was deleted the list came back empty, so the picker was on screen
+  // with nothing in it and no way back to the project root.
+  it("falls back to the project root when the selected checkout is gone", () => {
+    expect(
+      resolveCheckoutPickerRefsCwd({
+        selectedCwd: "/repo/.worktrees/feature",
+        projectCwd: "/repo",
+        selectedCheckoutMissing: true,
+      }),
+    ).toBe("/repo");
+  });
+
+  it("lists refs from the selected checkout while it exists", () => {
+    expect(
+      resolveCheckoutPickerRefsCwd({
+        selectedCwd: "/repo/.worktrees/feature",
+        projectCwd: "/repo",
+        selectedCheckoutMissing: false,
+      }),
+    ).toBe("/repo/.worktrees/feature");
+  });
+
+  it("keeps the selected checkout when there is no project root to fall back to", () => {
+    expect(
+      resolveCheckoutPickerRefsCwd({
+        selectedCwd: "/repo/.worktrees/feature",
+        projectCwd: null,
+        selectedCheckoutMissing: true,
+      }),
+    ).toBe("/repo/.worktrees/feature");
+  });
+});
+
+describe("annotateMissingCheckoutLabel", () => {
+  it("marks a selection whose folder is gone", () => {
+    expect(annotateMissingCheckoutLabel("feature/x", true)).toBe("feature/x (missing)");
+  });
+
+  it("leaves a healthy selection untouched", () => {
+    expect(annotateMissingCheckoutLabel("feature/x", false)).toBe("feature/x");
   });
 });

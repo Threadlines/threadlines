@@ -2,6 +2,7 @@ import * as nodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
 import {
@@ -66,6 +67,7 @@ import {
   type GitWorktreeEntry,
 } from "../vcs/GitVcsDriver.ts";
 import { VcsDriverRegistry, type VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
+import { checkoutPresence } from "../vcs/CheckoutPresence.ts";
 
 export interface GitWorkflowServiceShape {
   readonly status: (
@@ -189,9 +191,10 @@ const unsupportedGitCommand = (operation: string, cwd: string, detail: string) =
     detail,
   });
 
-function nonRepositoryLocalStatus(): VcsStatusLocalResult {
+function nonRepositoryLocalStatus(pathMissing = false): VcsStatusLocalResult {
   return {
     isRepo: false,
+    ...(pathMissing ? { pathMissing: true } : {}),
     hasPrimaryRemote: false,
     isDefaultRef: false,
     refName: null,
@@ -205,9 +208,9 @@ function nonRepositoryLocalStatus(): VcsStatusLocalResult {
   };
 }
 
-function nonRepositoryStatus(): VcsStatusResult {
+function nonRepositoryStatus(pathMissing = false): VcsStatusResult {
   return {
-    ...nonRepositoryLocalStatus(),
+    ...nonRepositoryLocalStatus(pathMissing),
     hasUpstream: false,
     aheadCount: 0,
     behindCount: 0,
@@ -237,6 +240,19 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
   const registry = yield* VcsDriverRegistry;
   const git = yield* GitVcsDriver;
   const gitManager = yield* GitManager;
+  const fileSystem = yield* FileSystem.FileSystem;
+
+  /**
+   * "Not a repository" and "not there at all" both arrive here as a null
+   * driver handle, and the UI turns the first into an "Initialize Git" call to
+   * action. Offering that for a checkout the user's agent deleted is worse than
+   * unhelpful, so the two are separated before the status leaves the server.
+   */
+  const isPathMissing = (cwd: string) =>
+    checkoutPresence(cwd).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.map((presence) => presence === "missing"),
+    );
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -356,7 +372,7 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
             ? gitManager
                 .status(input)
                 .pipe(Effect.map((status) => withRepositoryContext(status, input.cwd, handle)))
-            : Effect.succeed(nonRepositoryStatus()),
+            : isPathMissing(input.cwd).pipe(Effect.map(nonRepositoryStatus)),
         ),
       ),
     localStatus: (input) =>
@@ -366,7 +382,7 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
             ? gitManager
                 .localStatus(input)
                 .pipe(Effect.map((status) => withRepositoryContext(status, input.cwd, handle)))
-            : Effect.succeed(nonRepositoryLocalStatus()),
+            : isPathMissing(input.cwd).pipe(Effect.map(nonRepositoryLocalStatus)),
         ),
       ),
     remoteStatus: (input, options) =>

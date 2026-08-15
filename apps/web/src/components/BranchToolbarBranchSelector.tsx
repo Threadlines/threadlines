@@ -26,12 +26,14 @@ import { getSourceControlPresentation } from "../sourceControlPresentation";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import {
+  annotateMissingCheckoutLabel,
   deriveLocalBranchNameFromRemoteRef,
   hasActiveThreadTurn,
   queuedCheckoutSwitchToast,
   resolveActiveWorktreePath,
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
+  resolveCheckoutPickerRefsCwd,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   shouldIncludeBranchPickerItem,
@@ -223,15 +225,24 @@ export function BranchToolbarBranchSelector({
   const deferredBranchQuery = useDeferredValue(branchQuery);
 
   const branchStatusQuery = useGitStatus({ environmentId, cwd: branchCwd });
+  // A checkout that was deleted lists no refs at all, which would leave the
+  // picker open and empty. Refs then come from the project root so the valid
+  // alternatives are still there to switch to.
+  const selectedCheckoutMissing = branchStatusQuery.data?.pathMissing === true;
+  const refsCwd = resolveCheckoutPickerRefsCwd({
+    selectedCwd: branchCwd,
+    projectCwd: activeProjectCwd,
+    selectedCheckoutMissing,
+  });
   const trimmedBranchQuery = branchQuery.trim();
   const deferredTrimmedBranchQuery = deferredBranchQuery.trim();
 
   useEffect(() => {
-    if (!branchCwd) return;
+    if (!refsCwd) return;
     void queryClient.prefetchInfiniteQuery(
-      gitBranchSearchInfiniteQueryOptions({ environmentId, cwd: branchCwd, query: "" }),
+      gitBranchSearchInfiniteQueryOptions({ environmentId, cwd: refsCwd, query: "" }),
     );
-  }, [branchCwd, environmentId, queryClient]);
+  }, [refsCwd, environmentId, queryClient]);
 
   const {
     data: branchesSearchData,
@@ -242,7 +253,7 @@ export function BranchToolbarBranchSelector({
   } = useInfiniteQuery(
     gitBranchSearchInfiniteQueryOptions({
       environmentId,
-      cwd: branchCwd,
+      cwd: refsCwd,
       query: deferredTrimmedBranchQuery,
     }),
   );
@@ -583,11 +594,14 @@ export function BranchToolbarBranchSelector({
     maybeFetchNextBranchPage();
   }, [refs.length, maybeFetchNextBranchPage, shouldVirtualizeBranchList]);
 
-  const triggerLabel = getBranchTriggerLabel({
-    activeWorktreePath,
-    effectiveEnvMode,
-    resolvedActiveBranch,
-  });
+  const triggerLabel = annotateMissingCheckoutLabel(
+    getBranchTriggerLabel({
+      activeWorktreePath,
+      effectiveEnvMode,
+      resolvedActiveBranch,
+    }),
+    selectedCheckoutMissing,
+  );
 
   function renderPickerItem(itemValue: string, index: number) {
     if (checkoutPullRequestItemValue && itemValue === checkoutPullRequestItemValue) {

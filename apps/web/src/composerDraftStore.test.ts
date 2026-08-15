@@ -58,6 +58,21 @@ function selectionsByProvider(
 }
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+// The draft seeder asks the git status the client already holds whether an
+// inherited checkout still exists. Narrow module, stubbed per test.
+const missingCheckoutPaths = new Set<string>();
+vi.mock("./lib/gitStatusState", () => ({
+  getGitStatusSnapshot: (target: { readonly cwd: string | null }) => ({
+    data:
+      target.cwd !== null && missingCheckoutPaths.has(target.cwd)
+        ? { isRepo: false, pathMissing: true }
+        : null,
+    error: null,
+    cause: null,
+    isPending: false,
+  }),
+}));
+
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
   composerDraftHasUserContent,
@@ -1030,6 +1045,51 @@ describe("composerDraftStore project draft thread mapping", () => {
 
   beforeEach(() => {
     resetComposerDraftStore();
+    missingCheckoutPaths.clear();
+  });
+
+  // Reusing an empty draft for a new thread carries its checkout forward. When
+  // that folder has been deleted the carried-over path spread one broken thread
+  // across the project: no git status, no source control, and a checkout picker
+  // that had hidden itself, so there was no way back to the project root.
+  it("drops a carried-over checkout that is known to be gone", () => {
+    const deadWorktree = "/tmp/worktree-deleted";
+    useComposerDraftStore.getState().setProjectDraftThreadId(projectRef, draftId, {
+      threadId,
+      branch: "feature/x",
+      worktreePath: deadWorktree,
+    });
+    missingCheckoutPaths.add(deadWorktree);
+
+    // Reusing the draft for a new thread: no checkout stated, so it inherits.
+    useComposerDraftStore
+      .getState()
+      .setProjectDraftThreadId(projectRef, draftId, { threadId: otherThreadId });
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
+      worktreePath: null,
+      branch: null,
+      envMode: "local",
+    });
+  });
+
+  it("still carries over a checkout that is still on disk", () => {
+    const liveWorktree = "/tmp/worktree-live";
+    useComposerDraftStore.getState().setProjectDraftThreadId(projectRef, draftId, {
+      threadId,
+      branch: "feature/x",
+      worktreePath: liveWorktree,
+    });
+
+    useComposerDraftStore
+      .getState()
+      .setProjectDraftThreadId(projectRef, draftId, { threadId: otherThreadId });
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
+      worktreePath: liveWorktree,
+      branch: "feature/x",
+      envMode: "worktree",
+    });
   });
 
   it("stores and reads project draft thread ids via actions", () => {

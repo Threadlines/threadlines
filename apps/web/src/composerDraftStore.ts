@@ -53,6 +53,8 @@ import {
   normalizeFileSelectionContextDraft,
 } from "./lib/fileSelectionContext";
 import type { DrawingContextDraft } from "./lib/drawingContext";
+import { seedDraftWorktreePath } from "./lib/checkoutRecovery";
+import { getGitStatusSnapshot } from "./lib/gitStatusState";
 import {
   normalizePickedElementContextDraft,
   type PickedElementContextDraft,
@@ -1480,6 +1482,21 @@ function toProjectDraftSession(
   };
 }
 
+/**
+ * Whether the client already knows this checkout is gone.
+ *
+ * Reads the VCS status the app is holding for that path rather than asking the
+ * server, so seeding a draft stays synchronous and costs nothing. An unknown
+ * path (never subscribed, still loading) answers false: a draft is only
+ * redirected on positive knowledge, never on the absence of it.
+ */
+function isKnownMissingCheckout(target: {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+}): boolean {
+  return getGitStatusSnapshot(target).data?.pathMissing === true;
+}
+
 function createDraftThreadState(
   projectRef: ScopedProjectRef,
   threadId: ThreadId,
@@ -1499,15 +1516,25 @@ function createDraftThreadState(
     existingThread !== undefined &&
     (existingThread.environmentId !== projectRef.environmentId ||
       existingThread.projectId !== projectRef.projectId);
-  const nextWorktreePath =
-    options?.worktreePath === undefined
-      ? projectChanged
-        ? null
-        : (existingThread?.worktreePath ?? null)
-      : (options.worktreePath ?? null);
+  const inheritedWorktreePath = existingThread?.worktreePath ?? null;
+  const nextWorktreePath = seedDraftWorktreePath({
+    requested: options?.worktreePath,
+    inherited: inheritedWorktreePath,
+    projectChanged,
+    isCheckoutMissing: (cwd) =>
+      isKnownMissingCheckout({ environmentId: projectRef.environmentId, cwd }),
+  });
+  // A checkout dropped because it no longer exists takes its branch with it:
+  // that branch named a ref inside the folder that is gone, so carrying it onto
+  // a project-root draft would just point the picker at the wrong thing.
+  const droppedMissingCheckout =
+    options?.worktreePath === undefined &&
+    !projectChanged &&
+    inheritedWorktreePath !== null &&
+    nextWorktreePath === null;
   const nextBranch =
     options?.branch === undefined
-      ? projectChanged
+      ? projectChanged || droppedMissingCheckout
         ? null
         : (existingThread?.branch ?? null)
       : (options.branch ?? null);
@@ -1526,7 +1553,11 @@ function createDraftThreadState(
       options?.envMode ??
       (nextWorktreePath
         ? "worktree"
-        : projectChanged
+        : // A checkout dropped for being missing lands the draft at the project
+          // root. Leaving the mode on "worktree" would instead silently cut a
+          // brand-new worktree on the next send, which is not what the user
+          // asked for and hides that anything went wrong.
+          projectChanged || droppedMissingCheckout
           ? "local"
           : (existingThread?.envMode ?? "local")),
     promotedTo: null,
