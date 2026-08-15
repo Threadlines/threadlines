@@ -309,12 +309,8 @@ function AboutVersionSection() {
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="latest">
-                  Stable
-                </SelectItem>
-                <SelectItem hideIndicator value="nightly">
-                  Nightly
-                </SelectItem>
+                <SelectItem value="latest">Stable</SelectItem>
+                <SelectItem value="nightly">Nightly</SelectItem>
               </SelectPopup>
             </Select>
           }
@@ -580,12 +576,8 @@ function DefaultThreadEnvModeRow() {
             </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
-            <SelectItem hideIndicator value="local">
-              Local
-            </SelectItem>
-            <SelectItem hideIndicator value="worktree">
-              New worktree
-            </SelectItem>
+            <SelectItem value="local">Local</SelectItem>
+            <SelectItem value="worktree">New worktree</SelectItem>
           </SelectPopup>
         </Select>
       }
@@ -695,7 +687,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 {THEME_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                  <SelectItem key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>
                 ))}
@@ -732,15 +724,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
                 <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="locale">
-                  {TIMESTAMP_FORMAT_LABELS.locale}
-                </SelectItem>
-                <SelectItem hideIndicator value="12-hour">
-                  {TIMESTAMP_FORMAT_LABELS["12-hour"]}
-                </SelectItem>
-                <SelectItem hideIndicator value="24-hour">
-                  {TIMESTAMP_FORMAT_LABELS["24-hour"]}
-                </SelectItem>
+                <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
+                <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
+                <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
               </SelectPopup>
             </Select>
           }
@@ -2105,7 +2091,7 @@ export function ArchivedThreadsPanel() {
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 {AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS.map((days) => (
-                  <SelectItem key={days} hideIndicator value={String(days)}>
+                  <SelectItem key={days} value={String(days)}>
                     {formatAutoArchiveDaysLabel(days)}
                   </SelectItem>
                 ))}
@@ -2166,7 +2152,7 @@ export function ArchivedThreadsPanel() {
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   {ARCHIVED_THREAD_DELETE_AGE_OPTIONS.map((days) => (
-                    <SelectItem key={days} hideIndicator value={String(days)}>
+                    <SelectItem key={days} value={String(days)}>
                       {formatArchivedThreadDeleteAgeLabel(days)}
                     </SelectItem>
                   ))}

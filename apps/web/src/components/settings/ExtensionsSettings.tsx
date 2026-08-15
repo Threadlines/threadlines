@@ -2236,7 +2236,7 @@ function ExtensionDetailDialog({
                                   </SelectTrigger>
                                   <SelectPopup align="start" alignItemWithTrigger={false}>
                                     {field.enumValues.map((enumValue) => (
-                                      <SelectItem key={enumValue} hideIndicator value={enumValue}>
+                                      <SelectItem key={enumValue} value={enumValue}>
                                         {enumValue}
                                       </SelectItem>
                                     ))}
@@ -3567,7 +3567,7 @@ function ExtensionBrowserDialog({
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   {sortOptions.map((option) => (
-                    <SelectItem key={option.value} hideIndicator value={option.value}>
+                    <SelectItem key={option.value} value={option.value}>
                       {option.label}
                     </SelectItem>
                   ))}
@@ -4602,7 +4602,7 @@ export function ExtensionsSettingsPanel() {
                   {projectOptions.map((project) => {
                     const projectEnvironmentId = environmentIdByCwd.get(project.value);
                     return (
-                      <SelectItem key={project.value} hideIndicator value={project.value}>
+                      <SelectItem key={project.value} value={project.value}>
                         <span className="flex min-w-0 items-center gap-1.5">
                           {projectEnvironmentId ? (
                             <ProjectFavicon

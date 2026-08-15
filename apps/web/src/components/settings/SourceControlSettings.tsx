@@ -513,7 +513,7 @@ function TextGenerationSection() {
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
               {WRITING_STYLE_OPTIONS.map((option) => (
-                <SelectItem hideIndicator key={option.value} value={option.value}>
+                <SelectItem key={option.value} value={option.value}>
                   {option.label}
                 </SelectItem>
               ))}

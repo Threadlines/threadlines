@@ -481,7 +481,7 @@ export function AgentInstructionsSettingsPanel() {
                   {projectOptions.map((project) => {
                     const projectEnvironmentId = environmentIdByCwd.get(project.value);
                     return (
-                      <SelectItem key={project.value} hideIndicator value={project.value}>
+                      <SelectItem key={project.value} value={project.value}>
                         <span className="flex min-w-0 items-center gap-1.5">
                           {projectEnvironmentId ? (
                             <ProjectFavicon
@@ -538,7 +538,7 @@ export function AgentInstructionsSettingsPanel() {
                     {instructionFiles.map((file) => {
                       const key = instructionFileKey(file);
                       return (
-                        <SelectItem key={key} hideIndicator value={key}>
+                        <SelectItem key={key} value={key}>
                           {instructionFileLabel(file)}
                           {dirtyFileKeys.has(key) ? " • Edited" : ""}
                         </SelectItem>

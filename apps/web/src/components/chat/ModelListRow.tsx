@@ -1,6 +1,6 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
 import { memo } from "react";
-import { CheckIcon, StarIcon } from "lucide-react";
+import { StarIcon } from "lucide-react";
 import {
   getDisplayModelName,
   getProviderScopedDisplayModelLabel,
@@ -61,10 +61,10 @@ export const ModelListRow = memo(function ModelListRow(props: {
         // Single-line rows keep a compact fixed height; rows with a
         // description or provider footer grow to two lines.
         props.model.description || props.showProvider ? "py-1.5" : "h-8 py-0",
-        // Selection is marked by the inline check + primary-tinted name so
-        // it stays distinguishable from the grey hover/keyboard highlight
-        // (--accent and --muted resolve to the same grey in both themes).
-        "hover:bg-muted data-highlighted:bg-muted data-selected:bg-transparent data-selected:text-foreground [&[data-highlighted][data-selected]]:bg-muted",
+        // Selection is the house resting fill plus the primary-tinted name —
+        // the tint alone says "this is the one" and the fill matches every
+        // other picker; hover/keyboard highlight stays the stronger grey.
+        "hover:bg-muted data-highlighted:bg-muted data-selected:bg-foreground/8 data-selected:text-foreground [&[data-highlighted][data-selected]]:bg-muted",
       )}
     >
       <div className="min-w-0 flex-1 text-left">
@@ -74,12 +74,6 @@ export const ModelListRow = memo(function ModelListRow(props: {
             data-model-picker-model-name
           >
             <span className="truncate">{modelLabel}</span>
-            {/* Inline selection check (no left gutter — rows keep their
-                full width and unselected rows don't carry an empty column). */}
-            <CheckIcon
-              aria-hidden
-              className="hidden size-3.5 shrink-0 text-primary-readable group-data-selected:inline-block"
-            />
           </div>
           <span className="flex shrink-0 items-center gap-1.5">
             {/* Favorited rows keep the filled star visible in provider tabs;
