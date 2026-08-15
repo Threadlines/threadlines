@@ -498,10 +498,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
   // One machine is not a choice: the section only appears once there is
   // somewhere else the work could be.
   const showEnvironmentScope = environmentOptions.length > 1;
-  const scopedEnvironmentLabel =
+  const scopedEnvironment =
     showEnvironmentScope && scopedEnvironmentId !== null
-      ? (environmentOptions.find((option) => option.environmentId === scopedEnvironmentId)?.label ??
-        null)
+      ? (environmentOptions.find((option) => option.environmentId === scopedEnvironmentId) ?? null)
       : null;
 
   return (
@@ -529,12 +528,23 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 name={scopedProject.displayName}
                 className="size-3.5 shrink-0"
               />
+            ) : scopedEnvironment ? (
+              // A machine-only scope leads with the machine: its glyph in the
+              // icon slot and its name as the whole text, because at sidebar
+              // widths "All projects · <machine>" truncated to the half that
+              // said nothing.
+              scopedEnvironment.isPrimary ? (
+                <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+              ) : (
+                <CloudIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+              )
             ) : (
               <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
             )}
             <span className="min-w-0 flex-1 truncate text-left">
-              {scopedProject?.displayName ?? "All projects"}
-              {scopedEnvironmentLabel ? ` · ${scopedEnvironmentLabel}` : ""}
+              {scopedProject
+                ? `${scopedProject.displayName}${scopedEnvironment ? ` · ${scopedEnvironment.label}` : ""}`
+                : (scopedEnvironment?.label ?? "All projects")}
             </span>
             <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
           </MenuTrigger>

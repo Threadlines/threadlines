@@ -85,8 +85,10 @@ describe("ProjectScopeMenu", () => {
     });
     try {
       await expect.element(page.getByTestId("inbox-scope-trigger")).toBeVisible();
-      expect(document.querySelector("[data-testid='inbox-scope-trigger']")?.textContent).toContain(
-        "All projects · Windows Desktop",
+      // Machine-only scope: the machine IS the label — no "All projects ·"
+      // prefix to eat the width the name needs.
+      expect(document.querySelector("[data-testid='inbox-scope-trigger']")?.textContent).toBe(
+        "Windows Desktop",
       );
     } finally {
       await scopedMounted.unmount();
