@@ -2811,6 +2811,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtime = yield* createRuntime(runtimeInput).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.mapError(
             (cause) =>
               new ProviderAdapterProcessError({
