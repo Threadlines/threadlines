@@ -1245,6 +1245,15 @@ function collectSubagentActivityRecords(
       continue;
     }
 
+    // Promoted runs (a background `codex exec` launched by the main model)
+    // narrate their whole lifecycle through semantic metadata activities
+    // rather than collab tool items; without this fold the agent only ever
+    // reaches the UI through a durable-roster snapshot, i.e. after a reload.
+    if (activity.kind === "subagent.metadata") {
+      applySubagentMetadataActivity(byAgentId, pendingSpawnKeysByCallId, activity, payload);
+      continue;
+    }
+
     if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
       continue;
     }
@@ -1533,6 +1542,122 @@ function applySubagentTaskCompletion(
       ? { ...record.telemetry, step: null, lastToolName: null }
       : record.telemetry,
     updatedAt: activity.createdAt,
+  });
+}
+
+/** Folds a semantic `subagent.metadata` activity (the promoted-run lifecycle
+ *  channel: role, objective, effective settings, status, final result) into
+ *  the same records collab tool items build. Mirrors the server projection's
+ *  metadata patch so the live view and the durable roster tell one story. */
+function applySubagentMetadataActivity(
+  byAgentId: Map<string, InternalSubagentRecord>,
+  pendingSpawnKeysByCallId: Map<string, string>,
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown>,
+): void {
+  const agentThreadId = asTrimmedString(payload.agentThreadId);
+  const callId = asTrimmedString(payload.spawnCallId) ?? asTrimmedString(payload.callId);
+  const key = agentThreadId ?? (callId ? `pending:${callId}` : null);
+  if (!key) {
+    return;
+  }
+
+  // The id usually arrives on a later metadata update than the spawn; migrate
+  // the pending record the same way collab items do.
+  if (agentThreadId && callId) {
+    const pendingKey = pendingSpawnKeysByCallId.get(callId);
+    if (pendingKey) {
+      const pendingRecord = byAgentId.get(pendingKey);
+      if (pendingRecord) {
+        byAgentId.set(agentThreadId, {
+          ...pendingRecord,
+          id: agentThreadId,
+          agentThreadId,
+          updatedAt: activity.createdAt,
+        });
+        byAgentId.delete(pendingKey);
+      }
+      pendingSpawnKeysByCallId.delete(callId);
+    }
+  } else if (!agentThreadId && callId) {
+    pendingSpawnKeysByCallId.set(callId, key);
+  }
+
+  const previous = byAgentId.get(key);
+  const rawStatus = asTrimmedString(payload.status);
+  const status: SubagentProgressStatus =
+    rawStatus === "starting" ||
+    rawStatus === "running" ||
+    rawStatus === "waiting" ||
+    rawStatus === "completed" ||
+    rawStatus === "failed" ||
+    rawStatus === "interrupted"
+      ? rawStatus
+      : (previous?.status ?? "running");
+  const role =
+    asTrimmedString(payload.agentRole) ??
+    asTrimmedString(payload.role) ??
+    asTrimmedString(payload.taskName) ??
+    previous?.role ??
+    null;
+  const nickname =
+    asTrimmedString(payload.nickname) ??
+    asTrimmedString(payload.agentNickname) ??
+    previous?.nickname ??
+    null;
+  const modelSource =
+    asTrimmedString(payload.modelSource) ?? asTrimmedString(payload.modelProvenance);
+  const model = asTrimmedString(payload.model);
+  const requestedModel =
+    asTrimmedString(payload.requestedModel) ??
+    (modelSource === "explicit" || modelSource === "inherited" ? model : null);
+  const resolvedModel =
+    asTrimmedString(payload.resolvedModel) ??
+    (modelSource === "provider" ? model : null) ??
+    previous?.resolvedModel ??
+    null;
+  const resultBody =
+    (typeof payload.resultBody === "string" && payload.resultBody.trim().length > 0
+      ? payload.resultBody
+      : null) ??
+    previous?.resultBody ??
+    null;
+  const resultIsNew = resultBody !== null && (previous?.resultBody ?? null) === null;
+
+  byAgentId.set(key, {
+    id: key,
+    agentThreadId: agentThreadId ?? previous?.agentThreadId ?? null,
+    transcriptAgentId:
+      asTrimmedString(payload.transcriptAgentId) ?? previous?.transcriptAgentId ?? agentThreadId,
+    spawnCallId: callId ?? previous?.spawnCallId ?? null,
+    agentPath: asTrimmedString(payload.agentPath) ?? previous?.agentPath ?? null,
+    parentAgentPath: asTrimmedString(payload.parentAgentPath) ?? previous?.parentAgentPath ?? null,
+    treeDepth: previous?.treeDepth ?? 0,
+    turnId: activity.turnId ?? previous?.turnId ?? null,
+    label: subagentDisplayLabel({ role, nickname: null }),
+    ...(nickname ? { nickname } : {}),
+    role,
+    objective:
+      asTrimmedString(payload.objective) ??
+      asTrimmedString(payload.prompt) ??
+      previous?.objective ??
+      null,
+    status,
+    statusLabel: subagentProgressStatusLabel(status),
+    resolvedModel,
+    model: resolvedModel ?? requestedModel ?? previous?.model ?? null,
+    reasoningEffort: asTrimmedString(payload.reasoningEffort) ?? previous?.reasoningEffort ?? null,
+    // A settled agent's live text no longer describes it.
+    liveBody: resultBody !== null ? null : (previous?.liveBody ?? null),
+    liveBodyUpdatedAt: resultBody !== null ? null : (previous?.liveBodyUpdatedAt ?? null),
+    telemetry: previous?.telemetry ?? null,
+    createdAt: previous?.createdAt ?? activity.createdAt,
+    updatedAt: activity.createdAt,
+    resultActivityId: resultIsNew ? activity.id : (previous?.resultActivityId ?? null),
+    resultBody,
+    resultCreatedAt: resultIsNew
+      ? (asTrimmedString(payload.resultCreatedAt) ?? activity.createdAt)
+      : (previous?.resultCreatedAt ?? null),
   });
 }
 

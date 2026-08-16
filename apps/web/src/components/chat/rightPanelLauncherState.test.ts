@@ -240,9 +240,21 @@ describe("buildRightPanelLauncherStates", () => {
         workingTreeFileCount: null,
         reviewableTurnCount: 0,
         diffHasExplicitTarget: false,
+        // The background run is a command, not an agent; it neither inflates
+        // the agent count nor reads as one running.
         agents: { subagents: [buildSubagent()], backgroundRuns: [buildRun()], history },
       }).agents,
-    ).toEqual({ description: "2 of 3 agents running.", empty: false });
+    ).toEqual({ description: "1 of 2 agents running.", empty: false });
+
+    // A thread with only background commands is not empty, but has no agents.
+    expect(
+      buildRightPanelLauncherStates({
+        workingTreeFileCount: null,
+        reviewableTurnCount: 0,
+        diffHasExplicitTarget: false,
+        agents: { subagents: [], backgroundRuns: [buildRun()], history: [] },
+      }).agents,
+    ).toEqual({ description: "1 background command.", empty: false });
 
     expect(
       buildRightPanelLauncherStates({

@@ -324,7 +324,7 @@ export const AgentsPanel = memo(function AgentsPanel({
     [providerLabel, view],
   );
   const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
-  const anyRunning = hasRunningAgentActivity({ subagents, backgroundRuns });
+  const anyRunning = hasRunningAgentActivity({ subagents });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
   const selectedSubagentThreadId = selectedSubagent?.agentThreadId ?? null;
   const selectedSubagentWorkEntries = useMemo(
@@ -503,6 +503,31 @@ export const AgentsPanel = memo(function AgentsPanel({
                 </SectionLabel>
                 <ul className="divide-y divide-border/40 border-t border-border/40">
                   {view.earlier.map((branch) => (
+                    <BranchRow
+                      key={branch.key}
+                      branch={branch}
+                      variant="flat"
+                      providerGlyph={providerGlyph}
+                      onSelect={handleSelect}
+                      onStop={handleStop}
+                    />
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            {/* Background commands are not agents; they keep their rows (and
+                stop handles) below the agents instead of crowding them out. */}
+            {view.commands.length > 0 ? (
+              <>
+                <SectionLabel
+                  className="px-3 py-1.5"
+                  tick={false}
+                  data-agents-panel-commands="true"
+                >
+                  Commands
+                </SectionLabel>
+                <ul className="divide-y divide-border/40 border-t border-border/40">
+                  {view.commands.map((branch) => (
                     <BranchRow
                       key={branch.key}
                       branch={branch}

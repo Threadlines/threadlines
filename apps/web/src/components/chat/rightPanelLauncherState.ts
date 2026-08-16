@@ -180,7 +180,11 @@ function agentsState(agents: RightPanelLauncherAgentsInput | null): RightPanelSu
   const view = buildAgentsPanelView(agents);
   const total = view.current.length + view.earlier.length;
   if (total === 0) {
-    return { description: "No agents yet.", empty: true };
+    // Commands are not agents, but a surface with live rows on it is not
+    // empty either.
+    return view.commands.length > 0
+      ? { description: `${pluralize(view.commands.length, "background command")}.`, empty: false }
+      : { description: "No agents yet.", empty: true };
   }
   const live = summarizeLiveAgents(agents);
   const waitingCount = live?.waitingCount ?? 0;

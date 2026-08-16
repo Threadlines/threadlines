@@ -304,6 +304,34 @@ describe("buildAgentsPanelView", () => {
     expect(view.earlier[0]?.time).toBe("12m ago");
   });
 
+  it("keeps background commands out of the agent list, in their own section", () => {
+    const view = buildAgentsPanelView({
+      subagents: [buildSubagent({ id: "live", agentThreadId: "agent-live", status: "running" })],
+      backgroundRuns: [
+        buildRun({
+          id: "provider:task-watch",
+          source: "provider",
+          label: "Watch PR 162 CI until settled",
+          port: null,
+        }),
+      ],
+    });
+
+    expect(view.current.map((branch) => branch.kind)).toEqual(["subagent"]);
+    expect(view.commands.map((branch) => branch.kind)).toEqual(["run"]);
+    expect(view.hasAny).toBe(true);
+  });
+
+  it("counts a command-only thread as having content", () => {
+    const view = buildAgentsPanelView({
+      subagents: [],
+      backgroundRuns: [buildRun({ id: "provider:task-1", source: "provider" })],
+    });
+    expect(view.current).toEqual([]);
+    expect(view.commands).toHaveLength(1);
+    expect(view.hasAny).toBe(true);
+  });
+
   describe("formatAgentsPanelSummary", () => {
     const viewOf = (input: Parameters<typeof buildAgentsPanelView>[0]) =>
       buildAgentsPanelView(input);
@@ -552,7 +580,7 @@ describe("formatLiveAgentStatusLine", () => {
 });
 
 describe("summarizeLiveAgents", () => {
-  it("counts live subagents and runs together and flags one waiting on the user", () => {
+  it("counts live subagents only and flags one waiting on the user", () => {
     expect(
       summarizeLiveAgents({
         subagents: [
@@ -560,23 +588,12 @@ describe("summarizeLiveAgents", () => {
           buildSubagent({ id: "b", status: "waiting" }),
           buildSubagent({ id: "c", status: "completed" }),
         ],
-        // The user's own terminal does not make the count: the indicator
-        // advertises the agents panel, which no longer lists it.
-        backgroundRuns: [
-          buildRun({ id: "run" }),
-          buildRun({ id: "shell", source: "terminal", terminalId: "default" }),
-        ],
       }),
-    ).toEqual({ count: 3, waitingCount: 1 });
+    ).toEqual({ count: 2, waitingCount: 1 });
   });
 
   it("says nothing when the thread is idle", () => {
-    expect(
-      summarizeLiveAgents({
-        subagents: [buildSubagent({ status: "completed" })],
-        backgroundRuns: [],
-      }),
-    ).toBeNull();
+    expect(summarizeLiveAgents({ subagents: [buildSubagent({ status: "completed" })] })).toBeNull();
   });
 });
 

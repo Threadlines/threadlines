@@ -467,6 +467,55 @@ describe("ProcessDiagnostics", () => {
     });
   });
 
+  it("never detects a live provider session's own child processes", () => {
+    const SERVER_PID = 100;
+    const processRow = (
+      pid: number,
+      ppid: number,
+      command: string,
+      elapsed = "05:00",
+    ): ProcessDiagnostics.ProcessRow => ({
+      pid,
+      ppid,
+      pgid: pid,
+      status: "S",
+      cpuPercent: 0,
+      rssBytes: 1024,
+      elapsed,
+      command,
+    });
+    const processRows = [
+      // The provider session and its transient tool children.
+      processRow(200, SERVER_PID, "claude --output-format stream-json"),
+      processRow(300, 200, "zsh -c source /Users/will/.claude/shell-snapshots/snapshot.sh"),
+      processRow(400, 300, "ugrep -G --ignore-files --hidden -I -- pattern ."),
+      // A genuinely orphaned dev process, reparented to launchd.
+      processRow(500, 1, "node scripts/dev-runner.ts dev --port 5990"),
+    ];
+
+    // Chat prose mentioned the wrapper and helper pids; hints matched them too.
+    const seeded = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: [],
+      pids: [300, 400],
+      portRows: [],
+      processRows,
+      commandHints: ["zsh -c source snapshot", "ugrep -G --ignore-files"],
+      serverPid: SERVER_PID,
+    });
+    expect(seeded.runs).toEqual([]);
+
+    // The orphan is still found through its command hint.
+    const orphan = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: [],
+      pids: [],
+      portRows: [],
+      processRows,
+      commandHints: ["node scripts/dev-runner.ts dev --port 5990"],
+      serverPid: SERVER_PID,
+    });
+    expect(orphan.runs.map((run) => run.pid)).toEqual([500]);
+  });
+
   it("uses command hints to resolve descendant-owned preview ports", () => {
     const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: ["http://localhost:6013", "http://localhost:14053"],

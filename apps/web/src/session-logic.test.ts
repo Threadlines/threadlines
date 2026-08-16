@@ -3888,6 +3888,73 @@ describe("deriveActiveWorkStartedAt", () => {
   });
 });
 
+describe("subagent.metadata promoted-run lifecycle", () => {
+  /** The three metadata activities a promoted `codex exec` run actually
+   *  projects, copied from a live thread: spawn (callId only), the id link
+   *  once the rollout is claimed, and completion with the final message. */
+  const spawnMetadata = makeActivity({
+    id: "meta-1",
+    kind: "subagent.metadata",
+    summary: "Subagent metadata",
+    tone: "info",
+    turnId: "76441666-8b1e-471f-973f-9a4df8c68929",
+    createdAt: "2026-08-16T22:44:40.796Z",
+    payload: {
+      callId: "toolu_01VFJG1vAyYoJLjP3U38mFfk",
+      status: "running",
+      agentRole: "codex",
+      objective: "Run sol second-opinion review of sanitizer commit",
+      reasoningEffort: "medium",
+      reasoningEffortSource: "explicit",
+    },
+  });
+  const linkMetadata = makeActivity({
+    id: "meta-2",
+    kind: "subagent.metadata",
+    summary: "Subagent metadata",
+    tone: "info",
+    createdAt: "2026-08-16T22:44:45.000Z",
+    payload: {
+      callId: "toolu_01VFJG1vAyYoJLjP3U38mFfk",
+      agentThreadId: "codex-exec:01a00cbf",
+      transcriptAgentId: "codex-exec:01a00cbf",
+      status: "running",
+    },
+  });
+  const completionMetadata = makeActivity({
+    id: "meta-3",
+    kind: "subagent.metadata",
+    summary: "Subagent metadata",
+    tone: "info",
+    createdAt: "2026-08-16T22:45:20.385Z",
+    payload: {
+      callId: "toolu_01VFJG1vAyYoJLjP3U38mFfk",
+      agentThreadId: "codex-exec:01a00cbf",
+      status: "completed",
+      resultBody: "**Verdict:** Partially sound.",
+    },
+  });
+
+  it("shows a promoted run while it is still pending an id", () => {
+    const history = deriveThreadSubagentHistory([spawnMetadata]);
+    expect(history).toHaveLength(1);
+    expect(history[0]?.item.role).toBe("codex");
+    expect(history[0]?.item.status).toBe("running");
+    expect(history[0]?.item.objective).toBe("Run sol second-opinion review of sanitizer commit");
+    expect(history[0]?.item.reasoningEffort).toBe("medium");
+  });
+
+  it("migrates the pending record onto the agent id and settles with the result", () => {
+    const history = deriveThreadSubagentHistory([spawnMetadata, linkMetadata, completionMetadata]);
+    expect(history).toHaveLength(1);
+    const entry = history[0];
+    expect(entry?.item.agentThreadId).toBe("codex-exec:01a00cbf");
+    expect(entry?.item.status).toBe("completed");
+    expect(entry?.item.role).toBe("codex");
+    expect(entry?.resultBody).toBe("**Verdict:** Partially sound.");
+  });
+});
+
 describe("deriveSubagentProgressState", () => {
   it("tracks spawned agents through pending, running, and completed states", () => {
     const activities: OrchestrationThreadActivity[] = [

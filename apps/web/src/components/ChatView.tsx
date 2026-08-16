@@ -6460,12 +6460,8 @@ export default function ChatView(props: ChatViewProps) {
 
   /** The closed panel button's live-agent node. */
   const headerLiveAgents = useMemo(
-    () =>
-      summarizeLiveAgents({
-        subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
-        backgroundRuns,
-      }),
-    [backgroundRuns, subagentProgress?.items],
+    () => summarizeLiveAgents({ subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS }),
+    [subagentProgress?.items],
   );
 
   /**
