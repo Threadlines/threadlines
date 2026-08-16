@@ -43,6 +43,12 @@ export const desktopBackendPortProbeHosts = (mode: DesktopServerExposureMode): r
     ? DESKTOP_NETWORK_ACCESSIBLE_PORT_PROBE_HOSTS
     : DESKTOP_LOCAL_ONLY_PORT_PROBE_HOSTS;
 
+/**
+ * The address whose traffic the backend would actually receive; a listener
+ * reachable here — even one the bind probe cannot see — makes the port unusable.
+ */
+const DESKTOP_BACKEND_PORT_CONNECT_PROBE_HOST = "127.0.0.1";
+
 export const canBindDesktopBackendPort = Effect.fn("desktop.backendPort.canBind")(
   function* (input: { readonly port: number; readonly probeHosts: readonly string[] }) {
     const net = yield* NetService.NetService;
@@ -50,6 +56,13 @@ export const canBindDesktopBackendPort = Effect.fn("desktop.backendPort.canBind"
       if (!(yield* net.canListenOnHost(input.port, host))) {
         return false;
       }
+    }
+    // Bindability alone is not availability: with BSD SO_REUSEADDR semantics a
+    // wildcard listener (another app on 0.0.0.0/:: at this port) coexists with
+    // our specific-address bind and keeps answering the loopback traffic the
+    // window and readiness probe send. Seen live with T3 Code holding 3773.
+    if (yield* net.hasActiveListener(input.port, DESKTOP_BACKEND_PORT_CONNECT_PROBE_HOST)) {
+      return false;
     }
     return true;
   },

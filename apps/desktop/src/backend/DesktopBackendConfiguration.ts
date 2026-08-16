@@ -184,6 +184,7 @@ const ensureBackendPortIsBindable = Effect.fn(
 const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolveStartConfig")(
   function* (input: {
     readonly bootstrapToken: string;
+    readonly launchId: string;
     readonly observabilitySettings: BackendObservabilitySettings;
   }): Effect.fn.Return<
     DesktopBackendManager.DesktopBackendStartConfig,
@@ -211,6 +212,7 @@ const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         threadlinesHome: environment.baseDir,
         host: backendExposure.bindHost,
         desktopBootstrapToken: input.bootstrapToken,
+        desktopLaunchId: input.launchId,
         appVersion: environment.appVersion,
         tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
         tailscaleServePort: backendExposure.tailscaleServePort,
@@ -247,12 +249,17 @@ export const layer = Layer.effect(
           Effect.provideService(NetService.NetService, net),
         );
         const bootstrapToken = yield* getOrCreateBootstrapToken(tokenRef);
+        // Fresh per start attempt: the readiness probe must recognize this
+        // exact spawn, not a previous backend of ours nor an unrelated server
+        // that answers on the same port.
+        const launchId = yield* randomUUIDv4;
         const observabilitySettings = yield* readPersistedBackendObservabilitySettings.pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
         );
         return yield* resolveBackendStartConfig({
           bootstrapToken,
+          launchId,
           observabilitySettings,
         }).pipe(
           Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),

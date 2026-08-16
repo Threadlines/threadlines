@@ -213,6 +213,7 @@ const makeFixture = Effect.fn("makeFixture")(function* () {
     noBrowser: true,
     startupPresentation: "browser",
     desktopBootstrapToken: undefined,
+    desktopLaunchId: undefined,
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     tailscaleServeEnabled: false,

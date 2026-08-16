@@ -71,6 +71,31 @@ it.layer(NetService.layer)("NetService", (it) => {
       ),
     );
 
+    it.effect("hasActiveListener detects a wildcard listener from loopback", () =>
+      Effect.acquireUseRelease(
+        openServer(),
+        (server) =>
+          Effect.gen(function* () {
+            const net = yield* NetService.NetService;
+            const port = getPort(server);
+
+            const listening = yield* net.hasActiveListener(port, "127.0.0.1");
+            assert.equal(listening, true);
+          }),
+        closeServer,
+      ),
+    );
+
+    it.effect("hasActiveListener reports false for a free port", () =>
+      Effect.gen(function* () {
+        const net = yield* NetService.NetService;
+        const port = yield* net.reserveLoopbackPort();
+
+        const listening = yield* net.hasActiveListener(port, "127.0.0.1");
+        assert.equal(listening, false);
+      }),
+    );
+
     it.effect("findAvailablePort returns preferred when it is free", () =>
       Effect.gen(function* () {
         const net = yield* NetService.NetService;

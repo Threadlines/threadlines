@@ -1,4 +1,5 @@
 import Mime from "@effect/platform-node/Mime";
+import { DESKTOP_LAUNCH_ID_HEADER } from "@threadlines/contracts";
 import { decodeOtlpTraceRecords } from "@threadlines/shared/observability";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import * as Data from "effect/Data";
@@ -194,9 +195,16 @@ const serverEnvironmentRouteHandler = Effect.gen(function* () {
   const descriptor = yield* Effect.service(ServerEnvironment).pipe(
     Effect.flatMap((serverEnvironment) => serverEnvironment.getDescriptor),
   );
+  // The desktop's readiness probe only trusts a backend that echoes the
+  // launch id it was spawned with; without this any server answering 200 on
+  // the expected port would pass as ours.
+  const config = yield* ServerConfig;
   return HttpServerResponse.jsonUnsafe(descriptor, {
     status: 200,
-    headers: browserApiCorsHeaders,
+    headers:
+      config.desktopLaunchId !== undefined
+        ? { ...browserApiCorsHeaders, [DESKTOP_LAUNCH_ID_HEADER]: config.desktopLaunchId }
+        : browserApiCorsHeaders,
   });
 });
 

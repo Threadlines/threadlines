@@ -1,4 +1,5 @@
 import {
+  DESKTOP_LAUNCH_ID_HEADER,
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
 } from "@threadlines/contracts";
@@ -278,6 +279,78 @@ describe("DesktopBackendManager", () => {
           "http://127.0.0.1:3773/.well-known/threadlines/environment",
           "http://127.0.0.1:3773/.well-known/threadlines/environment",
         ]);
+      }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+    }),
+  );
+
+  it.effect("treats a 200 without the expected launch id as not ready", () =>
+    Effect.gen(function* () {
+      // The T3 Code collision: an unrelated server answering on our port
+      // returns 200 for every GET but cannot echo this spawn's launch id.
+      const responses: Array<{ readonly status: number; readonly launchId?: string }> = [
+        { status: 200 },
+        { status: 200, launchId: "launch-1" },
+      ];
+      let readyCount = 0;
+      const firstRequest = yield* Deferred.make<void>();
+      const ready = yield* Deferred.make<void>();
+      const exited = yield* Queue.unbounded<void>();
+
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            makeProcess({
+              exitCode: Deferred.await(ready).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+            }),
+          ),
+        ),
+      );
+
+      const managerLayer = makeManagerLayer({
+        spawnerLayer,
+        config: {
+          ...baseConfig,
+          bootstrap: { ...baseConfig.bootstrap, desktopLaunchId: "launch-1" },
+        },
+        httpClientLayer: httpClientLayer((request) =>
+          Effect.gen(function* () {
+            const next = responses.shift();
+            assert.isDefined(next);
+            yield* Deferred.succeed(firstRequest, void 0);
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response(null, {
+                status: next.status,
+                headers:
+                  next.launchId === undefined ? {} : { [DESKTOP_LAUNCH_ID_HEADER]: next.launchId },
+              }),
+            );
+          }),
+        ),
+        desktopWindow: {
+          handleBackendReady: Effect.sync(() => {
+            readyCount += 1;
+          }).pipe(Effect.andThen(Deferred.succeed(ready, void 0))),
+        },
+        backendOutputLog: {
+          writeSessionBoundary: ({ phase }) =>
+            phase === "END" ? Queue.offer(exited, void 0).pipe(Effect.asVoid) : Effect.void,
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const manager = yield* DesktopBackendManager.DesktopBackendManager;
+        yield* manager.start;
+        yield* Deferred.await(firstRequest);
+
+        assert.equal(readyCount, 0);
+
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Queue.take(exited);
+
+        assert.equal(readyCount, 1);
+        assert.equal(responses.length, 0);
       }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
     }),
   );

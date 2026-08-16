@@ -43,10 +43,15 @@ const serverExposureLayer = Layer.succeed(DesktopServerExposure.DesktopServerExp
   getAdvertisedEndpoints: Effect.succeed([]),
 } satisfies DesktopServerExposure.DesktopServerExposureShape);
 
-const makeNetLayer = (occupiedPorts: readonly number[] = []) => {
+const makeNetLayer = (
+  occupiedPorts: readonly number[] = [],
+  listenerPorts: readonly number[] = [],
+) => {
   const occupied = new Set(occupiedPorts);
+  const listeners = new Set(listenerPorts);
   return Layer.succeed(NetService.NetService, {
     canListenOnHost: (port: number) => Effect.succeed(!occupied.has(port)),
+    hasActiveListener: (port: number) => Effect.succeed(listeners.has(port)),
     isPortAvailableOnLoopback: () => Effect.die("unexpected isPortAvailableOnLoopback"),
     reserveLoopbackPort: () => Effect.die("unexpected reserveLoopbackPort"),
     findAvailablePort: () => Effect.die("unexpected findAvailablePort"),
@@ -127,7 +132,10 @@ const withHarness = <A, E, R>(
  * advertised state and the httpBaseUrl the window loads.
  */
 const withLiveExposureHarness = <A, E, R>(
-  input: { readonly occupiedPorts: readonly number[] },
+  input: {
+    readonly occupiedPorts: readonly number[];
+    readonly listenerPorts?: readonly number[];
+  },
   effect: Effect.Effect<
     A,
     E,
@@ -159,7 +167,7 @@ const withLiveExposureHarness = <A, E, R>(
       Effect.provide(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(exposureLayer),
-          Layer.provideMerge(makeNetLayer(input.occupiedPorts)),
+          Layer.provideMerge(makeNetLayer(input.occupiedPorts, input.listenerPorts)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
       ),
@@ -204,6 +212,21 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.bootstrap.tailscaleServePort, 8443);
         assert.match(first.bootstrap.desktopBootstrapToken, /^[0-9a-f]{48}$/i);
         assert.equal(second.bootstrap.desktopBootstrapToken, first.bootstrap.desktopBootstrapToken);
+      }),
+    ),
+  );
+
+  it.effect("issues a fresh launch id per resolved start config", () =>
+    withHarness(
+      Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+
+        const first = yield* configuration.resolve;
+        const second = yield* configuration.resolve;
+
+        assert.isString(first.bootstrap.desktopLaunchId);
+        assert.isNotEmpty(first.bootstrap.desktopLaunchId);
+        assert.notEqual(second.bootstrap.desktopLaunchId, first.bootstrap.desktopLaunchId);
       }),
     ),
   );
@@ -279,6 +302,26 @@ describe("DesktopBackendConfiguration", () => {
         const backendConfig = yield* serverExposure.backendConfig;
         assert.equal(backendConfig.port, 3775);
         assert.equal(backendConfig.httpBaseUrl.href, "http://127.0.0.1:3775/");
+      }),
+    ),
+  );
+
+  it.effect("moves off a bindable port when another server is already answering on it", () =>
+    // The T3 Code collision: a sibling app listening on the wildcard address
+    // leaves 127.0.0.1 bindable (BSD SO_REUSEADDR semantics) but still owns
+    // the port's loopback traffic, so bindability alone must not keep it.
+    withLiveExposureHarness(
+      { occupiedPorts: [], listenerPorts: [3773] },
+      Effect.gen(function* () {
+        const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        yield* serverExposure.configureFromSettings({ port: 3773, selectedByScan: true });
+
+        const config = yield* configuration.resolve;
+
+        assert.equal(config.bootstrap.port, 3774);
+        assert.equal(config.httpBaseUrl.href, "http://127.0.0.1:3774/");
+        assert.equal((yield* serverExposure.backendConfig).port, 3774);
       }),
     ),
   );

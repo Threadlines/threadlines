@@ -20,6 +20,9 @@ const isErrnoExceptionWithCode = (
   Predicate.hasProperty(cause, "code") &&
   Predicate.isString(cause.code);
 
+/** Loopback connects settle in microseconds; this only bounds pathological stalls. */
+const CONNECT_PROBE_TIMEOUT_MS = 500;
+
 const closeServer = (server: NodeNet.Server) => {
   try {
     server.close();
@@ -67,6 +70,16 @@ export interface NetServiceShape {
    * Returns true when a TCP server can bind to {host, port}.
    */
   readonly canListenOnHost: (port: number, host: string) => Effect.Effect<boolean>;
+
+  /**
+   * Returns true when something is accepting TCP connections on {host, port}.
+   *
+   * Complements `canListenOnHost`: with BSD `SO_REUSEADDR` semantics a
+   * specific-address bind can succeed while another process listens on the
+   * wildcard address of the same port, so bindability alone does not prove
+   * the port is free of traffic.
+   */
+  readonly hasActiveListener: (port: number, host: string) => Effect.Effect<boolean>;
 
   /**
    * Checks loopback availability on both IPv4 and IPv6 localhost addresses.
@@ -132,6 +145,35 @@ export const make = () => {
     });
 
   /**
+   * Returns true when a TCP connect to {host, port} is accepted. Connection
+   * refusal, timeout, and other errors all mean "no listener" — the caller
+   * only needs a fast local answer, not a diagnosis.
+   */
+  const hasActiveListener = (port: number, host: string): Effect.Effect<boolean> =>
+    Effect.callback<boolean>((resume) => {
+      const socket = NodeNet.connect({ host, port });
+      let settled = false;
+
+      const settle = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resume(Effect.succeed(value));
+      };
+
+      socket.unref();
+      socket.setTimeout(CONNECT_PROBE_TIMEOUT_MS);
+      socket.once("connect", () => settle(true));
+      socket.once("timeout", () => settle(false));
+      socket.once("error", () => settle(false));
+
+      return Effect.sync(() => {
+        settled = true;
+        socket.destroy();
+      });
+    });
+
+  /**
    * Reserve an ephemeral loopback port and release it immediately.
    * Returns the reserved port number.
    */
@@ -169,6 +211,7 @@ export const make = () => {
 
   return {
     canListenOnHost,
+    hasActiveListener,
     isPortAvailableOnLoopback: (port) =>
       Effect.zipWith(
         canListenOnHost(port, "127.0.0.1"),

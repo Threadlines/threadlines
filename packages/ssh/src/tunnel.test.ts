@@ -79,6 +79,7 @@ const hangingHttpClient = HttpClient.make(() => Effect.never);
 
 const testNetService = NetService.NetService.of({
   canListenOnHost: () => Effect.succeed(true),
+  hasActiveListener: () => Effect.succeed(false),
   isPortAvailableOnLoopback: () => Effect.succeed(true),
   reserveLoopbackPort: () => Effect.succeed(41_773),
   findAvailablePort: (preferred) => Effect.succeed(preferred),

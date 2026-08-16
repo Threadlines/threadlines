@@ -76,6 +76,8 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly noBrowser: boolean;
   readonly startupPresentation: StartupPresentation;
   readonly desktopBootstrapToken: string | undefined;
+  /** Non-secret per-spawn id echoed on the environment route; see contracts. */
+  readonly desktopLaunchId: string | undefined;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
   readonly tailscaleServeEnabled: boolean;
@@ -202,6 +204,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
           host: undefined,
           advertisedHost: undefined,
           desktopBootstrapToken: undefined,
+          desktopLaunchId: undefined,
           staticDir: undefined,
           devUrl,
           noBrowser: false,

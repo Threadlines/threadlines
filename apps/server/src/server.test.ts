@@ -17,6 +17,7 @@ import {
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  DESKTOP_LAUNCH_ID_HEADER,
   ProviderDriverKind,
   ProviderInstanceId,
   ResolvedKeybindingRule,
@@ -455,6 +456,7 @@ const buildAppUnderTest = (options?: {
       noBrowser: true,
       startupPresentation: "browser",
       desktopBootstrapToken: defaultDesktopBootstrapToken,
+      desktopLaunchId: undefined,
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       tailscaleServeEnabled: false,
@@ -1371,6 +1373,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
+      assert.isNull(response.headers.get(DESKTOP_LAUNCH_ID_HEADER));
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("echoes the desktop launch id on the environment descriptor route", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({ config: { desktopLaunchId: "launch-under-test" } });
+
+      const url = yield* getHttpServerUrl("/.well-known/threadlines/environment");
+      const response = yield* Effect.promise(() => fetch(url));
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get(DESKTOP_LAUNCH_ID_HEADER), "launch-under-test");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

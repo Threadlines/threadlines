@@ -21,6 +21,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import {
+  DESKTOP_LAUNCH_ID_HEADER,
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
 } from "@threadlines/contracts";
@@ -180,15 +181,37 @@ const closeRun = (
   ).pipe(Effect.ignore);
 };
 
+class BackendIdentityMismatchError extends Data.TaggedError("BackendIdentityMismatchError")<{
+  readonly url: URL;
+}> {
+  override get message() {
+    return `A server answered at ${this.url.href} without echoing this launch's id, so it is not the backend this desktop started.`;
+  }
+}
+
 const waitForHttpReady = Effect.fn("desktop.backendManager.waitForHttpReady")(function* (
   baseUrl: URL,
   timeout: Duration.Duration,
+  expectedLaunchId: string | undefined,
 ): Effect.fn.Return<void, BackendTimeoutError, HttpClient.HttpClient> {
   const readinessUrl = new URL(BACKEND_READINESS_PATH, baseUrl);
   const timeoutMs = Duration.toMillis(timeout);
   const client = (yield* HttpClient.HttpClient).pipe(
     HttpClient.filterStatusOk,
-    HttpClient.transformResponse(Effect.timeout(DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT)),
+    // A 200 alone is not proof of life: an unrelated app on the same port (a
+    // sibling fork's SPA fallback answers every GET) must keep reading as
+    // "not ready yet", not open the window onto a foreign server.
+    HttpClient.transformResponse((responseEffect) =>
+      responseEffect.pipe(
+        Effect.timeout(DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT),
+        Effect.flatMap((response) =>
+          expectedLaunchId === undefined ||
+          response.headers[DESKTOP_LAUNCH_ID_HEADER] === expectedLaunchId
+            ? Effect.succeed(response)
+            : Effect.fail(new BackendIdentityMismatchError({ url: readinessUrl })),
+        ),
+      ),
+    ),
     HttpClient.retry(Schedule.spaced(DEFAULT_BACKEND_READINESS_INTERVAL)),
   );
 
@@ -274,6 +297,7 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   yield* waitForHttpReady(
     options.httpBaseUrl,
     options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT,
+    options.bootstrap.desktopLaunchId,
   ).pipe(
     Effect.tap(() => options.onReady?.() ?? Effect.void),
     Effect.catch((error) => options.onReadinessFailure?.(error) ?? Effect.void),
