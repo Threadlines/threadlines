@@ -2884,8 +2884,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      // Closing the tabs one at a time empties the strip and lands back on the
-      // launcher, with the sidebar still open.
+      // Closing a background tab leaves the active one on screen.
       (
         document.querySelector("[data-right-panel-close-tab='sourceControl']") as HTMLElement
       ).click();
@@ -2897,23 +2896,23 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
+      // Closing the last tab dismisses the whole sidebar.
       (document.querySelector("[data-right-panel-close-tab='agents']") as HTMLElement).click();
-      await vi.waitFor(
-        () => {
-          expect(document.querySelector("[data-right-panel-launcher='true']")).not.toBeNull();
-          expect(document.querySelector("[data-right-panel-tab='agents']")).toBeNull();
-          // The sidebar itself is still showing, so its toggle stays pressed.
-          expect(railToggle.hasAttribute("data-pressed")).toBe(true);
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-
-      // The header button is what puts the sidebar away.
-      railToggle.click();
       await vi.waitFor(
         () => {
           expect(document.querySelector("[data-chat-right-panel='true']")).toBeNull();
           expect(railToggle.hasAttribute("data-pressed")).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // The header button brings the sidebar back; with the strip empty it
+      // opens on the launcher.
+      railToggle.click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-right-panel-launcher='true']")).not.toBeNull();
+          expect(railToggle.hasAttribute("data-pressed")).toBe(true);
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -6971,7 +6970,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("prefers draft state over sticky composer settings and defaults", async () => {
+  it("resets a reused empty draft to the sticky last-used selection", async () => {
     useComposerDraftStore.setState({
       stickyModelSelectionByProvider: {
         [ProviderInstanceId.make("codex")]: createModelSelection(
@@ -7036,12 +7035,17 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (path) => path === threadPath,
         "New-thread should reuse the existing project draft thread.",
       );
+      // Reusing the empty draft is still a request for a NEW thread, so it
+      // comes back on the sticky last-used selection rather than whatever
+      // model the abandoned draft happened to be left on. (Any real model
+      // pick writes sticky too, so nothing the user chose is lost.)
       expect(composerDraftFor(draftId)).toMatchObject({
         modelSelectionByProvider: {
-          codex: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
-            { id: "reasoningEffort", value: "low" },
-            { id: "fastMode", value: true },
-          ]),
+          codex: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+            options: expect.arrayContaining([{ id: "fastMode", value: true }]),
+          },
         },
         activeProvider: "codex",
       });

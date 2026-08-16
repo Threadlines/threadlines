@@ -113,7 +113,10 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
     platform,
     commandAvailable,
   });
-  const canRunToolUpdate = platform === "win32" && sourceControlToolPackageManager === "winget";
+  // Any verified package manager can run one-click updates: winget on Windows,
+  // Homebrew on macOS and Linux. Installs already work this way; keeping
+  // updates gated to Windows was a leftover from shipping them there first.
+  const canRunToolUpdate = sourceControlToolPackageManager !== null;
 
   const probe = <Kind extends VcsDriverKind>(
     input: DiscoveryProbe & { readonly kind: Kind },

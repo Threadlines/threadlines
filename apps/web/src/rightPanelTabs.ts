@@ -30,7 +30,9 @@ import {
  *  in the URL. */
 export type RightPanelTab = "sourceControl" | "diff" | "agents";
 
-/** Strip order, launcher order and `+` menu order are all this one order. */
+/** Launcher order and `+` menu order. The strip itself is ordered by when each
+ *  tab was opened, like a browser's, so this is only how the fixed menus list
+ *  the surfaces. */
 export const RIGHT_PANEL_TAB_ORDER: ReadonlyArray<RightPanelTab> = [
   "sourceControl",
   "diff",
@@ -127,13 +129,6 @@ export interface RightPanelTabsState {
    * stale value reads as an external navigation and undoes the mutation.
    */
   readonly observedUrlTab: RightPanelTab | null;
-  /**
-   * Set when this store is the one that asked the URL to read as closed by
-   * emptying the strip. A closed URL normally means "hide the sidebar", but that
-   * one case means "show the launcher", and the two are indistinguishable from
-   * the URL alone. Cleared as soon as the closed URL arrives.
-   */
-  readonly keepVisibleWhenUrlCloses: boolean;
 }
 
 export const EMPTY_RIGHT_PANEL_TABS_STATE: RightPanelTabsState = {
@@ -142,12 +137,14 @@ export const EMPTY_RIGHT_PANEL_TABS_STATE: RightPanelTabsState = {
   activeTab: null,
   diffTarget: null,
   observedUrlTab: null,
-  keepVisibleWhenUrlCloses: false,
 };
 
-function orderedTabs(tabs: Iterable<RightPanelTab>): ReadonlyArray<RightPanelTab> {
-  const wanted = new Set(tabs);
-  return RIGHT_PANEL_TAB_ORDER.filter((tab) => wanted.has(tab));
+/** A newly opened tab joins the end of the strip; an open one keeps its slot. */
+function withTab(
+  tabs: ReadonlyArray<RightPanelTab>,
+  tab: RightPanelTab,
+): ReadonlyArray<RightPanelTab> {
+  return tabs.includes(tab) ? tabs : [...tabs, tab];
 }
 
 /** Open-or-focus: tabs are singletons, so this never duplicates one. */
@@ -158,9 +155,8 @@ export function focusRightPanelTabState(
   return {
     ...state,
     visible: true,
-    openTabs: orderedTabs([...state.openTabs, tab]),
+    openTabs: withTab(state.openTabs, tab),
     activeTab: tab,
-    keepVisibleWhenUrlCloses: false,
   };
 }
 
@@ -181,7 +177,7 @@ export function autoOpenAgentsTabState(state: RightPanelTabsState): RightPanelTa
   if (state.visible && state.activeTab !== null && state.activeTab !== "agents") {
     return state.openTabs.includes("agents")
       ? state
-      : { ...state, openTabs: orderedTabs([...state.openTabs, "agents"]) };
+      : { ...state, openTabs: withTab(state.openTabs, "agents") };
   }
   return focusRightPanelTabState(state, "agents");
 }
@@ -237,8 +233,9 @@ export function retargetRightPanelDiffState(
 }
 
 /**
- * Closing a tab from the strip. The sidebar itself stays showing: emptying the
- * strip lands on the launcher rather than dismissing the sidebar.
+ * Closing a tab from the strip. Closing the last tab dismisses the sidebar —
+ * an empty strip on screen is nothing the user asked to keep looking at. The
+ * launcher stays reachable through the header's panel button.
  */
 export function closeRightPanelTabState(
   state: RightPanelTabsState,
@@ -252,15 +249,14 @@ export function closeRightPanelTabState(
   if (tab !== state.activeTab) {
     return { ...state, openTabs, diffTarget };
   }
-  // The neighbour to the right, else the one to the left, else the launcher.
+  // The neighbour to the right, else the one to the left.
   const activeTab = openTabs[index] ?? openTabs[index - 1] ?? null;
   return {
     ...state,
     openTabs,
     activeTab,
     diffTarget,
-    visible: true,
-    keepVisibleWhenUrlCloses: activeTab === null,
+    visible: activeTab !== null,
   };
 }
 
@@ -270,7 +266,7 @@ export function showRightPanelState(
   state: RightPanelTabsState,
   availableTabs: ReadonlyArray<RightPanelTab>,
 ): RightPanelTabsState {
-  const openTabs = orderedTabs(state.openTabs.filter((tab) => availableTabs.includes(tab)));
+  const openTabs = state.openTabs.filter((tab) => availableTabs.includes(tab));
   const activeTab =
     state.activeTab && openTabs.includes(state.activeTab) ? state.activeTab : (openTabs[0] ?? null);
   return { ...state, visible: true, openTabs, activeTab };
@@ -278,7 +274,7 @@ export function showRightPanelState(
 
 /** The header's panel button, hiding the sidebar. The strip is remembered. */
 export function hideRightPanelState(state: RightPanelTabsState): RightPanelTabsState {
-  return { ...state, visible: false, keepVisibleWhenUrlCloses: false };
+  return { ...state, visible: false };
 }
 
 /** The active tab a route search names, if any. */
@@ -399,11 +395,8 @@ export function reconcileRightPanelTabsState(
         observedUrlTab: urlActiveTab,
       };
     }
-    // The strip emptied and asked for a closed URL, which is the launcher.
-    if (urlClosed && previous.keepVisibleWhenUrlCloses) {
-      return { ...previous, observedUrlTab: null, keepVisibleWhenUrlCloses: false };
-    }
-    // Someone else closed the sidebar (the command palette, a sheet auto-hide).
+    // The sidebar closed — the last tab's ✕, the command palette, a sheet
+    // auto-hide. The strip is remembered either way.
     if (urlClosed) {
       return { ...previous, visible: false, observedUrlTab: null };
     }

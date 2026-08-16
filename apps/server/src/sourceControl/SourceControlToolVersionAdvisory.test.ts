@@ -205,6 +205,43 @@ it.effect("does not check Git for Windows latest releases off Windows", () => {
   });
 });
 
+it.effect("offers one-click Homebrew updates for an outdated GitHub CLI on macOS", () =>
+  Effect.gen(function* () {
+    const item: SourceControlProviderDiscoveryItem = {
+      kind: "github",
+      label: "GitHub",
+      executable: "gh",
+      status: "available",
+      version: Option.some("gh version 2.93.0 (2026-05-27)"),
+      installHint: "Install GitHub CLI.",
+      detail: Option.none(),
+      auth: {
+        status: "authenticated",
+        account: Option.some("octocat"),
+        host: Option.some("github.com"),
+        detail: Option.none(),
+      },
+    };
+    const enriched = yield* withSourceControlToolVersionAdvisory({
+      platform: "darwin",
+      packageManager: "homebrew",
+      canRunUpdate: true,
+      latestVersionResolver: () => Effect.succeed("2.98.0"),
+      item,
+    });
+
+    assert.strictEqual(enriched.versionAdvisory?.status, "recommended_update");
+    assert.deepStrictEqual(
+      enriched.versionAdvisory?.actions.find((action) => action.kind === "runUpdate"),
+      { label: "Update now", kind: "runUpdate", target: "github-cli", operation: "update" },
+    );
+    assert.deepStrictEqual(
+      enriched.versionAdvisory?.actions.find((action) => action.kind === "copyCommand"),
+      { label: "Copy Homebrew command", kind: "copyCommand", value: "brew upgrade gh" },
+    );
+  }),
+);
+
 it.effect("offers one-click Homebrew installs for missing macOS source control tools", () =>
   Effect.gen(function* () {
     const item: SourceControlProviderDiscoveryItem = {

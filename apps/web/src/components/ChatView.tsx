@@ -1305,12 +1305,6 @@ export default function ChatView(props: ChatViewProps) {
     [mountedTerminalThreadKeys],
   );
 
-  const fallbackDraftProjectRef = draftThread
-    ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-    : null;
-  const fallbackDraftProject = useStore(
-    useMemo(() => createProjectSelectorByRef(fallbackDraftProjectRef), [fallbackDraftProjectRef]),
-  );
   const localDraftError =
     routeKind === "server" && serverThread
       ? null
@@ -1321,14 +1315,19 @@ export default function ChatView(props: ChatViewProps) {
         ? buildLocalDraftThread(
             threadId,
             draftThread,
-            fallbackDraftProject?.defaultModelSelection ?? {
+            // Deliberately not the project's persisted `defaultModelSelection`:
+            // nothing writes that field anymore, so old projects carry pins
+            // from whenever they were created (e.g. a long-retired model). A
+            // draft with no selection of its own follows the sticky last-used
+            // state, with this offline fallback beneath it.
+            {
               instanceId: ProviderInstanceId.make("codex"),
               model: DEFAULT_MODEL,
             },
             localDraftError,
           )
         : undefined,
-    [draftThread, fallbackDraftProject?.defaultModelSelection, localDraftError, threadId],
+    [draftThread, localDraftError, threadId],
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread
@@ -1704,10 +1703,7 @@ export default function ChatView(props: ChatViewProps) {
   ]);
 
   const selectedProviderByThreadId = composerActiveProvider ?? null;
-  const threadProvider =
-    activeThread?.modelSelection.instanceId ??
-    activeProject?.defaultModelSelection?.instanceId ??
-    null;
+  const threadProvider = activeThread?.modelSelection.instanceId ?? null;
   const primaryServerConfig = useServerConfig();
   const activeEnvRuntimeState = useSavedEnvironmentRuntimeStore((s) =>
     activeThread?.environmentId ? s.byId[activeThread.environmentId] : null,
@@ -2430,10 +2426,7 @@ export default function ChatView(props: ChatViewProps) {
   // than the default Codex's. Falls back to first-match-by-kind when no
   // saved instance id is available or the instance no longer exists.
   const activeProviderInstanceId =
-    activeThread?.session?.providerInstanceId ??
-    activeThread?.modelSelection.instanceId ??
-    activeProject?.defaultModelSelection?.instanceId ??
-    null;
+    activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null;
   const activeProviderStatus = useMemo(() => {
     if (activeProviderInstanceId) {
       return (
@@ -4807,7 +4800,7 @@ export default function ChatView(props: ChatViewProps) {
       const title = truncate(titleSeed);
       const threadCreateModelSelection = createModelSelection(
         ctxSelectedModelSelection.instanceId,
-        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        ctxSelectedModel || DEFAULT_MODEL,
         ctxSelectedModelSelection.options,
       );
 
@@ -5841,7 +5834,7 @@ export default function ChatView(props: ChatViewProps) {
     if (sendCtx) {
       return sendCtx.selectedModelSelection;
     }
-    const persistedSelection = activeThread?.modelSelection ?? activeProject?.defaultModelSelection;
+    const persistedSelection = activeThread?.modelSelection ?? null;
     if (persistedSelection) {
       const resolved = buildForkModelSelection(
         persistedSelection.instanceId,
@@ -5865,12 +5858,7 @@ export default function ChatView(props: ChatViewProps) {
       }
     }
     return createModelSelection(defaultInstanceIdForDriver(CODEX_PROVIDER_DRIVER), DEFAULT_MODEL);
-  }, [
-    activeProject?.defaultModelSelection,
-    activeThread?.modelSelection,
-    buildForkModelSelection,
-    providerInstanceEntries,
-  ]);
+  }, [activeThread?.modelSelection, buildForkModelSelection, providerInstanceEntries]);
 
   const onContinueMessageInNewThread = useCallback(
     (messageId: MessageId) => {
@@ -6775,7 +6763,6 @@ export default function ChatView(props: ChatViewProps) {
                   // cross-provider handoff confirmation.
                   lockedProvider={null}
                   providerStatuses={providerStatuses as ServerProvider[]}
-                  activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
                   // A local draft has not chosen a concrete model yet. Ignore
                   // its placeholder Thread value so the composer can resolve
                   // the active provider instance's live `isDefault` model.

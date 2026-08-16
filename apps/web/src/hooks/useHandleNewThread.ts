@@ -96,6 +96,10 @@ function useNewThreadState() {
         : null;
       if (emptyStoredDraftThread) {
         return (async () => {
+          // A reused draft can hold the model it was minted with long ago;
+          // "new thread" means the last-used model, so sticky state is
+          // re-applied here just as it is for a freshly minted draft.
+          applyStickyState(emptyStoredDraftThread.draftId);
           if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
             setDraftThreadContext(emptyStoredDraftThread.draftId, {
               ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
@@ -135,6 +139,7 @@ function useNewThreadState() {
         // invested draft mints a fresh one instead of repurposing it.
         !composerDraftHasUserContent(getComposerDraft(currentRouteTarget.draftId))
       ) {
+        applyStickyState(currentRouteTarget.draftId);
         if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
           setDraftThreadContext(currentRouteTarget.draftId, {
             ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),

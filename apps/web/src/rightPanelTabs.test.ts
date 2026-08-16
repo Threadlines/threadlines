@@ -113,12 +113,12 @@ describe("rightPanelTabSearchParams", () => {
 });
 
 describe("right panel tab transitions", () => {
-  it("opens tabs in canonical order and never duplicates one", () => {
+  it("opens tabs in the order they were opened and never duplicates one", () => {
     let state = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "agents");
     state = focusRightPanelTabState(state, "sourceControl");
     state = focusRightPanelTabState(state, "agents");
 
-    expect(state.openTabs).toEqual(["sourceControl", "agents"]);
+    expect(state.openTabs).toEqual(["agents", "sourceControl"]);
     expect(state.activeTab).toBe("agents");
     expect(state.visible).toBe(true);
   });
@@ -133,7 +133,7 @@ describe("right panel tab transitions", () => {
     expect(state.diffTarget).toEqual({ diffFilePath: "b.ts", diffMode: "workingTree" });
   });
 
-  it("closes to the neighbouring tab and leaves the sidebar showing when the strip empties", () => {
+  it("closes to the neighbouring tab and dismisses the sidebar when the strip empties", () => {
     let state = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "sourceControl");
     state = retargetRightPanelDiffState(state, { diffMode: "workingTree" });
     state = focusRightPanelTabState(state, "agents");
@@ -150,8 +150,8 @@ describe("right panel tab transitions", () => {
     const empty = closeRightPanelTabState(withoutAgents, "diff");
     expect(empty.openTabs).toEqual([]);
     expect(empty.activeTab).toBeNull();
-    // The launcher, not a dismissal.
-    expect(empty.visible).toBe(true);
+    // Closing the last tab closes the whole sidebar.
+    expect(empty.visible).toBe(false);
     // A closed diff tab forgets its file, so reopening it is the working tree.
     expect(empty.diffTarget).toBeNull();
   });
@@ -225,10 +225,10 @@ describe("reconcileRightPanelTabsState", () => {
     expect(state.diffTarget).toEqual({ diffFilePath: "src/app.ts" });
   });
 
-  /** The mutation and the navigation it asks for both look like "closed" in the
-   *  URL, so this is the case the keep-visible flag exists for. */
-  it("keeps the launcher showing after the last tab is closed", () => {
+  it("stays dismissed once the closed URL from closing the last tab arrives", () => {
     const emptied = closeRightPanelTabState(openedOn("agents"), "agents");
+    expect(emptied.visible).toBe(false);
+
     const state = reconcileRightPanelTabsState(emptied, {
       urlActiveTab: null,
       urlClosed: true,
@@ -237,7 +237,7 @@ describe("reconcileRightPanelTabsState", () => {
       defaultVisible: false,
     });
 
-    expect(state.visible).toBe(true);
+    expect(state.visible).toBe(false);
     expect(state.openTabs).toEqual([]);
   });
 

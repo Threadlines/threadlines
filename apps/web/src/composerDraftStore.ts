@@ -1150,11 +1150,9 @@ export function deriveEffectiveComposerModelState(input: {
    */
   selectedInstanceId?: ProviderInstanceId | null | undefined;
   threadModelSelection: ModelSelection | null | undefined;
-  projectModelSelection: ModelSelection | null | undefined;
   settings: UnifiedSettings;
 }): EffectiveComposerModelState {
-  const baseModelCandidate =
-    input.threadModelSelection?.model ?? input.projectModelSelection?.model ?? null;
+  const baseModelCandidate = input.threadModelSelection?.model ?? null;
   const baseModel =
     (input.selectedInstanceId
       ? resolveAppModelSelectionForInstance(
@@ -1202,7 +1200,6 @@ export function deriveEffectiveComposerModelState(input: {
   const modelOptions =
     modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??
     providerSelectionsFromModelSelection(input.threadModelSelection) ??
-    providerSelectionsFromModelSelection(input.projectModelSelection) ??
     null;
 
   return {
@@ -2886,13 +2883,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               if (selection) {
                 // Iteration key comes from the instance-keyed sticky map,
                 // so coerce the string back to `ProviderInstanceId` for
-                // the typed lookup.
+                // the typed lookup. The sticky selection wins over anything
+                // the draft already held: every model pick — in a thread or
+                // in a draft — also writes sticky, so sticky is always at
+                // least as fresh, while a reused draft's own selection can
+                // date from whenever that draft was abandoned.
                 const instanceKey = provider as ProviderInstanceId;
-                const current = nextMap[instanceKey];
-                nextMap[instanceKey] = {
-                  ...selection,
-                  model: current?.model ?? selection.model,
-                };
+                nextMap[instanceKey] = selection;
               }
             }
             if (
@@ -3878,7 +3875,6 @@ export function useEffectiveComposerModelState(input: {
    */
   selectedInstanceId?: ProviderInstanceId | null | undefined;
   threadModelSelection: ModelSelection | null | undefined;
-  projectModelSelection: ModelSelection | null | undefined;
   settings: UnifiedSettings;
 }): EffectiveComposerModelState {
   const draft = useComposerDraftModelState(input.threadRef ?? input.draftId ?? DraftId.make(""));
@@ -3891,14 +3887,12 @@ export function useEffectiveComposerModelState(input: {
         selectedProvider: input.selectedProvider,
         selectedInstanceId: input.selectedInstanceId,
         threadModelSelection: input.threadModelSelection,
-        projectModelSelection: input.projectModelSelection,
         settings: input.settings,
       }),
     [
       draft,
       input.providers,
       input.settings,
-      input.projectModelSelection,
       input.selectedInstanceId,
       input.selectedProvider,
       input.threadModelSelection,

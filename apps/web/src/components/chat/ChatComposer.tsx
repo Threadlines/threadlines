@@ -519,7 +519,6 @@ export interface ChatComposerProps {
   // Provider / model
   lockedProvider: ProviderDriverKind | null;
   providerStatuses: ServerProvider[];
-  activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
 
   // Context window
@@ -635,7 +634,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     interactionMode,
     lockedProvider,
     providerStatuses,
-    activeProjectDefaultModelSelection,
     activeThreadModelSelection,
     activeThreadActivities,
     notices,
@@ -819,10 +817,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
   const threadProvider =
-    activeThread?.session?.providerInstanceId ??
-    activeThreadModelSelection?.instanceId ??
-    activeProjectDefaultModelSelection?.instanceId ??
-    null;
+    activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId ?? null;
   const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
   const unlockedSelectedProvider =
@@ -860,16 +855,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   //      from the model picker (must win, otherwise the UI appears to
   //      ignore picker selections).
   //   2. Thread's persisted instance id (server-side saved selection).
-  //   3. Project default's instance id.
-  //   4. First enabled entry matching the current driver kind.
-  //   5. First enabled entry overall / default instance for the kind.
+  //   3. First enabled entry matching the current driver kind.
+  //   4. First enabled entry overall / default instance for the kind.
   //
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
     const candidates: Array<string | null | undefined> = [
       composerDraft.activeProvider,
       activeThread?.session?.providerInstanceId,
       activeThreadModelSelection?.instanceId,
-      activeProjectDefaultModelSelection?.instanceId,
     ];
     for (const candidate of candidates) {
       if (!candidate) continue;
@@ -901,11 +894,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       anyEnabled?.instanceId ??
       providerInstanceEntries[0]?.instanceId ??
       activeThreadModelSelection?.instanceId ??
-      activeProjectDefaultModelSelection?.instanceId ??
       ProviderInstanceId.make("codex")
     );
   }, [
-    activeProjectDefaultModelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
@@ -921,7 +912,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProvider,
     selectedInstanceId,
     threadModelSelection: activeThreadModelSelection,
-    projectModelSelection: activeProjectDefaultModelSelection,
     settings,
   });
 
