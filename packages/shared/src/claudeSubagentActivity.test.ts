@@ -46,6 +46,10 @@ describe("extractClaudeSubagentResultText", () => {
     // implementation would time the suite out long before failing it.
     const hostile = `report${"\t".repeat(50_000)}${"<usage>".repeat(2_000)}`;
     expect(extractClaudeSubagentResultText(hostile)).toContain("report");
+    // Stacked complete blocks exercise the loop itself: each strip must move
+    // an index, not rescan the string, or this input goes quadratic.
+    const stacked = `report${"<usage>x</usage>".repeat(20_000)}`;
+    expect(extractClaudeSubagentResultText(stacked)).toBe("report");
   });
 });
 

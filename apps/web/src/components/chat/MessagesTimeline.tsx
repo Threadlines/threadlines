@@ -1743,7 +1743,12 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     row.kind === "message" && row.message.id === ctx.activeSearchTargetMessageId;
   return (
     <div
-      className={cn("pb-4", isActiveSearchTarget && "thread-search-target-pulse")}
+      // A row whose section renders nothing (e.g. an all-anchor work group
+      // with no resolvable tracker) must not leave a phantom padded gap.
+      className={cn(
+        "pb-4 [&:not(:has(*))]:pb-0",
+        isActiveSearchTarget && "thread-search-target-pulse",
+      )}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
       data-message-id={row.kind === "message" ? row.message.id : undefined}

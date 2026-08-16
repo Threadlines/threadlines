@@ -330,7 +330,14 @@ export const AgentsPanel = memo(function AgentsPanel({
   const selectedSubagentWorkEntries = useMemo(
     () =>
       selectedSubagentThreadId
-        ? workEntries.filter((entry) => entry.sourceAgentThreadId === selectedSubagentThreadId)
+        ? workEntries.filter(
+            (entry) =>
+              entry.sourceAgentThreadId === selectedSubagentThreadId ||
+              // Background tasks the agent started in its own conversation:
+              // for Claude agents the owner spawn call id is the agent's
+              // thread id, so they belong to the same drill-in view.
+              entry.ownerAgentToolUseId === selectedSubagentThreadId,
+          )
         : [],
     [selectedSubagentThreadId, workEntries],
   );

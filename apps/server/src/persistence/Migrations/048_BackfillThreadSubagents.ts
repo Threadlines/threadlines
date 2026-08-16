@@ -18,9 +18,11 @@ interface ActivityRow {
 /** The rows that can move the roster fold: collab tool items create/update
  *  agents, the task stream links transcripts and settles completions, and
  *  subagent.metadata enriches identity. Everything else is a no-op in
- *  projectSubagentActivity, so it never has to be loaded. */
+ *  projectSubagentActivity, so it never has to be loaded. The json_valid
+ *  guard matters: json_extract RAISES on malformed JSON rather than returning
+ *  NULL, and one corrupt row must not abort the whole migration. */
 const CANDIDATE_FILTER = `
-  json_extract(payload_json, '$.itemType') = 'collab_agent_tool_call'
+  (json_valid(payload_json) AND json_extract(payload_json, '$.itemType') = 'collab_agent_tool_call')
   OR kind IN ('task.started', 'task.progress', 'task.completed', 'subagent.metadata')
 `;
 
@@ -36,8 +38,14 @@ const CANDIDATE_FILTER = `
  * the order the incremental fold saw them. The listing sort (sequence, then
  * created_at, then activity id) is not usable here: lifecycle rows often share
  * a timestamp and carry random ids, and replaying a completion before its
- * update would resurrect a settled agent. Threads are processed one at a time
- * so memory stays proportional to a single thread's agent activity.
+ * update would resurrect a settled agent. (One caveat: the thread.reverted
+ * handler rewrites a thread's activities in listing order with fresh rowids —
+ * for those threads rowid order IS listing order, which is also exactly what
+ * the live rebuild folds, so the results agree.) Threads are processed one at
+ * a time so memory stays proportional to a single thread's agent activity,
+ * and a thread whose replay fails is logged and skipped rather than aborting
+ * the migration — an unbootable server is strictly worse than one thread
+ * with a stale roster.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -46,7 +54,26 @@ export default Effect.gen(function* () {
     SELECT DISTINCT thread_id FROM projection_thread_activities WHERE ${CANDIDATE_FILTER}
   `)) as unknown as ReadonlyArray<{ readonly thread_id: string }>;
 
+  // This is a rebuild: rosters for threads with no roster-moving activity
+  // left (all candidate rows pruned or the 047 SQL backfill guessed wrong)
+  // would otherwise survive every re-run untouched.
+  yield* sql.unsafe(`
+    DELETE FROM projection_thread_subagents WHERE thread_id NOT IN (
+      SELECT DISTINCT thread_id FROM projection_thread_activities WHERE ${CANDIDATE_FILTER}
+    )
+  `);
+
   for (const { thread_id: threadId } of threads) {
+    yield* backfillThread(sql, threadId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("subagent roster backfill skipped a thread", { threadId, error }),
+      ),
+    );
+  }
+});
+
+const backfillThread = (sql: SqlClient.SqlClient, threadId: string) =>
+  Effect.gen(function* () {
     const rows = (yield* sql.unsafe(
       `
         SELECT activity_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
@@ -79,7 +106,7 @@ export default Effect.gen(function* () {
     }
 
     yield* sql`DELETE FROM projection_thread_subagents WHERE thread_id = ${threadId}`;
-    if (subagents.length === 0) continue;
+    if (subagents.length === 0) return;
     yield* sql`
       INSERT INTO projection_thread_subagents ${sql.insert(
         subagents.map((row) => ({
@@ -109,5 +136,4 @@ export default Effect.gen(function* () {
         })),
       )}
     `;
-  }
-});
+  });

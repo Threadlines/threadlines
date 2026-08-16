@@ -104,18 +104,27 @@ function sanitizeClaudeSubagentResultText(value: string | null): string | null {
  *  by index arithmetic. The result text is provider-influenced input, so this
  *  deliberately avoids a backtracking regex over the whole string. */
 function stripTrailingUsageBlocks(value: string): string {
-  let result = value.trimEnd();
+  // Lowercased once; the loop only moves an end index backward, so stacked
+  // trailing blocks stay linear instead of re-scanning the string per block.
+  const lower = value.toLowerCase();
+  let end = value.length;
   for (;;) {
-    const lower = result.toLowerCase();
-    if (!lower.endsWith("</usage>")) {
-      return result;
+    while (end > 0 && isWhitespaceCharCode(value.charCodeAt(end - 1))) {
+      end -= 1;
     }
-    const open = lower.lastIndexOf("<usage>", result.length - "</usage>".length);
+    if (!lower.endsWith("</usage>", end)) {
+      return value.slice(0, end);
+    }
+    const open = lower.lastIndexOf("<usage>", end - "</usage>".length);
     if (open === -1) {
-      return result;
+      return value.slice(0, end);
     }
-    result = result.slice(0, open).trimEnd();
+    end = open;
   }
+}
+
+function isWhitespaceCharCode(code: number): boolean {
+  return code === 0x20 || (code >= 0x09 && code <= 0x0d) || code === 0xa0;
 }
 
 /** The footer is one short parenthetical; anchoring the pattern to a bounded

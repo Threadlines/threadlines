@@ -130,6 +130,11 @@ export interface WorkLogEntry {
    *  is the test for "this is not the main agent's activity". The conversation
    *  excludes these rows; the rail's Agents tab owns them. */
   sourceAgentThreadId?: string;
+  /** Spawn call of the agent whose conversation started this background task
+   *  (e.g. a test run the agent kicked off). Set only on task rows the
+   *  provider stamped with an owner; the rail's per-agent work view includes
+   *  these rows alongside the `sourceAgentThreadId` ones. */
+  ownerAgentToolUseId?: string;
   /** Provider tool call id backing this row, when the activity carried one.
    *  Lets the timeline correlate a subagent lane with its spawn row. */
   toolCallId?: string;
@@ -2102,8 +2107,12 @@ function toDerivedWorkLogEntry(
     if (ownerAgentToolUseId !== null) {
       // A task an agent started inside its own conversation (e.g. a background
       // test run): its rows belong to that agent's lane, keyed by the spawn
-      // call so the tracker and the rail attribute them correctly.
+      // call so the tracker and the rail attribute them correctly. The owner
+      // id also stays on the entry itself: for Claude agents the spawn call id
+      // IS the agent's thread id, so the rail's per-agent work filter can
+      // include these rows the same way it includes forwarded child work.
       entry.subagentTask = { subagentType, toolUseId: ownerAgentToolUseId };
+      entry.ownerAgentToolUseId = ownerAgentToolUseId;
     } else if (
       subagentType !== null ||
       (taskId !== null && agentTaskIndex.agentTaskIds.has(taskId))
