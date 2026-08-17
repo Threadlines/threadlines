@@ -92,7 +92,6 @@ describe("buildAgentBranches", () => {
           createdAt: "2026-08-11T10:03:00.000Z",
         }),
       ],
-      backgroundRuns: [],
     });
 
     expect(branches.map((branch) => branch.key)).toEqual([
@@ -117,7 +116,6 @@ describe("buildAgentBranches", () => {
         }),
         buildSubagent({ id: "native", spawnCallId: "tool-native" }),
       ],
-      backgroundRuns: [],
       subagentRuns: new Map([
         ["tool-codex-exec", run],
         // A settled agent's process is already gone, so its row never offers
@@ -145,7 +143,6 @@ describe("buildAgentBranches", () => {
         buildSubagent({ id: "starting", status: "starting" }),
         buildSubagent({ id: "interrupted", status: "interrupted" }),
       ],
-      backgroundRuns: [],
     });
 
     expect(branches.map((branch) => `${branch.key}:${branch.status}`)).toEqual([
@@ -181,7 +178,6 @@ describe("buildAgentBranches", () => {
           },
         }),
       ],
-      backgroundRuns: [],
     });
 
     expect(running?.output).toBe("Running the test suite");
@@ -192,69 +188,18 @@ describe("buildAgentBranches", () => {
   it("falls back to the agent's streamed prose when the provider reports no step", () => {
     const [branch] = buildAgentBranches({
       subagents: [buildSubagent({ liveBody: "  Reading   the   route  \n  files " })],
-      backgroundRuns: [],
     });
 
     expect(branch?.output).toBe("Reading the route files");
   });
 
-  it("marks a run with its provenance and the terminal it toggles", () => {
-    const branches = buildAgentBranches({
-      subagents: [],
-      backgroundRuns: [
-        buildRun({ id: "detected-run" }),
-        buildRun({
-          id: "provider-run",
-          source: "provider",
-          providerKind: "command",
-          terminalId: "terminal-a",
-          terminalVisible: true,
-          label: "Dev server task",
-        }),
-      ],
-      providerLabel: "codex",
-    });
-
-    expect(branches.map((branch) => branch.tag)).toEqual(["codex · detected", "codex · provider"]);
-    const providerBranch = branches.find((branch) => branch.key === "run:provider-run");
-    expect(providerBranch?.kind === "run" && providerBranch.terminalId).toBe("terminal-a");
-    expect(providerBranch?.kind === "run" && providerBranch.terminalVisible).toBe(true);
-  });
-
-  it("leaves the user's own terminals out: a hand-run shell is not orchestration", () => {
-    const branches = buildAgentBranches({
-      subagents: [],
-      backgroundRuns: [
-        buildRun({ id: "detected-run" }),
-        buildRun({
-          id: "terminal-run",
-          source: "terminal",
-          terminalId: "terminal-a",
-          label: "vp run dev:desktop",
-        }),
-      ],
-      providerLabel: "codex",
-    });
-
-    expect(branches.map((branch) => branch.key)).toEqual(["run:detected-run"]);
-  });
-
-  it("names a run's served URL as its latest output", () => {
-    const [branch] = buildAgentBranches({
-      subagents: [],
-      backgroundRuns: [buildRun({ urls: ["http://localhost:5173"] })],
-    });
-
-    expect(branch?.output).toBe("http://localhost:5173");
-  });
-
-  it("keeps subagents and runs in one ordering, agents ahead of untimed runs", () => {
+  it("never draws background command runs: the activity chip is their surface", () => {
     const branches = buildAgentBranches({
       subagents: [buildSubagent({ id: "agent", status: "running" })],
-      backgroundRuns: [buildRun({ id: "run" })],
     });
 
-    expect(branches.map((branch) => branch.key)).toEqual(["subagent:agent", "run:run"]);
+    expect(branches.map((branch) => branch.key)).toEqual(["subagent:agent"]);
+    expect(branches.every((branch) => branch.kind === "subagent")).toBe(true);
   });
 });
 
@@ -267,7 +212,6 @@ describe("buildAgentsPanelView", () => {
   it("keeps finished agents listed after the live items empty", () => {
     const view = buildAgentsPanelView({
       subagents: [],
-      backgroundRuns: [],
       history: [
         historyOf(
           buildSubagent({
@@ -304,32 +248,12 @@ describe("buildAgentsPanelView", () => {
     expect(view.earlier[0]?.time).toBe("12m ago");
   });
 
-  it("keeps background commands out of the agent list, in their own section", () => {
-    const view = buildAgentsPanelView({
-      subagents: [buildSubagent({ id: "live", agentThreadId: "agent-live", status: "running" })],
-      backgroundRuns: [
-        buildRun({
-          id: "provider:task-watch",
-          source: "provider",
-          label: "Watch PR 162 CI until settled",
-          port: null,
-        }),
-      ],
-    });
-
-    expect(view.current.map((branch) => branch.kind)).toEqual(["subagent"]);
-    expect(view.commands.map((branch) => branch.kind)).toEqual(["run"]);
-    expect(view.hasAny).toBe(true);
-  });
-
-  it("counts a command-only thread as having content", () => {
+  it("holds only agents: a thread with nothing but commands running is empty", () => {
     const view = buildAgentsPanelView({
       subagents: [],
-      backgroundRuns: [buildRun({ id: "provider:task-1", source: "provider" })],
     });
     expect(view.current).toEqual([]);
-    expect(view.commands).toHaveLength(1);
-    expect(view.hasAny).toBe(true);
+    expect(view.hasAny).toBe(false);
   });
 
   describe("formatAgentsPanelSummary", () => {
@@ -348,7 +272,6 @@ describe("buildAgentsPanelView", () => {
             statusLabel: "Needs approval",
           }),
         ],
-        backgroundRuns: [],
         history: [
           historyOf(
             buildSubagent({ id: "old", agentThreadId: "old", status: "completed" }),
@@ -362,19 +285,16 @@ describe("buildAgentsPanelView", () => {
       );
     });
 
-    it("counts a background run as a run rather than as an agent", () => {
+    it("never mentions background runs: they are not agents", () => {
       const view = viewOf({
         subagents: [buildSubagent({ id: "a", agentThreadId: "a", status: "running" })],
-        backgroundRuns: [buildRun({ id: "detected:default" })],
       });
 
-      expect(formatAgentsPanelSummary(view, "claude")).toBe("Claude · 1 running · 1 run");
+      expect(formatAgentsPanelSummary(view, "claude")).toBe("Claude · 1 running");
     });
 
     it("has nothing to say about a thread that has never run an agent", () => {
-      expect(
-        formatAgentsPanelSummary(viewOf({ subagents: [], backgroundRuns: [] }), "codex"),
-      ).toBeNull();
+      expect(formatAgentsPanelSummary(viewOf({ subagents: [] }), "codex")).toBeNull();
     });
   });
 
@@ -383,7 +303,6 @@ describe("buildAgentsPanelView", () => {
     // model, effort and age rather than dropping to just an age.
     const view = buildAgentsPanelView({
       subagents: [],
-      backgroundRuns: [],
       history: [
         historyOf(
           buildSubagent({
@@ -423,7 +342,6 @@ describe("buildAgentsPanelView", () => {
           createdAt: "2026-08-11T10:11:24.000Z",
         }),
       ],
-      backgroundRuns: [],
       nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
     });
 
@@ -433,7 +351,6 @@ describe("buildAgentsPanelView", () => {
   it("orders the history newest first", () => {
     const view = buildAgentsPanelView({
       subagents: [],
-      backgroundRuns: [],
       history: [
         historyOf(
           buildSubagent({
@@ -460,7 +377,6 @@ describe("buildAgentsPanelView", () => {
   it("lets the live record win over its own history counterpart", () => {
     const view = buildAgentsPanelView({
       subagents: [buildSubagent({ id: "agent", agentThreadId: "agent-thread", status: "running" })],
-      backgroundRuns: [],
       history: [
         historyOf(
           buildSubagent({ id: "agent", agentThreadId: "agent-thread", status: "completed" }),
@@ -475,7 +391,6 @@ describe("buildAgentsPanelView", () => {
   it("renders a failed history record as a failure rather than a quiet completion", () => {
     const view = buildAgentsPanelView({
       subagents: [],
-      backgroundRuns: [],
       history: [
         historyOf(
           buildSubagent({
@@ -500,7 +415,6 @@ describe("findAgentsPanelSubagent", () => {
   it("resolves an agent that exists only in the thread's history", () => {
     const view = buildAgentsPanelView({
       subagents: [],
-      backgroundRuns: [],
       history: [
         {
           item: buildSubagent({ id: "old", agentThreadId: "agent-old", status: "completed" }),
