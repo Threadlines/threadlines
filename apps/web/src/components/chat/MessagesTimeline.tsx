@@ -3074,6 +3074,13 @@ function withInferredFileChangePaths(
   if (!isFileChangeWorkEntry(entry) || (entry.changedFiles?.length ?? 0) > 0) {
     return entry;
   }
+  // A running edit that hasn't revealed its target (tool input still
+  // streaming) must not adopt the turn's accumulated file list: that pins
+  // the previous edits' files — and their whole-turn +/- totals — onto an
+  // unrelated in-flight row.
+  if (entry.executionState === "running") {
+    return entry;
+  }
 
   const turnSummary = resolveWorkEntryTurnDiffSummary(entry, turnDiffSummaryByTurnId);
   if (!turnSummary || turnSummary.files.length === 0) {

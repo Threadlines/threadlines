@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 import type {
   SourceControlToolUpdateOperation,
   SourceControlToolUpdateTarget,
@@ -51,6 +53,25 @@ export function sourceControlToolLabel(target: SourceControlToolUpdateTarget): s
 
 export function winGetPackageId(target: SourceControlToolUpdateTarget): string {
   return WINGET_PACKAGE_IDS[target];
+}
+
+/**
+ * Whether an executable on the PATH is actually a Homebrew keg. `brew upgrade`
+ * only works on formulae Homebrew itself installed; a tool that merely shares
+ * the PATH (Apple's `/usr/bin/git`, a `gh` from its own installer under
+ * `~/.local`) makes it fail with "Error: <formula> not installed". Homebrew
+ * links every keg's binaries out of `<prefix>/Cellar`, and the prefix is where
+ * the `brew` command itself lives (`<prefix>/bin/brew`), so the check is: does
+ * the executable's real path (symlinks resolved) live under that Cellar.
+ */
+export function isHomebrewCellarExecutable(input: {
+  readonly executableRealPath: string | null;
+  readonly brewCommandPath: string | null;
+}): boolean {
+  if (!input.executableRealPath || !input.brewCommandPath) return false;
+  const brewPrefix = path.dirname(path.dirname(input.brewCommandPath));
+  const cellar = path.join(brewPrefix, "Cellar") + path.sep;
+  return input.executableRealPath.startsWith(cellar);
 }
 
 export function selectSourceControlToolPackageManager(input: {

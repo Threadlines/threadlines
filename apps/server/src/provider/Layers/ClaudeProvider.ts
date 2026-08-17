@@ -961,14 +961,24 @@ export function parseClaudeAuthStatusEmail(stdout: string): string | undefined {
   }
 }
 
-export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(function* (
-  claudeSettings: ClaudeSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-) {
+/**
+ * Copy of `environment` without any token/API-key overrides, so a spawned CLI
+ * falls back to the normal Claude sign-in credential (macOS Keychain or
+ * `~/.claude/.credentials.json`).
+ */
+function stripClaudeTokenAuth(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const normalAuthEnvironment = { ...environment };
   delete normalAuthEnvironment[CLAUDE_CODE_OAUTH_TOKEN_ENV];
   delete normalAuthEnvironment.ANTHROPIC_AUTH_TOKEN;
   delete normalAuthEnvironment.ANTHROPIC_API_KEY;
+  return normalAuthEnvironment;
+}
+
+export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(function* (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const normalAuthEnvironment = stripClaudeTokenAuth(environment);
 
   const result = yield* runClaudeCommand(
     claudeSettings,
@@ -979,6 +989,69 @@ export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(
   if (result.success.value.code !== 0) return undefined;
   return parseClaudeAuthStatusEmail(result.success.value.stdout);
 });
+
+// A renewal needs a real API round trip: the CLI refreshes its OAuth
+// credential lazily when a turn needs a token, not on initialization (the
+// capabilities probe above never reaches the API, so it renews nothing).
+const CREDENTIAL_REFRESH_TIMEOUT_MS = 60_000;
+const CREDENTIAL_REFRESH_PROMPT = "Reply with exactly: ok";
+
+/**
+ * Run one minimal Haiku turn on normal Claude sign-in (token/API-key env
+ * stripped) so the CLI renews its stored OAuth credential and persists it to
+ * the credential store (macOS Keychain or `~/.claude/.credentials.json`).
+ * Threadlines never implements OAuth refresh itself — the CLI owns the store
+ * and the refresh-token rotation; live-verified to persist immediately from
+ * a short non-interactive run. Resolves to true when the turn completed,
+ * i.e. the sign-in works and a renewed credential should now be stored.
+ */
+export const refreshClaudeOAuthCredential = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+): Effect.Effect<boolean, never, Path.Path> => {
+  const abort = new AbortController();
+  return Effect.gen(function* () {
+    const claudeEnvironment = yield* makeClaudeEnvironment(
+      claudeSettings,
+      stripClaudeTokenAuth(environment),
+    );
+    return yield* Effect.tryPromise(async () => {
+      const q = claudeQuery({
+        prompt: CREDENTIAL_REFRESH_PROMPT,
+        options: {
+          persistSession: false,
+          pathToClaudeCodeExecutable: claudeSettings.binaryPath,
+          abortController: abort,
+          // No filesystem settings and no hooks: this run exists only to make
+          // the CLI renew its credential, not to act on the user's config.
+          settingSources: [],
+          settings: { disableAllHooks: true },
+          allowedTools: [],
+          maxTurns: 1,
+          model: "haiku",
+          env: claudeEnvironment,
+          stderr: () => {},
+        },
+      });
+      for await (const message of q) {
+        if (message.type === "result") return message.subtype === "success";
+      }
+      return false;
+    });
+  }).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        if (!abort.signal.aborted) abort.abort();
+      }),
+    ),
+    Effect.timeoutOption(CREDENTIAL_REFRESH_TIMEOUT_MS),
+    Effect.result,
+    Effect.map(
+      (result) =>
+        Result.isSuccess(result) && Option.isSome(result.success) && result.success.value === true,
+    ),
+  );
+};
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,

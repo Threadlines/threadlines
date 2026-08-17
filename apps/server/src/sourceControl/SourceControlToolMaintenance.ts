@@ -45,6 +45,15 @@ function updateError(target: SourceControlToolUpdateTarget, reason: string) {
   return new SourceControlToolUpdateError({ target, reason });
 }
 
+/** `brew upgrade <formula>` on a tool Homebrew never installed — the binary on
+ *  the PATH came from somewhere else — fails with "Error: <formula> not
+ *  installed". Discovery normally filters these out before offering an update,
+ *  so this classifier only catches the race where the environment changed in
+ *  between. */
+function isHomebrewFormulaNotInstalled(cause: VcsError): boolean {
+  return cause._tag === "VcsProcessExitError" && /Error: \S+ not installed/u.test(cause.detail);
+}
+
 function packageManagerFailureReason(input: {
   readonly target: SourceControlToolUpdateTarget;
   readonly operation: "install" | "update";
@@ -58,6 +67,14 @@ function packageManagerFailureReason(input: {
   ) {
     const label = sourceControlToolLabel(input.target);
     return `WinGet does not currently offer a newer compatible ${label} package. Its catalog may still be behind the latest official release; use the official release link or check again later.`;
+  }
+  if (
+    input.manager === "homebrew" &&
+    input.operation === "update" &&
+    isHomebrewFormulaNotInstalled(input.cause)
+  ) {
+    const label = sourceControlToolLabel(input.target);
+    return `The ${label} on this server was not installed with Homebrew, so \`brew upgrade\` cannot update it. Update it with the tool that installed it, or use the official release link.`;
   }
 
   const managerLabel = input.manager === "winget" ? "WinGet" : "Homebrew";

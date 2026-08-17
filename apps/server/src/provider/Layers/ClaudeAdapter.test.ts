@@ -2117,6 +2117,149 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("streams estimated file-change stats while an Edit input is still streaming", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        cwd: "/repo",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-edit-live",
+        uuid: "stream-edit-live-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "tool_use",
+            id: "tool-edit-live",
+            name: "Edit",
+            input: {},
+          },
+        },
+      } as unknown as SDKMessage);
+
+      // The path and old_string have fully streamed; new_string is mid-flight
+      // and repeats the old lines before appending two new ones.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-edit-live",
+        uuid: "stream-edit-live-input-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: {
+            type: "input_json_delta",
+            partial_json:
+              '{"file_path":"/repo/src/live.ts","old_string":"a\\nb","new_string":"a\\nb\\nc\\nd',
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-edit-live",
+        uuid: "stream-edit-live-input-2",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: {
+            type: "input_json_delta",
+            partial_json: '"}',
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-edit-live",
+        uuid: "stream-edit-live-stop",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_stop",
+          index: 1,
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-edit-live",
+        uuid: "user-edit-live-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-edit-live",
+              content: "ok",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-edit-live",
+        uuid: "result-edit-live",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+      const estimateIndex = runtimeEvents.findIndex(
+        (event) =>
+          event.type === "item.updated" &&
+          Array.isArray((event.payload.data as { changes?: unknown } | undefined)?.changes),
+      );
+      assert.notEqual(estimateIndex, -1);
+      const estimateEvent = runtimeEvents[estimateIndex];
+      if (estimateEvent?.type === "item.updated") {
+        assert.equal(estimateEvent.payload.detail, "src/live.ts");
+        assert.deepEqual(estimateEvent.payload.data, {
+          toolName: "Edit",
+          input: { file_path: "/repo/src/live.ts" },
+          changes: [{ path: "/repo/src/live.ts", kind: "update", additions: 2, deletions: 0 }],
+        });
+      }
+
+      // The fully parsed input still follows as its own update.
+      const parsedIndex = runtimeEvents.findIndex(
+        (event) =>
+          event.type === "item.updated" &&
+          (event.payload.data as { input?: { old_string?: string } } | undefined)?.input
+            ?.old_string === "a\nb",
+      );
+      assert.equal(parsedIndex > estimateIndex, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("summarizes Edit calls with workspace paths and per-file diff stats", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

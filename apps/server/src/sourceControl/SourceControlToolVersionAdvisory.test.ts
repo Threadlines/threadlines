@@ -242,6 +242,42 @@ it.effect("offers one-click Homebrew updates for an outdated GitHub CLI on macOS
   }),
 );
 
+it.effect("withholds Homebrew update actions from a gh that Homebrew does not manage", () =>
+  Effect.gen(function* () {
+    const item: SourceControlProviderDiscoveryItem = {
+      kind: "github",
+      label: "GitHub",
+      executable: "gh",
+      status: "available",
+      version: Option.some("gh version 2.93.0 (2026-05-27)"),
+      installHint: "Install GitHub CLI.",
+      detail: Option.none(),
+      auth: {
+        status: "authenticated",
+        account: Option.some("octocat"),
+        host: Option.some("github.com"),
+        detail: Option.none(),
+      },
+    };
+    const enriched = yield* withSourceControlToolVersionAdvisory({
+      platform: "darwin",
+      packageManager: "homebrew",
+      canRunUpdate: false,
+      latestVersionResolver: () => Effect.succeed("2.98.0"),
+      item,
+    });
+
+    assert.strictEqual(enriched.versionAdvisory?.status, "recommended_update");
+    // `brew upgrade gh` fails on a gh Homebrew never installed, so neither the
+    // one-click run nor the copyable command is offered — only the release
+    // link, with the message explaining why.
+    assert.ok(!enriched.versionAdvisory?.actions.some((action) => action.kind === "runUpdate"));
+    assert.ok(!enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
+    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "openUrl"));
+    assert.match(enriched.versionAdvisory?.message ?? "", /not installed with Homebrew/i);
+  }),
+);
+
 it.effect("offers one-click Homebrew installs for missing macOS source control tools", () =>
   Effect.gen(function* () {
     const item: SourceControlProviderDiscoveryItem = {

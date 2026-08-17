@@ -39,6 +39,55 @@ it("parses and normalizes the latest versions reported by WinGet", () => {
   );
 });
 
+it("recognizes Homebrew kegs by their real path under the brew prefix's Cellar", () => {
+  // A brew-installed gh: the bin symlink resolves into the Cellar.
+  assert.strictEqual(
+    SourceControlToolPackages.isHomebrewCellarExecutable({
+      executableRealPath: "/opt/homebrew/Cellar/gh/2.97.0/bin/gh",
+      brewCommandPath: "/opt/homebrew/bin/brew",
+    }),
+    true,
+  );
+  // gh from its own installer, and Apple's git: on the PATH, not brew's.
+  assert.strictEqual(
+    SourceControlToolPackages.isHomebrewCellarExecutable({
+      executableRealPath: "/Users/will/.local/gh/versions/2.93.0/bin/gh",
+      brewCommandPath: "/opt/homebrew/bin/brew",
+    }),
+    false,
+  );
+  assert.strictEqual(
+    SourceControlToolPackages.isHomebrewCellarExecutable({
+      executableRealPath: "/usr/bin/git",
+      brewCommandPath: "/opt/homebrew/bin/brew",
+    }),
+    false,
+  );
+  // Intel macs put both brew and standalone installers under /usr/local; only
+  // the Cellar path marks a keg.
+  assert.strictEqual(
+    SourceControlToolPackages.isHomebrewCellarExecutable({
+      executableRealPath: "/usr/local/bin/gh",
+      brewCommandPath: "/usr/local/bin/brew",
+    }),
+    false,
+  );
+  assert.strictEqual(
+    SourceControlToolPackages.isHomebrewCellarExecutable({
+      executableRealPath: "/usr/local/Cellar/gh/2.97.0/bin/gh",
+      brewCommandPath: "/usr/local/bin/brew",
+    }),
+    true,
+  );
+  assert.strictEqual(
+    SourceControlToolPackages.isHomebrewCellarExecutable({
+      executableRealPath: null,
+      brewCommandPath: "/opt/homebrew/bin/brew",
+    }),
+    false,
+  );
+});
+
 it("uses Linuxbrew without treating sudo package managers as one-click capable", () => {
   assert.strictEqual(
     SourceControlToolPackages.selectSourceControlToolPackageManager({
@@ -234,6 +283,45 @@ it.effect("explains when WinGet has no applicable package update", () => {
     if (result._tag === "Failure") {
       assert.match(result.failure.reason, /does not currently offer a newer compatible Git/i);
       assert.match(result.failure.reason, /official release/i);
+    }
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("explains when Homebrew does not manage the tool it was asked to upgrade", () => {
+  const layer = Layer.effect(
+    SourceControlToolMaintenance.SourceControlToolMaintenance,
+    SourceControlToolMaintenance.make({
+      platform: "darwin",
+      commandAvailable: (command) => command === "brew",
+    }),
+  ).pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
+    Layer.provide(
+      Layer.mock(VcsProcess.VcsProcess)({
+        run: (input) =>
+          Effect.fail(
+            new VcsProcessExitError({
+              operation: input.operation,
+              command: [input.command, ...input.args].join(" "),
+              cwd: input.cwd,
+              exitCode: 1,
+              detail: "==> Auto-updated Homebrew!\nError: gh not installed",
+            }),
+          ),
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+    const result = yield* Effect.result(maintenance.update({ target: "github-cli" }));
+
+    assert.strictEqual(result._tag, "Failure");
+    if (result._tag === "Failure") {
+      assert.match(result.failure.reason, /not installed with Homebrew/i);
+      // The readable classification, not the raw brew auto-update transcript.
+      assert.notMatch(result.failure.reason, /Auto-updated Homebrew/i);
     }
   }).pipe(Effect.provide(layer));
 });

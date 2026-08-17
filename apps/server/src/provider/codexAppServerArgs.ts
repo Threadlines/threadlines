@@ -5,11 +5,15 @@ import { planCliSpawn } from "../cliSpawn.ts";
  *
  * `default_mode_request_user_input` is an upstream feature flag (off by
  * default) that exposes the `request_user_input` tool outside Plan mode, so
- * Codex can ask structured questions during build turns. It is passed as a
- * `-c` config override rather than `--enable` so codex versions that do not
- * know the feature ignore it instead of failing to start.
+ * Codex can ask structured questions during build turns.
+ * `apply_patch_streaming_events` (also off by default) streams
+ * `item/fileChange/patchUpdated` notifications while the model is still
+ * generating an apply_patch call, which drives the live +/- badge on
+ * in-flight edit rows. Both are passed as `-c` config overrides rather than
+ * `--enable` so codex versions that do not know a feature ignore it instead
+ * of failing to start.
  *
- * Threadlines opts into this feature deliberately, so suppress the generic
+ * Threadlines opts into these features deliberately, so suppress the generic
  * unstable-feature warning Codex otherwise emits when each thread starts.
  * Codex 0.145.0 does not expose a supported session-source override for
  * app-server, so external-history de-duplication uses native thread IDs.
@@ -18,6 +22,8 @@ export const CODEX_APP_SERVER_ARGS: ReadonlyArray<string> = [
   "app-server",
   "-c",
   "features.default_mode_request_user_input=true",
+  "-c",
+  "features.apply_patch_streaming_events=true",
   "-c",
   "suppress_unstable_features_warning=true",
 ];

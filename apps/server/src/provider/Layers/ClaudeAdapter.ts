@@ -133,6 +133,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { estimatePartialFileChangeStat } from "./claudePartialToolInput.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
@@ -285,6 +286,14 @@ interface ToolInFlight {
   readonly input: Record<string, unknown>;
   readonly partialInputJson: string;
   readonly lastEmittedInputFingerprint?: string;
+  /** Throttle marker for streamed file-change estimates: last emitted +/-
+   *  counts and when, so unchanged counts and sub-interval deltas are
+   *  skipped. */
+  readonly partialStatsEmit?: {
+    readonly atMs: number;
+    readonly additions: number;
+    readonly deletions: number;
+  };
 }
 
 /** A background `codex exec` run promoted to a subagent row, from the moment
@@ -3468,6 +3477,87 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* updateResumeCursor(context);
   });
 
+  // Streamed file-change estimates re-emit at most twice a second per tool;
+  // between emissions the counts keep accumulating in the in-flight state.
+  const PARTIAL_FILE_CHANGE_EMIT_INTERVAL_MS = 500;
+
+  /**
+   * Surface a live `item.updated` for a file-change tool whose input JSON is
+   * still streaming: the target path plus estimated +/- counts derived from
+   * the partial buffer. The estimate rides the same `data.changes` shape as
+   * the exact PostToolUse stat, which replaces it at completion.
+   */
+  const emitPartialFileChangeProgress = Effect.fn("emitPartialFileChangeProgress")(function* (
+    context: ClaudeSessionContext,
+    blockIndex: number,
+    tool: ToolInFlight,
+    message: SDKMessage,
+  ) {
+    const estimate = estimatePartialFileChangeStat(tool.toolName, tool.partialInputJson);
+    if (!estimate) {
+      return;
+    }
+    const previousEmit = tool.partialStatsEmit;
+    if (
+      previousEmit &&
+      previousEmit.additions === estimate.stat.additions &&
+      previousEmit.deletions === estimate.stat.deletions
+    ) {
+      return;
+    }
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    if (previousEmit && nowMs - previousEmit.atMs < PARTIAL_FILE_CHANGE_EMIT_INTERVAL_MS) {
+      return;
+    }
+
+    const detail =
+      summarizeToolRequest(tool.toolName, estimate.input, { cwd: context.session.cwd }) ||
+      tool.detail;
+    context.inFlightTools.set(blockIndex, {
+      ...tool,
+      ...(detail ? { detail } : {}),
+      partialStatsEmit: {
+        atMs: nowMs,
+        additions: estimate.stat.additions,
+        deletions: estimate.stat.deletions,
+      },
+    });
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "item.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState
+        ? {
+            turnId: asCanonicalTurnId(context.turnState.turnId),
+          }
+        : {}),
+      itemId: asRuntimeItemId(tool.itemId),
+      payload: {
+        itemType: tool.itemType,
+        status: "inProgress",
+        title: tool.title,
+        ...(detail ? { detail } : {}),
+        data: {
+          toolName: tool.toolName,
+          input: estimate.input,
+          changes: [estimate.stat],
+        },
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: tool.itemId,
+      }),
+      raw: {
+        source: "claude.sdk.message",
+        method: "claude/stream_event/content_block_delta/input_json_delta",
+        payload: message,
+      },
+    });
+  });
+
   const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3566,6 +3656,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           !nextFingerprint ||
           tool.lastEmittedInputFingerprint === nextFingerprint
         ) {
+          // Input JSON still streaming: file-change tools get a live
+          // path + estimated +/- update instead of total silence.
+          if (!parsedInput && nextTool.itemType === "file_change") {
+            yield* emitPartialFileChangeProgress(context, event.index, nextTool, message);
+          }
           return;
         }
 

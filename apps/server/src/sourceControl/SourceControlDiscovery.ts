@@ -1,10 +1,12 @@
+import { realpathSync } from "node:fs";
+
 import {
   type SourceControlDiscoveryResult,
   type SourceControlProviderDiscoveryItem,
   type VcsDiscoveryItem,
   type VcsDriverKind,
 } from "@threadlines/contracts";
-import { isCommandAvailable } from "@threadlines/shared/shell";
+import { isCommandAvailable, resolveCommandPath } from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,7 +17,10 @@ import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SourceControlProviderDiscovery from "./SourceControlProviderDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
-import { selectSourceControlToolPackageManager } from "./SourceControlToolPackages.ts";
+import {
+  isHomebrewCellarExecutable,
+  selectSourceControlToolPackageManager,
+} from "./SourceControlToolPackages.ts";
 import * as SourceControlToolVersionAdvisory from "./SourceControlToolVersionAdvisory.ts";
 import * as SourceControlWinGet from "./SourceControlWinGet.ts";
 
@@ -72,6 +77,9 @@ export interface SourceControlDiscoveryOptions {
   readonly latestVersionResolver?: SourceControlToolVersionAdvisory.LatestVersionResolver;
   readonly winGetVersionResolver?: SourceControlWinGet.LatestWinGetVersionResolver;
   readonly platform?: NodeJS.Platform;
+  /** Test seam for the "is this executable a Homebrew keg" check, which
+   *  otherwise reads the real filesystem. */
+  readonly homebrewManagedExecutable?: (executable: string) => boolean;
 }
 
 export class SourceControlDiscovery extends Context.Service<
@@ -113,10 +121,34 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
     platform,
     commandAvailable,
   });
+  const homebrewManagedExecutable =
+    options?.homebrewManagedExecutable ??
+    ((executable: string): boolean => {
+      const executablePath = resolveCommandPath(executable, { platform });
+      let executableRealPath = executablePath;
+      if (executablePath !== null) {
+        try {
+          executableRealPath = realpathSync(executablePath);
+        } catch {
+          executableRealPath = executablePath;
+        }
+      }
+      return isHomebrewCellarExecutable({
+        executableRealPath,
+        brewCommandPath: resolveCommandPath("brew", { platform }),
+      });
+    });
   // Any verified package manager can run one-click updates: winget on Windows,
-  // Homebrew on macOS and Linux. Installs already work this way; keeping
-  // updates gated to Windows was a leftover from shipping them there first.
-  const canRunToolUpdate = sourceControlToolPackageManager !== null;
+  // Homebrew on macOS and Linux. WinGet addresses packages by catalog id, so
+  // where the executable came from does not matter there; `brew upgrade` only
+  // works on kegs Homebrew itself installed, so the tool in use must resolve
+  // into the Cellar — Apple's `/usr/bin/git` or a `gh` from its own installer
+  // would make it fail with "Error: <formula> not installed".
+  const canRunToolUpdateFor = (executable: string | undefined): boolean => {
+    if (sourceControlToolPackageManager === "winget") return true;
+    if (sourceControlToolPackageManager !== "homebrew") return false;
+    return executable !== undefined && homebrewManagedExecutable(executable);
+  };
 
   const probe = <Kind extends VcsDriverKind>(
     input: DiscoveryProbe & { readonly kind: Kind },
@@ -185,7 +217,7 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
       ...(options?.winGetVersionResolver
         ? { winGetVersionResolver: options.winGetVersionResolver }
         : {}),
-      canRunUpdate: canRunToolUpdate,
+      canRunUpdate: canRunToolUpdateFor(item.executable),
       packageManager: sourceControlToolPackageManager,
       canRunInstall:
         sourceControlToolPackageManager !== null &&

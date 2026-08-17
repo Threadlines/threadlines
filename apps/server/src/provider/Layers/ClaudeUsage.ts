@@ -22,6 +22,12 @@
  * the usage section from the card. We still log redacted diagnostics and honor
  * Retry-After so a rate-limited usage check doesn't keep hammering the endpoint.
  *
+ * This module never writes or refreshes the credential itself — the CLI owns
+ * the credential store and its refresh-token rotation. When the access token
+ * has expired (401), the fetch delegates to an injected refresh effect that
+ * runs a real Claude turn on normal sign-in auth, then retries once against
+ * the re-read store. See `fetchClaudeAccountUsage`.
+ *
  * @module provider/Layers/ClaudeUsage
  */
 import type {
@@ -52,7 +58,15 @@ const KEYCHAIN_READ_TIMEOUT_MS = 1_500;
 const FIVE_HOUR_WINDOW_MINS = 300;
 const SEVEN_DAY_WINDOW_MINS = 10_080;
 const CLAUDE_USAGE_BACKOFF_MAX_MS = 60 * 60 * 1000;
+const CLAUDE_USAGE_REFRESH_COOLDOWN_MS = 10 * 60 * 1000;
 const claudeUsageBackoffUntilMsByCredential = new Map<string, number>();
+// Keyed like the backoff map: a genuinely revoked sign-in keeps producing the
+// same stale token, so its key stays cooled down; a fresh sign-in rotates the
+// token and gets a new key (and an immediate refresh attempt).
+const claudeUsageRefreshCooldownUntilMsByCredential = new Map<string, number>();
+// Concurrent refresh turns would race Anthropic's refresh-token rotation
+// against each other; only ever run one at a time.
+let claudeUsageCredentialRefreshInFlight = false;
 
 const ClaudeCredentialAccount = Schema.Struct({
   email: Schema.optional(Schema.String),
@@ -569,13 +583,87 @@ export const readClaudeOAuthCredential = Effect.fn("readClaudeOAuthCredential")(
 });
 
 /**
+ * One usage-endpoint round trip. Resolves to `undefined` on a network error
+ * or timeout; otherwise carries the HTTP status plus the parsed usage
+ * snapshot (present only for a 2xx response with a recognizable payload).
+ * The status lets the caller tell an expired credential (401) apart from
+ * every other failure.
+ */
+const fetchClaudeUsageSnapshotOnce = Effect.fn("fetchClaudeUsageSnapshotOnce")(function* (
+  credential: ClaudeOAuthCredential,
+): Effect.fn.Return<
+  { readonly status: number; readonly usage: ServerProviderAccountUsage | undefined } | undefined,
+  never,
+  HttpClient.HttpClient
+> {
+  const client = yield* HttpClient.HttpClient;
+  const request = HttpClientRequest.get(CLAUDE_OAUTH_USAGE_URL).pipe(
+    HttpClientRequest.setHeaders({
+      authorization: `Bearer ${credential.accessToken}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      accept: "application/json",
+      ...(credential.organizationUuid
+        ? { "x-organization-uuid": credential.organizationUuid }
+        : {}),
+    }),
+  );
+  const response = yield* client.execute(request).pipe(
+    Effect.timeoutOption(USAGE_FETCH_TIMEOUT_MS),
+    Effect.catch(() => Effect.succeed(Option.none())),
+  );
+  if (Option.isNone(response)) return undefined;
+
+  const httpResponse = response.value;
+  if (httpResponse.status < 200 || httpResponse.status >= 300) {
+    const responseBody = yield* httpResponse.json.pipe(Effect.orElseSucceed(() => undefined));
+    const retryAfterReferenceMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const retryAfterMs = parseClaudeUsageRetryAfter(
+      readHeaderValue(httpResponse.headers, "retry-after"),
+      retryAfterReferenceMs,
+    );
+    if (httpResponse.status === 429 && retryAfterMs !== undefined) {
+      claudeUsageBackoffUntilMsByCredential.set(claudeUsageBackoffKey(credential), retryAfterMs);
+    }
+
+    yield* Effect.logWarning("claude.usage.fetch.unavailable", {
+      status: httpResponse.status,
+      retryAfterMs:
+        retryAfterMs !== undefined ? Math.max(0, retryAfterMs - retryAfterReferenceMs) : undefined,
+      errorType: readClaudeUsageErrorType(responseBody),
+      hasUsageFields: hasKnownClaudeUsageField(responseBody),
+    });
+    return { status: httpResponse.status, usage: undefined };
+  }
+
+  const payload = yield* httpResponse.json.pipe(
+    Effect.flatMap((body) => decodeClaudeOAuthUsageResponse(body)),
+    Effect.orElseSucceed(() => undefined),
+  );
+  if (!payload) return { status: httpResponse.status, usage: undefined };
+
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  return { status: httpResponse.status, usage: normalizeClaudeAccountUsage(payload, checkedAt) };
+});
+
+/**
  * Fetch the subscription usage snapshot (5h + weekly windows) for the
  * account Claude Code is logged into. Never fails — any error path resolves
  * to `undefined` so the provider probe stays healthy without usage data.
+ *
+ * The stored access token lives ~8 hours, and only a real Claude process can
+ * renew it (with the long-lived refresh token kept in the same credential).
+ * Threadlines sessions authenticate with the chat-only token, so nothing
+ * here ever renews the stored credential as a side effect — without help the
+ * usage fetch starts failing with 401 a few hours after the last sign-in.
+ * When `refreshOAuthCredential` is provided it is run on a 401 (expected to
+ * make the CLI renew and persist the credential), then the fetch re-reads
+ * the store and retries once. A per-credential cooldown keeps a genuinely
+ * revoked sign-in from spawning a refresh attempt on every probe.
  */
 export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(function* (
   claudeSettings: Pick<ClaudeSettings, "homePath">,
   environment: NodeJS.ProcessEnv = process.env,
+  refreshOAuthCredential?: Effect.Effect<boolean>,
 ): Effect.fn.Return<
   ServerProviderAccountUsage | undefined,
   never,
@@ -606,51 +694,53 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
     return undefined;
   }
 
-  const client = yield* HttpClient.HttpClient;
-  const request = HttpClientRequest.get(CLAUDE_OAUTH_USAGE_URL).pipe(
-    HttpClientRequest.setHeaders({
-      authorization: `Bearer ${credential.accessToken}`,
-      "anthropic-beta": "oauth-2025-04-20",
-      accept: "application/json",
-      ...(credential.organizationUuid
-        ? { "x-organization-uuid": credential.organizationUuid }
-        : {}),
-    }),
-  );
-  const response = yield* client.execute(request).pipe(
-    Effect.timeoutOption(USAGE_FETCH_TIMEOUT_MS),
-    Effect.catch(() => Effect.succeed(Option.none())),
-  );
-  if (Option.isNone(response)) return undefined;
+  const snapshot = yield* fetchClaudeUsageSnapshotOnce(credential);
+  if (!snapshot || snapshot.usage) return snapshot?.usage;
+  if (snapshot.status !== 401 || refreshOAuthCredential === undefined) return undefined;
 
-  const httpResponse = response.value;
-  if (httpResponse.status < 200 || httpResponse.status >= 300) {
-    const responseBody = yield* httpResponse.json.pipe(Effect.orElseSucceed(() => undefined));
-    const retryAfterReferenceMs = DateTime.toEpochMillis(yield* DateTime.now);
-    const retryAfterMs = parseClaudeUsageRetryAfter(
-      readHeaderValue(httpResponse.headers, "retry-after"),
-      retryAfterReferenceMs,
-    );
-    if (httpResponse.status === 429 && retryAfterMs !== undefined) {
-      claudeUsageBackoffUntilMsByCredential.set(backoffKey, retryAfterMs);
-    }
-
-    yield* Effect.logWarning("claude.usage.fetch.unavailable", {
-      status: httpResponse.status,
-      retryAfterMs:
-        retryAfterMs !== undefined ? Math.max(0, retryAfterMs - retryAfterReferenceMs) : undefined,
-      errorType: readClaudeUsageErrorType(responseBody),
-      hasUsageFields: hasKnownClaudeUsageField(responseBody),
+  const refreshNowMs = DateTime.toEpochMillis(yield* DateTime.now);
+  const cooldownUntilMs = claudeUsageRefreshCooldownUntilMsByCredential.get(backoffKey);
+  if (cooldownUntilMs !== undefined && cooldownUntilMs > refreshNowMs) {
+    yield* Effect.logDebug("claude.usage.credential-refresh.skipped", {
+      reason: "cooldown",
+      cooldownMs: cooldownUntilMs - refreshNowMs,
+    });
+    return undefined;
+  }
+  if (claudeUsageCredentialRefreshInFlight) {
+    yield* Effect.logDebug("claude.usage.credential-refresh.skipped", { reason: "in-flight" });
+    return undefined;
+  }
+  claudeUsageRefreshCooldownUntilMsByCredential.set(
+    backoffKey,
+    refreshNowMs + CLAUDE_USAGE_REFRESH_COOLDOWN_MS,
+  );
+  claudeUsageCredentialRefreshInFlight = true;
+  const refreshed = yield* refreshOAuthCredential.pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        claudeUsageCredentialRefreshInFlight = false;
+      }),
+    ),
+  );
+  if (!refreshed) {
+    yield* Effect.logWarning("claude.usage.credential-refresh.failed", {
+      reason: "refresh-turn-failed",
     });
     return undefined;
   }
 
-  const payload = yield* httpResponse.json.pipe(
-    Effect.flatMap((body) => decodeClaudeOAuthUsageResponse(body)),
-    Effect.orElseSucceed(() => undefined),
-  );
-  if (!payload) return undefined;
+  const refreshedCredential = yield* readClaudeOAuthCredential(claudeSettings);
+  if (!refreshedCredential || refreshedCredential.accessToken === credential.accessToken) {
+    yield* Effect.logWarning("claude.usage.credential-refresh.failed", {
+      reason: "credential-not-rotated",
+    });
+    return undefined;
+  }
 
-  const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  return normalizeClaudeAccountUsage(payload, checkedAt);
+  const retried = yield* fetchClaudeUsageSnapshotOnce(refreshedCredential);
+  if (retried?.usage) {
+    yield* Effect.logInfo("claude.usage.credential-refresh.recovered");
+  }
+  return retried?.usage;
 });

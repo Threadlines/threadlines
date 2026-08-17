@@ -251,6 +251,9 @@ function updateActions(input: {
         operation: "update",
       })
     : null;
+  // `canRun` false here means the tool in use is not managed by the package
+  // manager (e.g. a `gh` installed outside Homebrew), so the copy command
+  // would fail exactly like the one-click run — neither is offered.
   return [
     ...(recipe && input.canRun
       ? ([
@@ -260,10 +263,8 @@ function updateActions(input: {
             target: input.target,
             operation: "update",
           },
+          { label: recipe.copyLabel, kind: "copyCommand", value: recipe.copyCommand },
         ] as const)
-      : []),
-    ...(recipe
-      ? ([{ label: recipe.copyLabel, kind: "copyCommand", value: recipe.copyCommand }] as const)
       : []),
     { label: input.openLabel, kind: "openUrl", value: input.openUrl },
   ];
@@ -374,6 +375,14 @@ function createGitHubCliAdvisory(input: {
           openUrl: GITHUB_CLI_RELEASES_URL,
         });
 
+  // A Homebrew host whose gh did not come from Homebrew (its own installer,
+  // a version manager) gets no update actions, so the message has to say why
+  // and point at the path that does work.
+  const outsideHomebrewNote =
+    input.platform !== "win32" && input.packageManager === "homebrew" && !input.canRunUpdate
+      ? "This GitHub CLI was not installed with Homebrew, so Threadlines cannot update it here. Update it with the tool that installed it, or use the release link."
+      : null;
+
   if (
     input.currentVersion !== null &&
     compareToolVersions(input.currentVersion, GH_SECURITY_VERSION) < 0
@@ -392,7 +401,7 @@ function createGitHubCliAdvisory(input: {
             targetVersion: GH_SECURITY_VERSION,
             winGetVersion: input.winGetVersion,
           })
-        : null;
+        : outsideHomebrewNote;
     return advisory({
       status: "recommended_update",
       severity: "warning",
@@ -419,7 +428,7 @@ function createGitHubCliAdvisory(input: {
             targetVersion: input.latestVersion,
             winGetVersion: input.winGetVersion,
           })
-        : null;
+        : outsideHomebrewNote;
     return advisory({
       status: "behind_latest",
       severity: "info",

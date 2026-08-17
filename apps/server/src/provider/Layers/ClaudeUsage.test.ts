@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -14,6 +15,7 @@ import {
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
   claudeUsageBackoffKey,
   extractClaudeOAuthCredential,
+  fetchClaudeAccountUsage,
   normalizeClaudeAccountUsage,
   normalizeClaudeScopedUsageWindow,
   normalizeClaudeUsageResetsAt,
@@ -787,5 +789,143 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
         checkedAt,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("fetchClaudeAccountUsage", () => {
+  // Serves 401 for any token except `freshToken`, which gets a usage payload.
+  // Records the bearer of every request so tests can assert the retry order.
+  function usageEndpointLayer(freshToken: string, bearers: Array<string | undefined>) {
+    return Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => {
+        const authorization = (request.headers as unknown as Record<string, string>).authorization;
+        bearers.push(authorization);
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            authorization === `Bearer ${freshToken}`
+              ? new Response(JSON.stringify({ five_hour: { utilization: 18 } }), {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                })
+              : new Response(JSON.stringify({ error: { type: "authentication_error" } }), {
+                  status: 401,
+                  headers: { "content-type": "application/json" },
+                }),
+          ),
+        );
+      }),
+    );
+  }
+
+  function credentialsJson(accessToken: string): string {
+    return JSON.stringify({ claudeAiOauth: { accessToken } });
+  }
+
+  const noKeychainLayer = () =>
+    mockSpawnerLayer(() => {
+      throw new Error("keychain should not be queried");
+    });
+
+  it("renews an expired credential and retries the usage fetch once", async () => {
+    const bearers: Array<string | undefined> = [];
+    let refreshRuns = 0;
+    const usage = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
+        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("renew-stale-token"));
+        const refresh = Effect.gen(function* () {
+          refreshRuns += 1;
+          yield* fileSystem.writeFileString(credentialsPath, credentialsJson("renew-fresh-token"));
+          return true;
+        }).pipe(Effect.orDie);
+        return yield* fetchClaudeAccountUsage({ homePath }, {}, refresh);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            noKeychainLayer(),
+            usageEndpointLayer("renew-fresh-token", bearers),
+          ),
+        ),
+      ),
+    );
+
+    expect(refreshRuns).toBe(1);
+    expect(bearers).toEqual(["Bearer renew-stale-token", "Bearer renew-fresh-token"]);
+    expect(usage?.limits[0]?.primary?.usedPercent).toBe(18);
+  });
+
+  it("cools down after a refresh that does not rotate the credential", async () => {
+    const bearers: Array<string | undefined> = [];
+    let refreshRuns = 0;
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+        yield* fileSystem.writeFileString(
+          path.join(homePath, ".claude", ".credentials.json"),
+          credentialsJson("cooldown-stale-token"),
+        );
+        // A dead sign-in: the refresh "succeeds" but the store keeps the
+        // same token, so no retry fires and the next 401 must not spawn
+        // another refresh attempt while the cooldown holds.
+        const refresh = Effect.sync(() => {
+          refreshRuns += 1;
+          return true;
+        });
+        const first = yield* fetchClaudeAccountUsage({ homePath }, {}, refresh);
+        const second = yield* fetchClaudeAccountUsage({ homePath }, {}, refresh);
+        return [first, second];
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, noKeychainLayer(), usageEndpointLayer("", bearers)),
+        ),
+      ),
+    );
+
+    expect(results).toEqual([undefined, undefined]);
+    expect(refreshRuns).toBe(1);
+    expect(bearers).toEqual(["Bearer cooldown-stale-token", "Bearer cooldown-stale-token"]);
+  });
+
+  it("does not retry when the refresh turn fails", async () => {
+    const bearers: Array<string | undefined> = [];
+    const usage = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+        yield* fileSystem.writeFileString(
+          path.join(homePath, ".claude", ".credentials.json"),
+          credentialsJson("failed-refresh-token"),
+        );
+        return yield* fetchClaudeAccountUsage({ homePath }, {}, Effect.succeed(false));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, noKeychainLayer(), usageEndpointLayer("", bearers)),
+        ),
+      ),
+    );
+
+    expect(usage).toBeUndefined();
+    expect(bearers).toEqual(["Bearer failed-refresh-token"]);
   });
 });
