@@ -325,10 +325,15 @@ function historyBranch(
 }
 
 export interface AgentsPanelView {
-  /** The turn's own branches, in attention order. */
+  /** The turn's own agents, in attention order. */
   readonly current: ReadonlyArray<AgentBranch>;
   /** Agents from earlier in the thread, newest first. */
   readonly earlier: ReadonlyArray<AgentSubagentBranch>;
+  /** Non-agent background work — command tasks, detected processes. A CI
+   *  watcher loop is not an agent, and a tab called Agents putting commands
+   *  above the agents read as exactly that; they keep their rows (and stop
+   *  buttons) in their own section below instead. */
+  readonly commands: ReadonlyArray<AgentRunBranch>;
   /** False only when the thread has never run an agent at all. */
   readonly hasAny: boolean;
 }
@@ -356,7 +361,7 @@ export function formatAgentsPanelSummary(
   );
   const runningCount = subagents.filter((branch) => branch.status === "running").length;
   const waitingCount = subagents.filter((branch) => branch.status === "waiting").length;
-  const runCount = view.current.filter((branch) => branch.kind === "run").length;
+  const runCount = view.commands.length;
 
   const parts = [
     providerDisplayLabel(providerLabel),
@@ -393,7 +398,11 @@ export function buildAgentsPanelView(input: {
   readonly providerLabel?: string | null | undefined;
   readonly nowMs?: number | undefined;
 }): AgentsPanelView {
-  const current = buildAgentBranches(input);
+  const branches = buildAgentBranches(input);
+  const current = branches.filter(
+    (branch): branch is AgentSubagentBranch => branch.kind === "subagent",
+  );
+  const commands = branches.filter((branch): branch is AgentRunBranch => branch.kind === "run");
   const currentAgentKeys = new Set(input.subagents.map(subagentIdentity));
   const earlier = (input.history ?? [])
     .filter((entry) => !currentAgentKeys.has(subagentIdentity(entry.item)))
@@ -403,7 +412,12 @@ export function buildAgentsPanelView(input: {
         (parseTimestamp(right.item.updatedAt) ?? 0) - (parseTimestamp(left.item.updatedAt) ?? 0),
     );
 
-  return { current, earlier, hasAny: current.length > 0 || earlier.length > 0 };
+  return {
+    current,
+    earlier,
+    commands,
+    hasAny: current.length > 0 || earlier.length > 0 || commands.length > 0,
+  };
 }
 
 /** `agentThreadId` is the id every other surface addresses an agent by; the
@@ -500,12 +514,13 @@ export interface LiveAgentIndicator {
  */
 export function summarizeLiveAgents(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
-  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
 }): LiveAgentIndicator | null {
-  const statuses = [
-    ...input.subagents.map((item) => subagentBranchStatus(item.status)),
-    ...agentInitiatedRuns(input.backgroundRuns).map(backgroundRunBranchStatus),
-  ].filter(isLiveAgentBranchStatus);
+  // Background command runs deliberately do not count: a CI watcher is not an
+  // agent, and every live-agent affordance keyed off this (tab dot, closed
+  // panel node, launcher counts) would otherwise claim one is working.
+  const statuses = input.subagents
+    .map((item) => subagentBranchStatus(item.status))
+    .filter(isLiveAgentBranchStatus);
   if (statuses.length === 0) {
     return null;
   }
@@ -539,16 +554,13 @@ export function formatSubagentReceiptSummary(body: string): string | null {
  * Whether the rail has anything live to show right now. The panel's header
  * node and the rail tab's node read from this so they never disagree.
  */
+/** Whether an actual agent is running. Background command runs do not count —
+ *  see summarizeLiveAgents — so the Agents tab's live dot and its auto-open
+ *  never fire for a plain background command. */
 export function hasRunningAgentActivity(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
-  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
 }): boolean {
-  return (
-    input.subagents.some((item) => subagentBranchStatus(item.status) === "running") ||
-    agentInitiatedRuns(input.backgroundRuns).some(
-      (run) => backgroundRunBranchStatus(run) === "running",
-    )
-  );
+  return input.subagents.some((item) => subagentBranchStatus(item.status) === "running");
 }
 
 function parseTimestamp(value: string): number | null {

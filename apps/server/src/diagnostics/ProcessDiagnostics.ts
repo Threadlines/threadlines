@@ -1246,6 +1246,61 @@ function selectHintedProcessOnlyRows(input: {
   return best ? [best] : [];
 }
 
+/** Command shapes of the provider CLIs the server spawns for sessions. Path
+ *  segments count (`/opt/x/codex app-server`), dotted dirs (`.claude/…` in a
+ *  wrapper's args) do not. */
+const PROVIDER_SESSION_COMMAND_PATTERN =
+  /(?:^|[\s/])(?:claude|codex|cursor-agent|opencode)(?=$|[\s.])/i;
+
+/**
+ * Pids living under a live provider session's process subtree. A session's
+ * own children — shell wrappers around tool calls, search helpers, background
+ * commands — are tracked work (the task stream and terminal rows own them),
+ * not lost processes, so process-only detection must never resurface them as
+ * "detected" rows with stop buttons. Anything truly orphaned reparents to
+ * init/launchd, leaves this subtree, and stays detectable.
+ */
+export function providerSessionShieldedPids(
+  rows: ReadonlyArray<ProcessRow>,
+  serverPid: number,
+): Set<number> {
+  const childrenByParent = new Map<number, ProcessRow[]>();
+  for (const row of rows) {
+    const children = childrenByParent.get(row.ppid) ?? [];
+    children.push(row);
+    childrenByParent.set(row.ppid, children);
+  }
+
+  const collectSubtree = (rootPid: number, into: Set<number>) => {
+    const stack = [rootPid];
+    while (stack.length > 0) {
+      const pid = stack.pop();
+      if (pid === undefined || into.has(pid)) continue;
+      into.add(pid);
+      for (const child of childrenByParent.get(pid) ?? []) {
+        stack.push(child.pid);
+      }
+    }
+  };
+
+  const shielded = new Set<number>();
+  const serverStack = [...(childrenByParent.get(serverPid) ?? [])];
+  const visited = new Set<number>();
+  while (serverStack.length > 0) {
+    const row = serverStack.pop();
+    if (!row || visited.has(row.pid)) continue;
+    visited.add(row.pid);
+    if (PROVIDER_SESSION_COMMAND_PATTERN.test(row.command)) {
+      collectSubtree(row.pid, shielded);
+      continue;
+    }
+    for (const child of childrenByParent.get(row.pid) ?? []) {
+      serverStack.push(child);
+    }
+  }
+  return shielded;
+}
+
 export function resolveBackgroundRunsFromListeningPorts(input: {
   readonly urls: ReadonlyArray<string>;
   readonly pids?: ReadonlyArray<number> | undefined;
@@ -1299,8 +1354,11 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
   const serverDescendantPids = new Set(
     buildDescendantEntries(input.processRows ?? [], serverPid).map((entry) => entry.pid),
   );
+  const shieldedPids = providerSessionShieldedPids(input.processRows ?? [], serverPid);
   const explicitProcessOnlyRows = uniquePositivePids(input.pids ?? [])
-    .filter((pid) => !portRunPids.has(pid) && serverDescendantPids.has(pid))
+    .filter(
+      (pid) => !portRunPids.has(pid) && serverDescendantPids.has(pid) && !shieldedPids.has(pid),
+    )
     .flatMap((pid) => {
       const row = processRowsByPid.get(pid);
       return row ? [row] : [];
@@ -1310,7 +1368,7 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
       ? selectHintedProcessOnlyRows({
           processRows: input.processRows ?? [],
           commandHints: input.commandHints ?? [],
-        })
+        }).filter((row) => !shieldedPids.has(row.pid))
       : [];
   const processOnlyRows = [
     ...new Map(

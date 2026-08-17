@@ -326,15 +326,70 @@ export function projectSubagentActivity(
   if (patches.length === 0) return current;
   const next = [...current];
   for (const patch of patches) {
-    const index = next.findIndex(
-      (entry) =>
-        (patch.agentThreadId !== null && patch.agentThreadId === entry.agentThreadId) ||
-        (patch.spawnCallId !== null && patch.spawnCallId === entry.spawnCallId) ||
-        patch.id === entry.id,
-    );
-    const merged = mergeSubagent(index >= 0 ? next[index] : undefined, patch, activity);
-    if (index >= 0) next[index] = merged;
+    // A patch can match more than one row: a spawn that started as a
+    // `pending:` placeholder and an id-keyed row learned from a later item
+    // are the same agent once a patch carries both keys. All matches merge
+    // into one row — the persisted table is unique on id, agentThreadId and
+    // spawnCallId per thread, so leaving both rows behind is not a cosmetic
+    // duplicate but a constraint violation that fails the write.
+    const matches: number[] = [];
+    for (let index = 0; index < next.length; index += 1) {
+      const entry = next[index];
+      if (
+        entry &&
+        ((patch.agentThreadId !== null && patch.agentThreadId === entry.agentThreadId) ||
+          (patch.spawnCallId !== null && patch.spawnCallId === entry.spawnCallId) ||
+          patch.id === entry.id)
+      ) {
+        matches.push(index);
+      }
+    }
+    const [primary, ...absorbed] = matches;
+    let base = primary !== undefined ? next[primary] : undefined;
+    for (const index of absorbed) {
+      const duplicate = next[index];
+      if (base && duplicate) {
+        base = mergeSubagent(
+          base,
+          { ...duplicatePatchFrom(duplicate), id: duplicate.id },
+          activity,
+        );
+      }
+    }
+    const merged = mergeSubagent(base, patch, activity);
+    if (primary !== undefined) next[primary] = merged;
     else next.push(merged);
+    for (let cursor = absorbed.length - 1; cursor >= 0; cursor -= 1) {
+      const index = absorbed[cursor];
+      if (index !== undefined) next.splice(index, 1);
+    }
   }
   return next.toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** Reshapes an absorbed duplicate row into a patch so its learned fields fold
+ *  into the surviving row through the same merge path patches use. */
+function duplicatePatchFrom(duplicate: OrchestrationSubagent): SubagentPatch {
+  return {
+    id: duplicate.id,
+    agentThreadId: duplicate.agentThreadId,
+    parentAgentThreadId: duplicate.parentAgentThreadId,
+    spawnCallId: duplicate.spawnCallId,
+    transcriptAgentId: duplicate.transcriptAgentId,
+    turnId: duplicate.turnId,
+    agentPath: duplicate.agentPath,
+    parentAgentPath: duplicate.parentAgentPath,
+    treeDepth: duplicate.treeDepth,
+    nickname: duplicate.nickname,
+    role: duplicate.role,
+    objective: duplicate.objective,
+    status: duplicate.status,
+    requestedModel: duplicate.requestedModel,
+    resolvedModel: duplicate.resolvedModel,
+    reasoningEffort: duplicate.reasoningEffort,
+    modelProvenance: duplicate.modelProvenance,
+    reasoningEffortProvenance: duplicate.reasoningEffortProvenance,
+    resultBody: duplicate.resultBody,
+    resultCreatedAt: duplicate.resultCreatedAt,
+  };
 }

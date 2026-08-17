@@ -153,12 +153,14 @@ describe("AgentsPanel", () => {
       await expect.element(page.getByText("Router sweep")).toBeVisible();
 
       const branches = [...document.querySelectorAll("[data-agent-branch='true']")];
+      // Agents in attention order first; the provider's command run draws its
+      // branch in the Commands section after them.
       expect(branches.map((branch) => branch.getAttribute("data-agent-branch-status"))).toEqual([
-        "running",
         "running",
         "waiting",
         "failed",
         "completed",
+        "running",
       ]);
       expect(branches.map((branch) => branch.getAttribute("data-agent-branch-kind"))).toContain(
         "run",

@@ -259,6 +259,52 @@ describe("projectSubagentActivity", () => {
     expect(settled[0]?.status).toBe("interrupted");
   });
 
+  it("coalesces a pending spawn with an id-keyed row instead of duplicating", () => {
+    const codexItem = (item: Record<string, unknown>): OrchestrationThreadActivity =>
+      activity({
+        id: `codex-${String(item.id)}-${String(item.status)}`,
+        kind: "tool.updated",
+        turnId: TURN_ID,
+        payload: { itemType: "collab_agent_tool_call", data: { item } },
+      });
+
+    // Spawn starts before the provider names the agent: a pending placeholder.
+    const pending = projectSubagentActivity(
+      [],
+      codexItem({ id: "call-1", tool: "spawnAgent", status: "inProgress", prompt: "Review" }),
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.id).toBe("pending:call-1");
+
+    // A wait item reveals the agent id first, as its own row.
+    const revealed = projectSubagentActivity(
+      pending,
+      codexItem({
+        id: "call-2",
+        tool: "wait",
+        status: "inProgress",
+        receiverThreadIds: ["agent-x"],
+      }),
+    );
+    expect(revealed).toHaveLength(2);
+
+    // The spawn completion carries both keys. The two rows are the same agent;
+    // leaving both behind would violate the roster table's unique constraints.
+    const settled = projectSubagentActivity(
+      revealed,
+      codexItem({
+        id: "call-1",
+        tool: "spawnAgent",
+        status: "completed",
+        agentThreadId: "agent-x",
+      }),
+    );
+    expect(settled).toHaveLength(1);
+    expect(settled[0]?.agentThreadId).toBe("agent-x");
+    expect(settled[0]?.spawnCallId).toBe("call-1");
+    expect(settled[0]?.objective).toBe("Review");
+  });
+
   it("still folds Codex-shaped collab items", () => {
     const roster = projectSubagentActivity(
       [],
