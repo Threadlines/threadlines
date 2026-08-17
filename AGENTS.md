@@ -29,7 +29,7 @@ Use this language when communicating:
 - **environment** means one running Threadlines server and the machine, filesystem, provider credentials, and state it owns.
 - **project** means an environment-local workspace record rooted at a directory.
 - **thread** means the durable conversation and work history for a project.
-- **turn** means one user-to-agent cycle.
+- **turn** means one user-to-agent cycle, including follow-up work such as checkpointing.
 - **Threadlines home** means the base data directory, `~/.threadlines` by default (`THREADLINES_HOME` overrides it). Live state sits in its `userdata` subfolder; dev-mode state sits in `dev`.
 
 ## The three ways to hurt yourself
