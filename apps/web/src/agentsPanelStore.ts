@@ -2,10 +2,11 @@
  * Bridge between the chat view, which knows what the current turn is doing,
  * and the route, which owns the right-panel slot the agents panel renders in.
  *
- * The panel needs live subagent progress, background runs and the terminal
- * toggle — all of which are chat-view state — but it mounts as a sibling of
- * the chat column, next to source control. ChatView publishes here; the route
- * reads. Same shape as the file viewer's store, for the same reason.
+ * The panel needs live subagent progress and the agents' stop handles — all
+ * chat-view state — but it mounts as a sibling of the chat column, next to
+ * source control. ChatView publishes here; the route reads. Same shape as the
+ * file viewer's store, for the same reason. Background command runs are not
+ * part of this source: the header's activity chip is their surface.
  */
 import { create } from "zustand";
 
@@ -22,7 +23,6 @@ export interface AgentsPanelSource {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
-  backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** Runs the panel lists as subagents rather than as runs, keyed by the tool
    *  call that launched them. They carry the stop handle those agent rows use. */
   subagentRuns: ReadonlyMap<string, ThreadBackgroundRunItem>;
@@ -46,7 +46,6 @@ export interface AgentsPanelSource {
    *  unhydrated publish as observed idleness. */
   hydrated: boolean;
   threadCwd: string | null;
-  onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
 }
 

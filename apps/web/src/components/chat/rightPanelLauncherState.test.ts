@@ -50,7 +50,7 @@ function buildRun(overrides: Partial<ThreadBackgroundRunItem> = {}): ThreadBackg
   };
 }
 
-const NO_AGENTS = { subagents: [], backgroundRuns: [], history: [] } as const;
+const NO_AGENTS = { subagents: [], history: [] } as const;
 
 /** A clean thread with no committed turn diffs behind it. */
 const EMPTY_THREAD = { reviewableTurnCount: 0, agents: NO_AGENTS } as const;
@@ -210,7 +210,6 @@ describe("buildRightPanelLauncherStates", () => {
         diffHasExplicitTarget: false,
         agents: {
           subagents: [],
-          backgroundRuns: [],
           history: [
             { item: buildSubagent({ id: "a", status: "completed" }), resultBody: null },
             {
@@ -240,21 +239,20 @@ describe("buildRightPanelLauncherStates", () => {
         workingTreeFileCount: null,
         reviewableTurnCount: 0,
         diffHasExplicitTarget: false,
-        // The background run is a command, not an agent; it neither inflates
-        // the agent count nor reads as one running.
-        agents: { subagents: [buildSubagent()], backgroundRuns: [buildRun()], history },
+        agents: { subagents: [buildSubagent()], history },
       }).agents,
     ).toEqual({ description: "1 of 2 agents running.", empty: false });
 
-    // A thread with only background commands is not empty, but has no agents.
+    // Background commands live in the header's activity chip; a thread with
+    // nothing but commands running has no agents to report here.
     expect(
       buildRightPanelLauncherStates({
         workingTreeFileCount: null,
         reviewableTurnCount: 0,
         diffHasExplicitTarget: false,
-        agents: { subagents: [], backgroundRuns: [buildRun()], history: [] },
+        agents: { subagents: [], history: [] },
       }).agents,
-    ).toEqual({ description: "1 background command.", empty: false });
+    ).toEqual({ description: "No agents yet.", empty: true });
 
     expect(
       buildRightPanelLauncherStates({
@@ -263,7 +261,6 @@ describe("buildRightPanelLauncherStates", () => {
         diffHasExplicitTarget: false,
         agents: {
           subagents: [buildSubagent({ status: "waiting", statusLabel: "Needs approval" })],
-          backgroundRuns: [],
           history,
         },
       }).agents,
@@ -275,7 +272,7 @@ describe("buildRightPanelLauncherStates", () => {
         workingTreeFileCount: null,
         reviewableTurnCount: 0,
         diffHasExplicitTarget: false,
-        agents: { subagents: [buildSubagent()], backgroundRuns: [], history: [] },
+        agents: { subagents: [buildSubagent()], history: [] },
       }).agents,
     ).toEqual({ description: "1 agent running.", empty: false });
   });

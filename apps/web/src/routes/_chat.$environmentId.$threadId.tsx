@@ -68,9 +68,7 @@ import {
 // (or on a thread with nothing running at all), so the agents tab renders from
 // these until a source for this thread arrives.
 const EMPTY_SUBAGENTS = [] as const;
-const EMPTY_BACKGROUND_RUNS = [] as const;
 const EMPTY_SUBAGENT_HISTORY = [] as const;
-const noopToggleTerminal = () => {};
 const noopStopRun = () => {};
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
@@ -471,7 +469,6 @@ function ChatThreadRouteView() {
             environmentId={threadRef.environmentId}
             threadId={threadRef.threadId}
             subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
-            backgroundRuns={agentsSource?.backgroundRuns ?? EMPTY_BACKGROUND_RUNS}
             subagentRuns={agentsSource?.subagentRuns}
             history={agentsSource?.history ?? EMPTY_SUBAGENT_HISTORY}
             workEntries={agentsSource?.workEntries}
@@ -479,9 +476,6 @@ function ChatThreadRouteView() {
             turnInFlight={agentsSource?.turnInFlight ?? false}
             threadCwd={agentsSource?.threadCwd}
             embedded
-            onToggleBackgroundRunTerminal={
-              agentsSource?.onToggleBackgroundRunTerminal ?? noopToggleTerminal
-            }
             onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
           />
         </div>

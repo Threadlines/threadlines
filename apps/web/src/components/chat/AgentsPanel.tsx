@@ -31,7 +31,6 @@ export interface AgentsPanelProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   subagents: ReadonlyArray<SubagentProgressItem>;
-  backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** Background runs already listed above as subagents, keyed by the tool call
    *  that launched them. They are not rendered as rows; they only give the
    *  matching agent row a stop handle. */
@@ -53,7 +52,6 @@ export interface AgentsPanelProps {
   /** Set when the panel renders inside the sidebar's tab strip, which already
    *  carries the window chrome, the panel's name and its dismissal. */
   embedded?: boolean;
-  onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onClose?: (() => void) | undefined;
 }
@@ -139,17 +137,13 @@ function BranchRow({
   onSelect: (branch: AgentBranch) => void;
   onStop: (branch: AgentBranch) => void;
 }) {
-  const interactive =
-    branch.kind === "subagent" ? branch.transcriptAvailable : branch.terminalId !== null;
+  const interactive = branch.transcriptAvailable;
   const meta = branch.meta.join(" · ");
-  const ariaLabel =
-    branch.kind === "subagent"
-      ? `Open ${branch.name} transcript`
-      : `${branch.terminalVisible ? "Close" : "Open"} ${branch.name} terminal`;
+  const ariaLabel = `Open ${branch.name} transcript`;
 
-  // An agent the provider launched as a background shell command borrows the
-  // run rows' stop arm — same control, same placement, same behavior.
-  const canStop = branch.kind === "run" ? branch.run.canStop : branch.stoppableRun !== null;
+  // An agent the provider launched as a background shell command borrows a
+  // stop arm from the run it is — the same control the activity chip offers.
+  const canStop = branch.stoppableRun !== null;
   const flat = variant === "flat";
   // Flat rows carry no trunk to hang a status dot off, and a filed-away agent
   // that simply finished has nothing to say with one. Anything else does.
@@ -271,7 +265,6 @@ function BranchRow({
           className={cn(rowClassName, "transition-colors hover:bg-foreground/[0.03] focus-ring")}
           aria-label={ariaLabel}
           title={rowTitle}
-          aria-pressed={branch.kind === "run" ? branch.terminalVisible : undefined}
           onClick={() => onSelect(branch)}
         >
           {body}
@@ -300,7 +293,6 @@ export const AgentsPanel = memo(function AgentsPanel({
   environmentId,
   threadId,
   subagents,
-  backgroundRuns,
   subagentRuns,
   history,
   workEntries = EMPTY_WORK_ENTRIES,
@@ -308,15 +300,14 @@ export const AgentsPanel = memo(function AgentsPanel({
   turnInFlight = false,
   threadCwd,
   embedded = false,
-  onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
   onClose,
 }: AgentsPanelProps) {
   const selectedAgentId = useSelectedAgentId();
 
   const view = useMemo(
-    () => buildAgentsPanelView({ subagents, backgroundRuns, subagentRuns, history, providerLabel }),
-    [backgroundRuns, history, providerLabel, subagentRuns, subagents],
+    () => buildAgentsPanelView({ subagents, subagentRuns, history }),
+    [history, subagentRuns, subagents],
   );
   const headerMeta = useMemo(() => formatAgentsHeaderMeta({ subagents }), [subagents]);
   const headerSummary = useMemo(
@@ -342,26 +333,16 @@ export const AgentsPanel = memo(function AgentsPanel({
     [selectedSubagentThreadId, workEntries],
   );
 
-  const handleSelect = useCallback(
-    (branch: AgentBranch) => {
-      if (branch.kind === "run") {
-        if (branch.terminalId) {
-          onToggleBackgroundRunTerminal(branch.terminalId);
-        }
-        return;
-      }
-      if (branch.item.agentThreadId) {
-        selectAgentsPanelAgent(branch.item.agentThreadId);
-      }
-    },
-    [onToggleBackgroundRunTerminal],
-  );
+  const handleSelect = useCallback((branch: AgentBranch) => {
+    if (branch.item.agentThreadId) {
+      selectAgentsPanelAgent(branch.item.agentThreadId);
+    }
+  }, []);
 
   const handleStop = useCallback(
     (branch: AgentBranch) => {
-      const run = branch.kind === "run" ? branch.run : branch.stoppableRun;
-      if (run) {
-        onStopBackgroundRun(run);
+      if (branch.stoppableRun) {
+        onStopBackgroundRun(branch.stoppableRun);
       }
     },
     [onStopBackgroundRun],
@@ -503,31 +484,6 @@ export const AgentsPanel = memo(function AgentsPanel({
                 </SectionLabel>
                 <ul className="divide-y divide-border/40 border-t border-border/40">
                   {view.earlier.map((branch) => (
-                    <BranchRow
-                      key={branch.key}
-                      branch={branch}
-                      variant="flat"
-                      providerGlyph={providerGlyph}
-                      onSelect={handleSelect}
-                      onStop={handleStop}
-                    />
-                  ))}
-                </ul>
-              </>
-            ) : null}
-            {/* Background commands are not agents; they keep their rows (and
-                stop handles) below the agents instead of crowding them out. */}
-            {view.commands.length > 0 ? (
-              <>
-                <SectionLabel
-                  className="px-3 py-1.5"
-                  tick={false}
-                  data-agents-panel-commands="true"
-                >
-                  Commands
-                </SectionLabel>
-                <ul className="divide-y divide-border/40 border-t border-border/40">
-                  {view.commands.map((branch) => (
                     <BranchRow
                       key={branch.key}
                       branch={branch}

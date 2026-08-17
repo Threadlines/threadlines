@@ -3367,7 +3367,6 @@ export default function ChatView(props: ChatViewProps) {
       environmentId,
       threadId: activeThreadId,
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
-      backgroundRuns,
       subagentRuns: promotedSubagentRuns,
       history: subagentHistory,
       workEntries: workLogEntries,
@@ -3375,14 +3374,12 @@ export default function ChatView(props: ChatViewProps) {
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
       threadCwd: gitCwd,
-      onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
       onStopBackgroundRun: stopBackgroundRun,
     });
   }, [
     activeProviderDriver,
     activeThreadId,
     activeTurnInProgress,
-    backgroundRuns,
     environmentId,
     gitCwd,
     promotedSubagentRuns,
@@ -3390,7 +3387,6 @@ export default function ChatView(props: ChatViewProps) {
     subagentHistory,
     subagentProgress?.items,
     threadDetailHydrated,
-    toggleBackgroundRunTerminal,
     workLogEntries,
   ]);
   useEffect(() => () => publishAgentsPanelSource(null), []);

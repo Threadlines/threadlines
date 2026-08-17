@@ -40,7 +40,6 @@ export type RightPanelLauncherStates = Readonly<
 /** The agent state the panel already receives, read only for its counts. */
 export interface RightPanelLauncherAgentsInput {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
-  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   readonly history: ReadonlyArray<ThreadSubagentHistoryEntry>;
 }
 
@@ -180,11 +179,9 @@ function agentsState(agents: RightPanelLauncherAgentsInput | null): RightPanelSu
   const view = buildAgentsPanelView(agents);
   const total = view.current.length + view.earlier.length;
   if (total === 0) {
-    // Commands are not agents, but a surface with live rows on it is not
-    // empty either.
-    return view.commands.length > 0
-      ? { description: `${pluralize(view.commands.length, "background command")}.`, empty: false }
-      : { description: "No agents yet.", empty: true };
+    // Background commands live in the header's activity chip, not here, so
+    // they have no bearing on whether this surface is empty.
+    return { description: "No agents yet.", empty: true };
   }
   const live = summarizeLiveAgents(agents);
   const waitingCount = live?.waitingCount ?? 0;

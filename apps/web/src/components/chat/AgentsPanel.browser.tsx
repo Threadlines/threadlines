@@ -83,19 +83,14 @@ const TERMINAL_RUN: ThreadBackgroundRunItem = {
   command: "vp run dev:desktop",
 };
 
-function renderPanel(
-  props: Partial<Parameters<typeof AgentsPanel>[0]> = {},
-  onToggleBackgroundRunTerminal = vi.fn(),
-) {
+function renderPanel(props: Partial<Parameters<typeof AgentsPanel>[0]> = {}) {
   return render(
     <main style={{ boxSizing: "border-box", height: 640, width: 400 }}>
       <AgentsPanel
         environmentId={ENVIRONMENT_ID}
         threadId={THREAD_ID}
         subagents={[]}
-        backgroundRuns={[]}
         providerLabel="codex"
-        onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
         onStopBackgroundRun={vi.fn()}
         {...props}
       />
@@ -144,69 +139,20 @@ describe("AgentsPanel", () => {
           statusLabel: "Done",
         }),
       ],
-      // The user's own terminal rides along and must not appear: only the
-      // provider's run draws a branch.
-      backgroundRuns: [PROVIDER_RUN, TERMINAL_RUN],
     });
 
     try {
       await expect.element(page.getByText("Router sweep")).toBeVisible();
 
       const branches = [...document.querySelectorAll("[data-agent-branch='true']")];
-      // Agents in attention order first; the provider's command run draws its
-      // branch in the Commands section after them.
+      // Agents in attention order; background command runs never draw a
+      // branch here — the header's activity chip is their surface.
       expect(branches.map((branch) => branch.getAttribute("data-agent-branch-status"))).toEqual([
         "running",
         "waiting",
         "failed",
         "completed",
-        "running",
       ]);
-      expect(branches.map((branch) => branch.getAttribute("data-agent-branch-kind"))).toContain(
-        "run",
-      );
-
-      // A run is transcript-less, so it says where it came from instead.
-      const tags = [...document.querySelectorAll("[data-agent-branch-tag='true']")];
-      expect(tags.map((tag) => tag.textContent)).toEqual(["codex · provider"]);
-    } finally {
-      await mounted.unmount();
-    }
-  });
-
-  it("tags a detected run with the provider that reported it", async () => {
-    const mounted = await renderPanel({
-      backgroundRuns: [
-        {
-          ...TERMINAL_RUN,
-          id: "detected:1",
-          source: "detected",
-          terminalId: null,
-          label: "Dev server",
-          port: 5173,
-        },
-      ],
-    });
-
-    try {
-      await expect.element(page.getByText("codex · detected")).toBeVisible();
-    } finally {
-      await mounted.unmount();
-    }
-  });
-
-  it("toggles the terminal when a run branch is pressed instead of drilling in", async () => {
-    const onToggleBackgroundRunTerminal = vi.fn();
-    const mounted = await renderPanel(
-      { backgroundRuns: [PROVIDER_RUN] },
-      onToggleBackgroundRunTerminal,
-    );
-
-    try {
-      await page.getByRole("button", { name: "Open Dev server terminal" }).click();
-      expect(onToggleBackgroundRunTerminal).toHaveBeenCalledWith("default");
-      // Still the tree: a run never replaces the panel with a transcript.
-      expect(document.querySelector("[data-agents-panel='tree']")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }
@@ -406,7 +352,6 @@ describe("AgentsPanel", () => {
               },
             }),
           ]}
-          backgroundRuns={[]}
           history={[
             buildHistoryEntry({
               item: buildSubagent({
@@ -425,7 +370,6 @@ describe("AgentsPanel", () => {
           ]}
           providerLabel="codex"
           embedded
-          onToggleBackgroundRunTerminal={vi.fn()}
           onStopBackgroundRun={vi.fn()}
         />
       </main>,
@@ -784,10 +728,9 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("marks a spawned agent with the thread provider's glyph but leaves runs their tag", async () => {
+  it("marks a spawned agent with the thread provider's glyph", async () => {
     const mounted = await renderPanel({
       subagents: [buildSubagent({ label: "Router sweep" })],
-      backgroundRuns: [PROVIDER_RUN],
       providerLabel: "claudeAgent",
     });
 
@@ -798,12 +741,7 @@ describe("AgentsPanel", () => {
       const subagentRow = rows.find(
         (row) => row.getAttribute("data-agent-branch-kind") === "subagent",
       );
-      const runRow = rows.find((row) => row.getAttribute("data-agent-branch-kind") === "run");
       expect(subagentRow?.querySelector("[data-agent-branch-provider='true'] svg")).not.toBeNull();
-      expect(runRow?.querySelector("[data-agent-branch-provider='true']")).toBeNull();
-      expect(runRow?.querySelector("[data-agent-branch-tag='true']")?.textContent).toBe(
-        "claudeagent · provider",
-      );
     } finally {
       await mounted.unmount();
     }
@@ -824,10 +762,8 @@ describe("AgentsPanel", () => {
             environmentId={ENVIRONMENT_ID}
             threadId={THREAD_ID}
             subagents={[buildSubagent({ label: "Router sweep" })]}
-            backgroundRuns={[]}
             providerLabel="codex"
             embedded
-            onToggleBackgroundRunTerminal={vi.fn()}
             onStopBackgroundRun={vi.fn()}
           />
         </ChatRightPanel>
@@ -923,7 +859,7 @@ describe("AgentsPanel", () => {
             workingTreeFileCount: 0,
             reviewableTurnCount: 0,
             diffHasExplicitTarget: false,
-            agents: { subagents: [], backgroundRuns: [], history: [] },
+            agents: { subagents: [], history: [] },
           })}
           onSelectTab={onSelectTab}
           onCloseTab={vi.fn()}
@@ -991,7 +927,6 @@ describe("AgentsPanel", () => {
             diffHasExplicitTarget: false,
             agents: {
               subagents: [buildSubagent({ label: "Router sweep" })],
-              backgroundRuns: [],
               history: [
                 buildHistoryEntry({
                   item: buildSubagent({
@@ -1040,7 +975,7 @@ describe("AgentsPanel", () => {
             workingTreeFileCount: 0,
             reviewableTurnCount: 0,
             diffHasExplicitTarget: true,
-            agents: { subagents: [], backgroundRuns: [], history: [] },
+            agents: { subagents: [], history: [] },
           })}
           onSelectTab={vi.fn()}
           onCloseTab={vi.fn()}
@@ -1077,7 +1012,7 @@ describe("AgentsPanel", () => {
             workingTreeFileCount: 0,
             reviewableTurnCount: 6,
             diffHasExplicitTarget: false,
-            agents: { subagents: [], backgroundRuns: [], history: [] },
+            agents: { subagents: [], history: [] },
           })}
           onSelectTab={vi.fn()}
           onCloseTab={vi.fn()}
@@ -1162,7 +1097,6 @@ describe("AgentsPanel", () => {
             diffHasExplicitTarget: false,
             agents: {
               subagents: [buildSubagent({ label: "Router sweep" })],
-              backgroundRuns: [],
               history: [],
             },
           })}

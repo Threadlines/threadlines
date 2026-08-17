@@ -16,9 +16,6 @@ import { pluralize } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { formatSubagentMetaParts, formatSubagentDuration } from "./subagentMeta";
 import {
-  backgroundRunCommandText,
-  backgroundRunMetaItems,
-  backgroundRunSourceLabel,
   deriveSubagentDisplayDetails,
   normalizeSubagentInlineText,
   type ThreadBackgroundRunItem,
@@ -66,16 +63,10 @@ export interface AgentSubagentBranch extends AgentBranchBase {
   readonly stoppableRun: ThreadBackgroundRunItem | null;
 }
 
-export interface AgentRunBranch extends AgentBranchBase {
-  readonly kind: "run";
-  readonly depth: 0;
-  readonly run: ThreadBackgroundRunItem;
-  /** Clicking the branch toggles this terminal; null runs are not clickable. */
-  readonly terminalId: string | null;
-  readonly terminalVisible: boolean;
-}
-
-export type AgentBranch = AgentSubagentBranch | AgentRunBranch;
+/** Background command runs are not agents and never appear in this panel —
+ *  the header's activity chip is their surface (rows, terminal toggle, stop).
+ *  The alias survives so branch consumers keep reading as "any branch". */
+export type AgentBranch = AgentSubagentBranch;
 
 export interface TurnAgentSummarySegment {
   readonly id: string;
@@ -114,39 +105,6 @@ export function subagentBranchStatus(status: SubagentProgressItem["status"]): Ag
 
 export function isLiveAgentBranchStatus(status: AgentBranchStatus): boolean {
   return status === "running" || status === "waiting";
-}
-
-/**
- * A background run only appears while it is live, so every run branch reads as
- * running. Provider-managed runs that the provider has parked read as waiting.
- */
-function backgroundRunBranchStatus(run: ThreadBackgroundRunItem): AgentBranchStatus {
-  return /\b(waiting|blocked|paused)\b/iu.test(run.statusLabel) ? "waiting" : "running";
-}
-
-/**
- * The runs the panel — and every indicator that advertises it — counts: work an
- * agent started, or that detection attributed to one. A terminal the user
- * opened themselves is the thread's own shell, not the turn's orchestration;
- * the terminal strip and the header's activity popover are its surfaces, and
- * counting it here made a hand-run dev server read as an agent.
- */
-function agentInitiatedRuns(
-  runs: ReadonlyArray<ThreadBackgroundRunItem>,
-): ReadonlyArray<ThreadBackgroundRunItem> {
-  return runs.filter((run) => run.source !== "terminal");
-}
-
-/** `codex · detected`. The provider is dropped when it is not known. */
-function backgroundRunTag(
-  run: ThreadBackgroundRunItem,
-  providerLabel: string | null | undefined,
-): string {
-  if (run.source === "terminal") {
-    return "terminal";
-  }
-  const provider = providerLabel?.trim().toLowerCase();
-  return provider ? `${provider} · ${run.source}` : run.source;
 }
 
 /**
@@ -204,34 +162,6 @@ function subagentBranch(
   };
 }
 
-function runBranch(
-  run: ThreadBackgroundRunItem,
-  providerLabel: string | null | undefined,
-): AgentRunBranch {
-  const task = backgroundRunCommandText(run);
-  const detail = run.detail?.trim() || null;
-  // A served URL is the most useful thing a run has said; its detail line is
-  // the fallback when it is not just the command restated.
-  const primaryUrl = run.urls[0] ?? null;
-  const output = primaryUrl ?? (detail !== null && detail !== task ? detail : null);
-  return {
-    kind: "run",
-    key: `run:${run.id}`,
-    status: backgroundRunBranchStatus(run),
-    name: run.label,
-    statusLabel: run.statusLabel,
-    meta: [backgroundRunSourceLabel(run), ...backgroundRunMetaItems(run)],
-    time: null,
-    task,
-    output,
-    tag: backgroundRunTag(run, providerLabel),
-    depth: 0,
-    run,
-    terminalId: run.terminalId,
-    terminalVisible: run.terminalVisible === true,
-  };
-}
-
 /**
  * Running first, then waiting, then failed, then completed — the order in
  * which a branch is likely to need attention. Within a group, oldest first;
@@ -240,23 +170,15 @@ function runBranch(
  */
 export function buildAgentBranches(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
-  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** Background runs that are already listed as subagents, keyed by the tool
    *  call that launched them. Lends each matching row its stop handle. */
   readonly subagentRuns?: ReadonlyMap<string, ThreadBackgroundRunItem> | undefined;
-  readonly providerLabel?: string | null | undefined;
   readonly nowMs?: number | undefined;
 }): ReadonlyArray<AgentBranch> {
-  const branches: Array<{ branch: AgentBranch; startedAtMs: number | null }> = [
-    ...input.subagents.map((item) => ({
-      branch: subagentBranch(item, input.nowMs, input.subagentRuns) as AgentBranch,
-      startedAtMs: parseTimestamp(item.createdAt),
-    })),
-    ...agentInitiatedRuns(input.backgroundRuns).map((run) => ({
-      branch: runBranch(run, input.providerLabel) as AgentBranch,
-      startedAtMs: null,
-    })),
-  ];
+  const branches = input.subagents.map((item) => ({
+    branch: subagentBranch(item, input.nowMs, input.subagentRuns),
+    startedAtMs: parseTimestamp(item.createdAt),
+  }));
 
   return branches
     .toSorted((left, right) => {
@@ -329,12 +251,9 @@ export interface AgentsPanelView {
   readonly current: ReadonlyArray<AgentBranch>;
   /** Agents from earlier in the thread, newest first. */
   readonly earlier: ReadonlyArray<AgentSubagentBranch>;
-  /** Non-agent background work — command tasks, detected processes. A CI
-   *  watcher loop is not an agent, and a tab called Agents putting commands
-   *  above the agents read as exactly that; they keep their rows (and stop
-   *  buttons) in their own section below instead. */
-  readonly commands: ReadonlyArray<AgentRunBranch>;
-  /** False only when the thread has never run an agent at all. */
+  /** False only when the thread has never run an agent at all. Background
+   *  command runs do not appear in this panel at all — the header's activity
+   *  chip is their surface. */
   readonly hasAny: boolean;
 }
 
@@ -343,10 +262,6 @@ export interface AgentsPanelView {
  * these are, how many are working, how many want something, and how much of the
  * list is already finished. The row otherwise carried a pulsing dot and a
  * duration with nothing between them naming what was pulsing.
- *
- * Terminal and detected runs are counted as runs rather than folded into the
- * agent count — a dev server on the tree is not an agent, and saying so would
- * inflate the only number here anyone would act on.
  */
 export function formatAgentsPanelSummary(
   view: AgentsPanelView,
@@ -361,13 +276,11 @@ export function formatAgentsPanelSummary(
   );
   const runningCount = subagents.filter((branch) => branch.status === "running").length;
   const waitingCount = subagents.filter((branch) => branch.status === "waiting").length;
-  const runCount = view.commands.length;
 
   const parts = [
     providerDisplayLabel(providerLabel),
     runningCount > 0 ? `${runningCount} running` : null,
     waitingCount > 0 ? `${waitingCount} needs you` : null,
-    runCount > 0 ? pluralize(runCount, "run") : null,
     view.earlier.length > 0 ? `${view.earlier.length} earlier` : null,
   ].filter((part): part is string => part !== null);
 
@@ -392,17 +305,11 @@ function providerDisplayLabel(providerLabel: string | null | undefined): string 
  */
 export function buildAgentsPanelView(input: {
   readonly subagents: ReadonlyArray<SubagentProgressItem>;
-  readonly backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   readonly subagentRuns?: ReadonlyMap<string, ThreadBackgroundRunItem> | undefined;
   readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
-  readonly providerLabel?: string | null | undefined;
   readonly nowMs?: number | undefined;
 }): AgentsPanelView {
-  const branches = buildAgentBranches(input);
-  const current = branches.filter(
-    (branch): branch is AgentSubagentBranch => branch.kind === "subagent",
-  );
-  const commands = branches.filter((branch): branch is AgentRunBranch => branch.kind === "run");
+  const current = buildAgentBranches(input);
   const currentAgentKeys = new Set(input.subagents.map(subagentIdentity));
   const earlier = (input.history ?? [])
     .filter((entry) => !currentAgentKeys.has(subagentIdentity(entry.item)))
@@ -415,8 +322,7 @@ export function buildAgentsPanelView(input: {
   return {
     current,
     earlier,
-    commands,
-    hasAny: current.length > 0 || earlier.length > 0 || commands.length > 0,
+    hasAny: current.length > 0 || earlier.length > 0,
   };
 }
 
