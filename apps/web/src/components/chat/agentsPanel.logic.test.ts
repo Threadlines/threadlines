@@ -407,7 +407,7 @@ describe("buildAgentsPanelView", () => {
   });
 
   it("reports nothing at all only for a thread that has never run an agent", () => {
-    expect(buildAgentsPanelView({ subagents: [], backgroundRuns: [] }).hasAny).toBe(false);
+    expect(buildAgentsPanelView({ subagents: [] }).hasAny).toBe(false);
   });
 });
 
