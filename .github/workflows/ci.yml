@@ -66,6 +66,16 @@ jobs:
       - name: Browser test
         run: vp exec vp run --filter @threadlines/web test:browser
 
+      # Browser test failures are timing-sensitive and CI-only more often than
+      # not; the on-failure screenshot is the only evidence of what rendered.
+      - name: Upload browser test failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: browser-test-screenshots
+          path: apps/web/src/**/__screenshots__/**
+          if-no-files-found: ignore
+
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
 
