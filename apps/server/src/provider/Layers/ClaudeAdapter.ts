@@ -6124,6 +6124,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(runsInManagedWorktree ? { append: MANAGED_WORKTREE_INSTRUCTION } : {}),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
+        // SDK 0.3.233 dropped the todo/task tools from the default tool
+        // surface on newer models; the plan timeline reads them, so keep
+        // them enabled explicitly.
+        allowedTools: ["TodoWrite", "TaskCreate", "TaskGet", "TaskUpdate", "TaskList"],
         ...(effectiveEffort
           ? {
               effort: effectiveEffort,
