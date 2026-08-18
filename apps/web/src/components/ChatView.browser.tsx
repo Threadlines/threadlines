@@ -9618,16 +9618,23 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const sourceMessageText = page.getByText("Original prompt for branching.", { exact: true });
-      await sourceMessageText.hover();
-      const sourceMessageRow = sourceMessageText
-        .element()
-        .closest<HTMLElement>(`[data-message-id="${sourceMessageId}"]`);
-      const editAndBranchButton = sourceMessageRow?.querySelector<HTMLButtonElement>(
-        'button[aria-label="Edit and branch"]',
+      const sourceMessageRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-message-id="${sourceMessageId}"]`),
+        () =>
+          `Source message did not render. Rendered message ids: ${[
+            ...document.querySelectorAll<HTMLElement>("[data-message-id]"),
+          ]
+            .map((element) => element.dataset.messageId)
+            .join(", ")}`,
       );
-      expect(editAndBranchButton).not.toBeNull();
-      await page.elementLocator(editAndBranchButton!).click();
+      expect(sourceMessageRow.textContent).toContain("Original prompt for branching.");
+      await page.elementLocator(sourceMessageRow).hover();
+      const editAndBranchButton = await waitForElement(
+        () =>
+          sourceMessageRow.querySelector<HTMLButtonElement>('button[aria-label="Edit and branch"]'),
+        "Edit-and-branch button did not render for the source message.",
+      );
+      await page.elementLocator(editAndBranchButton).click();
       await expect
         .element(page.getByText("Edit this prompt in a new thread?", { exact: true }))
         .toBeInTheDocument();

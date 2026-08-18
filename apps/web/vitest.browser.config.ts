@@ -30,13 +30,14 @@ export default mergeConfig(
     },
     test: {
       include: ["src/**/*.browser.tsx"],
-      // Each worker is a full Chromium renderer. CI runs one at a time so the
-      // large ChatView file cannot lose its renderer while other browser files
-      // are mounting under load. Local runs use half the cores by default.
-      maxWorkers: process.env.THREADLINES_TEST_WORKERS
-        ? Number(process.env.THREADLINES_TEST_WORKERS)
-        : process.env.CI
-          ? 1
+      // Locally, cap parallel browser tabs at half the cores. Each tab is a
+      // full Chromium renderer; saturating every core pages out low-memory
+      // machines and turns fast specs into spurious 30s timeouts.
+      // THREADLINES_TEST_WORKERS lowers the cap further per machine.
+      maxWorkers: process.env.CI
+        ? undefined
+        : process.env.THREADLINES_TEST_WORKERS
+          ? Number(process.env.THREADLINES_TEST_WORKERS)
           : "50%",
       browser: {
         enabled: true,
