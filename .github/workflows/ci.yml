@@ -24,7 +24,9 @@ jobs:
   quality:
     name: Format, Lint, Typecheck, Test, Browser Test, Build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 minutes starves dependency-bump branches: a lockfile change cold-starts
+    # every cache and slow runners then hit the cap mid-pipeline.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
