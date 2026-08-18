@@ -20,7 +20,7 @@
     "@effect/atom-react": "catalog:",
     "@fontsource-variable/cascadia-mono": "^5.3.0",
     "@fontsource-variable/schibsted-grotesk": "^5.3.0",
-    "@legendapp/list": "^3.3.7",
+    "@legendapp/list": "^3.3.5",
     "@lexical/react": "^0.47.0",
     "@pierre/diffs": "catalog:",
     "@tanstack/react-pacer": "^0.23.0",
