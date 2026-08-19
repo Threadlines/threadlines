@@ -61,13 +61,14 @@ jobs:
         run: vp exec vp run test
 
       # Hosted runners point apt at azure.archive.ubuntu.com, which
-      # intermittently stalls for 20+ minutes and starves the job timeout
-      # (four runs on 2026-08-18). playwright install --with-deps runs apt,
-      # so swap in the main Ubuntu mirror first.
+      # intermittently stalls for 20+ minutes and starves the job timeout.
+      # Ubuntu 24.04 keeps the active mirror in apt-mirrors.txt, while older
+      # images use .list or .sources files, so update every supported format.
       - name: Use main Ubuntu mirror for apt
-        run: sudo find /etc/apt -name "*.list" -o -name "*.sources" | sudo xargs sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g'
+        run: sudo find /etc/apt -type f \( -name "*.list" -o -name "*.sources" -o -name "apt-mirrors.txt" \) -exec sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' {} +
 
       - name: Install browser test runtime
+        timeout-minutes: 10
         run: vp exec vp run --filter @threadlines/web test:browser:install
 
       - name: Browser test
