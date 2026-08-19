@@ -60,7 +60,6 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import {
-  resetEnvironmentServiceForTests,
   resetSavedEnvironmentRegistryStoreForTests,
   resetSavedEnvironmentRuntimeStoreForTests,
   useSavedEnvironmentRegistryStore,
@@ -69,6 +68,7 @@ import {
 import { type TerminalContextDraft } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
+import { useOptimisticThreadMessagesStore } from "../optimisticThreadMessages";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
@@ -2119,7 +2119,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   beforeEach(async () => {
-    await resetEnvironmentServiceForTests();
     await rpcHarness.reset({
       resolveUnary: resolveWsRpc,
       getInitialStreamValues: (request) => {
@@ -2189,6 +2188,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       stickyModelSelectionByProvider: {},
       stickyActiveProvider: null,
     });
+    useOptimisticThreadMessagesStore.setState({ messagesByThreadKey: {} });
     useCommandPaletteStore.setState({
       open: false,
       openIntent: null,
