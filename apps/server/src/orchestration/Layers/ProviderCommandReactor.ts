@@ -911,15 +911,25 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance id.`,
           });
         }
+        // Starting a provider session and ingesting its `thread.started` event
+        // happen concurrently. Re-read after startup so this bind cannot replace
+        // provider-side identifiers that arrived while `startSession` was in flight.
+        const latestThread = yield* resolveThread(threadId);
+        if (!latestThread) {
+          return yield* Effect.die(
+            new Error(`Thread '${threadId}' was not found in read model after session startup.`),
+          );
+        }
+        const latestSession = latestThread.session;
         const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
         const shouldPreservePendingTurnStartup =
-          thread.session?.status === "starting" && mappedStatus === "ready";
+          latestSession?.status === "starting" && mappedStatus === "ready";
         // Provider-side identifiers arrive via runtime ingestion
         // (`thread.started`); a rebind must not wipe them. They only survive
         // when the session continues on the same provider instance — after an
         // instance switch they describe the outgoing provider.
         const continuesSameInstance =
-          thread.session?.providerInstanceId === session.providerInstanceId;
+          latestSession?.providerInstanceId === session.providerInstanceId;
         yield* setThreadSession({
           threadId,
           session: {
@@ -928,10 +938,10 @@ const make = Effect.gen(function* () {
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             providerSessionId: continuesSameInstance
-              ? (thread.session?.providerSessionId ?? null)
+              ? (latestSession?.providerSessionId ?? null)
               : null,
             providerThreadId: continuesSameInstance
-              ? (thread.session?.providerThreadId ?? null)
+              ? (latestSession?.providerThreadId ?? null)
               : null,
             runtimeMode: desiredRuntimeMode,
             // Checkout the runtime actually started in. The next turn compares
@@ -942,7 +952,7 @@ const make = Effect.gen(function* () {
             activeTurnId: null,
             lastError: session.lastError ?? null,
             updatedAt: shouldPreservePendingTurnStartup
-              ? (thread.session?.updatedAt ?? session.updatedAt)
+              ? (latestSession?.updatedAt ?? session.updatedAt)
               : session.updatedAt,
           },
           createdAt,

@@ -731,6 +731,66 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("preserves provider identifiers published while session startup is in flight", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const defaultStartSession = harness.startSession.getMockImplementation();
+    if (!defaultStartSession) {
+      throw new Error("startSession mock has no implementation");
+    }
+
+    harness.startSession.mockImplementationOnce((threadId: unknown, input: unknown) =>
+      defaultStartSession(threadId, input).pipe(
+        Effect.tap((session) =>
+          harness.engine
+            .dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make("cmd-runtime-session-identity"),
+              threadId: ThreadId.make(String(threadId)),
+              session: {
+                threadId: ThreadId.make(String(threadId)),
+                status: "starting",
+                providerName: session.provider,
+                providerInstanceId: session.providerInstanceId,
+                providerSessionId: "codex-session-1",
+                providerThreadId: "codex-thread-1",
+                runtimeMode: session.runtimeMode,
+                checkoutCwd: session.cwd ?? null,
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: now,
+              },
+              createdAt: now,
+            })
+            .pipe(Effect.orDie),
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-with-runtime-identity"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-runtime-identity"),
+          role: "user",
+          text: "keep the provider identity",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.providerSessionId).toBe("codex-session-1");
+    expect(thread?.session?.providerThreadId).toBe("codex-thread-1");
+  });
+
   it("uses a fresh provider message id when retrying a persisted user message", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");
