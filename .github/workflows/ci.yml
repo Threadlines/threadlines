@@ -24,7 +24,9 @@ jobs:
   quality:
     name: Format, Lint, Typecheck, Test, Browser Test, Build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 minutes starves dependency-bump branches: a lockfile change cold-starts
+    # every cache and slow runners then hit the cap mid-pipeline.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,11 +60,29 @@ jobs:
       - name: Test
         run: vp exec vp run test
 
+      # Hosted runners point apt at azure.archive.ubuntu.com, which
+      # intermittently stalls for 20+ minutes and starves the job timeout.
+      # Ubuntu 24.04 keeps the active mirror in apt-mirrors.txt, while older
+      # images use .list or .sources files, so update every supported format.
+      - name: Use main Ubuntu mirror for apt
+        run: sudo find /etc/apt -type f \( -name "*.list" -o -name "*.sources" -o -name "apt-mirrors.txt" \) -exec sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' {} +
+
       - name: Install browser test runtime
+        timeout-minutes: 10
         run: vp exec vp run --filter @threadlines/web test:browser:install
 
       - name: Browser test
         run: vp exec vp run --filter @threadlines/web test:browser
+
+      # Browser test failures are timing-sensitive and CI-only more often than
+      # not; the on-failure screenshot is the only evidence of what rendered.
+      - name: Upload browser test failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: browser-test-screenshots
+          path: apps/web/src/**/__screenshots__/**
+          if-no-files-found: ignore
 
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
