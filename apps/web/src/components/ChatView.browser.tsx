@@ -60,6 +60,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import {
+  resetEnvironmentServiceForTests,
   resetSavedEnvironmentRegistryStoreForTests,
   resetSavedEnvironmentRuntimeStoreForTests,
   useSavedEnvironmentRegistryStore,
@@ -2118,6 +2119,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   beforeEach(async () => {
+    await resetEnvironmentServiceForTests();
     await rpcHarness.reset({
       resolveUnary: resolveWsRpc,
       getInitialStreamValues: (request) => {
