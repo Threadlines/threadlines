@@ -28,6 +28,8 @@ export function ChatRightPanel(props: {
   launcherSurfaceStates?: RightPanelLauncherStates | undefined;
   onSelectTab: (tab: RightPanelTab) => void;
   onCloseTab: (tab: RightPanelTab) => void;
+  /** Drag-reorder commit for the strip's tabs. */
+  onReorderTab?: ((tab: RightPanelTab, toIndex: number) => void) | undefined;
   /** Present in overlay mode, where the sidebar covers the conversation. */
   onDismiss?: (() => void) | undefined;
   children: ReactNode;
@@ -46,6 +48,7 @@ export function ChatRightPanel(props: {
         {...(props.liveTabs ? { liveTabs: props.liveTabs } : {})}
         onSelectTab={props.onSelectTab}
         onCloseTab={props.onCloseTab}
+        onReorderTab={props.onReorderTab}
         {...(onDismiss
           ? {
               trailing: (

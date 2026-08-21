@@ -224,6 +224,30 @@ export function advanceAgentsAutoOpenEdge(
   return true;
 }
 
+/**
+ * Drag-reorder: an open tab takes a new slot and the rest close ranks. The
+ * strip's order is otherwise append-only (tabs join at the end), so this is
+ * the one mutation that moves a tab, and it moves only the one the user held.
+ */
+export function moveRightPanelTabState(
+  state: RightPanelTabsState,
+  tab: RightPanelTab,
+  toIndex: number,
+): RightPanelTabsState {
+  const from = state.openTabs.indexOf(tab);
+  if (from === -1) {
+    return state;
+  }
+  const to = Math.max(0, Math.min(state.openTabs.length - 1, toIndex));
+  if (to === from) {
+    return state;
+  }
+  const openTabs = [...state.openTabs];
+  openTabs.splice(from, 1);
+  openTabs.splice(to, 0, tab);
+  return { ...state, openTabs };
+}
+
 /** Open-or-retarget the single Diff tab. */
 export function retargetRightPanelDiffState(
   state: RightPanelTabsState,
@@ -521,6 +545,15 @@ export function autoOpenAgentsTab(threadKey: string | null): RightPanelTab | nul
     next.activeTab === "agents" &&
     !(previous.visible && previous.activeTab === "agents");
   return focused ? "agents" : null;
+}
+
+/** Reorder is strip state only — no navigation follows, so nothing returns. */
+export function moveRightPanelTab(
+  threadKey: string | null,
+  tab: RightPanelTab,
+  toIndex: number,
+): void {
+  mutate(threadKey, (state) => moveRightPanelTabState(state, tab, toIndex));
 }
 
 export function retargetRightPanelDiff(

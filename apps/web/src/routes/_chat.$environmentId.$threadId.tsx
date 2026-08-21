@@ -43,6 +43,7 @@ import {
   hideRightPanel,
   isRightPanelClosedInSearch,
   useReconciledRightPanelTabs,
+  moveRightPanelTab,
   retargetRightPanelDiff,
   rightPanelDiffTargetFromSearch,
   rightPanelTabSearchParams,
@@ -404,6 +405,14 @@ function ChatThreadRouteView() {
     },
     [currentThreadKey, diffTarget, navigateToTab],
   );
+  // Reorder touches only the strip's remembered order; the URL owns the
+  // active tab, and that does not change here.
+  const reorderTab = useCallback(
+    (tab: RightPanelTab, toIndex: number) => {
+      moveRightPanelTab(currentThreadKey, tab, toIndex);
+    },
+    [currentThreadKey],
+  );
   // Warm the lazy diff chunk while source control is open: a file click is
   // the most likely next action, and the Suspense skeleton reads as jank.
   useEffect(() => {
@@ -519,6 +528,7 @@ function ChatThreadRouteView() {
       launcherSurfaceStates={launcherSurfaceStates}
       onSelectTab={selectTab}
       onCloseTab={closeTab}
+      onReorderTab={reorderTab}
       {...(shouldUseDiffSheet ? { onDismiss: hideSidebar } : {})}
     >
       {rightPanelContent}

@@ -16,6 +16,7 @@ import {
   hideRightPanel,
   isRightPanelClosedInSearch,
   useReconciledRightPanelTabs,
+  moveRightPanelTab,
   rightPanelDiffTargetFromSearch,
   rightPanelTabSearchParams,
   showRightPanel,
@@ -241,6 +242,12 @@ function DraftChatThreadRouteView() {
     },
     [navigateToTab, panelStateKey],
   );
+  const reorderTab = useCallback(
+    (tab: RightPanelTab, toIndex: number) => {
+      moveRightPanelTab(panelStateKey, tab, toIndex);
+    },
+    [panelStateKey],
+  );
   const showSidebar = useCallback(() => {
     const { activeTab: nextTab } = showRightPanel(panelStateKey, availableTabs);
     if (nextTab !== null) {
@@ -328,6 +335,7 @@ function DraftChatThreadRouteView() {
       launcherSurfaceStates={launcherSurfaceStates}
       onSelectTab={selectTab}
       onCloseTab={closeTab}
+      onReorderTab={reorderTab}
       {...(shouldUseSourceControlSheet ? { onDismiss: hideSidebar } : {})}
     >
       {rightPanel.openTabs.includes("sourceControl") ? (

@@ -12,6 +12,7 @@ import {
   focusRightPanelTabState,
   hideRightPanelState,
   isRightPanelClosedInSearch,
+  moveRightPanelTabState,
   reconcileRightPanelTabsState,
   retargetRightPanelDiffState,
   rightPanelTabSearchParams,
@@ -154,6 +155,30 @@ describe("right panel tab transitions", () => {
     expect(empty.visible).toBe(false);
     // A closed diff tab forgets its file, so reopening it is the working tree.
     expect(empty.diffTarget).toBeNull();
+  });
+
+  it("moves a dragged tab to its dropped slot and nothing else", () => {
+    let state = focusRightPanelTabState(EMPTY_RIGHT_PANEL_TABS_STATE, "sourceControl");
+    state = focusRightPanelTabState(state, "diff");
+    state = focusRightPanelTabState(state, "agents");
+    expect(state.openTabs).toEqual(["sourceControl", "diff", "agents"]);
+
+    const moved = moveRightPanelTabState(state, "agents", 0);
+    expect(moved.openTabs).toEqual(["agents", "sourceControl", "diff"]);
+    // Focus follows the tab, not the slot: the active tab stays active.
+    expect(moved.activeTab).toBe("agents");
+
+    // Out-of-range drops clamp to the ends instead of losing the tab.
+    expect(moveRightPanelTabState(moved, "agents", 99).openTabs).toEqual([
+      "sourceControl",
+      "diff",
+      "agents",
+    ]);
+
+    // A no-op move and a tab not in the strip both return the state as-is.
+    expect(moveRightPanelTabState(state, "diff", 1)).toBe(state);
+    const withoutAgents = closeRightPanelTabState(state, "agents");
+    expect(moveRightPanelTabState(withoutAgents, "agents", 0)).toBe(withoutAgents);
   });
 
   it("hides and shows the sidebar without losing the strip", () => {
