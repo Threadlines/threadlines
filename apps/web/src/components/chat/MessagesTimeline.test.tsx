@@ -720,11 +720,12 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Checked git state");
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
-    expect(markup).toContain('data-live-turn-elapsed="true"');
-    expect(markup).toContain("Working ");
-    // The running tool is the current activity: it carries the single live node
-    // (halo) on the spine rather than a detached inline pulse off the thread.
-    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
+    expect(markup).toContain('data-turn-working-anchor="true"');
+    // The anchor's accent dot holds still; the status word's shimmer is the
+    // "alive" signal, so no halo pulses anywhere in the timeline.
+    expect(markup).toContain('<span class="working-shimmer">Working</span>');
+    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
+    expect(markup).toContain("animate-status-pulse rounded-full bg-primary-graph/80");
     expect(markup).not.toContain("Tool still running");
     expect(markup).not.toContain("Explored project");
     expect(markup).not.toContain("Show activity");
@@ -802,13 +803,15 @@ describe("MessagesTimeline", () => {
     );
 
     // Reasoning entries carry no turn id, but the step still joins the accent
-    // spine (not a settled group) so it connects down to the live node.
+    // spine (not a settled group) so it connects down to the working anchor.
     expect(markup).toContain('data-live-activity-strip="true"');
     expect(markup).not.toContain('data-work-activity-inline="true"');
     expect(markup).toContain("Working through the next step");
-    // The standalone working row is absorbed into the spine: exactly one live
-    // node (halo) terminates the thread.
-    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
+    // The working anchor terminates the thread with a still accent dot and a
+    // shimmering status word — no halo pulses in the timeline.
+    expect(markup).toContain('data-turn-working-anchor="true"');
+    expect(markup).toContain("working-shimmer");
+    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
   });
 
   it("renders unpaired output-only command activity as inactive progress", async () => {
@@ -1477,12 +1480,15 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    // The work group is no longer the tail, so it is not the live spine; the
-    // single live node sits at the very bottom (the working row), not stranded
-    // on the finished command above the message.
-    expect(markup).not.toContain('data-live-activity-strip="true"');
+    // The work group is no longer the tail, so it freezes in place (no accent,
+    // no receipt collapse mid-turn) while the working anchor holds the bottom
+    // with its still dot and shimmering status word.
+    expect(markup).toContain('data-live-activity-frozen="true"');
+    expect(markup).toContain('data-turn-working-anchor="true"');
+    expect(markup).toContain("working-shimmer");
+    expect(markup).not.toContain("data-work-activity-receipt");
     expect(markup).toContain("The resource probe returned");
-    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
+    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
   });
 
   it("shows a live read label while a file-read command is running", async () => {

@@ -5909,4 +5909,37 @@ describe("deriveActiveStatusLabel", () => {
       }),
     ).toBe("Waiting for approval");
   });
+
+  it("names private reasoning on the label while it is the newest activity", () => {
+    const privateThinking = {
+      id: "thinking",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      label: "Thinking",
+      tone: "thinking" as const,
+      executionState: "running" as const,
+      redactedThinking: true,
+    };
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        workLogEntries: [privateThinking],
+      }),
+    ).toBe("Thinking");
+    // A later entry means the model has moved on: back to the generic label.
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        workLogEntries: [
+          privateThinking,
+          {
+            id: "command",
+            createdAt: "2026-02-23T00:00:03.000Z",
+            label: "Ran command",
+            tone: "tool" as const,
+            executionState: "running" as const,
+          },
+        ],
+      }),
+    ).toBe("Working");
+  });
 });

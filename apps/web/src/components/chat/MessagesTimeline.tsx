@@ -54,6 +54,7 @@ import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CopyIcon,
   CornerDownRightIcon,
@@ -79,7 +80,7 @@ import {
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
-import { LiveNode, SpineRow, spineAccentRowStyle } from "../ui/threadline";
+import { SpineRow, spineAccentRowStyle } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
@@ -2200,7 +2201,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
       {row.showCompletionDivider && (
         <AssistantCompletionDivider completionSummary={row.completionSummary} />
       )}
-      <div className="min-w-0 px-1 py-0.5">
+      {/* Mid-turn responses settle in with the same fade the activity rows use,
+          so a non-streamed message doesn't pop in fully formed. Settled rows
+          skip it — the class re-animates on virtualization remounts. */}
+      <div className={cn("min-w-0 px-1 py-0.5", row.assistantTurnInProgress && "work-row-enter")}>
         <div
           className="group/assistant-message block w-full max-w-full align-top"
           data-assistant-message-section="true"
@@ -2276,8 +2280,11 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
 }
 
 function AssistantCompletionDivider({ completionSummary }: { completionSummary: string | null }) {
+  // The summary is only known once the turn's checkpoint settles, so this
+  // mounts a beat after the response finishes; the fade keeps that late
+  // arrival from reading as a pop.
   return (
-    <div className="my-3 flex items-center gap-3">
+    <div className="work-meta-enter my-3 flex items-center gap-3">
       <span className="h-px flex-1 bg-border" />
       <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
         {completionSummary ? `Response • ${completionSummary}` : "Response"}
@@ -2399,10 +2406,9 @@ function SubagentReceiptTimelineRow({
 
   const body = (
     <>
-      <span
-        aria-hidden="true"
-        className="mt-[7px] block size-1.5 shrink-0 rounded-full bg-muted-foreground/35"
-      />
+      {/* Leads with the same icon as the rail's Agents tab, so the receipt and
+          the surface it opens read as one thing. */}
+      <BotIcon aria-hidden="true" className="mt-1 size-3 shrink-0 text-muted-foreground/60" />
       <span className="min-w-0 flex-1 truncate text-[12px] leading-5">
         <span className="font-medium text-foreground/85">{displayName}</span>
         {summary ? (
@@ -2412,8 +2418,9 @@ function SubagentReceiptTimelineRow({
           </>
         ) : null}
       </span>
-      <span className="shrink-0 font-mono text-[10px] leading-5 tracking-[0.12em] text-muted-foreground/45 uppercase">
-        Subagent
+      <span className="mt-[3px] flex shrink-0 items-center gap-1 rounded border border-border/50 bg-background/60 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/70 uppercase">
+        <CheckIcon aria-hidden="true" className="size-2.5" />
+        Subagent finished
       </span>
       {meta ? (
         <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/35 tabular-nums">
@@ -2423,22 +2430,32 @@ function SubagentReceiptTimelineRow({
     </>
   );
 
-  const rowClassName = "flex w-full min-w-0 items-start gap-2 px-1 py-1 text-left";
+  // A bordered clickable tile — the one shape the flat system reserves for
+  // exactly this: a row that opens another surface.
+  const rowClassName =
+    "flex w-full min-w-0 items-start gap-2 rounded-md border border-border/50 px-2 py-1 text-left";
 
   return (
-    <div className="min-w-0" data-subagent-receipt-row="true">
+    // The receipt lands mid-turn the moment its agent finishes; the fade makes
+    // that arrival read as an event rather than a row that was always there.
+    <div className="work-row-enter min-w-0" data-subagent-receipt-row="true">
       {interactive ? (
         <button
           type="button"
           className={cn(
             rowClassName,
-            "rounded-sm transition-colors hover:bg-foreground/[0.03] focus-ring",
+            "group/subagent-receipt transition-colors hover:border-border/80 hover:bg-foreground/[0.03] focus-ring",
           )}
           aria-label={`Open ${displayName} transcript`}
           data-subagent-receipt-open="true"
           onClick={() => onOpenAgentsPanel(agentThreadId)}
         >
           {body}
+          {/* The drill-in affordance: quiet at rest, named on hover. */}
+          <ChevronRightIcon
+            aria-hidden="true"
+            className="mt-1 size-3 shrink-0 text-muted-foreground/30 transition-colors duration-150 group-hover/subagent-receipt:text-muted-foreground/70"
+          />
         </button>
       ) : (
         <div className={rowClassName}>{body}</div>
@@ -2447,22 +2464,49 @@ function SubagentReceiptTimelineRow({
   );
 }
 
+/** The turn's fixed anchor at the timeline tail: the surface's one live node,
+ *  the turn timer, and the agent tracker live here from the first token to the
+ *  last, whatever the rows above are doing — so nothing about "now" teleports
+ *  mid-turn. Aligned on the same gutter as the activity spines above it. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
+  const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
+  const liveSubagents = turnAgents?.subagents ?? [];
+  const agentSummary = summarizeTurnAgents(liveSubagents);
+  const liveAgentStatus = formatLiveAgentStatusLine(liveSubagents);
+
   return (
-    <div className="py-0.5 pl-1.5">
-      <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
-        {/* The chat surface's one live node: the thread is being worked right now. */}
-        <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />
-        <span>
-          {row.createdAt ? (
+    // No node at all: the label shimmer is the anchor's whole "alive" signal,
+    // and accent dots stay reserved for the activity rows above. The pl-6
+    // keeps the text on the same column as the spine rows' text.
+    <div className="py-0.5" data-turn-working-anchor="true">
+      <div className="min-w-0 pl-6">
+        <p className="flex min-w-0 items-center gap-1.5 pt-0.5 text-[11px] leading-4 text-muted-foreground/70">
+          <span className="shrink-0 tabular-nums">
+            {row.createdAt ? (
+              <>
+                <span className="working-shimmer">{row.label}</span>{" "}
+                <span className="text-muted-foreground/40">·</span>{" "}
+                <WorkingTimer createdAt={row.createdAt} />
+              </>
+            ) : (
+              <span className="working-shimmer">{`${row.label}...`}</span>
+            )}
+          </span>
+          {agentSummary && onOpenAgentsPanel ? (
             <>
-              {row.label} <span className="text-muted-foreground/40">·</span>{" "}
-              <WorkingTimer createdAt={row.createdAt} />
+              <span className="shrink-0 text-muted-foreground/35">·</span>
+              <TurnAgentTrackerButton
+                summary={agentSummary}
+                onOpen={() => onOpenAgentsPanel(null)}
+              />
             </>
-          ) : (
-            `${row.label}...`
-          )}
-        </span>
+          ) : null}
+        </p>
+        {/* Once the turn has agents the status line's slot stays reserved, so
+            agents going live and idle swing the text, not the row height. */}
+        <div className={agentSummary ? "min-h-4" : undefined}>
+          <SpineLiveAgentStatus status={liveAgentStatus} />
+        </div>
       </div>
     </div>
   );
@@ -2551,7 +2595,7 @@ function LiveMessageMeta({
 
 /** Owns its own expand/collapse state so toggling re-renders only this row.
  *  State resets on unmount which is fine — work groups start collapsed. */
-type SpineNodeKind = "done" | "live" | "warning" | "error" | "group";
+type SpineNodeKind = "done" | "running" | "warning" | "error" | "group";
 
 const TONE_SPINE_DOT_CLASS_NAME = {
   warning: "size-[6px] rounded-full bg-warning",
@@ -2559,12 +2603,18 @@ const TONE_SPINE_DOT_CLASS_NAME = {
 } as const satisfies Record<"warning" | "error", string>;
 
 /** The glyph that sits on the activity spine for one row. The accent halo is
- *  reserved for the single live terminus; settled steps are quiet solid dots,
+ *  reserved for the turn's working row below the timeline tail; a still-running
+ *  step gets a small accent tick, settled steps are quiet solid dots,
  *  warnings/errors are compact tone dots, and a collapsed group of steps is a
  *  hollow ring (same family, reads as "openable"). */
 function SpineNode({ kind }: { kind: SpineNodeKind }) {
-  if (kind === "live") {
-    return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
+  if (kind === "running") {
+    return (
+      <span
+        aria-hidden="true"
+        className="size-[5px] animate-status-pulse rounded-full bg-primary-graph/80"
+      />
+    );
   }
   if (kind === "warning" || kind === "error") {
     return <span aria-hidden="true" className={TONE_SPINE_DOT_CLASS_NAME[kind]} />;
@@ -2591,6 +2641,9 @@ function workEntryNodeKind(entry: TimelineWorkEntry): SpineNodeKind {
   }
   if (entry.tone === "warning") {
     return "warning";
+  }
+  if (entry.executionState === "running") {
+    return "running";
   }
   return "done";
 }
@@ -2633,6 +2686,19 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
   const turnAgentTracker = useTurnAgentTracker(row.trackerTurnIds, row.trackerAgentSpawnIds);
   const isLiveActivity = isWorking && row.isLive;
+  // A group that settles from its live shape into a receipt while mounted gets
+  // one enter fade to soften the turn-end reflow. Receipts that mount already
+  // settled (history, scroll-back) stay quiet. Tracked with render-time refs:
+  // the class must be present on the very first settled render, not a commit
+  // later, or the receipt would flash at full strength before fading.
+  const isActiveShape = isWorking && row.inActiveExchange;
+  const previousActiveShapeRef = useRef(isActiveShape);
+  const settledFromLiveRef = useRef(false);
+  if (previousActiveShapeRef.current && !isActiveShape) {
+    settledFromLiveRef.current = true;
+  }
+  previousActiveShapeRef.current = isActiveShape;
+  const settleEnterClass = settledFromLiveRef.current ? "work-row-enter" : undefined;
 
   useEffect(() => {
     const wasWorking = previousIsWorkingRef.current;
@@ -2647,13 +2713,23 @@ const WorkGroupSection = memo(function WorkGroupSection({
   // its tracker is the one inline signal that agents are running at all, so the
   // row survives as the tracker alone. With no tracker to show there is no row.
   if (groupedEntries.length === 0) {
+    // While the turn is live the working row at the bottom already carries the
+    // tracker; the receipt takes over once the turn settles.
+    if (isWorking && row.inActiveExchange) {
+      return null;
+    }
     // The tracker is the row's whole reason to exist here, and it is only useful
     // when it can open the panel it summarizes.
     if (turnAgentTracker.summary === null || !onOpenAgentsPanel) {
       return null;
     }
     return (
-      <div data-work-activity-receipt="true" data-work-activity-anchor="true" style={spineStyle()}>
+      <div
+        className={settleEnterClass}
+        data-work-activity-receipt="true"
+        data-work-activity-anchor="true"
+        style={spineStyle()}
+      >
         <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={false}>
           <ActivityReceipt
             entries={groupedEntries}
@@ -2668,38 +2744,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
   }
 
   if (isLiveActivity) {
-    // A turn that delegated keeps its receipt while the group is still live:
-    // the tracker on it is the conversation's only inline signal that agents
-    // are running, and it must not blink out whenever the live group happens
-    // to absorb the turn's earlier steps. The receipt stays collapsed here —
-    // the live spine below already narrates the recent steps.
-    const showLiveTracker = turnAgentTracker.summary !== null && onOpenAgentsPanel;
-    return (
-      <>
-        {showLiveTracker ? (
-          <div
-            data-work-activity-receipt="true"
-            data-work-activity-live-tracker="true"
-            style={spineStyle()}
-          >
-            <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={false}>
-              <ActivityReceipt
-                entries={groupedEntries}
-                durationEntries={trackedEntries}
-                tracker={turnAgentTracker}
-                isExpanded={false}
-                onToggle={null}
-              />
-            </SpineRow>
-          </div>
-        ) : null}
-        <LiveActivitySpine
-          entries={groupedEntries}
-          liveStartedAt={row.liveStartedAt}
-          workspaceRoot={workspaceRoot}
-        />
-      </>
-    );
+    // The working row below the timeline tail carries the turn's live node,
+    // timer, and agent tracker; the spine only narrates the recent steps.
+    return <LiveActivitySpine entries={groupedEntries} workspaceRoot={workspaceRoot} />;
+  }
+
+  // A group the turn has moved past but not finished with: it keeps its
+  // live-spine shape, frozen — same rows, same heights, accent cooled — so
+  // the conversation doesn't collapse into a receipt right where the user is
+  // reading. Receipts happen once, when the turn settles.
+  if (isWorking && row.inActiveExchange) {
+    return <LiveActivitySpine entries={groupedEntries} workspaceRoot={workspaceRoot} frozen />;
   }
 
   const summarizedEntries = summarizeSemanticActivityEntries(groupedEntries);
@@ -2716,7 +2771,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 
   if (!shouldRenderReceipt) {
     return (
-      <div data-work-activity-inline="true" style={spineStyle()}>
+      <div className={settleEnterClass} data-work-activity-inline="true" style={spineStyle()}>
         {transcriptEntries.map((workEntry, index) => (
           <SpineRow
             key={`work-row:${workEntry.id}`}
@@ -2742,6 +2797,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     : Math.max(0, groupedEntries.length - transcriptEntries.length);
   return (
     <div
+      className={settleEnterClass}
       data-work-activity-receipt="true"
       data-work-activity-expanded={isExpanded ? "true" : "false"}
       style={spineStyle()}
@@ -2782,19 +2838,20 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
 });
 
-/** The live turn rendered as an accent spine: the recent steps dim as they
- *  recede upward toward the single live node — the halo sits directly on the
- *  most recent activity (the running tool, the current reasoning) and ends the
- *  thread, so there is no detached dot and the standalone working row is
- *  absorbed here. */
+/** The live turn's recent steps as an accent spine, dimming as they recede.
+ *  The turn's single live node lives on the working row below the timeline
+ *  tail, so the spine itself stays quiet: running steps get a small accent
+ *  tick, settled steps solid dots. `frozen` renders the same shape with the
+ *  accent cooled for a group the turn has moved past but not finished with —
+ *  identical rows and heights, so the freeze itself never shifts layout. */
 function LiveActivitySpine({
   entries,
-  liveStartedAt,
   workspaceRoot,
+  frozen = false,
 }: {
   entries: ReadonlyArray<TimelineWorkEntry>;
-  liveStartedAt: string | null;
   workspaceRoot: string | undefined;
+  frozen?: boolean;
 }) {
   const liveEntries = deriveLiveActivityEntries(entries);
   const hiddenSummary = summarizeLiveHiddenWorkEntries(entries, liveEntries);
@@ -2802,35 +2859,40 @@ function LiveActivitySpine({
   const lastIndex = liveEntries.length - 1;
 
   return (
-    <div data-live-activity-strip="true" style={spineStyle()}>
-      {hiddenSummary ? (
-        <p className="truncate pb-0.5 pl-6 text-[10px] leading-4 text-muted-foreground/45">
-          {hiddenSummary}
-        </p>
-      ) : null}
+    <div
+      data-live-activity-strip="true"
+      data-live-activity-frozen={frozen ? "true" : undefined}
+      style={spineStyle()}
+    >
+      {/* The slot stays reserved even while nothing is hidden: coalescing can
+          swing the hidden count across zero mid-turn, and the strip must not
+          gain and lose a line every time it does. */}
+      <p className="min-h-4 truncate pb-0.5 pl-6 text-[10px] leading-4 text-muted-foreground/45">
+        {hiddenSummary}
+      </p>
       {liveEntries.map((workEntry, index) => {
         const isCurrent = index === lastIndex;
         return (
           <SpineRow
             key={`work-row:${workEntry.id}`}
-            node={<SpineNode kind={isCurrent ? "live" : workEntryNodeKind(workEntry)} />}
+            node={<SpineNode kind={workEntryNodeKind(workEntry)} />}
             connectTop={index > 0}
             connectBottom={!isCurrent}
-            className={isCurrent ? undefined : liveSpineDimClass(lastIndex - index)}
-            style={liveSpineRowStyle(index, lastIndex)}
+            className={cn(
+              "work-row-enter",
+              isCurrent && !frozen
+                ? undefined
+                : cn(liveSpineDimClass(lastIndex - index), "transition-opacity duration-300"),
+            )}
+            style={frozen ? undefined : liveSpineRowStyle(index, lastIndex)}
           >
-            <>
-              <SimpleWorkEntryRow
-                isLiveActivity
-                workEntry={workEntry}
-                workspaceRoot={workspaceRoot}
-                inSpine
-                subagentLaneLabel={liveLaneLabels[index] ?? null}
-              />
-              {isCurrent && liveStartedAt ? (
-                <LiveTurnElapsedTimer createdAt={liveStartedAt} />
-              ) : null}
-            </>
+            <SimpleWorkEntryRow
+              isLiveActivity
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+              inSpine
+              subagentLaneLabel={liveLaneLabels[index] ?? null}
+            />
           </SpineRow>
         );
       })}
@@ -2838,16 +2900,26 @@ function LiveActivitySpine({
   );
 }
 
-function LiveTurnElapsedTimer({ createdAt }: { createdAt: string }) {
+/** The freshest live agent signal, pinned to the turn's working anchor where
+ *  the eye already is — one named line however many agents are live, never
+ *  buried under the churn of the steps above. */
+function SpineLiveAgentStatus({ status }: { status: LiveAgentStatusLine | null }) {
+  const { onOpenAgentsPanel } = use(TimelineRowCtx);
+  if (!status || !onOpenAgentsPanel) {
+    return null;
+  }
   return (
-    <span
-      className="-mt-0.5 ml-1 block text-[11px] leading-4 text-muted-foreground/55 tabular-nums"
-      data-live-turn-elapsed="true"
-      title="Total turn elapsed time"
+    <button
+      type="button"
+      className="work-meta-enter ml-1 block w-full min-w-0 truncate text-left text-[11px] leading-4 text-primary-readable/70 transition-colors duration-150 hover:text-primary-readable"
+      data-turn-live-agent-status="true"
+      title={`${status.name}: ${status.step}`}
+      onClick={() => onOpenAgentsPanel(null)}
     >
-      Working <span className="text-muted-foreground/35">·</span>{" "}
-      <WorkingTimer createdAt={createdAt} />
-    </span>
+      <span className="text-primary-readable/85">{status.name}</span>
+      <span className="px-1.5 text-muted-foreground/30">·</span>
+      <span>{status.step}</span>
+    </button>
   );
 }
 
@@ -2886,6 +2958,43 @@ function useTurnAgentTracker(
     summary: summarizeTurnAgents(turnSubagents),
     liveStatus: formatLiveAgentStatusLine(turnSubagents),
   };
+}
+
+/** The clickable turn-agents chip: one segment bar per agent plus the count,
+ *  shared by the settled receipt and the live working row so the tracker looks
+ *  the same wherever it renders. */
+function TurnAgentTrackerButton({
+  summary,
+  onOpen,
+}: {
+  summary: TurnAgentSummary;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline-flex min-w-0 items-center gap-1.5 transition-colors duration-150 hover:text-foreground/75"
+      aria-label={`${summary.text}. Open the agents panel.`}
+      data-turn-agents-summary="true"
+      onClick={onOpen}
+    >
+      <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+        {summary.segments.map((segment) => (
+          <span
+            key={segment.id}
+            className={cn(
+              "block h-1 w-[22px] rounded-full",
+              segment.status === "running" && "bg-primary-graph",
+              segment.status === "waiting" && "bg-amber-500",
+              segment.status === "failed" && "bg-destructive",
+              segment.status === "completed" && "bg-muted-foreground/35",
+            )}
+          />
+        ))}
+      </span>
+      <span className="truncate">{summary.text}</span>
+    </button>
+  );
 }
 
 function ActivityReceipt({
@@ -2947,29 +3056,10 @@ function ActivityReceipt({
           {agentSummary && onOpenAgentsPanel ? (
             <>
               <span className="text-muted-foreground/35">·</span>
-              <button
-                type="button"
-                className="inline-flex min-w-0 items-center gap-1.5 transition-colors duration-150 hover:text-foreground/75"
-                aria-label={`${agentSummary.text}. Open the agents panel.`}
-                data-turn-agents-summary="true"
-                onClick={() => onOpenAgentsPanel(null)}
-              >
-                <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
-                  {agentSummary.segments.map((segment) => (
-                    <span
-                      key={segment.id}
-                      className={cn(
-                        "block h-1 w-[22px] rounded-full",
-                        segment.status === "running" && "bg-primary-graph",
-                        segment.status === "waiting" && "bg-amber-500",
-                        segment.status === "failed" && "bg-destructive",
-                        segment.status === "completed" && "bg-muted-foreground/35",
-                      )}
-                    />
-                  ))}
-                </span>
-                <span className="truncate">{agentSummary.text}</span>
-              </button>
+              <TurnAgentTrackerButton
+                summary={agentSummary}
+                onOpen={() => onOpenAgentsPanel(null)}
+              />
             </>
           ) : null}
         </p>
@@ -3224,46 +3314,59 @@ function deriveLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): T
     }
     selected.push(entry);
     if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
-      return selected.toReversed();
-    }
-  }
-
-  for (let index = dedupedEntries.length - 1; index >= 0; index -= 1) {
-    const entry = dedupedEntries[index];
-    if (!entry || selected.includes(entry) || !isLiveFallbackWorkEntry(entry)) {
-      continue;
-    }
-    selected.push(entry);
-    if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
       break;
     }
   }
 
-  return selected
-    .toReversed()
-    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
-}
-
-function dedupeLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
-  const seen = new Set<string>();
-  const deduped: TimelineWorkEntry[] = [];
-
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (!entry) {
-      continue;
+  if (selected.length < LIVE_WORK_LOG_ENTRY_COUNT) {
+    for (let index = dedupedEntries.length - 1; index >= 0; index -= 1) {
+      const entry = dedupedEntries[index];
+      if (!entry || selected.includes(entry) || !isLiveFallbackWorkEntry(entry)) {
+        continue;
+      }
+      selected.push(entry);
+      if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
+        break;
+      }
     }
-    const key = liveActivityDedupeKey(entry);
-    if (key && seen.has(key)) {
-      continue;
-    }
-    if (key) {
-      seen.add(key);
-    }
-    deduped.push(entry);
   }
 
-  return deduped.toReversed();
+  // Rows keep the deduped list's slot order, not raw timestamps: a re-run of
+  // an already-shown subject stays in its slot instead of jumping to the tail.
+  const slotByEntry = new Map(dedupedEntries.map((entry, index) => [entry, index] as const));
+  return selected.toSorted(
+    (left, right) => (slotByEntry.get(left) ?? 0) - (slotByEntry.get(right) ?? 0),
+  );
+}
+
+/** Latest state at the first-seen slot: when the agent repeats a subject, the
+ *  row already on screen updates in place rather than being removed from the
+ *  middle of the window and re-added at the bottom. */
+function dedupeLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
+  const latestByKey = new Map<string, TimelineWorkEntry>();
+  for (const entry of entries) {
+    const key = liveActivityDedupeKey(entry);
+    if (key) {
+      latestByKey.set(key, entry);
+    }
+  }
+
+  const emitted = new Set<string>();
+  const deduped: TimelineWorkEntry[] = [];
+  for (const entry of entries) {
+    const key = liveActivityDedupeKey(entry);
+    if (!key) {
+      deduped.push(entry);
+      continue;
+    }
+    if (emitted.has(key)) {
+      continue;
+    }
+    emitted.add(key);
+    deduped.push(latestByKey.get(key) ?? entry);
+  }
+
+  return deduped;
 }
 
 function liveActivityDedupeKey(entry: TimelineWorkEntry): string | null {
@@ -4938,7 +5041,7 @@ function RunningToolIndicator({ className }: { className?: string }) {
 
 function InlineDiffStatLabel({ stat }: { stat: { additions: number; deletions: number } }) {
   return (
-    <span className="ml-1.5 font-mono text-[10px]">
+    <span className="work-meta-enter ml-1.5 font-mono text-[10px]">
       <DiffStatLabel additions={stat.additions} deletions={stat.deletions} />
     </span>
   );
@@ -4977,7 +5080,7 @@ function WorkEntrySummaryLine({
   inSpine?: boolean;
 }) {
   const previewClassName =
-    "flex min-w-0 flex-1 items-center self-center overflow-hidden leading-5 text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75";
+    "work-meta-enter flex min-w-0 flex-1 items-center self-center overflow-hidden leading-5 text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75";
 
   return (
     <p
@@ -5000,13 +5103,13 @@ function WorkEntrySummaryLine({
         {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
       </span>
       {runningStartedAt ? (
-        <span className="ml-1.5 shrink-0 text-[10px] leading-5 text-muted-foreground/45">
+        <span className="ml-1.5 shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45 tabular-nums">
           <span aria-hidden>· </span>
           <RunningCommandTimer createdAt={runningStartedAt} />
         </span>
       ) : completedDuration ? (
         <span
-          className="ml-1.5 shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45"
+          className="work-meta-enter ml-1.5 shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/45"
           aria-label={`Completed in ${completedDuration}`}
         >
           <span aria-hidden>· </span>

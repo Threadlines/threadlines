@@ -1139,8 +1139,8 @@ describe("MessagesTimeline", () => {
   it("keeps the tracker visible while the turn's work group is live", async () => {
     const onOpenAgentsPanel = vi.fn();
     // The tail work group renders as the live spine while the turn works. The
-    // turn's tracker must not blink out with the settled receipt when the live
-    // group absorbs the turn's earlier steps — it rides above the live steps.
+    // turn's tracker must not blink out with the settled receipt — it rides on
+    // the working anchor at the bottom, next to the turn's live node.
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
@@ -1163,7 +1163,9 @@ describe("MessagesTimeline", () => {
       await expect
         .element(page.getByRole("button", { name: "2 subagents. Open the agents panel." }))
         .toBeVisible();
-      expect(document.querySelector("[data-work-activity-live-tracker='true']")).not.toBeNull();
+      const anchor = document.querySelector("[data-turn-working-anchor='true']");
+      expect(anchor).not.toBeNull();
+      expect(anchor?.querySelector("[data-turn-agents-summary='true']")).not.toBeNull();
       expect(document.querySelector("[data-live-activity-strip='true']")).not.toBeNull();
     } finally {
       await screen.unmount();

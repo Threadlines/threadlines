@@ -150,6 +150,11 @@ export interface WorkLogEntry {
   authReconnect?: ProviderAuthReconnectAction;
   mcpAuthReconnect?: McpAuthReconnectAction;
   providerLifecyclePhase?: "preparing" | "waiting-for-model";
+  /** True while this row is the provider's private (content-free) reasoning.
+   *  The chat renders no row for it — the working anchor's status label names
+   *  the state instead — and the entry leaves the log if the thinking
+   *  completes without ever producing a readable summary. */
+  redactedThinking?: boolean;
   turnId?: TurnId | null;
   modelFallback?: ModelFallbackState;
 }
@@ -168,7 +173,6 @@ export type ActiveModelFallbackState = ModelFallbackState;
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
-  redactedThinking?: boolean;
 }
 
 export interface PendingApproval {
@@ -520,6 +524,13 @@ export function deriveActiveStatusLabel(input: {
   if (input.isSessionStarting) return "Preparing turn";
   if (input.phase === "connecting" || input.isConnecting) return "Connecting";
   if (input.isSendBusy) return input.phase === "disconnected" ? "Connecting" : "Sending";
+  // Private reasoning renders no timeline row; the working anchor's label is
+  // where the user sees it. Only the word changes — the anchor keeps timing
+  // the whole turn.
+  const lastEntry = input.workLogEntries[input.workLogEntries.length - 1];
+  if (lastEntry?.redactedThinking && lastEntry.executionState === "running") {
+    return "Thinking";
+  }
   if (input.phase === "running") return "Working";
 
   return "Working";
@@ -2045,13 +2056,13 @@ export function deriveWorkLogEntries(
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .filter((activity) => !isSubagentNotificationReplayActivity(activity))
     .map((activity) => toDerivedWorkLogEntry(activity, agentTaskIndex));
-  // `activityKind` stays on the emitted entries: the conversation timeline
-  // keys its agent-lifecycle parking on it (task.progress/task.completed rows
-  // with an agent identity never render inline). Only the derivation-internal
-  // fields come off.
+  // `activityKind` and `redactedThinking` stay on the emitted entries: the
+  // conversation timeline keys its agent-lifecycle parking on the former and
+  // its private-thinking row suppression on the latter. Only the
+  // derivation-internal collapse key comes off.
   return enrichGenericThinkingEntries(
     collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
-  ).map(({ collapseKey: _collapseKey, redactedThinking: _redactedThinking, ...entry }) => entry);
+  ).map(({ collapseKey: _collapseKey, ...entry }) => entry);
 }
 
 /** The task-notification completion replay re-emits the original Task tool

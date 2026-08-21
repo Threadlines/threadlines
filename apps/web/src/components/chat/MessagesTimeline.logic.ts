@@ -75,6 +75,11 @@ export type MessagesTimelineRow =
       trackerAgentSpawnIds: string[];
       isLive: boolean;
       liveStartedAt: string | null;
+      /** True while the turn this group belongs to is still working. Groups in
+       *  the active exchange keep their live-spine shape (frozen, no accent)
+       *  instead of collapsing into a receipt mid-turn — the settle happens
+       *  once, when the turn ends. */
+      inActiveExchange: boolean;
     }
   | {
       kind: "message";
@@ -289,6 +294,12 @@ export function deriveMessagesTimelineRows(input: {
     inferSupersededRunningCommandEntryIds(visibleTimelineEntries);
   /** Turns whose tracker has already been handed to an earlier group. */
   const trackedTurnIds = new Set<TurnId>();
+  // Everything after the last user message is the active exchange. Reasoning
+  // and lifecycle entries arrive without turn ids, so position is the reliable
+  // signal across providers.
+  const lastUserMessageIndex = visibleTimelineEntries.findLastIndex(
+    (entry) => entry.kind === "message" && entry.message.role === "user",
+  );
 
   for (let index = 0; index < visibleTimelineEntries.length; index += 1) {
     const timelineEntry = visibleTimelineEntries[index];
@@ -304,6 +315,17 @@ export function deriveMessagesTimelineRows(input: {
           entry.entry,
           supersededRunningCommandEntryIds,
         );
+        // Private thinking and provider lifecycle narration are status, not
+        // history: the working anchor's label names them while they are
+        // current, so a row that would vanish moments later never mounts at
+        // all. Private thinking becomes a real row only if it settles into a
+        // readable summary (the log drops the redacted flag) or fails.
+        if (settled.redactedThinking && settled.executionState !== "failed") {
+          return;
+        }
+        if (settled.providerLifecyclePhase) {
+          return;
+        }
         (isAgentLifecycleEntry(entry) ? agentAnchorEntries : groupedEntries).push(settled);
       };
       collect(timelineEntry);
@@ -339,6 +361,7 @@ export function deriveMessagesTimelineRows(input: {
         trackerAgentSpawnIds,
         isLive: false,
         liveStartedAt: null,
+        inActiveExchange: input.isWorking && index > lastUserMessageIndex,
       });
       index = cursor - 1;
       continue;
@@ -429,26 +452,62 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   if (input.isWorking) {
-    // The live work group renders its own terminal live node (the spine's
-    // halo), so only fall back to a standalone working row when there is no
-    // live work group to absorb it (e.g. a turn that has not emitted any tool
-    // activity yet).
-    const absorbedByLiveWorkRow = markLatestLiveWorkRow(
-      nextRows,
-      input.activeTurnId ?? null,
-      input.activeTurnStartedAt,
-    );
-    if (!absorbedByLiveWorkRow) {
-      nextRows.push({
-        kind: "working",
-        id: "working-indicator-row",
-        createdAt: input.activeTurnStartedAt,
-        label: input.activeStatusLabel ?? "Working",
-      });
-    }
+    // The working row is the turn's one fixed anchor: it renders for the whole
+    // turn, whatever the tail is, so the live node, the timer, and the agent
+    // tracker never teleport between homes. The tail work group still gets
+    // marked live so the spine above it keeps its accent styling.
+    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
+    nextRows.push({
+      kind: "working",
+      id: "working-indicator-row",
+      createdAt: input.activeTurnStartedAt,
+      label: resolveWorkingAnchorLabel(visibleTimelineEntries, input.activeStatusLabel),
+    });
   }
 
   return nextRows;
+}
+
+/** Labels the lifecycle status may replace on the working anchor. Anything
+ *  else — "Waiting for approval", "Reverting checkpoint", "Thinking" — names a
+ *  more specific state and keeps priority. */
+const GENERIC_ANCHOR_LABELS: ReadonlySet<string> = new Set([
+  "Working",
+  "Preparing turn",
+  "Sending",
+]);
+
+const LIFECYCLE_ANCHOR_LABELS = {
+  preparing: "Preparing turn",
+  "waiting-for-model": "Waiting for model",
+} as const satisfies Record<NonNullable<WorkLogEntry["providerLifecyclePhase"]>, string>;
+
+/**
+ * Provider lifecycle entries render no rows of their own; the working anchor
+ * is the one place connection state is narrated. The visibility pass has
+ * already dropped stale lifecycle entries (anything superseded by later
+ * concrete activity or a newer phase), so any one still present names the
+ * connection's actual current state.
+ */
+function resolveWorkingAnchorLabel(
+  visibleTimelineEntries: ReadonlyArray<TimelineEntry>,
+  activeStatusLabel: string | undefined,
+): string {
+  const fallback = activeStatusLabel ?? "Working";
+  if (!GENERIC_ANCHOR_LABELS.has(fallback)) {
+    return fallback;
+  }
+  for (let index = visibleTimelineEntries.length - 1; index >= 0; index -= 1) {
+    const timelineEntry = visibleTimelineEntries[index];
+    if (timelineEntry?.kind !== "work") {
+      continue;
+    }
+    const phase = timelineEntry.entry.providerLifecyclePhase;
+    if (phase) {
+      return LIFECYCLE_ANCHOR_LABELS[phase];
+    }
+  }
+  return fallback;
 }
 
 /**
@@ -621,8 +680,8 @@ function markLatestLiveWorkRow(
 ): boolean {
   // The live work group must be the tail of the timeline. Once the assistant
   // emits a message (or any other row) after the work, that work is no longer
-  // the current activity — the standalone working row then anchors the live
-  // node at the very bottom instead of stranding a halo on a finished step.
+  // the current activity — it freezes in place while the working row at the
+  // very bottom keeps carrying the turn's live node.
   const lastIndex = rows.length - 1;
   const lastRow = rows[lastIndex];
   if (!lastRow || lastRow.kind !== "work") {
@@ -699,6 +758,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return (
         a.isLive === bw.isLive &&
         a.liveStartedAt === bw.liveStartedAt &&
+        a.inActiveExchange === bw.inActiveExchange &&
         a.trackerTurnIds.length === bw.trackerTurnIds.length &&
         a.trackerTurnIds.every((turnId, index) => turnId === bw.trackerTurnIds[index]) &&
         a.trackerAgentSpawnIds.length === bw.trackerAgentSpawnIds.length &&

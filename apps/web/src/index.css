@@ -1000,6 +1000,73 @@ label:has(> select#reasoning-effort) select {
   animation: diff-panel-enter 150ms ease-out;
 }
 
+/* Live work log: rows settle in with a short rise, and the bits that arrive
+   after the row exists (final duration, preview, diff stat) fade in rather
+   than popping. From-only keyframes finish at each element's own opacity, so
+   dimmed spine rows land on their dim level, not full strength. */
+@keyframes work-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.work-row-enter {
+  animation: work-row-enter 180ms ease-out;
+}
+
+@keyframes work-meta-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+.work-meta-enter {
+  animation: work-meta-enter 240ms ease-out;
+}
+
+/* The working anchor's "alive" signal: a soft sheen sweeps through the status
+   word, then rests for the second half of the cycle. The anchor's accent dot
+   stays still — motion lives in the typography, so it never competes with the
+   pulsing ticks on running activity rows. */
+.working-shimmer {
+  --shimmer-base: color-mix(in srgb, var(--muted-foreground) 72%, transparent);
+  --shimmer-glint: color-mix(in srgb, var(--foreground) 95%, transparent);
+  background-image: linear-gradient(
+    100deg,
+    var(--shimmer-base) 42%,
+    var(--shimmer-glint) 50%,
+    var(--shimmer-base) 58%
+  );
+  background-size: 200% 100%;
+  background-position: 100% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .working-shimmer {
+    animation: working-shimmer 2.6s linear infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working-shimmer {
+    background-image: none;
+    color: var(--shimmer-base);
+  }
+}
+
+@keyframes working-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
 @keyframes terminal-context-attachment-updated {
   0% {
     border-color: color-mix(in srgb, var(--primary-readable) 52%, var(--border));
@@ -1023,6 +1090,8 @@ label:has(> select#reasoning-effort) select {
 @media (prefers-reduced-motion: reduce) {
   .diff-file-flash,
   .diff-panel-enter,
+  .work-row-enter,
+  .work-meta-enter,
   .terminal-context-attachment-updated {
     animation: none;
   }

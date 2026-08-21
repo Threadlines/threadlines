@@ -317,6 +317,46 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("keeps private thinking out of the work rows while it runs", () => {
+    const workEntry = (id: string, overrides: Partial<WorkLogEntry> = {}) => ({
+      id,
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      entry: {
+        id,
+        createdAt: "2026-01-01T00:00:00Z",
+        label: id,
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+        ...overrides,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        workEntry("main-read"),
+        workEntry("private-think", {
+          tone: "thinking",
+          redactedThinking: true,
+          executionState: "running",
+        }),
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // Private thinking is status (the working anchor names it), never a row —
+    // so its completion can never remove a row the user was looking at.
+    const workRow = rows.find((row) => row.kind === "work");
+    expect(
+      workRow?.kind === "work" ? workRow.groupedEntries.map((entry) => entry.id) : null,
+    ).toEqual(["main-read"]);
+  });
+
   it("keeps one work group when live agent commentary interleaves with the turn's steps", () => {
     const workEntry = (id: string, createdAt: string) => ({
       id,
@@ -364,13 +404,15 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows).toHaveLength(1);
-    const [row] = rows;
+    // One work group plus the always-present working anchor for the live turn.
+    expect(rows).toHaveLength(2);
+    const [row, anchorRow] = rows;
     expect(row?.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : null).toEqual([
       "main-read",
       "main-edit",
     ]);
     expect(row?.kind === "work" ? row.isLive : null).toBe(true);
+    expect(anchorRow?.kind).toBe("working");
   });
 
   it("uses the active status label for the live activity row", () => {
@@ -739,7 +781,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(workRows.map((row) => row.liveStartedAt)).toEqual([null, "2026-01-01T00:00:00Z"]);
   });
 
-  it("shows only the latest provider lifecycle status while waiting for model output", () => {
+  it("names the latest provider lifecycle status on the working anchor instead of a row", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
@@ -779,13 +821,14 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
+    // Lifecycle narration renders no rows: the working anchor is the single
+    // connection status, so the chat never says "preparing" twice.
     const workRows = rows.filter(
       (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
     );
-
-    expect(workRows).toHaveLength(1);
-    expect(workRows[0]?.groupedEntries.map((entry) => entry.id)).toEqual(["provider-started"]);
-    expect(workRows[0]?.isLive).toBe(true);
+    expect(workRows.flatMap((row) => row.groupedEntries)).toEqual([]);
+    const workingRow = rows.find((row) => row.kind === "working");
+    expect(workingRow?.kind === "working" ? workingRow.label : null).toBe("Waiting for model");
   });
 
   it("hides provider lifecycle status after concrete turn activity appears", () => {
@@ -847,6 +890,9 @@ describe("deriveMessagesTimelineRows", () => {
     expect(workRows).toHaveLength(1);
     expect(workRows[0]?.groupedEntries.map((entry) => entry.id)).toEqual(["tool-1"]);
     expect(workRows[0]?.isLive).toBe(true);
+    // With the lifecycle status stale, the anchor goes back to the generic label.
+    const workingRow = rows.find((row) => row.kind === "working");
+    expect(workingRow?.kind === "working" ? workingRow.label : null).toBe("Working");
   });
 
   it("settles a running command when later same-turn thinking reviews its output", () => {
