@@ -20,6 +20,8 @@ import {
   deriveThreadSubagentHistory,
   deriveTimelineEntries,
   deriveWorkLogEntries,
+  type TimelineEntry,
+  type WorkLogEntry,
 } from "../../session-logic";
 import type { ChatMessage } from "../../types";
 
@@ -142,8 +144,10 @@ describe("MessagesTimeline with the real virtual list", () => {
         const workingAnchor = document.querySelector<HTMLElement>(
           '[data-turn-working-anchor="true"]',
         );
+        const currentList = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]');
         expect(workingAnchor, label).not.toBeNull();
-        const listRect = list!.getBoundingClientRect();
+        expect(currentList, label).not.toBeNull();
+        const listRect = currentList!.getBoundingClientRect();
         const anchorRect = workingAnchor!.getBoundingClientRect();
         expect(anchorRect.bottom, label).toBeGreaterThan(listRect.top);
         expect(anchorRect.top, label).toBeLessThan(listRect.bottom);
@@ -161,11 +165,151 @@ describe("MessagesTimeline with the real virtual list", () => {
       ).sort((left, right) => left - right);
       for (const cutoffMs of replayTicks) {
         await screen.rerender(renderList(deriveAffectedThreadRenderState(fixture, cutoffMs)));
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        expectWorkingAnchorAtBottom(new Date(cutoffMs).toISOString());
+        await vi.waitFor(() => {
+          expectWorkingAnchorAtBottom(new Date(cutoffMs).toISOString());
+        });
       }
       await new Promise((resolve) => window.setTimeout(resolve, 150));
       expectWorkingAnchorAtBottom("settled replay");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("removes stale end space when a live working anchor settles", async () => {
+    const turnId = "turn-settles" as TurnId;
+    const userMessage: ChatMessage = {
+      id: "message-user" as ChatMessage["id"],
+      role: "user",
+      text: "Watch checks and ship when green",
+      streaming: false,
+      createdAt: "2026-08-21T21:37:36.097Z",
+    };
+    const firstAssistantMessage: ChatMessage = {
+      id: "message-assistant-progress" as ChatMessage["id"],
+      role: "assistant",
+      turnId,
+      text: "The fix worked. Vercel now passes and only the big CI job is still running.",
+      streaming: false,
+      createdAt: "2026-08-21T21:37:58.782Z",
+      completedAt: "2026-08-21T21:38:00.708Z",
+    };
+    const finalAssistantMessage: ChatMessage = {
+      id: "message-assistant-final" as ChatMessage["id"],
+      role: "assistant",
+      turnId,
+      text: [
+        "Yes, the restart killed my watcher, but nothing was lost. Current state:",
+        "",
+        "- My length fix cleared both failures. The Vercel preview now builds, and all small checks pass.",
+        "- Only the big CI job is still running. It takes about 15 minutes.",
+        "- The PR is mergeable once that goes green.",
+        "",
+        "I started a new watcher. When CI passes I'll merge the PR, wait for CI on main, then tag the stable.",
+      ].join("\n"),
+      streaming: false,
+      createdAt: "2026-08-21T21:38:05.801Z",
+      completedAt: "2026-08-21T21:38:08.221Z",
+    };
+    const commandEntry: WorkLogEntry = {
+      id: "work-command",
+      createdAt: "2026-08-21T21:38:01.950Z",
+      completedAt: "2026-08-21T21:38:03.150Z",
+      label: "Ran command",
+      detail: "gh pr checks 168 --watch --interval 30 > $null 2>&1",
+      command: "gh pr checks 168 --watch --interval 30 > $null 2>&1",
+      tone: "tool",
+      executionState: "completed",
+      activityKind: "tool.completed",
+      turnId,
+    };
+    const historyEntries: TimelineEntry[] = Array.from({ length: 10 }, (_, index) => {
+      const message: ChatMessage = {
+        id: `message-history-${index}` as ChatMessage["id"],
+        role: index % 2 === 0 ? "user" : "assistant",
+        text:
+          index % 2 === 0
+            ? `Earlier user message ${index + 1} with enough text to make the thread scroll.`
+            : [
+                `Earlier assistant response ${index + 1}.`,
+                "",
+                "This row is intentionally a little taller so the regression test uses a scrollable timeline, matching the real session shape.",
+              ].join("\n"),
+        streaming: false,
+        createdAt: `2026-08-21T21:36:${String(index).padStart(2, "0")}.000Z`,
+      };
+      return {
+        id: message.id,
+        kind: "message",
+        createdAt: message.createdAt,
+        message,
+      };
+    });
+    const entries: TimelineEntry[] = [
+      ...historyEntries,
+      {
+        id: userMessage.id,
+        kind: "message",
+        createdAt: userMessage.createdAt,
+        message: userMessage,
+      },
+      {
+        id: firstAssistantMessage.id,
+        kind: "message",
+        createdAt: firstAssistantMessage.createdAt,
+        message: firstAssistantMessage,
+      },
+      {
+        id: commandEntry.id,
+        kind: "work",
+        createdAt: commandEntry.createdAt,
+        entry: commandEntry,
+      },
+      {
+        id: finalAssistantMessage.id,
+        kind: "message",
+        createdAt: finalAssistantMessage.createdAt,
+        message: finalAssistantMessage,
+      },
+    ];
+    const props = buildProps();
+    const renderList = (active: boolean) => (
+      <div style={{ height: 710, width: 900 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={active}
+          activeTurnInProgress={active}
+          activeTurnId={turnId}
+          activeTurnStartedAt="2026-08-21T21:37:46.481Z"
+          timelineEntries={entries}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(renderList(true));
+
+    try {
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]');
+      expect(list).not.toBeNull();
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-turn-working-anchor="true"]')).not.toBeNull();
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+
+      await screen.rerender(renderList(false));
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-turn-working-anchor="true"]')).toBeNull();
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+
+      const finalRow = document.querySelector<HTMLElement>(
+        '[data-message-id="message-assistant-final"]',
+      );
+      const currentList = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]');
+      expect(finalRow).not.toBeNull();
+      expect(currentList).not.toBeNull();
+      const listRect = currentList!.getBoundingClientRect();
+      const finalRowRect = finalRow!.getBoundingClientRect();
+      expect(listRect.bottom - finalRowRect.bottom).toBeLessThan(64);
     } finally {
       await screen.unmount();
     }
