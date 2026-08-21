@@ -49,7 +49,10 @@ describe("nextActiveTabId", () => {
 
 describe("background tabs", () => {
   beforeEach(() => {
-    useBrowserPanelStore.setState({ browserStateByThreadKey: {} });
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+    });
   });
 
   it("creates a live tab without changing the user's active tab", () => {
@@ -63,6 +66,138 @@ describe("background tabs", () => {
 
     expect(next.activeTabId).toBe(original.activeTabId);
     expect(next.tabs.find((tab) => tab.id === openedId)?.url).toBe("http://localhost:5173/");
+  });
+
+  it("shows an agent background tab when the agent opened a closed browser", () => {
+    const store = useBrowserPanelStore.getState();
+
+    store.openBrowserForAgent(THREAD_REF, "agent-a");
+    const openedId = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/",
+      background: true,
+    });
+
+    const next = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(next.open).toBe(true);
+    expect(next.activeTabId).toBe(openedId);
+    expect(next.tabs).toHaveLength(1);
+    expect(next.tabs[0]?.url).toBe("http://localhost:5173/");
+  });
+
+  it("keeps a user-opened browser focused while adding an agent background tab", () => {
+    const store = useBrowserPanelStore.getState();
+    store.setBrowserOpen(THREAD_REF, true);
+    const original = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+
+    const openedId = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/",
+      background: true,
+    });
+
+    const next = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(next.open).toBe(true);
+    expect(next.activeTabId).toBe(original.activeTabId);
+    expect(next.tabs.map((tab) => tab.id)).toContain(openedId);
+  });
+
+  it("closes an agent-opened panel when the final agent tab closes", () => {
+    const store = useBrowserPanelStore.getState();
+    store.openBrowserForAgent(THREAD_REF, "agent-a");
+    const openedId = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/",
+    });
+
+    store.closeAgentTab(THREAD_REF, "agent-a", openedId);
+
+    const next = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(next.open).toBe(false);
+    expect(next.tabs).toHaveLength(1);
+    expect(next.tabs[0]?.url).toBeNull();
+  });
+
+  it("keeps the panel open when the user took control before the agent tab closed", () => {
+    const store = useBrowserPanelStore.getState();
+    store.openBrowserForAgent(THREAD_REF, "agent-a");
+    const openedId = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/",
+    });
+    store.markBrowserUserControlled(THREAD_REF);
+
+    store.closeAgentTab(THREAD_REF, "agent-a", openedId);
+
+    const next = selectThreadBrowserState(
+      useBrowserPanelStore.getState().browserStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(next.open).toBe(true);
+    expect(next.tabs).toHaveLength(1);
+    expect(next.tabs[0]?.url).toBeNull();
+  });
+
+  it("keeps an agent-opened panel until every agent closes its own tabs", () => {
+    const store = useBrowserPanelStore.getState();
+    store.openBrowserForAgent(THREAD_REF, "agent-a");
+    const first = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/a",
+    });
+    const second = store.openAgentTab(THREAD_REF, "agent-b", {
+      url: "http://localhost:5173/b",
+      background: true,
+    });
+
+    expect(store.closeAgentTab(THREAD_REF, "agent-a", first)).toEqual({
+      closed: true,
+      panelOpen: true,
+    });
+    expect(store.closeAgentTab(THREAD_REF, "agent-b", second)).toEqual({
+      closed: true,
+      panelOpen: false,
+    });
+  });
+
+  it("does not let one agent close another agent's tab", () => {
+    const store = useBrowserPanelStore.getState();
+    store.setBrowserOpen(THREAD_REF, true);
+    const openedId = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/",
+    });
+
+    expect(store.closeAgentTab(THREAD_REF, "agent-b", openedId)).toEqual({
+      closed: false,
+      panelOpen: true,
+    });
+    expect(
+      selectThreadBrowserState(
+        useBrowserPanelStore.getState().browserStateByThreadKey,
+        THREAD_REF,
+      ).tabs.some((tab) => tab.id === openedId),
+    ).toBe(true);
+  });
+
+  it("keeps a user-opened panel after its agent tab closes", () => {
+    const store = useBrowserPanelStore.getState();
+    store.setBrowserOpen(THREAD_REF, true);
+    const openedId = store.openAgentTab(THREAD_REF, "agent-a", {
+      url: "http://localhost:5173/",
+      background: true,
+    });
+
+    expect(store.closeAgentTab(THREAD_REF, "agent-a", openedId)).toEqual({
+      closed: true,
+      panelOpen: true,
+    });
   });
 });
 

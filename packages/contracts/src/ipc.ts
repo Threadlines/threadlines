@@ -432,6 +432,12 @@ export const DesktopPreviewNavigationBlockedSchema = Schema.Struct({
 });
 export type DesktopPreviewNavigationBlocked = typeof DesktopPreviewNavigationBlockedSchema.Type;
 
+/** Human input reached a guest page, so agent-owned cleanup must yield to the user. */
+export const DesktopPreviewUserControlSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+});
+export type DesktopPreviewUserControl = typeof DesktopPreviewUserControlSchema.Type;
+
 export const DesktopPreviewEvaluateInputSchema = Schema.Struct({
   webContentsId: Schema.Number,
   expression: Schema.String,
@@ -986,6 +992,8 @@ export interface DesktopBridge {
   onPreviewNavigationBlocked?: (
     listener: (event: DesktopPreviewNavigationBlocked) => void,
   ) => () => void;
+  /** Fires for genuine keyboard, pointer, or wheel input inside a guest page. */
+  onPreviewUserControl?: (listener: (event: DesktopPreviewUserControl) => void) => () => void;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

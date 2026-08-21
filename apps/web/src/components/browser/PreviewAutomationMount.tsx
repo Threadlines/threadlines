@@ -64,9 +64,12 @@ export function PreviewAutomationMount({
   projectId?: ProjectId | null;
 }) {
   const setBrowserOpen = useBrowserPanelStore((store) => store.setBrowserOpen);
-  const openTab = useBrowserPanelStore((store) => store.openTab);
-  const openTabWithUrl = useBrowserPanelStore((store) => store.openTabWithUrl);
-  const closeTab = useBrowserPanelStore((store) => store.closeTab);
+  const openBrowserForAgent = useBrowserPanelStore((store) => store.openBrowserForAgent);
+  const openAgentTab = useBrowserPanelStore((store) => store.openAgentTab);
+  const closeAgentTab = useBrowserPanelStore((store) => store.closeAgentTab);
+  const markBrowserUserControlled = useBrowserPanelStore(
+    (store) => store.markBrowserUserControlled,
+  );
   const setAgentTab = useBrowserPanelStore((store) => store.setAgentTab);
   const setAgentPoint = useBrowserPanelStore((store) => store.setAgentPoint);
   const setAgentActivity = useBrowserPanelStore((store) => store.setAgentActivity);
@@ -143,6 +146,16 @@ export function PreviewAutomationMount({
     });
   }, [attachedGuests, setBrowserOpen, setPendingBrowserApproval, threadRef]);
 
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onPreviewUserControl;
+    if (subscribe === undefined) return;
+    return subscribe((control) => {
+      if (attachedGuests().some((entry) => entry.webContentsId === control.webContentsId)) {
+        markBrowserUserControlled(threadRef);
+      }
+    });
+  }, [attachedGuests, markBrowserUserControlled, threadRef]);
+
   /**
    * Reads the world at the moment the agent acts, not at the moment this
    * component rendered: an operation may arrive many renders after the host
@@ -192,6 +205,11 @@ export function PreviewAutomationMount({
         webContentsId: webview === null ? null : attachedWebContentsId(webview),
         onAgentPoint: (point) => setAgentPoint(threadRef, point),
         onAgentActivity: (activity) => setAgentActivity(threadRef, activity),
+        onUserTakeover: () => markBrowserUserControlled(threadRef),
+        panelOpen: () => {
+          const current = useBrowserPanelStore.getState();
+          return selectThreadBrowserState(current.browserStateByThreadKey, threadRef).open;
+        },
         openTab: async (input) => {
           const normalized = input.url === undefined ? null : normalizePreviewUrl(input.url);
           if (input.url !== undefined && normalized === null) {
@@ -200,7 +218,9 @@ export function PreviewAutomationMount({
           if (normalized !== null) {
             const host = new URL(normalized).hostname;
             if (!isBrowserHostApproved(host, approvedDomains)) {
-              const openedId = openTab(threadRef, input.background !== true);
+              const openedId = openAgentTab(threadRef, request.agentId, {
+                background: input.background,
+              });
               agentTabPins.set(key, openedId);
               setAgentTab(threadRef, openedId);
               setPendingBrowserApproval(threadRef, {
@@ -215,22 +235,30 @@ export function PreviewAutomationMount({
               );
             }
           }
-          const activate = input.background !== true;
-          const openedId =
-            normalized === null
-              ? openTab(threadRef, activate)
-              : openTabWithUrl(threadRef, normalized, activate);
+          const openedId = openAgentTab(threadRef, request.agentId, {
+            url: normalized,
+            background: input.background,
+          });
           agentTabPins.set(key, openedId);
           setAgentTab(threadRef, openedId);
           return waitForTab(openedId);
         },
         closeTab: async (closingTabId) => {
-          if (closingTabId === null || !browserState.tabs.some((tab) => tab.id === closingTabId)) {
+          const closingTab = browserState.tabs.find((tab) => tab.id === closingTabId);
+          if (closingTabId === null || closingTab === undefined) {
             throw new Error("The browser tab to close does not exist.");
           }
-          closeTab(threadRef, closingTabId);
+          const closeResult = closeAgentTab(threadRef, request.agentId, closingTabId);
+          if (!closeResult.closed) {
+            throw new Error("You can only close a browser tab opened by this agent.");
+          }
           if (agentTabPins.get(key) === closingTabId) agentTabPins.delete(key);
           if (tabId === closingTabId) setAgentTab(threadRef, null);
+          return {
+            id: closingTab.id,
+            title: closingTab.title ?? "",
+            url: closingTab.url ?? "",
+          };
         },
         selectTab: async (input) => {
           const chosen =
@@ -306,9 +334,9 @@ export function PreviewAutomationMount({
     },
     [
       approvedDomains,
-      closeTab,
-      openTab,
-      openTabWithUrl,
+      closeAgentTab,
+      markBrowserUserControlled,
+      openAgentTab,
       selectTab,
       setAgentActivity,
       setAgentPoint,
@@ -331,7 +359,7 @@ export function PreviewAutomationMount({
       const store = useBrowserPanelStore.getState();
       const browserState = selectThreadBrowserState(store.browserStateByThreadKey, threadRef);
       if (!browserState.open) {
-        setBrowserOpen(threadRef, true);
+        openBrowserForAgent(threadRef, request.agentId);
       }
       await waitForPreviewWebview<PreviewWebviewHandle>({
         resolve: () => {
@@ -358,7 +386,7 @@ export function PreviewAutomationMount({
       // error it has always used for one, so a panel that never came up reads the
       // same as a panel with nothing loaded.
     },
-    [setBrowserOpen, threadRef],
+    [openBrowserForAgent, threadRef],
   );
 
   // Not the module-level `isElectron` snapshot: the bridge is what this needs,

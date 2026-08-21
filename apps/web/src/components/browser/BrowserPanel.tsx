@@ -43,6 +43,7 @@ import {
   selectActiveTab,
   selectPendingBrowserApproval,
   selectThreadAgentState,
+  selectThreadBrowserOwnership,
   selectThreadBrowserState,
   steppedZoom,
   useBrowserPanelStore,
@@ -146,11 +147,17 @@ export function BrowserPanel({
   const browserState = useBrowserPanelStore((store) =>
     selectThreadBrowserState(store.browserStateByThreadKey, threadRef),
   );
+  const browserOwnership = useBrowserPanelStore((store) =>
+    selectThreadBrowserOwnership(store.browserOwnershipByThreadKey, threadRef),
+  );
   const setTabUrl = useBrowserPanelStore((store) => store.setTabUrl);
   const setTabViewport = useBrowserPanelStore((store) => store.setTabViewport);
   const openTab = useBrowserPanelStore((store) => store.openTab);
   const closeTab = useBrowserPanelStore((store) => store.closeTab);
   const selectTab = useBrowserPanelStore((store) => store.selectTab);
+  const markBrowserUserControlled = useBrowserPanelStore(
+    (store) => store.markBrowserUserControlled,
+  );
   const expanded = useBrowserPanelStore((store) => store.expanded);
   const toggleExpanded = useBrowserPanelStore((store) => store.toggleExpanded);
   const deviceToolbarOpen = useBrowserPanelStore((store) => store.deviceToolbarOpen);
@@ -659,6 +666,9 @@ export function BrowserPanel({
       style={{ flex: `${flexGrow} 1 0%` }}
       data-testid="browser-panel"
       aria-label="Browser preview"
+      onPointerDownCapture={() => markBrowserUserControlled(threadRef)}
+      onKeyDownCapture={() => markBrowserUserControlled(threadRef)}
+      onWheelCapture={() => markBrowserUserControlled(threadRef)}
     >
       <div className="flex h-9 shrink-0 items-stretch border-b border-border px-1.5 pt-1.5">
         {/* Tabs scroll; everything after this stays put. ScrollArea keeps the
@@ -681,9 +691,9 @@ export function BrowserPanel({
                   isActive={tab.id === activeTabId}
                   closable
                   agentState={
-                    tab.id !== agentTabId
+                    browserOwnership.agentOwnerByTabId[tab.id] === undefined
                       ? "none"
-                      : agentActivity?.phase === "running"
+                      : tab.id === agentTabId && agentActivity?.phase === "running"
                         ? "working"
                         : "pinned"
                   }

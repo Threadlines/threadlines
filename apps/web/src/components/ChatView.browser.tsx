@@ -6,6 +6,8 @@ import {
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
   type EnvironmentApi,
+  type DesktopPreviewUserControl,
+  type DesktopPreviewTarget,
   type MessageId,
   type OrchestrationEvent,
   type PreviewAutomationRequest,
@@ -6112,7 +6114,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens a closed browser panel for an arriving automation request", async () => {
+  it("shows an agent background tab when automation opens a closed browser", async () => {
     // The agent asks for the page while the panel is shut. It used to be told
     // there was no browser; now the request is what opens one.
     const tab = makeBrowserTab();
@@ -6121,6 +6123,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         [THREAD_KEY]: { open: false, tabs: [tab], activeTabId: tab.id },
       },
       agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
     });
 
     let deliver: ((request: PreviewAutomationRequest) => void) | null = null;
@@ -6148,9 +6151,21 @@ describe("ChatView timeline estimator parity (full app)", () => {
         } as unknown as EnvironmentApi["previewAutomation"],
       }),
     );
+    let userControlListener: ((event: { webContentsId: number }) => void) | null = null;
     window.desktopBridge = {
-      previewStatus: () =>
-        Promise.resolve({ url: "http://localhost:5173/", title: "Preview", loading: false }),
+      previewStatus: (input: DesktopPreviewTarget) =>
+        Promise.resolve({
+          url:
+            input.webContentsId === 43 ? "http://localhost:5173/manual" : "http://localhost:5173/",
+          title: "Preview",
+          loading: false,
+        }),
+      onPreviewUserControl: (listener: (event: DesktopPreviewUserControl) => void) => {
+        userControlListener = listener;
+        return () => {
+          userControlListener = null;
+        };
+      },
     } as unknown as NonNullable<typeof window.desktopBridge>;
 
     const screen = await render(<PreviewAutomationMount threadRef={THREAD_REF} />);
@@ -6165,8 +6180,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       deliver!({
         requestId: "req-auto-open",
-        operation: "status",
-        input: {},
+        agentId: "agent-browser",
+        operation: "openTab",
+        input: { url: "http://localhost:5173/manual", background: true },
       } as unknown as PreviewAutomationRequest);
 
       // The panel opens on its own...
@@ -6179,9 +6195,28 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 4_000, interval: 16 },
       );
 
-      // ...and once its page is up, the operation the agent asked for lands.
+      // The initial blank guest lets the queued operation begin.
       registerPreviewWebview(THREAD_REF, tab.id, {
         getWebContentsId: () => 42,
+        loadURL: () => Promise.resolve(),
+        getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
+      });
+
+      let openedTabId = "";
+      await vi.waitFor(
+        () => {
+          const state = useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY];
+          expect(state?.tabs).toHaveLength(1);
+          expect(state?.tabs[0]?.url).toBe("http://localhost:5173/manual");
+          expect(state?.activeTabId).toBe(state?.tabs[0]?.id);
+          openedTabId = state?.activeTabId ?? "";
+          expect(openedTabId).not.toBe("");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      registerPreviewWebview(THREAD_REF, openedTabId, {
+        getWebContentsId: () => 43,
         loadURL: () => Promise.resolve(),
         getBoundingClientRect: () => ({ width: 900, height: 600 }) as DOMRect,
       });
@@ -6192,14 +6227,43 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(responses[0]?.error, "the request should not report a missing browser").toBe(
             undefined,
           );
-          expect(responses[0]?.result).toMatchObject({ url: "http://localhost:5173/" });
+          expect(responses[0]?.result).toMatchObject({
+            tabId: openedTabId,
+            url: "http://localhost:5173/manual",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const notifyUserControl = userControlListener as
+        | ((event: DesktopPreviewUserControl) => void)
+        | null;
+      notifyUserControl?.({ webContentsId: 43 });
+      deliver!({
+        requestId: "req-auto-close-after-takeover",
+        agentId: "agent-browser",
+        operation: "closeTab",
+        input: { tabId: openedTabId },
+      } as unknown as PreviewAutomationRequest);
+
+      await vi.waitFor(
+        () => {
+          expect(responses).toHaveLength(2);
+          expect(responses[1]?.result).toMatchObject({ panelOpen: true });
+          expect(useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.open).toBe(
+            true,
+          );
         },
         { timeout: 8_000, interval: 16 },
       );
     } finally {
       screen.unmount();
       resetPreviewWebviewsForTests();
-      useBrowserPanelStore.setState({ browserStateByThreadKey: {}, agentStateByThreadKey: {} });
+      useBrowserPanelStore.setState({
+        browserStateByThreadKey: {},
+        agentStateByThreadKey: {},
+        browserOwnershipByThreadKey: {},
+      });
       Reflect.deleteProperty(window, "desktopBridge");
       __resetEnvironmentApiOverridesForTests();
     }
