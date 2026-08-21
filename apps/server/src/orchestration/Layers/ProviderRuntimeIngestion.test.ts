@@ -554,6 +554,70 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("settles orphaned roster subagents when a fresh provider session starts", async () => {
+    const harness = await createHarness();
+
+    // A promoted background run whose completion will never arrive: its
+    // in-memory tracking lived in a provider process that is about to be
+    // replaced (e.g. the machine shut down mid-run).
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-orphan-running"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        callId: "call-exec-orphan",
+        agentThreadId: "codexExec:orphan-session",
+        agentRole: "codex exec",
+        status: "running",
+      },
+    });
+    // A row that finished normally must stay finished, not be re-stamped.
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-orphan-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: {
+        callId: "call-exec-done",
+        agentThreadId: "codexExec:done-session",
+        agentRole: "codex exec",
+        status: "completed",
+      },
+    });
+    await waitForThread(harness.readModel, (thread) =>
+      (thread.subagents ?? []).some(
+        (subagent) =>
+          subagent.agentThreadId === "codexExec:orphan-session" && subagent.status === "running",
+      ),
+    );
+
+    harness.emit({
+      type: "session.started",
+      eventId: asEventId("evt-session-started-orphan-sweep"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      payload: {
+        message: "ready",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      (entry.subagents ?? []).some(
+        (subagent) =>
+          subagent.agentThreadId === "codexExec:orphan-session" &&
+          subagent.status === "interrupted",
+      ),
+    );
+    const settled = (thread.subagents ?? []).find(
+      (subagent) => subagent.agentThreadId === "codexExec:done-session",
+    );
+    expect(settled?.status).toBe("completed");
+  });
+
   it("records and clears the session's observed cwd divergence", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

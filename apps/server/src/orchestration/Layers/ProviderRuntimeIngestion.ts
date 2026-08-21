@@ -2318,6 +2318,45 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
 
+      // A provider process that just started or exited tracks none of the
+      // roster's live agents: in-process children died with the previous
+      // process, and background runs lost the in-memory records that would
+      // settle their rows (a completion for an unknown run is dropped). No
+      // future event will ever report on them, so settle them as interrupted.
+      // An agent that does report again re-opens its row through the normal
+      // fold, since later lifecycle activities win over this one.
+      if (event.type === "session.started" || event.type === "session.exited") {
+        const detail = yield* getLoadedThreadDetail();
+        const orphans = (detail?.subagents ?? []).filter(
+          (subagent) =>
+            (subagent.status === "starting" ||
+              subagent.status === "running" ||
+              subagent.status === "waiting") &&
+            (subagent.agentThreadId !== null || subagent.spawnCallId !== null),
+        );
+        for (const [index, orphan] of orphans.entries()) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(event, `subagent-orphan-${index}`),
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(`${event.eventId}:subagent-orphan:${index}`),
+              tone: "info",
+              kind: "subagent.metadata",
+              summary: "Subagent no longer tracked by the provider session",
+              payload: {
+                ...(orphan.agentThreadId ? { agentThreadId: orphan.agentThreadId } : {}),
+                ...(orphan.spawnCallId ? { callId: orphan.spawnCallId } : {}),
+                status: "interrupted",
+              },
+              turnId: orphan.turnId,
+              createdAt: now,
+            },
+            createdAt: now,
+          });
+        }
+      }
+
       if (
         event.type === "thread.realtime.started" ||
         event.type === "thread.realtime.error" ||
