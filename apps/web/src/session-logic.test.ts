@@ -409,9 +409,9 @@ describe("deriveThreadSubagentHistory", () => {
       updatedAt: "2026-08-11T19:34:59.000Z",
     };
     const [turnPreparing, turnStarted, spawn, wait] = codexSpawnActivities();
-    const collabSpawn = structuredClone(spawn) as typeof spawn;
+    const collabSpawn = structuredClone(spawn!) as NonNullable<typeof spawn>;
     const collabItem = (
-      (collabSpawn?.payload as { data: { item: Record<string, unknown> } }).data as {
+      (collabSpawn.payload as { data: { item: Record<string, unknown> } }).data as {
         item: Record<string, unknown>;
       }
     ).item;
@@ -3058,6 +3058,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         id: "browser-open-tab",
+        sequence: 1,
         kind: "tool.completed",
         summary: "MCP tool call",
         payload: {
@@ -3084,6 +3085,7 @@ describe("deriveWorkLogEntries", () => {
       }),
       makeActivity({
         id: "browser-wait",
+        sequence: 2,
         kind: "tool.completed",
         summary: "MCP tool call",
         payload: {
@@ -3107,6 +3109,7 @@ describe("deriveWorkLogEntries", () => {
       }),
       makeActivity({
         id: "browser-close-tab",
+        sequence: 3,
         kind: "tool.completed",
         summary: "MCP tool call",
         payload: {

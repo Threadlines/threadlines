@@ -143,7 +143,7 @@ export function clampZoomFactor(factor: number): number {
 
 /** The next step up or down, so zooming lands on round values rather than drifting. */
 export function steppedZoom(current: number, direction: 1 | -1): number {
-  const steps = direction === 1 ? ZOOM_STEPS : [...ZOOM_STEPS].reverse();
+  const steps = direction === 1 ? ZOOM_STEPS : ZOOM_STEPS.toReversed();
   const next = steps.find((step) =>
     direction === 1 ? step > current + 0.001 : step < current - 0.001,
   );
