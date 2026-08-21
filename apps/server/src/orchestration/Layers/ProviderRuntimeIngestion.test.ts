@@ -1309,6 +1309,53 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-started-before-abort"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-abort"),
+      payload: {
+        callId: "call-live-before-abort",
+        agentThreadId: "agent-live-before-abort",
+        status: "running",
+      },
+    });
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-waiting-before-abort"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("turn-abort"),
+      payload: {
+        callId: "call-live-before-abort",
+        agentThreadId: "agent-live-before-abort",
+        status: "waiting",
+      },
+    });
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-completed-before-abort"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId: asTurnId("turn-abort"),
+      payload: {
+        callId: "call-completed-before-abort",
+        agentThreadId: "agent-completed-before-abort",
+        status: "completed",
+      },
+    });
+
+    await waitForThread(harness.readModel, (thread) =>
+      (thread.subagents ?? []).some(
+        (subagent) =>
+          subagent.agentThreadId === "agent-live-before-abort" && subagent.status === "waiting",
+      ),
+    );
+
+    harness.emit({
       type: "turn.aborted",
       eventId: asEventId("evt-turn-aborted"),
       provider: ProviderDriverKind.make("codex"),
@@ -1331,6 +1378,73 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     expect(thread.session?.lastError).toBeNull();
+    expect(
+      thread.subagents?.find((subagent) => subagent.agentThreadId === "agent-live-before-abort")
+        ?.status,
+    ).toBe("interrupted");
+    expect(
+      thread.subagents?.find(
+        (subagent) => subagent.agentThreadId === "agent-completed-before-abort",
+      )?.status,
+    ).toBe("completed");
+  });
+
+  it("settles live subagents when turn.completed reports an interruption", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-before-interrupted-completion"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-interrupted-completion"),
+    });
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-waiting-before-interrupted-completion"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-interrupted-completion"),
+      payload: {
+        callId: "call-waiting-before-interrupted-completion",
+        status: "waiting",
+      },
+    });
+
+    await waitForThread(harness.readModel, (thread) =>
+      (thread.subagents ?? []).some(
+        (subagent) =>
+          subagent.spawnCallId === "call-waiting-before-interrupted-completion" &&
+          subagent.status === "waiting",
+      ),
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-interrupted-completion"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("turn-interrupted-completion"),
+      payload: {
+        state: "interrupted",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      (entry.subagents ?? []).some(
+        (subagent) =>
+          subagent.spawnCallId === "call-waiting-before-interrupted-completion" &&
+          subagent.status === "interrupted",
+      ),
+    );
+    expect(
+      thread.subagents?.find(
+        (subagent) => subagent.spawnCallId === "call-waiting-before-interrupted-completion",
+      )?.status,
+    ).toBe("interrupted");
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

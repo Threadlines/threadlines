@@ -2314,6 +2314,45 @@ const make = Effect.gen(function* () {
           return loadedThreadDetail;
         });
 
+      const settleLiveSubagents = Effect.fn("settleLiveSubagents")(function* (options: {
+        readonly commandTag: string;
+        readonly summary: string;
+        readonly belongsToLifecycle: (
+          subagent: NonNullable<OrchestrationThread["subagents"]>[number],
+        ) => boolean;
+      }) {
+        const detail = yield* getLoadedThreadDetail();
+        const liveSubagents = (detail?.subagents ?? []).filter(
+          (subagent) =>
+            (subagent.status === "starting" ||
+              subagent.status === "running" ||
+              subagent.status === "waiting") &&
+            (subagent.agentThreadId !== null || subagent.spawnCallId !== null) &&
+            options.belongsToLifecycle(subagent),
+        );
+        for (const [index, subagent] of liveSubagents.entries()) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(event, `${options.commandTag}-${index}`),
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(`${event.eventId}:${options.commandTag}:${index}`),
+              tone: "info",
+              kind: "subagent.metadata",
+              summary: options.summary,
+              payload: {
+                ...(subagent.agentThreadId ? { agentThreadId: subagent.agentThreadId } : {}),
+                ...(subagent.spawnCallId ? { callId: subagent.spawnCallId } : {}),
+                status: "interrupted",
+              },
+              turnId: subagent.turnId,
+              createdAt: event.createdAt,
+            },
+            createdAt: event.createdAt,
+          });
+        }
+      });
+
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
@@ -2326,35 +2365,11 @@ const make = Effect.gen(function* () {
       // An agent that does report again re-opens its row through the normal
       // fold, since later lifecycle activities win over this one.
       if (event.type === "session.started" || event.type === "session.exited") {
-        const detail = yield* getLoadedThreadDetail();
-        const orphans = (detail?.subagents ?? []).filter(
-          (subagent) =>
-            (subagent.status === "starting" ||
-              subagent.status === "running" ||
-              subagent.status === "waiting") &&
-            (subagent.agentThreadId !== null || subagent.spawnCallId !== null),
-        );
-        for (const [index, orphan] of orphans.entries()) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.activity.append",
-            commandId: providerCommandId(event, `subagent-orphan-${index}`),
-            threadId: thread.id,
-            activity: {
-              id: EventId.make(`${event.eventId}:subagent-orphan:${index}`),
-              tone: "info",
-              kind: "subagent.metadata",
-              summary: "Subagent no longer tracked by the provider session",
-              payload: {
-                ...(orphan.agentThreadId ? { agentThreadId: orphan.agentThreadId } : {}),
-                ...(orphan.spawnCallId ? { callId: orphan.spawnCallId } : {}),
-                status: "interrupted",
-              },
-              turnId: orphan.turnId,
-              createdAt: now,
-            },
-            createdAt: now,
-          });
-        }
+        yield* settleLiveSubagents({
+          commandTag: "subagent-orphan",
+          summary: "Subagent no longer tracked by the provider session",
+          belongsToLifecycle: () => true,
+        });
       }
 
       if (
@@ -2436,6 +2451,20 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+
+      const completedTurnState =
+        event.type === "turn.completed" ? normalizeRuntimeTurnState(event.payload.state) : null;
+      const turnWasInterrupted =
+        event.type === "turn.aborted" ||
+        completedTurnState === "interrupted" ||
+        completedTurnState === "cancelled";
+      if (turnWasInterrupted && shouldApplyThreadLifecycle && eventTurnId !== undefined) {
+        yield* settleLiveSubagents({
+          commandTag: "subagent-turn-aborted",
+          summary: "Subagent interrupted with its parent turn",
+          belongsToLifecycle: (subagent) => sameId(subagent.turnId, eventTurnId),
+        });
+      }
 
       if (
         event.type === "session.started" ||
