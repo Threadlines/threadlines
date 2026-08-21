@@ -2,13 +2,17 @@ import {
   BotIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ChevronsUpDownIcon,
+  CloudIcon,
   CopyIcon,
   DatabaseIcon,
   ExternalLinkIcon,
   FileTextIcon,
+  FolderIcon,
   HistoryIcon,
   KeyRoundIcon,
   LoaderIcon,
+  MonitorIcon,
   PackageMinusIcon,
   PackagePlusIcon,
   PlugIcon,
@@ -21,6 +25,7 @@ import {
 } from "lucide-react";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type {
+  EnvironmentApi,
   EnvironmentId,
   ProviderExtensionApp,
   ProviderExtensionMcpServer,
@@ -34,8 +39,10 @@ import type {
 } from "@threadlines/contracts";
 import { ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
 import {
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -45,30 +52,44 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { openInPreferredEditor } from "../../editorPreferences";
+import { providerIconForDriverLabel } from "../chat/providerIconUtils";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { resolveEnvironmentHttpUrl } from "../../environments/runtime";
+import {
+  resolveEnvironmentHttpUrl,
+  useSavedEnvironmentRegistryStore,
+  useSavedEnvironmentRuntimeStore,
+} from "../../environments/runtime";
+import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { readEnvironmentApi, useEnvironmentApiAvailable } from "../../environmentApi";
 import { ensureLocalApi } from "../../localApi";
+import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 import {
   buildExtensionJsonSchemaFormArguments,
   createExtensionInventoryMemoryCache,
   deriveExtensionPluginGroupLabel,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
+  deriveExtensionScopeGroups,
   deriveExtensionSkillBundleKey,
   deriveExtensionSkillBundleLabel,
   extensionMcpNeedsAuthStatus,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
+  extensionScopeKey,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   formatSkillDisplayName,
   formatTokenCount,
   rankPluginsAcrossProviders,
+  resolveExtensionScope,
   selectCuratedPlugins,
   shouldCuratePluginBrowse,
   groupPluginComponents,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
+  type ExtensionScopeGroup,
+  type ExtensionScopeMachineInput,
+  type ExtensionScopeSelection,
   type PluginComponentTarget,
   resolvePluginComponentTarget,
   summarizePluginDetail,
@@ -100,6 +121,17 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import {
+  Menu,
+  MENU_PICK_ITEM_CLASS_NAME,
+  MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -107,7 +139,6 @@ import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
-import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 
@@ -205,10 +236,58 @@ interface ExtensionActionHistoryEntry {
 }
 
 interface ExtensionsSettingsPanelMemoryState {
-  cwd?: string | undefined;
-  providerInstanceId?: string | undefined;
-  manualProviderThreadId?: string | undefined;
+  scope?: ExtensionScopeSelection | undefined;
+  /** Carries its machine: a filter picked on one machine means nothing on another. */
+  providerFilter?:
+    | { readonly environmentId: EnvironmentId; readonly instanceId: string }
+    | undefined;
+  manualThreadOverride?: { readonly scopeKey: string; readonly value: string } | undefined;
   showAdvancedContext?: boolean | undefined;
+}
+
+type ExtensionProvidersApi = NonNullable<EnvironmentApi["providers"]>;
+
+/** One provider filter chip: the instance, its label, and the driver behind it. */
+interface ExtensionProviderChip {
+  readonly value: string;
+  readonly label: string;
+  readonly driver: string;
+}
+
+const EMPTY_PROVIDER_CHIPS: ReadonlyArray<ExtensionProviderChip> = [];
+
+interface ExtensionsScopeContextValue {
+  readonly environmentId: EnvironmentId | null;
+}
+
+/**
+ * The machine every plugin call in this panel goes to. The project picker spans
+ * machines, so the API is resolved from the scope rather than from whichever
+ * backend this client is paired with.
+ */
+const ExtensionsScopeContext = createContext<ExtensionsScopeContextValue | null>(null);
+
+/** `null` when the scope's machine is disconnected, or runs a server predating this API. */
+function readScopedProvidersApi(environmentId: EnvironmentId | null): ExtensionProvidersApi | null {
+  if (!environmentId) return null;
+  return readEnvironmentApi(environmentId)?.providers ?? null;
+}
+
+/**
+ * Returns a getter rather than the API itself, for two reasons: a disconnected
+ * machine must render a notice instead of throwing on the way to one, and the
+ * connection behind an environment is rebuilt on reconnect, so the API has to be
+ * resolved when the call is made rather than held from an earlier render.
+ */
+function useScopedProvidersApi(): () => ExtensionProvidersApi {
+  const environmentId = useContext(ExtensionsScopeContext)?.environmentId ?? null;
+  return useCallback(() => {
+    const api = readScopedProvidersApi(environmentId);
+    if (!api) {
+      throw new Error("This machine is not connected.");
+    }
+    return api;
+  }, [environmentId]);
 }
 
 const extensionInventoryCache =
@@ -797,11 +876,15 @@ function ExtensionItemBadges({
   item: ExtensionItem;
   showProvider?: boolean;
 }) {
+  const ProviderGlyph = showProvider
+    ? providerIconForDriverLabel(String(item.provider.driver))
+    : null;
   return (
     <div className="flex shrink-0 flex-wrap justify-end gap-1">
       {/* Both providers ship a "figma"; without this the rows are indistinguishable. */}
       {showProvider ? (
         <Badge size="sm" variant="outline">
+          {ProviderGlyph ? <ProviderGlyph className="size-2.5" /> : null}
           {providerTitle(item.provider)}
         </Badge>
       ) : null}
@@ -1474,6 +1557,7 @@ function ExtensionDetailDialog({
   lastAction?: ExtensionActionHistoryEntry | undefined;
   onActionHistoryChange: (itemKey: string, entry: ExtensionActionHistoryEntry) => void;
 }) {
+  const providersApi = useScopedProvidersApi();
   const openPath = item ? extensionOpenPath(item) : null;
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionOutput, setActionOutput] = useState<string | null>(null);
@@ -1509,7 +1593,7 @@ function ExtensionDetailDialog({
     setPluginDetail({ status: "loading" });
     void (async () => {
       try {
-        const result = await ensureLocalApi().server.readProviderExtensionPlugin({
+        const result = await providersApi().readExtensionPlugin({
           ...actionBaseInput(item, cwd),
           ...pluginSelectorInput(item.plugin),
         });
@@ -1526,7 +1610,7 @@ function ExtensionDetailDialog({
     return () => {
       cancelled = true;
     };
-  }, [cwd, item, pluginDetailAttempt]);
+  }, [cwd, item, pluginDetailAttempt, providersApi]);
 
   useEffect(() => {
     if (!item || item.kind !== "skill") return;
@@ -1535,7 +1619,7 @@ function ExtensionDetailDialog({
     setSkillContents({ status: "loading" });
     void (async () => {
       try {
-        const result = await ensureLocalApi().server.readProviderExtensionSkill({
+        const result = await providersApi().readExtensionSkill({
           ...actionBaseInput(item, cwd),
           path: item.skill.path,
         });
@@ -1558,7 +1642,7 @@ function ExtensionDetailDialog({
     return () => {
       cancelled = true;
     };
-  }, [cwd, item]);
+  }, [cwd, item, providersApi]);
 
   const pluginDetailValue = pluginDetail.status === "ready" ? pluginDetail.detail : null;
   const pluginDescription =
@@ -1650,14 +1734,16 @@ function ExtensionDetailDialog({
   const startMcpOAuth = useCallback(() => {
     if (!item || item.kind !== "mcp") return;
     void runDialogAction(mcpOAuthActionLabel, async () => {
-      const api = ensureLocalApi();
-      const result = await api.server.startProviderExtensionMcpOAuth({
+      const providers = providersApi();
+      const result = await providers.startExtensionMcpOAuth({
         ...actionBaseInput(item, cwd),
         serverName: item.server.configuredName ?? item.server.name,
         timeoutSecs: 300,
       });
+      // The browser prompt opens where the user is sitting, not on the machine
+      // running the provider, so this stays a local-shell call.
       if (result.authorizationUrl) {
-        await api.shell.openExternal(result.authorizationUrl);
+        await ensureLocalApi().shell.openExternal(result.authorizationUrl);
       }
       const pollId = pollRef.current + 1;
       pollRef.current = pollId;
@@ -1671,7 +1757,7 @@ function ExtensionDetailDialog({
       while (pollRef.current === pollId && Date.now() < expiresAt + 15_000) {
         await wait(1_500);
         if (pollRef.current !== pollId) return null;
-        const status = await api.server.getProviderExtensionOperationStatus({
+        const status = await providers.getExtensionOperationStatus({
           operationId: result.operationId,
         });
         setActionOutput(
@@ -1695,22 +1781,22 @@ function ExtensionDetailDialog({
       }
       throw new Error(`OAuth timed out.\n\nFallback:\n${result.terminalCommand}`);
     });
-  }, [cwd, item, mcpOAuthActionLabel, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, mcpOAuthActionLabel, onInventoryMutated, providersApi, runDialogAction]);
 
   const reloadMcp = useCallback(() => {
     if (!item) return;
     void runDialogAction("Reload MCP", async () => {
-      await ensureLocalApi().server.reloadProviderExtensionMcpServers(actionBaseInput(item, cwd));
+      await providersApi().reloadExtensionMcpServers(actionBaseInput(item, cwd));
       await onInventoryMutated();
       return "MCP servers reloaded.";
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
   const toggleSkill = useCallback(() => {
     if (!item || item.kind !== "skill") return;
     const nextEnabled = !(item.skill.enabled ?? true);
     void runDialogAction(nextEnabled ? "Enable skill" : "Disable skill", async () => {
-      const result = await ensureLocalApi().server.setProviderExtensionSkillEnabled({
+      const result = await providersApi().setExtensionSkillEnabled({
         ...actionBaseInput(item, cwd),
         path: item.skill.path,
         enabled: nextEnabled,
@@ -1718,27 +1804,26 @@ function ExtensionDetailDialog({
       await onInventoryMutated();
       return `Skill ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
   const installPlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
     void runDialogAction("Install plugin", async () => {
-      const result = await ensureLocalApi().server.installProviderExtensionPlugin({
+      const result = await providersApi().installExtensionPlugin({
         ...actionBaseInput(item, cwd),
         ...pluginSelectorInput(item.plugin),
       });
       await onInventoryMutated();
       return formatJson(result);
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
   const uninstallPlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
     void runDialogAction("Uninstall plugin", async () => {
-      const api = ensureLocalApi();
-      const confirmed = await api.dialogs.confirm(`Uninstall ${item.plugin.name}?`);
+      const confirmed = await ensureLocalApi().dialogs.confirm(`Uninstall ${item.plugin.name}?`);
       if (!confirmed) return "Uninstall cancelled.";
-      await api.server.uninstallProviderExtensionPlugin({
+      await providersApi().uninstallExtensionPlugin({
         ...actionBaseInput(item, cwd),
         pluginId: item.plugin.id,
         ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
@@ -1746,13 +1831,13 @@ function ExtensionDetailDialog({
       await onInventoryMutated();
       return "Plugin uninstalled.";
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
   const togglePlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
     const nextEnabled = !(item.plugin.enabled ?? true);
     void runDialogAction(nextEnabled ? "Enable plugin" : "Disable plugin", async () => {
-      const result = await ensureLocalApi().server.setProviderExtensionPluginEnabled({
+      const result = await providersApi().setExtensionPluginEnabled({
         ...actionBaseInput(item, cwd),
         pluginId: item.plugin.id,
         ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
@@ -1761,12 +1846,12 @@ function ExtensionDetailDialog({
       await onInventoryMutated();
       return `Plugin ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
   const updatePlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
     void runDialogAction("Update plugin", async () => {
-      await ensureLocalApi().server.updateProviderExtensionPlugin({
+      await providersApi().updateExtensionPlugin({
         ...actionBaseInput(item, cwd),
         pluginId: item.plugin.id,
         ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
@@ -1774,24 +1859,24 @@ function ExtensionDetailDialog({
       await onInventoryMutated();
       return "Plugin updated. Restart active Claude sessions to apply the new plugin bundle.";
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
 
   const readManagedClaudePlugin = useCallback(() => {
     if (!item || !managedClaudePlugin) return;
     void runDialogAction("Plugin details", async () => {
-      const result = await ensureLocalApi().server.readProviderExtensionPlugin({
+      const result = await providersApi().readExtensionPlugin({
         ...actionBaseInput(item, cwd),
         ...pluginSelectorInput(managedClaudePlugin),
       });
       return summarizePluginDetail(result.plugin);
     });
-  }, [cwd, item, managedClaudePlugin, runDialogAction]);
+  }, [cwd, item, managedClaudePlugin, providersApi, runDialogAction]);
 
   const toggleManagedClaudePlugin = useCallback(() => {
     if (!item || !managedClaudePlugin) return;
     const nextEnabled = !(managedClaudePlugin.enabled ?? true);
     void runDialogAction(nextEnabled ? "Enable plugin" : "Disable plugin", async () => {
-      const result = await ensureLocalApi().server.setProviderExtensionPluginEnabled({
+      const result = await providersApi().setExtensionPluginEnabled({
         ...actionBaseInput(item, cwd),
         pluginId: managedClaudePlugin.id,
         ...(managedClaudePlugin.scope ? { scope: managedClaudePlugin.scope } : {}),
@@ -1800,15 +1885,16 @@ function ExtensionDetailDialog({
       await onInventoryMutated();
       return `Plugin ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
-  }, [cwd, item, managedClaudePlugin, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, managedClaudePlugin, onInventoryMutated, providersApi, runDialogAction]);
 
   const uninstallManagedClaudePlugin = useCallback(() => {
     if (!item || !managedClaudePlugin) return;
     void runDialogAction("Uninstall plugin", async () => {
-      const api = ensureLocalApi();
-      const confirmed = await api.dialogs.confirm(`Uninstall ${managedClaudePlugin.name}?`);
+      const confirmed = await ensureLocalApi().dialogs.confirm(
+        `Uninstall ${managedClaudePlugin.name}?`,
+      );
       if (!confirmed) return "Uninstall cancelled.";
-      await api.server.uninstallProviderExtensionPlugin({
+      await providersApi().uninstallExtensionPlugin({
         ...actionBaseInput(item, cwd),
         pluginId: managedClaudePlugin.id,
         ...(managedClaudePlugin.scope ? { scope: managedClaudePlugin.scope } : {}),
@@ -1816,7 +1902,7 @@ function ExtensionDetailDialog({
       await onInventoryMutated();
       return "Plugin uninstalled.";
     });
-  }, [cwd, item, managedClaudePlugin, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, managedClaudePlugin, onInventoryMutated, providersApi, runDialogAction]);
 
   const selectedToolFormFields = useMemo(
     () => deriveExtensionJsonSchemaFormFields(selectedTool?.inputSchema),
@@ -1834,7 +1920,7 @@ function ExtensionDetailDialog({
         toolArgumentMode === "form" && selectedToolFormFields
           ? buildExtensionJsonSchemaFormArguments(selectedToolFormFields, toolFormValues)
           : parseJsonInput(toolArguments);
-      const result = await ensureLocalApi().server.callProviderExtensionMcpTool({
+      const result = await providersApi().callExtensionMcpTool({
         ...actionBaseInput(item, cwd),
         serverName: item.server.configuredName ?? item.server.name,
         toolName: selectedTool.name,
@@ -1846,6 +1932,7 @@ function ExtensionDetailDialog({
   }, [
     cwd,
     item,
+    providersApi,
     providerThreadId,
     runDialogAction,
     selectedTool,
@@ -1860,7 +1947,7 @@ function ExtensionDetailDialog({
       if (!item || item.kind !== "mcp") return;
       void runDialogAction("Read resource", async () => {
         const threadId = providerThreadId.trim();
-        const result = await ensureLocalApi().server.readProviderExtensionMcpResource({
+        const result = await providersApi().readExtensionMcpResource({
           ...actionBaseInput(item, cwd),
           serverName: item.server.configuredName ?? item.server.name,
           uri,
@@ -1869,7 +1956,7 @@ function ExtensionDetailDialog({
         return formatJson(result);
       });
     },
-    [cwd, item, providerThreadId, runDialogAction],
+    [cwd, item, providersApi, providerThreadId, runDialogAction],
   );
 
   const codexActionsAvailable = item ? isCodexProvider(item.provider) : false;
@@ -3147,6 +3234,7 @@ function MarketplacesBlock({
   onMutated: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const providersApi = useScopedProvidersApi();
   const [isAdding, setIsAdding] = useState(false);
   const [source, setSource] = useState("");
 
@@ -3194,10 +3282,7 @@ function MarketplacesBlock({
             disabled={busy !== null}
             onClick={() =>
               void run("Update marketplaces", async () => {
-                const result =
-                  await ensureLocalApi().server.refreshProviderExtensionPluginMarketplaces(
-                    baseInput,
-                  );
+                const result = await providersApi().refreshExtensionPluginMarketplaces(baseInput);
                 return result.errors?.length
                   ? result.errors.join(" ")
                   : (result.refreshedMarketplaces?.join(", ") ?? result.output);
@@ -3231,7 +3316,7 @@ function MarketplacesBlock({
             disabled={busy !== null || source.trim().length === 0}
             onClick={() =>
               void run("Add marketplace", async () => {
-                const result = await ensureLocalApi().server.addProviderExtensionMarketplace({
+                const result = await providersApi().addExtensionMarketplace({
                   ...baseInput,
                   source: source.trim(),
                 });
@@ -3284,10 +3369,11 @@ function MarketplacesBlock({
                   disabled={busy !== null}
                   onClick={() =>
                     void run(`Remove ${marketplace.name}`, async () => {
-                      const api = ensureLocalApi();
-                      const confirmed = await api.dialogs.confirm(`Remove ${marketplace.name}?`);
+                      const confirmed = await ensureLocalApi().dialogs.confirm(
+                        `Remove ${marketplace.name}?`,
+                      );
                       if (!confirmed) return "Cancelled.";
-                      await api.server.removeProviderExtensionMarketplace({
+                      await providersApi().removeExtensionMarketplace({
                         ...baseInput,
                         name: marketplace.name,
                       });
@@ -3788,6 +3874,7 @@ function ProviderInventoryRow({
   onLoadApps: (provider: ProviderExtensionProviderInventory) => Promise<void>;
   isLoadingApps: boolean;
 }) {
+  const providersApi = useScopedProvidersApi();
   const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("skills");
   const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
   const deferredProviderFilterText = filterText;
@@ -3959,7 +4046,7 @@ function ProviderInventoryRow({
       if (bundle.kind === "skills") {
         const skills = bundle.skills ?? [];
         for (const skill of skills) {
-          await ensureLocalApi().server.setProviderExtensionSkillEnabled({
+          await providersApi().setExtensionSkillEnabled({
             ...actionBaseInput(skillExtensionItem(bundle.provider, skill), cwd),
             path: skill.path,
             enabled: bundle.nextEnabled,
@@ -3970,7 +4057,7 @@ function ProviderInventoryRow({
       }
 
       const pluginItem = pluginExtensionItem(bundle.provider, bundle.plugin);
-      await ensureLocalApi().server.setProviderExtensionPluginEnabled({
+      await providersApi().setExtensionPluginEnabled({
         ...actionBaseInput(pluginItem, cwd),
         pluginId: bundle.plugin.id,
         ...(bundle.plugin.scope ? { scope: bundle.plugin.scope } : {}),
@@ -3978,7 +4065,7 @@ function ProviderInventoryRow({
       });
       await onInventoryMutated();
     },
-    [cwd, onInventoryMutated],
+    [cwd, onInventoryMutated, providersApi],
   );
 
   return (
@@ -4046,17 +4133,201 @@ function ProviderInventoryRow({
   );
 }
 
+function MachineGlyph({ isPrimary }: { isPrimary: boolean }) {
+  return isPrimary ? (
+    <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+  ) : (
+    <CloudIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+  );
+}
+
+/**
+ * Which machine, and optionally which project on it, the inventory is read for.
+ * Built from the same pieces as the sidebar's picker so the two read alike, but
+ * kept local: the sidebar's version carries drafts, renames, and grouping menus
+ * that have nothing to do with plugins.
+ *
+ * With one machine known there is no machine to name, so the groups collapse to
+ * a flat "All projects" plus projects, exactly as the sidebar drops its machine
+ * filter when there is nowhere else the work could be.
+ */
+function ExtensionScopePicker({
+  groups,
+  scope,
+  onScopeChange,
+}: {
+  groups: ReadonlyArray<ExtensionScopeGroup>;
+  scope: ExtensionScopeSelection | null;
+  onScopeChange: (next: ExtensionScopeSelection) => void;
+}) {
+  const showMachineGroups = groups.length > 1;
+  const soleGroup = groups.length === 1 ? groups[0] : undefined;
+  const selectedKey = scope ? extensionScopeKey(scope) : "";
+  const selectedGroup =
+    groups.find((group) => group.environmentId === scope?.environmentId) ?? null;
+  const selectedProject =
+    selectedGroup?.projects.find((project) => project.key === selectedKey) ?? null;
+  const triggerLabel = selectedProject
+    ? selectedProject.label
+    : showMachineGroups && selectedGroup
+      ? `All projects · ${selectedGroup.label}`
+      : "All projects";
+
+  const machineRow = (group: ExtensionScopeGroup) => (
+    <MenuItem
+      data-testid={`extension-scope-machine-${group.environmentId}`}
+      className={cn(
+        MENU_PICK_ITEM_CLASS_NAME,
+        selectedKey === group.machineKey && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+      )}
+      onClick={() => onScopeChange({ environmentId: group.environmentId, cwd: null })}
+    >
+      {showMachineGroups ? (
+        <MachineGlyph isPrimary={group.isPrimary} />
+      ) : (
+        <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+      )}
+      <span className="min-w-0 flex-1 truncate">All projects</span>
+    </MenuItem>
+  );
+
+  const projectRows = (group: ExtensionScopeGroup) =>
+    group.projects.map((project) => (
+      <MenuItem
+        key={project.key}
+        data-testid={`extension-scope-${project.key}`}
+        className={cn(
+          MENU_PICK_ITEM_CLASS_NAME,
+          selectedKey === project.key && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+        )}
+        onClick={() => onScopeChange({ environmentId: project.environmentId, cwd: project.cwd })}
+      >
+        <ProjectFavicon
+          cwd={project.cwd}
+          environmentId={project.environmentId}
+          name={project.label}
+          className="size-3.5 shrink-0"
+        />
+        <span className="min-w-0 flex-1 truncate">{project.label}</span>
+      </MenuItem>
+    ));
+
+  return (
+    <Menu>
+      <MenuTrigger
+        data-testid="extension-scope-trigger"
+        aria-label="Plugin scope"
+        // Sized to sit level with the xs provider chips beside it; capped so a
+        // long project or machine name truncates instead of wrapping the row.
+        className="flex h-7 min-w-32 max-w-64 cursor-pointer items-center gap-1.5 rounded-md border border-input bg-background px-1.5 text-xs text-muted-foreground/80 transition-colors select-none hover:bg-accent/60 hover:text-foreground focus-ring sm:h-6 dark:bg-input/32"
+      >
+        {selectedProject ? (
+          <ProjectFavicon
+            cwd={selectedProject.cwd}
+            environmentId={selectedProject.environmentId}
+            name={selectedProject.label}
+            className="size-3.5 shrink-0"
+          />
+        ) : showMachineGroups && selectedGroup ? (
+          <MachineGlyph isPrimary={selectedGroup.isPrimary} />
+        ) : (
+          <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
+        <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
+      </MenuTrigger>
+      <MenuPopup align="start" side="bottom" className="min-w-56">
+        {showMachineGroups ? (
+          groups.map((group, index) => (
+            <MenuGroup key={group.environmentId}>
+              {index > 0 ? <MenuSeparator /> : null}
+              <MenuGroupLabel>{group.label}</MenuGroupLabel>
+              {machineRow(group)}
+              {projectRows(group)}
+            </MenuGroup>
+          ))
+        ) : soleGroup ? (
+          <>
+            {machineRow(soleGroup)}
+            {soleGroup.projects.length > 0 ? <MenuSeparator /> : null}
+            {projectRows(soleGroup)}
+          </>
+        ) : null}
+      </MenuPopup>
+    </Menu>
+  );
+}
+
 export function ExtensionsSettingsPanel() {
   const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const serverConfig = useServerConfig();
   const serverProviders = useServerProviders();
-  const projectOptions = useMemo(
-    () => deriveSettingsProjectOptions(projects, sidebarThreads),
-    [projects, sidebarThreads],
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
+  const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
+  // Every machine this client knows about, this device first. Same source and
+  // ordering the sidebar's picker uses, so the two lists never disagree.
+  const machineOptions = useMemo<ExtensionScopeMachineInput[]>(() => {
+    const resolveLabel = (environmentId: EnvironmentId, isPrimary: boolean) =>
+      resolveEnvironmentOptionLabel({
+        isPrimary,
+        environmentId,
+        runtimeLabel: savedEnvironmentRuntimeById[environmentId]?.descriptor?.label ?? null,
+        savedLabel: savedEnvironmentRegistry[environmentId]?.label ?? null,
+      });
+    const savedOptions = Object.values(savedEnvironmentRegistry)
+      .filter((record) => record.environmentId !== primaryEnvironmentId)
+      .map((record) => ({
+        environmentId: record.environmentId,
+        label: resolveLabel(record.environmentId, false),
+        isPrimary: false,
+      }))
+      .toSorted((left, right) => left.label.localeCompare(right.label));
+    return primaryEnvironmentId === null
+      ? savedOptions
+      : [
+          {
+            environmentId: primaryEnvironmentId,
+            label: resolveLabel(primaryEnvironmentId, true),
+            isPrimary: true,
+          },
+          ...savedOptions,
+        ];
+  }, [primaryEnvironmentId, savedEnvironmentRegistry, savedEnvironmentRuntimeById]);
+  const scopeGroups = useMemo(
+    () => deriveExtensionScopeGroups(projects, sidebarThreads, machineOptions),
+    [machineOptions, projects, sidebarThreads],
   );
-  const providerEntries = useMemo(
+  const [rememberedScope, setRememberedScope] = useState<ExtensionScopeSelection | null>(
+    () => extensionsSettingsPanelMemoryState.scope ?? null,
+  );
+  const scope = useMemo(
+    () => resolveExtensionScope(scopeGroups, rememberedScope),
+    [rememberedScope, scopeGroups],
+  );
+  const scopeEnvironmentId = scope?.environmentId ?? null;
+  const scopeCwd = scope?.cwd ?? null;
+  // Downstream inputs omit an empty cwd, which is exactly what a machine scope means.
+  const cwd = scopeCwd ?? "";
+  const isPrimaryScope = scopeEnvironmentId !== null && scopeEnvironmentId === primaryEnvironmentId;
+  const scopeKey = scope ? extensionScopeKey(scope) : "";
+  const environmentApiAvailable = useEnvironmentApiAvailable(scopeEnvironmentId);
+  const scopeContextValue = useMemo<ExtensionsScopeContextValue>(
+    () => ({ environmentId: scopeEnvironmentId }),
+    [scopeEnvironmentId],
+  );
+  const scopeMachineLabel =
+    scopeGroups.find((group) => group.environmentId === scopeEnvironmentId)?.label ??
+    "This machine";
+  // Recomputed whenever the connection registry moves, so reconnecting a machine
+  // takes the notice down and starts the load without any other nudge.
+  const scopeIsReachable = useMemo(
+    () => environmentApiAvailable && readScopedProvidersApi(scopeEnvironmentId) !== null,
+    [environmentApiAvailable, scopeEnvironmentId],
+  );
+  const localProviderEntries = useMemo(
     () =>
       sortProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders))
         .filter(
@@ -4073,23 +4344,43 @@ export function ExtensionsSettingsPanel() {
         ),
     [serverProviders],
   );
-  const providerOptions = useMemo(
+  const localProviderOptions = useMemo(
     () =>
-      providerEntries.map((provider) => ({
+      localProviderEntries.map((provider) => ({
         value: String(provider.instanceId),
         label: provider.displayName,
+        driver: String(provider.driverKind),
       })),
-    [providerEntries],
+    [localProviderEntries],
   );
-  const [cwd, setCwd] = useState(
-    () => extensionsSettingsPanelMemoryState.cwd ?? projectOptions[0]?.value ?? "",
+  // A remote machine's provider instances are its own, and this client's server
+  // config says nothing about them. Its chips come from the inventory it returned,
+  // tagged with the machine that answered so they cannot outlive a scope hop.
+  const [remoteProviders, setRemoteProviders] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly options: ReadonlyArray<ExtensionProviderChip>;
+  } | null>(null);
+  const providerOptions = isPrimaryScope
+    ? localProviderOptions
+    : remoteProviders?.environmentId === scopeEnvironmentId
+      ? remoteProviders.options
+      : EMPTY_PROVIDER_CHIPS;
+  const [providerFilter, setProviderFilter] = useState(
+    () => extensionsSettingsPanelMemoryState.providerFilter ?? null,
   );
-  const [providerInstanceId, setProviderInstanceId] = useState(
-    () => extensionsSettingsPanelMemoryState.providerInstanceId ?? "",
+  // Derived, not reset by an effect: a filter must stop applying on the render
+  // the scope changes, or one request goes out naming another machine's provider.
+  const providerInstanceId =
+    providerFilter && providerFilter.environmentId === scopeEnvironmentId
+      ? providerFilter.instanceId
+      : "";
+  const [manualThreadOverride, setManualThreadOverride] = useState(
+    () => extensionsSettingsPanelMemoryState.manualThreadOverride ?? null,
   );
-  const [manualProviderThreadId, setManualProviderThreadId] = useState(
-    () => extensionsSettingsPanelMemoryState.manualProviderThreadId ?? "",
-  );
+  const manualProviderThreadId =
+    manualThreadOverride && manualThreadOverride.scopeKey === scopeKey
+      ? manualThreadOverride.value
+      : "";
   const [showAdvancedContext, setShowAdvancedContext] = useState(
     () => extensionsSettingsPanelMemoryState.showAdvancedContext ?? false,
   );
@@ -4097,31 +4388,24 @@ export function ExtensionsSettingsPanel() {
   const deferredPageQuery = useDeferredValue(pageQuery);
   const refreshRequestRef = useRef(0);
   const inventoryRequestKeyRef = useRef("");
-  const selectedProviderEntry = useMemo(
-    () => providerEntries.find((provider) => String(provider.instanceId) === providerInstanceId),
-    [providerEntries, providerInstanceId],
+  const selectedProviderOption = useMemo(
+    () => providerOptions.find((provider) => provider.value === providerInstanceId),
+    [providerInstanceId, providerOptions],
   );
   // MCP tool calls need a Codex thread. With no provider filter there is still exactly one Codex
   // instance to scope against, so keep detecting it rather than losing the capability.
-  const threadScopeProviderEntry =
-    selectedProviderEntry ??
-    providerEntries.find((provider) => provider.driverKind === EXTENSIONS_CODEX_DRIVER) ??
-    providerEntries[0];
-  // Plugin icon files are served by whichever environment owns the selected project, and the
-  // project chip shows the same favicon the sidebar uses.
-  const environmentIdByCwd = useMemo(
-    () => new Map(projects.map((project) => [project.cwd, project.environmentId] as const)),
-    [projects],
-  );
-  const selectedEnvironmentId = environmentIdByCwd.get(cwd) ?? null;
+  const threadScopeProvider =
+    selectedProviderOption ??
+    providerOptions.find((provider) => provider.driver === EXTENSIONS_CODEX_DRIVER) ??
+    providerOptions[0];
+  // Plugin icon files are served by whichever machine owns the scope.
+  const selectedEnvironmentId = scopeEnvironmentId;
   const detectedProviderThreadId = useMemo(
     () =>
       deriveDetectedProviderThreadId({
         cwd,
-        providerDriver: threadScopeProviderEntry ? String(threadScopeProviderEntry.driverKind) : "",
-        providerInstanceId: threadScopeProviderEntry
-          ? String(threadScopeProviderEntry.instanceId)
-          : "",
+        providerDriver: threadScopeProvider?.driver ?? "",
+        providerInstanceId: threadScopeProvider?.value ?? "",
         projects: projects.map((project) => ({
           environmentId: project.environmentId,
           id: project.id,
@@ -4143,7 +4427,7 @@ export function ExtensionsSettingsPanel() {
           lastSeenAt: thread.lastSeenAt,
         })),
       }),
-    [cwd, projects, threadScopeProviderEntry, threads],
+    [cwd, projects, threadScopeProvider, threads],
   );
   const effectiveProviderThreadId = manualProviderThreadId.trim() || detectedProviderThreadId;
   const providerThreadContextSource = manualProviderThreadId.trim()
@@ -4160,11 +4444,12 @@ export function ExtensionsSettingsPanel() {
   const inventoryRequestKey = useMemo(
     () =>
       makeExtensionInventoryCacheKey({
-        cwd,
+        environmentId: scopeEnvironmentId ?? "",
+        cwd: scopeCwd,
         providerInstanceId: providerInstanceId || "all",
         providerThreadId: effectiveProviderThreadId,
       }) ?? "",
-    [cwd, effectiveProviderThreadId, providerInstanceId],
+    [effectiveProviderThreadId, providerInstanceId, scopeCwd, scopeEnvironmentId],
   );
   inventoryRequestKeyRef.current = inventoryRequestKey;
   const initialCachedInventory = inventoryRequestKey
@@ -4191,7 +4476,6 @@ export function ExtensionsSettingsPanel() {
     () => initialCachedInventory?.loadDurationMs ?? null,
   );
   const [error, setError] = useState<string | null>(null);
-  const projectProviderRef = useRef({ cwd, providerInstanceId });
   const mcpInventoryRequestedRef = useRef(initialMcpInventoryRequested);
   const appsInventoryRequestedRef = useRef(initialAppsInventoryRequested);
 
@@ -4216,59 +4500,44 @@ export function ExtensionsSettingsPanel() {
     setAppsLoadingProviderId(null);
   }, []);
 
+  // The resolved scope is what gets remembered, so a pick that lapsed does not
+  // come back on the next visit.
   useEffect(() => {
-    extensionsSettingsPanelMemoryState.cwd = cwd;
-  }, [cwd]);
+    extensionsSettingsPanelMemoryState.scope = scope ?? undefined;
+  }, [scope]);
 
   useEffect(() => {
-    extensionsSettingsPanelMemoryState.providerInstanceId = providerInstanceId;
-  }, [providerInstanceId]);
+    extensionsSettingsPanelMemoryState.providerFilter = providerFilter ?? undefined;
+  }, [providerFilter]);
 
   useEffect(() => {
-    extensionsSettingsPanelMemoryState.manualProviderThreadId = manualProviderThreadId;
-  }, [manualProviderThreadId]);
+    extensionsSettingsPanelMemoryState.manualThreadOverride = manualThreadOverride ?? undefined;
+  }, [manualThreadOverride]);
 
   useEffect(() => {
     extensionsSettingsPanelMemoryState.showAdvancedContext = showAdvancedContext;
   }, [showAdvancedContext]);
 
+  // Only this device's provider list is authoritative about this device. A remote
+  // scope's chips come from its own inventory, so nothing here may clear them.
   useEffect(() => {
-    if (!cwd && projectOptions[0]?.value) {
-      setCwd(projectOptions[0].value);
-    }
-  }, [cwd, projectOptions]);
-
-  useEffect(() => {
-    if (providerOptions.length === 0) {
-      if (serverConfig && providerInstanceId) {
-        setProviderInstanceId("");
+    if (!isPrimaryScope || !providerFilter) return;
+    if (localProviderOptions.length === 0) {
+      if (serverConfig) {
+        setProviderFilter(null);
         clearInventory();
       }
       return;
     }
-    if (
-      providerInstanceId &&
-      !providerOptions.some((provider) => provider.value === providerInstanceId)
-    ) {
-      setProviderInstanceId("");
+    if (!localProviderOptions.some((provider) => provider.value === providerFilter.instanceId)) {
+      setProviderFilter(null);
       clearInventory();
     }
-  }, [clearInventory, providerInstanceId, providerOptions, serverConfig]);
+  }, [clearInventory, isPrimaryScope, localProviderOptions, providerFilter, serverConfig]);
 
   useEffect(() => {
     setSelectedItem(null);
-  }, [cwd, providerInstanceId]);
-
-  useEffect(() => {
-    const previous = projectProviderRef.current;
-    projectProviderRef.current = { cwd, providerInstanceId };
-    if (previous.cwd === cwd && previous.providerInstanceId === providerInstanceId) {
-      return;
-    }
-
-    setManualProviderThreadId("");
-    setShowAdvancedContext(false);
-  }, [cwd, providerInstanceId]);
+  }, [providerInstanceId, scopeKey]);
 
   useEffect(() => {
     mcpInventoryRequestedRef.current = false;
@@ -4303,10 +4572,14 @@ export function ExtensionsSettingsPanel() {
       const requestId = refreshRequestRef.current + 1;
       refreshRequestRef.current = requestId;
       const requestKey = inventoryRequestKey;
-      const requestCwd = cwd.trim();
+      const requestCwd = scopeCwd?.trim() ?? "";
+      const requestEnvironmentId = scopeEnvironmentId;
       const includeMcpServers = options?.includeMcpServers ?? mcpInventoryRequestedRef.current;
       const includeApps = options?.includeApps ?? appsInventoryRequestedRef.current;
-      if (!requestCwd) {
+      // A machine scope has no cwd and is still a request; nothing to ask means no
+      // scope resolved yet, or a machine this client cannot currently reach.
+      const providersApi = readScopedProvidersApi(requestEnvironmentId);
+      if (!providersApi) {
         setInventory(null);
         setLastInventoryLoadMs(null);
         setError(null);
@@ -4327,8 +4600,10 @@ export function ExtensionsSettingsPanel() {
       }
       const startedMs = performance.now();
       try {
-        const result = await ensureLocalApi().server.getProviderExtensions({
-          cwd: requestCwd,
+        const result = await providersApi.getExtensions({
+          // No cwd is the machine-wide request: the server answers with the
+          // user-level inventory rather than any one project's.
+          ...(requestCwd ? { cwd: requestCwd } : {}),
           // An empty filter means "every configured provider"; the server already fans out when
           // no instance id is supplied.
           ...(providerInstanceId
@@ -4345,6 +4620,18 @@ export function ExtensionsSettingsPanel() {
           const loadDurationMs = performance.now() - startedMs;
           if (requestKey) {
             extensionInventoryCache.set(requestKey, result, loadDurationMs);
+          }
+          // An unfiltered load is the only one that sees every provider, so it is
+          // the only one allowed to redraw a remote machine's chips.
+          if (!providerInstanceId && requestEnvironmentId) {
+            setRemoteProviders({
+              environmentId: requestEnvironmentId,
+              options: result.providers.map((provider) => ({
+                value: String(provider.instanceId),
+                label: provider.displayName ?? String(provider.driver),
+                driver: String(provider.driver),
+              })),
+            });
           }
           setInventory(result);
           setSelectedItem((current) =>
@@ -4371,7 +4658,15 @@ export function ExtensionsSettingsPanel() {
         }
       }
     },
-    [cwd, effectiveProviderThreadId, inventoryRequestKey, providerInstanceId],
+    [
+      effectiveProviderThreadId,
+      inventoryRequestKey,
+      providerInstanceId,
+      scopeCwd,
+      scopeEnvironmentId,
+      // Not read here: it is what makes a reconnect retry the load.
+      scopeIsReachable,
+    ],
   );
 
   useEffect(() => {
@@ -4381,7 +4676,7 @@ export function ExtensionsSettingsPanel() {
   }, [manualProviderThreadId, refresh]);
 
   const hasInventory = inventory !== null;
-  const isInitialInventoryLoading = cwd.trim().length > 0 && !hasInventory && error === null;
+  const isInitialInventoryLoading = scopeIsReachable && !hasInventory && error === null;
   const selectedItemActionKey = selectedItem ? extensionItemActionKey(selectedItem) : null;
   const selectedItemLastAction = selectedItemActionKey
     ? actionHistoryByItem[selectedItemActionKey]
@@ -4518,327 +4813,314 @@ export function ExtensionsSettingsPanel() {
   }, [allMcpItems, providerScopedInventory]);
 
   return (
-    <SettingsPageContainer className="max-w-5xl">
-      {isInitialInventoryLoading ? (
-        <span className="sr-only" role="status">
-          Loading plugins and connections
-        </span>
-      ) : null}
-      <SettingsSection
-        title="Plugins"
-        icon={<PlugIcon className="size-3.5" />}
-        headerAction={
-          isLoading ? (
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <LoaderIcon className="size-3 animate-spin" />
-              Loading
-            </span>
-          ) : null
-        }
-      >
-        <div className="space-y-4 px-4 py-4 sm:px-5">
-          <p className="text-xs text-muted-foreground">
-            Plugins and connections available to Codex and Claude in this project.
-            {inventory?.generatedAt
-              ? ` Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
-                  lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
-                }.`
-              : ""}
-          </p>
-          <Input
-            nativeInput
-            value={pageQuery}
-            placeholder="Search plugins and connections"
-            aria-label="Search plugins and connections"
-            onChange={(event) => setPageQuery(event.currentTarget.value)}
-          />
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              size="xs"
-              variant={providerInstanceId ? "outline" : "default"}
-              onClick={() => setProviderInstanceId("")}
-            >
-              All providers
-            </Button>
-            {providerOptions.map((provider) => (
-              <Button
-                key={provider.value}
-                size="xs"
-                variant={providerInstanceId === provider.value ? "default" : "outline"}
-                onClick={() => setProviderInstanceId(provider.value)}
-              >
-                {provider.label}
-              </Button>
-            ))}
-            {projectOptions.length > 0 ? (
-              <Select
-                value={cwd}
-                onValueChange={(value) => {
-                  if (!value) return;
-                  setCwd(value);
-                  clearInventory({ loading: true });
-                }}
-              >
-                <SelectTrigger size="xs" className="w-auto min-w-32" aria-label="Project scope">
-                  <SelectValue>
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {selectedEnvironmentId ? (
-                        <ProjectFavicon
-                          environmentId={selectedEnvironmentId}
-                          cwd={cwd}
-                          name={
-                            projectOptions.find((project) => project.value === cwd)?.label ?? ""
-                          }
-                        />
-                      ) : null}
-                      <span className="truncate">
-                        {projectOptions.find((project) => project.value === cwd)?.label ??
-                          "Project"}
-                      </span>
-                    </span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="start" alignItemWithTrigger={false}>
-                  {projectOptions.map((project) => {
-                    const projectEnvironmentId = environmentIdByCwd.get(project.value);
-                    return (
-                      <SelectItem key={project.value} value={project.value}>
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          {projectEnvironmentId ? (
-                            <ProjectFavicon
-                              environmentId={projectEnvironmentId}
-                              cwd={project.value}
-                              name={project.label}
-                            />
-                          ) : null}
-                          <span className="truncate">{project.label}</span>
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectPopup>
-              </Select>
-            ) : null}
-            <Button
-              size="xs"
-              variant="outline"
-              className="ml-auto"
-              disabled={allPluginItems.length === 0}
-              onClick={() => setIsBrowsingCatalog(true)}
-            >
-              <SearchIcon className="size-3.5" />
-              Browse catalog
-            </Button>
-          </div>
-          {isInitialInventoryLoading ? (
-            <InstalledStripSkeleton />
-          ) : (
-            <InstalledStrip
-              items={searchedInstalledPlugins}
-              environmentId={selectedEnvironmentId}
-              onSelect={setSelectedItem}
-            />
-          )}
-          <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
-        </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title="Skills and apps"
-        icon={<FileTextIcon className="size-3.5" />}
-        headerAction={
-          hasInventory && isLoading ? (
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <LoaderIcon className="size-3 animate-spin" />
-              Refreshing
-            </span>
-          ) : null
-        }
-      >
+    <ExtensionsScopeContext.Provider value={scopeContextValue}>
+      <SettingsPageContainer className="max-w-5xl">
         {isInitialInventoryLoading ? (
-          <ProviderInventorySkeleton />
-        ) : inventory?.providers.length ? (
-          inventory.providers.map((provider) => (
-            <ProviderInventoryRow
-              environmentId={selectedEnvironmentId}
-              filterText={deferredPageQuery}
-              key={provider.instanceId}
-              provider={provider}
-              cwd={cwd}
-              onSelectItem={setSelectedItem}
-              onInventoryMutated={refreshAfterMutation}
-              onLoadMcpServers={loadMcpServers}
-              isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
-              onLoadApps={loadApps}
-              isLoadingApps={appsLoadingProviderId === String(provider.instanceId)}
+          <span className="sr-only" role="status">
+            Loading plugins and connections
+          </span>
+        ) : null}
+        <SettingsSection
+          title="Plugins"
+          icon={<PlugIcon className="size-3.5" />}
+          headerAction={
+            isLoading ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <LoaderIcon className="size-3 animate-spin" />
+                Loading
+              </span>
+            ) : null
+          }
+        >
+          <div className="space-y-4 px-4 py-4 sm:px-5">
+            <p className="text-xs text-muted-foreground">
+              {scopeCwd === null
+                ? "Plugins and connections available to Codex and Claude on this machine."
+                : "Plugins and connections available to Codex and Claude in this project."}
+              {inventory?.generatedAt
+                ? ` Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
+                    lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
+                  }.`
+                : ""}
+            </p>
+            {scope !== null && !scopeIsReachable ? (
+              <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
+            ) : null}
+            <Input
+              nativeInput
+              value={pageQuery}
+              placeholder="Search plugins and connections"
+              aria-label="Search plugins and connections"
+              onChange={(event) => setPageQuery(event.currentTarget.value)}
             />
-          ))
-        ) : (
-          <SettingsRow
-            title={
-              !cwd ? (
-                "No project selected"
-              ) : isLoading ? (
-                <span className="inline-flex items-center gap-2">
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                  Loading skills and apps
-                </span>
-              ) : error ? (
-                "Inventory failed to load"
-              ) : (
-                "No skills or apps reported"
-              )
-            }
-            description={
-              !cwd
-                ? "Choose a project to inspect its skills and apps."
-                : isLoading
-                  ? "Reading skills and apps from Codex and Claude."
-                  : error
-                    ? "The inventory could not be loaded. Details are shown above."
-                    : "Neither provider reported skills or apps for this project."
-            }
-          />
-        )}
-      </SettingsSection>
-
-      <SettingsSection
-        title="Connections"
-        icon={<DatabaseIcon className="size-3.5" />}
-        headerAction={
-          mcpAuthCheckProvider ? (
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={mcpLoadingProviderId !== null}
-              onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
-            >
-              {mcpLoadingProviderId !== null ? (
-                <LoaderIcon className="size-3.5 animate-spin" />
-              ) : (
-                <KeyRoundIcon className="size-3.5" />
-              )}
-              {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
-            </Button>
-          ) : null
-        }
-      >
-        <div className="px-4 py-3.5 sm:px-5">
-          {isInitialInventoryLoading ? (
-            <ConnectionsTableSkeleton />
-          ) : (
-            <ConnectionsTable
-              items={searchedConnections}
-              environmentId={selectedEnvironmentId}
-              isLoading={isLoading}
-              onSelect={setSelectedItem}
-            />
-          )}
-        </div>
-      </SettingsSection>
-
-      {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
-        <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
-          <div className="space-y-3 px-4 py-3.5 sm:px-5">
-            {providerScopedInventory.map((provider) => (
-              <MarketplacesBlock
-                key={provider.instanceId}
-                provider={provider}
-                cwd={cwd}
-                onMutated={refreshAfterMutation}
-              />
-            ))}
-          </div>
-        </SettingsSection>
-      ) : null}
-
-      <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
-        <SettingsRow
-          title="MCP context"
-          description={providerThreadContextDescription}
-          control={
-            <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-              <Badge
-                size="sm"
-                variant={providerThreadContextSource === "none" ? "outline" : "success"}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button
+                size="xs"
+                variant={providerInstanceId ? "outline" : "default"}
+                onClick={() => setProviderFilter(null)}
               >
-                {providerThreadContextSource === "manual"
-                  ? "Manual"
-                  : providerThreadContextSource === "auto"
-                    ? "Auto"
-                    : "No context"}
-              </Badge>
+                All providers
+              </Button>
+              {providerOptions.map((provider) => {
+                const ProviderGlyph = providerIconForDriverLabel(provider.driver);
+                return (
+                  <Button
+                    key={provider.value}
+                    size="xs"
+                    variant={providerInstanceId === provider.value ? "default" : "outline"}
+                    onClick={() => {
+                      if (!scopeEnvironmentId) return;
+                      setProviderFilter({
+                        environmentId: scopeEnvironmentId,
+                        instanceId: provider.value,
+                      });
+                    }}
+                  >
+                    {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
+                    {provider.label}
+                  </Button>
+                );
+              })}
+              {scopeGroups.length > 0 ? (
+                <ExtensionScopePicker
+                  groups={scopeGroups}
+                  scope={scope}
+                  onScopeChange={(next) => {
+                    setRememberedScope(next);
+                    setShowAdvancedContext(false);
+                    clearInventory({ loading: true });
+                  }}
+                />
+              ) : null}
               <Button
                 size="xs"
                 variant="outline"
-                onClick={() => setShowAdvancedContext((open) => !open)}
-                aria-expanded={showAdvancedContext}
+                className="ml-auto"
+                disabled={allPluginItems.length === 0}
+                onClick={() => setIsBrowsingCatalog(true)}
               >
-                <ChevronDownIcon
-                  className={`size-3.5 transition-transform ${showAdvancedContext ? "" : "-rotate-90"}`}
-                />
-                Advanced
+                <SearchIcon className="size-3.5" />
+                Browse catalog
               </Button>
             </div>
+            {isInitialInventoryLoading ? (
+              <InstalledStripSkeleton />
+            ) : (
+              <InstalledStrip
+                items={searchedInstalledPlugins}
+                environmentId={selectedEnvironmentId}
+                onSelect={setSelectedItem}
+              />
+            )}
+            <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
+          </div>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Skills and apps"
+          icon={<FileTextIcon className="size-3.5" />}
+          headerAction={
+            hasInventory && isLoading ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <LoaderIcon className="size-3 animate-spin" />
+                Refreshing
+              </span>
+            ) : null
           }
         >
-          {showAdvancedContext ? (
-            <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
-              <div className="min-w-0 space-y-1">
-                <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                  Detected context
-                </div>
-                <div
-                  className="truncate font-mono text-[11px] text-foreground/80"
-                  title={detectedProviderThreadId || undefined}
-                >
-                  {detectedProviderThreadId || "No active Codex thread detected"}
-                </div>
-                <p className="text-[11px] text-muted-foreground/70">
-                  Leave the override empty to use the detected active session.
-                </p>
-              </div>
-              <Input
-                nativeInput
-                value={manualProviderThreadId}
-                onChange={(event) => {
-                  setManualProviderThreadId(event.currentTarget.value);
-                  invalidateInventoryRefresh();
-                }}
-                placeholder="override provider thread id"
-                className="w-full"
-                aria-label="Override provider thread id"
+          {isInitialInventoryLoading ? (
+            <ProviderInventorySkeleton />
+          ) : inventory?.providers.length ? (
+            inventory.providers.map((provider) => (
+              <ProviderInventoryRow
+                environmentId={selectedEnvironmentId}
+                filterText={deferredPageQuery}
+                key={provider.instanceId}
+                provider={provider}
+                cwd={cwd}
+                onSelectItem={setSelectedItem}
+                onInventoryMutated={refreshAfterMutation}
+                onLoadMcpServers={loadMcpServers}
+                isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
+                onLoadApps={loadApps}
+                isLoadingApps={appsLoadingProviderId === String(provider.instanceId)}
               />
-            </div>
-          ) : null}
-        </SettingsRow>
-      </SettingsSection>
+            ))
+          ) : (
+            <SettingsRow
+              title={
+                !scopeIsReachable ? (
+                  scope === null ? (
+                    "No machine available"
+                  ) : (
+                    `${scopeMachineLabel} is not connected`
+                  )
+                ) : isLoading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                    Loading skills and apps
+                  </span>
+                ) : error ? (
+                  "Inventory failed to load"
+                ) : (
+                  "No skills or apps reported"
+                )
+              }
+              description={
+                !scopeIsReachable
+                  ? scope === null
+                    ? "Add a computer or a project to inspect skills and apps."
+                    : "Reconnect this machine to inspect its skills and apps."
+                  : isLoading
+                    ? "Reading skills and apps from Codex and Claude."
+                    : error
+                      ? "The inventory could not be loaded. Details are shown above."
+                      : scopeCwd === null
+                        ? "Neither provider reported skills or apps on this machine."
+                        : "Neither provider reported skills or apps for this project."
+              }
+            />
+          )}
+        </SettingsSection>
 
-      <ExtensionBrowserDialog
-        environmentId={selectedEnvironmentId}
-        section={isBrowsingCatalog ? catalogSection : null}
-        providerLabel={
-          providerInstanceId ? (selectedProviderEntry?.displayName ?? "") : "All providers"
-        }
-        initialQuery={pageQuery}
-        onClose={() => setIsBrowsingCatalog(false)}
-        onSelect={(item) => {
-          setIsBrowsingCatalog(false);
-          setSelectedItem(item);
-        }}
-        onToggleSkillBundle={async () => {}}
-      />
-      <ExtensionDetailDialog
-        item={selectedItem}
-        environmentId={selectedEnvironmentId}
-        cwd={cwd}
-        providerThreadId={effectiveProviderThreadId}
-        onClose={() => setSelectedItem(null)}
-        onSelectItem={setSelectedItem}
-        onInventoryMutated={refreshAfterMutation}
-        lastAction={selectedItemLastAction}
-        onActionHistoryChange={recordItemActionHistory}
-      />
-    </SettingsPageContainer>
+        <SettingsSection
+          title="Connections"
+          icon={<DatabaseIcon className="size-3.5" />}
+          headerAction={
+            mcpAuthCheckProvider ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={mcpLoadingProviderId !== null}
+                onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
+              >
+                {mcpLoadingProviderId !== null ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <KeyRoundIcon className="size-3.5" />
+                )}
+                {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
+              </Button>
+            ) : null
+          }
+        >
+          <div className="px-4 py-3.5 sm:px-5">
+            {isInitialInventoryLoading ? (
+              <ConnectionsTableSkeleton />
+            ) : (
+              <ConnectionsTable
+                items={searchedConnections}
+                environmentId={selectedEnvironmentId}
+                isLoading={isLoading}
+                onSelect={setSelectedItem}
+              />
+            )}
+          </div>
+        </SettingsSection>
+
+        {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
+          <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
+            <div className="space-y-3 px-4 py-3.5 sm:px-5">
+              {providerScopedInventory.map((provider) => (
+                <MarketplacesBlock
+                  key={provider.instanceId}
+                  provider={provider}
+                  cwd={cwd}
+                  onMutated={refreshAfterMutation}
+                />
+              ))}
+            </div>
+          </SettingsSection>
+        ) : null}
+
+        <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
+          <SettingsRow
+            title="MCP context"
+            description={providerThreadContextDescription}
+            control={
+              <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
+                <Badge
+                  size="sm"
+                  variant={providerThreadContextSource === "none" ? "outline" : "success"}
+                >
+                  {providerThreadContextSource === "manual"
+                    ? "Manual"
+                    : providerThreadContextSource === "auto"
+                      ? "Auto"
+                      : "No context"}
+                </Badge>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => setShowAdvancedContext((open) => !open)}
+                  aria-expanded={showAdvancedContext}
+                >
+                  <ChevronDownIcon
+                    className={`size-3.5 transition-transform ${showAdvancedContext ? "" : "-rotate-90"}`}
+                  />
+                  Advanced
+                </Button>
+              </div>
+            }
+          >
+            {showAdvancedContext ? (
+              <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
+                <div className="min-w-0 space-y-1">
+                  <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                    Detected context
+                  </div>
+                  <div
+                    className="truncate font-mono text-[11px] text-foreground/80"
+                    title={detectedProviderThreadId || undefined}
+                  >
+                    {detectedProviderThreadId || "No active Codex thread detected"}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground/70">
+                    Leave the override empty to use the detected active session.
+                  </p>
+                </div>
+                <Input
+                  nativeInput
+                  value={manualProviderThreadId}
+                  onChange={(event) => {
+                    setManualThreadOverride({ scopeKey, value: event.currentTarget.value });
+                    invalidateInventoryRefresh();
+                  }}
+                  placeholder="override provider thread id"
+                  className="w-full"
+                  aria-label="Override provider thread id"
+                />
+              </div>
+            ) : null}
+          </SettingsRow>
+        </SettingsSection>
+
+        <ExtensionBrowserDialog
+          environmentId={selectedEnvironmentId}
+          section={isBrowsingCatalog ? catalogSection : null}
+          providerLabel={
+            providerInstanceId ? (selectedProviderOption?.label ?? "") : "All providers"
+          }
+          initialQuery={pageQuery}
+          onClose={() => setIsBrowsingCatalog(false)}
+          onSelect={(item) => {
+            setIsBrowsingCatalog(false);
+            setSelectedItem(item);
+          }}
+          onToggleSkillBundle={async () => {}}
+        />
+        <ExtensionDetailDialog
+          item={selectedItem}
+          environmentId={selectedEnvironmentId}
+          cwd={cwd}
+          providerThreadId={effectiveProviderThreadId}
+          onClose={() => setSelectedItem(null)}
+          onSelectItem={setSelectedItem}
+          onInventoryMutated={refreshAfterMutation}
+          lastAction={selectedItemLastAction}
+          onActionHistoryChange={recordItemActionHistory}
+        />
+      </SettingsPageContainer>
+    </ExtensionsScopeContext.Provider>
   );
 }

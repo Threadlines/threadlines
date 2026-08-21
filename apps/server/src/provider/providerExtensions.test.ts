@@ -12,6 +12,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { homedir } from "node:os";
 import { PtyAdapter } from "./../terminal/Services/PTY.ts";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
@@ -1942,6 +1943,36 @@ Per-component (rounded)
         process.platform === "win32" ? '"team plugins"' : "team plugins",
       ]);
       assert.equal(calls[0]?.cwd, process.cwd());
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("runs a request without a cwd against the machine-wide home directory", () => {
+    const calls: Array<{ readonly cwd: string | undefined }> = [];
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly options: { readonly cwd?: string };
+      };
+      calls.push({ cwd: childProcess.options.cwd });
+      return Effect.succeed(makeProcessResult("marketplace updated"));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      yield* refreshProviderExtensionPluginMarketplaces({
+        request: {
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "custom-claude" },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+      });
+
+      assert.equal(calls[0]?.cwd, homedir());
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 

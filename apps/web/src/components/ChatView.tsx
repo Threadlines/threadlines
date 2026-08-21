@@ -3581,13 +3581,15 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
-      const api = readLocalApi();
-      if (!api) {
+      // The OAuth flow runs on the machine that owns this thread's provider; only
+      // the browser prompt opens locally, where the user is sitting.
+      const providersApi = readEnvironmentApi(environmentId)?.providers;
+      if (!providersApi) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Could not start MCP authorization",
-            description: "Local API unavailable.",
+            description: "This thread's machine is not connected.",
           }),
         );
         return;
@@ -3611,14 +3613,14 @@ export default function ChatView(props: ChatViewProps) {
           providerInstanceId,
           ...(activeWorkspaceRoot ? { cwd: activeWorkspaceRoot } : {}),
         };
-        const result = await api.server.startProviderExtensionMcpOAuth({
+        const result = await providersApi.startExtensionMcpOAuth({
           ...baseInput,
           serverName: action.serverName,
           timeoutSecs: 300,
         });
         fallbackCommand = result.terminalCommand || fallbackCommand;
         if (result.authorizationUrl) {
-          await api.shell.openExternal(result.authorizationUrl);
+          await ensureLocalApi().shell.openExternal(result.authorizationUrl);
         }
 
         const expiresAtMs = Date.parse(result.expiresAt);
@@ -3629,7 +3631,7 @@ export default function ChatView(props: ChatViewProps) {
 
         while (Date.now() < deadlineMs) {
           await wait(1_500);
-          const status = await api.server.getProviderExtensionOperationStatus({
+          const status = await providersApi.getExtensionOperationStatus({
             operationId: result.operationId,
           });
 
@@ -3643,7 +3645,7 @@ export default function ChatView(props: ChatViewProps) {
               [statusKey]: "completed",
             }));
             try {
-              await api.server.reloadProviderExtensionMcpServers(baseInput);
+              await providersApi.reloadExtensionMcpServers(baseInput);
               toastManager.add({
                 type: "success",
                 title: `${action.serverLabel} MCP authorized`,
@@ -3694,6 +3696,7 @@ export default function ChatView(props: ChatViewProps) {
       activeProviderInstanceId,
       activeProviderLabel,
       activeWorkspaceRoot,
+      environmentId,
       runProjectScript,
     ],
   );

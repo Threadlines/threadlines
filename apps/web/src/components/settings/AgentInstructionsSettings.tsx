@@ -7,7 +7,7 @@ import type {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { ensureLocalApi } from "../../localApi";
+import { readEnvironmentApi, useEnvironmentApiAvailable } from "../../environmentApi";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   selectSidebarThreadsAcrossEnvironments,
@@ -213,7 +213,18 @@ export function AgentInstructionsSettingsPanel() {
     [projects],
   );
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
+  // Instruction files live on the machine that owns the project, and the picker
+  // spans machines, so the API is resolved from the project rather than from
+  // whichever backend this client happens to be paired with. Resolved per call:
+  // the connection behind an environment is rebuilt on reconnect.
   const selectedProjectEnvironmentId = environmentIdByCwd.get(cwd);
+  const environmentApiAvailable = useEnvironmentApiAvailable(selectedProjectEnvironmentId);
+  const readProjectProvidersApi = useCallback(() => {
+    if (!selectedProjectEnvironmentId) return null;
+    return readEnvironmentApi(selectedProjectEnvironmentId)?.providers ?? null;
+    // `environmentApiAvailable` is not read here; it is what re-runs the load
+    // once a dropped machine comes back.
+  }, [environmentApiAvailable, selectedProjectEnvironmentId]);
   const [instructions, setInstructions] = useState<ProviderInstructionFilesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -250,7 +261,8 @@ export function AgentInstructionsSettingsPanel() {
 
   const refresh = useCallback(async () => {
     const requestCwd = cwd.trim();
-    if (!requestCwd) {
+    const providersApi = readProjectProvidersApi();
+    if (!requestCwd || !providersApi) {
       setInstructions(null);
       setInstructionDrafts({});
       setActiveFileKey(null);
@@ -264,7 +276,7 @@ export function AgentInstructionsSettingsPanel() {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await ensureLocalApi().server.getProviderInstructionFiles({ cwd: requestCwd });
+      const result = await providersApi.getInstructionFiles({ cwd: requestCwd });
       if (refreshRequestRef.current === requestId) {
         setInstructions(result);
       }
@@ -277,7 +289,7 @@ export function AgentInstructionsSettingsPanel() {
         setIsLoading(false);
       }
     }
-  }, [cwd]);
+  }, [cwd, readProjectProvidersApi]);
 
   useEffect(() => {
     void refresh();
@@ -368,7 +380,11 @@ export function AgentInstructionsSettingsPanel() {
       const contents = draft?.contents ?? file.contents ?? "";
       setSavingFileKey(key);
       try {
-        const result = await ensureLocalApi().server.writeProviderInstructionFile({
+        const providersApi = readProjectProvidersApi();
+        if (!providersApi) {
+          throw new Error("This project's machine is not connected.");
+        }
+        const result = await providersApi.writeInstructionFile({
           cwd: instructions?.cwd ?? cwd,
           kind: file.kind,
           contents,
@@ -406,7 +422,7 @@ export function AgentInstructionsSettingsPanel() {
         setSavingFileKey((current) => (current === key ? null : current));
       }
     },
-    [cwd, instructionDrafts, instructions?.cwd, updateInstructionFile],
+    [cwd, instructionDrafts, instructions?.cwd, readProjectProvidersApi, updateInstructionFile],
   );
 
   return (

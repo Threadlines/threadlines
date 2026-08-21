@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   ProviderExtensionApp,
   ProviderExtensionMcpServer,
   ProviderExtensionPluginComponent,
@@ -7,6 +8,9 @@ import type {
   ProviderExtensionProviderInventory,
   ProviderExtensionSkill,
 } from "@threadlines/contracts";
+
+import type { ThreadSortInput } from "../../lib/threadSort";
+import { sortScopedProjectsByActivity } from "../Sidebar.logic";
 
 export type ExtensionItemKind = "plugin" | "skill" | "mcp" | "app";
 
@@ -360,7 +364,9 @@ export interface ExtensionProviderThreadCandidate {
 }
 
 export interface ExtensionInventoryCacheKeyInput {
-  readonly cwd: string;
+  readonly environmentId: string;
+  /** `null` for a machine-wide scope, which asks the server for the user-level view. */
+  readonly cwd: string | null;
   readonly providerInstanceId: string;
   readonly providerThreadId?: string | undefined;
 }
@@ -377,16 +383,27 @@ export interface ExtensionInventoryMemoryCacheOptions {
   readonly nowMs?: () => number;
 }
 
+/**
+ * Two machines can root a project at the same path, so the environment is part of
+ * the identity of a cached inventory. An empty cwd is a machine-wide scope rather
+ * than a missing selection, so only the environment and provider are required.
+ */
 export function makeExtensionInventoryCacheKey({
+  environmentId,
   cwd,
   providerInstanceId,
   providerThreadId,
 }: ExtensionInventoryCacheKeyInput): string | null {
-  const cwdKey = normalizedCwdKey(cwd);
+  const environmentKey = environmentId.trim();
   const providerKey = providerInstanceId.trim();
-  if (!cwdKey || !providerKey) return null;
+  if (!environmentKey || !providerKey) return null;
 
-  return JSON.stringify([cwdKey, providerKey, providerThreadId?.trim() ?? ""]);
+  return JSON.stringify([
+    environmentKey,
+    normalizedCwdKey(cwd ?? ""),
+    providerKey,
+    providerThreadId?.trim() ?? "",
+  ]);
 }
 
 export function createExtensionInventoryMemoryCache<T>({
@@ -602,6 +619,139 @@ function parsedTime(value: string | undefined): number {
   if (!value) return 0;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : 0;
+}
+
+// ── Plugin scope ─────────────────────────────────────────────────────
+//
+// A plugin inventory is read by one machine, so a scope names both the machine
+// and, optionally, a project on it. Omitting the project asks that machine for
+// its user-level inventory. Two machines can root a project at the same path,
+// so a cwd alone never identifies a scope.
+
+export interface ExtensionScopeSelection {
+  readonly environmentId: EnvironmentId;
+  /** `null` selects the machine itself: every project, user-level installs. */
+  readonly cwd: string | null;
+}
+
+export interface ExtensionScopeProjectInput {
+  readonly id: string;
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly name: string;
+  readonly createdAt?: string | undefined;
+  readonly updatedAt?: string | undefined;
+}
+
+export interface ExtensionScopeMachineInput {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly isPrimary: boolean;
+}
+
+export interface ExtensionScopeProjectEntry {
+  readonly key: string;
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly label: string;
+}
+
+export interface ExtensionScopeGroup {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly isPrimary: boolean;
+  /** Key of this machine's own entry, the one that carries no project. */
+  readonly machineKey: string;
+  readonly projects: ReadonlyArray<ExtensionScopeProjectEntry>;
+}
+
+export function extensionScopeKey(scope: ExtensionScopeSelection): string {
+  return JSON.stringify([
+    scope.environmentId,
+    scope.cwd === null ? null : normalizedCwdKey(scope.cwd),
+  ]);
+}
+
+/**
+ * One group per machine, each holding that machine's projects newest-first.
+ * Machines with no projects still get a group: their user-level inventory is
+ * exactly what the machine entry is for.
+ */
+export function deriveExtensionScopeGroups(
+  projects: ReadonlyArray<ExtensionScopeProjectInput>,
+  threads: ReadonlyArray<
+    ThreadSortInput & {
+      readonly environmentId: string;
+      readonly projectId: string;
+      readonly archivedAt: string | null;
+    }
+  >,
+  machines: ReadonlyArray<ExtensionScopeMachineInput>,
+): ReadonlyArray<ExtensionScopeGroup> {
+  const projectsByEnvironment = new Map<EnvironmentId, ExtensionScopeProjectEntry[]>();
+  const seenCwdsByEnvironment = new Map<EnvironmentId, Set<string>>();
+
+  for (const project of sortScopedProjectsByActivity(projects, threads, "updated_at")) {
+    const cwd = project.cwd.trim();
+    if (!cwd) continue;
+
+    const seenCwds = seenCwdsByEnvironment.get(project.environmentId) ?? new Set<string>();
+    seenCwdsByEnvironment.set(project.environmentId, seenCwds);
+    const cwdKey = normalizedCwdKey(cwd);
+    if (seenCwds.has(cwdKey)) continue;
+    seenCwds.add(cwdKey);
+
+    const entry: ExtensionScopeProjectEntry = {
+      key: extensionScopeKey({ environmentId: project.environmentId, cwd }),
+      environmentId: project.environmentId,
+      cwd,
+      label: project.name,
+    };
+    const entries = projectsByEnvironment.get(project.environmentId) ?? [];
+    projectsByEnvironment.set(project.environmentId, entries);
+    entries.push(entry);
+  }
+
+  // Projects can be streamed in before their machine lands in the registry.
+  // Naming the group after the environment keeps them pickable meanwhile.
+  const knownEnvironmentIds = new Set(machines.map((machine) => machine.environmentId));
+  const unregisteredMachines = [...projectsByEnvironment.keys()]
+    .filter((environmentId) => !knownEnvironmentIds.has(environmentId))
+    .toSorted((left, right) => left.localeCompare(right))
+    .map((environmentId) => ({ environmentId, label: environmentId, isPrimary: false }));
+
+  return [...machines, ...unregisteredMachines].map((machine) => ({
+    environmentId: machine.environmentId,
+    label: machine.label,
+    isPrimary: machine.isPrimary,
+    machineKey: extensionScopeKey({ environmentId: machine.environmentId, cwd: null }),
+    projects: projectsByEnvironment.get(machine.environmentId) ?? [],
+  }));
+}
+
+/**
+ * The scope actually in force. A remembered pick survives only while it still
+ * names something: a machine that dropped off, or a project that was removed,
+ * falls back rather than pinning the panel to a scope nothing can answer. With
+ * nothing remembered, the panel opens on this device's machine-wide view rather
+ * than singling out any one project.
+ */
+export function resolveExtensionScope(
+  groups: ReadonlyArray<ExtensionScopeGroup>,
+  remembered: ExtensionScopeSelection | null,
+): ExtensionScopeSelection | null {
+  if (remembered) {
+    const group = groups.find((entry) => entry.environmentId === remembered.environmentId);
+    if (group) {
+      if (remembered.cwd === null) return { environmentId: group.environmentId, cwd: null };
+      const rememberedKey = extensionScopeKey(remembered);
+      const project = group.projects.find((entry) => entry.key === rememberedKey);
+      if (project) return { environmentId: project.environmentId, cwd: project.cwd };
+    }
+  }
+
+  const primaryGroup = groups.find((group) => group.isPrimary) ?? groups[0];
+  return primaryGroup ? { environmentId: primaryGroup.environmentId, cwd: null } : null;
 }
 
 export function deriveDetectedProviderThreadId({

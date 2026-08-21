@@ -12,6 +12,7 @@ import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
@@ -118,6 +119,18 @@ const MAX_SKILL_ROOT_SCAN_DEPTH = 6;
 const MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DIRECTORIES = 400;
 const MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DEPTH = 5;
 const MAX_ERROR_MESSAGE_LENGTH = 240;
+
+/**
+ * Where a request without a `cwd` runs. Omitting `cwd` means "machine-wide": the
+ * user-level view of what a provider has installed, independent of any project.
+ * The home directory is the only cwd that answers that question. `process.cwd()`
+ * would instead report the project-level config of whatever folder the server
+ * happened to be launched from, which is a different machine's-worth of noise
+ * every time the server starts somewhere new.
+ */
+function machineScopeCwd(): string {
+  return homedir();
+}
 
 const CLAUDE_NESTED_SKILL_ROOT_SKIP_DIRECTORIES = new Set([
   ".git",
@@ -1199,7 +1212,7 @@ const resolveCodexActionContext = Effect.fn("providerExtensions.resolveCodexActi
     ProviderExtensionsError,
     FileSystem.FileSystem | Path.Path
   > {
-    const cwd = input.cwd ?? process.cwd();
+    const cwd = input.cwd ?? machineScopeCwd();
     const providerConfig = yield* resolveProviderActionConfig(input);
     if (providerConfig.driver !== CODEX_DRIVER) {
       return yield* new ProviderExtensionsError({
@@ -1250,7 +1263,7 @@ const resolveClaudeActionContext = Effect.fn("providerExtensions.resolveClaudeAc
     readonly providerInstanceId: ProviderInstanceId;
     readonly settings: ServerSettings;
   }): Effect.fn.Return<ClaudeProviderExtensionActionContext, ProviderExtensionsError, Path.Path> {
-    const cwd = input.cwd ?? process.cwd();
+    const cwd = input.cwd ?? machineScopeCwd();
     const providerConfig = yield* resolveProviderActionConfig(input);
     if (providerConfig.driver !== CLAUDE_DRIVER) {
       return yield* new ProviderExtensionsError({
@@ -4262,7 +4275,7 @@ export const readProviderExtensionsInventory = Effect.fn(
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
   const generatedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
-  const cwd = input.request.cwd ?? process.cwd();
+  const cwd = input.request.cwd ?? machineScopeCwd();
   const configMap = deriveProviderInstanceConfigMap(input.settings);
   const snapshotsByInstanceId = new Map(
     input.providers.map((provider) => [provider.instanceId, provider]),

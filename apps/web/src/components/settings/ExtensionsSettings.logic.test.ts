@@ -1,9 +1,12 @@
+import type { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildExtensionJsonSchemaFormArguments,
   createExtensionInventoryMemoryCache,
   deriveDetectedProviderThreadId,
+  deriveExtensionScopeGroups,
+  resolveExtensionScope,
   deriveExtensionJsonSchemaFormFields,
   deriveExtensionPluginGroupLabel,
   deriveExtensionSkillBundleKey,
@@ -246,25 +249,58 @@ describe("ExtensionsSettings logic", () => {
     ).toBe("bundle:cloudflare@openai-curated");
   });
 
-  it("builds stable extension inventory cache keys from project, provider, and context", () => {
+  it("builds stable extension inventory cache keys from machine, project, provider, and context", () => {
     expect(
       makeExtensionInventoryCacheKey({
+        environmentId: "env-local",
         cwd: "C:\\Repo\\BadCode",
         providerInstanceId: "codex",
         providerThreadId: "thread-1",
       }),
     ).toBe(
       makeExtensionInventoryCacheKey({
+        environmentId: "env-local",
         cwd: "c:/repo/badcode",
         providerInstanceId: "codex",
         providerThreadId: "thread-1",
       }),
     );
 
+    // Same path on two machines is two inventories.
     expect(
       makeExtensionInventoryCacheKey({
+        environmentId: "env-remote",
+        cwd: "/srv/app",
+        providerInstanceId: "codex",
+      }),
+    ).not.toBe(
+      makeExtensionInventoryCacheKey({
+        environmentId: "env-local",
+        cwd: "/srv/app",
+        providerInstanceId: "codex",
+      }),
+    );
+
+    // A machine-wide scope is cacheable; a missing provider is not.
+    expect(
+      makeExtensionInventoryCacheKey({
+        environmentId: "env-local",
+        cwd: null,
+        providerInstanceId: "codex",
+      }),
+    ).not.toBeNull();
+    expect(
+      makeExtensionInventoryCacheKey({
+        environmentId: "env-local",
         cwd: "/Users/demo/project",
         providerInstanceId: "",
+      }),
+    ).toBeNull();
+    expect(
+      makeExtensionInventoryCacheKey({
+        environmentId: "",
+        cwd: "/Users/demo/project",
+        providerInstanceId: "codex",
       }),
     ).toBeNull();
   });
@@ -534,5 +570,92 @@ describe("ExtensionsSettings logic", () => {
         ),
       }),
     ).toBeNull();
+  });
+});
+
+describe("ExtensionsSettings scope", () => {
+  const environmentId = (value: string) => value as EnvironmentId;
+  const machines = [
+    { environmentId: environmentId("env-local"), label: "This device", isPrimary: true },
+    { environmentId: environmentId("env-remote"), label: "Studio", isPrimary: false },
+  ];
+  const projects = [
+    {
+      id: "p1",
+      environmentId: environmentId("env-local"),
+      cwd: "/repo/alpha",
+      name: "Alpha",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      id: "p2",
+      environmentId: environmentId("env-local"),
+      cwd: "/repo/beta",
+      name: "Beta",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    },
+    // Same path as a local project, on a different machine: a distinct scope.
+    {
+      id: "p3",
+      environmentId: environmentId("env-remote"),
+      cwd: "/repo/alpha",
+      name: "Alpha (studio)",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+    },
+  ];
+
+  it("groups projects by machine, newest first, keyed by machine and path", () => {
+    const groups = deriveExtensionScopeGroups(projects, [], machines);
+
+    expect(
+      groups.map((group) => [group.label, group.projects.map((project) => project.label)]),
+    ).toEqual([
+      ["This device", ["Beta", "Alpha"]],
+      ["Studio", ["Alpha (studio)"]],
+    ]);
+    expect(groups[0]?.projects[1]?.key).not.toBe(groups[1]?.projects[0]?.key);
+    expect(groups[0]?.machineKey).not.toBe(groups[1]?.machineKey);
+  });
+
+  it("keeps a machine group for a machine with no projects", () => {
+    const groups = deriveExtensionScopeGroups([], [], machines);
+
+    expect(groups.map((group) => group.projects.length)).toEqual([0, 0]);
+  });
+
+  it("restores a remembered scope and falls back when it stops existing", () => {
+    const groups = deriveExtensionScopeGroups(projects, [], machines);
+
+    expect(
+      resolveExtensionScope(groups, {
+        environmentId: environmentId("env-remote"),
+        cwd: "/repo/alpha",
+      }),
+    ).toEqual({ environmentId: "env-remote", cwd: "/repo/alpha" });
+    expect(
+      resolveExtensionScope(groups, { environmentId: environmentId("env-remote"), cwd: null }),
+    ).toEqual({ environmentId: "env-remote", cwd: null });
+
+    // Project removed from that machine: fall back to this device, all projects.
+    expect(
+      resolveExtensionScope(groups, {
+        environmentId: environmentId("env-local"),
+        cwd: "/repo/gone",
+      }),
+    ).toEqual({ environmentId: "env-local", cwd: null });
+    // Machine gone entirely.
+    expect(
+      resolveExtensionScope(groups, { environmentId: environmentId("env-gone"), cwd: null }),
+    ).toEqual({ environmentId: "env-local", cwd: null });
+  });
+
+  it("defaults to the primary machine's all-projects view", () => {
+    expect(resolveExtensionScope(deriveExtensionScopeGroups(projects, [], machines), null)).toEqual(
+      {
+        environmentId: "env-local",
+        cwd: null,
+      },
+    );
+    expect(resolveExtensionScope(deriveExtensionScopeGroups([], [], []), null)).toBeNull();
   });
 });

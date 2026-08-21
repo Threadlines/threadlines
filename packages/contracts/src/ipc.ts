@@ -1173,6 +1173,57 @@ export interface EnvironmentApi {
     getExtensions: (
       input: ProviderExtensionsInventoryInput,
     ) => Promise<ProviderExtensionsInventoryResult>;
+    startExtensionMcpOAuth: (
+      input: ProviderExtensionMcpOAuthStartInput,
+    ) => Promise<ProviderExtensionMcpOAuthStartResult>;
+    getExtensionOperationStatus: (
+      input: ProviderExtensionOperationStatusInput,
+    ) => Promise<ProviderExtensionOperationStatusResult>;
+    reloadExtensionMcpServers: (
+      input: ProviderExtensionMcpReloadInput,
+    ) => Promise<ProviderExtensionMcpReloadResult>;
+    setExtensionSkillEnabled: (
+      input: ProviderExtensionSkillToggleInput,
+    ) => Promise<ProviderExtensionSkillToggleResult>;
+    readExtensionSkill: (
+      input: ProviderExtensionSkillReadInput,
+    ) => Promise<ProviderExtensionSkillReadResult>;
+    readExtensionPlugin: (
+      input: ProviderExtensionPluginReadInput,
+    ) => Promise<ProviderExtensionPluginReadResult>;
+    installExtensionPlugin: (
+      input: ProviderExtensionPluginInstallInput,
+    ) => Promise<ProviderExtensionPluginInstallResult>;
+    uninstallExtensionPlugin: (
+      input: ProviderExtensionPluginUninstallInput,
+    ) => Promise<ProviderExtensionPluginUninstallResult>;
+    setExtensionPluginEnabled: (
+      input: ProviderExtensionPluginToggleInput,
+    ) => Promise<ProviderExtensionPluginToggleResult>;
+    updateExtensionPlugin: (
+      input: ProviderExtensionPluginUpdateInput,
+    ) => Promise<ProviderExtensionPluginUpdateResult>;
+    refreshExtensionPluginMarketplaces: (
+      input: ProviderExtensionPluginMarketplaceRefreshInput,
+    ) => Promise<ProviderExtensionPluginMarketplaceRefreshResult>;
+    addExtensionMarketplace: (
+      input: ProviderExtensionMarketplaceAddInput,
+    ) => Promise<ProviderExtensionMarketplaceAddResult>;
+    removeExtensionMarketplace: (
+      input: ProviderExtensionMarketplaceRemoveInput,
+    ) => Promise<ProviderExtensionMarketplaceRemoveResult>;
+    callExtensionMcpTool: (
+      input: ProviderExtensionMcpToolCallInput,
+    ) => Promise<ProviderExtensionMcpToolCallResult>;
+    readExtensionMcpResource: (
+      input: ProviderExtensionMcpResourceReadInput,
+    ) => Promise<ProviderExtensionMcpResourceReadResult>;
+    getInstructionFiles: (
+      input: ProviderInstructionFilesInput,
+    ) => Promise<ProviderInstructionFilesResult>;
+    writeInstructionFile: (
+      input: ProviderInstructionWriteInput,
+    ) => Promise<ProviderInstructionWriteResult>;
   };
   attachments: {
     read: (input: ChatAttachmentReadInput) => Promise<ChatAttachmentReadResult>;
