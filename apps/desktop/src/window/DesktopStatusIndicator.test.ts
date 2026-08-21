@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import { afterEach, vi } from "vite-plus/test";
 
 import type { DesktopMenuActionPayload } from "@threadlines/contracts";
@@ -11,6 +12,7 @@ import type * as Electron from "electron";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTray from "../electron/ElectronTray.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -147,6 +149,9 @@ const makeDesktopWindowLayer = (input: {
     activate: Effect.void,
     createMainIfBackendReady: Effect.void,
     handleBackendReady: Effect.void,
+    allowMainWindowClose: Effect.void,
+    requestQuitConfirmation: () => Effect.succeed(false),
+    resolveQuitConfirmation: () => Effect.void,
     dispatchMenuAction: (action, payload) =>
       Effect.sync(() => {
         input.dispatchedActions.push(payload === undefined ? { action } : { action, payload });
@@ -162,6 +167,7 @@ function makeTestLayer(input: {
   readonly window: Electron.BrowserWindow;
 }) {
   return DesktopStatusIndicator.layer.pipe(
+    Layer.provideMerge(DesktopState.layer),
     Layer.provideMerge(makeElectronAppLayer(input.appCalls)),
     Layer.provideMerge(makeElectronTrayLayer(input.trayCalls)),
     Layer.provideMerge(makeElectronWindowLayer(input.window)),
@@ -282,12 +288,14 @@ describe("DesktopStatusIndicator", () => {
 
       yield* Effect.gen(function* () {
         const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+        const state = yield* DesktopState.DesktopState;
         yield* indicator.configure;
         yield* indicator.setStatus({
           status: "working",
           description: "2 threads are working",
           runningThreadCount: 2,
         });
+        assert.equal(yield* Ref.get(state.runningThreadCount), 2);
         yield* indicator.setStatus({
           status: "working",
           description: "2 threads are working",
@@ -298,6 +306,7 @@ describe("DesktopStatusIndicator", () => {
           description: "3 threads completed",
           completedThreadCount: 3,
         });
+        assert.equal(yield* Ref.get(state.runningThreadCount), 0);
         yield* indicator.setStatus({ status: "idle", description: "No threads are working" });
       }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window, platform: "win32" })));
 

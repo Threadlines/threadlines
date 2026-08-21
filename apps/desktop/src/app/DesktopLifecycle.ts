@@ -11,6 +11,7 @@ import type * as Electron from "electron";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopState from "./DesktopState.ts";
@@ -53,6 +54,7 @@ export type DesktopLifecycleRuntimeServices =
   | DesktopState.DesktopState
   | DesktopWindow.DesktopWindow
   | ElectronApp.ElectronApp
+  | ElectronDialog.ElectronDialog
   | ElectronTheme.ElectronTheme;
 
 export interface DesktopLifecycleShape {
@@ -106,6 +108,46 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
   },
 );
 
+export const confirmQuitWithRunningAgentSessions = Effect.fn(
+  "desktop.lifecycle.confirmQuitWithRunningAgentSessions",
+)(function* (): Effect.fn.Return<
+  boolean,
+  never,
+  DesktopState.DesktopState | DesktopWindow.DesktopWindow | ElectronDialog.ElectronDialog
+> {
+  const state = yield* DesktopState.DesktopState;
+  if (yield* Ref.get(state.quitting)) {
+    return true;
+  }
+
+  const runningThreadCount = yield* Ref.get(state.runningThreadCount);
+  if (!Number.isFinite(runningThreadCount) || runningThreadCount <= 0) return true;
+
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  return yield* desktopWindow.requestQuitConfirmation(runningThreadCount).pipe(
+    Effect.catch(() =>
+      Effect.gen(function* () {
+        const electronDialog = yield* ElectronDialog.ElectronDialog;
+        const message =
+          runningThreadCount === 1
+            ? "An agent session is still running."
+            : `${runningThreadCount} agent sessions are still running.`;
+        const result = yield* electronDialog.showMessageBox({
+          type: "warning",
+          title: "Quit Threadlines?",
+          message,
+          detail: "Quitting now will stop the local Threadlines server and any running agent work.",
+          buttons: ["Keep Running", "Quit Anyway"],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        return result.response === 1;
+      }),
+    ),
+  );
+});
+
 /**
  * Requests shutdown and waits for it, but never forever: on timeout the process
  * is forced down so it cannot linger holding the single-instance lock. A
@@ -131,6 +173,8 @@ function handleBeforeQuit(
   runEffect: <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) => Promise<A>,
   allowQuit: () => boolean,
   markQuitAllowed: () => void,
+  quitRequestPending: () => boolean,
+  markQuitRequestPending: (pending: boolean) => void,
 ): void {
   if (allowQuit()) {
     void runEffect(
@@ -144,22 +188,41 @@ function handleBeforeQuit(
   }
 
   event.preventDefault();
+  if (quitRequestPending()) return;
+  markQuitRequestPending(true);
   void runEffect(
     Effect.gen(function* () {
+      const shouldQuit = yield* confirmQuitWithRunningAgentSessions();
+      if (!shouldQuit) {
+        yield* logLifecycleInfo("before-quit canceled because agent sessions are running");
+        return false;
+      }
       const state = yield* DesktopState.DesktopState;
       yield* Ref.set(state.quitting, true);
       yield* logLifecycleInfo("before-quit received");
       yield* requestDesktopShutdownAndWaitWithFailsafe();
+      return true;
     }).pipe(Effect.withSpan("desktop.lifecycle.beforeQuit")),
-  ).finally(() => {
-    markQuitAllowed();
-    void runEffect(
-      Effect.gen(function* () {
-        const electronApp = yield* ElectronApp.ElectronApp;
-        yield* electronApp.quit;
-      }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterShutdown")),
-    );
-  });
+  )
+    .then((shouldQuit) => {
+      if (!shouldQuit) return;
+      markQuitAllowed();
+      void runEffect(
+        Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          const electronApp = yield* ElectronApp.ElectronApp;
+          yield* desktopWindow.allowMainWindowClose;
+          yield* electronApp.quit;
+        }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterShutdown")),
+      );
+    })
+    .catch(() => {
+      // A dialog failure should leave the app open; the original quit event was
+      // already canceled.
+    })
+    .finally(() => {
+      markQuitRequestPending(false);
+    });
 }
 
 function quitFromSignal(
@@ -219,6 +282,7 @@ export const layer = Layer.succeed(
       const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
       const runEffect = Effect.runPromiseWith(context);
       let quitAllowed = false;
+      let quitRequestPending = false;
       yield* electronTheme.onUpdated(() => {
         void runEffect(
           desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
@@ -231,6 +295,10 @@ export const layer = Layer.succeed(
           () => quitAllowed,
           () => {
             quitAllowed = true;
+          },
+          () => quitRequestPending,
+          (pending) => {
+            quitRequestPending = pending;
           },
         );
       });

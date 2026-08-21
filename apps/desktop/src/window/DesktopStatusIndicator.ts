@@ -4,8 +4,10 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import type * as Electron from "electron";
 
+import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -142,6 +144,7 @@ const make = Effect.gen(function* () {
   const electronTray = yield* ElectronTray.ElectronTray;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const state = yield* DesktopState.DesktopState;
   const context = yield* Effect.context<DesktopStatusIndicatorRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
   const appName = environment.displayName;
@@ -543,6 +546,10 @@ const make = Effect.gen(function* () {
     configure,
     setStatus: Effect.fn("desktop.status.setStatus")(function* (input) {
       currentStatus = input;
+      yield* Ref.set(
+        state.runningThreadCount,
+        input.status === "working" ? Math.max(1, normalizeRunningThreadCount(input)) : 0,
+      );
       yield* applyWindowsStatus(input);
       yield* applyMacStatus(input);
       yield* updateTray();

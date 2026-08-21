@@ -136,6 +136,9 @@ function makeManagerLayer(input: {
           activate: Effect.void,
           createMainIfBackendReady: Effect.void,
           handleBackendReady: Effect.void,
+          allowMainWindowClose: Effect.void,
+          requestQuitConfirmation: () => Effect.succeed(false),
+          resolveQuitConfirmation: () => Effect.void,
           dispatchMenuAction: () => Effect.void,
           syncAppearance: Effect.void,
           ...input.desktopWindow,
@@ -376,6 +379,7 @@ describe("DesktopBackendManager", () => {
       const ready = yield* Deferred.make<void>();
       const backendReady = yield* Ref.make(false);
       const quitting = yield* Ref.make(false);
+      const runningThreadCount = yield* Ref.make(0);
 
       const spawnerLayer = Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
@@ -403,6 +407,7 @@ describe("DesktopBackendManager", () => {
         desktopState: {
           backendReady,
           quitting,
+          runningThreadCount,
         },
         desktopWindow: {
           handleBackendReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),

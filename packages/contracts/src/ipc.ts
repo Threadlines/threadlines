@@ -366,6 +366,14 @@ export interface DesktopTaskbarStatusInput {
   threads?: readonly DesktopTaskbarThreadSummary[];
 }
 
+export interface DesktopQuitConfirmationRequest {
+  runningThreadCount: number;
+}
+
+export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
+  runningThreadCount: Schema.Number,
+});
+
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
   description: Schema.optionalKey(Schema.String),
@@ -987,6 +995,10 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
   setTaskbarStatus?: (input: DesktopTaskbarStatusInput) => Promise<void>;
+  onQuitConfirmationRequested?: (
+    listener: (request: DesktopQuitConfirmationRequest) => void,
+  ) => () => void;
+  resolveQuitConfirmation?: (confirmed: boolean) => Promise<void>;
   onMenuAction: (
     listener: (action: string, payload?: DesktopMenuActionPayload) => void,
   ) => () => void;

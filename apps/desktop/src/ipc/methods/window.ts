@@ -23,6 +23,7 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod, makeSyncIpcMethod } from "../DesktopIpc.ts";
 import * as DesktopStatusIndicator from "../../window/DesktopStatusIndicator.ts";
+import * as DesktopWindow from "../../window/DesktopWindow.ts";
 
 const ContextMenuPosition = Schema.Struct({
   x: Schema.Number,
@@ -134,6 +135,16 @@ export const setTaskbarStatus = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.setTaskbarStatus")(function* (input) {
     const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
     yield* statusIndicator.setStatus(input);
+  }),
+});
+
+export const resolveQuitConfirmation = makeIpcMethod({
+  channel: IpcChannels.QUIT_CONFIRMATION_RESOLVE_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.resolveQuitConfirmation")(function* (confirmed) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.resolveQuitConfirmation(confirmed);
   }),
 });
 

@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -15,6 +16,7 @@ import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
@@ -81,6 +83,13 @@ function makeFakeBrowserWindow(input?: {
       return window;
     }),
     once: vi.fn(),
+    removeListener: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
+      windowHandlers.set(
+        eventName,
+        (windowHandlers.get(eventName) ?? []).filter((handler) => handler !== listener),
+      );
+      return window;
+    }),
     restore: vi.fn(),
     setBackgroundColor: vi.fn(),
     setContentSize: vi.fn(),
@@ -194,7 +203,20 @@ function makeTestLayer(input: {
   readonly electronMenu?: ElectronMenu.ElectronMenuShape;
   readonly electronShell?: ElectronShell.ElectronShellShape;
   readonly electronSpelling?: ElectronSpelling.ElectronSpellingShape;
+  readonly appQuitCalls?: Ref.Ref<number>;
+  readonly initialRunningThreadCount?: number;
 }) {
+  const desktopStateLayer =
+    input.initialRunningThreadCount === undefined
+      ? DesktopState.layer
+      : Layer.effect(
+          DesktopState.DesktopState,
+          Effect.all({
+            backendReady: Ref.make(false),
+            quitting: Ref.make(false),
+            runningThreadCount: Ref.make(input.initialRunningThreadCount),
+          }),
+        );
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     workAreaSize: Effect.succeed({ width: 1920, height: 1080 }),
     create: (options) =>
@@ -222,8 +244,29 @@ function makeTestLayer(input: {
         desktopAssetsLayer,
         makeDesktopEnvironmentLayer(input.platform, input.env),
         desktopServerExposureLayer,
-        DesktopState.layer,
+        desktopStateLayer,
         NodeServices.layer,
+        Layer.succeed(ElectronApp.ElectronApp, {
+          metadata: Effect.die("unexpected metadata read"),
+          name: Effect.succeed("Threadlines"),
+          whenReady: Effect.void,
+          quit: input.appQuitCalls
+            ? Ref.update(input.appQuitCalls, (count) => count + 1)
+            : Effect.void,
+          exit: () => Effect.void,
+          relaunch: () => Effect.void,
+          setPath: () => Effect.void,
+          setName: () => Effect.void,
+          setAboutPanelOptions: () => Effect.void,
+          setAppUserModelId: () => Effect.void,
+          setDesktopName: () => Effect.void,
+          setDockIcon: () => Effect.void,
+          setDockBadge: () => Effect.void,
+          bounceDock: () => Effect.die("unexpected dock bounce"),
+          cancelDockBounce: () => Effect.void,
+          appendCommandLineSwitch: () => Effect.void,
+          on: () => Effect.void,
+        } satisfies ElectronApp.ElectronAppShape),
         input.electronMenu
           ? Layer.succeed(ElectronMenu.ElectronMenu, input.electronMenu)
           : electronMenuLayer,
@@ -703,6 +746,66 @@ describe("DesktopWindow", () => {
         assert.equal(fakeWindow.maximize.mock.calls.length, 1);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps the main window open while a running-session quit is confirmed", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow({
+        bounds: { x: 0, y: 0, width: Number.NaN, height: 780 },
+      });
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const appQuitCalls = yield* Ref.make(0);
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        appQuitCalls,
+        initialRunningThreadCount: 1,
+        platform: "win32",
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const blockedClose = { preventDefault: vi.fn() };
+        fakeWindow.emitWindow("close", blockedClose);
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+        assert.equal(blockedClose.preventDefault.mock.calls.length, 1);
+        assert.equal(yield* Ref.get(appQuitCalls), 1);
+
+        yield* desktopWindow.allowMainWindowClose;
+        const allowedClose = { preventDefault: vi.fn() };
+        fakeWindow.emitWindow("close", allowedClose);
+        assert.equal(allowedClose.preventDefault.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("round-trips a styled quit confirmation through the renderer", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+        const confirmation = yield* Effect.forkChild(desktopWindow.requestQuitConfirmation(2));
+        yield* waitForMockCalls(fakeWindow.send);
+
+        assert.deepEqual(fakeWindow.send.mock.calls[0], [
+          "desktop:quit-confirmation-request",
+          { runningThreadCount: 2 },
+        ]);
+
+        yield* desktopWindow.resolveQuitConfirmation(true);
+        assert.equal(yield* Fiber.join(confirmation), true);
+      }).pipe(Effect.provide(layer));
+    }),
   );
 
   it("uses normal bounds when a maximized window is persisted", () => {

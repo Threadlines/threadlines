@@ -3,6 +3,7 @@ import { PREVIEW_PARTITION } from "@threadlines/shared/preview";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -18,6 +19,7 @@ import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
@@ -68,6 +70,7 @@ type DesktopWindowRuntimeServices =
   | DesktopAssets.DesktopAssets
   | DesktopServerExposure.DesktopServerExposure
   | DesktopState.DesktopState
+  | ElectronApp.ElectronApp
   | FileSystem.FileSystem
   | ElectronMenu.ElectronMenu
   | ElectronGlobalShortcut.ElectronGlobalShortcut
@@ -85,8 +88,17 @@ export class DesktopWindowDevServerUrlMissingError extends Data.TaggedError(
   }
 }
 
+export class DesktopWindowQuitConfirmationError extends Data.TaggedError(
+  "DesktopWindowQuitConfirmationError",
+)<{ readonly cause: unknown }> {
+  override get message() {
+    return "Failed to open the quit confirmation dialog.";
+  }
+}
+
 export type DesktopWindowError =
   | DesktopWindowDevServerUrlMissingError
+  | DesktopWindowQuitConfirmationError
   | ElectronWindow.ElectronWindowCreateError;
 
 export interface DesktopWindowShape {
@@ -96,6 +108,11 @@ export interface DesktopWindowShape {
   readonly activate: Effect.Effect<void, DesktopWindowError>;
   readonly createMainIfBackendReady: Effect.Effect<void, DesktopWindowError>;
   readonly handleBackendReady: Effect.Effect<void, DesktopWindowError>;
+  readonly allowMainWindowClose: Effect.Effect<void>;
+  readonly requestQuitConfirmation: (
+    runningThreadCount: number,
+  ) => Effect.Effect<boolean, DesktopWindowError>;
+  readonly resolveQuitConfirmation: (confirmed: boolean) => Effect.Effect<void>;
   readonly dispatchMenuAction: (
     action: string,
     payload?: DesktopMenuActionPayload,
@@ -364,6 +381,7 @@ const make = Effect.gen(function* () {
   const assets = yield* DesktopAssets.DesktopAssets;
   const fileSystem = yield* FileSystem.FileSystem;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
+  const electronApp = yield* ElectronApp.ElectronApp;
   const electronGlobalShortcut = yield* ElectronGlobalShortcut.ElectronGlobalShortcut;
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronSpelling = yield* ElectronSpelling.ElectronSpelling;
@@ -374,6 +392,10 @@ const make = Effect.gen(function* () {
   const state = yield* DesktopState.DesktopState;
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
+  let mainWindowCloseAllowed = false;
+  const pendingQuitConfirmation = yield* Ref.make<Option.Option<Deferred.Deferred<boolean>>>(
+    Option.none(),
+  );
 
   const createWindow = Effect.fn("desktop.window.createWindow")(function* (
     backendHttpUrl: URL,
@@ -470,9 +492,17 @@ const make = Effect.gen(function* () {
       window.maximize();
     }
 
-    window.on("close", () => {
+    window.on("close", (event) => {
       if (environment.marketingCaptureMode) {
         return;
+      }
+      if (
+        environment.platform !== "darwin" &&
+        !mainWindowCloseAllowed &&
+        Effect.runSync(Ref.get(state.runningThreadCount)) > 0
+      ) {
+        event.preventDefault();
+        void runPromise(electronApp.quit);
       }
       const bounds = getPersistableMainWindowBounds(window);
       const width = normalizeRestoredDimension(bounds.width, MIN_MAIN_WINDOW_WIDTH);
@@ -759,6 +789,43 @@ const make = Effect.gen(function* () {
     });
   }).pipe(Effect.withSpan("desktop.window.repointMainWindowIfBackendMoved"));
 
+  const resolveQuitConfirmation = (confirmed: boolean) =>
+    Ref.getAndSet(pendingQuitConfirmation, Option.none()).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.void,
+          onSome: (pending) => Deferred.succeed(pending, confirmed).pipe(Effect.asVoid),
+        }),
+      ),
+    );
+
+  const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(function* (
+    runningThreadCount: number,
+  ) {
+    const window = yield* revealOrCreateMain;
+    const pending = yield* Deferred.make<boolean>();
+    yield* Ref.set(pendingQuitConfirmation, Option.some(pending));
+
+    const cancelOnWindowClosed = () => {
+      void runPromise(resolveQuitConfirmation(false));
+    };
+    const cleanup = Effect.sync(() => {
+      if (!window.isDestroyed()) {
+        window.removeListener("closed", cancelOnWindowClosed);
+      }
+    }).pipe(Effect.andThen(Ref.set(pendingQuitConfirmation, Option.none())));
+
+    return yield* Effect.try({
+      try: () => {
+        window.once("closed", cancelOnWindowClosed);
+        window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
+          runningThreadCount,
+        });
+      },
+      catch: (cause) => new DesktopWindowQuitConfirmationError({ cause }),
+    }).pipe(Effect.andThen(Deferred.await(pending)), Effect.ensuring(cleanup));
+  });
+
   return DesktopWindow.of({
     createMain,
     ensureMain,
@@ -801,6 +868,11 @@ const make = Effect.gen(function* () {
 
       send();
     }),
+    allowMainWindowClose: Effect.sync(() => {
+      mainWindowCloseAllowed = true;
+    }),
+    requestQuitConfirmation,
+    resolveQuitConfirmation,
     syncAppearance: Effect.gen(function* () {
       const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
       yield* electronWindow.syncAllAppearance((window) =>

@@ -158,6 +158,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewClearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
+  onQuitConfirmationRequested: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
+      if (typeof request !== "object" || request === null) return;
+      listener(request as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, wrappedListener);
+    };
+  },
+  resolveQuitConfirmation: (confirmed) =>
+    ipcRenderer.invoke(IpcChannels.QUIT_CONFIRMATION_RESOLVE_CHANNEL, confirmed),
   showContextMenu: (items, position) =>
     ipcRenderer.invoke(IpcChannels.CONTEXT_MENU_CHANNEL, {
       items,

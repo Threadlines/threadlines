@@ -6,6 +6,7 @@ import * as Ref from "effect/Ref";
 export interface DesktopStateShape {
   readonly backendReady: Ref.Ref<boolean>;
   readonly quitting: Ref.Ref<boolean>;
+  readonly runningThreadCount: Ref.Ref<number>;
 }
 
 export class DesktopState extends Context.Service<DesktopState, DesktopStateShape>()(
@@ -17,5 +18,6 @@ export const layer = Layer.effect(
   Effect.all({
     backendReady: Ref.make(false),
     quitting: Ref.make(false),
+    runningThreadCount: Ref.make(0),
   }),
 );
