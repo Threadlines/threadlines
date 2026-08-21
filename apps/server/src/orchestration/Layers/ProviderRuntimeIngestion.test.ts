@@ -2078,6 +2078,115 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("uses the durable child roster when the projected parent provider id is missing", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-missing-provider-thread"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-parent"),
+          providerThreadId: null,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-known-child-metadata"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      payload: {
+        callId: "call-known-child",
+        agentThreadId: "known-child-provider-thread",
+        agentPath: "/root/known_child",
+        status: "running",
+      },
+    });
+    await harness.drain();
+    await waitForThread(harness.readModel, (thread) =>
+      Boolean(
+        thread.subagents?.some(
+          (subagent) => subagent.agentThreadId === "known-child-provider-thread",
+        ),
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-known-child-commentary-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("known-child-message"),
+      providerRefs: {
+        providerThreadId: "known-child-provider-thread",
+        providerTurnId: "known-child-turn",
+        providerItemId: asItemId("known-child-message"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Known child commentary stays out of the parent chat.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-known-child-commentary-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("known-child-message"),
+      providerRefs: {
+        providerThreadId: "known-child-provider-thread",
+        providerTurnId: "known-child-turn",
+        providerItemId: asItemId("known-child-message"),
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        data: {
+          item: {
+            phase: "commentary",
+          },
+        },
+      },
+    });
+    await harness.drain();
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => {
+        const payload = activity.payload as { sourceAgentThreadId?: string };
+        return payload.sourceAgentThreadId === "known-child-provider-thread";
+      }),
+    );
+    expect(thread.messages.some((message) => message.text.includes("Known child commentary"))).toBe(
+      false,
+    );
+    expect(
+      thread.activities.some((activity) => {
+        const payload = activity.payload as { sourceAgentThreadId?: string };
+        return (
+          activity.kind === "subagent.result" &&
+          payload.sourceAgentThreadId === "known-child-provider-thread"
+        );
+      }),
+    ).toBe(true);
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

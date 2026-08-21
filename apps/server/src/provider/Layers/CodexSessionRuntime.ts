@@ -1383,7 +1383,7 @@ function toProtocolParseError(
 }
 
 function currentProviderThreadId(session: ProviderSession): string | undefined {
-  return readResumeCursorThreadId(session.resumeCursor);
+  return session.providerThreadId ?? readResumeCursorThreadId(session.resumeCursor);
 }
 
 export function shouldAcceptCodexNotificationForSession(input: {
@@ -1685,6 +1685,7 @@ export const makeCodexSessionRuntime = (
           }
           return updateSession(sessionRef, {
             resumeCursor: { threadId: payload.thread.id },
+            providerThreadId: payload.thread.id,
           });
         }),
       ),
@@ -2101,6 +2102,7 @@ export const makeCodexSessionRuntime = (
         cwd: opened.cwd,
         model: opened.model,
         resumeCursor: { threadId: providerThreadId },
+        providerThreadId,
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
@@ -2481,6 +2483,7 @@ export const makeCodexSessionRuntime = (
               status: "ready",
               activeTurnId: undefined,
               resumeCursor: { threadId: forkedThreadId },
+              providerThreadId: forkedThreadId,
             });
             yield* Effect.logInfo("codex thread rollback forked to a new provider thread", {
               threadId: options.threadId,

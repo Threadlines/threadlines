@@ -924,10 +924,10 @@ const make = Effect.gen(function* () {
         const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
         const shouldPreservePendingTurnStartup =
           latestSession?.status === "starting" && mappedStatus === "ready";
-        // Provider-side identifiers arrive via runtime ingestion
-        // (`thread.started`); a rebind must not wipe them. They only survive
-        // when the session continues on the same provider instance — after an
-        // instance switch they describe the outgoing provider.
+        // Provider-side identifiers can arrive through runtime ingestion or
+        // directly on the started session. Prefer the durable projection, but
+        // let the runtime heal an older missing value. Projected identifiers
+        // only survive while the same provider instance remains selected.
         const continuesSameInstance =
           latestSession?.providerInstanceId === session.providerInstanceId;
         yield* setThreadSession({
@@ -941,8 +941,8 @@ const make = Effect.gen(function* () {
               ? (latestSession?.providerSessionId ?? null)
               : null,
             providerThreadId: continuesSameInstance
-              ? (latestSession?.providerThreadId ?? null)
-              : null,
+              ? (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
+              : (session.providerThreadId ?? null),
             runtimeMode: desiredRuntimeMode,
             // Checkout the runtime actually started in. The next turn compares
             // it against the thread's target checkout to decide whether the

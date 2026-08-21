@@ -279,10 +279,11 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
     expect(parsed.providerInstanceId).toBe("codex_personal");
   });
 
-  it("propagates providerInstanceId through ProviderSession decode", () => {
+  it("propagates provider identities through ProviderSession decode", () => {
     const session = decodeProviderSession({
       provider: "codex",
       providerInstanceId: "codex_work",
+      providerThreadId: "provider-thread-1",
       status: "ready",
       runtimeMode: "full-access",
       threadId: "thread-1",
@@ -290,6 +291,7 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
       updatedAt: "2024-01-01T00:00:00Z",
     });
     expect(session.providerInstanceId).toBe("codex_work");
+    expect(session.providerThreadId).toBe("provider-thread-1");
   });
 
   it("decodes ProviderSession for fork-provided driver kinds", () => {

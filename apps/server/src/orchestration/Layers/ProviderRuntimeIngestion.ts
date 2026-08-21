@@ -887,14 +887,25 @@ function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefi
 
 function childProviderThreadIdForEvent(
   event: ProviderRuntimeEvent,
-  thread: Pick<OrchestrationThread, "session">,
+  thread: Pick<OrchestrationThread, "session" | "subagents">,
 ): string | undefined {
   const providerThreadId = providerThreadIdFromEvent(event);
   const parentProviderThreadId = thread.session?.providerThreadId?.trim();
-  if (!providerThreadId || !parentProviderThreadId) {
+  if (!providerThreadId) {
     return undefined;
   }
-  return providerThreadId === parentProviderThreadId ? undefined : providerThreadId;
+  if (parentProviderThreadId) {
+    return providerThreadId === parentProviderThreadId ? undefined : providerThreadId;
+  }
+
+  // Older projections may be missing the parent identity. In that case only
+  // classify an exact provider id already recorded in the durable child roster.
+  const isKnownChild = (thread.subagents ?? []).some(
+    (subagent) =>
+      subagent.agentThreadId === providerThreadId ||
+      subagent.transcriptAgentId === providerThreadId,
+  );
+  return isKnownChild ? providerThreadId : undefined;
 }
 
 function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
@@ -1831,7 +1842,7 @@ const make = Effect.gen(function* () {
 
   const projectRuntimeActivities = (
     event: ProviderRuntimeEvent,
-    thread: Pick<OrchestrationThread, "session">,
+    thread: Pick<OrchestrationThread, "session" | "subagents">,
   ) =>
     Effect.gen(function* () {
       const stream = yield* appendBufferedActivityStream(event);
@@ -2313,6 +2324,10 @@ const make = Effect.gen(function* () {
           loadedThreadDetail = (yield* resolveThreadDetail(thread.id)) ?? null;
           return loadedThreadDetail;
         });
+      const attributionThread =
+        providerThreadIdFromEvent(event) !== undefined && !thread.session?.providerThreadId?.trim()
+          ? ((yield* getLoadedThreadDetail()) ?? thread)
+          : thread;
 
       const settleLiveSubagents = Effect.fn("settleLiveSubagents")(function* (options: {
         readonly commandTag: string;
@@ -2691,7 +2706,7 @@ const make = Effect.gen(function* () {
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
       if (assistantDelta && assistantDelta.length > 0) {
-        const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
+        const childProviderThreadId = childProviderThreadIdForEvent(event, attributionThread);
         if (childProviderThreadId) {
           const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
           const body = yield* appendBufferedSubagentResultText(bufferKey, assistantDelta);
@@ -2825,7 +2840,7 @@ const make = Effect.gen(function* () {
           : undefined;
 
       if (assistantCompletion) {
-        const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
+        const childProviderThreadId = childProviderThreadIdForEvent(event, attributionThread);
         if (childProviderThreadId) {
           const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
           const bufferedText = yield* takeBufferedSubagentResultText(bufferKey);
@@ -3077,7 +3092,7 @@ const make = Effect.gen(function* () {
         (event.type === "item.updated" || event.type === "item.completed") &&
         event.payload.itemType === "file_change" &&
         (event.provider === "claudeAgent" ||
-          childProviderThreadIdForEvent(event, thread) !== undefined)
+          childProviderThreadIdForEvent(event, attributionThread) !== undefined)
       ) {
         const turnId = toTurnId(event.turnId);
         const itemFiles = checkpointFilesFromItemChanges(event.payload.data);
@@ -3097,7 +3112,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = yield* projectRuntimeActivities(event, thread);
+      const activities = yield* projectRuntimeActivities(event, attributionThread);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

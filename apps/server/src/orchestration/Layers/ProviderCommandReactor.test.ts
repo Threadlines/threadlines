@@ -791,6 +791,46 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.providerThreadId).toBe("codex-thread-1");
   });
 
+  it("heals a missing projected provider thread id from the started session", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const defaultStartSession = harness.startSession.getMockImplementation();
+    if (!defaultStartSession) {
+      throw new Error("startSession mock has no implementation");
+    }
+
+    harness.startSession.mockImplementationOnce((threadId: unknown, input: unknown) =>
+      defaultStartSession(threadId, input).pipe(
+        Effect.map((session) => ({
+          ...session,
+          providerThreadId: "codex-thread-healed",
+        })),
+      ),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-heal-runtime-identity"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-heal-runtime-identity"),
+          role: "user",
+          text: "heal the provider identity",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.providerThreadId).toBe("codex-thread-healed");
+  });
+
   it("uses a fresh provider message id when retrying a persisted user message", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");

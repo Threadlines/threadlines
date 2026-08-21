@@ -49,6 +49,8 @@ export const ProviderSession = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /** Provider-owned id for the primary conversation, when the driver exposes it. */
+  providerThreadId: Schema.optional(TrimmedNonEmptyString),
   activeTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
