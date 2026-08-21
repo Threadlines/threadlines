@@ -162,6 +162,8 @@ describe("buildAgentBranches", () => {
             totalTokens: 1_200,
             toolUses: 4,
             durationMs: null,
+            additions: null,
+            deletions: null,
           },
         }),
         buildSubagent({
@@ -175,6 +177,8 @@ describe("buildAgentBranches", () => {
             totalTokens: 900,
             toolUses: 2,
             durationMs: 42_000,
+            additions: null,
+            deletions: null,
           },
         }),
       ],
@@ -227,6 +231,8 @@ describe("buildAgentsPanelView", () => {
               totalTokens: 24_000,
               toolUses: null,
               durationMs: null,
+              additions: null,
+              deletions: null,
             },
             updatedAt: "2026-08-11T10:00:00.000Z",
           }),
@@ -348,6 +354,51 @@ describe("buildAgentsPanelView", () => {
     expect(view.current[0]?.meta).toEqual(["gpt-5.6-sol", "high", "36s"]);
   });
 
+  it("closes the meta line with what the agent wrote, live and in history", () => {
+    const telemetry = {
+      step: null,
+      lastToolName: null,
+      totalTokens: 24_000,
+      toolUses: null,
+      durationMs: null,
+      additions: 401,
+      deletions: 1,
+    };
+    const view = buildAgentsPanelView({
+      subagents: [
+        buildSubagent({
+          id: "live-writer",
+          agentThreadId: "live-writer",
+          status: "running",
+          statusLabel: "Running",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          telemetry,
+          createdAt: "2026-08-11T10:11:24.000Z",
+        }),
+      ],
+      history: [
+        {
+          item: buildSubagent({
+            id: "done-writer",
+            agentThreadId: "done-writer",
+            status: "completed",
+            statusLabel: "Done",
+            model: "claude-opus-5",
+            reasoningEffort: "high",
+            telemetry,
+            updatedAt: "2026-08-11T10:05:00.000Z",
+          }),
+          resultBody: null,
+        },
+      ],
+      nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
+    });
+
+    expect(view.current[0]?.meta.at(-1)).toBe("+401 −1");
+    expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens", "+401 −1"]);
+  });
+
   it("orders the history newest first", () => {
     const view = buildAgentsPanelView({
       subagents: [],
@@ -441,6 +492,8 @@ describe("formatLiveAgentStatusLine", () => {
           totalTokens: null,
           toolUses: null,
           durationMs: null,
+          additions: null,
+          deletions: null,
         },
         updatedAt: "2026-08-11T10:00:00.000Z",
       }),
@@ -454,6 +507,8 @@ describe("formatLiveAgentStatusLine", () => {
           totalTokens: null,
           toolUses: null,
           durationMs: null,
+          additions: null,
+          deletions: null,
         },
         updatedAt: "2026-08-11T10:00:30.000Z",
       }),
@@ -485,6 +540,8 @@ describe("formatLiveAgentStatusLine", () => {
             totalTokens: null,
             toolUses: null,
             durationMs: null,
+            additions: null,
+            deletions: null,
           },
         }),
       ]),
@@ -651,6 +708,8 @@ describe("formatAgentsHeaderMeta", () => {
             totalTokens: 2_000,
             toolUses: null,
             durationMs: null,
+            additions: null,
+            deletions: null,
           },
         }),
         buildSubagent({
@@ -662,6 +721,8 @@ describe("formatAgentsHeaderMeta", () => {
             totalTokens: 4_500,
             toolUses: null,
             durationMs: null,
+            additions: null,
+            deletions: null,
           },
         }),
       ],

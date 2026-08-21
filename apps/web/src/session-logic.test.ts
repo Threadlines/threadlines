@@ -4159,6 +4159,130 @@ describe("deriveSubagentProgressState", () => {
     });
   });
 
+  it("sums a Codex child's own edits into its telemetry", () => {
+    const spawn = makeActivity({
+      id: "codex-edit-spawn",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            id: "call-spawn",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "completed",
+            prompt: "editor: Rename the helper",
+            receiverThreadIds: ["agent-1"],
+            agentsStates: { "agent-1": { status: "running", message: null } },
+          },
+        },
+      },
+    });
+    const edit = (id: string, path: string, additions: number, deletions: number) =>
+      makeActivity({
+        id,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        summary: "File change",
+        payload: {
+          itemType: "file_change",
+          status: "completed",
+          toolCallId: id,
+          sourceAgentThreadId: "agent-1",
+          data: { toolName: "Edit", changes: [{ path, kind: "update", additions, deletions }] },
+        },
+      });
+
+    const state = deriveSubagentProgressState({
+      activities: [
+        spawn,
+        edit("child-edit-1", "src/a.ts", 12, 3),
+        edit("child-edit-2", "src/b.ts", 4, 1),
+      ],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+
+    expect(state?.items[0]).toMatchObject({
+      id: "agent-1",
+      telemetry: { additions: 16, deletions: 4 },
+    });
+  });
+
+  it("keeps a Claude agent's task counters and its edit totals on the same telemetry", () => {
+    const spawn = makeActivity({
+      id: "claude-edit-spawn",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.started",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Subagent task",
+        toolCallId: "toolu_edit",
+        data: { toolName: "Task", input: { description: "Rename it", subagent_type: "Explore" } },
+      },
+    });
+    const progress = makeActivity({
+      id: "claude-edit-progress",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      kind: "task.progress",
+      turnId: "turn-1",
+      payload: {
+        taskId: "b91f",
+        toolUseId: "toolu_edit",
+        subagentType: "Explore",
+        detail: "Editing src/helper.ts",
+        usage: { total_tokens: 4_200, tool_uses: 3, duration_ms: 9_000 },
+      },
+    });
+    // The agent's edit reaches the parent as a forwarded item, never as task
+    // usage, so it only counts if both feeds land on the same record. Claude
+    // states the owning agent inside `data`, which is the only free-form part
+    // of a runtime item payload.
+    const edit = makeActivity({
+      id: "claude-edit-file-change",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      summary: "File change",
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        toolCallId: "sub-edit-1",
+        data: {
+          toolName: "Edit",
+          changes: [{ path: "src/helper.ts", kind: "update", additions: 7, deletions: 2 }],
+          sourceAgentThreadId: "toolu_edit",
+          sourceAgentLabel: "Explore",
+        },
+      },
+    });
+
+    const state = deriveSubagentProgressState({
+      activities: [spawn, progress, edit],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+
+    expect(state?.items[0]?.telemetry).toMatchObject({
+      step: "Editing src/helper.ts",
+      totalTokens: 4_200,
+      toolUses: 3,
+      additions: 7,
+      deletions: 2,
+    });
+    // The same attribution is what keeps the edit out of the conversation's
+    // own work rows.
+    expect(deriveWorkLogEntries([edit])[0]).toMatchObject({
+      sourceAgentThreadId: "toolu_edit",
+    });
+  });
+
   it("streams live subagent text and clears it once the result lands", () => {
     const taskInput = {
       description: "Audit the SQL changes",

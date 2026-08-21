@@ -26,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 
@@ -239,14 +240,19 @@ function hasCheckpointForTurn(
   return false;
 }
 
-/** Extracts per-file diff stats from a file-change item's `data.changes`.
- * Entries without numeric counts (e.g. Codex patch summaries, which only
- * carry kind + path) are dropped — the cumulative turn diff covers those. */
+/** Extracts per-file diff stats from a file-change item's changes, which sit
+ * on `data.changes` (Claude) or `data.item.changes` (Codex item lifecycle).
+ * Counts come from the entry's own numbers when it carries them and from its
+ * unified `diff` body otherwise; an entry with neither is dropped. */
 function checkpointFilesFromItemChanges(data: unknown): OrchestrationCheckpointFile[] {
   if (typeof data !== "object" || data === null) {
     return [];
   }
-  const changes = (data as { readonly changes?: unknown }).changes;
+  const record = data as { readonly changes?: unknown; readonly item?: unknown };
+  const item = typeof record.item === "object" && record.item !== null ? record.item : undefined;
+  const changes = Array.isArray(record.changes)
+    ? record.changes
+    : (item as { readonly changes?: unknown } | undefined)?.changes;
   if (!Array.isArray(changes)) {
     return [];
   }
@@ -258,30 +264,57 @@ function checkpointFilesFromItemChanges(data: unknown): OrchestrationCheckpointF
     const candidate = entry as {
       readonly path?: unknown;
       readonly kind?: unknown;
+      readonly diff?: unknown;
       readonly additions?: unknown;
       readonly deletions?: unknown;
     };
     if (typeof candidate.path !== "string" || candidate.path.trim().length === 0) {
       continue;
     }
-    if (
-      typeof candidate.additions !== "number" ||
-      !Number.isInteger(candidate.additions) ||
-      candidate.additions < 0 ||
-      typeof candidate.deletions !== "number" ||
-      !Number.isInteger(candidate.deletions) ||
-      candidate.deletions < 0
-    ) {
+    const counts = checkpointFileCounts(candidate);
+    if (!counts) {
       continue;
     }
     files.push({
       path: candidate.path,
-      kind: candidate.kind === "add" || candidate.kind === "delete" ? candidate.kind : "modified",
-      additions: candidate.additions,
-      deletions: candidate.deletions,
+      kind: checkpointFileKind(candidate.kind),
+      additions: counts.additions,
+      deletions: counts.deletions,
     });
   }
   return files;
+}
+
+function checkpointFileCounts(candidate: {
+  readonly diff?: unknown;
+  readonly additions?: unknown;
+  readonly deletions?: unknown;
+}): DiffLineStats | undefined {
+  if (
+    typeof candidate.additions === "number" &&
+    Number.isInteger(candidate.additions) &&
+    candidate.additions >= 0 &&
+    typeof candidate.deletions === "number" &&
+    Number.isInteger(candidate.deletions) &&
+    candidate.deletions >= 0
+  ) {
+    return { additions: candidate.additions, deletions: candidate.deletions };
+  }
+  return typeof candidate.diff === "string" && candidate.diff.length > 0
+    ? countUnifiedDiffStats(candidate.diff)
+    : undefined;
+}
+
+/** Codex states the kind as `{ type: "add" | "delete" | "update" }`, Claude as
+ * a bare string; anything else is an ordinary modification. */
+function checkpointFileKind(kind: unknown): string {
+  const value =
+    typeof kind === "string"
+      ? kind
+      : typeof kind === "object" && kind !== null
+        ? (kind as { readonly type?: unknown }).type
+        : undefined;
+  return value === "add" || value === "delete" ? value : "modified";
 }
 
 /** Claude reports per-tool-call patch stats rather than a cumulative turn
@@ -316,6 +349,24 @@ function mergeTurnFileChangeEvidence(
     additions: entry.additions,
     deletions: entry.deletions,
   })).toSorted((left, right) => left.path.localeCompare(right.path));
+}
+
+/** Unions a turn's cumulative provider diff with its per-item evidence. The
+ * cumulative diff is git truth for every path it names, so it wins outright
+ * there; per-item evidence only supplies paths the cumulative diff has not
+ * caught up with yet (a child agent's edits between two emissions). */
+function unionTurnDiffFiles(
+  wholesale: ReadonlyArray<OrchestrationCheckpointFile>,
+  itemEvidence: ReadonlyArray<OrchestrationCheckpointFile>,
+): OrchestrationCheckpointFile[] {
+  if (wholesale.length === 0) {
+    return [...itemEvidence];
+  }
+  const byPath = new Map(itemEvidence.map((file) => [file.path, file] as const));
+  for (const file of wholesale) {
+    byPath.set(file.path, file);
+  }
+  return Array.from(byPath.values()).toSorted((left, right) => left.path.localeCompare(right.path));
 }
 
 function checkpointFilesEqual(
@@ -1210,31 +1261,61 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(new Map()),
   });
 
+  // A turn's cumulative provider diff (Codex `turn.diff.updated`), kept beside
+  // the per-item evidence so the two can be unioned. Codex reports the whole
+  // workspace against the turn baseline, so it eventually covers child-agent
+  // edits too — per-item evidence only fills the gap between emissions.
+  const turnWholesaleDiffByTurnKey = yield* Cache.make<
+    string,
+    ReadonlyArray<OrchestrationCheckpointFile>
+  >({
+    capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
+    timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
+    lookup: () => Effect.succeed([]),
+  });
+
+  const readTurnFileChangeEvidence = (turnKey: string) =>
+    Cache.getOption(turnFileChangeEvidenceByTurnKey, turnKey).pipe(
+      Effect.map(
+        Option.getOrElse(() => new Map<string, ReadonlyArray<OrchestrationCheckpointFile>>()),
+      ),
+    );
+
+  const readTurnWholesaleDiff = (turnKey: string) =>
+    Cache.getOption(turnWholesaleDiffByTurnKey, turnKey).pipe(
+      Effect.map(Option.getOrElse((): ReadonlyArray<OrchestrationCheckpointFile> => [])),
+    );
+
   const accumulateTurnFileChangeEvidence = (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
     readonly itemId: string;
     readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
   }) =>
-    Cache.getOption(
-      turnFileChangeEvidenceByTurnKey,
-      providerTurnKey(input.threadId, input.turnId),
-    ).pipe(
-      Effect.flatMap((existing) => {
-        const next = new Map(
-          Option.getOrElse(
-            existing,
-            () => new Map<string, ReadonlyArray<OrchestrationCheckpointFile>>(),
-          ),
-        );
-        next.set(input.itemId, input.files);
-        return Cache.set(
-          turnFileChangeEvidenceByTurnKey,
-          providerTurnKey(input.threadId, input.turnId),
-          next,
-        ).pipe(Effect.as(mergeTurnFileChangeEvidence(next)));
-      }),
-    );
+    Effect.gen(function* () {
+      const turnKey = providerTurnKey(input.threadId, input.turnId);
+      const next = new Map(yield* readTurnFileChangeEvidence(turnKey));
+      next.set(input.itemId, input.files);
+      yield* Cache.set(turnFileChangeEvidenceByTurnKey, turnKey, next);
+      return unionTurnDiffFiles(
+        yield* readTurnWholesaleDiff(turnKey),
+        mergeTurnFileChangeEvidence(next),
+      );
+    });
+
+  const recordWholesaleTurnDiff = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
+  }) =>
+    Effect.gen(function* () {
+      const turnKey = providerTurnKey(input.threadId, input.turnId);
+      yield* Cache.set(turnWholesaleDiffByTurnKey, turnKey, input.files);
+      return unionTurnDiffFiles(
+        input.files,
+        mergeTurnFileChangeEvidence(yield* readTurnFileChangeEvidence(turnKey)),
+      );
+    });
 
   // Shared checkpoint-summary sync for provider-reported turn file evidence
   // (Codex cumulative turn diffs, Claude per-tool-call stats). First evidence
@@ -2006,6 +2087,13 @@ const make = Effect.gen(function* () {
           key.startsWith(prefix)
             ? Cache.invalidate(turnFileChangeEvidenceByTurnKey, key)
             : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      const wholesaleDiffKeys = Array.from(yield* Cache.keys(turnWholesaleDiffByTurnKey));
+      yield* Effect.forEach(
+        wholesaleDiffKeys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(turnWholesaleDiffByTurnKey, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
       yield* Effect.forEach(
@@ -2903,23 +2991,25 @@ const make = Effect.gen(function* () {
           return;
         }
         if (turnId) {
-          yield* syncProviderTurnDiffSummary({
-            event,
-            thread,
+          const files = yield* recordWholesaleTurnDiff({
+            threadId: thread.id,
             turnId,
             files: parseCheckpointFilesFromUnifiedDiff(event.payload.unifiedDiff),
-            now,
           });
+          yield* syncProviderTurnDiffSummary({ event, thread, turnId, files, now });
         }
       }
 
       // Claude has no cumulative turn-diff notification; its per-tool-call
       // file-change stats are the provider evidence the turn summary (and
-      // shared-checkout attribution at capture time) relies on.
+      // shared-checkout attribution at capture time) relies on. Codex reports
+      // one, but only for the parent conversation, so a child agent's edits
+      // stay invisible between emissions unless its items count too.
       if (
         (event.type === "item.updated" || event.type === "item.completed") &&
-        event.provider === "claudeAgent" &&
-        event.payload.itemType === "file_change"
+        event.payload.itemType === "file_change" &&
+        (event.provider === "claudeAgent" ||
+          childProviderThreadIdForEvent(event, thread) !== undefined)
       ) {
         const turnId = toTurnId(event.turnId);
         const itemFiles = checkpointFilesFromItemChanges(event.payload.data);

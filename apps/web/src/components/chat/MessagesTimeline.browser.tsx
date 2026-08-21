@@ -1309,6 +1309,8 @@ describe("MessagesTimeline", () => {
         totalTokens: null,
         toolUses: null,
         durationMs: null,
+        additions: null,
+        deletions: null,
       },
       updatedAt,
     });

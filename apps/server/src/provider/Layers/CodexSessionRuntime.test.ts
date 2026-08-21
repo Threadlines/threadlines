@@ -27,6 +27,7 @@ import {
   rememberCollabThreadStartTurn,
   rememberCollabReceiverTurns,
   shouldAcceptCodexNotificationForSession,
+  shouldSuppressChildConversationNotification,
   type CodexServerNotification,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -244,6 +245,15 @@ describe("shouldAcceptCodexNotificationForSession", () => {
       }),
       true,
     );
+  });
+
+  it("drops a child conversation's own turn state, including its turn diff", () => {
+    // A child's turn diff covers only its own edits. Mapped onto the parent
+    // turn it would replace the parent's cumulative diff with a subset, so the
+    // child's file work has to reach the parent as items instead.
+    assert.equal(shouldSuppressChildConversationNotification("turn/diff/updated"), true);
+    assert.equal(shouldSuppressChildConversationNotification("turn/started"), true);
+    assert.equal(shouldSuppressChildConversationNotification("item/completed"), false);
   });
 
   it("accepts unscoped notifications and notifications before the provider thread is known", () => {

@@ -5,6 +5,7 @@
  * stays a pure projection of it.
  */
 import type { TurnId } from "@threadlines/contracts";
+import { formatDiffLineStats } from "@threadlines/shared/diffStats";
 
 import {
   formatSubagentDisplayName,
@@ -119,6 +120,19 @@ function agentIdentityMetaParts(item: SubagentProgressItem): ReadonlyArray<strin
   );
 }
 
+/**
+ * `+401 −1`: how much the agent actually wrote, summed over its own edits. Sits
+ * last on the line, where the thread's own counts sit in the left sidebar, and
+ * is absent until the agent has changed something.
+ */
+function agentDiffMetaParts(item: SubagentProgressItem): ReadonlyArray<string> {
+  const label = formatDiffLineStats({
+    additions: item.telemetry?.additions ?? 0,
+    deletions: item.telemetry?.deletions ?? 0,
+  });
+  return label === null ? [] : [label];
+}
+
 function subagentBranch(
   item: SubagentProgressItem,
   nowMs: number | undefined,
@@ -145,6 +159,7 @@ function subagentBranch(
         elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,
         includeCurrentTool: false,
       }),
+      ...agentDiffMetaParts(item),
     ],
     time: null,
     task: details.goal,
@@ -209,6 +224,7 @@ function formatAgentHistoryMeta(item: SubagentProgressItem): ReadonlyArray<strin
     ...(totalTokens !== null && totalTokens > 0
       ? [`${formatContextWindowTokens(totalTokens)} tokens`]
       : []),
+    ...agentDiffMetaParts(item),
   ];
 }
 

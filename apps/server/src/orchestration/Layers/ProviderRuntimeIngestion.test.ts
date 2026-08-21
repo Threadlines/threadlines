@@ -4601,6 +4601,158 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("unions a codex child agent's edits with the parent's cumulative turn diff", async () => {
+    const harness = await createHarness();
+    const seededAt = "2026-01-01T00:00:00.000Z";
+    const childRefs = {
+      providerThreadId: "child-provider-thread",
+      providerTurnId: "child-turn-1",
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-seed-child-evidence"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          providerThreadId: "parent-provider-thread",
+          updatedAt: seededAt,
+          lastError: null,
+        },
+        createdAt: seededAt,
+      }),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-evidence-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: seededAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-child-files"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-child-files",
+    );
+
+    // The child's edit lands first: with no cumulative diff yet, it is the
+    // only evidence the turn has.
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-file-change-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-child-files"),
+      itemId: asItemId("child-file-change-1"),
+      providerRefs: { ...childRefs, providerItemId: asItemId("child-file-change-1") },
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "File change",
+        data: {
+          item: {
+            type: "fileChange",
+            changes: [
+              {
+                path: "src/child.ts",
+                kind: { type: "update" },
+                diff: "--- a/src/child.ts\n+++ b/src/child.ts\n@@ -1 +1,2 @@\n-old\n+new\n+extra\n",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const afterChild = await waitForThread(harness.readModel, (thread) =>
+      thread.checkpoints.some(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-child-files",
+      ),
+    );
+    expect(
+      afterChild.checkpoints.find(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-child-files",
+      )?.files,
+    ).toEqual([{ path: "src/child.ts", kind: "modified", additions: 2, deletions: 1 }]);
+
+    // The parent's cumulative diff has only caught up with its own edit. The
+    // child's stays until git sees it.
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-child-evidence-wholesale"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-child-files"),
+      payload: {
+        unifiedDiff:
+          "diff --git a/src/parent.ts b/src/parent.ts\nindex e69de29..ce01362 100644\n--- a/src/parent.ts\n+++ b/src/parent.ts\n@@ -0,0 +1 @@\n+parent\n",
+      },
+    });
+    const afterUnion = await waitForThread(harness.readModel, (thread) =>
+      thread.checkpoints.some(
+        (entry: ProviderRuntimeTestCheckpoint) =>
+          entry.turnId === "turn-child-files" && entry.files.length === 2,
+      ),
+    );
+    expect(
+      afterUnion.checkpoints.find(
+        (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-child-files",
+      )?.files,
+    ).toEqual([
+      { path: "src/child.ts", kind: "modified", additions: 2, deletions: 1 },
+      { path: "src/parent.ts", kind: "modified", additions: 1, deletions: 0 },
+    ]);
+
+    // Once git covers a path, the cumulative diff is the truth for it: a
+    // child item naming the same file must not add its lines on top.
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-file-change-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-child-files"),
+      itemId: asItemId("child-file-change-2"),
+      providerRefs: { ...childRefs, providerItemId: asItemId("child-file-change-2") },
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "File change",
+        data: {
+          item: {
+            type: "fileChange",
+            changes: [
+              {
+                path: "src/parent.ts",
+                kind: { type: "update" },
+                diff: "--- a/src/parent.ts\n+++ b/src/parent.ts\n@@ -0,0 +1,9 @@\n+a\n+b\n+c\n+d\n+e\n+f\n+g\n+h\n+i\n",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await harness.drain();
+    const final = await harness.readModel();
+    expect(
+      final.threads
+        .find((entry) => entry.id === ThreadId.make("thread-1"))
+        ?.checkpoints.find(
+          (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-child-files",
+        )?.files,
+    ).toEqual([
+      { path: "src/child.ts", kind: "modified", additions: 2, deletions: 1 },
+      { path: "src/parent.ts", kind: "modified", additions: 1, deletions: 0 },
+    ]);
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

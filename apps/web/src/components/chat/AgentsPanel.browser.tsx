@@ -347,6 +347,8 @@ describe("AgentsPanel", () => {
                 step: null,
                 lastToolName: null,
                 durationMs: 92_000,
+                additions: 401,
+                deletions: 1,
                 totalTokens: 48_120,
                 toolUses: 12,
               },
@@ -413,6 +415,11 @@ describe("AgentsPanel", () => {
       }
 
       const [liveRow, historyRow] = rows as [HTMLElement, HTMLElement];
+
+      // What the agent wrote closes the line, and still fits beside the totals.
+      expect(liveRow.querySelector("[data-agent-branch-meta='true']")?.textContent).toContain(
+        "+401 −1",
+      );
 
       // The live row hangs off the trunk on a slim tree gutter, and its arm still
       // meets the status dot after the row's padding tightened.

@@ -20,6 +20,22 @@ export interface DiffLineStats {
   readonly deletions: number;
 }
 
+/** Compact line count for a dense meta line: exact under a thousand, then
+ *  abbreviated to one decimal (`1.2k`) so the column keeps its width. */
+export function formatDiffLineCount(count: number): string {
+  return count >= 1_000 ? `${Math.round(count / 100) / 10}k` : `${count}`;
+}
+
+/** `+401 −1` as one plain string, using the typographic minus (U+2212) the
+ *  sidebar's counts render with. Null when nothing changed, so callers can
+ *  drop the segment entirely rather than print a pair of zeroes. */
+export function formatDiffLineStats(stats: DiffLineStats): string | null {
+  if (stats.additions <= 0 && stats.deletions <= 0) {
+    return null;
+  }
+  return `+${formatDiffLineCount(stats.additions)} −${formatDiffLineCount(stats.deletions)}`;
+}
+
 /** Counts added/removed lines in a unified diff body, ignoring the
  *  `+++`/`---` file headers. */
 export function countUnifiedDiffStats(diff: string): DiffLineStats {

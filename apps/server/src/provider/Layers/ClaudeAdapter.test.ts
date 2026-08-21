@@ -3056,6 +3056,211 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect("publishes a subagent's file edits as agent-attributed file changes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        cwd: "/repo",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate this",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-subagent-edit",
+        uuid: "stream-subagent-task-edit",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-edit",
+            name: "Task",
+            input: {
+              description: "Rename the helper",
+              prompt: "Rename it everywhere",
+              subagent_type: "code-reviewer",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      // The agent's own edit, requested inside its forwarded conversation. Its
+      // tool_result never reaches this stream, so nothing else reports it.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent-edit",
+        uuid: "assistant-subagent-edit",
+        parent_tool_use_id: "tool-task-edit",
+        message: {
+          id: "subagent-message-edit",
+          content: [
+            {
+              type: "tool_use",
+              id: "sub-edit-1",
+              name: "Edit",
+              input: {
+                file_path: "/repo/src/helper.ts",
+                old_string: "oldName",
+                new_string: "newName",
+                replace_all: true,
+              },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const postToolUse =
+        harness.getLastCreateQueryInput()?.options.hooks?.PostToolUse?.[0]?.hooks[0];
+      assert.notEqual(postToolUse, undefined);
+      const firePostToolUse = (toolUseId: string, path: string, hunks: number) =>
+        postToolUse
+          ? Effect.promise(() =>
+              postToolUse(
+                {
+                  hook_event_name: "PostToolUse",
+                  tool_name: "Edit",
+                  tool_input: { file_path: path },
+                  tool_response: {
+                    filePath: path,
+                    originalFile: "oldName\n".repeat(hunks),
+                    structuredPatch: Array.from({ length: hunks }, (_unused, index) => ({
+                      oldStart: index + 1,
+                      oldLines: hunks,
+                      newStart: index + 1,
+                      newLines: hunks,
+                      lines: ["-oldName", "+newName"],
+                    })),
+                  },
+                  tool_use_id: toolUseId,
+                  session_id: "sdk-session-subagent-edit",
+                  transcript_path: "/tmp/transcript.jsonl",
+                  cwd: "/repo",
+                } as unknown as Parameters<NonNullable<typeof postToolUse>>[0],
+                toolUseId,
+                { signal: new AbortController().signal },
+              ),
+            )
+          : Effect.void;
+
+      // Ordinary order: the edit was announced, so the hook knows whose it is.
+      yield* firePostToolUse("sub-edit-1", "/repo/src/helper.ts", 3);
+
+      // Reverse order: the hook wins the race against the message that says
+      // which agent issued the edit. The stat waits for that message.
+      yield* firePostToolUse("sub-edit-2", "/repo/src/other.ts", 2);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent-edit",
+        uuid: "assistant-subagent-edit-2",
+        parent_tool_use_id: "tool-task-edit",
+        message: {
+          id: "subagent-message-edit-2",
+          content: [
+            {
+              type: "tool_use",
+              id: "sub-edit-2",
+              name: "Edit",
+              input: {
+                file_path: "/repo/src/other.ts",
+                old_string: "oldName",
+                new_string: "newName",
+                replace_all: true,
+              },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-subagent-edit",
+        uuid: "result-subagent-edit",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const fileChangesFor = (itemId: string) =>
+        runtimeEvents
+          .filter(
+            (event) =>
+              String(event.itemId) === itemId &&
+              (event.payload as { itemType?: unknown }).itemType === "file_change",
+          )
+          .map((event) => ({
+            event,
+            data: (
+              event.payload as {
+                data?: {
+                  changes?: unknown;
+                  sourceAgentThreadId?: unknown;
+                  sourceAgentLabel?: unknown;
+                };
+              }
+            ).data,
+          }));
+
+      // Announced first: an estimate off the input (which sees one
+      // replacement), then the hook's exact count on the same item.
+      const firstEdit = fileChangesFor("sub-edit-1");
+      assert.equal(firstEdit.length, 2);
+      assert.equal(firstEdit[0]?.event.type, "item.updated");
+      assert.deepEqual(firstEdit[0]?.data?.changes, [
+        { path: "/repo/src/helper.ts", kind: "update", additions: 1, deletions: 1 },
+      ]);
+      assert.equal(firstEdit[1]?.event.type, "item.completed");
+      assert.deepEqual(firstEdit[1]?.data?.changes, [
+        { path: "/repo/src/helper.ts", kind: "update", additions: 3, deletions: 3 },
+      ]);
+
+      // Hook first: one event, already exact — the estimate is never needed.
+      const secondEdit = fileChangesFor("sub-edit-2");
+      assert.equal(secondEdit.length, 1);
+      assert.equal(secondEdit[0]?.event.type, "item.completed");
+      assert.deepEqual(secondEdit[0]?.data?.changes, [
+        { path: "/repo/src/other.ts", kind: "update", additions: 2, deletions: 2 },
+      ]);
+
+      // Every one of them is attributed to the agent, which is what keeps it
+      // out of the main transcript and inside that agent's own work log, and
+      // sits on the parent's turn, which is where the turn diff accrues.
+      const parentTurnId = runtimeEvents.find((event) => event.type === "turn.started")?.turnId;
+      assert.notEqual(parentTurnId, undefined);
+      for (const { event, data } of [...firstEdit, ...secondEdit]) {
+        assert.equal(data?.sourceAgentThreadId, "tool-task-edit");
+        assert.equal(data?.sourceAgentLabel, "code-reviewer");
+        assert.equal(event.turnId, parentTurnId);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect(
     "attributes an agent's background task to its spawn through forwarded tool uses",
     () => {

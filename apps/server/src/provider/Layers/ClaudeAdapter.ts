@@ -2115,6 +2115,61 @@ function recordSubagentSpawns(
   }
 }
 
+/** The file-editing tool calls in a forwarded subagent message, each with the
+ *  +/- stat estimated from its (already complete) input. A subagent's tool
+ *  results never reach the main stream, so without these the turn's diff
+ *  evidence and the agent's own work log see nothing until the git checkpoint
+ *  at turn end. The exact PostToolUse stat replaces the estimate on the same
+ *  item id moments later. */
+function subagentFileChangeToolUses(
+  content: unknown,
+): Array<{ readonly toolUseId: string; readonly toolName: string; readonly stat: FileChangeStat }> {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const edits: Array<{ toolUseId: string; toolName: string; stat: FileChangeStat }> = [];
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const { type, name, id, input } = block as {
+      type?: unknown;
+      name?: unknown;
+      id?: unknown;
+      input?: unknown;
+    };
+    if (type !== "tool_use" || typeof name !== "string" || typeof id !== "string") {
+      continue;
+    }
+    if (classifyToolItemType(name) !== "file_change") {
+      continue;
+    }
+    const inputJson = encodeJsonStringForDiagnostics(input);
+    const estimate = inputJson ? estimatePartialFileChangeStat(name, inputJson) : null;
+    if (!estimate) {
+      continue;
+    }
+    edits.push({ toolUseId: id, toolName: name, stat: estimate.stat });
+  }
+  return edits;
+}
+
+/** Minimal `input` preview for a file-change item: the edited path under the
+ *  key the tool names it by, which is all the changed-file subject needs. */
+function fileChangeToolInputPreview(toolName: string, path: string): Record<string, string> {
+  return toolName === "NotebookEdit" ? { notebook_path: path } : { file_path: path };
+}
+
+/** The spawn's `subagent_type`, used to label the agent a forwarded edit
+ *  belongs to. Foreground spawns are still in flight while their agent works;
+ *  background ones are found through the launch record. */
+function subagentLabelForItemId(context: ClaudeSessionContext, itemId: string): string | undefined {
+  const tool =
+    context.collabAgentToolsByItemId.get(itemId) ??
+    Array.from(context.inFlightTools.values()).find((inFlight) => inFlight.itemId === itemId);
+  return nonEmptyString(tool?.input.subagent_type);
+}
+
 /** Maps complete Claude subagent JSONL records into renderable entries, and
  *  reports the model the records were produced by. A spawn that overrides no
  *  model leaves the parent's choice implicit everywhere else, so the agent's
@@ -5267,6 +5322,56 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  /** Publishes one of a subagent's file edits as its own `file_change` item,
+   *  tagged with the collab tool item that owns the agent. The tag is what
+   *  keeps the row out of the main transcript (the timeline drops entries
+   *  carrying `sourceAgentThreadId`) while the turn's live diff evidence and
+   *  the agent's own work log both pick it up. The item id is the subagent's
+   *  tool_use id, so the estimate emitted when the edit is requested and the
+   *  exact stat emitted when it completes are the same item, not two edits. */
+  const emitSubagentFileChange = Effect.fn("emitSubagentFileChange")(function* (
+    context: ClaudeSessionContext,
+    input: {
+      readonly ownerItemId: string;
+      readonly toolUseId: string;
+      readonly toolName: string;
+      readonly stat: FileChangeStat;
+      readonly status: "inProgress" | "completed";
+      readonly raw?: ProviderRuntimeEvent["raw"];
+    },
+  ) {
+    const stamp = yield* makeEventStamp();
+    const toolInput = fileChangeToolInputPreview(input.toolName, input.stat.path);
+    const detail = summarizeToolRequest(input.toolName, toolInput, { cwd: context.session.cwd });
+    const label = subagentLabelForItemId(context, input.ownerItemId);
+    yield* offerRuntimeEvent({
+      type: input.status === "completed" ? "item.completed" : "item.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      itemId: asRuntimeItemId(input.toolUseId),
+      payload: {
+        itemType: "file_change",
+        status: input.status,
+        title: titleForTool("file_change"),
+        ...(detail ? { detail } : {}),
+        data: {
+          toolName: input.toolName,
+          input: toolInput,
+          changes: [input.stat],
+          sourceAgentThreadId: input.ownerItemId,
+          ...(label ? { sourceAgentLabel: label } : {}),
+        },
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: input.toolUseId,
+      }),
+      ...(input.raw ? { raw: input.raw } : {}),
+    });
+  });
+
   /** Messages forwarded from inside a subagent (`forwardSubagentText`).
    *  Complete assistant envelopes stream into the spawning collab tool item
    *  as live progress text; parent-attributed stream deltas and the
@@ -5303,6 +5408,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // nested agent (keyed by the spawn's tool_use id) route here too. Runs
     // before the empty-text return: a spawn-only message carries no text.
     recordSubagentSpawns(context, (message.message as { content?: unknown }).content, tool.itemId);
+    // File edits the agent just requested, estimated from their input. Also
+    // runs before the empty-text return: a tool-only message carries no text.
+    for (const edit of subagentFileChangeToolUses(
+      (message.message as { content?: unknown }).content,
+    )) {
+      // The PostToolUse hook races this message and can win, in which case it
+      // could not tell whose edit it was yet. Its exact stat is waiting here,
+      // and is consumed rather than left for a tool_result a subagent's edit
+      // never produces.
+      const applied = context.fileChangeStatsByToolUseId.get(edit.toolUseId);
+      context.fileChangeStatsByToolUseId.delete(edit.toolUseId);
+      yield* emitSubagentFileChange(context, {
+        ownerItemId: tool.itemId,
+        toolUseId: edit.toolUseId,
+        toolName: edit.toolName,
+        stat: applied ?? edit.stat,
+        status: applied ? "completed" : "inProgress",
+        raw: {
+          source: "claude.sdk.message",
+          method: "claude/assistant/subagent-file-change",
+          payload: message,
+        },
+      });
+    }
     const text = extractTextContent((message.message as { content?: unknown }).content)
       .trim()
       .slice(0, SUBAGENT_LIVE_TEXT_MAX_CHARS);
@@ -5741,22 +5870,53 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const inFlightTools = new Map<number, ToolInFlight>();
       const fileChangeStatsByToolUseId = new Map<string, FileChangeStat>();
 
+      const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
+
       // Capture exact per-edit diff stats from the file tools' structured
       // output; the hook resolves before the SDK streams the matching
       // tool_result, so the stats are ready when the item events go out.
+      // A subagent's edits are the exception: their tool_result never reaches
+      // the main stream, so the hook publishes them itself, replacing the
+      // estimate emitted when the edit was requested.
+      const applyFileChangeStats = Effect.fn("applyFileChangeStats")(function* (
+        hookInput: unknown,
+        toolUseId: string,
+        stat: FileChangeStat,
+      ) {
+        const context = yield* Ref.get(contextRef);
+        const ownerItemId = context?.subagentToolUseOwners.get(toolUseId);
+        if (!context || !ownerItemId) {
+          fileChangeStatsByToolUseId.set(toolUseId, stat);
+          return;
+        }
+        const toolName = nonEmptyString((hookInput as { tool_name?: unknown }).tool_name) ?? "Edit";
+        yield* emitSubagentFileChange(context, {
+          ownerItemId,
+          toolUseId,
+          toolName,
+          stat,
+          status: "completed",
+        });
+      });
+
       const recordFileChangeStats: HookCallback = (hookInput, toolUseID) => {
         const stat = fileChangeStatFromHookInput(hookInput);
         const toolUseId =
           typeof (hookInput as { tool_use_id?: unknown }).tool_use_id === "string"
             ? ((hookInput as { tool_use_id: string }).tool_use_id ?? toolUseID)
             : toolUseID;
-        if (stat && toolUseId) {
-          fileChangeStatsByToolUseId.set(toolUseId, stat);
+        if (!stat || !toolUseId) {
+          return Promise.resolve({});
         }
-        return Promise.resolve({});
+        return runPromise(
+          applyFileChangeStats(hookInput, toolUseId, stat).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logDebug("claude.hook.file-change-stats", { cause }),
+            ),
+            Effect.as({}),
+          ),
+        );
       };
-
-      const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
 
       /**
        * Handle AskUserQuestion tool calls by emitting a `user-input.requested`

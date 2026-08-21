@@ -19,7 +19,11 @@ import {
   type ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
-import { countUnifiedDiffStats, type FileChangeStat } from "@threadlines/shared/diffStats";
+import {
+  countUnifiedDiffStats,
+  type DiffLineStats,
+  type FileChangeStat,
+} from "@threadlines/shared/diffStats";
 import {
   APPROVAL_ACTIVITY_KINDS,
   collectOpenPendingRequests,
@@ -219,6 +223,11 @@ export interface SubagentTelemetry {
   totalTokens: number | null;
   toolUses: number | null;
   durationMs: number | null;
+  /** Lines this agent added/removed, summed over the edits attributed to it.
+   *  Like the thread's own rollup, an edit that touches a file twice counts
+   *  twice — these are the size of the work, not a diff against a baseline. */
+  additions: number | null;
+  deletions: number | null;
 }
 
 export interface SubagentProgressItem {
@@ -1413,8 +1422,10 @@ function collectSubagentActivityRecords(
         // ordinary activities tagged with the child thread id, so fold those
         // into the same compact live-step shape.
         telemetry:
-          telemetryByToolUseId.get(agentId) ??
-          activityTelemetryByAgentId.get(agentId) ??
+          combineSubagentTelemetry(
+            telemetryByToolUseId.get(agentId),
+            activityTelemetryByAgentId.get(agentId),
+          ) ??
           previous?.telemetry ??
           null,
         createdAt: previous?.createdAt ?? activity.createdAt,
@@ -1465,15 +1476,42 @@ function collectSubagentActivityTelemetry(
               ? "Searching the web"
               : null
         : null;
+    // The step and last tool describe the moment, so the newest entry wins;
+    // the line counts describe the whole run, so they accumulate.
+    const previous = byAgentId.get(agentId);
+    const edited = sumChangedFileStats(entry.changedFileStats);
     byAgentId.set(agentId, {
       step: (runningStep ?? entry.label.trim()) || null,
       lastToolName: entry.toolTitle?.trim() || null,
       totalTokens: null,
       toolUses: null,
       durationMs: null,
+      additions: edited
+        ? (previous?.additions ?? 0) + edited.additions
+        : (previous?.additions ?? null),
+      deletions: edited
+        ? (previous?.deletions ?? 0) + edited.deletions
+        : (previous?.deletions ?? null),
     });
   }
   return byAgentId;
+}
+
+/** Total +/- across one work-log entry's per-file stats, or null when the
+ *  entry changed no files. */
+function sumChangedFileStats(
+  stats: ReadonlyArray<FileChangeStat> | undefined,
+): DiffLineStats | null {
+  if (!stats || stats.length === 0) {
+    return null;
+  }
+  let additions = 0;
+  let deletions = 0;
+  for (const stat of stats) {
+    additions += stat.additions;
+    deletions += stat.deletions;
+  }
+  return { additions, deletions };
 }
 
 /** Folds one task activity into the running telemetry for an agent. Counters
@@ -1495,14 +1533,40 @@ function mergeSubagentTelemetry(
     totalTokens: asPositiveNumber(usage?.total_tokens) ?? previous?.totalTokens ?? null,
     toolUses: asPositiveNumber(usage?.tool_uses) ?? previous?.toolUses ?? null,
     durationMs: asPositiveNumber(usage?.duration_ms) ?? previous?.durationMs ?? null,
+    additions: previous?.additions ?? null,
+    deletions: previous?.deletions ?? null,
   };
   return next.step === null &&
     next.lastToolName === null &&
     next.totalTokens === null &&
     next.toolUses === null &&
-    next.durationMs === null
+    next.durationMs === null &&
+    next.additions === null &&
+    next.deletions === null
     ? null
     : next;
+}
+
+/** Task-stream counters and activity-derived line counts describe the same
+ *  agent from two feeds: Claude reports usage on its task stream but the edits
+ *  only through forwarded items, and a Codex child has no task stream at all.
+ *  Taking whichever exists field by field is what lets one agent show both. */
+function combineSubagentTelemetry(
+  taskStream: SubagentTelemetry | undefined,
+  activityDerived: SubagentTelemetry | undefined,
+): SubagentTelemetry | null {
+  if (!taskStream) {
+    return activityDerived ?? null;
+  }
+  return {
+    step: taskStream.step ?? activityDerived?.step ?? null,
+    lastToolName: taskStream.lastToolName ?? activityDerived?.lastToolName ?? null,
+    totalTokens: taskStream.totalTokens,
+    toolUses: taskStream.toolUses,
+    durationMs: taskStream.durationMs,
+    additions: taskStream.additions ?? activityDerived?.additions ?? null,
+    deletions: taskStream.deletions ?? activityDerived?.deletions ?? null,
+  };
 }
 
 function asPositiveNumber(value: unknown): number | null {

@@ -1312,7 +1312,12 @@ export function enrichCollabAgentToolPayload(
   };
 }
 
-function shouldSuppressChildConversationNotification(
+/** Child-conversation notifications that describe the child's own turn rather
+ *  than work done inside the parent's. Mapped onto the parent turn they would
+ *  overwrite the parent's state: a child's `turn/diff/updated` covers only its
+ *  own edits, so letting it through would replace the parent's cumulative diff
+ *  evidence with a subset. The child's item lifecycle still flows through. */
+export function shouldSuppressChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
   return (
@@ -1325,6 +1330,7 @@ function shouldSuppressChildConversationNotification(
     method === "thread/tokenUsage/updated" ||
     method === "turn/started" ||
     method === "turn/completed" ||
+    method === "turn/diff/updated" ||
     method === "turn/plan/updated" ||
     method === "item/plan/delta"
   );
