@@ -622,6 +622,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     Effect.gen(function* () {
       let hasRunningSubprocess = false;
       const { manager, getEvents } = yield* createManager(5, {
+        // Pin a non-Windows platform: this covers the poll-only path, and the
+        // default platform would enable PowerShell prompt markers on a
+        // Windows development machine.
+        platform: "linux",
         subprocessChecker: () => Effect.succeed(hasRunningSubprocess),
         subprocessPollIntervalMs: 20,
       });
@@ -672,6 +676,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       });
 
       yield* manager.open(openInput());
+      const startedProcess = ptyAdapter.processes[0];
+      assert.isDefined(startedProcess);
+      startedProcess.emitData("\u001b]633;D\u0007PS C:\\repo> ");
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
@@ -785,6 +792,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       });
 
       yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
@@ -792,8 +802,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       });
       yield* Deferred.await(checkStarted);
 
-      const process = ptyAdapter.processes[0];
-      assert.isDefined(process);
       process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
       yield* waitFor(
         Effect.map(getEvents, (events) =>
@@ -823,6 +831,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       yield* manager.open(openInput());
       const process = ptyAdapter.processes[0];
       assert.isDefined(process);
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
       process.onWrite = () => process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
 
       yield* manager.write({
@@ -840,6 +849,50 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         .filter((event) => event.type === "activity")
         .map((event) => event.hasRunningSubprocess);
       expect(activityStates).toEqual([true, false]);
+    }),
+  );
+
+  it.effect("keeps a command submitted before the first prompt alive past the startup marker", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+
+      // The run-script flow writes the command right after open, while a real
+      // PowerShell is still booting, so the shell's first prompt marker
+      // arrives after the submission and carries its generation.
+      yield* manager.open(openInput());
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "vp run dev:desktop\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess),
+        ),
+      );
+
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> vp run dev:desktop\r\n");
+
+      yield* Effect.sleep("100 millis");
+      expect(
+        (yield* getEvents).some(
+          (event) => event.type === "activity" && event.hasRunningSubprocess === false,
+        ),
+      ).toBe(false);
+
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && !event.hasRunningSubprocess),
+        ),
+      );
     }),
   );
 
@@ -886,6 +939,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       let checks = 0;
       let hasRunningSubprocess = false;
       const { manager, getEvents } = yield* createManager(5, {
+        // Poll-only path; see the platform note in the activity test above.
+        platform: "linux",
         subprocessChecker: () => {
           checks += 1;
           return Effect.succeed(hasRunningSubprocess);

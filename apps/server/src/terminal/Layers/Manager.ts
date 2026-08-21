@@ -151,6 +151,8 @@ interface TerminalSessionState {
   subprocessPollingArmed: boolean;
   consecutiveSubprocessIdlePolls: number;
   commandCompletionMarkersEnabled: boolean;
+  /** True once the shell rendered its first prompt marker after spawn. */
+  startupPromptMarkerSeen: boolean;
   terminalCommandInputState: TerminalCommandInputState;
   runtimeEnv: Record<string, string> | null;
 }
@@ -1462,9 +1464,19 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                 historyLineLimit,
               );
             }
+            // The first prompt marker after spawn is the shell's startup
+            // prompt. Callers (e.g. the run-script flow) can submit a command
+            // while PowerShell is still booting, so that marker arrives with
+            // the submitted command's generation and must mark the shell
+            // ready instead of completing the command.
+            let completionGenerations = sanitized.commandFinishedGenerations;
+            if (!session.startupPromptMarkerSeen && completionGenerations.length > 0) {
+              session.startupPromptMarkerSeen = true;
+              completionGenerations = completionGenerations.slice(1);
+            }
             const commandFinished =
               session.commandCompletionMarkersEnabled &&
-              sanitized.commandFinishedGenerations.includes(session.commandGeneration) &&
+              completionGenerations.includes(session.commandGeneration) &&
               session.hasRunningSubprocess;
             if (commandFinished) {
               session.hasRunningSubprocess = false;
@@ -1496,6 +1508,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.subprocessPollingArmed = false;
           session.consecutiveSubprocessIdlePolls = 0;
           session.commandCompletionMarkersEnabled = false;
+          session.startupPromptMarkerSeen = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
           session.status = "exited";
           session.pendingHistoryControlSequence = null;
@@ -1582,6 +1595,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.subprocessPollingArmed = false;
         session.consecutiveSubprocessIdlePolls = 0;
         session.commandCompletionMarkersEnabled = false;
+        session.startupPromptMarkerSeen = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
         session.status = "exited";
         session.pendingHistoryControlSequence = null;
@@ -1691,6 +1705,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.subprocessPollingArmed = false;
         session.consecutiveSubprocessIdlePolls = 0;
         session.commandCompletionMarkersEnabled = false;
+        session.startupPromptMarkerSeen = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
         session.pendingHistoryControlSequence = null;
         session.pendingProcessEvents = [];
@@ -1790,6 +1805,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.subprocessPollingArmed = false;
           session.consecutiveSubprocessIdlePolls = 0;
           session.commandCompletionMarkersEnabled = false;
+          session.startupPromptMarkerSeen = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
           session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
@@ -2121,6 +2137,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               subprocessPollingArmed: false,
               consecutiveSubprocessIdlePolls: 0,
               commandCompletionMarkersEnabled: false,
+              startupPromptMarkerSeen: false,
               terminalCommandInputState: createTerminalCommandInputState(),
               runtimeEnv: normalizedRuntimeEnv(input.env),
             };
@@ -2341,6 +2358,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               subprocessPollingArmed: false,
               consecutiveSubprocessIdlePolls: 0,
               commandCompletionMarkersEnabled: false,
+              startupPromptMarkerSeen: false,
               terminalCommandInputState: createTerminalCommandInputState(),
               runtimeEnv: normalizedRuntimeEnv(input.env),
             };
