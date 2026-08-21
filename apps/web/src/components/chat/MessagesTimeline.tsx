@@ -1120,7 +1120,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const hasRows = rows.length > 0;
-  const lastRow = hasRows ? rows[rows.length - 1] : null;
 
   useEffect(() => {
     if (!hasRows || searchTargetRowIndex >= 0) {
@@ -1203,24 +1202,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [legendListReady, stickToBottomNow]);
 
   useEffect(() => {
-    if (!lastRow || (!activeTurnInProgress && !stickToBottomRequestPending)) {
+    if (!hasRows || (!activeTurnInProgress && !stickToBottomRequestPending)) {
       return;
     }
     if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
       return;
     }
 
-    const frameId = window.requestAnimationFrame(() => {
+    // Live rows above the stable working anchor can change height without
+    // changing the last row. LegendList settles those measurements across a
+    // few frames, so keep the pinned tail aligned throughout that window.
+    return scheduleStickToBottomFrames(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT, () => {
       if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
         return;
       }
       void listRef.current?.scrollToEnd?.({ animated: false });
     });
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [activeTurnInProgress, lastRow, listRef, stickToBottomRequestPending]);
+  }, [activeTurnInProgress, hasRows, listRef, rows, stickToBottomRequestPending]);
 
   useEffect(() => {
     return () => {
