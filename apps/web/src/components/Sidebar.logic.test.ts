@@ -1008,6 +1008,7 @@ describe("inbox done lifecycle", () => {
     latestTurn: null,
     createdAt: "2026-07-27T12:00:00.000Z",
     updatedAt: undefined,
+    pinnedAt: null,
   };
   const doneMark = { state: "done", at: NOW } as const;
 
@@ -1159,6 +1160,21 @@ describe("inbox done lifecycle", () => {
         autoDoneAfterDays: 2,
       }),
     ).toBe(false);
+  });
+
+  it("never auto-files a pinned thread, however stale", () => {
+    // A pin is "keep this at hand"; the idle timer must not overrule it. The
+    // user's explicit word still does -- pinning guards the automatic filing
+    // only.
+    const pinnedStale = {
+      ...base,
+      pinnedAt: "2026-07-20T12:00:00.000Z",
+      latestUserMessageAt: "2026-07-24T12:00:00.000Z",
+    };
+    expect(isThreadDone(pinnedStale, null, { now: NOW, autoDoneAfterDays: 2 })).toBe(false);
+    expect(
+      isThreadDone(pinnedStale, { state: "done", at: NOW }, { now: NOW, autoDoneAfterDays: 2 }),
+    ).toBe(true);
   });
 
   it("never files a completion the user has not seen", () => {

@@ -201,7 +201,8 @@ export interface InboxThreadRowProps {
   projectLabel: string | null;
   isActive: boolean;
   jumpLabel: string | null;
-  /** False while the thread is moving or blocked: live work can't be waved away. */
+  /** False while the thread is moving, blocked, or pinned: live work can't be
+   *  waved away, and a pin means keep it here. */
   canMarkDone: boolean;
   orderedThreadKeys: readonly string[];
   renamingThreadKey: string | null;

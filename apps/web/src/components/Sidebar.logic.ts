@@ -683,12 +683,16 @@ export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
  *    last activity. New work outranks an old word in both directions: a done
  *    thread that starts again pulls itself back without being un-marked, and
  *    a reopened thread that goes quiet again is allowed to re-file itself.
- * 3. Auto-done on idle, unless the thread holds a completion the user has
- *    not seen -- unread work is the inbox's reason to exist, and filing it
- *    unread would be the sidebar reading your mail for you.
+ * 3. Auto-done on idle, unless the thread is pinned or holds a completion the
+ *    user has not seen. A pin is "keep this at hand" -- filing it on a timer
+ *    would undo the one placement the user made by hand -- and unread work is
+ *    the inbox's reason to exist; filing it unread would be the sidebar
+ *    reading your mail for you.
  */
 export function isThreadDone(
-  thread: InboxLifecycleInput & DoneSortInput & { readonly lastVisitedAt?: string | undefined },
+  thread: InboxLifecycleInput &
+    DoneSortInput &
+    Pick<SidebarThreadSummary, "pinnedAt"> & { readonly lastVisitedAt?: string | undefined },
   override: ThreadDoneOverride | null | undefined,
   options: { readonly now: string; readonly autoDoneAfterDays?: number | null },
 ): boolean {
@@ -702,6 +706,7 @@ export function isThreadDone(
     return override.state === "done";
   }
   if (options.autoDoneAfterDays == null) return false;
+  if (thread.pinnedAt !== null) return false;
   if (hasUnseenCompletion(thread)) return false;
   if (lastActivityAt === null) return false;
   return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;

@@ -622,7 +622,12 @@ export default function Sidebar() {
           projectKey,
           projectLabel: sidebarProjectByKey.get(projectKey)?.displayName ?? null,
           isDone,
-          canMarkDone: canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
+          // A pinned row never offers the wrap-up check: the pin says "keep
+          // this here", and a hover affordance that files it away contradicts
+          // it. Unpinning brings the action back.
+          canMarkDone:
+            thread.pinnedAt === null &&
+            canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
           doneAt: isDone ? resolveDoneTimestamp(thread, override) : null,
         };
       }),

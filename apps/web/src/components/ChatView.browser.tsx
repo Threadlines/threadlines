@@ -5974,6 +5974,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     const pinnedThreadId = "thread-pinned-inbox" as ThreadId;
     const backgroundThreadId = "thread-background-inbox" as ThreadId;
     const completedThreadId = "thread-completed-inbox" as ThreadId;
+    const settledThreadId = "thread-settled-inbox" as ThreadId;
     const runningSnapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-running-pin-test" as MessageId,
       targetText: "running pin target",
@@ -5981,8 +5982,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       sessionActiveTurnId: "turn-running-pin-test" as TurnId,
     });
     const withPinnedThread = addThreadToSnapshot(
-      addThreadToSnapshot(addThreadToSnapshot(runningSnapshot, pinnedThreadId), backgroundThreadId),
-      completedThreadId,
+      addThreadToSnapshot(
+        addThreadToSnapshot(
+          addThreadToSnapshot(runningSnapshot, pinnedThreadId),
+          backgroundThreadId,
+        ),
+        completedThreadId,
+      ),
+      settledThreadId,
     );
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -6043,6 +6050,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
           document.querySelector<HTMLElement>(`[data-testid="thread-row-${completedThreadId}"]`),
         "Unable to find the completed thread's row.",
       );
+      await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${settledThreadId}"]`),
+        "Unable to find the settled thread's row.",
+      );
 
       expect(
         pinnedRow.compareDocumentPosition(runningRow) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -6065,9 +6076,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "A completed-unseen thread cannot be wrapped up before inspection.",
       ).toBeNull();
       expect(
-        document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
+        document.querySelector(`[data-testid="thread-done-${settledThreadId}"]`),
         "A settled inspected thread offers Wrap up.",
       ).not.toBeNull();
+      expect(
+        document.querySelector(`[data-testid="thread-done-${pinnedThreadId}"]`),
+        "A pinned thread never offers Wrap up; the pin means keep it here.",
+      ).toBeNull();
     } finally {
       await mounted.cleanup();
     }
