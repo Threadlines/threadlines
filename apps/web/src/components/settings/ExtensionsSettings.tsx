@@ -2732,7 +2732,7 @@ function ExtensionPreviewSection({
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
-                className="group flex min-h-10 w-full items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-ring sm:[&:nth-child(2)]:border-t-0"
+                className="group flex min-h-10 w-full min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-ring sm:[&:nth-child(2)]:border-t-0"
                 onClick={() => onSelect(item)}
                 type="button"
               >
@@ -2937,7 +2937,7 @@ function InstalledPluginRow({
   const detail = installedPluginDetail(item.plugin);
 
   return (
-    <div className="group flex min-h-11 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
+    <div className="group flex min-h-11 min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
       <button
         type="button"
         className="-mx-1 flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:text-foreground focus-ring"
@@ -3046,21 +3046,21 @@ function SkillListSkeleton() {
 function ConnectionsTableSkeleton() {
   return (
     <div aria-hidden="true" data-testid="extensions-connections-skeleton">
-      <div className="grid grid-cols-[minmax(0,1fr)_9rem_8rem] gap-3 border-b border-border/50 pb-1.5">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
         <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
-        <Skeleton className="h-2.5 w-10 max-w-full rounded-full" />
+        <Skeleton className="hidden h-2.5 w-10 max-w-full rounded-full sm:block" />
         <Skeleton className="h-2.5 w-12 max-w-full rounded-full" />
       </div>
       {["first-connection", "second-connection"].map((rowKey) => (
         <div
           key={rowKey}
-          className="grid min-h-11 grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 first:border-t-0"
+          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
         >
           <span className="flex min-w-0 items-center gap-2">
             <Skeleton className="size-3.5 shrink-0 rounded-sm" />
             <Skeleton className="h-3 w-32 max-w-full rounded-full" />
           </span>
-          <Skeleton className="h-3 w-20 max-w-full rounded-full" />
+          <Skeleton className="hidden h-3 w-20 max-w-full rounded-full sm:block" />
           <Skeleton className="h-3 w-16 max-w-full rounded-full" />
         </div>
       ))}
@@ -3154,9 +3154,10 @@ function ConnectionsTable({
 
   return (
     <div>
-      <div className="grid grid-cols-[minmax(0,1fr)_9rem_8rem] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+      {/* Type folds away below sm: three fixed columns starve the name column on a phone. */}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
         <span>Connection</span>
-        <span>Type</span>
+        <span className="hidden sm:block">Type</span>
         <span>Status</span>
       </div>
       {items.map((item) => {
@@ -3167,10 +3168,14 @@ function ConnectionsTable({
           <button
             key={`${item.provider.instanceId}:${item.id}`}
             type="button"
-            className="grid w-full grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring"
+            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
             onClick={() => onSelect(item)}
           >
             <span className="flex min-w-0 items-center gap-2">
+              {/* The type column is hidden on a phone, so the provider mark rides with the name. */}
+              <span className="sm:hidden">
+                <ProviderNameGlyph driver={String(item.provider.driver)} />
+              </span>
               <ExtensionItemGlyph item={item} environmentId={environmentId} />
               <span className="min-w-0">
                 <span className="block truncate text-xs text-foreground">{item.title}</span>
@@ -3181,7 +3186,7 @@ function ConnectionsTable({
                 ) : null}
               </span>
             </span>
-            <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="hidden min-w-0 flex-col gap-0.5 sm:flex">
               <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
                 <ProviderNameGlyph driver={String(item.provider.driver)} />
                 <span className="truncate">{providerTitle(item.provider)}</span>
@@ -5107,7 +5112,7 @@ export function ExtensionsSettingsPanel() {
                 onClick={() => selectTab("skills")}
               />
             </div>
-            <div className="pb-2 text-[11px] text-muted-foreground/70">
+            <div className="min-w-0 truncate pb-2 text-[11px] text-muted-foreground/70">
               {isLoading ? (
                 <span className="inline-flex items-center gap-1.5">
                   <LoaderIcon className="size-3 animate-spin" />

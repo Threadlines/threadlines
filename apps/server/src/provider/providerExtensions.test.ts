@@ -2305,6 +2305,54 @@ Per-component (rounded)
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
+  it.effect("keeps a personal skill user-scoped when the project lives under the home", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // Real projects sit under the home directory, so the ancestor walk reaches
+      // <home>/.claude/skills and must not re-file personal skills as project skills.
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-skills-nested-home-",
+      });
+      const cwd = path.join(claudeHome, "projects", "app");
+      yield* fileSystem.makeDirectory(cwd, { recursive: true });
+      const skillPath = path.join(claudeHome, ".claude", "skills", "personal", "SKILL.md");
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(
+        skillPath,
+        ["---", "name: personal", "---", "A personal skill."].join("\n"),
+      );
+
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+        providers: [],
+      });
+      const skill = result.providers[0]?.skills.find((entry) => entry.name === "personal");
+
+      assert.equal(skill?.scope, "user");
+      assert.equal(skill?.source, "Claude user");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
   it.effect("starts Claude MCP login through the configured Claude CLI", () => {
     const ptyCalls: Array<{ readonly shell: string; readonly args: ReadonlyArray<string> }> = [];
     const calls: Array<{

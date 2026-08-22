@@ -3163,10 +3163,16 @@ const claudeWritableSkillRoots = Effect.fn("providerExtensions.claudeWritableSki
   ): Effect.fn.Return<ClaudeSkillRoot[], never, FileSystem.FileSystem | Path.Path> {
     const path = yield* Path.Path;
     const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
+    // A project under the home directory walks its ancestors up through ~/.claude/skills, which
+    // would re-file every personal skill as a project skill. The user root keeps its own identity.
+    const userRootKey = normalizedPathKey(path.resolve(claudeUserSkillsRoot(path, claudeHome)));
+    const ancestorRoots = claudeAncestorSkillRoots(path, cwd).filter(
+      (root) => normalizedPathKey(path.resolve(root.root)) !== userRootKey,
+    );
     return uniqueClaudeSkillRoots(
       [
         ...nestedProjectRoots,
-        ...claudeAncestorSkillRoots(path, cwd),
+        ...ancestorRoots,
         {
           root: claudeUserSkillsRoot(path, claudeHome),
           scope: "user",
