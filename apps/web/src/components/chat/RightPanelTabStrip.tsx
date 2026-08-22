@@ -1,7 +1,9 @@
 /**
  * The right sidebar's tab strip, in the internal browser's visual language: a
  * short row of rounded-top tabs, the active one lifted onto the background, a
- * close ✕ that appears on hover, and a `+` sitting after the last tab.
+ * close ✕ that appears on hover, and a `+` sitting after the last tab. On touch
+ * screens -- where a control that waits for hover is a control that does not
+ * exist -- the ✕ is on show permanently instead, in width the tab reserves.
  *
  * The `+` opens a menu of the thread's surfaces rather than a new blank tab,
  * because there is a fixed set of them and each can only be open once. A
@@ -51,11 +53,13 @@ export type RightPanelTabStripMode = "labels" | "icons";
 const TAB_LABEL_HYSTERESIS_PX = 12;
 
 /**
- * The label's tail fades out from under the ✕ while the ✕ is showing. The ✕ has
- * no width of its own -- reserving one is the whole thing this strip is trying
- * to avoid -- so the label is what gives way, which is also what Chrome and Edge
- * do. Spelled out twice rather than composed at runtime: Tailwind only ships
- * classes it can see written down.
+ * On hover-capable devices the label's tail fades out from under the ✕ while
+ * the ✕ is showing. There the ✕ has no width of its own -- reserving one is the
+ * whole thing this strip is trying to avoid -- so the label is what gives way,
+ * which is also what Chrome and Edge do. (Touch tabs reserve real width via
+ * padding instead, so the label never runs under the ✕ there.) Spelled out
+ * twice rather than composed at runtime: Tailwind only ships classes it can see
+ * written down.
  */
 const LABEL_FADE_UNDER_CLOSE =
   "group-hover/rail-tab:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent_calc(100%-0.75rem))] " +
@@ -409,17 +413,16 @@ function TabStripItem({
   onClose: () => void;
 }) {
   const TabIcon = RIGHT_PANEL_TAB_ICONS[surface.id];
-  // While this tab rides the pointer its ✕ hides and its glyph holds: the
-  // hover that reveals the ✕ is inevitable mid-drag, and a close control on a
-  // tab being moved reads as the wrong gesture. Inline styles, because they
-  // are the only thing that outranks the group-hover reveal classes.
+  // While this tab rides the pointer its ✕ hides and its glyph holds: a close
+  // control on a tab being moved reads as the wrong gesture. Inline styles,
+  // because they are the one thing that outranks the classes.
   const dragging = reorder?.visual?.kind === "dragged";
-  // With no label to overlay, only the active tab offers a ✕: hovering an
-  // inactive icon takes you to its surface, and turning that same hover into a
-  // close target would make a 28px box mean two opposite things. Reaching a
-  // background surface's ✕ costs one extra click (select it, then close it),
-  // which is the trade the strip already makes for not spending width on a
-  // control that is invisible most of the time. Middle-click closes either way.
+  // In icon mode the ✕ takes the glyph's whole box, so only the active tab
+  // offers one: an always-on ✕ across every icon would erase the row's one
+  // means of telling the surfaces apart, and the active surface is the one
+  // whose identity the panel below is already showing. Reaching a background
+  // surface's ✕ costs one extra tap (select it, then close it); middle-click
+  // closes any of them outright.
   const closable = !iconOnly || active;
   const tabButton = (
     <button
@@ -436,8 +439,10 @@ function TabStripItem({
       <span
         className={cn(
           "flex size-3 shrink-0 items-center justify-center transition-opacity",
-          // The glyph steps aside only where the ✕ lands on top of it.
-          iconOnly && closable && HIDE_ON_TAB_HOVER_OR_FOCUS,
+          // The glyph steps aside only where the ✕ lands on top of it: on hover
+          // where hover exists, permanently on touch, where the always-on ✕ has
+          // the active tab's whole box.
+          iconOnly && closable && cn("opacity-0 can-hover:opacity-100", HIDE_ON_TAB_HOVER_OR_FOCUS),
         )}
         {...(dragging ? { style: { opacity: 1 } } : {})}
         {...(measuring ? {} : { "data-right-panel-tab-glyph": "true" })}
@@ -474,9 +479,10 @@ function TabStripItem({
           ? // Square-ish: the glyph and its padding, nothing else.
             "px-2"
           : // Padded wider after the label than before the glyph: the glyph
-            // anchors the left edge, and the tail carries the ✕, which wants a
-            // margin of its own rather than sitting on the tab's edge.
-            "pr-3.5 pl-1.5",
+            // anchors the left edge, and the tail carries the ✕. On touch the
+            // tail is wider still, real reserved width for the always-on ✕; on
+            // hover devices it shrinks back and the ✕ overlays the label.
+            "pr-5.5 pl-1.5 can-hover:pr-3.5",
         active
           ? "bg-background text-foreground"
           : "bg-muted/50 text-muted-foreground/80 hover:bg-accent hover:text-foreground",
@@ -526,9 +532,11 @@ function TabStripItem({
     >
       {tabButton}
       {/* Overlaid on the tab's right edge rather than given a column of its own:
-          reserving ~18px per tab for a control that is invisible most of the
-          time is the width this strip cannot spare. Absolute, so revealing it
-          reflows nothing -- the tab is the same box hovered or not. */}
+          on hover devices, reserving ~18px per tab for a control that is
+          invisible most of the time is the width this strip cannot spare, so it
+          hides until hover and reflows nothing when it shows. Touch screens
+          have no hover to reveal it with, so there it stays on show and the
+          tab's own padding reserves its ground. */}
       {closable && !measuring ? (
         <button
           type="button"
@@ -540,7 +548,7 @@ function TabStripItem({
           // across the whole tab: without it nothing says the pointer is on the ✕
           // rather than on the tab it sits in.
           className={cn(
-            "group/rail-close absolute inline-flex items-center justify-center opacity-0 transition-[opacity,background-color,color] hover:text-foreground focus-ring",
+            "group/rail-close absolute inline-flex items-center justify-center transition-[opacity,background-color,color] hover:text-foreground focus-ring",
             active ? "bg-background" : "bg-rail",
             iconOnly
               ? // The whole tab, so the target is the icon's own 28px box rather
@@ -549,6 +557,7 @@ function TabStripItem({
                 // while this full box keeps the pointer target generous.
                 "inset-0 rounded-t-md"
               : "top-1/2 right-1 size-4 -translate-y-1/2 rounded hover:bg-foreground/10",
+            "can-hover:opacity-0",
             REVEAL_ON_TAB_HOVER_OR_FOCUS,
             "focus-visible:opacity-100",
           )}
@@ -602,10 +611,12 @@ function useTabStripMode(tabsKey: string): {
   rowRef: React.RefObject<HTMLDivElement | null>;
   measureRef: React.RefObject<HTMLDivElement | null>;
   actionsRef: React.RefObject<HTMLDivElement | null>;
+  trailingRef: React.RefObject<HTMLDivElement | null>;
 } {
   const rowRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
   const actionsRef = useRef<HTMLDivElement | null>(null);
+  const trailingRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<RightPanelTabStripMode>("labels");
   const modeRef = useRef<RightPanelTabStripMode>(mode);
 
@@ -624,7 +635,8 @@ function useTabStripMode(tabsKey: string): {
         row.clientWidth -
         parseFloat(style.paddingLeft) -
         parseFloat(style.paddingRight) -
-        (actionsRef.current?.offsetWidth ?? 0);
+        (actionsRef.current?.offsetWidth ?? 0) -
+        (trailingRef.current?.offsetWidth ?? 0);
       const labelled = measure.offsetWidth;
       const fits =
         modeRef.current === "labels"
@@ -644,6 +656,10 @@ function useTabStripMode(tabsKey: string): {
     if (actions !== null) {
       observer.observe(actions);
     }
+    const trailing = trailingRef.current;
+    if (trailing !== null) {
+      observer.observe(trailing);
+    }
     return () => {
       observer.disconnect();
     };
@@ -651,7 +667,7 @@ function useTabStripMode(tabsKey: string): {
     // box is the only thing that has to be re-subscribed.
   }, [tabsKey]);
 
-  return { mode, rowRef, measureRef, actionsRef };
+  return { mode, rowRef, measureRef, actionsRef, trailingRef };
 }
 
 export const RightPanelTabStrip = memo(function RightPanelTabStrip({
@@ -681,7 +697,7 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   trailing?: React.ReactNode;
 }) {
   const stripRef = useRef<HTMLDivElement | null>(null);
-  const { mode, rowRef, measureRef, actionsRef } = useTabStripMode(openTabs.join(","));
+  const { mode, rowRef, measureRef, actionsRef, trailingRef } = useTabStripMode(openTabs.join(","));
   const iconOnly = mode === "icons";
   const reorderable = onReorderTab !== undefined && openTabs.length > 1;
   const { drag, beginTabDrag, suppressDragClick } = useTabDragReorder({
@@ -811,9 +827,7 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
           </ScrollArea>
         </div>
         {/* Anchored beside the scroller, never in it: the one control that adds a
-            tab has to stay reachable no matter how far the tabs have scrolled.
-            Grouped with the sheet's dismissal so the strip can measure in one
-            read what the tabs do not get to spend. */}
+            tab has to stay reachable no matter how far the tabs have scrolled. */}
         <div
           ref={actionsRef}
           className="flex shrink-0 items-stretch"
@@ -859,12 +873,20 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
               </MenuPopup>
             </Menu>
           ) : null}
-          {/* Dismissal belongs to the panel, not to the tabs, so it keeps the far
-              edge and stays put while the tabs scroll past it. */}
-          {trailing ? (
-            <div className="flex shrink-0 items-center self-center ps-1">{trailing}</div>
-          ) : null}
         </div>
+        {/* Dismissal belongs to the panel, not to the tabs, so it is pushed out
+            to the row's far edge rather than parked beside the `+`, and stays
+            put while the tabs scroll past it. Measured on its own so the mode
+            decision still knows the tabs never had this width to spend. */}
+        {trailing ? (
+          <div
+            ref={trailingRef}
+            className="ms-auto flex shrink-0 items-center self-center ps-1"
+            data-right-panel-strip-trailing="true"
+          >
+            {trailing}
+          </div>
+        ) : null}
       </div>
     </div>
   );

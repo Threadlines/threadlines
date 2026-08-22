@@ -3,6 +3,9 @@
 @custom-variant dark (&:is(.dark, .dark *));
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
+/* The primary pointer can hover (mouse/trackpad). Hide-until-hover affordances
+   are gated on this, so touch screens get them permanently visible instead. */
+@custom-variant can-hover (@media (hover: hover));
 
 :root {
   --workspace-topbar-height: 52px;

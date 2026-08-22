@@ -1603,7 +1603,7 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("reveals a tab's ✕ on its right edge, costing the tab no width", async () => {
+  it("reveals a tab's ✕ on hover, costing the tab no width beyond its touch reserve", async () => {
     const onCloseTab = vi.fn();
     const mounted = await render(
       <main style={{ boxSizing: "border-box", height: 640, width: 420 }}>
@@ -1628,7 +1628,10 @@ describe("AgentsPanel", () => {
       const close = tab.querySelector("[data-right-panel-close-tab]") as HTMLElement;
       const restingWidth = tab.getBoundingClientRect().width;
 
-      // Nothing on show for a tab nobody is pointing at.
+      // On a hover-capable device, nothing on show for a tab nobody is pointing
+      // at. (Touch screens keep the ✕ visible instead -- `can-hover` gates the
+      // hide -- but this test browser hovers, so it exercises the reveal.)
+      expect(window.matchMedia("(hover: hover)").matches).toBe(true);
       expect(getComputedStyle(close).opacity).toBe("0");
 
       // Keyboard reaches it the same way the pointer does: focus the tab, then
