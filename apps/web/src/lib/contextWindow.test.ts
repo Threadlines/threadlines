@@ -7,6 +7,7 @@ import {
   deriveLatestContextWindowSnapshot,
   formatContextWindowPercentage,
   formatContextWindowTokens,
+  formatContextWindowTokensCompact,
 } from "./contextWindow";
 
 function makeActivity(id: string, kind: string, payload: unknown): OrchestrationThreadActivity {
@@ -86,6 +87,13 @@ describe("contextWindow", () => {
     expect(formatContextWindowTokens(3456)).toBe("3.4k");
     expect(formatContextWindowTokens(999_950)).toBe("999.9k");
     expect(formatContextWindowTokens(1_460_000)).toBe("1.4m");
+  });
+
+  it("drops the k-range decimal in the compact variant without rounding up", () => {
+    expect(formatContextWindowTokensCompact(48_120)).toBe("48k");
+    expect(formatContextWindowTokensCompact(48_999)).toBe("48k");
+    expect(formatContextWindowTokensCompact(3456)).toBe("3.4k");
+    expect(formatContextWindowTokensCompact(1_460_000)).toBe("1.4m");
   });
 
   it("includes total processed tokens when available", () => {

@@ -141,3 +141,16 @@ export function formatContextWindowTokens(value: number | null): string {
   }
   return `${(Math.floor(value / 100_000) / 10).toFixed(1).replace(/\.0$/, "")}m`;
 }
+
+/** Width-budgeted labels (the agents panel's `model · effort · tokens` meta
+ *  line) drop the k-range decimal so the line keeps fitting its 330px row.
+ *  Still truncated, never rounded up: 48,999 shows as 48k, not 49k. */
+export function formatContextWindowTokensCompact(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value < 10_000) {
+    return formatContextWindowTokens(value);
+  }
+  if (value < 1_000_000) {
+    return `${Math.floor(value / 1_000)}k`;
+  }
+  return formatContextWindowTokens(value);
+}

@@ -12,7 +12,7 @@ import {
   type SubagentProgressItem,
   type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
-import { formatContextWindowTokens } from "../../lib/contextWindow";
+import { formatContextWindowTokensCompact } from "../../lib/contextWindow";
 import { pluralize } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { formatSubagentMetaParts, formatSubagentDuration } from "./subagentMeta";
@@ -222,7 +222,7 @@ function formatAgentHistoryMeta(item: SubagentProgressItem): ReadonlyArray<strin
   return [
     ...agentIdentityMetaParts(item),
     ...(totalTokens !== null && totalTokens > 0
-      ? [`${formatContextWindowTokens(totalTokens)} tokens`]
+      ? [`${formatContextWindowTokensCompact(totalTokens)} tokens`]
       : []),
     ...agentDiffMetaParts(item),
   ];
@@ -633,7 +633,7 @@ export function formatAgentsHeaderMeta(input: {
 
   const parts = [
     elapsedMs !== null && elapsedMs > 0 ? formatSubagentDuration(elapsedMs) : null,
-    totalTokens > 0 ? `${formatContextWindowTokens(totalTokens)} tokens` : null,
+    totalTokens > 0 ? `${formatContextWindowTokensCompact(totalTokens)} tokens` : null,
   ].filter((part): part is string => part !== null);
 
   return parts.length > 0 ? parts.join(" · ") : null;
