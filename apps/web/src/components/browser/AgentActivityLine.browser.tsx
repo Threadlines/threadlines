@@ -21,6 +21,7 @@ function seedBrowserPanel(viewport: { width: number | null; height: number | nul
       [THREAD_KEY]: { open: true, tabs: [tab], activeTabId: tab.id },
     },
     agentStateByThreadKey: {},
+    browserOwnershipByThreadKey: {},
     pendingApprovalByThreadKey: {},
     deviceToolbarOpen: true,
   });
@@ -30,6 +31,7 @@ function resetBrowserPanel() {
   useBrowserPanelStore.setState({
     browserStateByThreadKey: {},
     agentStateByThreadKey: {},
+    browserOwnershipByThreadKey: {},
     pendingApprovalByThreadKey: {},
     deviceToolbarOpen: false,
   });

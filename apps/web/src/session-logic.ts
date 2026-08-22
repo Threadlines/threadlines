@@ -173,6 +173,16 @@ export type ActiveModelFallbackState = ModelFallbackState;
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
+  browserReceipt?: BrowserReceipt;
+}
+
+interface BrowserReceipt {
+  tabId: string;
+  openedUrl: string | null;
+  finalUrl: string | null;
+  verifications: ReadonlyArray<string>;
+  tabClosed: boolean;
+  panelOpen: boolean | null;
 }
 
 export interface PendingApproval {
@@ -2061,8 +2071,10 @@ export function deriveWorkLogEntries(
   // its private-thinking row suppression on the latter. Only the
   // derivation-internal collapse key comes off.
   return enrichGenericThinkingEntries(
-    collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
-  ).map(({ collapseKey: _collapseKey, ...entry }) => entry);
+    collapseBrowserReceipts(
+      collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+    ),
+  ).map(({ collapseKey: _collapseKey, browserReceipt: _browserReceipt, ...entry }) => entry);
 }
 
 /** The task-notification completion replay re-emits the original Task tool
@@ -2206,6 +2218,7 @@ function toDerivedWorkLogEntry(
       extractRuntimeActivityDetail(activity, payload) ??
       extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
+  const browserReceipt = deriveBrowserReceipt(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
@@ -2288,6 +2301,9 @@ function toDerivedWorkLogEntry(
   }
   if (toolCallId) {
     entry.toolCallId = toolCallId;
+  }
+  if (browserReceipt) {
+    entry.browserReceipt = browserReceipt;
   }
   const providerLifecyclePhase = providerLifecyclePhaseFromActivityKind(activity.kind);
   if (providerLifecyclePhase) {
@@ -2424,6 +2440,80 @@ function collapseDerivedWorkLogEntries(
   }
 
   return collapsed;
+}
+
+/** Turns a run of browser calls on one tab into one durable, readable receipt. */
+function collapseBrowserReceipts(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+): DerivedWorkLogEntry[] {
+  const collapsed: DerivedWorkLogEntry[] = [];
+  const activeIndexByTab = new Map<string, number>();
+
+  for (const entry of entries) {
+    const receipt = entry.browserReceipt;
+    if (!receipt) {
+      collapsed.push(entry);
+      continue;
+    }
+    const key = [entry.turnId ?? "thread", entry.sourceAgentThreadId ?? "root", receipt.tabId].join(
+      "\u001f",
+    );
+    const activeIndex = activeIndexByTab.get(key);
+    if (activeIndex === undefined) {
+      const receiptEntry = applyBrowserReceiptPresentation(entry, receipt);
+      collapsed.push(receiptEntry);
+      if (!receipt.tabClosed) activeIndexByTab.set(key, collapsed.length - 1);
+      continue;
+    }
+
+    const previous = collapsed[activeIndex];
+    if (!previous) {
+      collapsed.push(applyBrowserReceiptPresentation(entry, receipt));
+      continue;
+    }
+    const merged = mergeDerivedWorkLogEntries(previous, entry);
+    const mergedReceipt = merged.browserReceipt;
+    if (!mergedReceipt) {
+      collapsed.push(entry);
+      continue;
+    }
+    collapsed[activeIndex] = applyBrowserReceiptPresentation(merged, mergedReceipt);
+    if (mergedReceipt.tabClosed) activeIndexByTab.delete(key);
+  }
+
+  return collapsed;
+}
+
+function applyBrowserReceiptPresentation(
+  entry: DerivedWorkLogEntry,
+  receipt: BrowserReceipt,
+): DerivedWorkLogEntry {
+  const parts: string[] = [];
+  if (receipt.openedUrl) parts.push(`Opened ${truncateInlinePreview(receipt.openedUrl, 72)}`);
+  if (receipt.finalUrl && receipt.finalUrl !== receipt.openedUrl) {
+    parts.push(`Final ${truncateInlinePreview(receipt.finalUrl, 72)}`);
+  }
+  if (receipt.verifications.length > 0) {
+    parts.push(`Verified ${formatNaturalList(receipt.verifications)}`);
+  }
+  if (receipt.tabClosed) {
+    parts.push(receipt.panelOpen ? "Closed tab; browser stayed open" : "Closed tab and browser");
+  } else {
+    parts.push("Tab and browser left open");
+  }
+  return {
+    ...entry,
+    label: "Browser receipt",
+    toolTitle: "Browser receipt",
+    detail: parts.join(" · "),
+    browserReceipt: receipt,
+  };
+}
+
+function formatNaturalList(values: ReadonlyArray<string>): string {
+  if (values.length <= 1) return values[0] ?? "page";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
 }
 
 function shouldKeepDerivedWorkLogEntry(entry: DerivedWorkLogEntry): boolean {
@@ -2653,6 +2743,7 @@ function mergeDerivedWorkLogEntries(
   const subagentTask = next.subagentTask ?? previous.subagentTask;
   const spawnedAgentIds = next.spawnedAgentIds ?? previous.spawnedAgentIds;
   const completedAt = next.completedAt ?? previous.completedAt;
+  const browserReceipt = mergeBrowserReceipt(previous.browserReceipt, next.browserReceipt);
   return {
     ...previous,
     ...next,
@@ -2678,6 +2769,7 @@ function mergeDerivedWorkLogEntries(
     ...(turnId !== undefined ? { turnId } : {}),
     ...(subagentTask ? { subagentTask } : {}),
     ...(spawnedAgentIds ? { spawnedAgentIds } : {}),
+    ...(browserReceipt ? { browserReceipt } : {}),
   };
 }
 
@@ -3456,6 +3548,7 @@ interface ToolCallIdentity {
   readonly serverOrNamespace: string | null;
   readonly tool: string | null;
   readonly input: unknown;
+  readonly result: unknown;
 }
 
 interface SemanticToolPresentation {
@@ -3486,6 +3579,12 @@ function extractToolCallIdentity(payload: Record<string, unknown> | null): ToolC
       : data && Object.prototype.hasOwnProperty.call(data, "arguments")
         ? data.arguments
         : undefined;
+  const result =
+    item && Object.prototype.hasOwnProperty.call(item, "result")
+      ? item.result
+      : data && Object.prototype.hasOwnProperty.call(data, "result")
+        ? data.result
+        : payload?.result;
 
   if (!serverOrNamespace && !tool) {
     return null;
@@ -3496,6 +3595,92 @@ function extractToolCallIdentity(payload: Record<string, unknown> | null): ToolC
     serverOrNamespace,
     tool,
     input,
+    result,
+  };
+}
+
+function deriveBrowserReceipt(payload: Record<string, unknown> | null): BrowserReceipt | null {
+  const identity = extractToolCallIdentity(payload);
+  const tool = identity?.tool?.trim().toLowerCase() ?? "";
+  if (
+    !identity ||
+    !toolNamespaceMatches(identity.serverOrNamespace, "browser", "threadlines_browser") ||
+    !tool.startsWith("browser_")
+  ) {
+    return null;
+  }
+
+  const result = structuredToolResult(identity.result);
+  const closedTab = asRecord(result?.closedTab ?? result?.closed_tab);
+  const tabId =
+    asTrimmedString(result?.tabId ?? result?.tab_id) ??
+    asTrimmedString(closedTab?.id) ??
+    argumentValue(identity.input, "tabId", "tab_id");
+  if (!tabId) return null;
+
+  const inputUrl = argumentValue(identity.input, "url", "href");
+  const finalUrl =
+    asTrimmedString(closedTab?.url) ?? asTrimmedString(result?.url) ?? inputUrl ?? null;
+  const verifications: string[] = [];
+  if (tool === "browser_open_tab" || tool === "browser_navigate") {
+    verifications.push("address", "load state");
+  }
+  if (tool === "browser_snapshot") verifications.push("page content");
+  if (tool === "browser_screenshot") verifications.push("appearance");
+  if (tool === "browser_status") verifications.push("address", "load state");
+  if (tool === "browser_wait_for") {
+    const input = asRecord(identity.input);
+    if (asTrimmedString(input?.urlContains ?? input?.url_contains)) {
+      verifications.push("address");
+    }
+    if (asTrimmedString(input?.text) || input?.target !== undefined) {
+      verifications.push("page content");
+    }
+    if (verifications.length === 0) verifications.push("page state");
+  }
+
+  return {
+    tabId,
+    openedUrl: inputUrl ?? finalUrl,
+    finalUrl,
+    verifications,
+    tabClosed: tool === "browser_close_tab" && closedTab !== null,
+    panelOpen: typeof result?.panelOpen === "boolean" ? result.panelOpen : null,
+  };
+}
+
+function structuredToolResult(value: unknown): Record<string, unknown> | null {
+  const result = asRecord(value) ?? parseJsonRecord(value);
+  if (!result) return null;
+  return (
+    asRecord(result.structuredContent ?? result.structured_content) ??
+    parseJsonRecord(result.structuredContent ?? result.structured_content) ??
+    result
+  );
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || !value.trim().startsWith("{")) return null;
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function mergeBrowserReceipt(
+  previous: BrowserReceipt | undefined,
+  next: BrowserReceipt | undefined,
+): BrowserReceipt | undefined {
+  if (!previous) return next;
+  if (!next || previous.tabId !== next.tabId) return previous;
+  return {
+    tabId: previous.tabId,
+    openedUrl: previous.openedUrl ?? next.openedUrl,
+    finalUrl: next.finalUrl ?? previous.finalUrl,
+    verifications: uniqueStrings([...previous.verifications, ...next.verifications]),
+    tabClosed: previous.tabClosed || next.tabClosed,
+    panelOpen: next.panelOpen ?? previous.panelOpen,
   };
 }
 
@@ -3644,8 +3829,41 @@ function browserAutomationDetail(identity: ToolCallIdentity): string {
   const url = directUrl ?? codeUrl;
   const tool = identity.tool?.trim().toLowerCase();
 
-  if (tool && /^(?:open|goto|navigate|new_tab)$/u.test(tool)) {
+  if (tool && /^(?:open|goto|new_tab|browser_open_tab|open_tab)$/u.test(tool)) {
     return url ? `Opening ${truncateInlinePreview(url, 72)}` : "Opening browser page";
+  }
+  if (tool && /^(?:browser_navigate|navigate)$/u.test(tool)) {
+    return url ? `Navigating to ${truncateInlinePreview(url, 72)}` : "Navigating browser page";
+  }
+  if (tool && /^(?:browser_close_tab|close_tab)$/u.test(tool)) {
+    const tabId = argumentValue(identity.input, "tabId", "tab_id");
+    return tabId ? `Closed browser tab ${truncateInlinePreview(tabId, 32)}` : "Closed browser tab";
+  }
+  if (tool && /^(?:browser_select_tab|select_tab)$/u.test(tool)) {
+    const tabId = argumentValue(identity.input, "tabId", "tab_id");
+    return tabId
+      ? `Selected browser tab ${truncateInlinePreview(tabId, 32)}`
+      : "Selected browser tab";
+  }
+  if (tool && /^(?:browser_tabs|tabs)$/u.test(tool)) {
+    return "Listed browser tabs";
+  }
+  if (tool && /^(?:browser_snapshot|snapshot)$/u.test(tool)) {
+    return "Verified browser page";
+  }
+  if (tool && /^(?:browser_wait_for|wait_for)$/u.test(tool)) {
+    return "Waited for browser page";
+  }
+  if (tool && /^(?:browser_)?screenshot$/u.test(tool)) {
+    return "Captured browser screenshot";
+  }
+  if (
+    tool &&
+    /^(?:browser_)?(?:click|type|press|scroll|move|drag|evaluate|resize|set_appearance)$/u.test(
+      tool,
+    )
+  ) {
+    return "Interacted with browser page";
   }
 
   if (code && /\.goto\(/u.test(code) && url) {
