@@ -8,6 +8,7 @@ import { BotIcon } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
+import { isPluginSkillCommandName } from "./composerSlashCommandSearch";
 import { formatProviderSkillInstallSource } from "~/providerSkillPresentation";
 import { cn } from "~/lib/utils";
 import {
@@ -81,7 +82,7 @@ function SkillGlyph(props: { className?: string }) {
 function groupCommandItems(
   items: ComposerCommandItem[],
   triggerKind: ComposerTriggerKind | null,
-  groupSlashCommandSections: boolean,
+  providerGroupLabel: string,
 ): ComposerCommandGroup[] {
   if (triggerKind === "skill") {
     return items.length > 0 ? [{ id: "skills", label: "Skills", items }] : [];
@@ -89,19 +90,37 @@ function groupCommandItems(
   if (triggerKind === "path") {
     return items.length > 0 ? [{ id: "paths", label: "Files & folders", items }] : [];
   }
-  if (triggerKind !== "slash-command" || !groupSlashCommandSections) {
+  if (triggerKind !== "slash-command") {
     return [{ id: "default", label: null, items }];
   }
 
   const builtInItems = items.filter((item) => item.type === "slash-command");
   const providerItems = items.filter((item) => item.type === "provider-slash-command");
+  // Only plugin skills are identifiable in a provider's command list — Claude
+  // namespaces them `plugin:skill`. Everything else stays with the provider's
+  // own commands, because personal and project skills look like commands.
+  // Keyboard order relies on the flat item list already matching this section
+  // order (ChatComposer partitions with the same predicate).
+  const pluginSkillItems = providerItems.filter((item) =>
+    isPluginSkillCommandName(item.command.name),
+  );
+  const providerCommandItems = providerItems.filter(
+    (item) => !isPluginSkillCommandName(item.command.name),
+  );
+  const skillItems = items.filter((item) => item.type === "skill");
 
   const groups: ComposerCommandGroup[] = [];
   if (builtInItems.length > 0) {
     groups.push({ id: "built-in", label: "Built-in", items: builtInItems });
   }
-  if (providerItems.length > 0) {
-    groups.push({ id: "provider", label: "Provider", items: providerItems });
+  if (providerCommandItems.length > 0) {
+    groups.push({ id: "provider", label: providerGroupLabel, items: providerCommandItems });
+  }
+  if (pluginSkillItems.length > 0) {
+    groups.push({ id: "plugin-skills", label: "Plugin skills", items: pluginSkillItems });
+  }
+  if (skillItems.length > 0) {
+    groups.push({ id: "skills", label: "Skills", items: skillItems });
   }
   return groups;
 }
@@ -111,7 +130,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   resolvedTheme: "light" | "dark";
   isLoading: boolean;
   triggerKind: ComposerTriggerKind | null;
-  groupSlashCommandSections?: boolean;
+  /** Display name of the selected provider, used as the provider group heading. */
+  providerGroupLabel?: string;
   emptyStateText?: string;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
@@ -119,9 +139,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(
-    () =>
-      groupCommandItems(props.items, props.triggerKind, props.groupSlashCommandSections ?? true),
-    [props.groupSlashCommandSections, props.items, props.triggerKind],
+    () => groupCommandItems(props.items, props.triggerKind, props.providerGroupLabel ?? "Provider"),
+    [props.items, props.providerGroupLabel, props.triggerKind],
   );
 
   useLayoutEffect(() => {

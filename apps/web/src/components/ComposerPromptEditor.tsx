@@ -73,6 +73,7 @@ import {
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
   COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME,
   COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME,
+  COMPOSER_INLINE_STALE_SKILL_CHIP_CLASS_NAME,
   SKILL_CHIP_ICON_SVG,
 } from "./composerInlineChip";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
@@ -130,6 +131,28 @@ const ComposerTerminalContextActionsContext = createContext<{
 }>({
   onRemoveTerminalContext: () => {},
 });
+
+/**
+ * Which `$skill` names the thread's selected provider can actually resolve.
+ * Chips read this at render time, so switching provider restyles them without
+ * rebuilding editor state. `authoritative` is false while the list is still
+ * loading — chips stay normal rather than flashing a warning.
+ */
+export type ComposerSkillAvailability = {
+  knownSkillNames: ReadonlySet<string>;
+  authoritative: boolean;
+  /** Tooltip for chips this provider cannot resolve. */
+  staleReason: string;
+};
+
+const EMPTY_SKILL_AVAILABILITY: ComposerSkillAvailability = {
+  knownSkillNames: new Set<string>(),
+  authoritative: false,
+  staleReason: "Not available with the selected provider",
+};
+
+const ComposerSkillAvailabilityContext =
+  createContext<ComposerSkillAvailability>(EMPTY_SKILL_AVAILABILITY);
 
 function ComposerMentionDecorator(props: { path: string }) {
   const theme = resolvedThemeFromDocument();
@@ -248,13 +271,24 @@ function skillMetadataByName(
   );
 }
 
-function ComposerSkillDecorator(props: { skillLabel: string; skillDescription: string | null }) {
+function ComposerSkillDecorator(props: {
+  skillName: string;
+  skillLabel: string;
+  skillDescription: string | null;
+}) {
+  const availability = use(ComposerSkillAvailabilityContext);
+  const isStale = availability.authoritative && !availability.knownSkillNames.has(props.skillName);
   const chip = (
     <span
-      className={COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME}
+      className={
+        isStale
+          ? COMPOSER_INLINE_STALE_SKILL_CHIP_CLASS_NAME
+          : COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME
+      }
       contentEditable={false}
       spellCheck={false}
       data-composer-skill-chip="true"
+      {...(isStale ? { "data-composer-skill-stale": "true" } : {})}
     >
       <span
         aria-hidden="true"
@@ -265,7 +299,8 @@ function ComposerSkillDecorator(props: { skillLabel: string; skillDescription: s
     </span>
   );
 
-  if (!props.skillDescription) {
+  const tooltip = isStale ? availability.staleReason : props.skillDescription;
+  if (!tooltip) {
     return chip;
   }
 
@@ -273,7 +308,7 @@ function ComposerSkillDecorator(props: { skillLabel: string; skillDescription: s
     <Tooltip>
       <TooltipTrigger render={chip} />
       <TooltipPopup side="top" className="max-w-120 whitespace-normal leading-tight">
-        {props.skillDescription}
+        {tooltip}
       </TooltipPopup>
     </Tooltip>
   );
@@ -350,6 +385,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
   override decorate(): React.ReactElement {
     return (
       <ComposerSkillDecorator
+        skillName={this.__skillName}
         skillLabel={this.__skillLabel}
         skillDescription={this.__skillDescription}
       />
@@ -492,7 +528,10 @@ function $createComposerCommandTextNode(text: string): ComposerCommandTextNode {
   return $applyNodeReplacement(new ComposerCommandTextNode(text));
 }
 
-const LEADING_COMMAND_TOKEN_REGEX = /^\/([a-z][a-z-]*)(?=\s|$)/i;
+// Provider command names are not always plain words: Claude exposes plugin
+// skills as `plugin:skill`, and both providers allow digits and underscores.
+// The token still only styles when it matches a recognized name.
+const LEADING_COMMAND_TOKEN_REGEX = /^\/([a-z][a-z0-9:_-]*)(?=\s|$)/i;
 
 /** The token is only styleable while it is the very start of the prompt: the
  *  first text of the first paragraph, with nothing before it. */
@@ -1018,9 +1057,13 @@ interface ComposerPromptEditorProps {
   cursor: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   skills: ReadonlyArray<ServerProviderSkill>;
-  /** Slash commands that trigger on Enter in this thread; the leading token
-   *  is tinted while it matches one of these. */
+  /** Command names this thread acts on — built-ins plus the selected
+   *  provider's commands. The leading token is styled as a pill while it
+   *  matches one of these; styling only, Enter handling lives elsewhere. */
   recognizedSlashCommands?: ReadonlyArray<string>;
+  /** Skill names the selected provider can resolve. Omitted means "unknown",
+   *  which renders every skill chip in its normal state. */
+  skillAvailability?: ComposerSkillAvailability;
   disabled: boolean;
   placeholder: string;
   className?: string;
@@ -1850,6 +1893,7 @@ export function ComposerPromptEditor({
   terminalContexts,
   skills,
   recognizedSlashCommands,
+  skillAvailability,
   disabled,
   placeholder,
   className,
@@ -1886,23 +1930,27 @@ export function ComposerPromptEditor({
     [],
   );
 
+  // Decorator nodes portal into this subtree, so skill chips read availability
+  // straight from context and restyle on a provider switch alone.
   return (
-    <LexicalComposer key={COMPOSER_EDITOR_HMR_KEY} initialConfig={initialConfig}>
-      <ComposerPromptEditorInner
-        value={value}
-        cursor={cursor}
-        terminalContexts={terminalContexts}
-        skills={skills}
-        disabled={disabled}
-        placeholder={placeholder}
-        onRemoveTerminalContext={onRemoveTerminalContext}
-        onChange={onChange}
-        onPaste={onPaste}
-        editorRef={editorRef}
-        {...(recognizedSlashCommands ? { recognizedSlashCommands } : {})}
-        {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
-        {...(className ? { className } : {})}
-      />
-    </LexicalComposer>
+    <ComposerSkillAvailabilityContext value={skillAvailability ?? EMPTY_SKILL_AVAILABILITY}>
+      <LexicalComposer key={COMPOSER_EDITOR_HMR_KEY} initialConfig={initialConfig}>
+        <ComposerPromptEditorInner
+          value={value}
+          cursor={cursor}
+          terminalContexts={terminalContexts}
+          skills={skills}
+          disabled={disabled}
+          placeholder={placeholder}
+          onRemoveTerminalContext={onRemoveTerminalContext}
+          onChange={onChange}
+          onPaste={onPaste}
+          editorRef={editorRef}
+          {...(recognizedSlashCommands ? { recognizedSlashCommands } : {})}
+          {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
+          {...(className ? { className } : {})}
+        />
+      </LexicalComposer>
+    </ComposerSkillAvailabilityContext>
   );
 }
