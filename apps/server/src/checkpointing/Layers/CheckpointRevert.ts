@@ -9,6 +9,7 @@
  * @module CheckpointRevertLive
  */
 import type { CheckpointRef, OrchestrationThread, ThreadId } from "@threadlines/contracts";
+import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -35,7 +36,6 @@ import {
   checkpointPreTurnRefForThreadTurn,
   checkpointPreTurnRefForThreadTurnCount,
   checkpointRefForThreadTurn,
-  normalizeWorkspacePath,
   resolveThreadWorkspaceCwd,
 } from "../Utils.ts";
 

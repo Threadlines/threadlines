@@ -29,14 +29,6 @@ export function checkpointPreTurnRefForThreadTurnCount(
   );
 }
 
-/**
- * Normalizes a workspace path for equality comparisons across separators,
- * trailing slashes, and case-insensitive filesystems.
- */
-export function normalizeWorkspacePath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
-}
-
 export function resolveThreadWorkspaceCwd(input: {
   readonly thread: {
     readonly projectId: ProjectId;

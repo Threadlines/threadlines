@@ -41,3 +41,11 @@ export function normalizeFilesystemPathForComparison(value: string): string {
 export function areFilesystemPathsEqual(left: string, right: string): boolean {
   return normalizeFilesystemPathForComparison(left) === normalizeFilesystemPathForComparison(right);
 }
+
+/**
+ * Normalizes a workspace path for equality comparisons across separators,
+ * trailing slashes, and case-insensitive filesystems.
+ */
+export function normalizeWorkspacePath(value: string): string {
+  return value.replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
+}

@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
+import { normalizeWorkspacePath } from "@threadlines/shared/path";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { normalizeCheckpointFilePath } from "../../checkpointing/SelectiveRevert.ts";
@@ -25,7 +26,6 @@ import {
   checkpointPreTurnRefForThreadTurn,
   checkpointPreTurnRefForThreadTurnCount,
   checkpointRefForThreadTurn,
-  normalizeWorkspacePath,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import {
