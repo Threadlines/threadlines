@@ -2430,12 +2430,14 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         return;
       }
 
+      // Cumulative fields track the session-wide `total`; the `last*` fields and
+      // usedTokens (the current context size) track the latest turn.
       assert.deepEqual(firstEvent.value.payload.usage, {
         usedTokens: 126,
         totalProcessedTokens: 11_839,
         maxTokens: 258_400,
-        inputTokens: 120,
-        cachedInputTokens: 0,
+        inputTokens: 11_833,
+        cachedInputTokens: 3456,
         outputTokens: 6,
         reasoningOutputTokens: 0,
         lastUsedTokens: 126,

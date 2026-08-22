@@ -777,6 +777,49 @@ function readClaudeUsageTotals(value: unknown): ClaudeUsageTotals | undefined {
   };
 }
 
+/** Free space is derived client-side from maxTokens - usedTokens, so keeping the
+ *  SDK's own free-space category would double-count it in the breakdown. */
+function isClaudeFreeSpaceCategory(name: string): boolean {
+  return name.trim().toLowerCase() === "free space";
+}
+
+/** The SDK marks deferred categories with `isDeferred`, but has also been seen
+ *  tagging the name itself ("MCP tools (deferred)"); match either. */
+function isClaudeDeferredCategory(
+  category: SDKControlGetContextUsageResponse["categories"][number],
+): boolean {
+  return category.isDeferred === true || category.name.trim().toLowerCase().endsWith("(deferred)");
+}
+
+/** Keeps the SDK's category order: legend colors are assigned by index, so
+ *  reordering would make them flicker between updates. */
+function normalizeClaudeContextCategories(
+  value: SDKControlGetContextUsageResponse["categories"] | undefined,
+): ThreadTokenUsageSnapshot["contextCategories"] {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const categories = value.flatMap((category) => {
+    const name = typeof category?.name === "string" ? category.name.trim() : "";
+    const tokens = asPositiveFiniteInteger(category?.tokens);
+    // Deferred categories (tool schemas not yet loaded) are excluded from the
+    // SDK's own used-token total, so listing them would make the breakdown sum
+    // past the reported usage.
+    if (
+      name.length === 0 ||
+      tokens === undefined ||
+      isClaudeDeferredCategory(category) ||
+      isClaudeFreeSpaceCategory(name)
+    ) {
+      return [];
+    }
+    return [{ name, tokens }];
+  });
+
+  return categories.length > 0 ? categories : undefined;
+}
+
 function normalizeClaudeContextUsage(
   value: SDKControlGetContextUsageResponse | undefined,
 ): ThreadTokenUsageSnapshot | undefined {
@@ -791,15 +834,27 @@ function normalizeClaudeContextUsage(
 
   const maxTokens =
     asPositiveFiniteInteger(value.maxTokens) ?? asPositiveFiniteInteger(value.rawMaxTokens);
+  const contextCategories = normalizeClaudeContextCategories(value.categories);
+  // A fully initialized Claude session always reports at least a system-prompt
+  // and messages category. A response without any is a partially started
+  // process (e.g. queried during session resume) whose token estimate would
+  // replace the last known rich snapshot with a bare one — treat it as
+  // unavailable and let the caller fall back instead.
+  if (contextCategories === undefined) {
+    return undefined;
+  }
 
   return {
     usedTokens,
     lastUsedTokens: usedTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
+    contextCategories,
     compactsAutomatically: value.isAutoCompactEnabled,
   };
 }
 
+/** Scalar keys only: `contextCategories` is an array, so it needs the
+ *  element-wise comparison below instead of an identity check. */
 const THREAD_TOKEN_USAGE_SNAPSHOT_KEYS = [
   "usedTokens",
   "totalProcessedTokens",
@@ -818,6 +873,22 @@ const THREAD_TOKEN_USAGE_SNAPSHOT_KEYS = [
   "compactsAutomatically",
 ] as const satisfies ReadonlyArray<keyof ThreadTokenUsageSnapshot>;
 
+function areClaudeContextCategoriesEqual(
+  left: ThreadTokenUsageSnapshot["contextCategories"],
+  right: ThreadTokenUsageSnapshot["contextCategories"],
+): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((category, index) => {
+    const other = right[index];
+    return other !== undefined && category.name === other.name && category.tokens === other.tokens;
+  });
+}
+
 function areThreadTokenUsageSnapshotsEqual(
   left: ThreadTokenUsageSnapshot | undefined,
   right: ThreadTokenUsageSnapshot | undefined,
@@ -825,7 +896,10 @@ function areThreadTokenUsageSnapshotsEqual(
   if (!left || !right) {
     return false;
   }
-  return THREAD_TOKEN_USAGE_SNAPSHOT_KEYS.every((key) => left[key] === right[key]);
+  return (
+    THREAD_TOKEN_USAGE_SNAPSHOT_KEYS.every((key) => left[key] === right[key]) &&
+    areClaudeContextCategoriesEqual(left.contextCategories, right.contextCategories)
+  );
 }
 
 function normalizeClaudeCompactBoundaryUsage(

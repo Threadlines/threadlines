@@ -27,8 +27,15 @@ const TEST_CONTEXT_WINDOW: ContextWindowSnapshot = {
   toolUses: null,
   durationMs: null,
   compactsAutomatically: false,
+  contextCategories: null,
   updatedAt: "2026-06-19T12:00:00.000Z",
 };
+
+function contextSegmentNames(): ReadonlyArray<string> {
+  return Array.from(document.querySelectorAll("[data-context-segment]")).map(
+    (segment) => segment.getAttribute("data-context-segment") ?? "",
+  );
+}
 
 const TEST_ACCOUNT_USAGE: ProviderAccountUsagePresentation = {
   label: "Codex usage",
@@ -101,6 +108,68 @@ describe("ContextWindowMeter", () => {
       await page.getByRole("button", { name: "Outside target" }).click();
 
       await expect.element(page.getByText("Codex usage")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("breaks the context window down by category behind a collapsed toggle", async () => {
+    const screen = await render(
+      <ContextWindowMeter
+        usage={{
+          ...TEST_CONTEXT_WINDOW,
+          inputTokens: 1_300_000,
+          cachedInputTokens: 1_200_000,
+          // Listed smallest-first to prove the display sorts largest-first.
+          contextCategories: [
+            { name: "System tools", tokens: 20_000 },
+            { name: "Messages", tokens: 30_000 },
+          ],
+        }}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+
+      await expect.element(page.getByText(/1.2m of 1.3m input tokens/)).toBeVisible();
+      expect(contextSegmentNames()).toEqual(["Messages", "System tools"]);
+
+      const breakdownToggle = page.getByRole("button", { name: "Show context breakdown" });
+      await expect.element(page.getByText("System tools")).not.toBeInTheDocument();
+
+      await breakdownToggle.click();
+
+      await expect.element(page.getByText("Messages")).toBeVisible();
+      await expect.element(page.getByText("System tools")).toBeVisible();
+      await expect.element(page.getByText("Free space")).toBeVisible();
+
+      await breakdownToggle.click();
+      await expect.element(page.getByText("Free space")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows a single used segment when the provider reports no categories", async () => {
+    const screen = await render(
+      <ContextWindowMeter
+        usage={{
+          ...TEST_CONTEXT_WINDOW,
+          inputTokens: 11_833,
+          cachedInputTokens: 3456,
+        }}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+
+      expect(contextSegmentNames()).toEqual(["Used"]);
+      await expect
+        .element(page.getByRole("button", { name: "Show context breakdown" }))
+        .not.toBeInTheDocument();
+      await expect.element(page.getByText(/29.2% ⋅ 3.4k of 11.8k input tokens/)).toBeVisible();
     } finally {
       await screen.unmount();
     }

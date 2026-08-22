@@ -247,9 +247,14 @@ function makeContextUsageResponse(input: {
   readonly maxTokens: number;
   readonly rawMaxTokens?: number;
   readonly isAutoCompactEnabled?: boolean;
+  readonly categories?: SDKControlGetContextUsageResponse["categories"];
 }): SDKControlGetContextUsageResponse {
   return {
-    categories: [],
+    // A category-less response is treated as a partially started process and
+    // ignored by the adapter, so a usable fixture needs at least one category.
+    categories: input.categories ?? [
+      { name: "Messages", tokens: input.totalTokens, color: "#000000" },
+    ],
     totalTokens: input.totalTokens,
     maxTokens: input.maxTokens,
     rawMaxTokens: input.rawMaxTokens ?? input.maxTokens,
@@ -5122,6 +5127,66 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "ignores a category-less context usage report instead of emitting a bare snapshot",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          attachments: [],
+        });
+
+        // A freshly resumed SDK process reports a token estimate before it has
+        // rebuilt its context breakdown. Emitting that would replace the last
+        // rich snapshot with a bare one, so no usage event may be produced.
+        harness.query.setContextUsageResponse(
+          makeContextUsageResponse({
+            totalTokens: 93169,
+            maxTokens: 1000000,
+            categories: [],
+          }),
+        );
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 100,
+          duration_api_ms: 90,
+          num_turns: 1,
+          result: "done",
+          stop_reason: "end_turn",
+          session_id: "sdk-session-bare-context",
+        } as unknown as SDKMessage);
+        harness.query.finish();
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.deepEqual(
+          runtimeEvents.filter((event) => event.type === "thread.token-usage.updated"),
+          [],
+        );
+        assert.equal(harness.query.getContextUsageCalls.length, 1);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("emits Claude context window on result completion usage snapshots", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -5187,6 +5252,7 @@ describe("ClaudeAdapterLive", () => {
             cachedInputTokens: 21144,
             outputTokens: 679,
             maxTokens: 200000,
+            contextCategories: [{ name: "Messages", tokens: 24542 }],
             lastInputTokens: 23863,
             lastCachedInputTokens: 21144,
             lastOutputTokens: 679,
@@ -5274,6 +5340,7 @@ describe("ClaudeAdapterLive", () => {
           usedTokens: 22000,
           lastUsedTokens: 22000,
           maxTokens: 200000,
+          contextCategories: [{ name: "Messages", tokens: 22000 }],
           compactsAutomatically: true,
         },
       });
@@ -5285,6 +5352,7 @@ describe("ClaudeAdapterLive", () => {
           cachedInputTokens: 20,
           outputTokens: 80,
           maxTokens: 200000,
+          contextCategories: [{ name: "Messages", tokens: 24000 }],
           lastInputTokens: 120,
           lastCachedInputTokens: 20,
           lastOutputTokens: 80,
@@ -5332,14 +5400,25 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
       });
 
+      // Both snapshots carry an equal-but-not-identical category array: the
+      // dedupe has to compare the entries, not the array reference.
+      const categories = [
+        { name: "System prompt", tokens: 3000, color: "#111111" },
+        { name: "MCP tools", tokens: 700, color: "#444444", isDeferred: true },
+        { name: "System tools (deferred)", tokens: 5000, color: "#555555" },
+        { name: "Messages", tokens: 19000, color: "#222222" },
+        { name: "Free space", tokens: 178000, color: "#333333" },
+      ] satisfies SDKControlGetContextUsageResponse["categories"];
       harness.query.setContextUsageResponses([
         makeContextUsageResponse({
           totalTokens: 22000,
           maxTokens: 200000,
+          categories: categories.map((category) => ({ ...category })),
         }),
         makeContextUsageResponse({
           totalTokens: 22000,
           maxTokens: 200000,
+          categories: categories.map((category) => ({ ...category })),
         }),
       ]);
 
@@ -5377,6 +5456,12 @@ describe("ClaudeAdapterLive", () => {
           usedTokens: 22000,
           lastUsedTokens: 22000,
           maxTokens: 200000,
+          // Free space is derived client-side and deferred categories are not
+          // part of the used total, so both are filtered out here.
+          contextCategories: [
+            { name: "System prompt", tokens: 3000 },
+            { name: "Messages", tokens: 19000 },
+          ],
           compactsAutomatically: true,
         },
       });
@@ -5755,6 +5840,7 @@ describe("ClaudeAdapterLive", () => {
             lastOutputTokens: 70,
             lastReasoningOutputTokens: 50,
             maxTokens: 1000000,
+            contextCategories: [{ name: "Messages", tokens: 80 }],
             compactsAutomatically: true,
           },
         });

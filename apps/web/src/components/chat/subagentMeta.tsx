@@ -8,7 +8,7 @@
 import type { ProviderDriverKind, ServerProviderModel } from "@threadlines/contracts";
 
 import type { SubagentProgressItem } from "../../session-logic";
-import { formatContextWindowTokens } from "../../lib/contextWindow";
+import { formatContextWindowTokensCompact } from "../../lib/contextWindow";
 import { getProviderScopedDisplayModelName } from "./providerIconUtils";
 
 /** `74s` / `12m 04s` / `3h 21m`. Provider task durations are the agent's own
@@ -126,7 +126,7 @@ export function formatSubagentMetaParts(
     parts.push(duration);
   }
   if (telemetry?.totalTokens != null) {
-    parts.push(`${formatContextWindowTokens(telemetry.totalTokens)} tokens`);
+    parts.push(`${formatContextWindowTokensCompact(telemetry.totalTokens)} tokens`);
   }
   if (telemetry?.toolUses != null) {
     parts.push(

@@ -1,23 +1,19 @@
+import { ChevronDownIcon } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
+import {
+  type ContextWindowSnapshot,
+  deriveCachedInputRate,
+  formatContextWindowPercentage,
+  formatContextWindowTokens,
+} from "~/lib/contextWindow";
 import {
   isProviderUsageNearLimit,
   type ProviderAccountUsagePresentation,
 } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-
-function formatPercentage(value: number | null): string | null {
-  if (value === null || !Number.isFinite(value)) {
-    return null;
-  }
-  if (value < 10) {
-    return `${value.toFixed(1).replace(/\.0$/, "")}%`;
-  }
-  return `${Math.round(value)}%`;
-}
 
 function isDomNode(value: unknown): value is Node {
   return typeof value === "object" && value !== null && "nodeType" in value;
@@ -59,6 +55,92 @@ function AccountUsageBar(props: {
   );
 }
 
+/** Categorical swatches assigned by index (cycled), so a category keeps its
+ *  color as long as the provider keeps its order. */
+const CONTEXT_CATEGORY_COLOR_CLASS_NAMES = [
+  "bg-context-cat-1",
+  "bg-context-cat-2",
+  "bg-context-cat-3",
+  "bg-context-cat-4",
+  "bg-context-cat-5",
+  "bg-context-cat-6",
+  "bg-context-cat-7",
+  "bg-context-cat-8",
+] as const;
+
+type ContextBreakdownSegment = {
+  readonly key: string;
+  readonly name: string;
+  readonly tokens: number;
+  readonly percentage: number;
+  readonly colorClassName: string;
+};
+
+/** Providers without a category breakdown (Codex) collapse to one used-vs-free
+ *  segment so the bar renders through the same path. */
+function buildContextBreakdownSegments(
+  usage: ContextWindowSnapshot | null,
+): ReadonlyArray<ContextBreakdownSegment> {
+  const maxTokens = usage?.maxTokens ?? null;
+  if (!usage || maxTokens === null || maxTokens <= 0) {
+    return [];
+  }
+
+  const toPercentage = (tokens: number) => Math.max(0, Math.min(100, (tokens / maxTokens) * 100));
+  const categories = usage.contextCategories ?? null;
+  if (categories && categories.length > 0) {
+    // Colors are keyed to the provider's order (stable across updates), then
+    // the bar and legend display largest-first.
+    return categories
+      .map((category, index) => ({
+        key: `${index}-${category.name}`,
+        name: category.name,
+        tokens: category.tokens,
+        percentage: toPercentage(category.tokens),
+        colorClassName:
+          CONTEXT_CATEGORY_COLOR_CLASS_NAMES[index % CONTEXT_CATEGORY_COLOR_CLASS_NAMES.length] ??
+          CONTEXT_CATEGORY_COLOR_CLASS_NAMES[0],
+      }))
+      .sort((left, right) => right.tokens - left.tokens);
+  }
+
+  if (usage.usedTokens <= 0) {
+    return [];
+  }
+  return [
+    {
+      key: "used",
+      name: "Used",
+      tokens: usage.usedTokens,
+      percentage: usage.usedPercentage ?? toPercentage(usage.usedTokens),
+      colorClassName: "bg-primary",
+    },
+  ];
+}
+
+function ContextBreakdownLegendRow(props: {
+  swatchClassName: string;
+  name: string;
+  tokens: number | null;
+  percentage: number | null;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 leading-tight">
+      <span
+        aria-hidden="true"
+        className={cn("size-2 shrink-0 rounded-sm", props.swatchClassName)}
+      />
+      <span className="min-w-0 flex-1 truncate text-foreground text-xs">{props.name}</span>
+      <span className="shrink-0 text-muted-foreground text-xs">
+        {formatContextWindowTokens(props.tokens)}
+      </span>
+      <span className="w-9 shrink-0 text-right text-foreground text-xs tabular-nums">
+        {formatContextWindowPercentage(props.percentage) ?? "–"}
+      </span>
+    </div>
+  );
+}
+
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot | null;
   accountUsage?: ProviderAccountUsagePresentation | null;
@@ -77,9 +159,18 @@ export function ContextWindowMeter(props: {
   const [isOpen, setIsOpen] = useState(false);
   const [isPinnedOpen, setIsPinnedOpen] = useState(false);
   const [isHoverOpenSuppressed, setIsHoverOpenSuppressed] = useState(false);
+  const [isBreakdownOpen, setIsBreakdownOpen] = useState(false);
   const accountUsage = props.accountUsage ?? null;
+  const breakdownSegments = buildContextBreakdownSegments(usage);
+  const hasContextCategories = (usage?.contextCategories?.length ?? 0) > 0;
+  const cachedInputRate = deriveCachedInputRate(usage);
+  const cachedInputDetail = cachedInputRate
+    ? `${formatContextWindowPercentage(cachedInputRate.percentage) ?? "0%"} ⋅ ${formatContextWindowTokens(
+        cachedInputRate.cachedTokens,
+      )} of ${formatContextWindowTokens(cachedInputRate.inputTokens)} input tokens`
+    : null;
   const usageNearLimit = isProviderUsageNearLimit(accountUsage);
-  const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
+  const usedPercentage = formatContextWindowPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));
   const radius = 9.75;
   const circumference = 2 * Math.PI * radius;
@@ -222,7 +313,7 @@ export function ContextWindowMeter(props: {
                   )}
                 >
                   {usage.usedPercentage !== null
-                    ? Math.round(usage.usedPercentage)
+                    ? Math.trunc(usage.usedPercentage)
                     : formatContextWindowTokens(usage.usedTokens)}
                 </span>
               ) : null}
@@ -248,29 +339,82 @@ export function ContextWindowMeter(props: {
             <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
               Context window
             </div>
-            {!usage ? (
-              <div className="whitespace-nowrap text-xs font-medium text-foreground">
-                <span>No tokens used yet</span>
-                {contextWindowLabel ? (
-                  <>
-                    <span className="mx-1">⋅</span>
-                    <span>{contextWindowLabel} window</span>
-                  </>
-                ) : null}
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              {!usage ? (
+                <div className="whitespace-nowrap text-xs font-medium text-foreground">
+                  <span>No tokens used yet</span>
+                  {contextWindowLabel ? (
+                    <>
+                      <span className="mx-1">⋅</span>
+                      <span>{contextWindowLabel} window</span>
+                    </>
+                  ) : null}
+                </div>
+              ) : usage.maxTokens !== null && usedPercentage ? (
+                <div className="whitespace-nowrap text-xs font-medium text-foreground">
+                  <span>{usedPercentage}</span>
+                  <span className="mx-1">⋅</span>
+                  <span>{formatContextWindowTokens(usage.usedTokens)}</span>
+                  <span>/</span>
+                  <span>{formatContextWindowTokens(usage.maxTokens ?? null)} context used</span>
+                </div>
+              ) : (
+                <div className="text-sm text-foreground">
+                  {formatContextWindowTokens(usage.usedTokens)} tokens used so far
+                </div>
+              )}
+              {hasContextCategories ? (
+                <button
+                  type="button"
+                  aria-expanded={isBreakdownOpen}
+                  aria-label="Show context breakdown"
+                  onClick={() => setIsBreakdownOpen((open) => !open)}
+                  className="-mr-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:outline-none"
+                >
+                  <ChevronDownIcon
+                    aria-hidden="true"
+                    className={cn("size-3.5 transition-transform", isBreakdownOpen && "rotate-180")}
+                  />
+                </button>
+              ) : null}
+            </div>
+            {breakdownSegments.length > 0 ? (
+              <div aria-hidden="true" className="flex h-1 overflow-hidden rounded-full bg-muted">
+                {breakdownSegments.map((segment) => (
+                  <div
+                    key={segment.key}
+                    data-context-segment={segment.name}
+                    className={cn("h-full shrink-0 transition-[width]", segment.colorClassName)}
+                    style={{ width: `${segment.percentage}%` }}
+                  />
+                ))}
               </div>
-            ) : usage.maxTokens !== null && usedPercentage ? (
-              <div className="whitespace-nowrap text-xs font-medium text-foreground">
-                <span>{usedPercentage}</span>
-                <span className="mx-1">⋅</span>
-                <span>{formatContextWindowTokens(usage.usedTokens)}</span>
-                <span>/</span>
-                <span>{formatContextWindowTokens(usage.maxTokens ?? null)} context used</span>
+            ) : null}
+            {hasContextCategories && isBreakdownOpen ? (
+              <div className="space-y-1 pt-0.5">
+                {breakdownSegments.map((segment) => (
+                  <ContextBreakdownLegendRow
+                    key={segment.key}
+                    swatchClassName={segment.colorClassName}
+                    name={segment.name}
+                    tokens={segment.tokens}
+                    percentage={segment.percentage}
+                  />
+                ))}
+                <ContextBreakdownLegendRow
+                  swatchClassName="bg-muted"
+                  name="Free space"
+                  tokens={usage?.remainingTokens ?? null}
+                  percentage={usage?.remainingPercentage ?? null}
+                />
               </div>
-            ) : (
-              <div className="text-sm text-foreground">
-                {formatContextWindowTokens(usage.usedTokens)} tokens used so far
+            ) : null}
+            {cachedInputDetail ? (
+              <div className="flex min-w-0 items-baseline gap-2 text-xs">
+                <span className="shrink-0 font-medium text-foreground">Cached input</span>
+                <span className="min-w-0 text-muted-foreground">{cachedInputDetail}</span>
               </div>
-            )}
+            ) : null}
             {usage &&
             (usage.totalProcessedTokens ?? null) !== null &&
             (usage.totalProcessedTokens ?? 0) > usage.usedTokens ? (
