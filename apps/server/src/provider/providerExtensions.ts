@@ -839,6 +839,41 @@ function mapCodexSkills(
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+/** Scopes whose entries a name-matched toggle is allowed to touch. */
+const CODEX_SHADOWABLE_SKILL_SCOPES = new Set(["user", "system"]);
+
+/**
+ * Codex keys a skill's enabled state by path, so a personal copy and the built-in it shadows carry
+ * two independent flags under one name. The list shows them as a single row, so its toggle has to
+ * govern both: writing only one leaves the other live and the row lying about it.
+ *
+ * Project-scoped (`repo`) and plugin-bundled entries never participate. Two projects using the
+ * same skill name are genuinely unrelated.
+ */
+export function codexShadowedSkillWritePaths(
+  response: CodexSchema.V2SkillsListResponse,
+  target: { readonly name?: string | undefined; readonly path?: string | undefined },
+): string[] {
+  const entries = response.data.flatMap((entry) => entry.skills);
+  const nameKey = (value: string | null | undefined) => optionalText(value)?.toLowerCase();
+  const targetPath = optionalText(target.path);
+  const targetName =
+    nameKey(target.name) ??
+    nameKey(entries.find((entry) => requiredText(entry.path) === targetPath)?.name);
+  if (!targetName) return [];
+
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    if (!CODEX_SHADOWABLE_SKILL_SCOPES.has(entry.scope)) continue;
+    if (nameKey(entry.name) !== targetName) continue;
+    const path = requiredText(entry.path);
+    // The requested path is written on its own; this is only the copies alongside it.
+    if (!path || path === targetPath) continue;
+    paths.add(path);
+  }
+  return [...paths];
+}
+
 function codexMcpAuthStatusLabel(
   authStatus: CodexSchema.V2ListMcpServerStatusResponse__McpAuthStatus,
 ): string {
@@ -4227,7 +4262,24 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
     settings: input.settings,
   });
   const response = yield* runCodexAppServerAction(context, (client) =>
-    mapCodexRequestError(client.request("skills/config/write", params)),
+    Effect.gen(function* () {
+      // A failed listing must not block the toggle: writing the requested path alone is a partial
+      // result, which still beats refusing to change anything.
+      const shadowedPaths = yield* client.request("skills/list", { cwds: [context.cwd] }).pipe(
+        Effect.map((listed) => codexShadowedSkillWritePaths(listed, input.request)),
+        Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])),
+      );
+      const written = yield* mapCodexRequestError(client.request("skills/config/write", params));
+      yield* Effect.forEach(
+        shadowedPaths,
+        (path) =>
+          mapCodexRequestError(
+            client.request("skills/config/write", { enabled: input.request.enabled, path }),
+          ),
+        { discard: true },
+      );
+      return written;
+    }),
   );
   return { effectiveEnabled: response.effectiveEnabled };
 });

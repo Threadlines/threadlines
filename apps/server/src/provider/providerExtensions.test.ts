@@ -1249,6 +1249,109 @@ Per-component (rounded)
     assert.equal(codexSkillConfigWriteParams({ enabled: true }), null);
   });
 
+  it.effect("toggles every same-name Codex copy the deduped row stands for", () => {
+    const userPath = "/home/.codex/skills/imagegen/SKILL.md";
+    const systemPath = "/home/.codex/skills/.system/imagegen/SKILL.md";
+    const repoPath = "/repo/.codex/skills/imagegen/SKILL.md";
+    const writes: Array<unknown> = [];
+    const peer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "skills/list": () => ({
+        data: [
+          {
+            cwd: process.cwd(),
+            errors: [],
+            skills: [
+              {
+                name: "imagegen",
+                path: userPath,
+                scope: "user",
+                description: "Personal copy.",
+                enabled: true,
+              },
+              // Same name, shipped by Codex: one row in the UI, so one toggle governs both.
+              {
+                name: "ImageGen",
+                path: systemPath,
+                scope: "system",
+                description: "Built-in copy.",
+                enabled: true,
+              },
+              // A project skill that happens to share the name stays independent.
+              {
+                name: "imagegen",
+                path: repoPath,
+                scope: "repo",
+                description: "Project copy.",
+                enabled: true,
+              },
+              {
+                name: "openai-docs",
+                path: "/home/.codex/skills/.system/openai-docs/SKILL.md",
+                scope: "system",
+                description: "Unrelated.",
+                enabled: true,
+              },
+            ],
+          },
+        ],
+      }),
+      "skills/config/write": (params) => {
+        writes.push(params);
+        return { effectiveEnabled: false };
+      },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      const result = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd: process.cwd(),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          path: userPath,
+          enabled: false,
+        },
+        settings: makeSettings(),
+      });
+
+      assert.deepEqual(result, { effectiveEnabled: false });
+      assert.deepEqual(writes, [
+        { enabled: false, path: userPath },
+        { enabled: false, path: systemPath },
+      ]);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("still toggles the requested Codex skill when the listing fails", () => {
+    const userPath = "/home/.codex/skills/imagegen/SKILL.md";
+    const writes: Array<unknown> = [];
+    // No `skills/list` handler, so the peer answers it with a JSON-RPC error.
+    const peer = makeCodexAppServerPeer({
+      initialize: codexInventoryPeerHandlers.initialize!,
+      "skills/config/write": (params) => {
+        writes.push(params);
+        return { effectiveEnabled: false };
+      },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      const result = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd: process.cwd(),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          path: userPath,
+          enabled: false,
+        },
+        settings: makeSettings(),
+      });
+
+      // A partial toggle beats a failed one.
+      assert.deepEqual(result, { effectiveEnabled: false });
+      assert.deepEqual(writes, [{ enabled: false, path: userPath }]);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
   it.effect(
     "returns a Codex provider error instead of hanging when app-server never responds",
     () => {
