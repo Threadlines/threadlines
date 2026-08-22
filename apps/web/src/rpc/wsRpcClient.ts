@@ -149,6 +149,7 @@ export interface WsRpcClient {
     readonly stageChanges: RpcUnaryMethod<typeof WS_METHODS.vcsStageChanges>;
     readonly unstageChanges: RpcUnaryMethod<typeof WS_METHODS.vcsUnstageChanges>;
     readonly createWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsCreateWorktree>;
+    readonly listWorktrees: RpcUnaryMethod<typeof WS_METHODS.vcsListWorktrees>;
     readonly removeWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsRemoveWorktree>;
     readonly createRef: RpcUnaryMethod<typeof WS_METHODS.vcsCreateRef>;
     readonly createTag: RpcUnaryMethod<typeof WS_METHODS.vcsCreateTag>;
@@ -505,6 +506,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.vcsUnstageChanges](input)),
       createWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.vcsCreateWorktree](input)),
+      listWorktrees: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsListWorktrees](input)),
       removeWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRemoveWorktree](input)),
       createRef: (input) => transport.request((client) => client[WS_METHODS.vcsCreateRef](input)),

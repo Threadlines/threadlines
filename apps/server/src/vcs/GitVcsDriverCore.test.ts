@@ -253,6 +253,79 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    // The cleanup UI only ever offers to delete a checkout it can describe:
+    // the tag it shows ("has uncommitted changes", "2 commits not on main")
+    // comes straight from these two fields.
+    it.effect("reports dirty and unmerged state per checkout", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+
+        const cleanPath = path.join(cwd, "worktrees", "clean");
+        const messyPath = path.join(cwd, "worktrees", "messy");
+        yield* git(cwd, ["worktree", "add", "-b", "clean-branch", cleanPath]);
+        yield* git(cwd, ["worktree", "add", "-b", "messy-branch", messyPath]);
+        yield* git(messyPath, ["config", "user.email", "test@test.com"]);
+        yield* git(messyPath, ["config", "user.name", "Test"]);
+        yield* writeTextFile(messyPath, "shipped.ts", "export const shipped = true;\n");
+        yield* git(messyPath, ["add", "."]);
+        yield* git(messyPath, ["commit", "-m", "work only this checkout has"]);
+        yield* writeTextFile(messyPath, "scratch.ts", "export const scratch = true;\n");
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd });
+
+        const root = worktrees.find((worktree) => worktree.isRoot);
+        assert.isDefined(root);
+        const clean = worktrees.find((worktree) => worktree.refName === "clean-branch");
+        assert.deepStrictEqual(
+          { dirty: clean?.dirty, unmerged: clean?.unmergedCommitCount, isRoot: clean?.isRoot },
+          { dirty: false, unmerged: 0, isRoot: false },
+        );
+        const messy = worktrees.find((worktree) => worktree.refName === "messy-branch");
+        assert.deepStrictEqual(
+          { dirty: messy?.dirty, unmerged: messy?.unmergedCommitCount, isRoot: messy?.isRoot },
+          { dirty: true, unmerged: 1, isRoot: false },
+        );
+        assert.isFalse(clean?.unrelatedHistory);
+        assert.isFalse(messy?.unrelatedHistory);
+      }),
+    );
+
+    // Checkouts left over from before a history rewrite share no commit with
+    // the default branch. Counting there reports the branch's whole history as
+    // unshipped work, so the listing says "unrelated" and skips the number.
+    it.effect("flags a checkout whose branch shares no history with the base", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+
+        yield* git(cwd, ["checkout", "--orphan", "ancient-branch"]);
+        yield* git(cwd, ["rm", "-rf", "--cached", "."]);
+        yield* writeTextFile(cwd, "ancient.ts", "export const ancient = true;\n");
+        yield* git(cwd, ["add", "ancient.ts"]);
+        yield* git(cwd, ["commit", "-m", "history from before the rewrite"]);
+        // Forced: the orphan commit leaves the base branch's files untracked.
+        yield* git(cwd, ["checkout", "-f", initialBranch]);
+        const ancientPath = path.join(cwd, "worktrees", "ancient");
+        yield* git(cwd, ["worktree", "add", ancientPath, "ancient-branch"]);
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd });
+
+        const ancient = worktrees.find((worktree) => worktree.refName === "ancient-branch");
+        assert.deepStrictEqual(
+          {
+            unrelated: ancient?.unrelatedHistory,
+            unmerged: ancient?.unmergedCommitCount,
+          },
+          { unrelated: true, unmerged: null },
+        );
+      }),
+    );
+
     it.effect("reports no checkouts for a non-repository directory", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

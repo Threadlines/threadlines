@@ -101,6 +101,34 @@ const VcsWorktree = Schema.Struct({
   path: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
 });
+
+/**
+ * One checkout of a repository plus the two facts a cleanup decision needs:
+ * whether removing it drops uncommitted work, and whether it drops commits the
+ * default branch never saw.
+ */
+export const VcsWorktreeStatus = Schema.Struct({
+  path: TrimmedNonEmptyStringSchema,
+  /** Null for a detached checkout. */
+  refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  /** The repository's main checkout, which is never removable. */
+  isRoot: Schema.Boolean,
+  dirty: Schema.Boolean,
+  /**
+   * Commits on this checkout's branch that the default branch cannot reach.
+   * Null when the repository has no resolvable default branch, when the
+   * checkout is detached, when the histories are unrelated, or when the count
+   * could not be read.
+   */
+  unmergedCommitCount: Schema.NullOr(NonNegativeInt),
+  /**
+   * The branch shares no commit at all with the default branch, so a count of
+   * "unmerged" commits would be the whole of its history. Happens to checkouts
+   * left over from before a history rewrite.
+   */
+  unrelatedHistory: Schema.Boolean,
+});
+export type VcsWorktreeStatus = typeof VcsWorktreeStatus.Type;
 const GitResolvedPullRequest = Schema.Struct({
   number: PositiveInt,
   title: TrimmedNonEmptyStringSchema,
@@ -321,6 +349,11 @@ export const VcsCreateWorktreeInput = Schema.Struct({
 });
 export type VcsCreateWorktreeInput = typeof VcsCreateWorktreeInput.Type;
 
+export const VcsListWorktreesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+});
+export type VcsListWorktreesInput = typeof VcsListWorktreesInput.Type;
+
 export const GitPullRequestRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   reference: GitPullRequestReference,
@@ -536,6 +569,11 @@ export const VcsCreateWorktreeResult = Schema.Struct({
   worktree: VcsWorktree,
 });
 export type VcsCreateWorktreeResult = typeof VcsCreateWorktreeResult.Type;
+
+export const VcsListWorktreesResult = Schema.Struct({
+  worktrees: Schema.Array(VcsWorktreeStatus),
+});
+export type VcsListWorktreesResult = typeof VcsListWorktreesResult.Type;
 
 export const GitResolvePullRequestResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,

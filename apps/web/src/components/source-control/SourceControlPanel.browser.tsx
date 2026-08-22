@@ -1,7 +1,10 @@
 import "../../index.css";
 
+import { scopeThreadRef } from "@threadlines/client-runtime";
 import {
   EnvironmentId,
+  ThreadId,
+  type ScopedThreadRef,
   type GitActionProgressEvent,
   type GitRunStackedActionResult,
   type EnvironmentApi,
@@ -31,6 +34,7 @@ import {
 } from "../../environmentApi";
 import { __resetLocalApiForTests } from "../../localApi";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
+import { useStore } from "../../store";
 import { resetGitActionProgressStateForTests } from "../gitActionProgressState";
 import { SourceControlPanel, type SourceControlProjectTarget } from "./SourceControlPanel";
 
@@ -247,9 +251,21 @@ function getCommitMessageTextarea() {
 }
 
 function makeEnvironmentApi(
-  overrides: { readonly vcs?: Partial<EnvironmentApi["vcs"]> } = {},
+  overrides: {
+    readonly vcs?: Partial<EnvironmentApi["vcs"]>;
+    readonly orchestration?: Partial<EnvironmentApi["orchestration"]>;
+  } = {},
 ): EnvironmentApi {
   return {
+    orchestration: {
+      getArchivedShellSnapshot: vi.fn(async () => ({
+        snapshotSequence: 0,
+        projects: [],
+        threads: [],
+        updatedAt: "2026-05-25T12:00:00.000Z",
+      })),
+      ...overrides.orchestration,
+    },
     vcs: {
       listRefs: vi.fn(async () => ({
         isRepo: true,
@@ -307,6 +323,61 @@ function makeEnvironmentApi(
   } as unknown as EnvironmentApi;
 }
 
+/**
+ * Puts one live thread in the store bound to `worktreePath`, which is what
+ * makes the cleanup dialog treat that checkout as in use.
+ */
+function seedWorktreeThread(worktreePath: string): void {
+  const threadId = "source-control-live-thread";
+  const projectId = "source-control-live-project";
+  useStore.setState({
+    activeEnvironmentId: ENVIRONMENT_ID,
+    environmentStateById: {
+      [ENVIRONMENT_ID]: {
+        projectIds: [projectId],
+        projectById: {
+          [projectId]: {
+            id: projectId,
+            environmentId: ENVIRONMENT_ID,
+            kind: "workspace",
+            name: "Threadlines",
+            cwd: CWD,
+          },
+        },
+        threadIds: [threadId],
+        threadShellById: {
+          [threadId]: {
+            id: threadId,
+            environmentId: ENVIRONMENT_ID,
+            projectId,
+            title: "Live work",
+            worktreePath,
+            branch: null,
+            effectiveCwd: null,
+            modelSelection: { instanceId: "codex", model: "gpt-5.3-codex" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+        },
+        threadSessionById: {},
+        threadTurnStateById: {},
+        messageIdsByThreadId: {},
+        messageByThreadId: {},
+        activityIdsByThreadId: {},
+        activityByThreadId: {},
+        proposedPlanIdsByThreadId: {},
+        proposedPlanByThreadId: {},
+        turnDiffIdsByThreadId: {},
+        turnDiffSummaryByThreadId: {},
+      },
+    },
+  } as never);
+}
+
+function resetSeededThreads(): void {
+  useStore.setState({ activeEnvironmentId: null, environmentStateById: {} } as never);
+}
+
 function createTestRouter(children: ReactNode) {
   const rootRoute = createRootRoute({
     component: () => children,
@@ -327,6 +398,7 @@ async function renderPanel(
     readonly environmentApi?: EnvironmentApi;
     readonly registerEnvironmentApi?: boolean;
     readonly target?: SourceControlProjectTarget;
+    readonly activeThreadRef?: ScopedThreadRef;
     readonly onActiveBranchChange?: (branch: string | null, worktreePath: string | null) => void;
     readonly onOpenDiff?: (filePath?: string) => void;
   } = {},
@@ -354,7 +426,7 @@ async function renderPanel(
       <QueryClientProvider client={queryClient}>
         <SourceControlPanel
           target={target}
-          activeThreadRef={null}
+          activeThreadRef={input.activeThreadRef ?? null}
           {...(input.onActiveBranchChange
             ? { onActiveBranchChange: input.onActiveBranchChange }
             : {})}
@@ -1885,6 +1957,111 @@ describe("SourceControlPanel changes", () => {
       expect(onActiveBranchChange).toHaveBeenCalledWith("main", null);
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("cleans up only the worktrees ticked in the cleanup dialog", async () => {
+    const safePath = "/repo/.worktrees/feature-safe";
+    const riskyPath = "/repo/.worktrees/feature-risky";
+    const livePath = "/repo/.worktrees/feature-live";
+    const listWorktrees = vi.fn(async () => ({
+      worktrees: [
+        {
+          path: CWD,
+          refName: "main",
+          isRoot: true,
+          dirty: false,
+          unmergedCommitCount: null,
+          unrelatedHistory: false,
+        },
+        {
+          path: safePath,
+          refName: "feature/safe",
+          isRoot: false,
+          dirty: false,
+          unmergedCommitCount: 0,
+          unrelatedHistory: false,
+        },
+        {
+          path: riskyPath,
+          refName: "feature/risky",
+          isRoot: false,
+          dirty: true,
+          unmergedCommitCount: 2,
+          unrelatedHistory: false,
+        },
+        {
+          path: livePath,
+          refName: "feature/live",
+          isRoot: false,
+          dirty: false,
+          unmergedCommitCount: 0,
+          unrelatedHistory: false,
+        },
+      ],
+    }));
+    const removeWorktree = vi.fn(async () => undefined);
+    const onActiveBranchChange = vi.fn();
+    seedWorktreeThread(livePath);
+    const mounted = await renderPanel({
+      activeThreadRef: scopeThreadRef(ENVIRONMENT_ID, ThreadId.make("source-control-live-thread")),
+      environmentApi: makeEnvironmentApi({
+        vcs: { listWorktrees, removeWorktree } as unknown as Partial<EnvironmentApi["vcs"]>,
+      }),
+      onActiveBranchChange,
+    });
+
+    const openCleanupDialog = async () => {
+      await page.getByRole("button", { name: "Branch: main" }).click();
+      const cleanupItem = page.getByRole("menuitem", { name: /Clean up worktrees/ });
+      await expect.element(cleanupItem).toBeVisible();
+      // Root excluded, the live checkout is in use, so two are cleanable.
+      await expect.element(cleanupItem).toHaveTextContent("2 unused");
+      await cleanupItem.click();
+    };
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Branch: main" })).toBeVisible();
+      await openCleanupDialog();
+
+      // Inspecting a checkout before deciding moves the thread into it, which
+      // is the same switch the composer's branch picker performs.
+      await page.getByRole("button", { name: "Switch checkout to feature-risky" }).click();
+      await vi.waitFor(() => {
+        expect(onActiveBranchChange).toHaveBeenCalledWith("feature/risky", riskyPath);
+      });
+
+      await openCleanupDialog();
+      await expect.element(page.getByText("Clean up worktrees")).toBeVisible();
+      await expect
+        .element(page.getByText("Threadlines has 2 worktrees nothing is using."))
+        .toBeVisible();
+      await expect
+        .element(page.getByText("uncommitted changes, 2 commits not on main"))
+        .toBeVisible();
+      await expect.element(page.getByText("in use")).toBeVisible();
+
+      // Only the risk-free checkout starts ticked; Select all pulls in the
+      // risky one too and Select none clears both.
+      await expect.element(page.getByRole("button", { name: "Delete 1 worktree" })).toBeVisible();
+      await page.getByRole("button", { name: "Select all 2" }).click();
+      await expect.element(page.getByRole("button", { name: "Delete 2 worktrees" })).toBeVisible();
+      await page.getByRole("button", { name: "Select none" }).click();
+      await expect.element(page.getByRole("button", { name: "Delete 0 worktrees" })).toBeDisabled();
+      await page.getByText("feature-safe", { exact: false }).click();
+
+      const confirm = page.getByRole("button", { name: "Delete 1 worktree" });
+      await expect.element(confirm).toBeVisible();
+      await confirm.click();
+
+      await vi.waitFor(() => {
+        expect(removeWorktree).toHaveBeenCalledTimes(1);
+      });
+      expect(removeWorktree).toHaveBeenCalledWith({ cwd: CWD, path: safePath, force: true });
+      await expect.element(page.getByRole("button", { name: "Close" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+      resetSeededThreads();
     }
   });
 });

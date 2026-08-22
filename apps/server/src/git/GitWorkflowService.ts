@@ -34,6 +34,8 @@ import {
   type VcsCreateWorktreeResult,
   type VcsListRefsInput,
   type VcsListRefsResult,
+  type VcsListWorktreesInput,
+  type VcsListWorktreesResult,
   type GitGenerateCommitMessageInput,
   type GitGenerateCommitMessageResult,
   type GitManagerServiceError,
@@ -116,6 +118,10 @@ export interface GitWorkflowServiceShape {
   readonly listWorktrees: (input: {
     readonly cwd: string;
   }) => Effect.Effect<ReadonlyArray<GitWorktreeEntry>, GitCommandError>;
+  /** See GitVcsDriverShape.listWorktreeStatuses. Empty for a non-repository cwd. */
+  readonly listWorktreeStatuses: (
+    input: VcsListWorktreesInput,
+  ) => Effect.Effect<VcsListWorktreesResult, GitCommandError>;
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
@@ -442,6 +448,14 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
           isGitRepository
             ? git.listWorktrees(input)
             : Effect.succeed<ReadonlyArray<GitWorktreeEntry>>([]),
+        ),
+      ),
+    listWorktreeStatuses: (input) =>
+      detectGitRepositoryForCommand("GitWorkflowService.listWorktreeStatuses", input.cwd).pipe(
+        Effect.flatMap((isGitRepository) =>
+          isGitRepository
+            ? git.listWorktreeStatuses(input)
+            : Effect.succeed<VcsListWorktreesResult>({ worktrees: [] }),
         ),
       ),
     commitGraph: (input) =>

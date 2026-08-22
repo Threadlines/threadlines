@@ -91,6 +91,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       stageChanges: rpcClient.vcs.stageChanges,
       unstageChanges: rpcClient.vcs.unstageChanges,
       createWorktree: rpcClient.vcs.createWorktree,
+      listWorktrees: rpcClient.vcs.listWorktrees,
       removeWorktree: rpcClient.vcs.removeWorktree,
       createRef: rpcClient.vcs.createRef,
       createTag: rpcClient.vcs.createTag,

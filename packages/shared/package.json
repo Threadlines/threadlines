@@ -167,6 +167,10 @@
       "types": "./src/terminalCommandTracker.ts",
       "import": "./src/terminalCommandTracker.ts"
     },
+    "./worktreeUsage": {
+      "types": "./src/worktreeUsage.ts",
+      "import": "./src/worktreeUsage.ts"
+    },
     "./threadCwd": {
       "types": "./src/threadCwd.ts",
       "import": "./src/threadCwd.ts"

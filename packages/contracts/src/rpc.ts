@@ -45,6 +45,8 @@ import {
   VcsDeleteBranchResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
+  VcsListWorktreesInput,
+  VcsListWorktreesResult,
   VcsInitInput,
   VcsListRefsInput,
   VcsListRefsResult,
@@ -278,6 +280,7 @@ export const WS_METHODS = {
   vcsStageChanges: "vcs.stageChanges",
   vcsUnstageChanges: "vcs.unstageChanges",
   vcsCreateWorktree: "vcs.createWorktree",
+  vcsListWorktrees: "vcs.listWorktrees",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
   vcsCreateTag: "vcs.createTag",
@@ -946,6 +949,12 @@ export const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
   error: GitCommandError,
 });
 
+export const WsVcsListWorktreesRpc = Rpc.make(WS_METHODS.vcsListWorktrees, {
+  payload: VcsListWorktreesInput,
+  success: VcsListWorktreesResult,
+  error: GitCommandError,
+});
+
 export const WsVcsRemoveWorktreeRpc = Rpc.make(WS_METHODS.vcsRemoveWorktree, {
   payload: VcsRemoveWorktreeInput,
   // Removal is refused outright while a thread still works in the folder, so
@@ -1235,6 +1244,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsStageChangesRpc,
   WsVcsUnstageChangesRpc,
   WsVcsCreateWorktreeRpc,
+  WsVcsListWorktreesRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
   WsVcsCreateTagRpc,
