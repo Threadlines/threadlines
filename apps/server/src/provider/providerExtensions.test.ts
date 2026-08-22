@@ -48,6 +48,7 @@ import {
   setProviderExtensionSkillEnabled,
   parseClaudeEnabledPlugins,
   skillDirectoryUnderRoots,
+  annotateClaudeSkillCapabilities,
   refreshProviderExtensionPluginMarketplaces,
   startProviderExtensionMcpOAuth,
   writeInstructionFile,
@@ -1633,6 +1634,36 @@ Per-component (rounded)
         skillDirectoryUnderRoots(path, [root], path.join("/elsewhere", "writer", "SKILL.md")),
         null,
       );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("leaves a plugin-bundled skill without a toggle or a delete", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const userSkillsRoot = path.join("/home", ".claude", "skills");
+      const [bundled, personal] = annotateClaudeSkillCapabilities(
+        [
+          {
+            name: "bundled",
+            path: path.join(userSkillsRoot, "bundled", "SKILL.md"),
+            bundleId: "helper@market",
+          },
+          { name: "personal", path: path.join(userSkillsRoot, "personal", "SKILL.md") },
+        ],
+        {
+          path,
+          userSkillsRoot,
+          writableRoots: [userSkillsRoot],
+          enabledPlugins: new Map(),
+        },
+      );
+
+      // A bundled skill follows its plugin even when it was found in a writable root.
+      assert.equal(bundled?.canToggle, undefined);
+      assert.equal(bundled?.canDelete, undefined);
+      assert.equal(personal?.canToggle, true);
+      assert.equal(personal?.canDelete, true);
+      assert.equal(personal?.enabled, true);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
