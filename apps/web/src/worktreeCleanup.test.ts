@@ -82,6 +82,35 @@ describe("getOrphanedWorktreePathForThread", () => {
     expect(result).toBeNull();
   });
 
+  // An archived thread can bring its checkout back through checkout recovery,
+  // so its link has to count in both directions.
+  it("returns null when only an archived thread links to the same worktree", () => {
+    const result = getOrphanedWorktreePathForThread(
+      [makeThread({ worktreePath: "/tmp/repo/worktrees/feature-a" })],
+      ThreadId.make("thread-1"),
+      [{ id: "thread-archived", worktreePath: "/tmp/repo/worktrees/feature-a" }],
+    );
+    expect(result).toBeNull();
+  });
+
+  it("resolves an archived target thread against the live threads", () => {
+    const archived = [{ id: "thread-archived", worktreePath: "/tmp/repo/worktrees/feature-a" }];
+    expect(
+      getOrphanedWorktreePathForThread(
+        [makeThread({ worktreePath: "/tmp/repo/worktrees/feature-b" })],
+        "thread-archived",
+        archived,
+      ),
+    ).toBe("/tmp/repo/worktrees/feature-a");
+    expect(
+      getOrphanedWorktreePathForThread(
+        [makeThread({ worktreePath: "/tmp/repo/worktrees/feature-a" })],
+        "thread-archived",
+        archived,
+      ),
+    ).toBeNull();
+  });
+
   it("ignores threads linked to different worktrees", () => {
     const threads = [
       makeThread({

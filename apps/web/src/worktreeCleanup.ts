@@ -1,6 +1,10 @@
 import type { VcsRef } from "@threadlines/contracts";
 
-import type { Thread } from "./types";
+/** Any thread shape that records a checkout: live store threads and archived shells both qualify. */
+export interface WorktreeLinkedThread {
+  readonly id: string;
+  readonly worktreePath: string | null;
+}
 
 function normalizeWorktreePath(path: string | null): string | null {
   const trimmed = path?.trim();
@@ -10,11 +14,23 @@ function normalizeWorktreePath(path: string | null): string | null {
   return trimmed;
 }
 
+/**
+ * The worktree a thread would leave behind, or null when something else still
+ * points at it.
+ *
+ * Archived threads count: they can recreate their checkout later through
+ * checkout recovery, so deleting a live thread must not offer to remove the
+ * folder an archived one is waiting on -- and the same in reverse. The target
+ * thread may come from either list.
+ */
 export function getOrphanedWorktreePathForThread(
-  threads: readonly Thread[],
-  threadId: Thread["id"],
+  threads: readonly WorktreeLinkedThread[],
+  threadId: string,
+  archivedThreads: readonly WorktreeLinkedThread[] = [],
 ): string | null {
-  const targetThread = threads.find((thread) => thread.id === threadId);
+  const targetThread =
+    threads.find((thread) => thread.id === threadId) ??
+    archivedThreads.find((thread) => thread.id === threadId);
   if (!targetThread) {
     return null;
   }
@@ -24,7 +40,7 @@ export function getOrphanedWorktreePathForThread(
     return null;
   }
 
-  const isShared = threads.some((thread) => {
+  const isShared = [...threads, ...archivedThreads].some((thread) => {
     if (thread.id === threadId) {
       return false;
     }

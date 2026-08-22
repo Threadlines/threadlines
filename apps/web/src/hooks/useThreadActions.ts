@@ -25,6 +25,25 @@ import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useSettings } from "./useSettings";
 
+/**
+ * Asks whether the folder should go too. Answers false when no confirm dialog
+ * is available, so a worktree is never removed without the user saying so.
+ */
+async function confirmOrphanedWorktreeDeletion(worktreePath: string): Promise<boolean> {
+  const localApi = readLocalApi();
+  if (!localApi) {
+    return false;
+  }
+  return localApi.dialogs.confirm(
+    [
+      "This thread is the only one linked to this worktree:",
+      formatWorktreePathForDisplay(worktreePath),
+      "",
+      "Delete the worktree too?",
+    ].join("\n"),
+  );
+}
+
 export function useThreadActions() {
   const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useSettings((settings) => settings.confirmThreadDelete);
@@ -121,19 +140,83 @@ export function useThreadActions() {
     });
   }, []);
 
+  const removeOrphanedWorktree = useCallback(
+    async (input: {
+      readonly environmentId: ScopedThreadRef["environmentId"];
+      readonly threadId: ThreadId;
+      readonly projectCwd: string;
+      readonly worktreePath: string;
+    }) => {
+      try {
+        await ensureEnvironmentApi(input.environmentId).vcs.removeWorktree({
+          cwd: input.projectCwd,
+          path: input.worktreePath,
+          force: true,
+        });
+        await invalidateGitQueries(queryClient, { environmentId: input.environmentId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
+        console.error("Failed to remove orphaned worktree after thread deletion", {
+          threadId: input.threadId,
+          projectCwd: input.projectCwd,
+          worktreePath: input.worktreePath,
+          error,
+        });
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Thread deleted, but worktree removal failed",
+            description: `Could not remove ${formatWorktreePathForDisplay(input.worktreePath)}. ${message}`,
+          }),
+        );
+      }
+    },
+    [queryClient],
+  );
+
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
       if (!api) return;
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
-        // Thread not in main store (e.g. archived thread) — dispatch delete directly.
+        // Thread not in the main store (archived): its worktree link only
+        // survives in the archived snapshot, so read it from there and offer
+        // the same cleanup the live path offers.
+        const snapshot = await api.orchestration.getArchivedShellSnapshot().catch(() => null);
+        const archivedThreads = snapshot?.threads ?? [];
+        const archivedThread = archivedThreads.find((entry) => entry.id === target.threadId);
+        const liveThreads = selectThreadsForEnvironment(useStore.getState(), target.environmentId);
+        const orphanedWorktreePath = getOrphanedWorktreePathForThread(
+          liveThreads,
+          target.threadId,
+          archivedThreads,
+        );
+        const projectCwd =
+          archivedThread === undefined
+            ? undefined
+            : snapshot?.projects.find((project) => project.id === archivedThread.projectId)
+                ?.workspaceRoot;
+        const shouldDeleteWorktree =
+          orphanedWorktreePath !== null &&
+          projectCwd !== undefined &&
+          (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
+
         await api.orchestration.dispatchCommand({
           type: "thread.delete",
           commandId: newCommandId(),
           threadId: target.threadId,
         });
         refreshArchivedThreadsForEnvironment(target.environmentId);
+
+        if (shouldDeleteWorktree && orphanedWorktreePath && projectCwd) {
+          await removeOrphanedWorktree({
+            environmentId: target.environmentId,
+            threadId: target.threadId,
+            projectCwd,
+            worktreePath: orphanedWorktreePath,
+          });
+        }
         return;
       }
       const { thread, threadRef } = resolved;
@@ -156,26 +239,20 @@ export function useThreadActions() {
         deletedIds && deletedIds.size > 0
           ? threads.filter((entry) => entry.id === threadRef.threadId || !deletedIds.has(entry.id))
           : threads;
+      // Archived threads keep their worktree link, so they have to be weighed
+      // before offering to remove the folder one of them still points at.
+      const archivedThreads = thread.worktreePath
+        ? ((await api.orchestration.getArchivedShellSnapshot().catch(() => null))?.threads ?? [])
+        : [];
       const orphanedWorktreePath = getOrphanedWorktreePathForThread(
         survivingThreads,
         threadRef.threadId,
+        archivedThreads,
       );
-      const displayWorktreePath = orphanedWorktreePath
-        ? formatWorktreePathForDisplay(orphanedWorktreePath)
-        : null;
-      const canDeleteWorktree = orphanedWorktreePath !== null && threadProject !== undefined;
-      const localApi = readLocalApi();
       const shouldDeleteWorktree =
-        canDeleteWorktree &&
-        localApi &&
-        (await localApi.dialogs.confirm(
-          [
-            "This thread is the only one linked to this worktree:",
-            displayWorktreePath ?? orphanedWorktreePath,
-            "",
-            "Delete the worktree too?",
-          ].join("\n"),
-        ));
+        orphanedWorktreePath !== null &&
+        threadProject !== undefined &&
+        (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
       if (thread.session && thread.session.status !== "closed") {
         await stopThreadSession(threadRef).catch(() => undefined);
@@ -237,39 +314,20 @@ export function useThreadActions() {
         return;
       }
 
-      try {
-        await ensureEnvironmentApi(threadRef.environmentId).vcs.removeWorktree({
-          cwd: threadProject.cwd,
-          path: orphanedWorktreePath,
-          force: true,
-        });
-        await invalidateGitQueries(queryClient, {
-          environmentId: threadRef.environmentId,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
-        console.error("Failed to remove orphaned worktree after thread deletion", {
-          threadId: threadRef.threadId,
-          projectCwd: threadProject.cwd,
-          worktreePath: orphanedWorktreePath,
-          error,
-        });
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Thread deleted, but worktree removal failed",
-            description: `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
-          }),
-        );
-      }
+      await removeOrphanedWorktree({
+        environmentId: threadRef.environmentId,
+        threadId: threadRef.threadId,
+        projectCwd: threadProject.cwd,
+        worktreePath: orphanedWorktreePath,
+      });
     },
     [
       clearComposerDraftForThread,
       clearProjectDraftThreadById,
       clearTerminalState,
       getCurrentRouteThreadRef,
+      removeOrphanedWorktree,
       router,
-      queryClient,
       resolveThreadTarget,
       sidebarThreadSortOrder,
     ],
