@@ -21,7 +21,10 @@ import {
   makeExtensionInventoryCacheKey,
   formatSkillDisplayName,
   formatTokenCount,
+  groupExtensionSkills,
   groupPluginComponents,
+  parseExtensionsSettingsTab,
+  resolveExtensionsSettingsTab,
   makeExtensionJsonSchemaFormDefaults,
   resolvePluginComponentTarget,
   selectCuratedPlugins,
@@ -31,6 +34,52 @@ import {
 } from "./ExtensionsSettings.logic";
 
 describe("ExtensionsSettings logic", () => {
+  it("takes the tab from the URL and falls back to the remembered one", () => {
+    expect(parseExtensionsSettingsTab("skills")).toBe("skills");
+    expect(parseExtensionsSettingsTab("nonsense")).toBeUndefined();
+    expect(parseExtensionsSettingsTab(undefined)).toBeUndefined();
+
+    // An explicit link wins over whatever the last visit left behind.
+    expect(resolveExtensionsSettingsTab("plugins", "skills")).toBe("plugins");
+    expect(resolveExtensionsSettingsTab(undefined, "skills")).toBe("skills");
+    expect(resolveExtensionsSettingsTab(undefined, undefined)).toBe("plugins");
+  });
+
+  it("groups skills by origin and sorts each group by name", () => {
+    const skills = [
+      { name: "zebra", scope: "user" },
+      { name: "shipped", scope: "system" },
+      { name: "alpha", scope: "user" },
+      { name: "repo-check", scope: "project" },
+      { name: "bundled", scope: "user", bundleId: "helper@market" },
+    ];
+
+    const groups = groupExtensionSkills(skills, (skill) => ({
+      scope: skill.scope,
+      bundleId: skill.bundleId,
+      sortKey: skill.name,
+    }));
+
+    expect(groups.map((group) => group.label)).toEqual([
+      "Project skills",
+      "Personal skills",
+      "From plugins",
+      "Built in",
+    ]);
+    expect(groups[1]?.items.map((skill) => skill.name)).toEqual(["alpha", "zebra"]);
+    // A bundled skill belongs to its plugin no matter which root it was found in.
+    expect(groups[2]?.items.map((skill) => skill.name)).toEqual(["bundled"]);
+  });
+
+  it("drops skill groups that have no members", () => {
+    const groups = groupExtensionSkills([{ name: "solo", scope: "user" }], (skill) => ({
+      scope: skill.scope,
+      sortKey: skill.name,
+    }));
+
+    expect(groups.map((group) => group.key)).toEqual(["personal"]);
+  });
+
   it("matches extension records case-insensitively across provided fields", () => {
     expect(extensionTextMatchesFilter(["Browser", "Control the in-app browser"], "BROW")).toBe(
       true,

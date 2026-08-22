@@ -43,6 +43,11 @@ import {
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
   readProviderExtensionSkill,
+  createProviderExtensionSkill,
+  deleteProviderExtensionSkill,
+  setProviderExtensionSkillEnabled,
+  parseClaudeEnabledPlugins,
+  skillDirectoryUnderRoots,
   refreshProviderExtensionPluginMarketplaces,
   startProviderExtensionMcpOAuth,
   writeInstructionFile,
@@ -280,8 +285,25 @@ function claudeInventoryProcessFor(args: ReadonlyArray<string>) {
   if (args[0] === "mcp" && args[1] === "list") {
     return makeProcessResult("");
   }
+  if (args[0] === "plugin" && (args[1] === "enable" || args[1] === "disable")) {
+    return makeProcessResult(`Successfully ${args[1]}d plugin: ${args[2] ?? ""}`);
+  }
   return makeProcessResult("", `unexpected claude command: ${args.join(" ")}`, 1);
 }
+
+/** A Claude-only settings object rooted at a throwaway home, which every skill test needs. */
+function makeClaudeSkillSettings(claudeHome: string): ServerSettingsContract {
+  return makeSettings({
+    providers: {
+      codex: { enabled: false },
+      claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+      cursor: { enabled: false },
+      opencode: { enabled: false },
+    },
+  });
+}
+
+const CLAUDE_SKILL_PROVIDER = ProviderInstanceId.make("claudeAgent");
 
 describe("provider extensions inventory", () => {
   it("treats Codex app-directory 403s as optional inventory misses", () => {
@@ -1578,6 +1600,299 @@ Per-component (rounded)
       }).pipe(Effect.flip);
 
       assert.equal(error.message, "Skill is not in the current provider extensions inventory.");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it("reads the enabled state Claude writes for skills-dir plugins", () => {
+    const enabled = parseClaudeEnabledPlugins(
+      '{"enabledPlugins":{"note-taker@skills-dir":false,"other@marketplace":true,"bad":1}}',
+    );
+
+    assert.equal(enabled.get("note-taker@skills-dir"), false);
+    assert.equal(enabled.get("other@marketplace"), true);
+    // A non-boolean entry says nothing about the skill, so it must not read as disabled.
+    assert.equal(enabled.has("bad"), false);
+    assert.equal(parseClaudeEnabledPlugins("not json").size, 0);
+  });
+
+  it.effect("treats only a direct child of a skills root as managed", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const root = path.join("/home", ".claude", "skills");
+
+      assert.equal(
+        skillDirectoryUnderRoots(path, [root], path.join(root, "writer", "SKILL.md")),
+        path.join(root, "writer"),
+      );
+      // Namespaced skills sit a level deeper; deleting one would leave its namespace behind.
+      assert.equal(
+        skillDirectoryUnderRoots(path, [root], path.join(root, "team", "writer", "SKILL.md")),
+        null,
+      );
+      assert.equal(
+        skillDirectoryUnderRoots(path, [root], path.join("/elsewhere", "writer", "SKILL.md")),
+        null,
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("creates a skill the inventory then reports as toggleable and deletable", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-create-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-create-home-",
+      });
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const created = yield* createProviderExtensionSkill({
+        request: {
+          cwd,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          name: "release-notes",
+          description: "Write the release notes: carefully.",
+        },
+        settings,
+      });
+
+      assert.equal(
+        created.path,
+        path.join(claudeHome, ".claude", "skills", "release-notes", "SKILL.md"),
+      );
+      const contents = yield* fileSystem.readFileString(created.path);
+      assert.include(contents, "name: release-notes");
+      // A description with a colon in it must not break the YAML front matter.
+      assert.include(contents, 'description: "Write the release notes: carefully."');
+
+      // Claude reports a disabled skills-dir skill only through its settings.json map.
+      yield* fileSystem.writeFileString(
+        path.join(claudeHome, ".claude", "settings.json"),
+        '{"enabledPlugins":{"release-notes@skills-dir":false}}',
+      );
+
+      const inventory = yield* readProviderExtensionsInventory({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+        settings,
+        providers: [],
+      });
+      const skill = inventory.providers
+        .flatMap((provider) => provider.skills)
+        .find((entry) => entry.path === created.path);
+
+      assert.equal(skill?.canToggle, true);
+      assert.equal(skill?.canDelete, true);
+      assert.equal(skill?.enabled, false);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("refuses a skill name that is not kebab-case or already taken", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() => Effect.succeed(makeProcessResult(""))),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-name-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-name-home-",
+      });
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const invalid = yield* createProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, name: "Release Notes" },
+        settings,
+      }).pipe(Effect.flip);
+      assert.include(invalid.message, "lower-case letters");
+
+      yield* fileSystem.makeDirectory(path.join(claudeHome, ".claude", "skills", "taken"), {
+        recursive: true,
+      });
+      const duplicate = yield* createProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, name: "taken" },
+        settings,
+      }).pipe(Effect.flip);
+      assert.include(duplicate.message, "already exists");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("deletes a personal skill folder and refuses everything outside one", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-delete-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-delete-home-",
+      });
+      const skillsRoot = path.join(claudeHome, ".claude", "skills");
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const doomedDirectory = path.join(skillsRoot, "doomed");
+      const doomedPath = path.join(doomedDirectory, "SKILL.md");
+      yield* fileSystem.makeDirectory(doomedDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(doomedPath, "---\nname: doomed\n---\n");
+      // A namespaced skill is reported by the inventory but is not a direct child of the root.
+      const nestedDirectory = path.join(skillsRoot, "team", "nested");
+      const nestedPath = path.join(nestedDirectory, "SKILL.md");
+      yield* fileSystem.makeDirectory(nestedDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(nestedPath, "---\nname: nested\n---\n");
+      const outsidePath = path.join(cwd, "not-a-skill.md");
+      yield* fileSystem.writeFileString(outsidePath, "Leave this alone.\n");
+
+      yield* readProviderExtensionsInventory({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+        settings,
+        providers: [],
+      });
+
+      const outside = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: outsidePath },
+        settings,
+      }).pipe(Effect.flip);
+      assert.equal(outside.message, "Skill is not in the current provider extensions inventory.");
+
+      const nested = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: nestedPath },
+        settings,
+      }).pipe(Effect.flip);
+      assert.equal(nested.message, "Skill is not in a skills folder Threadlines manages.");
+      assert.equal(yield* fileSystem.exists(nestedPath), true);
+
+      const deleted = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: doomedPath },
+        settings,
+      });
+      assert.deepEqual(deleted, { deleted: true });
+      assert.equal(yield* fileSystem.exists(doomedDirectory), false);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("refuses to delete a skill entry that is a symlink", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-symlink-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-symlink-home-",
+      });
+      const linkedDirectory = path.join(claudeHome, ".claude", "skills", "linked");
+      const linkedPath = path.join(linkedDirectory, "SKILL.md");
+      const target = path.join(cwd, "real-skill.md");
+      yield* fileSystem.writeFileString(target, "---\nname: linked\n---\n");
+      yield* fileSystem.makeDirectory(linkedDirectory, { recursive: true });
+      yield* fileSystem.symlink(target, linkedPath);
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      yield* readProviderExtensionsInventory({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+        settings,
+        providers: [],
+      });
+
+      const error = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: linkedPath },
+        settings,
+      }).pipe(Effect.flip);
+
+      assert.include(error.message, "not a regular file");
+      assert.equal(yield* fileSystem.exists(target), true);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("toggles a Claude user skill through its skills-dir plugin id", () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const args = (command as unknown as { readonly args: ReadonlyArray<string> }).args;
+        calls.push(args);
+        return Effect.succeed(claudeInventoryProcessFor(args));
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-toggle-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-toggle-home-",
+      });
+      const skillPath = path.join(claudeHome, ".claude", "skills", "note-taker", "SKILL.md");
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(skillPath, "---\nname: note-taker\n---\n");
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const result = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          path: skillPath,
+          enabled: false,
+        },
+        settings,
+      });
+
+      assert.deepEqual(result, { effectiveEnabled: false });
+      assert.deepEqual(calls.at(-1), ["plugin", "disable", "note-taker@skills-dir"]);
+
+      // A project skill has no skills-dir plugin behind it, so it must be refused rather than
+      // guessed at.
+      const projectSkillPath = path.join(cwd, ".claude", "skills", "local", "SKILL.md");
+      const error = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          path: projectSkillPath,
+          enabled: false,
+        },
+        settings,
+      }).pipe(Effect.flip);
+      assert.include(error.message, "personal skills folder");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
