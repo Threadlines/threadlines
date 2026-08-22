@@ -38,6 +38,8 @@ import type {
   VcsListStashesResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
+  VcsListWorktreesInput,
+  VcsListWorktreesResult,
   VcsInitInput,
   VcsListRefsInput,
   VcsListRefsResult,
@@ -1302,6 +1304,7 @@ export interface EnvironmentApi {
     stageChanges: (input: VcsStageChangesInput) => Promise<VcsStageChangesResult>;
     unstageChanges: (input: VcsUnstageChangesInput) => Promise<VcsUnstageChangesResult>;
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
+    listWorktrees: (input: VcsListWorktreesInput) => Promise<VcsListWorktreesResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;
     createTag: (input: VcsCreateTagInput) => Promise<VcsCreateTagResult>;

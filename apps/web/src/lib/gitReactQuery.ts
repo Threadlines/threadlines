@@ -55,6 +55,8 @@ export const gitQueryKeys = {
     ["git", "auth-remediation-plan", environmentId ?? null, cwd] as const,
   stashes: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "stashes", environmentId ?? null, cwd] as const,
+  worktrees: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "worktrees", environmentId ?? null, cwd] as const,
 };
 
 export const gitMutationKeys = {
@@ -796,6 +798,31 @@ export function gitCreateWorktreeMutationOptions(input: {
     onSuccess: async () => {
       await invalidateGitQueries(input.queryClient, { environmentId: input.environmentId });
     },
+  });
+}
+
+/**
+ * The repository's checkouts with their cleanup state. Fetched on demand (the
+ * branch menu opens it) and never polled: the list only moves when the user
+ * creates or removes a worktree, and both paths invalidate it.
+ */
+export function vcsListWorktreesQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: gitQueryKeys.worktrees(input.environmentId, input.cwd),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Worktrees are unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).vcs.listWorktrees({ cwd: input.cwd });
+    },
+    enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    staleTime: 5_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

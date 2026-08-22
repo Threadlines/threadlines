@@ -35,6 +35,8 @@ import {
   type VcsDeleteBranchResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
+  type VcsListWorktreesInput,
+  type VcsListWorktreesResult,
   type VcsInitInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
@@ -257,6 +259,15 @@ export interface GitVcsDriverShape {
   readonly listWorktrees: (input: {
     readonly cwd: string;
   }) => Effect.Effect<ReadonlyArray<GitWorktreeEntry>, GitCommandError>;
+  /**
+   * The same enumeration plus the state a cleanup decision needs: uncommitted
+   * changes and commits the default branch cannot reach. One extra pair of git
+   * calls per checkout, run sequentially -- a repository has a handful of
+   * checkouts, not thousands.
+   */
+  readonly listWorktreeStatuses: (
+    input: VcsListWorktreesInput,
+  ) => Effect.Effect<VcsListWorktreesResult, GitCommandError>;
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;

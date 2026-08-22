@@ -253,6 +253,44 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    // The cleanup UI only ever offers to delete a checkout it can describe:
+    // the tag it shows ("has uncommitted changes", "2 commits not on main")
+    // comes straight from these two fields.
+    it.effect("reports dirty and unmerged state per checkout", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+
+        const cleanPath = path.join(cwd, "worktrees", "clean");
+        const messyPath = path.join(cwd, "worktrees", "messy");
+        yield* git(cwd, ["worktree", "add", "-b", "clean-branch", cleanPath]);
+        yield* git(cwd, ["worktree", "add", "-b", "messy-branch", messyPath]);
+        yield* git(messyPath, ["config", "user.email", "test@test.com"]);
+        yield* git(messyPath, ["config", "user.name", "Test"]);
+        yield* writeTextFile(messyPath, "shipped.ts", "export const shipped = true;\n");
+        yield* git(messyPath, ["add", "."]);
+        yield* git(messyPath, ["commit", "-m", "work only this checkout has"]);
+        yield* writeTextFile(messyPath, "scratch.ts", "export const scratch = true;\n");
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd });
+
+        const root = worktrees.find((worktree) => worktree.isRoot);
+        assert.isDefined(root);
+        const clean = worktrees.find((worktree) => worktree.refName === "clean-branch");
+        assert.deepStrictEqual(
+          { dirty: clean?.dirty, unmerged: clean?.unmergedCommitCount, isRoot: clean?.isRoot },
+          { dirty: false, unmerged: 0, isRoot: false },
+        );
+        const messy = worktrees.find((worktree) => worktree.refName === "messy-branch");
+        assert.deepStrictEqual(
+          { dirty: messy?.dirty, unmerged: messy?.unmergedCommitCount, isRoot: messy?.isRoot },
+          { dirty: true, unmerged: 1, isRoot: false },
+        );
+      }),
+    );
+
     it.effect("reports no checkouts for a non-repository directory", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

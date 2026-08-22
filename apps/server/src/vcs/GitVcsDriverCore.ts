@@ -3821,6 +3821,102 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  /**
+   * Absolute path of the repository's main checkout, derived from the shared
+   * git directory. Null when it cannot be determined (bare repositories), in
+   * which case no listed checkout is reported as the root.
+   */
+  const resolveMainWorktreePath = Effect.fn("resolveMainWorktreePath")(function* (cwd: string) {
+    const result = yield* executeGit(
+      "GitVcsDriver.listWorktreeStatuses.commonDir",
+      cwd,
+      ["rev-parse", "--git-common-dir"],
+      { timeoutMs: 5_000, allowNonZeroExit: true },
+    ).pipe(Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)));
+    if (result === null || result.exitCode !== 0) {
+      return null;
+    }
+    const rawGitCommonDir = result.stdout.trim();
+    if (rawGitCommonDir.length === 0) {
+      return null;
+    }
+    const gitCommonDir = path.isAbsolute(rawGitCommonDir)
+      ? path.normalize(rawGitCommonDir)
+      : path.normalize(path.resolve(cwd, rawGitCommonDir));
+    if (path.basename(gitCommonDir) !== ".git") {
+      return null;
+    }
+    return path.dirname(gitCommonDir);
+  });
+
+  const realPathOrSelf = (candidate: string): Effect.Effect<string> =>
+    fileSystem
+      .realPath(candidate)
+      .pipe(Effect.catch(() => Effect.succeed(path.resolve(candidate))));
+
+  /** Uncommitted changes in one checkout. A checkout git can no longer read
+   * (its directory was removed underneath us) counts as clean rather than
+   * failing the whole listing. */
+  const readWorktreeDirty = (cwd: string): Effect.Effect<boolean> =>
+    executeGit("GitVcsDriver.listWorktreeStatuses.status", cwd, ["status", "--porcelain"], {
+      timeoutMs: 10_000,
+      allowNonZeroExit: true,
+    }).pipe(
+      Effect.map((result) => result.exitCode === 0 && result.stdout.trim().length > 0),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+
+  /** Commits on `branch` the repository's default branch cannot reach. */
+  const readUnmergedCommitCount = (
+    cwd: string,
+    branch: string | null,
+  ): Effect.Effect<number | null> =>
+    Effect.gen(function* () {
+      if (branch === null) {
+        return null;
+      }
+      const baseRef = yield* resolveBaseBranchForNoUpstream(cwd, branch);
+      if (!baseRef) {
+        return null;
+      }
+      const result = yield* executeGit(
+        "GitVcsDriver.listWorktreeStatuses.revList",
+        cwd,
+        ["rev-list", "--count", `${baseRef}..${branch}`],
+        { timeoutMs: 10_000, allowNonZeroExit: true },
+      );
+      if (result.exitCode !== 0) {
+        return null;
+      }
+      const parsed = Number.parseInt(result.stdout.trim(), 10);
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+    }).pipe(Effect.catch(() => Effect.succeed(null)));
+
+  const listWorktreeStatuses: GitVcsDriver.GitVcsDriverShape["listWorktreeStatuses"] = Effect.fn(
+    "listWorktreeStatuses",
+  )(function* (input) {
+    const entries = yield* listWorktrees({ cwd: input.cwd });
+    if (entries.length === 0) {
+      return { worktrees: [] };
+    }
+    const mainWorktreePath = yield* resolveMainWorktreePath(input.cwd);
+    const mainRealPath = mainWorktreePath === null ? null : yield* realPathOrSelf(mainWorktreePath);
+
+    const worktrees = [];
+    for (const entry of entries) {
+      const entryRealPath = yield* realPathOrSelf(entry.path);
+      const isRoot = mainRealPath !== null && entryRealPath === mainRealPath;
+      worktrees.push({
+        path: entry.path,
+        refName: entry.branch,
+        isRoot,
+        dirty: yield* readWorktreeDirty(entry.path),
+        unmergedCommitCount: yield* readUnmergedCommitCount(entry.path, entry.branch),
+      });
+    }
+    return { worktrees };
+  });
+
   const readListRefsRepositoryContext = Effect.fn("readListRefsRepositoryContext")(function* (
     cwd: string,
   ) {
@@ -4757,6 +4853,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readConfigValue,
     listRefs,
     listWorktrees,
+    listWorktreeStatuses,
     commitGraph,
     commitDetails,
     workingTreeDiff,
