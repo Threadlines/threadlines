@@ -22,6 +22,91 @@ export {
   type ExtensionMcpOAuthActionIntent,
 } from "../../mcpAuthStatus";
 
+// ── Page tabs ────────────────────────────────────────────────────────
+//
+// The page holds two unrelated jobs — installing plugins and managing skills — so
+// it splits into tabs. The tab lives in the URL so a link can point at either one,
+// and is remembered so returning to settings lands where you left.
+
+export const EXTENSIONS_SETTINGS_TABS = ["plugins", "skills"] as const;
+export type ExtensionsSettingsTab = (typeof EXTENSIONS_SETTINGS_TABS)[number];
+
+/** Route search validation. Returns undefined for a missing or unknown tab. */
+export function parseExtensionsSettingsTab(value: unknown): ExtensionsSettingsTab | undefined {
+  return EXTENSIONS_SETTINGS_TABS.find((tab) => tab === value);
+}
+
+/** The URL is explicit intent, so it beats the remembered tab. */
+export function resolveExtensionsSettingsTab(
+  searchTab: ExtensionsSettingsTab | undefined,
+  rememberedTab: ExtensionsSettingsTab | undefined,
+): ExtensionsSettingsTab {
+  return searchTab ?? rememberedTab ?? "plugins";
+}
+
+// ── Skill grouping ───────────────────────────────────────────────────
+
+export type ExtensionSkillGroupKey = "project" | "personal" | "plugin" | "builtin";
+
+/**
+ * Where a skill came from, which is what a reader wants to know first: one they wrote for this
+ * project, one they wrote for themselves, one a plugin brought, or one the provider ships.
+ */
+export function extensionSkillGroupKey(skill: {
+  readonly scope?: string | undefined;
+  readonly bundleId?: string | undefined;
+}): ExtensionSkillGroupKey {
+  if (skill.bundleId?.trim()) return "plugin";
+  const scope = skill.scope?.trim().toLowerCase();
+  if (scope === "project") return "project";
+  if (scope === "system") return "builtin";
+  return "personal";
+}
+
+const EXTENSION_SKILL_GROUP_ORDER = [
+  "project",
+  "personal",
+  "plugin",
+  "builtin",
+] as const satisfies ReadonlyArray<ExtensionSkillGroupKey>;
+
+export const EXTENSION_SKILL_GROUP_LABELS: Record<ExtensionSkillGroupKey, string> = {
+  project: "Project skills",
+  personal: "Personal skills",
+  plugin: "From plugins",
+  builtin: "Built in",
+};
+
+export interface ExtensionSkillGroup<T> {
+  readonly key: ExtensionSkillGroupKey;
+  readonly label: string;
+  readonly items: ReadonlyArray<T>;
+}
+
+/** Groups in a fixed origin order, each sorted by the name shown on the row. Empty groups drop. */
+export function groupExtensionSkills<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => {
+    readonly scope?: string | undefined;
+    readonly bundleId?: string | undefined;
+    readonly sortKey: string;
+  },
+): ReadonlyArray<ExtensionSkillGroup<T>> {
+  return EXTENSION_SKILL_GROUP_ORDER.flatMap((key) => {
+    const matching = items.filter((item) => extensionSkillGroupKey(read(item)) === key);
+    if (matching.length === 0) return [];
+    return [
+      {
+        key,
+        label: EXTENSION_SKILL_GROUP_LABELS[key],
+        items: matching.toSorted((left, right) =>
+          read(left).sortKey.localeCompare(read(right).sortKey),
+        ),
+      },
+    ];
+  });
+}
+
 export function extensionProviderDriverSortRank(driverKind: string): number {
   if (driverKind === "codex") return 0;
   if (driverKind === "claudeAgent") return 1;

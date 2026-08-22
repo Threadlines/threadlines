@@ -21,8 +21,10 @@ import {
   RefreshCwIcon,
   SearchIcon,
   TerminalIcon,
+  Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type {
   EnvironmentApi,
@@ -80,6 +82,10 @@ import {
   extensionProviderDriverSortRank,
   formatSkillDisplayName,
   formatTokenCount,
+  groupExtensionSkills,
+  parseExtensionsSettingsTab,
+  resolveExtensionsSettingsTab,
+  type ExtensionsSettingsTab,
   rankPluginsAcrossProviders,
   resolveExtensionScope,
   selectCuratedPlugins,
@@ -143,8 +149,6 @@ import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
-/** Installed plugin lists are short now that the catalog lives behind Browse, so show them whole. */
-const EXTENSION_INSTALLED_PLUGIN_PREVIEW_LIMIT = 25;
 const EXTENSION_BROWSER_PAGE_SIZE = 80;
 const EXTENSION_INVENTORY_CACHE_MAX_ENTRIES = 5;
 const EXTENSION_INVENTORY_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -243,6 +247,8 @@ interface ExtensionsSettingsPanelMemoryState {
     | undefined;
   manualThreadOverride?: { readonly scopeKey: string; readonly value: string } | undefined;
   showAdvancedContext?: boolean | undefined;
+  /** Overridden by a `tab` search param, so a shared link still opens where it points. */
+  tab?: ExtensionsSettingsTab | undefined;
 }
 
 type ExtensionProvidersApi = NonNullable<EnvironmentApi["providers"]>;
@@ -356,35 +362,6 @@ function PluginIcon({
 
 function extensionItemActionKey(item: ExtensionItem): string {
   return `${item.provider.instanceId}:${item.kind}:${item.id}`;
-}
-
-function statusVariant(status: ProviderExtensionProviderInventory["status"]) {
-  switch (status) {
-    case "ready":
-      return "success";
-    case "partial":
-      return "warning";
-    case "error":
-      return "error";
-    case "disabled":
-    case "unsupported":
-      return "outline";
-  }
-}
-
-function providerStatusLabel(status: ProviderExtensionProviderInventory["status"]): string {
-  switch (status) {
-    case "ready":
-      return "Ready";
-    case "partial":
-      return "Loaded with issues";
-    case "error":
-      return "Error";
-    case "disabled":
-      return "Disabled";
-    case "unsupported":
-      return "Unsupported";
-  }
 }
 
 function providerTitle(provider: ProviderExtensionProviderInventory): string {
@@ -636,6 +613,12 @@ function skillBundleKey(skill: ProviderExtensionSkill): string {
     scope: skill.scope,
     source: skill.source,
   });
+}
+
+/** `<root>/<name>/SKILL.md` -> `<root>/<name>`: the folder a delete removes. */
+function skillFolderPath(skillPath: string): string {
+  const separatorIndex = skillPath.replaceAll("\\", "/").lastIndexOf("/");
+  return separatorIndex > 0 ? skillPath.slice(0, separatorIndex) : skillPath;
 }
 
 function findRefreshedExtensionItem(
@@ -1542,6 +1525,7 @@ function ExtensionDetailDialog({
   onSelectItem,
   environmentId,
   cwd,
+  machineLabel,
   providerThreadId,
   onInventoryMutated,
   lastAction,
@@ -1552,6 +1536,8 @@ function ExtensionDetailDialog({
   onSelectItem: (item: ExtensionItem) => void;
   environmentId: EnvironmentId | null;
   cwd: string;
+  /** Named in the delete confirmation so it is clear which machine loses the folder. */
+  machineLabel: string;
   providerThreadId: string;
   onInventoryMutated: () => Promise<void>;
   lastAction?: ExtensionActionHistoryEntry | undefined;
@@ -1805,6 +1791,25 @@ function ExtensionDetailDialog({
       return `Skill ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
+
+  const deleteSkill = useCallback(() => {
+    if (!item || item.kind !== "skill") return;
+    const folder = skillFolderPath(item.skill.path);
+    void runDialogAction("Delete skill", async () => {
+      const confirmed = await ensureLocalApi().dialogs.confirm(
+        `Delete ${item.title}? Deletes the folder ${folder} on ${machineLabel}.`,
+      );
+      if (!confirmed) return "Delete cancelled.";
+      await providersApi().deleteExtensionSkill({
+        ...actionBaseInput(item, cwd),
+        path: item.skill.path,
+      });
+      await onInventoryMutated();
+      // The item this dialog is bound to no longer exists, so there is nothing left to show.
+      onClose();
+      return "Skill deleted.";
+    });
+  }, [cwd, item, machineLabel, onClose, onInventoryMutated, providersApi, runDialogAction]);
 
   const installPlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
@@ -2414,7 +2419,7 @@ function ExtensionDetailDialog({
                 ) : null}
               </>
             ) : null}
-            {codexActionsAvailable && item.kind === "skill" ? (
+            {item.kind === "skill" && item.skill.canToggle === true ? (
               <Button
                 size="xs"
                 variant="outline"
@@ -2427,6 +2432,21 @@ function ExtensionDetailDialog({
                   <PowerIcon className="size-3.5" />
                 )}
                 {item.skill.enabled === false ? "Enable" : "Disable"}
+              </Button>
+            ) : null}
+            {item.kind === "skill" && item.skill.canDelete === true ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busyAction !== null}
+                onClick={deleteSkill}
+              >
+                {busyAction === "Delete skill" ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2Icon className="size-3.5" />
+                )}
+                Delete
               </Button>
             ) : null}
             {codexActionsAvailable && item.kind === "plugin" ? (
@@ -3005,43 +3025,21 @@ function InstalledStripSkeleton() {
   );
 }
 
-function ProviderInventorySkeleton() {
+function SkillListSkeleton() {
   return (
-    <div aria-hidden="true" data-testid="extensions-provider-skeleton">
-      {["first-provider", "second-provider"].map((providerKey) => (
-        <SettingsRow
-          key={providerKey}
-          title={<Skeleton className="h-3.5 w-24 rounded-full" />}
-          description={<Skeleton className="h-3 w-40 max-w-full rounded-full" />}
-          control={<Skeleton className="h-5 w-14 rounded-full" />}
+    <div aria-hidden="true" data-testid="extensions-skills-skeleton">
+      {["first-skill", "second-skill", "third-skill", "fourth-skill"].map((rowKey) => (
+        <div
+          key={rowKey}
+          className="flex min-h-11 items-center gap-2.5 border-t border-border/40 px-4 py-2.5 first:border-t-0 sm:px-5"
         >
-          <div className="mt-3 space-y-3 border-t border-border/50 py-3">
-            <div className="flex gap-1.5">
-              <Skeleton className="h-7 w-20 rounded-sm" />
-              <Skeleton className="h-7 w-16 rounded-sm" />
-            </div>
-            <div className="min-w-0 rounded-md border border-border/60 bg-background/35">
-              <div className="flex min-h-10 items-center justify-between border-b border-border/50 px-3 py-2">
-                <Skeleton className="h-3 w-20 rounded-full" />
-                <Skeleton className="h-2.5 w-8 rounded-full" />
-              </div>
-              <div className="grid lg:grid-cols-2">
-                {["first-row", "second-row"].map((rowKey) => (
-                  <div
-                    key={rowKey}
-                    className="flex min-h-10 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0"
-                  >
-                    <Skeleton className="size-3.5 shrink-0 rounded-sm" />
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      <Skeleton className="h-3 w-28 max-w-full rounded-full" />
-                      <Skeleton className="h-2.5 w-40 max-w-full rounded-full" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+          <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3 w-28 max-w-full rounded-full" />
+            <Skeleton className="h-2.5 w-48 max-w-full rounded-full" />
           </div>
-        </SettingsRow>
+          <Skeleton className="h-4 w-8 rounded-full" />
+        </div>
       ))}
     </div>
   );
@@ -3851,285 +3849,209 @@ function ExtensionBrowserDialog({
   );
 }
 
-function ProviderInventoryRow({
-  provider,
-  cwd,
+/**
+ * One skill, as a row. The control on the right is whatever the server says this skill supports:
+ * a switch when it can be toggled, otherwise a status badge. Bundled skills follow their plugin,
+ * so they read as status rather than offering a control that would not apply.
+ */
+function SkillListRow({
+  item,
   environmentId,
-  filterText,
-  onSelectItem,
-  onInventoryMutated,
-  onLoadMcpServers,
-  isLoadingMcpServers,
-  onLoadApps,
-  isLoadingApps,
+  isBusy,
+  onSelect,
+  onToggle,
 }: {
-  provider: ProviderExtensionProviderInventory;
-  cwd: string;
+  item: Extract<ExtensionItem, { kind: "skill" }>;
   environmentId: EnvironmentId | null;
-  filterText: string;
-  onSelectItem: (item: ExtensionItem) => void;
-  onInventoryMutated: () => Promise<void>;
-  onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
-  isLoadingMcpServers: boolean;
-  onLoadApps: (provider: ProviderExtensionProviderInventory) => Promise<void>;
-  isLoadingApps: boolean;
+  isBusy: boolean;
+  onSelect: (item: ExtensionItem) => void;
+  onToggle: (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => void;
 }) {
-  const providersApi = useScopedProvidersApi();
-  const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("skills");
-  const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
-  const deferredProviderFilterText = filterText;
-
-  const allItems = useMemo(
-    () => ({
-      plugins: provider.plugins.map((plugin) => pluginExtensionItem(provider, plugin)),
-      skills: provider.skills.map((skill) => skillExtensionItem(provider, skill)),
-      mcpServers: provider.mcpServers.map((server) => mcpExtensionItem(provider, server)),
-      apps: provider.apps.map((app) => appExtensionItem(provider, app)),
-    }),
-    [provider],
-  );
-  const filterProviderItems = useCallback(
-    (items: ReadonlyArray<ExtensionItem>) =>
-      filterExtensionItems(items, deferredProviderFilterText),
-    [deferredProviderFilterText],
-  );
-  // The plugin list a provider reports is its whole catalog (2000+ for Codex). The section shows
-  // what is actually installed; everything else lives behind Browse.
-  const installedPluginItems = useMemo(
-    () => allItems.plugins.filter(extensionItemInstalled),
-    [allItems],
-  );
-  // Codex answers app/list with the whole ChatGPT app directory; only accessible apps are
-  // actually connected to the account. The section shows those, the catalog lives behind Browse.
-  const connectedAppItems = useMemo(() => allItems.apps.filter(extensionItemInstalled), [allItems]);
-  const filteredItems = useMemo(
-    () => ({
-      plugins: sortExtensionItems(filterProviderItems(installedPluginItems), "recommended"),
-      skills: sortExtensionItems(filterProviderItems(allItems.skills), "recommended"),
-      mcpServers: sortExtensionItems(filterProviderItems(allItems.mcpServers), "recommended"),
-      apps: sortExtensionItems(filterProviderItems(connectedAppItems), "recommended"),
-    }),
-    [allItems, filterProviderItems, installedPluginItems, connectedAppItems],
-  );
-  const panelIdBase = useMemo(
-    () => `extensions-${String(provider.instanceId).replace(/[^a-zA-Z0-9_-]/g, "-")}`,
-    [provider.instanceId],
-  );
-  const catalogPluginCount = allItems.plugins.length - installedPluginItems.length;
-  const catalogAppCount = allItems.apps.length - connectedAppItems.length;
-  const initialSection = provider.skills.length > 0 ? "skills" : "apps";
-  const allSections: ReadonlyArray<ExtensionSectionConfig> = [
-    {
-      key: "plugins" as const,
-      title: "Installed plugins",
-      label: "Plugins",
-      browseLabel:
-        catalogPluginCount > 0 ? `Browse ${catalogPluginCount} more` : "Browse all plugins",
-      icon: <PlugIcon className="size-3.5" />,
-      items: filteredItems.plugins,
-      browseItems: sortExtensionItems(filterProviderItems(allItems.plugins), "recommended"),
-      previewLimit: EXTENSION_INSTALLED_PLUGIN_PREVIEW_LIMIT,
-      totalCount: installedPluginItems.length,
-      emptyLabel: "No plugins installed.",
-    },
-    {
-      key: "skills" as const,
-      title: "Skills",
-      label: "Skills",
-      browseLabel: "Browse all skills",
-      icon: <FileTextIcon className="size-3.5" />,
-      items: filteredItems.skills,
-      totalCount: provider.skills.length,
-      emptyLabel: "No skills reported.",
-    },
-    {
-      key: "mcpServers" as const,
-      title: "MCP Servers",
-      label: "MCP",
-      browseLabel: "Browse MCP servers",
-      icon: <DatabaseIcon className="size-3.5" />,
-      items: filteredItems.mcpServers,
-      totalCount: provider.mcpServers.length,
-      isTruncated: provider.mcpServersTruncated,
-      emptyLabel:
-        provider.mcpServersStatus === "deferred"
-          ? "MCP servers not loaded."
-          : provider.mcpServersStatus === "error"
-            ? "MCP servers failed to load."
-            : "No MCP servers reported.",
-      statusMessage: provider.mcpServersMessage,
-      loadLabel:
-        provider.mcpServersStatus === "deferred"
-          ? "Load MCP servers"
-          : provider.mcpServersStatus === "error"
-            ? "Retry MCP servers"
-            : undefined,
-      isLoading: isLoadingMcpServers,
-      onLoad: () => void onLoadMcpServers(provider),
-    },
-    {
-      key: "apps" as const,
-      title: "Apps",
-      label: "Apps",
-      browseLabel:
-        catalogAppCount > 0
-          ? `Browse ${catalogAppCount}${provider.appsTruncated ? "+" : ""} more`
-          : "Browse all apps",
-      icon: <BotIcon className="size-3.5" />,
-      items: filteredItems.apps,
-      browseItems: sortExtensionItems(filterProviderItems(allItems.apps), "recommended"),
-      totalCount: connectedAppItems.length,
-      isDeferred: provider.appsStatus === "deferred",
-      emptyLabel:
-        provider.appsStatus === "deferred"
-          ? "Apps not loaded."
-          : provider.appsStatus === "error"
-            ? "Apps failed to load."
-            : "No connected apps.",
-      statusMessage: provider.appsMessage,
-      loadLabel:
-        provider.appsStatus === "deferred"
-          ? "Load apps"
-          : provider.appsStatus === "error"
-            ? "Retry apps"
-            : undefined,
-      isLoading: isLoadingApps,
-      onLoad: () => void onLoadApps(provider),
-    },
-  ];
-  // Installed plugins and MCP connections are rendered above the fold by the page itself, so this
-  // row is only the two surfaces that have nowhere else to live.
-  // Apps are a Codex concept; the Claude driver always reports an empty list, so rendering the tab
-  // for it just advertises a category that provider does not have.
-  const sections = allSections.filter(
-    (section) => section.key === "skills" || (section.key === "apps" && isCodexProvider(provider)),
-  );
-  const activeSectionConfig =
-    sections.find((section) => section.key === activeSection) ?? sections[0];
-  const browseSectionConfig = sections.find((section) => section.key === browseSection) ?? null;
-  const firstFilteredSection =
-    sections.find((section) => section.items.length > 0)?.key ?? initialSection;
-  const activeSectionItemCount = filteredItems[activeSection]?.length ?? 0;
-
-  useEffect(() => {
-    setActiveSection(initialSection);
-    setBrowseSection(null);
-  }, [initialSection, provider.instanceId]);
-
-  useEffect(() => {
-    // Apps and MCP sections are empty for reasons other than content (deferred load, catalog
-    // behind Browse), so bouncing off them would fight deliberate tab clicks.
-    if (activeSection === "mcpServers" || activeSection === "apps") return;
-    if (activeSectionItemCount === 0 && firstFilteredSection !== activeSection) {
-      setActiveSection(firstFilteredSection);
-    }
-  }, [activeSection, activeSectionItemCount, firstFilteredSection]);
-
-  useEffect(() => {
-    if (
-      activeSection === "mcpServers" &&
-      provider.mcpServersStatus === "deferred" &&
-      !isLoadingMcpServers
-    ) {
-      void onLoadMcpServers(provider);
-    }
-  }, [activeSection, isLoadingMcpServers, onLoadMcpServers, provider]);
-
-  useEffect(() => {
-    if (activeSection === "apps" && provider.appsStatus === "deferred" && !isLoadingApps) {
-      void onLoadApps(provider);
-    }
-  }, [activeSection, isLoadingApps, onLoadApps, provider]);
-
-  const toggleSkillBundle = useCallback(
-    async (bundle: ExtensionSkillBundleControl) => {
-      if (bundle.kind === "skills") {
-        const skills = bundle.skills ?? [];
-        for (const skill of skills) {
-          await providersApi().setExtensionSkillEnabled({
-            ...actionBaseInput(skillExtensionItem(bundle.provider, skill), cwd),
-            path: skill.path,
-            enabled: bundle.nextEnabled,
-          });
-        }
-        await onInventoryMutated();
-        return;
-      }
-
-      const pluginItem = pluginExtensionItem(bundle.provider, bundle.plugin);
-      await providersApi().setExtensionPluginEnabled({
-        ...actionBaseInput(pluginItem, cwd),
-        pluginId: bundle.plugin.id,
-        ...(bundle.plugin.scope ? { scope: bundle.plugin.scope } : {}),
-        enabled: bundle.nextEnabled,
-      });
-      await onInventoryMutated();
-    },
-    [cwd, onInventoryMutated, providersApi],
-  );
+  const ProviderGlyph = providerIconForDriverLabel(String(item.provider.driver));
+  const enabled = item.skill.enabled !== false;
+  const description = item.skill.shortDescription ?? item.skill.description ?? item.skill.path;
 
   return (
-    <SettingsRow
-      title={providerTitle(provider)}
-      description={`${provider.instanceId} - ${provider.driver}`}
-      status={provider.message}
-      control={
-        <Badge size="sm" variant={statusVariant(provider.status)}>
-          {providerStatusLabel(provider.status)}
+    <div className="group flex min-h-11 items-center gap-2.5 border-t border-border/40 px-4 first:border-t-0 sm:px-5">
+      <button
+        className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-2.5 text-left transition-colors hover:text-foreground focus-ring"
+        onClick={() => onSelect(item)}
+        type="button"
+      >
+        {ProviderGlyph ? (
+          <ProviderGlyph className="size-3.5 shrink-0 text-muted-foreground/60" />
+        ) : (
+          <ExtensionItemGlyph item={item} environmentId={environmentId} sizeClassName="size-3.5" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
+          <span className="block truncate text-[11px] text-muted-foreground/70">{description}</span>
+        </span>
+      </button>
+      {item.skill.canToggle === true ? (
+        <Switch
+          checked={enabled}
+          disabled={isBusy}
+          aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
+          onCheckedChange={(checked) => onToggle(item, Boolean(checked))}
+        />
+      ) : (
+        <Badge size="sm" variant={enabled ? "success" : "outline"}>
+          {enabled ? "On" : "Off"}
         </Badge>
-      }
-    >
-      <div className="mt-3 space-y-3 border-t border-border/50 py-3">
-        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Plugin section">
-          {sections.map((section) => (
-            <SectionTabButton
-              key={section.key}
-              label={section.label}
-              value={section.items.length}
-              totalValue={section.totalCount}
-              isTruncated={section.isTruncated}
-              isDeferred={section.isDeferred}
-              active={activeSection === section.key}
-              icon={section.icon}
-              panelId={`${panelIdBase}-${section.key}`}
-              onClick={() => setActiveSection(section.key)}
-            />
-          ))}
-        </div>
-        {activeSectionConfig ? (
-          <ExtensionPreviewSection
-            environmentId={environmentId}
-            title={activeSectionConfig.title}
-            items={activeSectionConfig.items}
-            totalCount={activeSectionConfig.totalCount}
-            isTruncated={activeSectionConfig.isTruncated}
-            previewLimit={activeSectionConfig.previewLimit}
-            emptyLabel={activeSectionConfig.emptyLabel}
-            statusMessage={activeSectionConfig.statusMessage}
-            loadLabel={activeSectionConfig.loadLabel}
-            isLoading={activeSectionConfig.isLoading}
-            onLoad={activeSectionConfig.onLoad}
-            filterText={deferredProviderFilterText}
-            onSelect={onSelectItem}
-            panelId={`${panelIdBase}-${activeSectionConfig.key}`}
-            browseLabel={activeSectionConfig.browseLabel}
-            browseAvailable={
-              (activeSectionConfig.browseItems ?? activeSectionConfig.items).length > 0
-            }
-            onBrowse={() => setBrowseSection(activeSectionConfig.key)}
-          />
-        ) : null}
-      </div>
-      <ExtensionBrowserDialog
-        environmentId={environmentId}
-        section={browseSectionConfig}
-        providerLabel={providerTitle(provider)}
-        initialQuery={filterText}
-        onClose={() => setBrowseSection(null)}
-        onSelect={onSelectItem}
-        onToggleSkillBundle={toggleSkillBundle}
-      />
-    </SettingsRow>
+      )}
+    </div>
+  );
+}
+
+function NewSkillDialog({
+  open,
+  providers,
+  cwd,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  /** Providers in scope that can hold a new skill. The picker is hidden when there is only one. */
+  providers: ReadonlyArray<ProviderExtensionProviderInventory>;
+  cwd: string;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const providersApi = useScopedProvidersApi();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [providerInstanceId, setProviderInstanceId] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setDescription("");
+    setError(null);
+    setIsSaving(false);
+    setProviderInstanceId(String(providers[0]?.instanceId ?? ""));
+  }, [open, providers]);
+
+  const trimmedName = name.trim();
+  const nameIsValid = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(trimmedName) && trimmedName.length <= 64;
+  const canSave = nameIsValid && providerInstanceId.length > 0 && !isSaving;
+
+  const save = useCallback(async () => {
+    if (!canSave) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const result = await providersApi().createExtensionSkill({
+        ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
+        providerInstanceId: providerInstanceId as ProviderInstanceId,
+        name: trimmedName,
+        ...(description.trim() ? { description: description.trim() } : {}),
+      });
+      await onCreated();
+      toastManager.add({
+        type: "success",
+        title: "Skill created",
+        description: result.path,
+      });
+      onClose();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "The skill was not created.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    canSave,
+    cwd,
+    description,
+    onClose,
+    onCreated,
+    providerInstanceId,
+    providersApi,
+    trimmedName,
+  ]);
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+      <DialogPopup className="sm:max-w-md">
+        <DialogPanel>
+          <DialogHeader>
+            <DialogTitle>New skill</DialogTitle>
+            <DialogDescription>
+              Writes a SKILL.md into your personal skills folder. Open it afterwards to fill in the
+              instructions.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {providers.length > 1 ? (
+              <label className="block space-y-1">
+                <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                  Provider
+                </span>
+                <Select
+                  value={providerInstanceId}
+                  onValueChange={(value) => setProviderInstanceId(String(value))}
+                >
+                  <SelectTrigger className="w-full" aria-label="Provider">
+                    <SelectValue>
+                      {providerTitle(
+                        providers.find(
+                          (provider) => String(provider.instanceId) === providerInstanceId,
+                        ) ?? providers[0]!,
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {providers.map((provider) => (
+                      <SelectItem key={provider.instanceId} value={String(provider.instanceId)}>
+                        {providerTitle(provider)}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              </label>
+            ) : null}
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                Name
+              </span>
+              <Input
+                nativeInput
+                autoFocus
+                value={name}
+                placeholder="review-checklist"
+                onChange={(event) => setName(event.currentTarget.value)}
+              />
+              <span className="block text-[11px] text-muted-foreground/70">
+                Lower-case letters, digits, and single hyphens. This is the folder name too.
+              </span>
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                Description
+              </span>
+              <Textarea
+                value={description}
+                rows={3}
+                placeholder="When the agent should reach for this skill."
+                onChange={(event) => setDescription(event.currentTarget.value)}
+              />
+            </label>
+            {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button size="xs" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button size="xs" disabled={!canSave} onClick={() => void save()}>
+              {isSaving ? <LoaderIcon className="size-3.5 animate-spin" /> : null}
+              Create skill
+            </Button>
+          </DialogFooter>
+        </DialogPanel>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -4384,6 +4306,28 @@ export function ExtensionsSettingsPanel() {
   const [showAdvancedContext, setShowAdvancedContext] = useState(
     () => extensionsSettingsPanelMemoryState.showAdvancedContext ?? false,
   );
+  // Read loosely: the panel is also mounted outside its own route in tests, and a strict
+  // subscription would fail there rather than fall back to the remembered tab.
+  const searchTab = useSearch({
+    strict: false,
+    select: (search) => parseExtensionsSettingsTab((search as { readonly tab?: unknown }).tab),
+  });
+  const navigate = useNavigate();
+  const [rememberedTab, setRememberedTab] = useState(() => extensionsSettingsPanelMemoryState.tab);
+  const tab = resolveExtensionsSettingsTab(searchTab, rememberedTab);
+  const selectTab = useCallback(
+    (next: ExtensionsSettingsTab) => {
+      setRememberedTab(next);
+      void navigate({
+        to: "/settings/plugins",
+        replace: true,
+        search: (previous) => ({ ...previous, tab: next }),
+      });
+    },
+    [navigate],
+  );
+  const [isCreatingSkill, setIsCreatingSkill] = useState(false);
+  const [busySkillPath, setBusySkillPath] = useState<string | null>(null);
   const [pageQuery, setPageQuery] = useState("");
   const deferredPageQuery = useDeferredValue(pageQuery);
   const refreshRequestRef = useRef(0);
@@ -4517,6 +4461,10 @@ export function ExtensionsSettingsPanel() {
   useEffect(() => {
     extensionsSettingsPanelMemoryState.showAdvancedContext = showAdvancedContext;
   }, [showAdvancedContext]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.tab = tab;
+  }, [tab]);
 
   // Only this device's provider list is authoritative about this device. A remote
   // scope's chips come from its own inventory, so nothing here may clear them.
@@ -4738,6 +4686,120 @@ export function ExtensionsSettingsPanel() {
       ),
     [providerScopedInventory],
   );
+  // Both tabs read the same single inventory load; nothing here refetches per tab.
+  const allSkillItems = useMemo(
+    () =>
+      providerScopedInventory.flatMap((provider) =>
+        provider.skills.map((skill) => skillExtensionItem(provider, skill)),
+      ),
+    [providerScopedInventory],
+  );
+  const skillGroups = useMemo(
+    () =>
+      groupExtensionSkills(
+        filterExtensionItems(allSkillItems, deferredPageQuery).filter(
+          (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
+        ),
+        (item) => ({
+          scope: item.skill.scope,
+          bundleId: item.skill.bundleId,
+          sortKey: item.title.toLowerCase(),
+        }),
+      ),
+    [allSkillItems, deferredPageQuery],
+  );
+  const matchingSkillCount = skillGroups.reduce((total, group) => total + group.items.length, 0);
+  const skillCreateProviders = useMemo(
+    () =>
+      providerScopedInventory.filter(
+        (provider) => isCodexProvider(provider) || isClaudeProvider(provider),
+      ),
+    [providerScopedInventory],
+  );
+  const toggleSkillRow = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      if (!providersApi) return;
+      setBusySkillPath(item.skill.path);
+      try {
+        await providersApi.setExtensionSkillEnabled({
+          ...actionBaseInput(item, cwd),
+          path: item.skill.path,
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true });
+      } catch (toggleError) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${nextEnabled ? "Enable" : "Disable"} skill failed`,
+            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusySkillPath((current) => (current === item.skill.path ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
+  );
+
+  // Apps are a Codex concept; the Claude driver always reports an empty list.
+  const codexProviders = useMemo(
+    () => providerScopedInventory.filter(isCodexProvider),
+    [providerScopedInventory],
+  );
+  const allAppItems = useMemo(
+    () =>
+      codexProviders.flatMap((provider) =>
+        provider.apps.map((app) => appExtensionItem(provider, app)),
+      ),
+    [codexProviders],
+  );
+  const appsDeferredProvider = codexProviders.find(
+    (provider) => provider.appsStatus === "deferred" || provider.appsStatus === "error",
+  );
+  const appsSection = useMemo((): ExtensionSectionConfig => {
+    // Codex answers app/list with the whole ChatGPT app directory; only accessible apps are
+    // actually connected to the account. The section shows those, the catalog lives behind Browse.
+    const connected = allAppItems.filter(extensionItemInstalled);
+    const catalogCount = allAppItems.length - connected.length;
+    const truncated = codexProviders.some((provider) => provider.appsTruncated);
+    const failed = codexProviders.some((provider) => provider.appsStatus === "error");
+    const deferred = codexProviders.every((provider) => provider.appsStatus === "deferred");
+    return {
+      key: "apps",
+      title: "Apps",
+      label: "Apps",
+      browseLabel:
+        catalogCount > 0 ? `Browse ${catalogCount}${truncated ? "+" : ""} more` : "Browse all apps",
+      icon: <BotIcon className="size-3.5" />,
+      items: sortExtensionItems(filterExtensionItems(connected, deferredPageQuery), "recommended"),
+      browseItems: sortExtensionItems(
+        filterExtensionItems(allAppItems, deferredPageQuery),
+        "recommended",
+      ),
+      totalCount: connected.length,
+      isDeferred: deferred,
+      emptyLabel: deferred
+        ? "Apps not loaded."
+        : failed
+          ? "Apps failed to load."
+          : "No connected apps.",
+      statusMessage: codexProviders.find((provider) => provider.appsMessage)?.appsMessage,
+      loadLabel: deferred ? "Load apps" : failed ? "Retry apps" : undefined,
+      isLoading: appsLoadingProviderId !== null,
+      ...(appsDeferredProvider ? { onLoad: () => void loadApps(appsDeferredProvider) } : {}),
+    };
+  }, [
+    allAppItems,
+    appsDeferredProvider,
+    appsLoadingProviderId,
+    codexProviders,
+    deferredPageQuery,
+    loadApps,
+  ]);
+  const [isBrowsingApps, setIsBrowsingApps] = useState(false);
+
   const searchedInstalledPlugins = useMemo(
     () =>
       sortExtensionItems(
@@ -4892,208 +4954,293 @@ export function ExtensionsSettingsPanel() {
                   }}
                 />
               ) : null}
-              <Button
-                size="xs"
-                variant="outline"
-                className="ml-auto"
-                disabled={allPluginItems.length === 0}
-                onClick={() => setIsBrowsingCatalog(true)}
-              >
-                <SearchIcon className="size-3.5" />
-                Browse catalog
-              </Button>
             </div>
-            {isInitialInventoryLoading ? (
-              <InstalledStripSkeleton />
-            ) : (
-              <InstalledStrip
-                items={searchedInstalledPlugins}
-                environmentId={selectedEnvironmentId}
-                onSelect={setSelectedItem}
+            <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Plugins and skills">
+              <SectionTabButton
+                label="Plugins"
+                value={searchedInstalledPlugins.length}
+                totalValue={allPluginItems.filter(extensionItemInstalled).length}
+                active={tab === "plugins"}
+                icon={<PlugIcon className="size-3.5" />}
+                panelId="extensions-tab-plugins"
+                onClick={() => selectTab("plugins")}
               />
-            )}
-            <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
+              <SectionTabButton
+                label="Skills"
+                value={matchingSkillCount}
+                totalValue={allSkillItems.length}
+                active={tab === "skills"}
+                icon={<FileTextIcon className="size-3.5" />}
+                panelId="extensions-tab-skills"
+                onClick={() => selectTab("skills")}
+              />
+            </div>
           </div>
         </SettingsSection>
 
-        <SettingsSection
-          title="Skills and apps"
-          icon={<FileTextIcon className="size-3.5" />}
-          headerAction={
-            hasInventory && isLoading ? (
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <LoaderIcon className="size-3 animate-spin" />
-                Refreshing
-              </span>
-            ) : null
-          }
-        >
-          {isInitialInventoryLoading ? (
-            <ProviderInventorySkeleton />
-          ) : inventory?.providers.length ? (
-            inventory.providers.map((provider) => (
-              <ProviderInventoryRow
-                environmentId={selectedEnvironmentId}
-                filterText={deferredPageQuery}
-                key={provider.instanceId}
-                provider={provider}
-                cwd={cwd}
-                onSelectItem={setSelectedItem}
-                onInventoryMutated={refreshAfterMutation}
-                onLoadMcpServers={loadMcpServers}
-                isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
-                onLoadApps={loadApps}
-                isLoadingApps={appsLoadingProviderId === String(provider.instanceId)}
-              />
-            ))
-          ) : (
-            <SettingsRow
-              title={
-                !scopeIsReachable ? (
-                  scope === null ? (
-                    "No machine available"
-                  ) : (
-                    `${scopeMachineLabel} is not connected`
-                  )
-                ) : isLoading ? (
-                  <span className="inline-flex items-center gap-2">
-                    <LoaderIcon className="size-3.5 animate-spin" />
-                    Loading skills and apps
-                  </span>
-                ) : error ? (
-                  "Inventory failed to load"
-                ) : (
-                  "No skills or apps reported"
-                )
-              }
-              description={
-                !scopeIsReachable
-                  ? scope === null
-                    ? "Add a computer or a project to inspect skills and apps."
-                    : "Reconnect this machine to inspect its skills and apps."
-                  : isLoading
-                    ? "Reading skills and apps from Codex and Claude."
-                    : error
-                      ? "The inventory could not be loaded. Details are shown above."
-                      : scopeCwd === null
-                        ? "Neither provider reported skills or apps on this machine."
-                        : "Neither provider reported skills or apps for this project."
-              }
-            />
-          )}
-        </SettingsSection>
-
-        <SettingsSection
-          title="Connections"
-          icon={<DatabaseIcon className="size-3.5" />}
-          headerAction={
-            mcpAuthCheckProvider ? (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={mcpLoadingProviderId !== null}
-                onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
-              >
-                {mcpLoadingProviderId !== null ? (
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                ) : (
-                  <KeyRoundIcon className="size-3.5" />
-                )}
-                {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
-              </Button>
-            ) : null
-          }
-        >
-          <div className="px-4 py-3.5 sm:px-5">
-            {isInitialInventoryLoading ? (
-              <ConnectionsTableSkeleton />
-            ) : (
-              <ConnectionsTable
-                items={searchedConnections}
-                environmentId={selectedEnvironmentId}
-                isLoading={isLoading}
-                onSelect={setSelectedItem}
-              />
-            )}
-          </div>
-        </SettingsSection>
-
-        {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
-          <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
-            <div className="space-y-3 px-4 py-3.5 sm:px-5">
-              {providerScopedInventory.map((provider) => (
-                <MarketplacesBlock
-                  key={provider.instanceId}
-                  provider={provider}
-                  cwd={cwd}
-                  onMutated={refreshAfterMutation}
-                />
-              ))}
-            </div>
-          </SettingsSection>
-        ) : null}
-
-        <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
-          <SettingsRow
-            title="MCP context"
-            description={providerThreadContextDescription}
-            control={
-              <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-                <Badge
-                  size="sm"
-                  variant={providerThreadContextSource === "none" ? "outline" : "success"}
-                >
-                  {providerThreadContextSource === "manual"
-                    ? "Manual"
-                    : providerThreadContextSource === "auto"
-                      ? "Auto"
-                      : "No context"}
-                </Badge>
+        {tab === "plugins" ? (
+          <>
+            <SettingsSection
+              title="Installed plugins"
+              icon={<PlugIcon className="size-3.5" />}
+              headerAction={
                 <Button
                   size="xs"
                   variant="outline"
-                  onClick={() => setShowAdvancedContext((open) => !open)}
-                  aria-expanded={showAdvancedContext}
+                  disabled={allPluginItems.length === 0}
+                  onClick={() => setIsBrowsingCatalog(true)}
                 >
-                  <ChevronDownIcon
-                    className={`size-3.5 transition-transform ${showAdvancedContext ? "" : "-rotate-90"}`}
+                  <SearchIcon className="size-3.5" />
+                  Browse catalog
+                </Button>
+              }
+            >
+              <div
+                className="space-y-4 px-4 py-4 sm:px-5"
+                id="extensions-tab-plugins"
+                role="tabpanel"
+              >
+                {isInitialInventoryLoading ? (
+                  <InstalledStripSkeleton />
+                ) : (
+                  <InstalledStrip
+                    items={searchedInstalledPlugins}
+                    environmentId={selectedEnvironmentId}
+                    onSelect={setSelectedItem}
                   />
-                  Advanced
+                )}
+                <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
+              </div>
+            </SettingsSection>
+
+            {codexProviders.length > 0 ? (
+              <SettingsSection title="Apps" icon={<BotIcon className="size-3.5" />}>
+                <div className="px-4 py-3.5 sm:px-5">
+                  <ExtensionPreviewSection
+                    environmentId={selectedEnvironmentId}
+                    title={appsSection.title}
+                    items={appsSection.items}
+                    totalCount={appsSection.totalCount}
+                    isTruncated={appsSection.isTruncated}
+                    emptyLabel={appsSection.emptyLabel}
+                    statusMessage={appsSection.statusMessage}
+                    loadLabel={appsSection.loadLabel}
+                    isLoading={appsSection.isLoading}
+                    onLoad={appsSection.onLoad}
+                    filterText={deferredPageQuery}
+                    onSelect={setSelectedItem}
+                    panelId="extensions-apps"
+                    browseLabel={appsSection.browseLabel}
+                    browseAvailable={(appsSection.browseItems ?? appsSection.items).length > 0}
+                    onBrowse={() => setIsBrowsingApps(true)}
+                  />
+                </div>
+              </SettingsSection>
+            ) : null}
+          </>
+        ) : (
+          <SettingsSection
+            title="Skills"
+            icon={<FileTextIcon className="size-3.5" />}
+            headerAction={
+              <div className="flex items-center gap-2">
+                {hasInventory && isLoading ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <LoaderIcon className="size-3 animate-spin" />
+                    Refreshing
+                  </span>
+                ) : null}
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={skillCreateProviders.length === 0}
+                  onClick={() => setIsCreatingSkill(true)}
+                >
+                  <PackagePlusIcon className="size-3.5" />
+                  New skill
                 </Button>
               </div>
             }
           >
-            {showAdvancedContext ? (
-              <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
-                <div className="min-w-0 space-y-1">
-                  <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                    Detected context
+            <div id="extensions-tab-skills" role="tabpanel">
+              {isInitialInventoryLoading ? (
+                <SkillListSkeleton />
+              ) : skillGroups.length > 0 ? (
+                skillGroups.map((group) => (
+                  <div key={group.key}>
+                    <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 first:border-t-0 sm:px-5">
+                      {group.label}
+                    </div>
+                    {group.items.map((item) => (
+                      <SkillListRow
+                        key={item.skill.path}
+                        item={item}
+                        environmentId={selectedEnvironmentId}
+                        isBusy={busySkillPath === item.skill.path}
+                        onSelect={setSelectedItem}
+                        onToggle={(target, nextEnabled) => void toggleSkillRow(target, nextEnabled)}
+                      />
+                    ))}
                   </div>
-                  <div
-                    className="truncate font-mono text-[11px] text-foreground/80"
-                    title={detectedProviderThreadId || undefined}
-                  >
-                    {detectedProviderThreadId || "No active Codex thread detected"}
-                  </div>
-                  <p className="text-[11px] text-muted-foreground/70">
-                    Leave the override empty to use the detected active session.
-                  </p>
-                </div>
-                <Input
-                  nativeInput
-                  value={manualProviderThreadId}
-                  onChange={(event) => {
-                    setManualThreadOverride({ scopeKey, value: event.currentTarget.value });
-                    invalidateInventoryRefresh();
-                  }}
-                  placeholder="override provider thread id"
-                  className="w-full"
-                  aria-label="Override provider thread id"
+                ))
+              ) : (
+                <SettingsRow
+                  title={
+                    !scopeIsReachable ? (
+                      scope === null ? (
+                        "No machine available"
+                      ) : (
+                        `${scopeMachineLabel} is not connected`
+                      )
+                    ) : isLoading ? (
+                      <span className="inline-flex items-center gap-2">
+                        <LoaderIcon className="size-3.5 animate-spin" />
+                        Loading skills
+                      </span>
+                    ) : error ? (
+                      "Inventory failed to load"
+                    ) : allSkillItems.length > 0 ? (
+                      "No matching skills"
+                    ) : (
+                      "No skills reported"
+                    )
+                  }
+                  description={
+                    !scopeIsReachable
+                      ? scope === null
+                        ? "Add a computer or a project to inspect skills."
+                        : "Reconnect this machine to inspect its skills."
+                      : isLoading
+                        ? "Reading skills from Codex and Claude."
+                        : error
+                          ? "The inventory could not be loaded. Details are shown above."
+                          : allSkillItems.length > 0
+                            ? "No skill matches the search above."
+                            : scopeCwd === null
+                              ? "Neither provider reported skills on this machine."
+                              : "Neither provider reported skills for this project."
+                  }
                 />
+              )}
+            </div>
+          </SettingsSection>
+        )}
+
+        {tab === "plugins" ? (
+          <>
+            <SettingsSection
+              title="Connections"
+              icon={<DatabaseIcon className="size-3.5" />}
+              headerAction={
+                mcpAuthCheckProvider ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={mcpLoadingProviderId !== null}
+                    onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
+                  >
+                    {mcpLoadingProviderId !== null ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <KeyRoundIcon className="size-3.5" />
+                    )}
+                    {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
+                  </Button>
+                ) : null
+              }
+            >
+              <div className="px-4 py-3.5 sm:px-5">
+                {isInitialInventoryLoading ? (
+                  <ConnectionsTableSkeleton />
+                ) : (
+                  <ConnectionsTable
+                    items={searchedConnections}
+                    environmentId={selectedEnvironmentId}
+                    isLoading={isLoading}
+                    onSelect={setSelectedItem}
+                  />
+                )}
               </div>
+            </SettingsSection>
+
+            {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
+              <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
+                <div className="space-y-3 px-4 py-3.5 sm:px-5">
+                  {providerScopedInventory.map((provider) => (
+                    <MarketplacesBlock
+                      key={provider.instanceId}
+                      provider={provider}
+                      cwd={cwd}
+                      onMutated={refreshAfterMutation}
+                    />
+                  ))}
+                </div>
+              </SettingsSection>
             ) : null}
-          </SettingsRow>
-        </SettingsSection>
+
+            <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
+              <SettingsRow
+                title="MCP context"
+                description={providerThreadContextDescription}
+                control={
+                  <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
+                    <Badge
+                      size="sm"
+                      variant={providerThreadContextSource === "none" ? "outline" : "success"}
+                    >
+                      {providerThreadContextSource === "manual"
+                        ? "Manual"
+                        : providerThreadContextSource === "auto"
+                          ? "Auto"
+                          : "No context"}
+                    </Badge>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => setShowAdvancedContext((open) => !open)}
+                      aria-expanded={showAdvancedContext}
+                    >
+                      <ChevronDownIcon
+                        className={`size-3.5 transition-transform ${showAdvancedContext ? "" : "-rotate-90"}`}
+                      />
+                      Advanced
+                    </Button>
+                  </div>
+                }
+              >
+                {showAdvancedContext ? (
+                  <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
+                    <div className="min-w-0 space-y-1">
+                      <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                        Detected context
+                      </div>
+                      <div
+                        className="truncate font-mono text-[11px] text-foreground/80"
+                        title={detectedProviderThreadId || undefined}
+                      >
+                        {detectedProviderThreadId || "No active Codex thread detected"}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground/70">
+                        Leave the override empty to use the detected active session.
+                      </p>
+                    </div>
+                    <Input
+                      nativeInput
+                      value={manualProviderThreadId}
+                      onChange={(event) => {
+                        setManualThreadOverride({ scopeKey, value: event.currentTarget.value });
+                        invalidateInventoryRefresh();
+                      }}
+                      placeholder="override provider thread id"
+                      className="w-full"
+                      aria-label="Override provider thread id"
+                    />
+                  </div>
+                ) : null}
+              </SettingsRow>
+            </SettingsSection>
+          </>
+        ) : null}
 
         <ExtensionBrowserDialog
           environmentId={selectedEnvironmentId}
@@ -5109,10 +5256,32 @@ export function ExtensionsSettingsPanel() {
           }}
           onToggleSkillBundle={async () => {}}
         />
+        <ExtensionBrowserDialog
+          environmentId={selectedEnvironmentId}
+          section={isBrowsingApps ? appsSection : null}
+          providerLabel={
+            providerInstanceId ? (selectedProviderOption?.label ?? "") : "All providers"
+          }
+          initialQuery={pageQuery}
+          onClose={() => setIsBrowsingApps(false)}
+          onSelect={(item) => {
+            setIsBrowsingApps(false);
+            setSelectedItem(item);
+          }}
+          onToggleSkillBundle={async () => {}}
+        />
+        <NewSkillDialog
+          open={isCreatingSkill}
+          providers={skillCreateProviders}
+          cwd={cwd}
+          onClose={() => setIsCreatingSkill(false)}
+          onCreated={refreshAfterMutation}
+        />
         <ExtensionDetailDialog
           item={selectedItem}
           environmentId={selectedEnvironmentId}
           cwd={cwd}
+          machineLabel={scopeMachineLabel}
           providerThreadId={effectiveProviderThreadId}
           onClose={() => setSelectedItem(null)}
           onSelectItem={setSelectedItem}
