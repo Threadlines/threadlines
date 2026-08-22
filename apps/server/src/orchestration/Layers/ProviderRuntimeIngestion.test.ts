@@ -3937,6 +3937,74 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("keeps streaming after emphasis that closes against punctuation", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const messageId = "assistant:item-streaming-punctuation-emphasis";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-punctuation-emphasis"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-punctuation-emphasis"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-streaming-punctuation-emphasis",
+    );
+
+    // The closing ** is preceded by a period, not an alphanumeric. It must
+    // still count as a closer — otherwise every delta after it stays held
+    // until the message completes and the tail arrives as one burst.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-punctuation-emphasis-bold"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-punctuation-emphasis"),
+      itemId: asItemId("item-streaming-punctuation-emphasis"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Logged **1.89 hours tonight.** ",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId &&
+          candidate.streaming &&
+          candidate.text === "Logged **1.89 hours tonight.** ",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-punctuation-emphasis-tail"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-punctuation-emphasis"),
+      itemId: asItemId("item-streaming-punctuation-emphasis"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "The tail keeps streaming.",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId &&
+          candidate.streaming &&
+          candidate.text === "Logged **1.89 hours tonight.** The tail keeps streaming.",
+      ),
+    );
+  });
+
   it("holds incomplete table markdown while streaming assistant deltas", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-01-01T00:00:00.000Z";
