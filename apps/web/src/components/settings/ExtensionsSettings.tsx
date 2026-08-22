@@ -97,6 +97,7 @@ import {
   shouldCuratePluginBrowse,
   groupPluginComponents,
   isLikelyLocalPath,
+  isProviderCoverageMissing,
   makeExtensionInventoryCacheKey,
   type ExtensionScopeGroup,
   type ExtensionScopeMachineInput,
@@ -4643,14 +4644,17 @@ export function ExtensionsSettingsPanel() {
           includeMcpServers,
           includeApps,
         });
+        const loadDurationMs = performance.now() - startedMs;
+        // A response is correct for the key it was issued under no matter what the user switched
+        // to while it was in flight, so it is always worth keeping. Dropping it made switching
+        // back to a provider a cold miss, which is what showed "No plugins installed" on return.
+        if (requestKey) {
+          extensionInventoryCache.set(requestKey, result, loadDurationMs);
+        }
         if (
           refreshRequestRef.current === requestId &&
           inventoryRequestKeyRef.current === requestKey
         ) {
-          const loadDurationMs = performance.now() - startedMs;
-          if (requestKey) {
-            extensionInventoryCache.set(requestKey, result, loadDurationMs);
-          }
           // An unfiltered load is the only one that sees every provider, so it is
           // the only one allowed to redraw a remote machine's chips.
           if (!providerInstanceId && requestEnvironmentId) {
@@ -4706,7 +4710,18 @@ export function ExtensionsSettingsPanel() {
   }, [manualProviderThreadId, refresh]);
 
   const hasInventory = inventory !== null;
-  const isInitialInventoryLoading = scopeIsReachable && !hasInventory && error === null;
+  // The loaded inventory predates the current provider chip, so it cannot answer for it yet.
+  // Showing skeletons while the refetch runs is the honest reading; empty labels would not be.
+  const providerCoverageMissing = isProviderCoverageMissing({
+    providerInstanceId,
+    inventoryProviderInstanceIds: (inventory?.providers ?? []).map((provider) =>
+      String(provider.instanceId),
+    ),
+    hasInventory,
+    hasError: error !== null,
+  });
+  const isInitialInventoryLoading =
+    (scopeIsReachable && !hasInventory && error === null) || (providerCoverageMissing && isLoading);
   const selectedItemActionKey = selectedItem ? extensionItemActionKey(selectedItem) : null;
   const selectedItemLastAction = selectedItemActionKey
     ? actionHistoryByItem[selectedItemActionKey]

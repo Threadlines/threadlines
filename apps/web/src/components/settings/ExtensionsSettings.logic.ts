@@ -191,6 +191,23 @@ export function bucketSkillsByPlugin<T>(
     .toSorted((left, right) => left.label.localeCompare(right.label));
 }
 
+/**
+ * Whether the loaded inventory can say anything about the provider currently filtered to. A
+ * provider-scoped fetch only returns that provider, so selecting a different chip leaves an
+ * inventory that legitimately has no entry for it. Every section would then render its real empty
+ * label ("No plugins installed") while the refetch is still running, which reads as a definitive
+ * answer rather than a gap. A real error is not this case: the error presentation owns that.
+ */
+export function isProviderCoverageMissing(input: {
+  readonly providerInstanceId: string;
+  readonly inventoryProviderInstanceIds: ReadonlyArray<string>;
+  readonly hasInventory: boolean;
+  readonly hasError: boolean;
+}): boolean {
+  if (!input.providerInstanceId || !input.hasInventory || input.hasError) return false;
+  return !input.inventoryProviderInstanceIds.includes(input.providerInstanceId);
+}
+
 export type ExtensionBrowserLoadState = "ready" | "loading" | "error";
 
 export interface ExtensionBrowserStatusLine {

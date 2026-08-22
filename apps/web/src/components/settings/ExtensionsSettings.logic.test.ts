@@ -19,6 +19,7 @@ import {
   extensionProviderDriverSortRank,
   formatExtensionGroupLabel,
   isLikelyLocalPath,
+  isProviderCoverageMissing,
   makeExtensionInventoryCacheKey,
   formatSkillDisplayName,
   formatTokenCount,
@@ -121,6 +122,43 @@ describe("ExtensionsSettings logic", () => {
     expect(buckets[1]?.autoExpand).toBe(true);
     expect(buckets[1]?.total).toBe(2);
     expect(buckets[1]?.matching.map((skill) => skill.id)).toEqual(["a"]);
+  });
+
+  it("knows when the loaded inventory cannot answer for the selected provider", () => {
+    const base = {
+      providerInstanceId: "codex",
+      hasInventory: true,
+      hasError: false,
+    };
+
+    // The bug: a Claude-scoped fetch leaves an inventory with no Codex entry, so selecting the
+    // Codex chip filtered to nothing and every section claimed to be empty.
+    expect(
+      isProviderCoverageMissing({ ...base, inventoryProviderInstanceIds: ["claudeAgent"] }),
+    ).toBe(true);
+
+    expect(
+      isProviderCoverageMissing({
+        ...base,
+        inventoryProviderInstanceIds: ["codex", "claudeAgent"],
+      }),
+    ).toBe(false);
+    // No filter means the inventory covers whatever it returned.
+    expect(
+      isProviderCoverageMissing({
+        ...base,
+        providerInstanceId: "",
+        inventoryProviderInstanceIds: ["claudeAgent"],
+      }),
+    ).toBe(false);
+    // Nothing loaded yet is the ordinary initial load, not a coverage gap.
+    expect(
+      isProviderCoverageMissing({ ...base, hasInventory: false, inventoryProviderInstanceIds: [] }),
+    ).toBe(false);
+    // A failed fetch keeps its own error presentation rather than pretending to load.
+    expect(
+      isProviderCoverageMissing({ ...base, hasError: true, inventoryProviderInstanceIds: [] }),
+    ).toBe(false);
   });
 
   it("says the browse catalog is still loading even when rows are already showing", () => {
