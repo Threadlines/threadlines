@@ -4,6 +4,7 @@ import { EventId, TurnId, type OrchestrationThreadActivity } from "@threadlines/
 import { projectSubagentActivity } from "./subagentProjection.ts";
 
 const TURN_ID = TurnId.make("11111111-1111-4111-8111-111111111111");
+const RESUME_TURN_ID = TurnId.make("22222222-2222-4222-8222-222222222222");
 const SPAWN_TOOL_USE_ID = "toolu_01GSFNVFM8ppotb3KXjK3ASy";
 
 function activity(input: {
@@ -205,6 +206,79 @@ describe("projectSubagentActivity", () => {
       }),
     );
     expect(unchanged).toHaveLength(1);
+  });
+
+  it("re-opens a settled agent whose task starts again under the resuming call", () => {
+    const spawned = projectSubagentActivity(
+      [],
+      claudeSpawnActivity({
+        id: "a1",
+        kind: "tool.started",
+        status: "inProgress",
+        turnId: TURN_ID,
+      }),
+    );
+    const settled = projectSubagentActivity(
+      spawned,
+      activity({
+        id: "a2",
+        kind: "task.completed",
+        payload: { taskId: "a34bb18edee269135", status: "completed", toolUseId: SPAWN_TOOL_USE_ID },
+        createdAt: "2026-08-15T00:05:00.000Z",
+      }),
+    );
+    expect(settled[0]?.status).toBe("completed");
+
+    // The model sent the agent another message: same task, but reported under
+    // the call that resumed it and inside the turn that sent it.
+    const resumed = projectSubagentActivity(
+      settled,
+      activity({
+        id: "a3",
+        kind: "task.started",
+        turnId: RESUME_TURN_ID,
+        createdAt: "2026-08-15T00:10:00.000Z",
+        payload: {
+          taskId: "a34bb18edee269135",
+          toolUseId: "toolu_01WaB14B6ivDH4qPhA5QhpDx",
+          taskType: "local_agent",
+          subagentType: "claude",
+          description: "Fix missing-worktree bug trio",
+        },
+      }),
+    );
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]?.status).toBe("running");
+    expect(resumed[0]?.turnId).toBe(RESUME_TURN_ID);
+    expect(resumed[0]?.spawnCallId).toBe(SPAWN_TOOL_USE_ID);
+
+    // A background command starting under an unknown tool call is not an agent
+    // and gets no row of its own.
+    const unchanged = projectSubagentActivity(
+      resumed,
+      activity({
+        id: "a4",
+        kind: "task.started",
+        payload: { taskId: "bash-1", toolUseId: "toolu_bash", taskType: "local_bash" },
+      }),
+    );
+    expect(unchanged).toHaveLength(1);
+
+    const finished = projectSubagentActivity(
+      resumed,
+      activity({
+        id: "a5",
+        kind: "task.completed",
+        createdAt: "2026-08-15T00:20:00.000Z",
+        payload: {
+          taskId: "a34bb18edee269135",
+          status: "completed",
+          toolUseId: "toolu_01WaB14B6ivDH4qPhA5QhpDx",
+        },
+      }),
+    );
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.status).toBe("completed");
   });
 
   it("projects a failed Claude agent as failed, not running", () => {

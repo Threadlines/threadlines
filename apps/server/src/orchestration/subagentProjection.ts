@@ -285,6 +285,60 @@ function settleTaskCompletion(
   return next;
 }
 
+const AGENT_TASK_TYPES = new Set(["local_agent", "remote_agent"]);
+
+/** Background command tasks share the task activity kinds with agent tasks and
+ *  must never move an agent's row. */
+function isAgentTaskActivity(payload: UnknownRecord | null): boolean {
+  return (
+    text(payload?.subagentType) !== null || AGENT_TASK_TYPES.has(text(payload?.taskType) ?? "")
+  );
+}
+
+function isSettledStatus(status: OrchestrationSubagentStatus): boolean {
+  return status === "completed" || status === "failed" || status === "interrupted";
+}
+
+/** Re-opens a settled agent's row when its task reports work again.
+ *
+ *  A background agent the model revives (Claude's `SendMessage`) runs again
+ *  under its original task id but under the tool call that resumed it, and a
+ *  provider session that restarted since the spawn remembers neither — the
+ *  transcript link the task stream established is what still names the agent.
+ *  Codex has no equivalent resume call, and its children report through collab
+ *  items rather than this task stream, so nothing here applies to it.
+ *
+ *  Update-only, and only for a row that already settled: a task matching no
+ *  known agent must not invent a roster row, and a live agent must not have its
+ *  spawn turn rewritten by its own progress. */
+function reopenResumedAgentRun(
+  current: ReadonlyArray<OrchestrationSubagent>,
+  activity: OrchestrationThreadActivity,
+): ReadonlyArray<OrchestrationSubagent> {
+  const payload = record(activity.payload);
+  if (!isAgentTaskActivity(payload)) return current;
+  const taskId = text(payload?.taskId);
+  const toolUseId = text(payload?.toolUseId);
+  const index = current.findIndex(
+    (entry) =>
+      (taskId !== null && entry.transcriptAgentId === taskId) ||
+      (toolUseId !== null &&
+        (entry.agentThreadId === toolUseId ||
+          entry.spawnCallId === toolUseId ||
+          entry.id === toolUseId)),
+  );
+  const existing = index >= 0 ? current[index] : undefined;
+  if (!existing || !isSettledStatus(existing.status)) return current;
+  const next = [...current];
+  next[index] = {
+    ...existing,
+    status: "running",
+    turnId: activity.turnId ?? existing.turnId,
+    updatedAt: activity.createdAt,
+  };
+  return next;
+}
+
 /** Claude addresses an agent's on-disk transcript by the task id it reports on
  *  the task stream, not by the spawning tool_use id this roster is keyed by.
  *  The task stream is the only place the two are linked, so the link is folded
@@ -317,7 +371,7 @@ export function projectSubagentActivity(
   activity: OrchestrationThreadActivity,
 ): ReadonlyArray<OrchestrationSubagent> {
   if (activity.kind === "task.started" || activity.kind === "task.progress") {
-    return linkTaskTranscript(current, activity);
+    return reopenResumedAgentRun(linkTaskTranscript(current, activity), activity);
   }
   if (activity.kind === "task.completed") {
     return linkTaskTranscript(settleTaskCompletion(current, activity), activity);
