@@ -1906,31 +1906,46 @@ function SourceControlBranchMenu({
         return;
       }
       const api = readEnvironmentApi(target.environmentId);
-      if (api) {
-        void api.orchestration
-          .dispatchCommand({
-            type: "thread.meta.update",
-            commandId: newCommandId(),
-            threadId: activeThreadRef.threadId,
-            branch,
-            worktreePath,
-          })
-          .catch(() => {
-            // The optimistic local update below is now wrong; a switch that
-            // silently stays put is this panel's worst failure mode.
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Couldn't move the thread",
-                description: "The checkout switch didn't reach the server. Try again.",
-              }),
-            );
-          });
+      if (!api) {
+        // No connection means the switch cannot happen at all; applying the
+        // optimistic update anyway would leave the panel lying indefinitely.
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn't move the thread",
+            description: "Not connected to the environment. Try again once it reconnects.",
+          }),
+        );
+        return;
       }
+      const previousBranch = currentBranch;
+      const previousWorktreePath = target.worktreePath;
+      void api.orchestration
+        .dispatchCommand({
+          type: "thread.meta.update",
+          commandId: newCommandId(),
+          threadId: activeThreadRef.threadId,
+          branch,
+          worktreePath,
+        })
+        .catch(() => {
+          // Roll the optimistic update back to what the panel showed before;
+          // a switch that silently stays put is this panel's worst failure
+          // mode, and one that lies about having happened is the second.
+          setThreadBranch(activeThreadRef, previousBranch, previousWorktreePath);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Couldn't move the thread",
+              description: "The checkout switch didn't reach the server. Try again.",
+            }),
+          );
+        });
       setThreadBranch(activeThreadRef, branch, worktreePath);
     },
     [
       activeThreadRef,
+      currentBranch,
       onActiveBranchChange,
       setThreadBranch,
       target.environmentId,

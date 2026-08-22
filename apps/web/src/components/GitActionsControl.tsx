@@ -1170,27 +1170,39 @@ export default function GitActionsControl({
 
         const worktreePath = activeServerThread.worktreePath;
         const api = readEnvironmentApi(activeThreadRef.environmentId);
-        if (api) {
-          void api.orchestration
-            .dispatchCommand({
-              type: "thread.meta.update",
-              commandId: newCommandId(),
-              threadId: activeThreadRef.threadId,
-              branch,
-              worktreePath,
-            })
-            .catch(() => {
-              // The optimistic update below already happened; a branch label
-              // that silently disagrees with the server is a lying UI.
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Couldn't save the branch change",
-                  description: "The update didn't reach the server. Try again.",
-                }),
-              );
-            });
+        if (!api) {
+          // No connection means the change cannot be saved at all; applying
+          // the optimistic update anyway would leave the label lying.
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Couldn't save the branch change",
+              description: "Not connected to the environment. Try again once it reconnects.",
+            }),
+          );
+          return;
         }
+        const previousBranch = activeServerThread.branch;
+        void api.orchestration
+          .dispatchCommand({
+            type: "thread.meta.update",
+            commandId: newCommandId(),
+            threadId: activeThreadRef.threadId,
+            branch,
+            worktreePath,
+          })
+          .catch(() => {
+            // Roll the optimistic update back; a branch label that silently
+            // disagrees with the server is a lying UI.
+            setThreadBranch(activeThreadRef, previousBranch, worktreePath);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Couldn't save the branch change",
+                description: "The update didn't reach the server. Try again.",
+              }),
+            );
+          });
 
         setThreadBranch(activeThreadRef, branch, worktreePath);
         return;

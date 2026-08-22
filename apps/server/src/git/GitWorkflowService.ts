@@ -1,7 +1,5 @@
-import {
-  areFilesystemPathsEqual,
-  normalizeFilesystemPathForComparison,
-} from "@threadlines/shared/path";
+import * as NodeFS from "node:fs";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -185,16 +183,25 @@ function withRepositoryContext<T extends VcsStatusLocalResult>(
   };
 }
 
+/** Symlink-resolved form for comparison; the raw value when resolution fails. */
+function toComparableRealPath(value: string): string {
+  try {
+    return NodeFS.realpathSync.native(value);
+  } catch {
+    return value;
+  }
+}
+
 /**
- * "ancestor" gates the whole source-control panel behind a confirmation, so
- * it must mean exactly one thing: the repository root is a genuine parent
- * directory of the panel's cwd. Plain string comparison used to report
- * "ancestor" for any mismatch, which raised the gate for healthy checkouts
+ * "ancestor" gates the whole source-control panel behind a confirmation.
+ * Plain string comparison used to raise that gate for healthy checkouts
  * whenever git's resolved root differed from the configured cwd only by
- * symlinks, casing, or separators (worktrees under /tmp on macOS, drive
- * casing on Windows). Divergence that is not a real parent/child pair reads
- * as "same": git resolved this cwd to that root, so the panel is operating
- * on its own repository.
+ * symlinks, casing, or separators (git realpaths its answers; the configured
+ * cwd may be the symlinked spelling). Compare after resolving symlinks and
+ * normalizing separators and case instead. Anything still unequal keeps the
+ * gate up: a false gate is a visible, dismissible banner, while a false
+ * "same" would silently expose repository-wide actions — e.g. a cwd
+ * symlinked into a subdirectory of a larger repository.
  */
 export function resolveRepositoryRootRelation(
   repositoryRoot: string,
@@ -203,14 +210,9 @@ export function resolveRepositoryRootRelation(
   if (areFilesystemPathsEqual(repositoryRoot, cwd)) {
     return "same";
   }
-  const rootNormalized = normalizeFilesystemPathForComparison(repositoryRoot);
-  const cwdNormalized = normalizeFilesystemPathForComparison(cwd);
-  const separator = rootNormalized.includes("\\") ? "\\" : "/";
-  return cwdNormalized.startsWith(
-    rootNormalized.endsWith(separator) ? rootNormalized : `${rootNormalized}${separator}`,
-  )
-    ? "ancestor"
-    : "same";
+  return areFilesystemPathsEqual(toComparableRealPath(repositoryRoot), toComparableRealPath(cwd))
+    ? "same"
+    : "ancestor";
 }
 
 const unsupportedGitWorkflow = (operation: string, cwd: string, detail: string) =>

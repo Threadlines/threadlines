@@ -407,30 +407,18 @@ export function projectEvent(
 
     case "thread.meta-updated":
       return decodeForEvent(ThreadMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) => {
-          // A checkout move with no live session takes effect now. The
-          // session-scoped effectiveCwd survives a stop so clients keep
-          // showing where work last happened, but once the user points the
-          // thread somewhere else that leftover value would shadow the new
-          // checkout in every panel until the next session starts.
-          const existing = nextBase.threads.find((entry) => entry.id === payload.threadId);
-          const sessionInactive = !existing?.session || existing.session.status === "stopped";
-          const clearsStaleEffectiveCwd =
-            payload.worktreePath !== undefined && sessionInactive && existing?.effectiveCwd != null;
-          return {
-            ...nextBase,
-            threads: updateThread(nextBase.threads, payload.threadId, {
-              ...(payload.title !== undefined ? { title: payload.title } : {}),
-              ...(payload.modelSelection !== undefined
-                ? { modelSelection: payload.modelSelection }
-                : {}),
-              ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
-              ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
-              ...(clearsStaleEffectiveCwd ? { effectiveCwd: null, effectiveCwdSource: null } : {}),
-              updatedAt: payload.updatedAt,
-            }),
-          };
-        }),
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.title !== undefined ? { title: payload.title } : {}),
+            ...(payload.modelSelection !== undefined
+              ? { modelSelection: payload.modelSelection }
+              : {}),
+            ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
+            ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
       );
 
     case "thread.runtime-mode-set":
