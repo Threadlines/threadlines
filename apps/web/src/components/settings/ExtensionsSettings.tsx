@@ -84,6 +84,7 @@ import {
   formatTokenCount,
   groupExtensionSkills,
   bucketSkillsByPlugin,
+  extensionBrowserStatusLine,
   dedupeShadowedSkills,
   EXTENSION_SKILL_GROUP_LABELS,
   type ExtensionSkillPluginBucket,
@@ -230,6 +231,8 @@ interface ExtensionSectionConfig {
   readonly statusMessage?: string | undefined;
   readonly loadLabel?: string | undefined;
   readonly isLoading?: boolean | undefined;
+  /** The deferred load this section browses failed. Browse says so instead of failing silently. */
+  readonly loadFailed?: boolean | undefined;
   readonly onLoad?: (() => void) | undefined;
 }
 
@@ -255,6 +258,7 @@ interface ExtensionsSettingsPanelMemoryState {
   tab?: ExtensionsSettingsTab | undefined;
   /** Plugin bundles left open on the Skills tab. */
   expandedSkillPlugins?: ReadonlyArray<string> | undefined;
+  showMarketplaces?: boolean | undefined;
 }
 
 type ExtensionProvidersApi = NonNullable<EnvironmentApi["providers"]>;
@@ -2898,62 +2902,121 @@ function ExtensionItemGlyph({
   );
 }
 
+/** Row subtitle for an installed plugin: its own words when it has them, its provenance otherwise. */
+function installedPluginDetail(plugin: ProviderExtensionPlugin): string | undefined {
+  return (
+    optionalDetail([plugin.description]) ??
+    optionalDetail([
+      plugin.version ? `v${plugin.version}` : undefined,
+      plugin.marketplaceName ?? plugin.remoteMarketplaceName,
+      plugin.scope,
+      plugin.source,
+    ])
+  );
+}
+
 /**
- * Everything installed, as logos. A dozen icons in one line answers "what do I have" faster than a
- * dozen text rows, and it is the one place a plugin's identity is worth more than its metadata.
+ * Installed plugins as rows rather than a strip of logos. The strip answered "what do I have" but
+ * nothing else, so enabling or disabling one meant opening it first.
  */
-function InstalledStrip({
-  items,
+function InstalledPluginRow({
+  item,
   environmentId,
+  isBusy,
   onSelect,
+  onToggle,
 }: {
-  items: ReadonlyArray<ExtensionItem>;
+  item: Extract<ExtensionItem, { kind: "plugin" }>;
   environmentId: EnvironmentId | null;
+  isBusy: boolean;
   onSelect: (item: ExtensionItem) => void;
+  onToggle: (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => void;
 }) {
-  if (items.length === 0) return null;
+  const enabled = item.plugin.enabled !== false;
+  const detail = installedPluginDetail(item.plugin);
 
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="group flex min-h-11 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
+      <button
+        type="button"
+        className="-mx-1 flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:text-foreground focus-ring"
+        onClick={() => onSelect(item)}
+      >
+        <PluginIcon
+          environmentId={environmentId}
+          iconUrl={item.plugin.iconUrl}
+          iconPath={item.plugin.iconPath}
+          sizeClassName="size-4"
+          fallback={<PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
+          {detail ? (
+            <span className="block truncate text-[11px] text-muted-foreground/70">{detail}</span>
+          ) : null}
+        </span>
+      </button>
+      <Switch
+        checked={enabled}
+        disabled={isBusy}
+        aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
+        onCheckedChange={(checked) => onToggle(item, Boolean(checked))}
+      />
+      <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+    </div>
+  );
+}
+
+function InstalledPluginsList({
+  items,
+  environmentId,
+  busyPluginId,
+  onSelect,
+  onToggle,
+}: {
+  items: ReadonlyArray<Extract<ExtensionItem, { kind: "plugin" }>>;
+  environmentId: EnvironmentId | null;
+  busyPluginId: string | null;
+  onSelect: (item: ExtensionItem) => void;
+  onToggle: (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => void;
+}) {
+  if (items.length === 0) return <EmptyList label="No plugins installed." />;
+
+  return (
+    <div className="grid rounded-md border border-border/60 bg-background/35 lg:grid-cols-2">
       {items.map((item) => (
-        <Tooltip key={`${item.provider.instanceId}:${item.id}`}>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                className="inline-flex size-9 items-center justify-center rounded-md transition-opacity hover:opacity-80 focus-ring"
-                onClick={() => onSelect(item)}
-                aria-label={item.title}
-              >
-                {/* Plugin artwork already ships its own tile and background, so wrapping it in
-                    another square just shrinks it and fights whatever the icon draws. Only the
-                    fallback needs a container of ours. */}
-                <PluginIcon
-                  environmentId={environmentId}
-                  iconUrl={item.kind === "plugin" ? item.plugin.iconUrl : undefined}
-                  iconPath={item.kind === "plugin" ? item.plugin.iconPath : undefined}
-                  sizeClassName="size-9"
-                  fallback={
-                    <span className="inline-flex size-9 items-center justify-center rounded-md border border-border/60 bg-muted/40">
-                      <PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />
-                    </span>
-                  }
-                />
-              </button>
-            }
-          />
-          <TooltipPopup side="bottom">{item.title}</TooltipPopup>
-        </Tooltip>
+        <InstalledPluginRow
+          key={`${item.provider.instanceId}:${item.id}`}
+          item={item}
+          environmentId={environmentId}
+          isBusy={busyPluginId === item.plugin.id}
+          onSelect={onSelect}
+          onToggle={onToggle}
+        />
       ))}
     </div>
   );
 }
 
-function InstalledStripSkeleton() {
+function InstalledPluginsSkeleton() {
   return (
-    <div className="flex flex-wrap gap-1.5" aria-hidden="true">
-      {["first", "second", "third", "fourth", "fifth", "sixth"].map((key) => (
-        <Skeleton key={key} className="size-9 rounded-md" />
+    <div
+      className="grid rounded-md border border-border/60 bg-background/35 lg:grid-cols-2"
+      aria-hidden="true"
+      data-testid="extensions-installed-plugins-skeleton"
+    >
+      {["first", "second", "third", "fourth"].map((key) => (
+        <div
+          key={key}
+          className="flex min-h-11 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0"
+        >
+          <Skeleton className="size-4 shrink-0 rounded-sm" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3 w-28 max-w-full rounded-full" />
+            <Skeleton className="h-2.5 w-40 max-w-full rounded-full" />
+          </div>
+          <Skeleton className="h-4 w-8 rounded-full" />
+        </div>
       ))}
     </div>
   );
@@ -3476,6 +3539,15 @@ function ExtensionBrowserDialog({
             : {}),
         }));
   }, [filter, isCurated, searchedItems, section?.key, sort]);
+  const browserStatusLine = extensionBrowserStatusLine({
+    providerLabel,
+    sectionTitle: section?.title ?? "",
+    visibleCount: browserItems.length,
+    totalCount: browseSourceItems.length,
+    isCurated,
+    isLoading: section?.isLoading === true,
+    hasError: section?.loadFailed === true,
+  });
   const visibleItems = browserItems.slice(0, visibleLimit);
   const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
   const renderGroups =
@@ -3509,10 +3581,11 @@ function ExtensionBrowserDialog({
                 <DialogTitle className="truncate text-base">
                   Browse {section.key === "plugins" ? "plugins" : section.title.toLowerCase()}
                 </DialogTitle>
-                <DialogDescription>
-                  {isCurated
-                    ? `${providerLabel} - featured and most installed. Search to reach all ${browseSourceItems.length}.`
-                    : `${providerLabel} - ${browserItems.length} visible from ${browseSourceItems.length} total`}
+                <DialogDescription className="flex items-center gap-1.5">
+                  {browserStatusLine.state === "loading" ? (
+                    <LoaderIcon className="size-3 shrink-0 animate-spin" />
+                  ) : null}
+                  {browserStatusLine.text}
                 </DialogDescription>
               </div>
             </div>
@@ -3704,6 +3777,27 @@ function ExtensionBrowserDialog({
                   >
                     Load {nextVisibleCount} more
                   </button>
+                ) : null}
+                {/* The rows already on screen are the connected ones; the catalog behind them can
+                    take seconds, so the list has to say it is still filling. */}
+                {section.isLoading ? (
+                  <div className="flex items-center gap-2 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                    <LoaderIcon className="size-3 animate-spin" />
+                    {`Loading more ${section.title.toLowerCase()}`}
+                  </div>
+                ) : section.loadFailed ? (
+                  <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                    <span>
+                      {section.statusMessage ??
+                        `Could not load all ${section.title.toLowerCase()}.`}
+                    </span>
+                    {section.loadLabel && section.onLoad ? (
+                      <Button size="xs" variant="outline" onClick={section.onLoad}>
+                        <RefreshCwIcon className="size-3.5" />
+                        {section.loadLabel}
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : section.isLoading ? (
@@ -4301,6 +4395,10 @@ export function ExtensionsSettingsPanel() {
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
   const [busySkillPath, setBusySkillPath] = useState<string | null>(null);
   const [busySkillPluginId, setBusySkillPluginId] = useState<string | null>(null);
+  const [busyPluginId, setBusyPluginId] = useState<string | null>(null);
+  const [showMarketplaces, setShowMarketplaces] = useState(
+    () => extensionsSettingsPanelMemoryState.showMarketplaces ?? false,
+  );
   const [expandedSkillPlugins, setExpandedSkillPlugins] = useState<ReadonlyArray<string>>(
     () => extensionsSettingsPanelMemoryState.expandedSkillPlugins ?? [],
   );
@@ -4445,6 +4543,10 @@ export function ExtensionsSettingsPanel() {
   useEffect(() => {
     extensionsSettingsPanelMemoryState.expandedSkillPlugins = expandedSkillPlugins;
   }, [expandedSkillPlugins]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.showMarketplaces = showMarketplaces;
+  }, [showMarketplaces]);
 
   // Only this device's provider list is authoritative about this device. A remote
   // scope's chips come from its own inventory, so nothing here may clear them.
@@ -4808,6 +4910,7 @@ export function ExtensionsSettingsPanel() {
     const catalogCount = allAppItems.length - connected.length;
     const truncated = codexProviders.some((provider) => provider.appsTruncated);
     const failed = codexProviders.some((provider) => provider.appsStatus === "error");
+    const catalogFailed = codexProviders.some((provider) => provider.appsCatalogStatus === "error");
     return {
       key: "apps",
       title: "Apps",
@@ -4826,8 +4929,9 @@ export function ExtensionsSettingsPanel() {
       totalCount: connected.length,
       emptyLabel: failed ? "Apps failed to load." : "No connected apps.",
       statusMessage: codexProviders.find((provider) => provider.appsMessage)?.appsMessage,
-      loadLabel: failed ? "Retry apps" : undefined,
+      loadLabel: failed || catalogFailed ? "Retry apps" : undefined,
       isLoading: appsLoadingProviderId !== null,
+      loadFailed: catalogFailed,
       ...(appsCatalogProvider ? { onLoad: () => void loadApps(appsCatalogProvider) } : {}),
     };
   }, [
@@ -4856,9 +4960,46 @@ export function ExtensionsSettingsPanel() {
       sortExtensionItems(
         filterExtensionItems(allPluginItems.filter(extensionItemInstalled), deferredPageQuery),
         "recommended",
+      ).filter(
+        (item): item is Extract<ExtensionItem, { kind: "plugin" }> => item.kind === "plugin",
       ),
     [allPluginItems, deferredPageQuery],
   );
+  const togglePluginRow = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      if (!providersApi) return;
+      setBusyPluginId(item.plugin.id);
+      try {
+        await providersApi.setExtensionPluginEnabled({
+          ...actionBaseInput(item, cwd),
+          pluginId: item.plugin.id,
+          ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true });
+      } catch (toggleError) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${nextEnabled ? "Enable" : "Disable"} plugin failed`,
+            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusyPluginId((current) => (current === item.plugin.id ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
+  );
+  // Marketplaces are plumbing, not a destination: one line naming them, management behind it.
+  const marketplaceSummary = useMemo(() => {
+    const names = providerScopedInventory.flatMap((provider) =>
+      provider.marketplaces.map((marketplace) => marketplace.displayName ?? marketplace.name),
+    );
+    if (names.length === 0) return null;
+    return `${names.length} ${names.length === 1 ? "source" : "sources"}: ${names.join(", ")}`;
+  }, [providerScopedInventory]);
   const searchedConnections = useMemo(
     () => sortExtensionItems(filterExtensionItems(allMcpItems, deferredPageQuery), "recommended"),
     [allMcpItems, deferredPageQuery],
@@ -5040,12 +5181,14 @@ export function ExtensionsSettingsPanel() {
                 role="tabpanel"
               >
                 {isInitialInventoryLoading ? (
-                  <InstalledStripSkeleton />
+                  <InstalledPluginsSkeleton />
                 ) : (
-                  <InstalledStrip
+                  <InstalledPluginsList
                     items={searchedInstalledPlugins}
                     environmentId={selectedEnvironmentId}
+                    busyPluginId={busyPluginId}
                     onSelect={setSelectedItem}
+                    onToggle={(target, nextEnabled) => void togglePluginRow(target, nextEnabled)}
                   />
                 )}
                 <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
@@ -5245,22 +5388,43 @@ export function ExtensionsSettingsPanel() {
               </div>
             </SettingsSection>
 
-            {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
-              <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
-                <div className="space-y-3 px-4 py-3.5 sm:px-5">
-                  {providerScopedInventory.map((provider) => (
-                    <MarketplacesBlock
-                      key={provider.instanceId}
-                      provider={provider}
-                      cwd={cwd}
-                      onMutated={refreshAfterMutation}
-                    />
-                  ))}
-                </div>
-              </SettingsSection>
-            ) : null}
-
             <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
+              {marketplaceSummary ? (
+                <SettingsRow
+                  title="Marketplace sources"
+                  description={
+                    <span className="block truncate" title={marketplaceSummary}>
+                      {marketplaceSummary}
+                    </span>
+                  }
+                  control={
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => setShowMarketplaces((open) => !open)}
+                      aria-expanded={showMarketplaces}
+                    >
+                      <ChevronDownIcon
+                        className={`size-3.5 transition-transform ${showMarketplaces ? "" : "-rotate-90"}`}
+                      />
+                      Manage
+                    </Button>
+                  }
+                >
+                  {showMarketplaces ? (
+                    <div className="mt-3 space-y-3 border-t border-border/50 py-3">
+                      {providerScopedInventory.map((provider) => (
+                        <MarketplacesBlock
+                          key={provider.instanceId}
+                          provider={provider}
+                          cwd={cwd}
+                          onMutated={refreshAfterMutation}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </SettingsRow>
+              ) : null}
               <SettingsRow
                 title="MCP context"
                 description={providerThreadContextDescription}

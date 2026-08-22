@@ -191,6 +191,48 @@ export function bucketSkillsByPlugin<T>(
     .toSorted((left, right) => left.label.localeCompare(right.label));
 }
 
+export type ExtensionBrowserLoadState = "ready" | "loading" | "error";
+
+export interface ExtensionBrowserStatusLine {
+  readonly state: ExtensionBrowserLoadState;
+  readonly text: string;
+}
+
+/**
+ * What the Browse dialog says under its title. A deferred catalog is fetched when the dialog
+ * opens, and for apps that takes seconds while the already-connected rows are on screen. Without
+ * this the line reads "9 visible from 9 total" the whole time and the dialog looks finished.
+ */
+export function extensionBrowserStatusLine(input: {
+  readonly providerLabel: string;
+  readonly sectionTitle: string;
+  readonly visibleCount: number;
+  readonly totalCount: number;
+  readonly isCurated: boolean;
+  readonly isLoading: boolean;
+  readonly hasError: boolean;
+}): ExtensionBrowserStatusLine {
+  const subject = input.sectionTitle.toLowerCase();
+  if (input.isLoading) {
+    return {
+      state: "loading",
+      text: `${input.providerLabel} - ${input.visibleCount} shown, loading all ${subject}`,
+    };
+  }
+  if (input.hasError) {
+    return {
+      state: "error",
+      text: `${input.providerLabel} - ${input.visibleCount} shown, could not load all ${subject}`,
+    };
+  }
+  return {
+    state: "ready",
+    text: input.isCurated
+      ? `${input.providerLabel} - featured and most installed. Search to reach all ${input.totalCount}.`
+      : `${input.providerLabel} - ${input.visibleCount} visible from ${input.totalCount} total`,
+  };
+}
+
 export function extensionProviderDriverSortRank(driverKind: string): number {
   if (driverKind === "codex") return 0;
   if (driverKind === "claudeAgent") return 1;

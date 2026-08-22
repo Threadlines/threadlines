@@ -14,6 +14,7 @@ import {
   extensionMcpNeedsAuthStatus,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
+  extensionBrowserStatusLine,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   formatExtensionGroupLabel,
@@ -120,6 +121,40 @@ describe("ExtensionsSettings logic", () => {
     expect(buckets[1]?.autoExpand).toBe(true);
     expect(buckets[1]?.total).toBe(2);
     expect(buckets[1]?.matching.map((skill) => skill.id)).toEqual(["a"]);
+  });
+
+  it("says the browse catalog is still loading even when rows are already showing", () => {
+    const base = {
+      providerLabel: "Codex",
+      sectionTitle: "Apps",
+      visibleCount: 9,
+      totalCount: 9,
+      isCurated: false,
+    };
+
+    // The bug: 9 connected apps render immediately, so a plain count read as finished for the
+    // ~12s the directory took to arrive.
+    const loading = extensionBrowserStatusLine({ ...base, isLoading: true, hasError: false });
+    expect(loading.state).toBe("loading");
+    expect(loading.text).toBe("Codex - 9 shown, loading all apps");
+
+    const failed = extensionBrowserStatusLine({ ...base, isLoading: false, hasError: true });
+    expect(failed.state).toBe("error");
+    expect(failed.text).toBe("Codex - 9 shown, could not load all apps");
+
+    const ready = extensionBrowserStatusLine({
+      ...base,
+      totalCount: 109,
+      isLoading: false,
+      hasError: false,
+    });
+    expect(ready.state).toBe("ready");
+    expect(ready.text).toBe("Codex - 9 visible from 109 total");
+
+    // Loading wins over an error left from a previous attempt.
+    expect(extensionBrowserStatusLine({ ...base, isLoading: true, hasError: true }).state).toBe(
+      "loading",
+    );
   });
 
   it("drops skill groups that have no members", () => {
