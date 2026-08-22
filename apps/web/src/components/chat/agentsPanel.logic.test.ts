@@ -670,7 +670,7 @@ describe("selectTurnAgents", () => {
   it("selects turnless agents through the spawn-call fallback", () => {
     const selected = selectTurnAgents({
       live: [
-        buildSubagent({ id: "toolu_spawn", turnId: TURN_ONE, spawnCallId: "toolu_spawn" }),
+        buildSubagent({ id: "toolu_spawn", turnId: null, spawnCallId: "toolu_spawn" }),
         buildSubagent({ id: "unrelated", turnId: TURN_TWO, spawnCallId: "toolu_other" }),
       ],
       history: undefined,
@@ -679,6 +679,20 @@ describe("selectTurnAgents", () => {
     });
 
     expect(selected.map((item) => item.id)).toEqual(["toolu_spawn"]);
+  });
+
+  /** A turn-attributed agent stays with its turn's tracker: the turnless tail
+   *  group its background stream creates after the response must not grow a
+   *  second "Agent working" tracker for the same agent. */
+  it("does not re-select a turn-attributed agent through the spawn-call fallback", () => {
+    const selected = selectTurnAgents({
+      live: [buildSubagent({ id: "toolu_spawn", turnId: TURN_ONE, spawnCallId: "toolu_spawn" })],
+      history: undefined,
+      turnIds: new Set(),
+      spawnCallIds: new Set(["toolu_spawn"]),
+    });
+
+    expect(selected).toEqual([]);
   });
 
   it("does not double-select an agent matched by both turn and spawn id", () => {
