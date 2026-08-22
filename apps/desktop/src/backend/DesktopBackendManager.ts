@@ -386,7 +386,25 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         }));
 
         if (!entryExists) {
-          yield* scheduleRestart(`missing server entry at ${config.entryPath}`);
+          const reason = `missing server entry at ${config.entryPath}`;
+          const latest = yield* Ref.get(state);
+          // Same cap as a crashing spawn: a broken install must not retry
+          // invisibly forever either.
+          if (!latest.everReady && latest.restartAttempt >= MAX_STARTUP_ATTEMPTS - 1) {
+            yield* Ref.update(state, (current) => ({
+              ...current,
+              desiredRunning: false,
+            }));
+            yield* triggerStartupFailure({
+              failureKind: "process-exit",
+              attempts: latest.restartAttempt + 1,
+              lastExitCode: Option.none(),
+              lastReason: reason,
+              stderrTail: "",
+            });
+            return;
+          }
+          yield* scheduleRestart(reason);
           return;
         }
 

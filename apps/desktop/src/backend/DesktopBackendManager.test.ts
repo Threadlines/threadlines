@@ -111,12 +111,13 @@ function makeManagerLayer(input: {
   readonly desktopWindow?: Partial<DesktopWindow.DesktopWindowShape>;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly startupFailurePrompt?: DesktopStartupFailurePrompt.DesktopStartupFailurePromptShape;
+  readonly entryExists?: boolean;
 }) {
   return DesktopBackendManager.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         FileSystem.layerNoop({
-          exists: () => Effect.succeed(true),
+          exists: () => Effect.succeed(input.entryExists ?? true),
         }),
         Layer.succeed(DesktopBackendConfiguration.DesktopBackendConfiguration, {
           resolve: Effect.succeed(input.config ?? baseConfig),
@@ -522,6 +523,48 @@ describe("DesktopBackendManager", () => {
           assert.equal(yield* Queue.size(starts), 0);
         }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
       }),
+  );
+
+  it.effect("caps missing-entry retries with the same startup failure prompt", () =>
+    Effect.gen(function* () {
+      const promptReports =
+        yield* Queue.unbounded<DesktopStartupFailurePrompt.DesktopStartupFailureReport>();
+      let spawnCount = 0;
+
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.sync(() => {
+            spawnCount += 1;
+            return makeProcess();
+          }),
+        ),
+      );
+
+      const managerLayer = makeManagerLayer({
+        spawnerLayer,
+        entryExists: false,
+        startupFailurePrompt: {
+          handle: (report) => Queue.offer(promptReports, report).pipe(Effect.as("quit" as const)),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const manager = yield* DesktopBackendManager.DesktopBackendManager;
+        yield* manager.start;
+
+        yield* TestClock.adjust(Duration.millis(500));
+        yield* TestClock.adjust(Duration.seconds(1));
+
+        const report = yield* Queue.take(promptReports);
+        assert.equal(report.attempts, 3);
+        assert.include(report.lastReason, "missing server entry");
+        assert.equal(spawnCount, 0);
+
+        yield* TestClock.adjust(Duration.seconds(30));
+        assert.equal(yield* Queue.size(promptReports), 0);
+      }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+    }),
   );
 
   it.effect(
