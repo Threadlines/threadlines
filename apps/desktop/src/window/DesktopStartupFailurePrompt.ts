@@ -3,14 +3,17 @@
  *
  * When the backend cannot start, the desktop shell has no window to show, so
  * without this dialog the app sits in Task Manager doing nothing the user can
- * see. The prompt first fires the anonymous crash report (bounded, best
- * effort), then offers the three exits a stuck user needs: try again, look at
- * the logs, or quit cleanly so the single-instance lock is released.
+ * see. The prompt offers the three exits a stuck user needs: try again, look
+ * at the logs, or quit cleanly so the single-instance lock is released. The
+ * anonymous crash report is sent concurrently (bounded, best effort), and any
+ * defect in the dialog itself falls back to a plain error box plus quit —
+ * this path must never fail back into invisibility.
  */
 
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -32,7 +35,7 @@ export interface DesktopStartupFailurePromptShape {
   /**
    * Reports the failure, shows the dialog until the user picks a way out, and
    * quits the app itself when they choose to. "retry" asks the caller to
-   * reset its failure budget and start the backend again.
+   * reset its failure budget and start the backend again. Never fails.
    */
   readonly handle: (
     report: DesktopCrashReport.DesktopStartupFailureReport,
@@ -77,59 +80,67 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
   const electronShell = yield* ElectronShell.ElectronShell;
   const crashReport = yield* DesktopCrashReport.DesktopCrashReport;
 
+  const askUser = (report: DesktopCrashReport.DesktopStartupFailureReport) =>
+    Effect.gen(function* () {
+      const { message, detail } = describeStartupFailure({
+        displayName: environment.displayName,
+        report,
+        logDir: environment.logDir,
+      });
+
+      while (true) {
+        const result = yield* electronDialog.showMessageBox({
+          type: "error",
+          title: message,
+          message,
+          detail,
+          buttons: ["Try Again", "Open Logs Folder", "Quit"],
+          defaultId: TRY_AGAIN_BUTTON_INDEX,
+          cancelId: QUIT_BUTTON_INDEX,
+          noLink: true,
+        });
+
+        if (result.response === OPEN_LOGS_BUTTON_INDEX) {
+          yield* electronShell.openPath(environment.logDir);
+          continue;
+        }
+        return result.response === TRY_AGAIN_BUTTON_INDEX ? ("retry" as const) : ("quit" as const);
+      }
+    });
+
   const handle: DesktopStartupFailurePromptShape["handle"] = Effect.fn(
     "desktop.startupFailurePrompt.handle",
   )(function* (report) {
-    yield* crashReport
-      .reportStartupFailure(report)
-      .pipe(Effect.timeoutOption(CRASH_REPORT_TIMEOUT), Effect.asVoid);
+    // Concurrent with the dialog: the user should never wait on telemetry.
+    const reportFiber = yield* Effect.forkChild(
+      crashReport
+        .reportStartupFailure(report)
+        .pipe(Effect.timeoutOption(CRASH_REPORT_TIMEOUT), Effect.asVoid),
+    );
 
-    const { message, detail } = describeStartupFailure({
-      displayName: environment.displayName,
-      report,
-      logDir: environment.logDir,
-    });
+    const action = yield* askUser(report).pipe(
+      Effect.catchCause(() =>
+        // The rich dialog itself failed; a plain error box and a clean quit
+        // beat an invisible process holding the single-instance lock.
+        electronDialog
+          .showErrorBox(
+            `${environment.displayName} couldn't start`,
+            `The background service failed to start and the recovery dialog could not be shown. See logs: ${environment.logDir}`,
+          )
+          .pipe(Effect.as("quit" as const)),
+      ),
+    );
 
-    while (true) {
-      const result = yield* electronDialog.showMessageBox({
-        type: "error",
-        title: message,
-        message,
-        detail,
-        buttons: ["Try Again", "Open Logs Folder", "Quit"],
-        defaultId: TRY_AGAIN_BUTTON_INDEX,
-        cancelId: QUIT_BUTTON_INDEX,
-        noLink: true,
-      });
-
-      if (result.response === OPEN_LOGS_BUTTON_INDEX) {
-        yield* electronShell.openPath(environment.logDir);
-        continue;
-      }
-      if (result.response === TRY_AGAIN_BUTTON_INDEX) {
-        return "retry" as const;
-      }
+    yield* Fiber.await(reportFiber);
+    if (action === "quit") {
       yield* electronApp.quit;
-      return "quit" as const;
     }
+    return action;
   });
 
   return DesktopStartupFailurePrompt.of({ handle });
 });
 
 export const layer = Layer.effect(DesktopStartupFailurePrompt, makeDesktopStartupFailurePrompt);
-
-// Kept for tests and stub wiring.
-export const layerTest = (
-  action: DesktopStartupFailureAction,
-  onHandle?: (report: DesktopCrashReport.DesktopStartupFailureReport) => void,
-) =>
-  Layer.succeed(DesktopStartupFailurePrompt, {
-    handle: (report) =>
-      Effect.sync(() => {
-        onHandle?.(report);
-        return action;
-      }),
-  });
 
 export type { DesktopStartupFailureReport } from "../app/DesktopCrashReport.ts";

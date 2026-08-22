@@ -149,7 +149,7 @@ async function exitAfterSecondaryInstanceHandoff(): Promise<void> {
   // Safe before "ready": showErrorBox is the one dialog Electron allows early.
   Electron.dialog.showErrorBox(
     "Threadlines is already running",
-    "Another Threadlines process is already running on this computer but is not responding. Quit Threadlines from Task Manager (Windows) or Activity Monitor (Mac) and try again.",
+    "Another Threadlines process is already running on this computer but is not responding. It may be showing a startup error dialog. Check the taskbar and Alt+Tab first. Otherwise quit Threadlines from Task Manager (use the Details tab on Windows) or Activity Monitor (Mac) and try again.",
   );
   Electron.app.exit(1);
 }

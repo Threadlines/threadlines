@@ -1,6 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { resolveTelemetryConsent, scrubUserPaths, truncateTail } from "./DesktopCrashReport.ts";
+import {
+  redactSecrets,
+  resolveTelemetryConsent,
+  scrubUserPaths,
+  truncateTail,
+} from "./DesktopCrashReport.ts";
 
 describe("scrubUserPaths", () => {
   it("replaces the home directory in both separator styles and any casing", () => {
@@ -21,6 +26,20 @@ describe("scrubUserPaths", () => {
 
   it("is a no-op for an empty home directory", () => {
     assert.equal(scrubUserPaths("text", ""), "text");
+  });
+});
+
+describe("redactSecrets", () => {
+  it("cuts values after credential-shaped labels", () => {
+    assert.equal(
+      redactSecrets("Error: connect failed api_key=sk-live-123 token: abc.def password=hunter2"),
+      "Error: connect failed api_key=[redacted] token: [redacted] password=[redacted]",
+    );
+  });
+
+  it("leaves ordinary error text alone", () => {
+    const text = "EADDRINUSE: address already in use 127.0.0.1:3773";
+    assert.equal(redactSecrets(text), text);
   });
 });
 

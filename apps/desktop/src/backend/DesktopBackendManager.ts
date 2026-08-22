@@ -579,7 +579,11 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               Effect.catch((error) =>
                 logBackendManagerError("failed to open main window after backend readiness", {
                   message: error.message,
-                }),
+                }).pipe(
+                  // No window appeared, so a later backend failure is still an
+                  // invisible wedge: keep the startup failure cap armed.
+                  Effect.andThen(Ref.update(state, (latest) => ({ ...latest, everReady: false }))),
+                ),
               ),
             );
           }),

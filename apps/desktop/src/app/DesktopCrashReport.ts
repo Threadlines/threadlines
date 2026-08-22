@@ -39,7 +39,17 @@ const bundledPosthogHost =
     : "https://us.i.posthog.com";
 
 const ANONYMOUS_ID_FILE_NAME = "anonymous-id";
-const STDERR_TAIL_MAX_CHARS = 4_000;
+const STDERR_TAIL_MAX_CHARS = 2_000;
+
+// Values following credential-shaped labels are cut before anything leaves
+// the machine. Boot-phase stderr should never contain these, but a config
+// echo or connection string in a crash must not end up in telemetry.
+const SECRET_PATTERN =
+  /((?:key|token|secret|password|passwd|credential|bearer|authorization)[\w-]*\s*[=:]\s*)[^\s"']+/gi;
+
+export function redactSecrets(text: string): string {
+  return text.replace(SECRET_PATTERN, "$1[redacted]");
+}
 
 export interface DesktopStartupFailureReport {
   readonly failureKind: "process-exit" | "readiness-timeout";
@@ -159,7 +169,8 @@ const makeDesktopCrashReport = Effect.gen(function* () {
 
       const identifier = yield* getIdentifier;
       if (Option.isNone(identifier)) return;
-      const scrub = (text: string) => scrubUserPaths(text, environment.homeDirectory);
+      const scrub = (text: string) =>
+        redactSecrets(scrubUserPaths(text, environment.homeDirectory));
       const payload = {
         api_key: posthogKey,
         batch: [
