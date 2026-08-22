@@ -31,6 +31,8 @@ import {
   derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
+  mapCodexInstalledApps,
+  mergeCodexAppSources,
   mapCodexPluginInventory,
   mapCodexPluginDetail,
   parseClaudeMarketplaceManifest,
@@ -43,6 +45,13 @@ import {
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
   readProviderExtensionSkill,
+  createProviderExtensionSkill,
+  deleteProviderExtensionSkill,
+  setProviderExtensionSkillEnabled,
+  parseClaudeEnabledPlugins,
+  parseSkillFrontMatter,
+  skillDirectoryUnderRoots,
+  annotateClaudeSkillCapabilities,
   refreshProviderExtensionPluginMarketplaces,
   startProviderExtensionMcpOAuth,
   writeInstructionFile,
@@ -259,6 +268,7 @@ const codexInventoryPeerHandlers: Record<string, ((params: unknown) => unknown) 
   "skills/list": () => ({ data: [] }),
   "mcpServerStatus/list": () => ({ data: [] }),
   "app/list": () => ({ data: [] }),
+  "app/installed": () => ({ apps: [] }),
 };
 
 function makeSettings(overrides: Record<string, unknown> = {}): ServerSettingsContract {
@@ -280,8 +290,25 @@ function claudeInventoryProcessFor(args: ReadonlyArray<string>) {
   if (args[0] === "mcp" && args[1] === "list") {
     return makeProcessResult("");
   }
+  if (args[0] === "plugin" && (args[1] === "enable" || args[1] === "disable")) {
+    return makeProcessResult(`Successfully ${args[1]}d plugin: ${args[2] ?? ""}`);
+  }
   return makeProcessResult("", `unexpected claude command: ${args.join(" ")}`, 1);
 }
+
+/** A Claude-only settings object rooted at a throwaway home, which every skill test needs. */
+function makeClaudeSkillSettings(claudeHome: string): ServerSettingsContract {
+  return makeSettings({
+    providers: {
+      codex: { enabled: false },
+      claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+      cursor: { enabled: false },
+      opencode: { enabled: false },
+    },
+  });
+}
+
+const CLAUDE_SKILL_PROVIDER = ProviderInstanceId.make("claudeAgent");
 
 describe("provider extensions inventory", () => {
   it("treats Codex app-directory 403s as optional inventory misses", () => {
@@ -1222,6 +1249,109 @@ Per-component (rounded)
     assert.equal(codexSkillConfigWriteParams({ enabled: true }), null);
   });
 
+  it.effect("toggles every same-name Codex copy the deduped row stands for", () => {
+    const userPath = "/home/.codex/skills/imagegen/SKILL.md";
+    const systemPath = "/home/.codex/skills/.system/imagegen/SKILL.md";
+    const repoPath = "/repo/.codex/skills/imagegen/SKILL.md";
+    const writes: Array<unknown> = [];
+    const peer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "skills/list": () => ({
+        data: [
+          {
+            cwd: process.cwd(),
+            errors: [],
+            skills: [
+              {
+                name: "imagegen",
+                path: userPath,
+                scope: "user",
+                description: "Personal copy.",
+                enabled: true,
+              },
+              // Same name, shipped by Codex: one row in the UI, so one toggle governs both.
+              {
+                name: "ImageGen",
+                path: systemPath,
+                scope: "system",
+                description: "Built-in copy.",
+                enabled: true,
+              },
+              // A project skill that happens to share the name stays independent.
+              {
+                name: "imagegen",
+                path: repoPath,
+                scope: "repo",
+                description: "Project copy.",
+                enabled: true,
+              },
+              {
+                name: "openai-docs",
+                path: "/home/.codex/skills/.system/openai-docs/SKILL.md",
+                scope: "system",
+                description: "Unrelated.",
+                enabled: true,
+              },
+            ],
+          },
+        ],
+      }),
+      "skills/config/write": (params) => {
+        writes.push(params);
+        return { effectiveEnabled: false };
+      },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      const result = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd: process.cwd(),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          path: userPath,
+          enabled: false,
+        },
+        settings: makeSettings(),
+      });
+
+      assert.deepEqual(result, { effectiveEnabled: false });
+      assert.deepEqual(writes, [
+        { enabled: false, path: userPath },
+        { enabled: false, path: systemPath },
+      ]);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("still toggles the requested Codex skill when the listing fails", () => {
+    const userPath = "/home/.codex/skills/imagegen/SKILL.md";
+    const writes: Array<unknown> = [];
+    // No `skills/list` handler, so the peer answers it with a JSON-RPC error.
+    const peer = makeCodexAppServerPeer({
+      initialize: codexInventoryPeerHandlers.initialize!,
+      "skills/config/write": (params) => {
+        writes.push(params);
+        return { effectiveEnabled: false };
+      },
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      const result = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd: process.cwd(),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          path: userPath,
+          enabled: false,
+        },
+        settings: makeSettings(),
+      });
+
+      // A partial toggle beats a failed one.
+      assert.deepEqual(result, { effectiveEnabled: false });
+      assert.deepEqual(writes, [{ enabled: false, path: userPath }]);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
   it.effect(
     "returns a Codex provider error instead of hanging when app-server never responds",
     () => {
@@ -1271,10 +1401,13 @@ Per-component (rounded)
 
       assert.equal(codex?.status, "ready");
       assert.equal(codex?.mcpServersStatus, "deferred");
-      assert.equal(codex?.appsStatus, "deferred");
+      // The connected snapshot is cheap and always read; only the directory stays deferred.
+      assert.equal(codex?.appsStatus, "ready");
+      assert.equal(codex?.appsCatalogStatus, "deferred");
       assert.equal(peer.calls.includes("plugin/list"), true);
       assert.equal(peer.calls.includes("skills/list"), true);
       assert.equal(peer.calls.includes("mcpServerStatus/list"), false);
+      assert.equal(peer.calls.includes("app/installed"), true);
       assert.equal(peer.calls.includes("app/list"), false);
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
@@ -1307,13 +1440,138 @@ Per-component (rounded)
         );
 
         assert.equal(codex?.status, "ready");
-        assert.equal(codex?.appsStatus, "error");
+        // The catalog timed out; the connected snapshot still answered, so the section is fine.
+        assert.equal(codex?.appsStatus, "ready");
+        assert.equal(codex?.appsCatalogStatus, "error");
         assert.equal(codex?.appsMessage, "Timed out reading Codex apps.");
         assert.deepEqual(codex?.apps, []);
         assert.equal(codex?.mcpServersStatus, "deferred");
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("reports connected apps from the local snapshot enriched by app/read", () => {
+    const peer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "app/installed": () => ({
+        apps: [
+          { id: "connector-1", enabled: true, callable: true, runtimeName: "alpaca-runtime" },
+          { id: "connector-2", enabled: false, callable: false },
+        ],
+      }),
+      "app/read": () => ({
+        apps: [
+          {
+            id: "connector-1",
+            name: "Alpaca",
+            description: "Trade from chat.",
+            iconUrl: "https://example.test/alpaca.png",
+          },
+        ],
+        missingAppIds: ["connector-2"],
+      }),
+      // The catalog stays deferred, so the connected list is entirely snapshot-driven.
+      "app/list": "never",
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const result = yield* readProviderExtensionsInventory({
+        request: { cwd: process.cwd(), includeMcpServers: false, includeApps: false },
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      assert.equal(codex?.appsStatus, "ready");
+      assert.equal(codex?.appsCatalogStatus, "deferred");
+      assert.deepEqual(
+        codex?.apps.map((app) => app.name),
+        ["Alpaca", "connector-2"],
+      );
+      const enriched = codex?.apps.find((app) => app.id === "connector-1");
+      assert.equal(enriched?.description, "Trade from chat.");
+      assert.equal(enriched?.iconUrl, "https://example.test/alpaca.png");
+      // Everything in the snapshot is connected, whatever app/read knew about it.
+      assert.equal(enriched?.accessible, true);
+      const unread = codex?.apps.find((app) => app.id === "connector-2");
+      assert.equal(unread?.accessible, true);
+      assert.equal(unread?.enabled, false);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("keeps the connected apps when app/read fails", () => {
+    const peer = makeCodexAppServerPeer({
+      ...codexInventoryPeerHandlers,
+      "app/installed": () => ({
+        apps: [{ id: "connector-1", enabled: true, callable: true, runtimeName: "Alpaca" }],
+      }),
+      "app/list": "never",
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, peer.spawner);
+
+    return Effect.gen(function* () {
+      invalidateCodexAppsCache();
+      const result = yield* readProviderExtensionsInventory({
+        request: { cwd: process.cwd(), includeMcpServers: false, includeApps: false },
+        settings: makeSettings(),
+        providers: [],
+      });
+      const codex = result.providers.find(
+        (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+      );
+
+      // `app/read` is unhandled by this peer, so the bare snapshot has to stand on its own.
+      assert.equal(codex?.appsStatus, "ready");
+      assert.deepEqual(
+        codex?.apps.map((app) => app.name),
+        ["Alpaca"],
+      );
+      assert.equal(codex?.apps[0]?.iconUrl, undefined);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it("falls back to the app id when the snapshot carries no runtime name", () => {
+    const apps = mapCodexInstalledApps({
+      apps: [{ id: "connector-9", enabled: true, callable: false }],
+    });
+
+    assert.deepEqual(apps, [
+      { id: "connector-9", name: "connector-9", enabled: true, accessible: true },
+    ]);
+  });
+
+  it("lets directory metadata fill gaps the connected snapshot cannot", () => {
+    const merged = mergeCodexAppSources(
+      [{ id: "connector-1", name: "connector-1", enabled: true, accessible: true }],
+      [
+        {
+          id: "connector-1",
+          name: "Alpaca",
+          description: "Trade from chat.",
+          iconUrl: "https://example.test/alpaca.png",
+          accessible: false,
+        },
+        { id: "connector-2", name: "Bravo", accessible: false },
+      ],
+    );
+
+    assert.deepEqual(
+      merged.map((app) => app.name),
+      ["Alpaca", "Bravo"],
+    );
+    const connected = merged.find((app) => app.id === "connector-1");
+    // A snapshot name that fell back to the id must not overwrite the directory's real name.
+    assert.equal(connected?.name, "Alpaca");
+    assert.equal(connected?.description, "Trade from chat.");
+    assert.equal(connected?.iconUrl, "https://example.test/alpaca.png");
+    // Only the snapshot decides connectivity, so the directory's stale flag loses.
+    assert.equal(connected?.accessible, true);
+    assert.equal(merged.find((app) => app.id === "connector-2")?.accessible, false);
+  });
 
   it.effect("serves Codex apps from cache without re-issuing the slow app/list request", () => {
     const appListHandlers = {
@@ -1581,6 +1839,360 @@ Per-component (rounded)
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
+  it("reads folded and literal block scalars in skill front matter", () => {
+    // Shape taken from a real plugin-bundled skill, which rendered as just ">" before this.
+    const folded = parseSkillFrontMatter(
+      [
+        "name: analyzing-expensive-users",
+        "description: >",
+        "  Analyze the most expensive users in AI observability and explain why they cost so much.",
+        "  Use when the user asks about top spenders, expensive users, per-user LLM cost.",
+        "allowed-tools: Read",
+      ].join("\n"),
+    );
+    assert.equal(
+      folded.get("description"),
+      "Analyze the most expensive users in AI observability and explain why they cost so much. Use when the user asks about top spenders, expensive users, per-user LLM cost.",
+    );
+    // The key after the block must still be read, not swallowed by it.
+    assert.equal(folded.get("allowedtools"), "Read");
+
+    const literal = parseSkillFrontMatter(
+      ["description: |-", "  First line.", "  Second line.", "name: keeper"].join("\n"),
+    );
+    assert.equal(literal.get("description"), "First line.\nSecond line.");
+    assert.equal(literal.get("name"), "keeper");
+
+    // Plain scalars keep working, quotes and all.
+    assert.equal(
+      parseSkillFrontMatter('description: "Trade: from chat."').get("description"),
+      "Trade: from chat.",
+    );
+  });
+
+  it("reads the enabled state Claude writes for skills-dir plugins", () => {
+    const enabled = parseClaudeEnabledPlugins(
+      '{"enabledPlugins":{"note-taker@skills-dir":false,"other@marketplace":true,"bad":1}}',
+    );
+
+    assert.equal(enabled.get("note-taker@skills-dir"), false);
+    assert.equal(enabled.get("other@marketplace"), true);
+    // A non-boolean entry says nothing about the skill, so it must not read as disabled.
+    assert.equal(enabled.has("bad"), false);
+    assert.equal(parseClaudeEnabledPlugins("not json").size, 0);
+  });
+
+  it.effect("treats only a direct child of a skills root as managed", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const root = path.join("/home", ".claude", "skills");
+
+      assert.equal(
+        skillDirectoryUnderRoots(path, [root], path.join(root, "writer", "SKILL.md")),
+        path.join(root, "writer"),
+      );
+      // Namespaced skills sit a level deeper; deleting one would leave its namespace behind.
+      assert.equal(
+        skillDirectoryUnderRoots(path, [root], path.join(root, "team", "writer", "SKILL.md")),
+        null,
+      );
+      assert.equal(
+        skillDirectoryUnderRoots(path, [root], path.join("/elsewhere", "writer", "SKILL.md")),
+        null,
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("leaves a plugin-bundled skill without a toggle or a delete", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const userSkillsRoot = path.join("/home", ".claude", "skills");
+      const [bundled, personal] = annotateClaudeSkillCapabilities(
+        [
+          {
+            name: "bundled",
+            path: path.join(userSkillsRoot, "bundled", "SKILL.md"),
+            bundleId: "helper@market",
+          },
+          { name: "personal", path: path.join(userSkillsRoot, "personal", "SKILL.md") },
+        ],
+        {
+          path,
+          userSkillsRoot,
+          writableRoots: [userSkillsRoot],
+          enabledPlugins: new Map(),
+        },
+      );
+
+      // A bundled skill follows its plugin even when it was found in a writable root.
+      assert.equal(bundled?.canToggle, undefined);
+      assert.equal(bundled?.canDelete, undefined);
+      assert.equal(personal?.canToggle, true);
+      assert.equal(personal?.canDelete, true);
+      assert.equal(personal?.enabled, true);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("creates a skill the inventory then reports as toggleable and deletable", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-create-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-create-home-",
+      });
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const created = yield* createProviderExtensionSkill({
+        request: {
+          cwd,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          name: "release-notes",
+          description: "Write the release notes: carefully.",
+        },
+        settings,
+      });
+
+      assert.equal(
+        created.path,
+        path.join(claudeHome, ".claude", "skills", "release-notes", "SKILL.md"),
+      );
+      const contents = yield* fileSystem.readFileString(created.path);
+      assert.include(contents, "name: release-notes");
+      // A description with a colon in it must not break the YAML front matter.
+      assert.include(contents, 'description: "Write the release notes: carefully."');
+
+      // Claude reports a disabled skills-dir skill only through its settings.json map.
+      yield* fileSystem.writeFileString(
+        path.join(claudeHome, ".claude", "settings.json"),
+        '{"enabledPlugins":{"release-notes@skills-dir":false}}',
+      );
+
+      const inventory = yield* readProviderExtensionsInventory({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+        settings,
+        providers: [],
+      });
+      const skill = inventory.providers
+        .flatMap((provider) => provider.skills)
+        .find((entry) => entry.path === created.path);
+
+      assert.equal(skill?.canToggle, true);
+      assert.equal(skill?.canDelete, true);
+      assert.equal(skill?.enabled, false);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("refuses a skill name that is not kebab-case or already taken", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() => Effect.succeed(makeProcessResult(""))),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-name-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-name-home-",
+      });
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const invalid = yield* createProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, name: "Release Notes" },
+        settings,
+      }).pipe(Effect.flip);
+      assert.include(invalid.message, "lower-case letters");
+
+      yield* fileSystem.makeDirectory(path.join(claudeHome, ".claude", "skills", "taken"), {
+        recursive: true,
+      });
+      const duplicate = yield* createProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, name: "taken" },
+        settings,
+      }).pipe(Effect.flip);
+      assert.include(duplicate.message, "already exists");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("deletes a personal skill folder and refuses everything outside one", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-delete-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-delete-home-",
+      });
+      const skillsRoot = path.join(claudeHome, ".claude", "skills");
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const doomedDirectory = path.join(skillsRoot, "doomed");
+      const doomedPath = path.join(doomedDirectory, "SKILL.md");
+      yield* fileSystem.makeDirectory(doomedDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(doomedPath, "---\nname: doomed\n---\n");
+      // A namespaced skill is reported by the inventory but is not a direct child of the root.
+      const nestedDirectory = path.join(skillsRoot, "team", "nested");
+      const nestedPath = path.join(nestedDirectory, "SKILL.md");
+      yield* fileSystem.makeDirectory(nestedDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(nestedPath, "---\nname: nested\n---\n");
+      const outsidePath = path.join(cwd, "not-a-skill.md");
+      yield* fileSystem.writeFileString(outsidePath, "Leave this alone.\n");
+
+      yield* readProviderExtensionsInventory({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+        settings,
+        providers: [],
+      });
+
+      const outside = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: outsidePath },
+        settings,
+      }).pipe(Effect.flip);
+      assert.equal(outside.message, "Skill is not in the current provider extensions inventory.");
+
+      const nested = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: nestedPath },
+        settings,
+      }).pipe(Effect.flip);
+      assert.equal(nested.message, "Skill is not in a skills folder Threadlines manages.");
+      assert.equal(yield* fileSystem.exists(nestedPath), true);
+
+      const deleted = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: doomedPath },
+        settings,
+      });
+      assert.deepEqual(deleted, { deleted: true });
+      assert.equal(yield* fileSystem.exists(doomedDirectory), false);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("refuses to delete a skill entry that is a symlink", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          claudeInventoryProcessFor(
+            (command as unknown as { readonly args: ReadonlyArray<string> }).args,
+          ),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-symlink-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-symlink-home-",
+      });
+      const linkedDirectory = path.join(claudeHome, ".claude", "skills", "linked");
+      const linkedPath = path.join(linkedDirectory, "SKILL.md");
+      const target = path.join(cwd, "real-skill.md");
+      yield* fileSystem.writeFileString(target, "---\nname: linked\n---\n");
+      yield* fileSystem.makeDirectory(linkedDirectory, { recursive: true });
+      yield* fileSystem.symlink(target, linkedPath);
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      yield* readProviderExtensionsInventory({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER },
+        settings,
+        providers: [],
+      });
+
+      const error = yield* deleteProviderExtensionSkill({
+        request: { cwd, providerInstanceId: CLAUDE_SKILL_PROVIDER, path: linkedPath },
+        settings,
+      }).pipe(Effect.flip);
+
+      assert.include(error.message, "not a regular file");
+      assert.equal(yield* fileSystem.exists(target), true);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("toggles a Claude user skill through its skills-dir plugin id", () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const args = (command as unknown as { readonly args: ReadonlyArray<string> }).args;
+        calls.push(args);
+        return Effect.succeed(claudeInventoryProcessFor(args));
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-toggle-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-skill-toggle-home-",
+      });
+      const skillPath = path.join(claudeHome, ".claude", "skills", "note-taker", "SKILL.md");
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(skillPath, "---\nname: note-taker\n---\n");
+      const settings = makeClaudeSkillSettings(claudeHome);
+
+      const result = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          path: skillPath,
+          enabled: false,
+        },
+        settings,
+      });
+
+      assert.deepEqual(result, { effectiveEnabled: false });
+      assert.deepEqual(calls.at(-1), ["plugin", "disable", "note-taker@skills-dir"]);
+
+      // A project skill has no skills-dir plugin behind it, so it must be refused rather than
+      // guessed at.
+      const projectSkillPath = path.join(cwd, ".claude", "skills", "local", "SKILL.md");
+      const error = yield* setProviderExtensionSkillEnabled({
+        request: {
+          cwd,
+          providerInstanceId: CLAUDE_SKILL_PROVIDER,
+          path: projectSkillPath,
+          enabled: false,
+        },
+        settings,
+      }).pipe(Effect.flip);
+      assert.include(error.message, "personal skills folder");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
   it.effect("discovers Claude skills from user, ancestor, current, and nested roots", () => {
     const spawner = ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
@@ -1690,6 +2302,54 @@ Per-component (rounded)
       assert.equal(skillsByName.get("deploy")?.shortDescription, "Nested under the skills root");
       assert.equal(skillsByName.get("deploy")?.enabled, true);
       assert.equal(skillsByName.get("user-only")?.scope, "user");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("keeps a personal skill user-scoped when the project lives under the home", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // Real projects sit under the home directory, so the ancestor walk reaches
+      // <home>/.claude/skills and must not re-file personal skills as project skills.
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-skills-nested-home-",
+      });
+      const cwd = path.join(claudeHome, "projects", "app");
+      yield* fileSystem.makeDirectory(cwd, { recursive: true });
+      const skillPath = path.join(claudeHome, ".claude", "skills", "personal", "SKILL.md");
+      yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+      yield* fileSystem.writeFileString(
+        skillPath,
+        ["---", "name: personal", "---", "A personal skill."].join("\n"),
+      );
+
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+        providers: [],
+      });
+      const skill = result.providers[0]?.skills.find((entry) => entry.name === "personal");
+
+      assert.equal(skill?.scope, "user");
+      assert.equal(skill?.source, "Claude user");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 

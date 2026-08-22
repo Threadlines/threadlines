@@ -21,8 +21,10 @@ import {
   RefreshCwIcon,
   SearchIcon,
   TerminalIcon,
+  Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type {
   EnvironmentApi,
@@ -80,12 +82,22 @@ import {
   extensionProviderDriverSortRank,
   formatSkillDisplayName,
   formatTokenCount,
+  groupExtensionSkills,
+  bucketSkillsByPlugin,
+  extensionBrowserStatusLine,
+  dedupeShadowedSkills,
+  EXTENSION_SKILL_GROUP_LABELS,
+  type ExtensionSkillPluginBucket,
+  parseExtensionsSettingsTab,
+  resolveExtensionsSettingsTab,
+  type ExtensionsSettingsTab,
   rankPluginsAcrossProviders,
   resolveExtensionScope,
   selectCuratedPlugins,
   shouldCuratePluginBrowse,
   groupPluginComponents,
   isLikelyLocalPath,
+  isProviderCoverageMissing,
   makeExtensionInventoryCacheKey,
   type ExtensionScopeGroup,
   type ExtensionScopeMachineInput,
@@ -143,8 +155,6 @@ import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
-/** Installed plugin lists are short now that the catalog lives behind Browse, so show them whole. */
-const EXTENSION_INSTALLED_PLUGIN_PREVIEW_LIMIT = 25;
 const EXTENSION_BROWSER_PAGE_SIZE = 80;
 const EXTENSION_INVENTORY_CACHE_MAX_ENTRIES = 5;
 const EXTENSION_INVENTORY_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -222,6 +232,8 @@ interface ExtensionSectionConfig {
   readonly statusMessage?: string | undefined;
   readonly loadLabel?: string | undefined;
   readonly isLoading?: boolean | undefined;
+  /** The deferred load this section browses failed. Browse says so instead of failing silently. */
+  readonly loadFailed?: boolean | undefined;
   readonly onLoad?: (() => void) | undefined;
 }
 
@@ -243,6 +255,11 @@ interface ExtensionsSettingsPanelMemoryState {
     | undefined;
   manualThreadOverride?: { readonly scopeKey: string; readonly value: string } | undefined;
   showAdvancedContext?: boolean | undefined;
+  /** Overridden by a `tab` search param, so a shared link still opens where it points. */
+  tab?: ExtensionsSettingsTab | undefined;
+  /** Plugin bundles left open on the Skills tab. */
+  expandedSkillPlugins?: ReadonlyArray<string> | undefined;
+  showMarketplaces?: boolean | undefined;
 }
 
 type ExtensionProvidersApi = NonNullable<EnvironmentApi["providers"]>;
@@ -358,35 +375,6 @@ function extensionItemActionKey(item: ExtensionItem): string {
   return `${item.provider.instanceId}:${item.kind}:${item.id}`;
 }
 
-function statusVariant(status: ProviderExtensionProviderInventory["status"]) {
-  switch (status) {
-    case "ready":
-      return "success";
-    case "partial":
-      return "warning";
-    case "error":
-      return "error";
-    case "disabled":
-    case "unsupported":
-      return "outline";
-  }
-}
-
-function providerStatusLabel(status: ProviderExtensionProviderInventory["status"]): string {
-  switch (status) {
-    case "ready":
-      return "Ready";
-    case "partial":
-      return "Loaded with issues";
-    case "error":
-      return "Error";
-    case "disabled":
-      return "Disabled";
-    case "unsupported":
-      return "Unsupported";
-  }
-}
-
 function providerTitle(provider: ProviderExtensionProviderInventory): string {
   return provider.displayName ?? (provider.driver === "claudeAgent" ? "Claude" : provider.driver);
 }
@@ -397,10 +385,12 @@ function inventoryHasLoadedMcpServers(inventory: ProviderExtensionsInventoryResu
   );
 }
 
+/**
+ * Whether the full app directory has been fetched. The connected apps come from a local snapshot
+ * on every load, so their presence says nothing about the catalog.
+ */
 function inventoryHasLoadedApps(inventory: ProviderExtensionsInventoryResult): boolean {
-  return inventory.providers.some(
-    (provider) => provider.appsStatus === "ready" || provider.apps.length > 0,
-  );
+  return inventory.providers.some((provider) => provider.appsCatalogStatus === "ready");
 }
 
 function extensionKindLabel(kind: ExtensionItemKind): string {
@@ -438,52 +428,48 @@ function formatBoolean(value: boolean | undefined): string | undefined {
   return value ? "Yes" : "No";
 }
 
-function SectionTabButton({
+/**
+ * The page's primary structure. Underline tabs rather than chips: chips sit next to the filter
+ * chips and read as one more filter, which is exactly what these are not.
+ */
+function PageTabButton({
   label,
-  value,
-  totalValue,
-  isTruncated,
-  isDeferred,
+  count,
   active,
-  icon,
   panelId,
   onClick,
 }: {
   label: string;
-  value: number;
-  totalValue: number;
-  isTruncated?: boolean | undefined;
-  /** The section has not been fetched yet, so 0 would be a lie; show a placeholder instead. */
-  isDeferred?: boolean | undefined;
+  count: number;
   active: boolean;
-  icon: ReactNode;
   panelId: string;
   onClick: () => void;
 }) {
-  const total = formatSectionTotal(totalValue, isTruncated);
-  const countLabel = isDeferred ? "–" : value === totalValue ? total : `${value}/${total}`;
-
   return (
-    <Button
-      size="xs"
-      variant={active ? "outline" : "ghost"}
-      className={cn(
-        "h-7 justify-start rounded-sm px-2 text-[11px]",
-        active
-          ? "border-primary/35 bg-accent/70 text-foreground shadow-none"
-          : "text-muted-foreground hover:text-foreground",
-      )}
+    <button
+      type="button"
       role="tab"
       aria-selected={active}
       aria-controls={panelId}
-      data-pressed={active ? "" : undefined}
+      // The -mb-px drops the active underline onto the row's hairline instead of above it.
+      className={cn(
+        "-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[15px] font-medium transition-colors focus-ring",
+        active
+          ? "border-foreground text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground",
+      )}
       onClick={onClick}
     >
-      {icon}
-      <span>{label}</span>
-      <span className="ml-1 font-mono tabular-nums text-foreground/80">{countLabel}</span>
-    </Button>
+      {label}
+      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count}</span>
+    </button>
   );
+}
+
+/** The provider's own mark, for rows and headers that belong to exactly one provider. */
+function ProviderNameGlyph({ driver }: { driver: string }) {
+  const Glyph = providerIconForDriverLabel(driver);
+  return Glyph ? <Glyph className="size-3 shrink-0 text-muted-foreground/70" /> : null;
 }
 
 function EmptyList({ label }: { label: string }) {
@@ -636,6 +622,12 @@ function skillBundleKey(skill: ProviderExtensionSkill): string {
     scope: skill.scope,
     source: skill.source,
   });
+}
+
+/** `<root>/<name>/SKILL.md` -> `<root>/<name>`: the folder a delete removes. */
+function skillFolderPath(skillPath: string): string {
+  const separatorIndex = skillPath.replaceAll("\\", "/").lastIndexOf("/");
+  return separatorIndex > 0 ? skillPath.slice(0, separatorIndex) : skillPath;
 }
 
 function findRefreshedExtensionItem(
@@ -900,7 +892,8 @@ function ExtensionItemBadges({
       ) : null}
       {extensionItemInstalled(item) ? (
         <Badge size="sm" variant="outline">
-          Installed
+          {/* Nothing is installed for an app; it is a connection to a ChatGPT account. */}
+          {item.kind === "app" ? "Connected" : "Installed"}
         </Badge>
       ) : null}
       {extensionItemIsOfficial(item) ? (
@@ -1542,6 +1535,7 @@ function ExtensionDetailDialog({
   onSelectItem,
   environmentId,
   cwd,
+  machineLabel,
   providerThreadId,
   onInventoryMutated,
   lastAction,
@@ -1552,6 +1546,8 @@ function ExtensionDetailDialog({
   onSelectItem: (item: ExtensionItem) => void;
   environmentId: EnvironmentId | null;
   cwd: string;
+  /** Named in the delete confirmation so it is clear which machine loses the folder. */
+  machineLabel: string;
   providerThreadId: string;
   onInventoryMutated: () => Promise<void>;
   lastAction?: ExtensionActionHistoryEntry | undefined;
@@ -1805,6 +1801,25 @@ function ExtensionDetailDialog({
       return `Skill ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
+
+  const deleteSkill = useCallback(() => {
+    if (!item || item.kind !== "skill") return;
+    const folder = skillFolderPath(item.skill.path);
+    void runDialogAction("Delete skill", async () => {
+      const confirmed = await ensureLocalApi().dialogs.confirm(
+        `Delete ${item.title}? Deletes the folder ${folder} on ${machineLabel}.`,
+      );
+      if (!confirmed) return "Delete cancelled.";
+      await providersApi().deleteExtensionSkill({
+        ...actionBaseInput(item, cwd),
+        path: item.skill.path,
+      });
+      await onInventoryMutated();
+      // The item this dialog is bound to no longer exists, so there is nothing left to show.
+      onClose();
+      return "Skill deleted.";
+    });
+  }, [cwd, item, machineLabel, onClose, onInventoryMutated, providersApi, runDialogAction]);
 
   const installPlugin = useCallback(() => {
     if (!item || item.kind !== "plugin") return;
@@ -2161,7 +2176,7 @@ function ExtensionDetailDialog({
                     <DetailRow label="Display" value={item.app.displayName} />
                     <DetailRow label="Description" value={item.app.description} />
                     <DetailRow label="Enabled" value={formatBoolean(item.app.enabled)} />
-                    <DetailRow label="Accessible" value={formatBoolean(item.app.accessible)} />
+                    <DetailRow label="Connected" value={formatBoolean(item.app.accessible)} />
                   </>
                 ) : null}
               </dl>
@@ -2414,7 +2429,7 @@ function ExtensionDetailDialog({
                 ) : null}
               </>
             ) : null}
-            {codexActionsAvailable && item.kind === "skill" ? (
+            {item.kind === "skill" && item.skill.canToggle === true ? (
               <Button
                 size="xs"
                 variant="outline"
@@ -2427,6 +2442,21 @@ function ExtensionDetailDialog({
                   <PowerIcon className="size-3.5" />
                 )}
                 {item.skill.enabled === false ? "Enable" : "Disable"}
+              </Button>
+            ) : null}
+            {item.kind === "skill" && item.skill.canDelete === true ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busyAction !== null}
+                onClick={deleteSkill}
+              >
+                {busyAction === "Delete skill" ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2Icon className="size-3.5" />
+                )}
+                Delete
               </Button>
             ) : null}
             {codexActionsAvailable && item.kind === "plugin" ? (
@@ -2702,7 +2732,7 @@ function ExtensionPreviewSection({
             {visibleItems.map((item) => (
               <button
                 key={`${item.kind}:${item.id}`}
-                className="group flex min-h-10 w-full items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-ring sm:[&:nth-child(2)]:border-t-0"
+                className="group flex min-h-10 w-full min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/55 focus-ring sm:[&:nth-child(2)]:border-t-0"
                 onClick={() => onSelect(item)}
                 type="button"
               >
@@ -2817,88 +2847,6 @@ function groupExtensionItems(
   }));
 }
 
-interface ExtensionSkillBundleControl {
-  readonly kind: "plugin" | "skills";
-  readonly provider: ProviderExtensionProviderInventory;
-  readonly plugin: ProviderExtensionPlugin;
-  readonly label: string;
-  readonly skillCount: number;
-  readonly busyKey: string;
-  readonly badgeLabel: string;
-  readonly badgeVariant: "outline" | "success";
-  readonly actionLabel: string;
-  readonly nextEnabled: boolean;
-  readonly skills?: ReadonlyArray<ProviderExtensionSkill> | undefined;
-}
-
-function skillBundleControlForGroup(
-  items: ReadonlyArray<ExtensionItem>,
-  filter: ExtensionBrowserFilter,
-): ExtensionSkillBundleControl | null {
-  const skillItems = items.filter(
-    (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
-  );
-  if (skillItems.length !== items.length || skillItems.length === 0) return null;
-
-  const first = skillItems[0]!;
-  const bundleId = first.skill.bundleId?.trim();
-  if (!bundleId) return null;
-  if (skillItems.some((item) => item.skill.bundleId !== bundleId)) return null;
-
-  const plugin = skillBundlePlugin(first);
-  if (!plugin || plugin.installed !== true) return null;
-  const visibleDisabledCount = skillItems.filter((item) => item.skill.enabled === false).length;
-  const visibleEnabledCount = skillItems.filter((item) => item.skill.enabled !== false).length;
-  const label = skillBundleLabel(first.skill);
-
-  if (filter === "disabled" && visibleDisabledCount > 0) {
-    return {
-      kind: "skills",
-      provider: first.provider,
-      plugin,
-      label,
-      skillCount: visibleDisabledCount,
-      busyKey: `${plugin.id}:visible-disabled`,
-      badgeLabel: "Off",
-      badgeVariant: "outline",
-      actionLabel: "Enable",
-      nextEnabled: true,
-      skills: skillItems.map((item) => item.skill),
-    };
-  }
-
-  if (filter === "enabled" && visibleEnabledCount > 0) {
-    return {
-      kind: "skills",
-      provider: first.provider,
-      plugin,
-      label,
-      skillCount: visibleEnabledCount,
-      busyKey: `${plugin.id}:visible-enabled`,
-      badgeLabel: "On",
-      badgeVariant: "success",
-      actionLabel: "Disable",
-      nextEnabled: false,
-      skills: skillItems.map((item) => item.skill),
-    };
-  }
-
-  const pluginEnabled = plugin.enabled !== false;
-
-  return {
-    kind: "plugin",
-    provider: first.provider,
-    plugin,
-    label,
-    skillCount: skillItems.length,
-    busyKey: plugin.id,
-    badgeLabel: pluginEnabled ? "On" : "Off",
-    badgeVariant: pluginEnabled ? "success" : "outline",
-    actionLabel: pluginEnabled ? "Disable" : "Enable",
-    nextEnabled: !pluginEnabled,
-  };
-}
-
 function ExtensionItemGlyph({
   item,
   environmentId,
@@ -2932,6 +2880,17 @@ function ExtensionItemGlyph({
     fallback
   );
 
+  // Apps publish a remote logo and nothing else, so they take the same path plugin artwork does.
+  if (item.kind === "app") {
+    return (
+      <PluginIcon
+        environmentId={environmentId}
+        iconUrl={item.app.iconUrl}
+        fallback={wrappedFallback}
+        sizeClassName={sizeClassName}
+      />
+    );
+  }
   if (item.kind !== "plugin") return wrappedFallback;
   return (
     <PluginIcon
@@ -2944,104 +2903,141 @@ function ExtensionItemGlyph({
   );
 }
 
+/** Row subtitle for an installed plugin: its own words when it has them, its provenance otherwise. */
+function installedPluginDetail(plugin: ProviderExtensionPlugin): string | undefined {
+  return (
+    optionalDetail([plugin.description]) ??
+    optionalDetail([
+      plugin.version ? `v${plugin.version}` : undefined,
+      plugin.marketplaceName ?? plugin.remoteMarketplaceName,
+      plugin.scope,
+      plugin.source,
+    ])
+  );
+}
+
 /**
- * Everything installed, as logos. A dozen icons in one line answers "what do I have" faster than a
- * dozen text rows, and it is the one place a plugin's identity is worth more than its metadata.
+ * Installed plugins as rows rather than a strip of logos. The strip answered "what do I have" but
+ * nothing else, so enabling or disabling one meant opening it first.
  */
-function InstalledStrip({
+function InstalledPluginRow({
+  item,
+  environmentId,
+  isBusy,
+  onSelect,
+  onToggle,
+}: {
+  item: Extract<ExtensionItem, { kind: "plugin" }>;
+  environmentId: EnvironmentId | null;
+  isBusy: boolean;
+  onSelect: (item: ExtensionItem) => void;
+  onToggle: (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => void;
+}) {
+  const enabled = item.plugin.enabled !== false;
+  const detail = installedPluginDetail(item.plugin);
+
+  return (
+    <div className="group flex min-h-11 min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
+      <button
+        type="button"
+        className="-mx-1 flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:text-foreground focus-ring"
+        onClick={() => onSelect(item)}
+      >
+        <PluginIcon
+          environmentId={environmentId}
+          iconUrl={item.plugin.iconUrl}
+          iconPath={item.plugin.iconPath}
+          sizeClassName="size-4"
+          fallback={<PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
+          {detail ? (
+            <span className="block truncate text-[11px] text-muted-foreground/70">{detail}</span>
+          ) : null}
+        </span>
+      </button>
+      <Switch
+        checked={enabled}
+        disabled={isBusy}
+        aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
+        onCheckedChange={(checked) => onToggle(item, Boolean(checked))}
+      />
+      <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+    </div>
+  );
+}
+
+function InstalledPluginsList({
   items,
   environmentId,
+  busyPluginId,
   onSelect,
+  onToggle,
 }: {
-  items: ReadonlyArray<ExtensionItem>;
+  items: ReadonlyArray<Extract<ExtensionItem, { kind: "plugin" }>>;
   environmentId: EnvironmentId | null;
+  busyPluginId: string | null;
   onSelect: (item: ExtensionItem) => void;
+  onToggle: (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => void;
 }) {
-  if (items.length === 0) return null;
+  if (items.length === 0) return <EmptyList label="No plugins installed." />;
 
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="grid rounded-md border border-border/60 bg-background/35 lg:grid-cols-2">
       {items.map((item) => (
-        <Tooltip key={`${item.provider.instanceId}:${item.id}`}>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                className="inline-flex size-9 items-center justify-center rounded-md transition-opacity hover:opacity-80 focus-ring"
-                onClick={() => onSelect(item)}
-                aria-label={item.title}
-              >
-                {/* Plugin artwork already ships its own tile and background, so wrapping it in
-                    another square just shrinks it and fights whatever the icon draws. Only the
-                    fallback needs a container of ours. */}
-                <PluginIcon
-                  environmentId={environmentId}
-                  iconUrl={item.kind === "plugin" ? item.plugin.iconUrl : undefined}
-                  iconPath={item.kind === "plugin" ? item.plugin.iconPath : undefined}
-                  sizeClassName="size-9"
-                  fallback={
-                    <span className="inline-flex size-9 items-center justify-center rounded-md border border-border/60 bg-muted/40">
-                      <PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />
-                    </span>
-                  }
-                />
-              </button>
-            }
-          />
-          <TooltipPopup side="bottom">{item.title}</TooltipPopup>
-        </Tooltip>
+        <InstalledPluginRow
+          key={`${item.provider.instanceId}:${item.id}`}
+          item={item}
+          environmentId={environmentId}
+          isBusy={busyPluginId === item.plugin.id}
+          onSelect={onSelect}
+          onToggle={onToggle}
+        />
       ))}
     </div>
   );
 }
 
-function InstalledStripSkeleton() {
+function InstalledPluginsSkeleton() {
   return (
-    <div className="flex flex-wrap gap-1.5" aria-hidden="true">
-      {["first", "second", "third", "fourth", "fifth", "sixth"].map((key) => (
-        <Skeleton key={key} className="size-9 rounded-md" />
-      ))}
-    </div>
-  );
-}
-
-function ProviderInventorySkeleton() {
-  return (
-    <div aria-hidden="true" data-testid="extensions-provider-skeleton">
-      {["first-provider", "second-provider"].map((providerKey) => (
-        <SettingsRow
-          key={providerKey}
-          title={<Skeleton className="h-3.5 w-24 rounded-full" />}
-          description={<Skeleton className="h-3 w-40 max-w-full rounded-full" />}
-          control={<Skeleton className="h-5 w-14 rounded-full" />}
+    <div
+      className="grid rounded-md border border-border/60 bg-background/35 lg:grid-cols-2"
+      aria-hidden="true"
+      data-testid="extensions-installed-plugins-skeleton"
+    >
+      {["first", "second", "third", "fourth"].map((key) => (
+        <div
+          key={key}
+          className="flex min-h-11 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0"
         >
-          <div className="mt-3 space-y-3 border-t border-border/50 py-3">
-            <div className="flex gap-1.5">
-              <Skeleton className="h-7 w-20 rounded-sm" />
-              <Skeleton className="h-7 w-16 rounded-sm" />
-            </div>
-            <div className="min-w-0 rounded-md border border-border/60 bg-background/35">
-              <div className="flex min-h-10 items-center justify-between border-b border-border/50 px-3 py-2">
-                <Skeleton className="h-3 w-20 rounded-full" />
-                <Skeleton className="h-2.5 w-8 rounded-full" />
-              </div>
-              <div className="grid lg:grid-cols-2">
-                {["first-row", "second-row"].map((rowKey) => (
-                  <div
-                    key={rowKey}
-                    className="flex min-h-10 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0"
-                  >
-                    <Skeleton className="size-3.5 shrink-0 rounded-sm" />
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      <Skeleton className="h-3 w-28 max-w-full rounded-full" />
-                      <Skeleton className="h-2.5 w-40 max-w-full rounded-full" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+          <Skeleton className="size-4 shrink-0 rounded-sm" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3 w-28 max-w-full rounded-full" />
+            <Skeleton className="h-2.5 w-40 max-w-full rounded-full" />
           </div>
-        </SettingsRow>
+          <Skeleton className="h-4 w-8 rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkillListSkeleton() {
+  return (
+    <div aria-hidden="true" data-testid="extensions-skills-skeleton">
+      {["first-skill", "second-skill", "third-skill", "fourth-skill"].map((rowKey) => (
+        <div
+          key={rowKey}
+          className="flex min-h-11 items-center gap-2.5 border-t border-border/40 px-4 py-2.5 first:border-t-0 sm:px-5"
+        >
+          <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3 w-28 max-w-full rounded-full" />
+            <Skeleton className="h-2.5 w-48 max-w-full rounded-full" />
+          </div>
+          <Skeleton className="h-4 w-8 rounded-full" />
+        </div>
       ))}
     </div>
   );
@@ -3050,21 +3046,21 @@ function ProviderInventorySkeleton() {
 function ConnectionsTableSkeleton() {
   return (
     <div aria-hidden="true" data-testid="extensions-connections-skeleton">
-      <div className="grid grid-cols-[minmax(0,1fr)_9rem_8rem] gap-3 border-b border-border/50 pb-1.5">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
         <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
-        <Skeleton className="h-2.5 w-10 max-w-full rounded-full" />
+        <Skeleton className="hidden h-2.5 w-10 max-w-full rounded-full sm:block" />
         <Skeleton className="h-2.5 w-12 max-w-full rounded-full" />
       </div>
       {["first-connection", "second-connection"].map((rowKey) => (
         <div
           key={rowKey}
-          className="grid min-h-11 grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 first:border-t-0"
+          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
         >
           <span className="flex min-w-0 items-center gap-2">
             <Skeleton className="size-3.5 shrink-0 rounded-sm" />
             <Skeleton className="h-3 w-32 max-w-full rounded-full" />
           </span>
-          <Skeleton className="h-3 w-20 max-w-full rounded-full" />
+          <Skeleton className="hidden h-3 w-20 max-w-full rounded-full sm:block" />
           <Skeleton className="h-3 w-16 max-w-full rounded-full" />
         </div>
       ))}
@@ -3158,9 +3154,10 @@ function ConnectionsTable({
 
   return (
     <div>
-      <div className="grid grid-cols-[minmax(0,1fr)_9rem_8rem] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+      {/* Type folds away below sm: three fixed columns starve the name column on a phone. */}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/50 pb-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
         <span>Connection</span>
-        <span>Type</span>
+        <span className="hidden sm:block">Type</span>
         <span>Status</span>
       </div>
       {items.map((item) => {
@@ -3171,10 +3168,14 @@ function ConnectionsTable({
           <button
             key={`${item.provider.instanceId}:${item.id}`}
             type="button"
-            className="grid w-full grid-cols-[minmax(0,1fr)_9rem_8rem] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring"
+            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border/40 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
             onClick={() => onSelect(item)}
           >
             <span className="flex min-w-0 items-center gap-2">
+              {/* The type column is hidden on a phone, so the provider mark rides with the name. */}
+              <span className="sm:hidden">
+                <ProviderNameGlyph driver={String(item.provider.driver)} />
+              </span>
               <ExtensionItemGlyph item={item} environmentId={environmentId} />
               <span className="min-w-0">
                 <span className="block truncate text-xs text-foreground">{item.title}</span>
@@ -3185,9 +3186,10 @@ function ConnectionsTable({
                 ) : null}
               </span>
             </span>
-            <span className="flex min-w-0 flex-col gap-0.5">
-              <span className="truncate text-xs text-foreground/90">
-                {providerTitle(item.provider)}
+            <span className="hidden min-w-0 flex-col gap-0.5 sm:flex">
+              <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
+                <ProviderNameGlyph driver={String(item.provider.driver)} />
+                <span className="truncate">{providerTitle(item.provider)}</span>
               </span>
               <span className="flex min-w-0 items-center gap-1.5">
                 {item.server.transport ? (
@@ -3272,7 +3274,8 @@ function MarketplacesBlock({
   return (
     <section className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+        <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+          <ProviderNameGlyph driver={String(provider.driver)} />
           {providerTitle(provider)}
         </h3>
         <div className="flex gap-1">
@@ -3446,7 +3449,6 @@ function ExtensionBrowserDialog({
   environmentId,
   onClose,
   onSelect,
-  onToggleSkillBundle,
 }: {
   section: ExtensionSectionConfig | null;
   providerLabel: string;
@@ -3454,14 +3456,12 @@ function ExtensionBrowserDialog({
   environmentId: EnvironmentId | null;
   onClose: () => void;
   onSelect: (item: ExtensionItem) => void;
-  onToggleSkillBundle: (bundle: ExtensionSkillBundleControl) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ExtensionBrowserFilter>("all");
   const [sort, setSort] = useState<ExtensionBrowserSort>("recommended");
   const [visibleLimit, setVisibleLimit] = useState(EXTENSION_BROWSER_PAGE_SIZE);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [busyBundleId, setBusyBundleId] = useState<string | null>(null);
   const [showEntireCatalog, setShowEntireCatalog] = useState(false);
   const sortOptions = useMemo(
     () =>
@@ -3477,7 +3477,6 @@ function ExtensionBrowserDialog({
     setSort(defaultExtensionBrowserSort(section));
     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
     setCollapsedGroups({});
-    setBusyBundleId(null);
     setShowEntireCatalog(false);
   }, [initialQuery, section?.key]);
 
@@ -3546,6 +3545,15 @@ function ExtensionBrowserDialog({
             : {}),
         }));
   }, [filter, isCurated, searchedItems, section?.key, sort]);
+  const browserStatusLine = extensionBrowserStatusLine({
+    providerLabel,
+    sectionTitle: section?.title ?? "",
+    visibleCount: browserItems.length,
+    totalCount: browseSourceItems.length,
+    isCurated,
+    isLoading: section?.isLoading === true,
+    hasError: section?.loadFailed === true,
+  });
   const visibleItems = browserItems.slice(0, visibleLimit);
   const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
   const renderGroups =
@@ -3560,41 +3568,6 @@ function ExtensionBrowserDialog({
   const toggleGroup = useCallback((groupKey: string) => {
     setCollapsedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
   }, []);
-
-  const toggleSkillBundle = useCallback(
-    async (bundle: ExtensionSkillBundleControl) => {
-      setBusyBundleId(bundle.busyKey);
-      try {
-        await onToggleSkillBundle(bundle);
-        toastManager.add({
-          type: "success",
-          title:
-            bundle.kind === "skills"
-              ? bundle.nextEnabled
-                ? "Skills enabled"
-                : "Skills disabled"
-              : bundle.nextEnabled
-                ? "Bundle enabled"
-                : "Bundle disabled",
-          description:
-            bundle.kind === "skills"
-              ? `${bundle.label}: ${bundle.skillCount} visible skills updated.`
-              : `${bundle.label} controls ${bundle.skillCount} skills.`,
-        });
-      } catch (error) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Bundle toggle failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      } finally {
-        setBusyBundleId((current) => (current === bundle.busyKey ? null : current));
-      }
-    },
-    [onToggleSkillBundle],
-  );
 
   return (
     <Dialog
@@ -3614,10 +3587,11 @@ function ExtensionBrowserDialog({
                 <DialogTitle className="truncate text-base">
                   Browse {section.key === "plugins" ? "plugins" : section.title.toLowerCase()}
                 </DialogTitle>
-                <DialogDescription>
-                  {isCurated
-                    ? `${providerLabel} - featured and most installed. Search to reach all ${browseSourceItems.length}.`
-                    : `${providerLabel} - ${browserItems.length} visible from ${browseSourceItems.length} total`}
+                <DialogDescription className="flex items-center gap-1.5">
+                  {browserStatusLine.state === "loading" ? (
+                    <LoaderIcon className="size-3 shrink-0 animate-spin" />
+                  ) : null}
+                  {browserStatusLine.text}
                 </DialogDescription>
               </div>
             </div>
@@ -3678,7 +3652,12 @@ function ExtensionBrowserDialog({
                     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
                   }}
                 >
-                  {isCurated && option.value === "all" ? "Featured" : option.label}
+                  {isCurated && option.value === "all"
+                    ? "Featured"
+                    : // Apps are account connections, so "Installed" would be the wrong word.
+                      section?.key === "apps" && option.value === "installed"
+                      ? "Connected"
+                      : option.label}
                   <span className="font-mono tabular-nums text-foreground/80">
                     {isCurated && option.value === "all"
                       ? searchedItems.length
@@ -3729,12 +3708,6 @@ function ExtensionBrowserDialog({
                   <div className="divide-y divide-border/45">
                     {groups.map((group) => {
                       const collapsed = collapsedGroups[group.key] === true;
-                      const bundleControl =
-                        section.key === "skills"
-                          ? skillBundleControlForGroup(group.items, filter)
-                          : null;
-                      const bundleBusy =
-                        bundleControl !== null && busyBundleId === bundleControl.busyKey;
                       return (
                         <section key={group.key}>
                           <div className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 backdrop-blur">
@@ -3747,34 +3720,9 @@ function ExtensionBrowserDialog({
                               <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/70">
                                 {group.label}
                               </span>
-                              {bundleControl ? (
-                                <Badge
-                                  size="sm"
-                                  variant={bundleControl.badgeVariant}
-                                  className="shrink-0"
-                                >
-                                  {bundleControl.badgeLabel}
-                                </Badge>
-                              ) : null}
                             </button>
                             <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
                               <span className="font-mono tabular-nums">{group.items.length}</span>
-                              {bundleControl ? (
-                                <Button
-                                  size="xs"
-                                  variant="outline"
-                                  className="h-6 rounded-sm px-2 text-[10px]"
-                                  disabled={bundleBusy}
-                                  onClick={() => void toggleSkillBundle(bundleControl)}
-                                >
-                                  {bundleBusy ? (
-                                    <LoaderIcon className="size-3 animate-spin" />
-                                  ) : (
-                                    <PowerIcon className="size-3" />
-                                  )}
-                                  {bundleControl.actionLabel}
-                                </Button>
-                              ) : null}
                               <button
                                 type="button"
                                 className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-ring"
@@ -3836,6 +3784,34 @@ function ExtensionBrowserDialog({
                     Load {nextVisibleCount} more
                   </button>
                 ) : null}
+                {/* The rows already on screen are the connected ones; the catalog behind them can
+                    take seconds, so the list has to say it is still filling. */}
+                {section.isLoading ? (
+                  <div className="flex items-center gap-2 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                    <LoaderIcon className="size-3 animate-spin" />
+                    {`Loading more ${section.title.toLowerCase()}`}
+                  </div>
+                ) : section.loadFailed ? (
+                  <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                    <span>
+                      {section.statusMessage ??
+                        `Could not load all ${section.title.toLowerCase()}.`}
+                    </span>
+                    {section.loadLabel && section.onLoad ? (
+                      <Button size="xs" variant="outline" onClick={section.onLoad}>
+                        <RefreshCwIcon className="size-3.5" />
+                        {section.loadLabel}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : section.isLoading ? (
+              // Opening Browse is what starts a deferred catalog fetch, so the first paint here is
+              // a load in progress rather than an empty result.
+              <div className="flex items-center gap-2 px-6 py-5 text-xs text-muted-foreground">
+                <LoaderIcon className="size-3.5 animate-spin" />
+                {`Loading ${section.title.toLowerCase()}`}
               </div>
             ) : (
               <div className="px-6 py-5">
@@ -3851,285 +3827,303 @@ function ExtensionBrowserDialog({
   );
 }
 
-function ProviderInventoryRow({
-  provider,
-  cwd,
+/**
+ * One skill, as a row. The control on the right is whatever the server says this skill supports:
+ * a switch when it can be toggled, otherwise a status badge. Bundled skills follow their plugin,
+ * so they read as status rather than offering a control that would not apply.
+ */
+function SkillListRow({
+  item,
   environmentId,
-  filterText,
-  onSelectItem,
-  onInventoryMutated,
-  onLoadMcpServers,
-  isLoadingMcpServers,
-  onLoadApps,
-  isLoadingApps,
+  isBusy,
+  onSelect,
+  onToggle,
 }: {
-  provider: ProviderExtensionProviderInventory;
-  cwd: string;
+  item: Extract<ExtensionItem, { kind: "skill" }>;
   environmentId: EnvironmentId | null;
-  filterText: string;
-  onSelectItem: (item: ExtensionItem) => void;
-  onInventoryMutated: () => Promise<void>;
-  onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
-  isLoadingMcpServers: boolean;
-  onLoadApps: (provider: ProviderExtensionProviderInventory) => Promise<void>;
-  isLoadingApps: boolean;
+  isBusy: boolean;
+  onSelect: (item: ExtensionItem) => void;
+  /** Omitted for plugin-bundled rows, which follow their plugin's switch instead. */
+  onToggle?:
+    | ((item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => void)
+    | undefined;
 }) {
-  const providersApi = useScopedProvidersApi();
-  const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("skills");
-  const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
-  const deferredProviderFilterText = filterText;
-
-  const allItems = useMemo(
-    () => ({
-      plugins: provider.plugins.map((plugin) => pluginExtensionItem(provider, plugin)),
-      skills: provider.skills.map((skill) => skillExtensionItem(provider, skill)),
-      mcpServers: provider.mcpServers.map((server) => mcpExtensionItem(provider, server)),
-      apps: provider.apps.map((app) => appExtensionItem(provider, app)),
-    }),
-    [provider],
-  );
-  const filterProviderItems = useCallback(
-    (items: ReadonlyArray<ExtensionItem>) =>
-      filterExtensionItems(items, deferredProviderFilterText),
-    [deferredProviderFilterText],
-  );
-  // The plugin list a provider reports is its whole catalog (2000+ for Codex). The section shows
-  // what is actually installed; everything else lives behind Browse.
-  const installedPluginItems = useMemo(
-    () => allItems.plugins.filter(extensionItemInstalled),
-    [allItems],
-  );
-  // Codex answers app/list with the whole ChatGPT app directory; only accessible apps are
-  // actually connected to the account. The section shows those, the catalog lives behind Browse.
-  const connectedAppItems = useMemo(() => allItems.apps.filter(extensionItemInstalled), [allItems]);
-  const filteredItems = useMemo(
-    () => ({
-      plugins: sortExtensionItems(filterProviderItems(installedPluginItems), "recommended"),
-      skills: sortExtensionItems(filterProviderItems(allItems.skills), "recommended"),
-      mcpServers: sortExtensionItems(filterProviderItems(allItems.mcpServers), "recommended"),
-      apps: sortExtensionItems(filterProviderItems(connectedAppItems), "recommended"),
-    }),
-    [allItems, filterProviderItems, installedPluginItems, connectedAppItems],
-  );
-  const panelIdBase = useMemo(
-    () => `extensions-${String(provider.instanceId).replace(/[^a-zA-Z0-9_-]/g, "-")}`,
-    [provider.instanceId],
-  );
-  const catalogPluginCount = allItems.plugins.length - installedPluginItems.length;
-  const catalogAppCount = allItems.apps.length - connectedAppItems.length;
-  const initialSection = provider.skills.length > 0 ? "skills" : "apps";
-  const allSections: ReadonlyArray<ExtensionSectionConfig> = [
-    {
-      key: "plugins" as const,
-      title: "Installed plugins",
-      label: "Plugins",
-      browseLabel:
-        catalogPluginCount > 0 ? `Browse ${catalogPluginCount} more` : "Browse all plugins",
-      icon: <PlugIcon className="size-3.5" />,
-      items: filteredItems.plugins,
-      browseItems: sortExtensionItems(filterProviderItems(allItems.plugins), "recommended"),
-      previewLimit: EXTENSION_INSTALLED_PLUGIN_PREVIEW_LIMIT,
-      totalCount: installedPluginItems.length,
-      emptyLabel: "No plugins installed.",
-    },
-    {
-      key: "skills" as const,
-      title: "Skills",
-      label: "Skills",
-      browseLabel: "Browse all skills",
-      icon: <FileTextIcon className="size-3.5" />,
-      items: filteredItems.skills,
-      totalCount: provider.skills.length,
-      emptyLabel: "No skills reported.",
-    },
-    {
-      key: "mcpServers" as const,
-      title: "MCP Servers",
-      label: "MCP",
-      browseLabel: "Browse MCP servers",
-      icon: <DatabaseIcon className="size-3.5" />,
-      items: filteredItems.mcpServers,
-      totalCount: provider.mcpServers.length,
-      isTruncated: provider.mcpServersTruncated,
-      emptyLabel:
-        provider.mcpServersStatus === "deferred"
-          ? "MCP servers not loaded."
-          : provider.mcpServersStatus === "error"
-            ? "MCP servers failed to load."
-            : "No MCP servers reported.",
-      statusMessage: provider.mcpServersMessage,
-      loadLabel:
-        provider.mcpServersStatus === "deferred"
-          ? "Load MCP servers"
-          : provider.mcpServersStatus === "error"
-            ? "Retry MCP servers"
-            : undefined,
-      isLoading: isLoadingMcpServers,
-      onLoad: () => void onLoadMcpServers(provider),
-    },
-    {
-      key: "apps" as const,
-      title: "Apps",
-      label: "Apps",
-      browseLabel:
-        catalogAppCount > 0
-          ? `Browse ${catalogAppCount}${provider.appsTruncated ? "+" : ""} more`
-          : "Browse all apps",
-      icon: <BotIcon className="size-3.5" />,
-      items: filteredItems.apps,
-      browseItems: sortExtensionItems(filterProviderItems(allItems.apps), "recommended"),
-      totalCount: connectedAppItems.length,
-      isDeferred: provider.appsStatus === "deferred",
-      emptyLabel:
-        provider.appsStatus === "deferred"
-          ? "Apps not loaded."
-          : provider.appsStatus === "error"
-            ? "Apps failed to load."
-            : "No connected apps.",
-      statusMessage: provider.appsMessage,
-      loadLabel:
-        provider.appsStatus === "deferred"
-          ? "Load apps"
-          : provider.appsStatus === "error"
-            ? "Retry apps"
-            : undefined,
-      isLoading: isLoadingApps,
-      onLoad: () => void onLoadApps(provider),
-    },
-  ];
-  // Installed plugins and MCP connections are rendered above the fold by the page itself, so this
-  // row is only the two surfaces that have nowhere else to live.
-  // Apps are a Codex concept; the Claude driver always reports an empty list, so rendering the tab
-  // for it just advertises a category that provider does not have.
-  const sections = allSections.filter(
-    (section) => section.key === "skills" || (section.key === "apps" && isCodexProvider(provider)),
-  );
-  const activeSectionConfig =
-    sections.find((section) => section.key === activeSection) ?? sections[0];
-  const browseSectionConfig = sections.find((section) => section.key === browseSection) ?? null;
-  const firstFilteredSection =
-    sections.find((section) => section.items.length > 0)?.key ?? initialSection;
-  const activeSectionItemCount = filteredItems[activeSection]?.length ?? 0;
-
-  useEffect(() => {
-    setActiveSection(initialSection);
-    setBrowseSection(null);
-  }, [initialSection, provider.instanceId]);
-
-  useEffect(() => {
-    // Apps and MCP sections are empty for reasons other than content (deferred load, catalog
-    // behind Browse), so bouncing off them would fight deliberate tab clicks.
-    if (activeSection === "mcpServers" || activeSection === "apps") return;
-    if (activeSectionItemCount === 0 && firstFilteredSection !== activeSection) {
-      setActiveSection(firstFilteredSection);
-    }
-  }, [activeSection, activeSectionItemCount, firstFilteredSection]);
-
-  useEffect(() => {
-    if (
-      activeSection === "mcpServers" &&
-      provider.mcpServersStatus === "deferred" &&
-      !isLoadingMcpServers
-    ) {
-      void onLoadMcpServers(provider);
-    }
-  }, [activeSection, isLoadingMcpServers, onLoadMcpServers, provider]);
-
-  useEffect(() => {
-    if (activeSection === "apps" && provider.appsStatus === "deferred" && !isLoadingApps) {
-      void onLoadApps(provider);
-    }
-  }, [activeSection, isLoadingApps, onLoadApps, provider]);
-
-  const toggleSkillBundle = useCallback(
-    async (bundle: ExtensionSkillBundleControl) => {
-      if (bundle.kind === "skills") {
-        const skills = bundle.skills ?? [];
-        for (const skill of skills) {
-          await providersApi().setExtensionSkillEnabled({
-            ...actionBaseInput(skillExtensionItem(bundle.provider, skill), cwd),
-            path: skill.path,
-            enabled: bundle.nextEnabled,
-          });
-        }
-        await onInventoryMutated();
-        return;
-      }
-
-      const pluginItem = pluginExtensionItem(bundle.provider, bundle.plugin);
-      await providersApi().setExtensionPluginEnabled({
-        ...actionBaseInput(pluginItem, cwd),
-        pluginId: bundle.plugin.id,
-        ...(bundle.plugin.scope ? { scope: bundle.plugin.scope } : {}),
-        enabled: bundle.nextEnabled,
-      });
-      await onInventoryMutated();
-    },
-    [cwd, onInventoryMutated, providersApi],
-  );
+  const ProviderGlyph = providerIconForDriverLabel(String(item.provider.driver));
+  const enabled = item.skill.enabled !== false;
+  const description = item.skill.shortDescription ?? item.skill.description ?? item.skill.path;
 
   return (
-    <SettingsRow
-      title={providerTitle(provider)}
-      description={`${provider.instanceId} - ${provider.driver}`}
-      status={provider.message}
-      control={
-        <Badge size="sm" variant={statusVariant(provider.status)}>
-          {providerStatusLabel(provider.status)}
+    <div className="group flex min-h-11 items-center gap-2.5 border-t border-border/40 px-4 first:border-t-0 sm:px-5">
+      <button
+        className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-2.5 text-left transition-colors hover:text-foreground focus-ring"
+        onClick={() => onSelect(item)}
+        type="button"
+      >
+        {ProviderGlyph ? (
+          <ProviderGlyph className="size-3.5 shrink-0 text-muted-foreground/60" />
+        ) : (
+          <ExtensionItemGlyph item={item} environmentId={environmentId} sizeClassName="size-3.5" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
+          <span className="block truncate text-[11px] text-muted-foreground/70">{description}</span>
+        </span>
+      </button>
+      {item.skill.canToggle === true && onToggle ? (
+        <Switch
+          checked={enabled}
+          disabled={isBusy}
+          aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
+          onCheckedChange={(checked) => onToggle(item, Boolean(checked))}
+        />
+      ) : (
+        <Badge size="sm" variant={enabled ? "success" : "outline"}>
+          {enabled ? "On" : "Off"}
         </Badge>
-      }
-    >
-      <div className="mt-3 space-y-3 border-t border-border/50 py-3">
-        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Plugin section">
-          {sections.map((section) => (
-            <SectionTabButton
-              key={section.key}
-              label={section.label}
-              value={section.items.length}
-              totalValue={section.totalCount}
-              isTruncated={section.isTruncated}
-              isDeferred={section.isDeferred}
-              active={activeSection === section.key}
-              icon={section.icon}
-              panelId={`${panelIdBase}-${section.key}`}
-              onClick={() => setActiveSection(section.key)}
+      )}
+    </div>
+  );
+}
+
+/**
+ * A plugin's skills, behind one disclosure row. A single plugin can ship a hundred of them, which
+ * as a flat list buries everything the user actually wrote. The switch is the plugin's own
+ * enable/disable: bundled skills follow their plugin rather than toggling one by one.
+ */
+function SkillPluginGroup({
+  bucket,
+  plugin,
+  environmentId,
+  expanded,
+  isBusy,
+  onToggleExpanded,
+  onTogglePlugin,
+  onSelect,
+}: {
+  bucket: ExtensionSkillPluginBucket<Extract<ExtensionItem, { kind: "skill" }>>;
+  plugin: ProviderExtensionPlugin | null;
+  environmentId: EnvironmentId | null;
+  expanded: boolean;
+  isBusy: boolean;
+  onToggleExpanded: () => void;
+  onTogglePlugin: (nextEnabled: boolean) => void;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  const enabled = plugin?.enabled !== false;
+  const countLabel =
+    bucket.matching.length === bucket.total
+      ? `${bucket.total} ${bucket.total === 1 ? "skill" : "skills"}`
+      : `${bucket.matching.length} of ${bucket.total} matching`;
+
+  return (
+    <div className="border-t border-border/40 first:border-t-0">
+      <div className="flex min-h-11 items-center gap-2.5 px-4 sm:px-5">
+        <button
+          type="button"
+          className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-2.5 text-left transition-colors hover:text-foreground focus-ring"
+          onClick={onToggleExpanded}
+          aria-expanded={expanded}
+        >
+          <ChevronDownIcon
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/60 transition-transform",
+              expanded ? "" : "-rotate-90",
+            )}
+          />
+          <PluginIcon
+            environmentId={environmentId}
+            iconUrl={plugin?.iconUrl}
+            iconPath={plugin?.iconPath}
+            sizeClassName="size-4"
+            fallback={<PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-foreground">
+              {bucket.label}
+            </span>
+            <span className="block truncate text-[11px] text-muted-foreground/70">
+              {countLabel}
+            </span>
+          </span>
+        </button>
+        {plugin ? (
+          <Switch
+            checked={enabled}
+            disabled={isBusy}
+            aria-label={`${enabled ? "Disable" : "Enable"} ${bucket.label}`}
+            onCheckedChange={(checked) => onTogglePlugin(Boolean(checked))}
+          />
+        ) : (
+          <Badge size="sm" variant={enabled ? "success" : "outline"}>
+            {enabled ? "On" : "Off"}
+          </Badge>
+        )}
+      </div>
+      {expanded ? (
+        <div className="pl-4 sm:pl-6">
+          {bucket.matching.map((item) => (
+            <SkillListRow
+              key={item.skill.path}
+              item={item}
+              environmentId={environmentId}
+              isBusy={false}
+              onSelect={onSelect}
             />
           ))}
         </div>
-        {activeSectionConfig ? (
-          <ExtensionPreviewSection
-            environmentId={environmentId}
-            title={activeSectionConfig.title}
-            items={activeSectionConfig.items}
-            totalCount={activeSectionConfig.totalCount}
-            isTruncated={activeSectionConfig.isTruncated}
-            previewLimit={activeSectionConfig.previewLimit}
-            emptyLabel={activeSectionConfig.emptyLabel}
-            statusMessage={activeSectionConfig.statusMessage}
-            loadLabel={activeSectionConfig.loadLabel}
-            isLoading={activeSectionConfig.isLoading}
-            onLoad={activeSectionConfig.onLoad}
-            filterText={deferredProviderFilterText}
-            onSelect={onSelectItem}
-            panelId={`${panelIdBase}-${activeSectionConfig.key}`}
-            browseLabel={activeSectionConfig.browseLabel}
-            browseAvailable={
-              (activeSectionConfig.browseItems ?? activeSectionConfig.items).length > 0
-            }
-            onBrowse={() => setBrowseSection(activeSectionConfig.key)}
-          />
-        ) : null}
-      </div>
-      <ExtensionBrowserDialog
-        environmentId={environmentId}
-        section={browseSectionConfig}
-        providerLabel={providerTitle(provider)}
-        initialQuery={filterText}
-        onClose={() => setBrowseSection(null)}
-        onSelect={onSelectItem}
-        onToggleSkillBundle={toggleSkillBundle}
-      />
-    </SettingsRow>
+      ) : null}
+    </div>
+  );
+}
+
+function NewSkillDialog({
+  open,
+  providers,
+  cwd,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  /** Providers in scope that can hold a new skill. The picker is hidden when there is only one. */
+  providers: ReadonlyArray<ProviderExtensionProviderInventory>;
+  cwd: string;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const providersApi = useScopedProvidersApi();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [providerInstanceId, setProviderInstanceId] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setDescription("");
+    setError(null);
+    setIsSaving(false);
+    setProviderInstanceId(String(providers[0]?.instanceId ?? ""));
+  }, [open, providers]);
+
+  const trimmedName = name.trim();
+  const nameIsValid = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(trimmedName) && trimmedName.length <= 64;
+  const canSave = nameIsValid && providerInstanceId.length > 0 && !isSaving;
+
+  const save = useCallback(async () => {
+    if (!canSave) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const result = await providersApi().createExtensionSkill({
+        ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
+        providerInstanceId: providerInstanceId as ProviderInstanceId,
+        name: trimmedName,
+        ...(description.trim() ? { description: description.trim() } : {}),
+      });
+      await onCreated();
+      toastManager.add({
+        type: "success",
+        title: "Skill created",
+        description: result.path,
+      });
+      onClose();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "The skill was not created.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    canSave,
+    cwd,
+    description,
+    onClose,
+    onCreated,
+    providerInstanceId,
+    providersApi,
+    trimmedName,
+  ]);
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+      <DialogPopup className="sm:max-w-md">
+        <DialogPanel>
+          <DialogHeader>
+            <DialogTitle>New skill</DialogTitle>
+            <DialogDescription>
+              Writes a SKILL.md into your personal skills folder. Open it afterwards to fill in the
+              instructions.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {providers.length > 1 ? (
+              <label className="block space-y-1">
+                <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                  Provider
+                </span>
+                <Select
+                  value={providerInstanceId}
+                  onValueChange={(value) => setProviderInstanceId(String(value))}
+                >
+                  <SelectTrigger className="w-full" aria-label="Provider">
+                    <SelectValue>
+                      {providerTitle(
+                        providers.find(
+                          (provider) => String(provider.instanceId) === providerInstanceId,
+                        ) ?? providers[0]!,
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {providers.map((provider) => (
+                      <SelectItem key={provider.instanceId} value={String(provider.instanceId)}>
+                        {providerTitle(provider)}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              </label>
+            ) : null}
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                Name
+              </span>
+              <Input
+                nativeInput
+                autoFocus
+                value={name}
+                placeholder="review-checklist"
+                onChange={(event) => setName(event.currentTarget.value)}
+              />
+              <span className="block text-[11px] text-muted-foreground/70">
+                Lower-case letters, digits, and single hyphens. This is the folder name too.
+              </span>
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                Description
+              </span>
+              <Textarea
+                value={description}
+                rows={3}
+                placeholder="When the agent should reach for this skill."
+                onChange={(event) => setDescription(event.currentTarget.value)}
+              />
+            </label>
+            {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button size="xs" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button size="xs" disabled={!canSave} onClick={() => void save()}>
+              {isSaving ? <LoaderIcon className="size-3.5 animate-spin" /> : null}
+              Create skill
+            </Button>
+          </DialogFooter>
+        </DialogPanel>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -4384,6 +4378,36 @@ export function ExtensionsSettingsPanel() {
   const [showAdvancedContext, setShowAdvancedContext] = useState(
     () => extensionsSettingsPanelMemoryState.showAdvancedContext ?? false,
   );
+  // Read loosely: the panel is also mounted outside its own route in tests, and a strict
+  // subscription would fail there rather than fall back to the remembered tab.
+  const searchTab = useSearch({
+    strict: false,
+    select: (search) => parseExtensionsSettingsTab((search as { readonly tab?: unknown }).tab),
+  });
+  const navigate = useNavigate();
+  const [rememberedTab, setRememberedTab] = useState(() => extensionsSettingsPanelMemoryState.tab);
+  const tab = resolveExtensionsSettingsTab(searchTab, rememberedTab);
+  const selectTab = useCallback(
+    (next: ExtensionsSettingsTab) => {
+      setRememberedTab(next);
+      void navigate({
+        to: "/settings/plugins",
+        replace: true,
+        search: (previous) => ({ ...previous, tab: next }),
+      });
+    },
+    [navigate],
+  );
+  const [isCreatingSkill, setIsCreatingSkill] = useState(false);
+  const [busySkillPath, setBusySkillPath] = useState<string | null>(null);
+  const [busySkillPluginId, setBusySkillPluginId] = useState<string | null>(null);
+  const [busyPluginId, setBusyPluginId] = useState<string | null>(null);
+  const [showMarketplaces, setShowMarketplaces] = useState(
+    () => extensionsSettingsPanelMemoryState.showMarketplaces ?? false,
+  );
+  const [expandedSkillPlugins, setExpandedSkillPlugins] = useState<ReadonlyArray<string>>(
+    () => extensionsSettingsPanelMemoryState.expandedSkillPlugins ?? [],
+  );
   const [pageQuery, setPageQuery] = useState("");
   const deferredPageQuery = useDeferredValue(pageQuery);
   const refreshRequestRef = useRef(0);
@@ -4518,6 +4542,18 @@ export function ExtensionsSettingsPanel() {
     extensionsSettingsPanelMemoryState.showAdvancedContext = showAdvancedContext;
   }, [showAdvancedContext]);
 
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.tab = tab;
+  }, [tab]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.expandedSkillPlugins = expandedSkillPlugins;
+  }, [expandedSkillPlugins]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.showMarketplaces = showMarketplaces;
+  }, [showMarketplaces]);
+
   // Only this device's provider list is authoritative about this device. A remote
   // scope's chips come from its own inventory, so nothing here may clear them.
   useEffect(() => {
@@ -4613,14 +4649,17 @@ export function ExtensionsSettingsPanel() {
           includeMcpServers,
           includeApps,
         });
+        const loadDurationMs = performance.now() - startedMs;
+        // A response is correct for the key it was issued under no matter what the user switched
+        // to while it was in flight, so it is always worth keeping. Dropping it made switching
+        // back to a provider a cold miss, which is what showed "No plugins installed" on return.
+        if (requestKey) {
+          extensionInventoryCache.set(requestKey, result, loadDurationMs);
+        }
         if (
           refreshRequestRef.current === requestId &&
           inventoryRequestKeyRef.current === requestKey
         ) {
-          const loadDurationMs = performance.now() - startedMs;
-          if (requestKey) {
-            extensionInventoryCache.set(requestKey, result, loadDurationMs);
-          }
           // An unfiltered load is the only one that sees every provider, so it is
           // the only one allowed to redraw a remote machine's chips.
           if (!providerInstanceId && requestEnvironmentId) {
@@ -4676,7 +4715,18 @@ export function ExtensionsSettingsPanel() {
   }, [manualProviderThreadId, refresh]);
 
   const hasInventory = inventory !== null;
-  const isInitialInventoryLoading = scopeIsReachable && !hasInventory && error === null;
+  // The loaded inventory predates the current provider chip, so it cannot answer for it yet.
+  // Showing skeletons while the refetch runs is the honest reading; empty labels would not be.
+  const providerCoverageMissing = isProviderCoverageMissing({
+    providerInstanceId,
+    inventoryProviderInstanceIds: (inventory?.providers ?? []).map((provider) =>
+      String(provider.instanceId),
+    ),
+    hasInventory,
+    hasError: error !== null,
+  });
+  const isInitialInventoryLoading =
+    (scopeIsReachable && !hasInventory && error === null) || (providerCoverageMissing && isLoading);
   const selectedItemActionKey = selectedItem ? extensionItemActionKey(selectedItem) : null;
   const selectedItemLastAction = selectedItemActionKey
     ? actionHistoryByItem[selectedItemActionKey]
@@ -4738,14 +4788,238 @@ export function ExtensionsSettingsPanel() {
       ),
     [providerScopedInventory],
   );
+  // Both tabs read the same single inventory load; nothing here refetches per tab.
+  const allSkillItems = useMemo(
+    () =>
+      dedupeShadowedSkills(
+        providerScopedInventory.flatMap((provider) =>
+          provider.skills.map((skill) => skillExtensionItem(provider, skill)),
+        ),
+        (item) => ({
+          providerId: String(item.provider.instanceId),
+          name: item.kind === "skill" ? item.skill.name : item.title,
+          scope: item.kind === "skill" ? item.skill.scope : undefined,
+        }),
+      ),
+    [providerScopedInventory],
+  );
+  const skillItems = useMemo(
+    () =>
+      allSkillItems.filter(
+        (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
+      ),
+    [allSkillItems],
+  );
+  // Bundled skills are bucketed per plugin instead of listed flat, so the groups only ever hold
+  // the skills a person wrote themselves.
+  const skillGroups = useMemo(
+    () =>
+      groupExtensionSkills(
+        filterExtensionItems(
+          skillItems.filter((item) => !item.skill.bundleId?.trim()),
+          deferredPageQuery,
+        ).filter(
+          (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
+        ),
+        (item) => ({
+          scope: item.skill.scope,
+          bundleId: item.skill.bundleId,
+          sortKey: item.title.toLowerCase(),
+        }),
+      ),
+    [deferredPageQuery, skillItems],
+  );
+  const skillPluginBuckets = useMemo(() => {
+    const bundled = skillItems.filter((item) => Boolean(item.skill.bundleId?.trim()));
+    const matching = new Set(
+      filterExtensionItems(bundled, deferredPageQuery).map((item) => item.id),
+    );
+    return bucketSkillsByPlugin(bundled, (item) => ({
+      bundleId: item.skill.bundleId ?? "",
+      label: skillBundleLabel(item.skill),
+      sortKey: item.title.toLowerCase(),
+      matches: matching.has(item.id),
+    }));
+  }, [deferredPageQuery, skillItems]);
+  const toggleSkillPlugin = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      const plugin = skillBundlePlugin(item);
+      if (!providersApi || !plugin) return;
+      setBusySkillPluginId(plugin.id);
+      try {
+        await providersApi.setExtensionPluginEnabled({
+          ...actionBaseInput(item, cwd),
+          pluginId: plugin.id,
+          ...(plugin.scope ? { scope: plugin.scope } : {}),
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true });
+      } catch (toggleError) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${nextEnabled ? "Enable" : "Disable"} plugin failed`,
+            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusySkillPluginId((current) => (current === plugin.id ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
+  );
+  const skillCreateProviders = useMemo(
+    () =>
+      providerScopedInventory.filter(
+        (provider) => isCodexProvider(provider) || isClaudeProvider(provider),
+      ),
+    [providerScopedInventory],
+  );
+  const toggleSkillRow = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      if (!providersApi) return;
+      setBusySkillPath(item.skill.path);
+      try {
+        await providersApi.setExtensionSkillEnabled({
+          ...actionBaseInput(item, cwd),
+          path: item.skill.path,
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true });
+      } catch (toggleError) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${nextEnabled ? "Enable" : "Disable"} skill failed`,
+            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusySkillPath((current) => (current === item.skill.path ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
+  );
+
+  // Apps are a Codex concept; the Claude driver always reports an empty list.
+  const codexProviders = useMemo(
+    () => providerScopedInventory.filter(isCodexProvider),
+    [providerScopedInventory],
+  );
+  const allAppItems = useMemo(
+    () =>
+      codexProviders.flatMap((provider) =>
+        provider.apps.map((app) => appExtensionItem(provider, app)),
+      ),
+    [codexProviders],
+  );
+  const appsCatalogProvider = codexProviders.find(
+    (provider) =>
+      provider.appsCatalogStatus === "deferred" || provider.appsCatalogStatus === "error",
+  );
+  // The catalog is the only part still worth a round-trip; the connected list is already here.
+  const appsCatalogPending = codexProviders.some(
+    (provider) => provider.appsCatalogStatus === "deferred",
+  );
+  const appsSection = useMemo((): ExtensionSectionConfig => {
+    // The connected apps come from the local snapshot on every load. Only the full ChatGPT
+    // directory behind Browse costs a backend round-trip.
+    const connected = allAppItems.filter(extensionItemInstalled);
+    const catalogCount = allAppItems.length - connected.length;
+    const truncated = codexProviders.some((provider) => provider.appsTruncated);
+    const failed = codexProviders.some((provider) => provider.appsStatus === "error");
+    const catalogFailed = codexProviders.some((provider) => provider.appsCatalogStatus === "error");
+    return {
+      key: "apps",
+      title: "Apps",
+      label: "Apps",
+      browseLabel: appsCatalogPending
+        ? "Browse all apps"
+        : catalogCount > 0
+          ? `Browse ${catalogCount}${truncated ? "+" : ""} more`
+          : "Browse all apps",
+      icon: <BotIcon className="size-3.5" />,
+      items: sortExtensionItems(filterExtensionItems(connected, deferredPageQuery), "recommended"),
+      browseItems: sortExtensionItems(
+        filterExtensionItems(allAppItems, deferredPageQuery),
+        "recommended",
+      ),
+      totalCount: connected.length,
+      emptyLabel: failed ? "Apps failed to load." : "No connected apps.",
+      statusMessage: codexProviders.find((provider) => provider.appsMessage)?.appsMessage,
+      loadLabel: failed || catalogFailed ? "Retry apps" : undefined,
+      isLoading: appsLoadingProviderId !== null,
+      loadFailed: catalogFailed,
+      ...(appsCatalogProvider ? { onLoad: () => void loadApps(appsCatalogProvider) } : {}),
+    };
+  }, [
+    allAppItems,
+    appsCatalogPending,
+    appsCatalogProvider,
+    appsLoadingProviderId,
+    codexProviders,
+    deferredPageQuery,
+    loadApps,
+  ]);
+  const [isBrowsingApps, setIsBrowsingApps] = useState(false);
+  // Browse is the moment the catalog is actually wanted, so opening it starts the fetch and the
+  // dialog shows its own loading state rather than an empty list behind a dead button.
+  const browseApps = useCallback(() => {
+    setIsBrowsingApps(true);
+    if (appsCatalogPending && appsCatalogProvider) void loadApps(appsCatalogProvider);
+  }, [appsCatalogPending, appsCatalogProvider, loadApps]);
+  // Apps are Codex-only, so the section header carries the provider's own glyph.
+  const CodexSectionGlyph = codexProviders[0]
+    ? providerIconForDriverLabel(String(codexProviders[0].driver))
+    : null;
+
   const searchedInstalledPlugins = useMemo(
     () =>
       sortExtensionItems(
         filterExtensionItems(allPluginItems.filter(extensionItemInstalled), deferredPageQuery),
         "recommended",
+      ).filter(
+        (item): item is Extract<ExtensionItem, { kind: "plugin" }> => item.kind === "plugin",
       ),
     [allPluginItems, deferredPageQuery],
   );
+  const togglePluginRow = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "plugin" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      if (!providersApi) return;
+      setBusyPluginId(item.plugin.id);
+      try {
+        await providersApi.setExtensionPluginEnabled({
+          ...actionBaseInput(item, cwd),
+          pluginId: item.plugin.id,
+          ...(item.plugin.scope ? { scope: item.plugin.scope } : {}),
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true });
+      } catch (toggleError) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${nextEnabled ? "Enable" : "Disable"} plugin failed`,
+            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusyPluginId((current) => (current === item.plugin.id ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
+  );
+  // Marketplaces are plumbing, not a destination: one line naming them, management behind it.
+  const marketplaceSummary = useMemo(() => {
+    const names = providerScopedInventory.flatMap((provider) =>
+      provider.marketplaces.map((marketplace) => marketplace.displayName ?? marketplace.name),
+    );
+    if (names.length === 0) return null;
+    return `${names.length} ${names.length === 1 ? "source" : "sources"}: ${names.join(", ")}`;
+  }, [providerScopedInventory]);
   const searchedConnections = useMemo(
     () => sortExtensionItems(filterExtensionItems(allMcpItems, deferredPageQuery), "recommended"),
     [allMcpItems, deferredPageQuery],
@@ -4820,280 +5094,419 @@ export function ExtensionsSettingsPanel() {
             Loading plugins and connections
           </span>
         ) : null}
-        <SettingsSection
-          title="Plugins"
-          icon={<PlugIcon className="size-3.5" />}
-          headerAction={
-            isLoading ? (
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <LoaderIcon className="size-3 animate-spin" />
-                Loading
-              </span>
-            ) : null
-          }
-        >
-          <div className="space-y-4 px-4 py-4 sm:px-5">
-            <p className="text-xs text-muted-foreground">
-              {scopeCwd === null
-                ? "Plugins and connections available to Codex and Claude on this machine."
-                : "Plugins and connections available to Codex and Claude in this project."}
-              {inventory?.generatedAt
-                ? ` Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
-                    lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
-                  }.`
-                : ""}
-            </p>
-            {scope !== null && !scopeIsReachable ? (
-              <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
-            ) : null}
-            <Input
-              nativeInput
-              value={pageQuery}
-              placeholder="Search plugins and connections"
-              aria-label="Search plugins and connections"
-              onChange={(event) => setPageQuery(event.currentTarget.value)}
-            />
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Button
-                size="xs"
-                variant={providerInstanceId ? "outline" : "default"}
-                onClick={() => setProviderFilter(null)}
-              >
-                All providers
-              </Button>
-              {providerOptions.map((provider) => {
-                const ProviderGlyph = providerIconForDriverLabel(provider.driver);
-                return (
-                  <Button
-                    key={provider.value}
-                    size="xs"
-                    variant={providerInstanceId === provider.value ? "default" : "outline"}
-                    onClick={() => {
-                      if (!scopeEnvironmentId) return;
-                      setProviderFilter({
-                        environmentId: scopeEnvironmentId,
-                        instanceId: provider.value,
-                      });
-                    }}
-                  >
-                    {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
-                    {provider.label}
-                  </Button>
-                );
-              })}
-              {scopeGroups.length > 0 ? (
-                <ExtensionScopePicker
-                  groups={scopeGroups}
-                  scope={scope}
-                  onScopeChange={(next) => {
-                    setRememberedScope(next);
-                    setShowAdvancedContext(false);
-                    clearInventory({ loading: true });
-                  }}
-                />
+        <div className="space-y-4">
+          <div className="flex items-end justify-between gap-3 border-b border-border">
+            <div className="flex items-center gap-5" role="tablist" aria-label="Plugins and skills">
+              <PageTabButton
+                label="Plugins"
+                count={allPluginItems.filter(extensionItemInstalled).length}
+                active={tab === "plugins"}
+                panelId="extensions-tab-plugins"
+                onClick={() => selectTab("plugins")}
+              />
+              <PageTabButton
+                label="Skills"
+                count={allSkillItems.length}
+                active={tab === "skills"}
+                panelId="extensions-tab-skills"
+                onClick={() => selectTab("skills")}
+              />
+            </div>
+            <div className="min-w-0 truncate pb-2 text-[11px] text-muted-foreground/70">
+              {isLoading ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <LoaderIcon className="size-3 animate-spin" />
+                  Loading
+                </span>
+              ) : inventory?.generatedAt ? (
+                `Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
+                  lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
+                }`
               ) : null}
-              <Button
-                size="xs"
-                variant="outline"
-                className="ml-auto"
-                disabled={allPluginItems.length === 0}
-                onClick={() => setIsBrowsingCatalog(true)}
-              >
-                <SearchIcon className="size-3.5" />
-                Browse catalog
-              </Button>
             </div>
-            {isInitialInventoryLoading ? (
-              <InstalledStripSkeleton />
-            ) : (
-              <InstalledStrip
-                items={searchedInstalledPlugins}
-                environmentId={selectedEnvironmentId}
-                onSelect={setSelectedItem}
-              />
-            )}
-            <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
           </div>
-        </SettingsSection>
-
-        <SettingsSection
-          title="Skills and apps"
-          icon={<FileTextIcon className="size-3.5" />}
-          headerAction={
-            hasInventory && isLoading ? (
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <LoaderIcon className="size-3 animate-spin" />
-                Refreshing
-              </span>
-            ) : null
-          }
-        >
-          {isInitialInventoryLoading ? (
-            <ProviderInventorySkeleton />
-          ) : inventory?.providers.length ? (
-            inventory.providers.map((provider) => (
-              <ProviderInventoryRow
-                environmentId={selectedEnvironmentId}
-                filterText={deferredPageQuery}
-                key={provider.instanceId}
-                provider={provider}
-                cwd={cwd}
-                onSelectItem={setSelectedItem}
-                onInventoryMutated={refreshAfterMutation}
-                onLoadMcpServers={loadMcpServers}
-                isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
-                onLoadApps={loadApps}
-                isLoadingApps={appsLoadingProviderId === String(provider.instanceId)}
-              />
-            ))
-          ) : (
-            <SettingsRow
-              title={
-                !scopeIsReachable ? (
-                  scope === null ? (
-                    "No machine available"
-                  ) : (
-                    `${scopeMachineLabel} is not connected`
-                  )
-                ) : isLoading ? (
-                  <span className="inline-flex items-center gap-2">
-                    <LoaderIcon className="size-3.5 animate-spin" />
-                    Loading skills and apps
-                  </span>
-                ) : error ? (
-                  "Inventory failed to load"
-                ) : (
-                  "No skills or apps reported"
-                )
-              }
-              description={
-                !scopeIsReachable
-                  ? scope === null
-                    ? "Add a computer or a project to inspect skills and apps."
-                    : "Reconnect this machine to inspect its skills and apps."
-                  : isLoading
-                    ? "Reading skills and apps from Codex and Claude."
-                    : error
-                      ? "The inventory could not be loaded. Details are shown above."
-                      : scopeCwd === null
-                        ? "Neither provider reported skills or apps on this machine."
-                        : "Neither provider reported skills or apps for this project."
-              }
-            />
-          )}
-        </SettingsSection>
-
-        <SettingsSection
-          title="Connections"
-          icon={<DatabaseIcon className="size-3.5" />}
-          headerAction={
-            mcpAuthCheckProvider ? (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={mcpLoadingProviderId !== null}
-                onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
-              >
-                {mcpLoadingProviderId !== null ? (
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                ) : (
-                  <KeyRoundIcon className="size-3.5" />
-                )}
-                {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
-              </Button>
-            ) : null
-          }
-        >
-          <div className="px-4 py-3.5 sm:px-5">
-            {isInitialInventoryLoading ? (
-              <ConnectionsTableSkeleton />
-            ) : (
-              <ConnectionsTable
-                items={searchedConnections}
-                environmentId={selectedEnvironmentId}
-                isLoading={isLoading}
-                onSelect={setSelectedItem}
-              />
-            )}
-          </div>
-        </SettingsSection>
-
-        {providerScopedInventory.some((provider) => provider.marketplaces.length > 0) ? (
-          <SettingsSection title="Marketplaces" icon={<PackagePlusIcon className="size-3.5" />}>
-            <div className="space-y-3 px-4 py-3.5 sm:px-5">
-              {providerScopedInventory.map((provider) => (
-                <MarketplacesBlock
-                  key={provider.instanceId}
-                  provider={provider}
-                  cwd={cwd}
-                  onMutated={refreshAfterMutation}
-                />
-              ))}
-            </div>
-          </SettingsSection>
-        ) : null}
-
-        <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
-          <SettingsRow
-            title="MCP context"
-            description={providerThreadContextDescription}
-            control={
-              <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-                <Badge
-                  size="sm"
-                  variant={providerThreadContextSource === "none" ? "outline" : "success"}
+          {scope !== null && !scopeIsReachable ? (
+            <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
+          ) : null}
+          <Input
+            nativeInput
+            value={pageQuery}
+            placeholder={tab === "skills" ? "Search skills" : "Search plugins and connections"}
+            aria-label={tab === "skills" ? "Search skills" : "Search plugins and connections"}
+            onChange={(event) => setPageQuery(event.currentTarget.value)}
+          />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="xs"
+              variant={providerInstanceId ? "outline" : "default"}
+              onClick={() => setProviderFilter(null)}
+            >
+              All providers
+            </Button>
+            {providerOptions.map((provider) => {
+              const ProviderGlyph = providerIconForDriverLabel(provider.driver);
+              return (
+                <Button
+                  key={provider.value}
+                  size="xs"
+                  variant={providerInstanceId === provider.value ? "default" : "outline"}
+                  onClick={() => {
+                    if (!scopeEnvironmentId) return;
+                    setProviderFilter({
+                      environmentId: scopeEnvironmentId,
+                      instanceId: provider.value,
+                    });
+                  }}
                 >
-                  {providerThreadContextSource === "manual"
-                    ? "Manual"
-                    : providerThreadContextSource === "auto"
-                      ? "Auto"
-                      : "No context"}
-                </Badge>
+                  {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
+                  {provider.label}
+                </Button>
+              );
+            })}
+            {scopeGroups.length > 0 ? (
+              <ExtensionScopePicker
+                groups={scopeGroups}
+                scope={scope}
+                onScopeChange={(next) => {
+                  setRememberedScope(next);
+                  setShowAdvancedContext(false);
+                  clearInventory({ loading: true });
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
+
+        {tab === "plugins" ? (
+          <>
+            <SettingsSection
+              title="Installed plugins"
+              description="Plugin packages installed on this machine for Codex and Claude. They can bundle skills, commands, and connections."
+              icon={<PlugIcon className="size-3.5" />}
+              headerAction={
                 <Button
                   size="xs"
                   variant="outline"
-                  onClick={() => setShowAdvancedContext((open) => !open)}
-                  aria-expanded={showAdvancedContext}
+                  disabled={allPluginItems.length === 0}
+                  onClick={() => setIsBrowsingCatalog(true)}
                 >
-                  <ChevronDownIcon
-                    className={`size-3.5 transition-transform ${showAdvancedContext ? "" : "-rotate-90"}`}
+                  <SearchIcon className="size-3.5" />
+                  Browse catalog
+                </Button>
+              }
+            >
+              <div
+                className="space-y-4 px-4 py-4 sm:px-5"
+                id="extensions-tab-plugins"
+                role="tabpanel"
+              >
+                {isInitialInventoryLoading ? (
+                  <InstalledPluginsSkeleton />
+                ) : (
+                  <InstalledPluginsList
+                    items={searchedInstalledPlugins}
+                    environmentId={selectedEnvironmentId}
+                    busyPluginId={busyPluginId}
+                    onSelect={setSelectedItem}
+                    onToggle={(target, nextEnabled) => void togglePluginRow(target, nextEnabled)}
                   />
-                  Advanced
+                )}
+                <NeedsAttention entries={attentionEntries} onSelect={setSelectedItem} />
+              </div>
+            </SettingsSection>
+
+            {codexProviders.length > 0 ? (
+              <SettingsSection
+                title="Apps"
+                description="Apps connected to your ChatGPT account. They run on OpenAI's servers and only work with Codex."
+                icon={CodexSectionGlyph ? <CodexSectionGlyph className="size-3.5" /> : undefined}
+              >
+                <div className="px-4 py-3.5 sm:px-5">
+                  <ExtensionPreviewSection
+                    environmentId={selectedEnvironmentId}
+                    title={appsSection.title}
+                    items={appsSection.items}
+                    totalCount={appsSection.totalCount}
+                    isTruncated={appsSection.isTruncated}
+                    emptyLabel={appsSection.emptyLabel}
+                    statusMessage={appsSection.statusMessage}
+                    loadLabel={appsSection.loadLabel}
+                    isLoading={appsSection.isLoading}
+                    onLoad={appsSection.onLoad}
+                    filterText={deferredPageQuery}
+                    onSelect={setSelectedItem}
+                    panelId="extensions-apps"
+                    browseLabel={appsSection.browseLabel}
+                    browseAvailable
+                    onBrowse={browseApps}
+                  />
+                </div>
+              </SettingsSection>
+            ) : null}
+          </>
+        ) : (
+          <SettingsSection
+            title="Skills"
+            description="Instruction files that teach an agent one kind of task. Stored as folders on this machine."
+            icon={<FileTextIcon className="size-3.5" />}
+            headerAction={
+              <div className="flex items-center gap-2">
+                {hasInventory && isLoading ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <LoaderIcon className="size-3 animate-spin" />
+                    Refreshing
+                  </span>
+                ) : null}
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={skillCreateProviders.length === 0}
+                  onClick={() => setIsCreatingSkill(true)}
+                >
+                  <PackagePlusIcon className="size-3.5" />
+                  New skill
                 </Button>
               </div>
             }
           >
-            {showAdvancedContext ? (
-              <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
-                <div className="min-w-0 space-y-1">
-                  <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
-                    Detected context
-                  </div>
-                  <div
-                    className="truncate font-mono text-[11px] text-foreground/80"
-                    title={detectedProviderThreadId || undefined}
-                  >
-                    {detectedProviderThreadId || "No active Codex thread detected"}
-                  </div>
-                  <p className="text-[11px] text-muted-foreground/70">
-                    Leave the override empty to use the detected active session.
-                  </p>
-                </div>
-                <Input
-                  nativeInput
-                  value={manualProviderThreadId}
-                  onChange={(event) => {
-                    setManualThreadOverride({ scopeKey, value: event.currentTarget.value });
-                    invalidateInventoryRefresh();
-                  }}
-                  placeholder="override provider thread id"
-                  className="w-full"
-                  aria-label="Override provider thread id"
+            <div id="extensions-tab-skills" role="tabpanel">
+              {isInitialInventoryLoading ? (
+                <SkillListSkeleton />
+              ) : skillGroups.length > 0 || skillPluginBuckets.length > 0 ? (
+                <>
+                  {skillGroups.map((group) => (
+                    <div key={group.key}>
+                      <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 first:border-t-0 sm:px-5">
+                        {group.label}
+                      </div>
+                      {group.items.map((item) => (
+                        <SkillListRow
+                          key={item.skill.path}
+                          item={item}
+                          environmentId={selectedEnvironmentId}
+                          isBusy={busySkillPath === item.skill.path}
+                          onSelect={setSelectedItem}
+                          onToggle={(target, nextEnabled) =>
+                            void toggleSkillRow(target, nextEnabled)
+                          }
+                        />
+                      ))}
+                    </div>
+                  ))}
+                  {skillPluginBuckets.length > 0 ? (
+                    <div>
+                      <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:px-5">
+                        {EXTENSION_SKILL_GROUP_LABELS.plugin}
+                      </div>
+                      {skillPluginBuckets.map((bucket) => {
+                        const first = bucket.matching[0]!;
+                        const plugin = skillBundlePlugin(first);
+                        return (
+                          <SkillPluginGroup
+                            key={bucket.bundleId}
+                            bucket={bucket}
+                            plugin={plugin}
+                            environmentId={selectedEnvironmentId}
+                            expanded={
+                              bucket.autoExpand || expandedSkillPlugins.includes(bucket.bundleId)
+                            }
+                            isBusy={busySkillPluginId === plugin?.id}
+                            onToggleExpanded={() =>
+                              setExpandedSkillPlugins((current) =>
+                                current.includes(bucket.bundleId)
+                                  ? current.filter((id) => id !== bucket.bundleId)
+                                  : [...current, bucket.bundleId],
+                              )
+                            }
+                            onTogglePlugin={(nextEnabled) =>
+                              void toggleSkillPlugin(first, nextEnabled)
+                            }
+                            onSelect={setSelectedItem}
+                          />
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <SettingsRow
+                  title={
+                    !scopeIsReachable ? (
+                      scope === null ? (
+                        "No machine available"
+                      ) : (
+                        `${scopeMachineLabel} is not connected`
+                      )
+                    ) : isLoading ? (
+                      <span className="inline-flex items-center gap-2">
+                        <LoaderIcon className="size-3.5 animate-spin" />
+                        Loading skills
+                      </span>
+                    ) : error ? (
+                      "Inventory failed to load"
+                    ) : allSkillItems.length > 0 ? (
+                      "No matching skills"
+                    ) : (
+                      "No skills reported"
+                    )
+                  }
+                  description={
+                    !scopeIsReachable
+                      ? scope === null
+                        ? "Add a computer or a project to inspect skills."
+                        : "Reconnect this machine to inspect its skills."
+                      : isLoading
+                        ? "Reading skills from Codex and Claude."
+                        : error
+                          ? "The inventory could not be loaded. Details are shown above."
+                          : allSkillItems.length > 0
+                            ? "No skill matches the search above."
+                            : scopeCwd === null
+                              ? "Neither provider reported skills on this machine."
+                              : "Neither provider reported skills for this project."
+                  }
                 />
+              )}
+            </div>
+          </SettingsSection>
+        )}
+
+        {tab === "plugins" ? (
+          <>
+            <SettingsSection
+              title="Connections"
+              icon={<DatabaseIcon className="size-3.5" />}
+              headerAction={
+                mcpAuthCheckProvider ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={mcpLoadingProviderId !== null}
+                    onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
+                  >
+                    {mcpLoadingProviderId !== null ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <KeyRoundIcon className="size-3.5" />
+                    )}
+                    {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
+                  </Button>
+                ) : null
+              }
+            >
+              <div className="px-4 py-3.5 sm:px-5">
+                {isInitialInventoryLoading ? (
+                  <ConnectionsTableSkeleton />
+                ) : (
+                  <ConnectionsTable
+                    items={searchedConnections}
+                    environmentId={selectedEnvironmentId}
+                    isLoading={isLoading}
+                    onSelect={setSelectedItem}
+                  />
+                )}
               </div>
-            ) : null}
-          </SettingsRow>
-        </SettingsSection>
+            </SettingsSection>
+
+            <SettingsSection title="Advanced" icon={<PlugIcon className="size-3.5" />}>
+              {marketplaceSummary ? (
+                <SettingsRow
+                  title="Marketplace sources"
+                  description={
+                    <span className="block truncate" title={marketplaceSummary}>
+                      {marketplaceSummary}
+                    </span>
+                  }
+                  control={
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => setShowMarketplaces((open) => !open)}
+                      aria-expanded={showMarketplaces}
+                    >
+                      <ChevronDownIcon
+                        className={`size-3.5 transition-transform ${showMarketplaces ? "" : "-rotate-90"}`}
+                      />
+                      Manage
+                    </Button>
+                  }
+                >
+                  {showMarketplaces ? (
+                    <div className="mt-3 space-y-3 border-t border-border/50 py-3">
+                      {providerScopedInventory.map((provider) => (
+                        <MarketplacesBlock
+                          key={provider.instanceId}
+                          provider={provider}
+                          cwd={cwd}
+                          onMutated={refreshAfterMutation}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </SettingsRow>
+              ) : null}
+              <SettingsRow
+                title="MCP context"
+                description={providerThreadContextDescription}
+                control={
+                  <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
+                    <Badge
+                      size="sm"
+                      variant={providerThreadContextSource === "none" ? "outline" : "success"}
+                    >
+                      {providerThreadContextSource === "manual"
+                        ? "Manual"
+                        : providerThreadContextSource === "auto"
+                          ? "Auto"
+                          : "No context"}
+                    </Badge>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => setShowAdvancedContext((open) => !open)}
+                      aria-expanded={showAdvancedContext}
+                    >
+                      <ChevronDownIcon
+                        className={`size-3.5 transition-transform ${showAdvancedContext ? "" : "-rotate-90"}`}
+                      />
+                      Advanced
+                    </Button>
+                  </div>
+                }
+              >
+                {showAdvancedContext ? (
+                  <div className="mt-3 grid gap-3 border-t border-border/50 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] sm:items-start">
+                    <div className="min-w-0 space-y-1">
+                      <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+                        Detected context
+                      </div>
+                      <div
+                        className="truncate font-mono text-[11px] text-foreground/80"
+                        title={detectedProviderThreadId || undefined}
+                      >
+                        {detectedProviderThreadId || "No active Codex thread detected"}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground/70">
+                        Leave the override empty to use the detected active session.
+                      </p>
+                    </div>
+                    <Input
+                      nativeInput
+                      value={manualProviderThreadId}
+                      onChange={(event) => {
+                        setManualThreadOverride({ scopeKey, value: event.currentTarget.value });
+                        invalidateInventoryRefresh();
+                      }}
+                      placeholder="override provider thread id"
+                      className="w-full"
+                      aria-label="Override provider thread id"
+                    />
+                  </div>
+                ) : null}
+              </SettingsRow>
+            </SettingsSection>
+          </>
+        ) : null}
 
         <ExtensionBrowserDialog
           environmentId={selectedEnvironmentId}
@@ -5107,12 +5520,32 @@ export function ExtensionsSettingsPanel() {
             setIsBrowsingCatalog(false);
             setSelectedItem(item);
           }}
-          onToggleSkillBundle={async () => {}}
+        />
+        <ExtensionBrowserDialog
+          environmentId={selectedEnvironmentId}
+          section={isBrowsingApps ? appsSection : null}
+          providerLabel={
+            providerInstanceId ? (selectedProviderOption?.label ?? "") : "All providers"
+          }
+          initialQuery={pageQuery}
+          onClose={() => setIsBrowsingApps(false)}
+          onSelect={(item) => {
+            setIsBrowsingApps(false);
+            setSelectedItem(item);
+          }}
+        />
+        <NewSkillDialog
+          open={isCreatingSkill}
+          providers={skillCreateProviders}
+          cwd={cwd}
+          onClose={() => setIsCreatingSkill(false)}
+          onCreated={refreshAfterMutation}
         />
         <ExtensionDetailDialog
           item={selectedItem}
           environmentId={selectedEnvironmentId}
           cwd={cwd}
+          machineLabel={scopeMachineLabel}
           providerThreadId={effectiveProviderThreadId}
           onClose={() => setSelectedItem(null)}
           onSelectItem={setSelectedItem}

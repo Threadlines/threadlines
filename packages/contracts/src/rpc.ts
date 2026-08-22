@@ -143,6 +143,10 @@ import {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillCreateInput,
+  ProviderExtensionSkillCreateResult,
+  ProviderExtensionSkillDeleteInput,
+  ProviderExtensionSkillDeleteResult,
   ProviderExtensionSkillReadInput,
   ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
@@ -337,6 +341,8 @@ export const WS_METHODS = {
   serverReloadProviderExtensionMcpServers: "server.reloadProviderExtensionMcpServers",
   serverSetProviderExtensionSkillEnabled: "server.setProviderExtensionSkillEnabled",
   serverReadProviderExtensionSkill: "server.readProviderExtensionSkill",
+  serverCreateProviderExtensionSkill: "server.createProviderExtensionSkill",
+  serverDeleteProviderExtensionSkill: "server.deleteProviderExtensionSkill",
   serverReadProviderExtensionPlugin: "server.readProviderExtensionPlugin",
   serverInstallProviderExtensionPlugin: "server.installProviderExtensionPlugin",
   serverUninstallProviderExtensionPlugin: "server.uninstallProviderExtensionPlugin",
@@ -561,6 +567,24 @@ export const WsServerReadProviderExtensionSkillRpc = Rpc.make(
   {
     payload: ProviderExtensionSkillReadInput,
     success: ProviderExtensionSkillReadResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerCreateProviderExtensionSkillRpc = Rpc.make(
+  WS_METHODS.serverCreateProviderExtensionSkill,
+  {
+    payload: ProviderExtensionSkillCreateInput,
+    success: ProviderExtensionSkillCreateResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerDeleteProviderExtensionSkillRpc = Rpc.make(
+  WS_METHODS.serverDeleteProviderExtensionSkill,
+  {
+    payload: ProviderExtensionSkillDeleteInput,
+    success: ProviderExtensionSkillDeleteResult,
     error: ProviderExtensionsError,
   },
 );
@@ -1159,6 +1183,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReloadProviderExtensionMcpServersRpc,
   WsServerSetProviderExtensionSkillEnabledRpc,
   WsServerReadProviderExtensionSkillRpc,
+  WsServerCreateProviderExtensionSkillRpc,
+  WsServerDeleteProviderExtensionSkillRpc,
   WsServerReadProviderExtensionPluginRpc,
   WsServerInstallProviderExtensionPluginRpc,
   WsServerUninstallProviderExtensionPluginRpc,

@@ -148,6 +148,17 @@ export const ProviderExtensionSkill = Schema.Struct({
   bundleId: Schema.optional(TrimmedNonEmptyString),
   bundleName: Schema.optional(TrimmedNonEmptyString),
   bundleDisplayName: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The server can flip this skill's enabled state on its own. Absent means it cannot, so the
+   * client renders status text instead of a toggle. Plugin-bundled skills follow their plugin
+   * and are never toggled directly.
+   */
+  canToggle: Schema.optional(Schema.Boolean),
+  /**
+   * The skill directory sits directly inside a user or project skills root the server is allowed
+   * to delete from. Never set for plugin-bundled or provider-shipped skills.
+   */
+  canDelete: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionSkill = typeof ProviderExtensionSkill.Type;
 
@@ -243,6 +254,9 @@ export const ProviderExtensionApp = Schema.Struct({
   description: Schema.optional(TrimmedString),
   enabled: Schema.optional(Schema.Boolean),
   accessible: Schema.optional(Schema.Boolean),
+  /** Remote logo published by the provider. Rendered the same way plugin artwork is. */
+  iconUrl: Schema.optional(TrimmedNonEmptyString),
+  iconUrlDark: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderExtensionApp = typeof ProviderExtensionApp.Type;
 
@@ -261,10 +275,16 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   /** The provider returned exactly as many servers as we asked for, so the count is a floor. */
   mcpServersTruncated: Schema.optional(Schema.Boolean),
   apps: Schema.Array(ProviderExtensionApp),
+  /** Covers the connected apps, which are read from a local snapshot on every inventory load. */
   appsStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
   appsMessage: Schema.optional(TrimmedString),
   /** As above: the apps count is a page size, not a total. */
   appsTruncated: Schema.optional(Schema.Boolean),
+  /**
+   * Covers the full app directory, which costs a backend round-trip and is only fetched when the
+   * user opens Browse. `deferred` means the catalog is not in `apps` yet.
+   */
+  appsCatalogStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
 });
 export type ProviderExtensionProviderInventory = typeof ProviderExtensionProviderInventory.Type;
 
@@ -409,6 +429,40 @@ export const ProviderExtensionSkillReadResult = Schema.Struct({
   truncated: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionSkillReadResult = typeof ProviderExtensionSkillReadResult.Type;
+
+/**
+ * Skill names double as directory names and as the identifier providers match on, so they are
+ * restricted to kebab-case. The server rejects anything else rather than sanitizing it.
+ */
+export const ProviderExtensionSkillName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+);
+
+export const ProviderExtensionSkillCreateInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  name: ProviderExtensionSkillName,
+  description: Schema.optional(TrimmedString),
+});
+export type ProviderExtensionSkillCreateInput = typeof ProviderExtensionSkillCreateInput.Type;
+
+export const ProviderExtensionSkillCreateResult = Schema.Struct({
+  /** Absolute path of the SKILL.md that was written. */
+  path: TrimmedNonEmptyString,
+});
+export type ProviderExtensionSkillCreateResult = typeof ProviderExtensionSkillCreateResult.Type;
+
+export const ProviderExtensionSkillDeleteInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  /** Absolute path of the skill file, as reported by the inventory. */
+  path: TrimmedNonEmptyString,
+});
+export type ProviderExtensionSkillDeleteInput = typeof ProviderExtensionSkillDeleteInput.Type;
+
+export const ProviderExtensionSkillDeleteResult = Schema.Struct({
+  deleted: Schema.Boolean,
+});
+export type ProviderExtensionSkillDeleteResult = typeof ProviderExtensionSkillDeleteResult.Type;
 
 export const ProviderExtensionPluginReadInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,
