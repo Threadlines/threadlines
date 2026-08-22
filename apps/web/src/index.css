@@ -1338,8 +1338,16 @@ label:has(> select#reasoning-effort) select {
 }
 
 /* Leading slash-command token in the composer (ComposerCommandTextNode).
+   Pill shaped like the inline chips (composerInlineChip.ts) but tinted with the
+   primary accent, so commands stay distinguishable from skill chips. Vertical
+   padding stays at 1px so promoting the token does not shift line metrics.
    One-shot fade-in on recognition; no looping animation. */
 .composer-command-token {
+  border: 1px solid color-mix(in srgb, var(--color-primary-readable) 28%, transparent);
+  border-radius: var(--radius-md);
+  background-color: color-mix(in srgb, var(--color-primary-readable) 10%, transparent);
+  padding-block: 1px;
+  padding-inline: 0.25rem;
   color: var(--color-primary-readable);
   animation: composer-command-token-in 180ms ease-out;
 }

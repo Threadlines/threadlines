@@ -81,3 +81,10 @@ export function searchSlashCommandItems(
 
   return ranked.map((entry) => entry.item);
 }
+
+/** Plugin skills are the only provider commands identifiable by name — Claude
+ *  namespaces them `plugin:skill`. Both the `/` menu's section split and the
+ *  composer's flat keyboard order partition with this same rule. */
+export function isPluginSkillCommandName(name: string): boolean {
+  return name.includes(":");
+}

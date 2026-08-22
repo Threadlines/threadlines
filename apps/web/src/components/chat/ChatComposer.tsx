@@ -94,7 +94,11 @@ import {
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
 } from "../composerFooterLayout";
-import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
+import {
+  type ComposerPromptEditorHandle,
+  type ComposerSkillAvailability,
+  ComposerPromptEditor,
+} from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -113,7 +117,7 @@ import { ComposerPendingPickedElementContexts } from "./ComposerPendingPickedEle
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
 import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
-import { searchSlashCommandItems } from "./composerSlashCommandSearch";
+import { isPluginSkillCommandName, searchSlashCommandItems } from "./composerSlashCommandSearch";
 import { buildDefaultComposerPlaceholder } from "./composerPlaceholder";
 import {
   getComposerProviderState,
@@ -138,6 +142,7 @@ import {
 import { CircleAlertIcon, FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
+  getProviderDisplayName,
   getProviderInteractionModeToggle,
   providerModelSupportsInputModality,
 } from "../../providerModels";
@@ -191,6 +196,25 @@ const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="combobox-popup"]',
   '[data-slot="autocomplete-popup"]',
 ].join(",");
+
+/** Menu rows for provider skills, shared by the `$` trigger and the `/` menu's
+ *  Skills section. Both insert the same `$skill-name` token on select. */
+function buildComposerSkillItems(
+  skills: ServerProvider["skills"],
+  provider: ProviderDriverKind,
+): Array<Extract<ComposerCommandItem, { type: "skill" }>> {
+  return skills.map((skill) => ({
+    id: `skill:${provider}:${skill.name}`,
+    type: "skill" as const,
+    provider,
+    skill,
+    label: formatProviderSkillDisplayName(skill),
+    description:
+      skill.shortDescription ??
+      skill.description ??
+      (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+  }));
+}
 
 const extendReplacementRangeForTrailingSpace = (
   text: string,
@@ -926,6 +950,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
   );
+  // Heading for the provider section of the `/` menu — the instance's own name
+  // when it has one, so custom instances read as themselves.
+  const selectedProviderDisplayName = useMemo(
+    () =>
+      selectedProviderStatus?.displayName?.trim() ||
+      getProviderDisplayName(providerStatuses, selectedProvider),
+    [providerStatuses, selectedProvider, selectedProviderStatus],
+  );
   const projectSkillsQuery = useQuery(
     providerSkillsQueryOptions({
       environmentId,
@@ -935,6 +967,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }),
   );
   const composerSkills = projectSkillsQuery.data ?? EMPTY_PROVIDER_SKILLS;
+  // `$skill` is Codex-native, so a draft carried to another provider sends its
+  // chips as literal words. Chips read this to warn; the list only counts as
+  // authoritative once Codex's skills have actually loaded.
+  const composerSkillAvailability = useMemo<ComposerSkillAvailability>(
+    () => ({
+      knownSkillNames: new Set(
+        composerSkills.filter((skill) => skill.enabled).map((skill) => skill.name),
+      ),
+      authoritative:
+        selectedProvider !== CODEX_AGENT_PROVIDER || projectSkillsQuery.data !== undefined,
+      staleReason:
+        selectedProvider === CODEX_AGENT_PROVIDER
+          ? "Skill not found in this workspace"
+          : "Not available with the selected provider",
+    }),
+    [composerSkills, projectSkillsQuery.data, selectedProvider],
+  );
   // Account-level usage (5h/weekly windows) for the instance the composer
   // is targeting — surfaced in the context window meter's hover card.
   const selectedProviderAccountUsage = useMemo(
@@ -1083,11 +1132,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
   const goalBarVisible = goalSupported && (threadGoal !== null || isGoalEditorOpen);
-  // Commands that will trigger on Enter in this thread; the editor tints the
-  // leading token so typed-past-the-menu commands still read as commands.
+  // Commands this thread will act on: the built-ins plus whatever the selected
+  // provider reports. The editor tints the leading token so typed-past-the-menu
+  // commands still read as commands.
   const recognizedSlashCommands = useMemo(
-    () => ["plan", "default", ...(goalSupported ? ["goal"] : [])],
-    [goalSupported],
+    () => [
+      "plan",
+      "default",
+      ...(goalSupported ? ["goal"] : []),
+      ...(selectedProviderStatus?.slashCommands ?? []).map((command) => command.name),
+    ],
+    [goalSupported, selectedProviderStatus],
   );
 
   useEffect(() => {
@@ -1230,23 +1285,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       const query = composerTrigger.query.trim().toLowerCase();
       const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
-      if (!query) {
-        return slashCommandItems;
-      }
-      return searchSlashCommandItems(slashCommandItems, query);
+      const rankedCommandItems = query
+        ? searchSlashCommandItems(slashCommandItems, query)
+        : slashCommandItems;
+      // Skills are ranked in their own list and appended after the commands —
+      // the two kinds score on different scales, so a shared ranker would
+      // interleave them arbitrarily.
+      const skillItems = buildComposerSkillItems(
+        searchProviderSkills(composerSkills, query),
+        selectedProvider,
+      );
+      // The menu shows labeled sections even while filtering, so keyboard
+      // order must match section order: built-ins, provider commands, plugin
+      // skills, skills. Ranking is preserved within each section.
+      return [
+        ...rankedCommandItems.filter((item) => item.type === "slash-command"),
+        ...rankedCommandItems.filter(
+          (item) =>
+            item.type === "provider-slash-command" && !isPluginSkillCommandName(item.command.name),
+        ),
+        ...rankedCommandItems.filter(
+          (item) =>
+            item.type === "provider-slash-command" && isPluginSkillCommandName(item.command.name),
+        ),
+        ...skillItems,
+      ];
     }
     if (composerTrigger.kind === "skill") {
-      return searchProviderSkills(composerSkills, composerTrigger.query).map((skill) => ({
-        id: `skill:${selectedProvider}:${skill.name}`,
-        type: "skill" as const,
-        provider: selectedProvider,
-        skill,
-        label: formatProviderSkillDisplayName(skill),
-        description:
-          skill.shortDescription ??
-          skill.description ??
-          (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
-      }));
+      return buildComposerSkillItems(
+        searchProviderSkills(composerSkills, composerTrigger.query),
+        selectedProvider,
+      );
     }
     return [];
   }, [
@@ -3273,10 +3342,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   resolvedTheme={resolvedTheme}
                   isLoading={isComposerMenuLoading}
                   triggerKind={composerTriggerKind}
-                  groupSlashCommandSections={
-                    composerTrigger?.kind === "slash-command" &&
-                    composerTrigger.query.trim().length === 0
-                  }
+                  providerGroupLabel={selectedProviderDisplayName}
                   emptyStateText={composerMenuEmptyState}
                   activeItemId={activeComposerMenuItem?.id ?? null}
                   onHighlightedItemChange={onComposerMenuItemHighlighted}
@@ -3454,6 +3520,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 terminalContexts={[]}
                 skills={composerSkills}
                 recognizedSlashCommands={recognizedSlashCommands}
+                skillAvailability={composerSkillAvailability}
                 {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}
