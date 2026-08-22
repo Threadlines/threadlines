@@ -23,6 +23,7 @@ export function parseSafeExternalUrl(rawUrl: unknown): Option.Option<string> {
 
 export interface ElectronShellShape {
   readonly openExternal: (rawUrl: unknown) => Effect.Effect<boolean>;
+  readonly openPath: (fileSystemPath: string) => Effect.Effect<boolean>;
   readonly openScreenClip: () => Effect.Effect<boolean>;
   readonly copyText: (text: string) => Effect.Effect<void>;
 }
@@ -43,6 +44,14 @@ const make = ElectronShell.of({
           ),
         ),
     }),
+  // Electron resolves openPath with an error string on failure, "" on success.
+  openPath: (fileSystemPath) =>
+    Effect.promise(() =>
+      Electron.shell.openPath(fileSystemPath).then(
+        (openError) => openError === "",
+        () => false,
+      ),
+    ),
   openScreenClip: () =>
     Effect.promise(() =>
       Electron.shell.openExternal(WINDOWS_SCREEN_CLIP_URI).then(

@@ -27,12 +27,21 @@ import {
 } from "@threadlines/contracts";
 
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
+import * as DesktopCrashReport from "../app/DesktopCrashReport.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopStartupFailurePrompt from "../window/DesktopStartupFailurePrompt.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 
 const INITIAL_RESTART_DELAY = Duration.millis(500);
 const MAX_RESTART_DELAY = Duration.seconds(10);
+// Failed spawns before the first successful readiness stop looping and become
+// a visible startup-failure prompt. Once the backend has been ready this app
+// session, restarts stay unbounded: the window exists, so a crash there is
+// not an invisible wedge.
+const MAX_STARTUP_ATTEMPTS = 3;
+// Cap on the retained stderr needed for a useful crash report.
+const STDERR_TAIL_MAX_CHARS = 8_192;
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
@@ -136,6 +145,8 @@ interface ActiveBackendRun {
 interface BackendManagerState {
   readonly desiredRunning: boolean;
   readonly ready: boolean;
+  /** True once any run reached readiness in this app session. */
+  readonly everReady: boolean;
   readonly config: Option.Option<DesktopBackendStartConfig>;
   readonly active: Option.Option<ActiveBackendRun>;
   readonly restartAttempt: number;
@@ -146,6 +157,7 @@ interface BackendManagerState {
 const initialState: BackendManagerState = {
   desiredRunning: false,
   ready: false,
+  everReady: false,
   config: Option.none(),
   active: Option.none(),
   restartAttempt: 0,
@@ -314,6 +326,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
   const backendOutputLog = yield* DesktopObservability.DesktopBackendOutputLog;
   const desktopState = yield* DesktopState.DesktopState;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const startupFailurePrompt = yield* DesktopStartupFailurePrompt.DesktopStartupFailurePrompt;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
   const state = yield* Ref.make(initialState);
@@ -378,6 +391,12 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         }
 
         const runScope = yield* Scope.make("sequential");
+        // Per-run crash-report inputs: the stderr tail carries the fatal
+        // error when the process dies, the timeout marker reroutes a
+        // killed-for-unresponsiveness exit away from the restart path.
+        const stderrTailRef = yield* Ref.make("");
+        const stderrDecoder = new TextDecoder();
+        const readinessTimeoutRef = yield* Ref.make(Option.none<BackendTimeoutError>());
         const runId = yield* Ref.modify(state, (latest) => [
           latest.nextRunId,
           {
@@ -394,6 +413,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
 
         const finalizeRun = Effect.fn("desktop.backendManager.finalizeRun")(function* (
           reason: string,
+          exitCode: Option.Option<number>,
         ) {
           yield* mutex.withPermits(1)(
             Effect.gen(function* () {
@@ -447,9 +467,36 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                 yield* Ref.set(desktopState.backendReady, false);
               }
 
-              if (isCurrentRun && nextState.desiredRunning) {
-                yield* scheduleRestart(reason);
+              if (!isCurrentRun || !nextState.desiredRunning) {
+                return;
               }
+
+              const readinessTimeout = yield* Ref.get(readinessTimeoutRef);
+              const startupFailed =
+                !nextState.everReady &&
+                (Option.isSome(readinessTimeout) ||
+                  nextState.restartAttempt >= MAX_STARTUP_ATTEMPTS - 1);
+              if (!startupFailed) {
+                yield* scheduleRestart(reason);
+                return;
+              }
+
+              // Stop trying; the prompt fiber owns what happens next.
+              yield* Ref.update(state, (latest) => ({
+                ...latest,
+                desiredRunning: false,
+              }));
+              const stderrTail = yield* Ref.get(stderrTailRef);
+              yield* triggerStartupFailure({
+                failureKind: Option.isSome(readinessTimeout) ? "readiness-timeout" : "process-exit",
+                attempts: nextState.restartAttempt + 1,
+                lastExitCode: exitCode,
+                lastReason: Option.match(readinessTimeout, {
+                  onNone: () => reason,
+                  onSome: (timeout) => timeout.message,
+                }),
+                stderrTail,
+              });
             }),
           );
         });
@@ -479,6 +526,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   ...latest,
                   restartAttempt: 0,
                   ready: true,
+                  everReady: true,
                 },
               ] as const;
             });
@@ -496,17 +544,44 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
             );
           }),
           onReadinessFailure: (error) =>
-            logBackendManagerWarning("backend readiness check failed during bootstrap", {
-              error: error.message,
+            Effect.gen(function* () {
+              yield* logBackendManagerWarning("backend readiness check failed during bootstrap", {
+                error: error.message,
+              });
+              const latest = yield* Ref.get(state);
+              if (latest.everReady) {
+                return;
+              }
+              // Before the first readiness there is no window: a process that
+              // is alive but unresponsive would sit invisible forever. Mark
+              // the run and kill it so finalizeRun surfaces the failure
+              // instead of scheduling a restart.
+              yield* Ref.set(readinessTimeoutRef, Option.some(error));
+              const run = Option.getOrUndefined(latest.active);
+              if (run?.id === runId) {
+                yield* Effect.forkIn(closeRun(run), parentScope);
+              }
             }),
-          onOutput: (streamName, chunk) => backendOutputLog.writeOutputChunk(streamName, chunk),
+          onOutput: (streamName, chunk) =>
+            streamName === "stderr"
+              ? backendOutputLog.writeOutputChunk(streamName, chunk).pipe(
+                  Effect.andThen(
+                    Ref.update(stderrTailRef, (tail) => {
+                      const appended = tail + stderrDecoder.decode(chunk, { stream: true });
+                      return appended.length <= STDERR_TAIL_MAX_CHARS
+                        ? appended
+                        : appended.slice(appended.length - STDERR_TAIL_MAX_CHARS);
+                    }),
+                  ),
+                )
+              : backendOutputLog.writeOutputChunk(streamName, chunk),
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Scope.provide(runScope),
           Effect.matchEffect({
-            onFailure: (error) => finalizeRun(error.message),
-            onSuccess: (exit) => finalizeRun(exit.reason),
+            onFailure: (error) => finalizeRun(error.message, Option.none()),
+            onSuccess: (exit) => finalizeRun(exit.reason, exit.code),
           }),
           Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
         );
@@ -579,6 +654,32 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
       }),
     });
   });
+
+  // Forked so the (possibly minutes-long) dialog never blocks the manager
+  // mutex. "quit" is handled inside the prompt; "retry" resets the failure
+  // budget and starts over.
+  const triggerStartupFailure = (report: DesktopCrashReport.DesktopStartupFailureReport) =>
+    Effect.forkIn(
+      Effect.gen(function* () {
+        yield* logBackendManagerError("backend failed to start; showing startup failure prompt", {
+          failureKind: report.failureKind,
+          attempts: report.attempts,
+          reason: report.lastReason,
+        });
+        const action = yield* startupFailurePrompt.handle(report);
+        if (action === "retry") {
+          yield* Ref.update(state, (latest) => ({ ...latest, restartAttempt: 0 }));
+          yield* start;
+        }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          logBackendManagerError("startup failure prompt failed", {
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
+      parentScope,
+    ).pipe(Effect.asVoid);
 
   const stop = Effect.fn("desktop.backendManager.stop")(function* (options?: {
     readonly timeout?: Duration.Duration;

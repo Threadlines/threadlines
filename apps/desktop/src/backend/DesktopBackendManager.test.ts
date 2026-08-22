@@ -24,6 +24,7 @@ import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopStartupFailurePrompt from "../window/DesktopStartupFailurePrompt.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 
 const decodeDesktopBackendBootstrap = Schema.decodeEffect(
@@ -109,6 +110,7 @@ function makeManagerLayer(input: {
   readonly desktopState?: DesktopState.DesktopStateShape;
   readonly desktopWindow?: Partial<DesktopWindow.DesktopWindowShape>;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
+  readonly startupFailurePrompt?: DesktopStartupFailurePrompt.DesktopStartupFailurePromptShape;
 }) {
   return DesktopBackendManager.layer.pipe(
     Layer.provide(
@@ -129,6 +131,12 @@ function makeManagerLayer(input: {
           writeOutputChunk: () => Effect.void,
           ...input.backendOutputLog,
         } satisfies DesktopObservability.DesktopBackendOutputLogShape),
+        Layer.succeed(
+          DesktopStartupFailurePrompt.DesktopStartupFailurePrompt,
+          input.startupFailurePrompt ?? {
+            handle: () => Effect.die("unexpected startup failure prompt"),
+          },
+        ),
         Layer.succeed(DesktopWindow.DesktopWindow, {
           createMain: Effect.die("unexpected createMain"),
           ensureMain: Effect.die("unexpected ensureMain"),
@@ -441,45 +449,203 @@ describe("DesktopBackendManager", () => {
     }),
   );
 
-  it.effect("restarts an unexpectedly exited backend with the Effect clock", () =>
+  it.effect(
+    "restarts a backend that dies before readiness, then caps at three attempts with a prompt",
+    () =>
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const promptReports =
+          yield* Queue.unbounded<DesktopStartupFailurePrompt.DesktopStartupFailureReport>();
+        const promptAction =
+          yield* Ref.make<DesktopStartupFailurePrompt.DesktopStartupFailureAction>("retry");
+        let startCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              startCount += 1;
+              return makeProcess({
+                exitCode: Queue.offer(starts, startCount).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }),
+          ),
+        );
+
+        const managerLayer = makeManagerLayer({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          startupFailurePrompt: {
+            handle: (report) =>
+              Queue.offer(promptReports, report).pipe(Effect.andThen(Ref.get(promptAction))),
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const manager = yield* DesktopBackendManager.DesktopBackendManager;
+          yield* manager.start;
+
+          assert.equal(yield* Queue.take(starts), 1);
+
+          yield* TestClock.adjust(Duration.millis(499));
+          assert.equal(yield* Queue.size(starts), 0);
+          yield* TestClock.adjust(Duration.millis(1));
+          assert.equal(yield* Queue.take(starts), 2);
+
+          yield* TestClock.adjust(Duration.millis(999));
+          assert.equal(yield* Queue.size(starts), 0);
+          yield* TestClock.adjust(Duration.millis(1));
+          assert.equal(yield* Queue.take(starts), 3);
+
+          // The third failed attempt surfaces the prompt instead of a fourth
+          // silent restart.
+          const firstReport = yield* Queue.take(promptReports);
+          assert.equal(firstReport.failureKind, "process-exit");
+          assert.equal(firstReport.attempts, 3);
+          assert.deepEqual(firstReport.lastExitCode, Option.some(1));
+
+          // "Try Again" resets the failure budget: a full new round of three.
+          assert.equal(yield* Queue.take(starts), 4);
+          yield* Ref.set(promptAction, "quit");
+          yield* TestClock.adjust(Duration.millis(500));
+          assert.equal(yield* Queue.take(starts), 5);
+          yield* TestClock.adjust(Duration.seconds(1));
+          assert.equal(yield* Queue.take(starts), 6);
+
+          const secondReport = yield* Queue.take(promptReports);
+          assert.equal(secondReport.attempts, 3);
+
+          // "Quit" leaves the manager idle: no further spawns on any delay.
+          yield* TestClock.adjust(Duration.seconds(30));
+          assert.equal(yield* Queue.size(starts), 0);
+        }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+      }),
+  );
+
+  it.effect(
+    "kills and reports a backend that never answers readiness before the first window",
+    () =>
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const promptReports =
+          yield* Queue.unbounded<DesktopStartupFailurePrompt.DesktopStartupFailureReport>();
+        let startCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              startCount += 1;
+              yield* Queue.offer(starts, startCount);
+              const scope = yield* Scope.Scope;
+              const closed = yield* Deferred.make<void>();
+              const close = Deferred.succeed(closed, void 0).pipe(Effect.asVoid);
+              yield* Scope.addFinalizer(scope, close);
+              return makeProcess({
+                stderr: Stream.make(new TextEncoder().encode("EADDRINUSE: port already bound\n")),
+                exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(143))),
+                kill: () => close,
+              });
+            }),
+          ),
+        );
+
+        const managerLayer = makeManagerLayer({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          startupFailurePrompt: {
+            handle: (report) => Queue.offer(promptReports, report).pipe(Effect.as("quit" as const)),
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const manager = yield* DesktopBackendManager.DesktopBackendManager;
+          yield* manager.start;
+          assert.equal(yield* Queue.take(starts), 1);
+
+          // The 60s readiness budget elapses without a single healthy answer.
+          yield* TestClock.adjust(Duration.minutes(1));
+
+          const report = yield* Queue.take(promptReports);
+          assert.equal(report.failureKind, "readiness-timeout");
+          assert.equal(report.attempts, 1);
+          assert.include(report.lastReason, "Timed out");
+          assert.include(report.stderrTail, "EADDRINUSE");
+
+          // The unresponsive process was killed and nothing respawns.
+          yield* TestClock.adjust(Duration.seconds(30));
+          assert.equal(yield* Queue.size(starts), 0);
+        }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+      }),
+  );
+
+  it.effect("keeps restarting without a prompt once the backend has been ready", () =>
     Effect.gen(function* () {
       const starts = yield* Queue.unbounded<number>();
+      const exitFirstRun = yield* Deferred.make<void>();
       let startCount = 0;
+      let requestCount = 0;
 
       const spawnerLayer = Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             startCount += 1;
+            yield* Queue.offer(starts, startCount);
+            if (startCount === 1) {
+              return makeProcess({
+                exitCode: Deferred.await(exitFirstRun).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }
+            const scope = yield* Scope.Scope;
+            const closed = yield* Deferred.make<void>();
+            yield* Scope.addFinalizer(scope, Deferred.succeed(closed, void 0).pipe(Effect.asVoid));
             return makeProcess({
-              exitCode: Queue.offer(starts, startCount).pipe(
-                Effect.as(ChildProcessSpawner.ExitCode(1)),
-              ),
+              exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
             });
           }),
         ),
       );
 
+      // First run answers healthy; every later run never answers, which after
+      // readiness must stay a logged warning, not a kill or a prompt.
       const managerLayer = makeManagerLayer({
         spawnerLayer,
-        httpClientLayer: httpClientLayer(() => Effect.never),
+        httpClientLayer: httpClientLayer((request) =>
+          Effect.suspend(() => {
+            requestCount += 1;
+            return requestCount === 1
+              ? Effect.succeed(responseForRequest(request, 200))
+              : Effect.never;
+          }),
+        ),
       });
 
       yield* Effect.gen(function* () {
         const manager = yield* DesktopBackendManager.DesktopBackendManager;
         yield* manager.start;
-
         assert.equal(yield* Queue.take(starts), 1);
 
-        yield* TestClock.adjust(Duration.millis(499));
-        assert.equal(yield* Queue.size(starts), 0);
-        yield* TestClock.adjust(Duration.millis(1));
+        // Wait for readiness, then crash the first run.
+        yield* Effect.gen(function* () {
+          while (!(yield* manager.snapshot).ready) {
+            yield* Effect.yieldNow;
+          }
+        });
+        yield* Deferred.succeed(exitFirstRun, void 0);
+
+        yield* TestClock.adjust(Duration.millis(500));
         assert.equal(yield* Queue.take(starts), 2);
 
-        yield* TestClock.adjust(Duration.millis(999));
-        assert.equal(yield* Queue.size(starts), 0);
-        yield* TestClock.adjust(Duration.millis(1));
-        assert.equal(yield* Queue.take(starts), 3);
+        // The second run never becomes ready; the 60s readiness timeout must
+        // leave it running instead of surfacing a startup failure.
+        yield* TestClock.adjust(Duration.minutes(2));
+        const snapshot = yield* manager.snapshot;
+        assert.equal(Option.isSome(snapshot.activePid), true);
       }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
     }),
   );

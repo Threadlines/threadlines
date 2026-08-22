@@ -117,6 +117,7 @@ function screenCaptureLayer(input: {
 }) {
   const shellLayer = Layer.succeed(ElectronShell.ElectronShell, {
     openExternal: input.openExternal ?? (() => Effect.succeed(true)),
+    openPath: () => Effect.succeed(true),
     openScreenClip: input.openScreenClip ?? (() => Effect.succeed(true)),
     copyText: () => Effect.void,
   } satisfies ElectronShell.ElectronShellShape);
