@@ -374,10 +374,12 @@ function inventoryHasLoadedMcpServers(inventory: ProviderExtensionsInventoryResu
   );
 }
 
+/**
+ * Whether the full app directory has been fetched. The connected apps come from a local snapshot
+ * on every load, so their presence says nothing about the catalog.
+ */
 function inventoryHasLoadedApps(inventory: ProviderExtensionsInventoryResult): boolean {
-  return inventory.providers.some(
-    (provider) => provider.appsStatus === "ready" || provider.apps.length > 0,
-  );
+  return inventory.providers.some((provider) => provider.appsCatalogStatus === "ready");
 }
 
 function extensionKindLabel(kind: ExtensionItemKind): string {
@@ -415,52 +417,48 @@ function formatBoolean(value: boolean | undefined): string | undefined {
   return value ? "Yes" : "No";
 }
 
-function SectionTabButton({
+/**
+ * The page's primary structure. Underline tabs rather than chips: chips sit next to the filter
+ * chips and read as one more filter, which is exactly what these are not.
+ */
+function PageTabButton({
   label,
-  value,
-  totalValue,
-  isTruncated,
-  isDeferred,
+  count,
   active,
-  icon,
   panelId,
   onClick,
 }: {
   label: string;
-  value: number;
-  totalValue: number;
-  isTruncated?: boolean | undefined;
-  /** The section has not been fetched yet, so 0 would be a lie; show a placeholder instead. */
-  isDeferred?: boolean | undefined;
+  count: number;
   active: boolean;
-  icon: ReactNode;
   panelId: string;
   onClick: () => void;
 }) {
-  const total = formatSectionTotal(totalValue, isTruncated);
-  const countLabel = isDeferred ? "–" : value === totalValue ? total : `${value}/${total}`;
-
   return (
-    <Button
-      size="xs"
-      variant={active ? "outline" : "ghost"}
-      className={cn(
-        "h-7 justify-start rounded-sm px-2 text-[11px]",
-        active
-          ? "border-primary/35 bg-accent/70 text-foreground shadow-none"
-          : "text-muted-foreground hover:text-foreground",
-      )}
+    <button
+      type="button"
       role="tab"
       aria-selected={active}
       aria-controls={panelId}
-      data-pressed={active ? "" : undefined}
+      // The -mb-px drops the active underline onto the row's hairline instead of above it.
+      className={cn(
+        "-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[15px] font-medium transition-colors focus-ring",
+        active
+          ? "border-foreground text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground",
+      )}
       onClick={onClick}
     >
-      {icon}
-      <span>{label}</span>
-      <span className="ml-1 font-mono tabular-nums text-foreground/80">{countLabel}</span>
-    </Button>
+      {label}
+      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count}</span>
+    </button>
   );
+}
+
+/** The provider's own mark, for rows and headers that belong to exactly one provider. */
+function ProviderNameGlyph({ driver }: { driver: string }) {
+  const Glyph = providerIconForDriverLabel(driver);
+  return Glyph ? <Glyph className="size-3 shrink-0 text-muted-foreground/70" /> : null;
 }
 
 function EmptyList({ label }: { label: string }) {
@@ -883,7 +881,8 @@ function ExtensionItemBadges({
       ) : null}
       {extensionItemInstalled(item) ? (
         <Badge size="sm" variant="outline">
-          Installed
+          {/* Nothing is installed for an app; it is a connection to a ChatGPT account. */}
+          {item.kind === "app" ? "Connected" : "Installed"}
         </Badge>
       ) : null}
       {extensionItemIsOfficial(item) ? (
@@ -2166,7 +2165,7 @@ function ExtensionDetailDialog({
                     <DetailRow label="Display" value={item.app.displayName} />
                     <DetailRow label="Description" value={item.app.description} />
                     <DetailRow label="Enabled" value={formatBoolean(item.app.enabled)} />
-                    <DetailRow label="Accessible" value={formatBoolean(item.app.accessible)} />
+                    <DetailRow label="Connected" value={formatBoolean(item.app.accessible)} />
                   </>
                 ) : null}
               </dl>
@@ -2952,6 +2951,17 @@ function ExtensionItemGlyph({
     fallback
   );
 
+  // Apps publish a remote logo and nothing else, so they take the same path plugin artwork does.
+  if (item.kind === "app") {
+    return (
+      <PluginIcon
+        environmentId={environmentId}
+        iconUrl={item.app.iconUrl}
+        fallback={wrappedFallback}
+        sizeClassName={sizeClassName}
+      />
+    );
+  }
   if (item.kind !== "plugin") return wrappedFallback;
   return (
     <PluginIcon
@@ -3184,8 +3194,9 @@ function ConnectionsTable({
               </span>
             </span>
             <span className="flex min-w-0 flex-col gap-0.5">
-              <span className="truncate text-xs text-foreground/90">
-                {providerTitle(item.provider)}
+              <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
+                <ProviderNameGlyph driver={String(item.provider.driver)} />
+                <span className="truncate">{providerTitle(item.provider)}</span>
               </span>
               <span className="flex min-w-0 items-center gap-1.5">
                 {item.server.transport ? (
@@ -3270,7 +3281,8 @@ function MarketplacesBlock({
   return (
     <section className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+        <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70">
+          <ProviderNameGlyph driver={String(provider.driver)} />
           {providerTitle(provider)}
         </h3>
         <div className="flex gap-1">
@@ -3676,7 +3688,12 @@ function ExtensionBrowserDialog({
                     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
                   }}
                 >
-                  {isCurated && option.value === "all" ? "Featured" : option.label}
+                  {isCurated && option.value === "all"
+                    ? "Featured"
+                    : // Apps are account connections, so "Installed" would be the wrong word.
+                      section?.key === "apps" && option.value === "installed"
+                      ? "Connected"
+                      : option.label}
                   <span className="font-mono tabular-nums text-foreground/80">
                     {isCurated && option.value === "all"
                       ? searchedItems.length
@@ -3834,6 +3851,13 @@ function ExtensionBrowserDialog({
                     Load {nextVisibleCount} more
                   </button>
                 ) : null}
+              </div>
+            ) : section.isLoading ? (
+              // Opening Browse is what starts a deferred catalog fetch, so the first paint here is
+              // a load in progress rather than an empty result.
+              <div className="flex items-center gap-2 px-6 py-5 text-xs text-muted-foreground">
+                <LoaderIcon className="size-3.5 animate-spin" />
+                {`Loading ${section.title.toLowerCase()}`}
               </div>
             ) : (
               <div className="px-6 py-5">
@@ -4708,7 +4732,6 @@ export function ExtensionsSettingsPanel() {
       ),
     [allSkillItems, deferredPageQuery],
   );
-  const matchingSkillCount = skillGroups.reduce((total, group) => total + group.items.length, 0);
   const skillCreateProviders = useMemo(
     () =>
       providerScopedInventory.filter(
@@ -4755,23 +4778,30 @@ export function ExtensionsSettingsPanel() {
       ),
     [codexProviders],
   );
-  const appsDeferredProvider = codexProviders.find(
-    (provider) => provider.appsStatus === "deferred" || provider.appsStatus === "error",
+  const appsCatalogProvider = codexProviders.find(
+    (provider) =>
+      provider.appsCatalogStatus === "deferred" || provider.appsCatalogStatus === "error",
+  );
+  // The catalog is the only part still worth a round-trip; the connected list is already here.
+  const appsCatalogPending = codexProviders.some(
+    (provider) => provider.appsCatalogStatus === "deferred",
   );
   const appsSection = useMemo((): ExtensionSectionConfig => {
-    // Codex answers app/list with the whole ChatGPT app directory; only accessible apps are
-    // actually connected to the account. The section shows those, the catalog lives behind Browse.
+    // The connected apps come from the local snapshot on every load. Only the full ChatGPT
+    // directory behind Browse costs a backend round-trip.
     const connected = allAppItems.filter(extensionItemInstalled);
     const catalogCount = allAppItems.length - connected.length;
     const truncated = codexProviders.some((provider) => provider.appsTruncated);
     const failed = codexProviders.some((provider) => provider.appsStatus === "error");
-    const deferred = codexProviders.every((provider) => provider.appsStatus === "deferred");
     return {
       key: "apps",
       title: "Apps",
       label: "Apps",
-      browseLabel:
-        catalogCount > 0 ? `Browse ${catalogCount}${truncated ? "+" : ""} more` : "Browse all apps",
+      browseLabel: appsCatalogPending
+        ? "Browse all apps"
+        : catalogCount > 0
+          ? `Browse ${catalogCount}${truncated ? "+" : ""} more`
+          : "Browse all apps",
       icon: <BotIcon className="size-3.5" />,
       items: sortExtensionItems(filterExtensionItems(connected, deferredPageQuery), "recommended"),
       browseItems: sortExtensionItems(
@@ -4779,26 +4809,32 @@ export function ExtensionsSettingsPanel() {
         "recommended",
       ),
       totalCount: connected.length,
-      isDeferred: deferred,
-      emptyLabel: deferred
-        ? "Apps not loaded."
-        : failed
-          ? "Apps failed to load."
-          : "No connected apps.",
+      emptyLabel: failed ? "Apps failed to load." : "No connected apps.",
       statusMessage: codexProviders.find((provider) => provider.appsMessage)?.appsMessage,
-      loadLabel: deferred ? "Load apps" : failed ? "Retry apps" : undefined,
+      loadLabel: failed ? "Retry apps" : undefined,
       isLoading: appsLoadingProviderId !== null,
-      ...(appsDeferredProvider ? { onLoad: () => void loadApps(appsDeferredProvider) } : {}),
+      ...(appsCatalogProvider ? { onLoad: () => void loadApps(appsCatalogProvider) } : {}),
     };
   }, [
     allAppItems,
-    appsDeferredProvider,
+    appsCatalogPending,
+    appsCatalogProvider,
     appsLoadingProviderId,
     codexProviders,
     deferredPageQuery,
     loadApps,
   ]);
   const [isBrowsingApps, setIsBrowsingApps] = useState(false);
+  // Browse is the moment the catalog is actually wanted, so opening it starts the fetch and the
+  // dialog shows its own loading state rather than an empty list behind a dead button.
+  const browseApps = useCallback(() => {
+    setIsBrowsingApps(true);
+    if (appsCatalogPending && appsCatalogProvider) void loadApps(appsCatalogProvider);
+  }, [appsCatalogPending, appsCatalogProvider, loadApps]);
+  // Apps are Codex-only, so the section header carries the provider's own glyph.
+  const CodexSectionGlyph = codexProviders[0]
+    ? providerIconForDriverLabel(String(codexProviders[0].driver))
+    : null;
 
   const searchedInstalledPlugins = useMemo(
     () =>
@@ -4882,106 +4918,94 @@ export function ExtensionsSettingsPanel() {
             Loading plugins and connections
           </span>
         ) : null}
-        <SettingsSection
-          title="Plugins"
-          icon={<PlugIcon className="size-3.5" />}
-          headerAction={
-            isLoading ? (
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <LoaderIcon className="size-3 animate-spin" />
-                Loading
-              </span>
-            ) : null
-          }
-        >
-          <div className="space-y-4 px-4 py-4 sm:px-5">
-            <p className="text-xs text-muted-foreground">
-              {scopeCwd === null
-                ? "Plugins and connections available to Codex and Claude on this machine."
-                : "Plugins and connections available to Codex and Claude in this project."}
-              {inventory?.generatedAt
-                ? ` Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
-                    lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
-                  }.`
-                : ""}
-            </p>
-            {scope !== null && !scopeIsReachable ? (
-              <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
-            ) : null}
-            <Input
-              nativeInput
-              value={pageQuery}
-              placeholder="Search plugins and connections"
-              aria-label="Search plugins and connections"
-              onChange={(event) => setPageQuery(event.currentTarget.value)}
-            />
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Button
-                size="xs"
-                variant={providerInstanceId ? "outline" : "default"}
-                onClick={() => setProviderFilter(null)}
-              >
-                All providers
-              </Button>
-              {providerOptions.map((provider) => {
-                const ProviderGlyph = providerIconForDriverLabel(provider.driver);
-                return (
-                  <Button
-                    key={provider.value}
-                    size="xs"
-                    variant={providerInstanceId === provider.value ? "default" : "outline"}
-                    onClick={() => {
-                      if (!scopeEnvironmentId) return;
-                      setProviderFilter({
-                        environmentId: scopeEnvironmentId,
-                        instanceId: provider.value,
-                      });
-                    }}
-                  >
-                    {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
-                    {provider.label}
-                  </Button>
-                );
-              })}
-              {scopeGroups.length > 0 ? (
-                <ExtensionScopePicker
-                  groups={scopeGroups}
-                  scope={scope}
-                  onScopeChange={(next) => {
-                    setRememberedScope(next);
-                    setShowAdvancedContext(false);
-                    clearInventory({ loading: true });
-                  }}
-                />
-              ) : null}
-            </div>
-            <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Plugins and skills">
-              <SectionTabButton
+        <div className="space-y-4">
+          <div className="flex items-end justify-between gap-3 border-b border-border">
+            <div className="flex items-center gap-5" role="tablist" aria-label="Plugins and skills">
+              <PageTabButton
                 label="Plugins"
-                value={searchedInstalledPlugins.length}
-                totalValue={allPluginItems.filter(extensionItemInstalled).length}
+                count={allPluginItems.filter(extensionItemInstalled).length}
                 active={tab === "plugins"}
-                icon={<PlugIcon className="size-3.5" />}
                 panelId="extensions-tab-plugins"
                 onClick={() => selectTab("plugins")}
               />
-              <SectionTabButton
+              <PageTabButton
                 label="Skills"
-                value={matchingSkillCount}
-                totalValue={allSkillItems.length}
+                count={allSkillItems.length}
                 active={tab === "skills"}
-                icon={<FileTextIcon className="size-3.5" />}
                 panelId="extensions-tab-skills"
                 onClick={() => selectTab("skills")}
               />
             </div>
+            <div className="pb-2 text-[11px] text-muted-foreground/70">
+              {isLoading ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <LoaderIcon className="size-3 animate-spin" />
+                  Loading
+                </span>
+              ) : inventory?.generatedAt ? (
+                `Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
+                  lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
+                }`
+              ) : null}
+            </div>
           </div>
-        </SettingsSection>
+          {scope !== null && !scopeIsReachable ? (
+            <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
+          ) : null}
+          <Input
+            nativeInput
+            value={pageQuery}
+            placeholder={tab === "skills" ? "Search skills" : "Search plugins and connections"}
+            aria-label={tab === "skills" ? "Search skills" : "Search plugins and connections"}
+            onChange={(event) => setPageQuery(event.currentTarget.value)}
+          />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="xs"
+              variant={providerInstanceId ? "outline" : "default"}
+              onClick={() => setProviderFilter(null)}
+            >
+              All providers
+            </Button>
+            {providerOptions.map((provider) => {
+              const ProviderGlyph = providerIconForDriverLabel(provider.driver);
+              return (
+                <Button
+                  key={provider.value}
+                  size="xs"
+                  variant={providerInstanceId === provider.value ? "default" : "outline"}
+                  onClick={() => {
+                    if (!scopeEnvironmentId) return;
+                    setProviderFilter({
+                      environmentId: scopeEnvironmentId,
+                      instanceId: provider.value,
+                    });
+                  }}
+                >
+                  {ProviderGlyph ? <ProviderGlyph className="size-3 shrink-0" /> : null}
+                  {provider.label}
+                </Button>
+              );
+            })}
+            {scopeGroups.length > 0 ? (
+              <ExtensionScopePicker
+                groups={scopeGroups}
+                scope={scope}
+                onScopeChange={(next) => {
+                  setRememberedScope(next);
+                  setShowAdvancedContext(false);
+                  clearInventory({ loading: true });
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
 
         {tab === "plugins" ? (
           <>
             <SettingsSection
               title="Installed plugins"
+              description="Plugin packages installed on this machine for Codex and Claude. They can bundle skills, commands, and connections."
               icon={<PlugIcon className="size-3.5" />}
               headerAction={
                 <Button
@@ -5014,7 +5038,11 @@ export function ExtensionsSettingsPanel() {
             </SettingsSection>
 
             {codexProviders.length > 0 ? (
-              <SettingsSection title="Apps" icon={<BotIcon className="size-3.5" />}>
+              <SettingsSection
+                title="Apps"
+                description="Apps connected to your ChatGPT account. They run on OpenAI's servers and only work with Codex."
+                icon={CodexSectionGlyph ? <CodexSectionGlyph className="size-3.5" /> : undefined}
+              >
                 <div className="px-4 py-3.5 sm:px-5">
                   <ExtensionPreviewSection
                     environmentId={selectedEnvironmentId}
@@ -5031,8 +5059,8 @@ export function ExtensionsSettingsPanel() {
                     onSelect={setSelectedItem}
                     panelId="extensions-apps"
                     browseLabel={appsSection.browseLabel}
-                    browseAvailable={(appsSection.browseItems ?? appsSection.items).length > 0}
-                    onBrowse={() => setIsBrowsingApps(true)}
+                    browseAvailable
+                    onBrowse={browseApps}
                   />
                 </div>
               </SettingsSection>
@@ -5041,6 +5069,7 @@ export function ExtensionsSettingsPanel() {
         ) : (
           <SettingsSection
             title="Skills"
+            description="Instruction files that teach an agent one kind of task. Stored as folders on this machine."
             icon={<FileTextIcon className="size-3.5" />}
             headerAction={
               <div className="flex items-center gap-2">

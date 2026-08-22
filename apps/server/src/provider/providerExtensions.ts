@@ -117,6 +117,8 @@ const CODEX_MCP_ORIGIN_TIMEOUT = Duration.seconds(3);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
 const CODEX_EXTENSION_INVENTORY_PAGE_LIMIT = 100;
+/** `app/read` accepts at most this many ids per call. */
+const CODEX_APP_READ_MAX_IDS = 100;
 const MAX_CODEX_MCP_ORIGIN_PLUGINS = 40;
 const CODEX_MCP_OAUTH_DEFAULT_TIMEOUT_SECONDS = 300;
 const CODEX_MCP_OAUTH_MAX_TIMEOUT_SECONDS = 900;
@@ -1004,12 +1006,18 @@ const readCodexMcpPluginOwners = Effect.fn("providerExtensions.readCodexMcpPlugi
   },
 );
 
+function compareAppsByName(left: ProviderExtensionApp, right: ProviderExtensionApp): number {
+  return left.name.localeCompare(right.name);
+}
+
 function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensionApp[] {
   return response.data
     .flatMap((app) => {
       const id = requiredText(app.id);
       const name = requiredText(app.name);
       if (!id || !name) return [];
+      const iconUrl = optionalText(app.logoUrl ?? null);
+      const iconUrlDark = optionalText(app.logoUrlDark ?? null);
       return [
         {
           id,
@@ -1017,10 +1025,99 @@ function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensi
           description: optionalText(app.description ?? app.appMetadata?.seoDescription ?? null),
           enabled: app.isEnabled,
           accessible: app.isAccessible,
+          ...(iconUrl ? { iconUrl } : {}),
+          ...(iconUrlDark ? { iconUrlDark } : {}),
         },
       ];
     })
-    .toSorted((left, right) => left.name.localeCompare(right.name));
+    .toSorted(compareAppsByName);
+}
+
+/**
+ * `app/installed` reads a locally committed runtime snapshot, so it answers without a backend
+ * round-trip. It carries connectivity but only a best-effort name, which `app/read` then fills in.
+ */
+export function mapCodexInstalledApps(
+  response: CodexSchema.V2AppsInstalledResponse,
+): ProviderExtensionApp[] {
+  return response.apps
+    .flatMap((app) => {
+      const id = requiredText(app.id);
+      if (!id) return [];
+      return [
+        {
+          id,
+          name: optionalText(app.runtimeName ?? null) ?? id,
+          enabled: app.enabled,
+          // Being in the snapshot is what "connected" means; the directory says nothing about it.
+          accessible: true,
+        },
+      ];
+    })
+    .toSorted(compareAppsByName);
+}
+
+/** Canonical names, descriptions, and logos for apps already known to be installed. */
+export function mergeCodexAppMetadata(
+  apps: ReadonlyArray<ProviderExtensionApp>,
+  response: CodexSchema.V2AppsReadResponse,
+): ProviderExtensionApp[] {
+  const metadataById = new Map(
+    response.apps.flatMap((entry) => {
+      const id = requiredText(entry.id);
+      return id ? [[id, entry] as const] : [];
+    }),
+  );
+  return apps
+    .map((app) => {
+      const metadata = metadataById.get(app.id);
+      if (!metadata) return app;
+      const description = optionalText(metadata.description ?? null);
+      const iconUrl = optionalText(metadata.iconUrl ?? null);
+      const iconUrlDark = optionalText(metadata.iconUrlDark ?? null);
+      return {
+        ...app,
+        name: requiredText(metadata.name) ?? app.name,
+        ...(description ? { description } : {}),
+        ...(iconUrl ? { iconUrl } : {}),
+        ...(iconUrlDark ? { iconUrlDark } : {}),
+      };
+    })
+    .toSorted(compareAppsByName);
+}
+
+/**
+ * The connected snapshot and the full directory describe the same apps from different angles.
+ * Connectivity is only the snapshot's to state; everything descriptive takes whichever source
+ * actually has a value.
+ */
+export function mergeCodexAppSources(
+  installed: ReadonlyArray<ProviderExtensionApp>,
+  catalog: ReadonlyArray<ProviderExtensionApp>,
+): ProviderExtensionApp[] {
+  const merged = new Map<string, ProviderExtensionApp>();
+  for (const app of catalog) merged.set(app.id, app);
+  for (const app of installed) {
+    const listed = merged.get(app.id);
+    if (!listed) {
+      merged.set(app.id, app);
+      continue;
+    }
+    // A snapshot name that fell back to the id carries no information, so the directory wins.
+    const name = app.name === app.id ? listed.name : app.name;
+    const description = app.description ?? listed.description;
+    const iconUrl = app.iconUrl ?? listed.iconUrl;
+    const iconUrlDark = app.iconUrlDark ?? listed.iconUrlDark;
+    merged.set(app.id, {
+      ...listed,
+      ...app,
+      name,
+      ...(description ? { description } : {}),
+      ...(iconUrl ? { iconUrl } : {}),
+      ...(iconUrlDark ? { iconUrlDark } : {}),
+    });
+  }
+  return [...merged.values()].toSorted(compareAppsByName);
 }
 
 /**
@@ -1379,6 +1476,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       | "mcpServersTruncated"
       | "apps"
       | "appsStatus"
+      | "appsCatalogStatus"
       | "appsMessage"
       | "appsTruncated"
       | "status"
@@ -1451,6 +1549,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const appListWithoutThreadParams = {
           limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
         };
+        const appInstalledParams: CodexSchema.V2AppsInstalledParams =
+          input.providerThreadId !== undefined ? { threadId: input.providerThreadId } : {};
         const emptyMcpServerResponse: CodexSchema.V2ListMcpServerStatusResponse = {
           data: [],
         };
@@ -1466,6 +1566,32 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
               collectCodexRequest("MCP servers"),
             )
           : Effect.succeed(Result.succeed(emptyMcpServerResponse));
+
+        // The connected set is a local snapshot read, so it runs on every inventory load and the
+        // Apps section can render immediately. The directory behind `app/list` stays deferred.
+        const installedAppsEffect = client.request("app/installed", appInstalledParams).pipe(
+          Effect.catch((cause) =>
+            input.providerThreadId !== undefined && isThreadNotFoundError(cause)
+              ? client.request("app/installed", {})
+              : Effect.fail(cause),
+          ),
+          Effect.flatMap((snapshot) => {
+            const base = mapCodexInstalledApps(snapshot);
+            if (base.length === 0) return Effect.succeed(base);
+            return client
+              .request("app/read", {
+                appIds: base.slice(0, CODEX_APP_READ_MAX_IDS).map((app) => app.id),
+                includeTools: false,
+              })
+              .pipe(
+                // Names and logos are a nicety. Losing them leaves the connected list intact,
+                // which beats reporting the whole section as failed.
+                Effect.map((metadata) => mergeCodexAppMetadata(base, metadata)),
+                Effect.catch(() => Effect.succeed(base)),
+              );
+          }),
+          collectCodexRequest("connected apps"),
+        );
 
         const appsEffect = fetchApps
           ? client.request("app/list", appListParams).pipe(
@@ -1537,8 +1663,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         ).pipe(Effect.forkScoped);
 
         // The requests are independent JSON-RPC calls; serializing them just delays whichever
-        // runs last and starts its timeout window late, so let all four go at once.
-        const [plugins, skills, mcpServerResponse, apps] = yield* Effect.all(
+        // runs last and starts its timeout window late, so let them all go at once.
+        const [plugins, skills, mcpServerResponse, apps, installedApps] = yield* Effect.all(
           [
             pluginsEffect,
             client.request("skills/list", { cwds: [input.cwd] }).pipe(
@@ -1547,8 +1673,9 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             ),
             mcpServersEffect,
             appsEffect,
+            installedAppsEffect,
           ],
-          { concurrency: 4 },
+          { concurrency: 5 },
         );
         const mcpPluginOwnersExit = mcpPluginOwnersFiber.pollUnsafe();
         const mcpPluginOwners =
@@ -1558,7 +1685,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const mcpServers = Result.isFailure(mcpServerResponse)
           ? Result.fail(mcpServerResponse.failure)
           : Result.succeed(mapCodexMcpServers(mcpServerResponse.success, mcpPluginOwners));
-        return { includeMcpServers, plugins, skills, mcpServers, apps };
+        return { includeMcpServers, plugins, skills, mcpServers, apps, installedApps };
       }),
     ).pipe(
       Effect.result,
@@ -1602,20 +1729,36 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     const mcpServersMessage = Result.isFailure(data.mcpServers)
       ? resultMessage(data.mcpServers)
       : undefined;
-    // Apps failures report through their own section like MCP servers do: the Apps tab shows the
-    // error and a retry, without flagging the whole provider as "loaded with issues". When a
+    // Apps failures report through their own section like MCP servers do: the Apps section shows
+    // the error and a retry, without flagging the whole provider as "loaded with issues". When a
     // refresh fails but an earlier read succeeded, the stale list beats an empty error state.
     const appsFailureMessage = Result.isFailure(data.apps) ? resultMessage(data.apps) : undefined;
     const staleAppsFallback =
       Result.isFailure(data.apps) && cachedApps !== undefined ? cachedApps.apps : undefined;
-    const apps = Result.isSuccess(data.apps) ? data.apps.success : (staleAppsFallback ?? []);
-    const appsLoaded = Result.isSuccess(data.apps) || staleAppsFallback !== undefined;
-    const appsStatus =
-      includeApps || freshCachedApps !== undefined ? (appsLoaded ? "ready" : "error") : "deferred";
+    const catalogApps = Result.isSuccess(data.apps) ? data.apps.success : (staleAppsFallback ?? []);
+    const catalogLoaded = Result.isSuccess(data.apps) || staleAppsFallback !== undefined;
+    const installedApps = Result.isSuccess(data.installedApps) ? data.installedApps.success : [];
+    const apps = mergeCodexAppSources(installedApps, catalogApps);
+    const installedAppsFailureMessage = Result.isFailure(data.installedApps)
+      ? resultMessage(data.installedApps)
+      : undefined;
+    // The connected list is what the section renders, so its own read decides the section status.
+    const appsStatus = Result.isSuccess(data.installedApps) ? "ready" : "error";
+    const appsCatalogStatus =
+      includeApps || freshCachedApps !== undefined
+        ? catalogLoaded
+          ? "ready"
+          : "error"
+        : "deferred";
     const appsMessage =
-      appsFailureMessage !== undefined && staleAppsFallback !== undefined
-        ? `${appsFailureMessage} Showing the last loaded apps.`
-        : appsFailureMessage;
+      [
+        installedAppsFailureMessage,
+        appsFailureMessage !== undefined && staleAppsFallback !== undefined
+          ? `${appsFailureMessage} Showing the last loaded apps.`
+          : appsFailureMessage,
+      ]
+        .filter((message): message is string => Boolean(message))
+        .join(" ") || undefined;
 
     const plugins = Result.isSuccess(data.plugins) ? data.plugins.success.plugins : [];
     const marketplaces = Result.isSuccess(data.plugins) ? data.plugins.success.marketplaces : [];
@@ -1646,8 +1789,11 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         : {}),
       apps,
       appsStatus,
+      appsCatalogStatus,
       ...(appsMessage ? { appsMessage } : {}),
-      ...(apps.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT ? { appsTruncated: true } : {}),
+      ...(catalogApps.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
+        ? { appsTruncated: true }
+        : {}),
     };
   },
 );

@@ -254,6 +254,9 @@ export const ProviderExtensionApp = Schema.Struct({
   description: Schema.optional(TrimmedString),
   enabled: Schema.optional(Schema.Boolean),
   accessible: Schema.optional(Schema.Boolean),
+  /** Remote logo published by the provider. Rendered the same way plugin artwork is. */
+  iconUrl: Schema.optional(TrimmedNonEmptyString),
+  iconUrlDark: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderExtensionApp = typeof ProviderExtensionApp.Type;
 
@@ -272,10 +275,16 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   /** The provider returned exactly as many servers as we asked for, so the count is a floor. */
   mcpServersTruncated: Schema.optional(Schema.Boolean),
   apps: Schema.Array(ProviderExtensionApp),
+  /** Covers the connected apps, which are read from a local snapshot on every inventory load. */
   appsStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
   appsMessage: Schema.optional(TrimmedString),
   /** As above: the apps count is a page size, not a total. */
   appsTruncated: Schema.optional(Schema.Boolean),
+  /**
+   * Covers the full app directory, which costs a backend round-trip and is only fetched when the
+   * user opens Browse. `deferred` means the catalog is not in `apps` yet.
+   */
+  appsCatalogStatus: Schema.optional(ProviderExtensionInventorySectionStatus),
 });
 export type ProviderExtensionProviderInventory = typeof ProviderExtensionProviderInventory.Type;
 
