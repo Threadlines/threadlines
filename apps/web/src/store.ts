@@ -2370,6 +2370,34 @@ export function setThreadBranch(
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 
+/**
+ * Restores a checkout snapshot captured before an optimistic
+ * `setThreadBranch`, including the session that call clears when the cwd
+ * changes. Used to roll back a thread.meta.update dispatch that never
+ * reached the server; plain `setThreadBranch` cannot bring the session back.
+ */
+export function restoreThreadCheckout(
+  state: AppState,
+  threadRef: ScopedThreadRef,
+  snapshot: {
+    readonly branch: string | null;
+    readonly worktreePath: string | null;
+    readonly session: ThreadSession | null;
+  },
+): AppState {
+  const nextEnvironmentState = updateThreadState(
+    getStoredEnvironmentState(state, threadRef.environmentId),
+    threadRef.threadId,
+    (thread) => ({
+      ...thread,
+      branch: snapshot.branch,
+      worktreePath: snapshot.worktreePath,
+      session: snapshot.session,
+    }),
+  );
+  return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
+}
+
 interface AppStore extends AppState {
   setActiveEnvironmentId: (environmentId: EnvironmentId) => void;
   removeEnvironmentState: (environmentId: EnvironmentId) => void;
@@ -2389,6 +2417,14 @@ interface AppStore extends AppState {
     threadRef: ScopedThreadRef,
     branch: string | null,
     worktreePath: string | null,
+  ) => void;
+  restoreThreadCheckout: (
+    threadRef: ScopedThreadRef,
+    snapshot: {
+      readonly branch: string | null;
+      readonly worktreePath: string | null;
+      readonly session: ThreadSession | null;
+    },
   ) => void;
 }
 
@@ -2411,4 +2447,6 @@ export const useStore = create<AppStore>((set) => ({
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadRef, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),
+  restoreThreadCheckout: (threadRef, snapshot) =>
+    set((state) => restoreThreadCheckout(state, threadRef, snapshot)),
 }));

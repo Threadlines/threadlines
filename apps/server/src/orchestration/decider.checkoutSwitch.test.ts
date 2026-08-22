@@ -158,6 +158,19 @@ describe("decider checkout switch effectiveCwd", () => {
     expect(events[0]).toMatchObject({ type: "thread.meta-updated" });
   });
 
+  it("keeps effectiveCwd when a branch-only update carries the unchanged worktree path", async () => {
+    const events = await decide(
+      metaUpdateCommand({ worktreePath: worktreeA }),
+      makeReadModel({
+        session: makeSession({ status: "stopped", checkoutCwd: worktreeA }),
+        effectiveCwd: `${worktreeA}/packages/deep`,
+      }),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "thread.meta-updated" });
+  });
+
   it("leaves effectiveCwd alone for meta updates that do not move the checkout", async () => {
     const events = await decide(
       metaUpdateCommand({ title: "Renamed" }),

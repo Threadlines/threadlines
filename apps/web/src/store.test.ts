@@ -6,6 +6,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -23,12 +24,18 @@ import {
   selectThreadByRef,
   selectThreadExistsByRef,
   selectSidebarThreadsForProjectRef,
+  restoreThreadCheckout,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
   type AppState,
   type EnvironmentState,
 } from "./store";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
+import {
+  DEFAULT_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type Thread,
+  type ThreadSession,
+} from "./types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
@@ -456,6 +463,40 @@ describe("setThreadBranch", () => {
     expect(
       environmentStateOf(next, remoteEnvironmentId).threadShellById[sharedThreadId]?.worktreePath,
     ).toBe("/tmp/remote-worktree");
+  });
+
+  it("restoreThreadCheckout brings back the session an optimistic switch cleared", () => {
+    const session: ThreadSession = {
+      provider: ProviderDriverKind.make("codex"),
+      status: "running",
+      checkoutCwd: "/tmp/worktree-a",
+      createdAt: "2026-02-13T00:00:00.000Z",
+      updatedAt: "2026-02-13T00:00:00.000Z",
+    };
+    const thread = makeThread({
+      branch: "feature-a",
+      worktreePath: "/tmp/worktree-a",
+      session,
+    });
+    const state = makeState(thread);
+    const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
+
+    const afterOptimistic = setThreadBranch(state, threadRef, "main", null);
+    expect(
+      environmentStateOf(afterOptimistic, localEnvironmentId).threadSessionById[thread.id],
+    ).toBeNull();
+
+    const restored = restoreThreadCheckout(afterOptimistic, threadRef, {
+      branch: "feature-a",
+      worktreePath: "/tmp/worktree-a",
+      session,
+    });
+    const shell = environmentStateOf(restored, localEnvironmentId).threadShellById[thread.id];
+    expect(shell?.branch).toBe("feature-a");
+    expect(shell?.worktreePath).toBe("/tmp/worktree-a");
+    expect(environmentStateOf(restored, localEnvironmentId).threadSessionById[thread.id]).toEqual(
+      session,
+    );
   });
 });
 

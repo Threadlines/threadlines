@@ -1134,6 +1134,10 @@ export default function GitActionsControl({
   );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const setThreadBranch = useStore((store) => store.setThreadBranch);
+  const restoreThreadCheckout = useStore((store) => store.restoreThreadCheckout);
+  // Identifies the newest optimistic branch dispatch so a stale rejection
+  // cannot roll back state a later dispatch already replaced.
+  const branchDispatchIdRef = useRef(0);
   const queryClient = useQueryClient();
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
@@ -1182,7 +1186,13 @@ export default function GitActionsControl({
           );
           return;
         }
-        const previousBranch = activeServerThread.branch;
+        const snapshot = {
+          branch: activeServerThread.branch,
+          worktreePath,
+          session: activeServerThread.session ?? null,
+        };
+        branchDispatchIdRef.current += 1;
+        const dispatchId = branchDispatchIdRef.current;
         void api.orchestration
           .dispatchCommand({
             type: "thread.meta.update",
@@ -1193,8 +1203,11 @@ export default function GitActionsControl({
           })
           .catch(() => {
             // Roll the optimistic update back; a branch label that silently
-            // disagrees with the server is a lying UI.
-            setThreadBranch(activeThreadRef, previousBranch, worktreePath);
+            // disagrees with the server is a lying UI. A stale rejection
+            // never overwrites a newer dispatch's state.
+            if (branchDispatchIdRef.current === dispatchId) {
+              restoreThreadCheckout(activeThreadRef, snapshot);
+            }
             toastManager.add(
               stackedThreadToast({
                 type: "error",
@@ -1222,6 +1235,7 @@ export default function GitActionsControl({
       activeServerThread,
       activeThreadRef,
       draftId,
+      restoreThreadCheckout,
       setDraftThreadContext,
       setThreadBranch,
     ],

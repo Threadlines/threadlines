@@ -1817,6 +1817,10 @@ function SourceControlBranchMenu({
 }) {
   const queryClient = useQueryClient();
   const setThreadBranch = useStore((store) => store.setThreadBranch);
+  const restoreThreadCheckout = useStore((store) => store.restoreThreadCheckout);
+  // Identifies the newest optimistic checkout dispatch so a stale rejection
+  // cannot roll back state a later dispatch already replaced.
+  const checkoutDispatchIdRef = useRef(0);
   const activeThreadSession =
     useStore(useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]))
       ?.session ?? null;
@@ -1918,8 +1922,13 @@ function SourceControlBranchMenu({
         );
         return;
       }
-      const previousBranch = currentBranch;
-      const previousWorktreePath = target.worktreePath;
+      const snapshot = {
+        branch: currentBranch,
+        worktreePath: target.worktreePath,
+        session: activeThreadSession,
+      };
+      checkoutDispatchIdRef.current += 1;
+      const dispatchId = checkoutDispatchIdRef.current;
       void api.orchestration
         .dispatchCommand({
           type: "thread.meta.update",
@@ -1929,10 +1938,14 @@ function SourceControlBranchMenu({
           worktreePath,
         })
         .catch(() => {
-          // Roll the optimistic update back to what the panel showed before;
-          // a switch that silently stays put is this panel's worst failure
-          // mode, and one that lies about having happened is the second.
-          setThreadBranch(activeThreadRef, previousBranch, previousWorktreePath);
+          // Roll the optimistic update back to what the panel showed before —
+          // including the session the optimistic switch cleared. A switch
+          // that silently stays put is this panel's worst failure mode, and
+          // one that lies about having happened is the second. A stale
+          // rejection never overwrites a newer dispatch's state.
+          if (checkoutDispatchIdRef.current === dispatchId) {
+            restoreThreadCheckout(activeThreadRef, snapshot);
+          }
           toastManager.add(
             stackedThreadToast({
               type: "error",
@@ -1945,8 +1958,10 @@ function SourceControlBranchMenu({
     },
     [
       activeThreadRef,
+      activeThreadSession,
       currentBranch,
       onActiveBranchChange,
+      restoreThreadCheckout,
       setThreadBranch,
       target.environmentId,
       target.worktreePath,

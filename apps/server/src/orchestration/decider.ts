@@ -605,9 +605,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // session-scoped effectiveCwd must stop shadowing the new checkout.
       // Emitted as a real event rather than special-cased in the folds: the
       // in-memory projector, the SQLite pipeline, and the web store all
-      // already know what thread.effective-cwd-set means.
+      // already know what thread.effective-cwd-set means. Only an actual
+      // move clears — branch-only updates carry the unchanged worktree path
+      // and must not wipe a valid cwd-follow value.
+      const checkoutChanged =
+        worktreePath !== undefined &&
+        (worktreePath === null || thread.worktreePath === null
+          ? worktreePath !== thread.worktreePath
+          : !areFilesystemPathsEqual(worktreePath, thread.worktreePath));
       const sessionInactive = thread.session == null || thread.session.status === "stopped";
-      if (worktreePath === undefined || !sessionInactive || thread.effectiveCwd == null) {
+      if (!checkoutChanged || !sessionInactive || thread.effectiveCwd == null) {
         return metaUpdatedEvent;
       }
       return [
