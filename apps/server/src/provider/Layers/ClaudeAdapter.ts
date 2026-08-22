@@ -313,7 +313,9 @@ interface ClaudeTaskSnapshot {
   readonly description?: string;
   readonly status?: ClaudeTaskStatus;
   /** tool_use_id of the call that started the task (from task_started), so
-   *  every task.completed emitter can link back to the originating tool. */
+   *  every task.completed emitter can link back to the originating tool. First
+   *  writer wins: a resumed background agent reports its later runs under the
+   *  call that revived it, and the spawn is what owns the agent's row. */
   readonly toolUseId?: string;
   /** Subagent type of agent tasks (from task_started), replayed on progress
    *  events that omit it so consumers can keep classifying the task. */
@@ -382,6 +384,12 @@ interface ClaudeSessionContext {
   /** Structured final results already applied. Kept separately so a richer
    *  structured result can supersede an earlier legacy notification once. */
   readonly structuredCompletedCollabAgentItemIds: Set<string>;
+  /** Background agents the model can revive with `SendMessage`, keyed by the
+   *  agent id the launch result handed it (a separate SDK identity from the
+   *  task id). The value names the spawn tool item that owns the agent's row,
+   *  so a resume re-opens that row instead of inventing one. Kept for the
+   *  session lifetime, like the launch records it points at. */
+  readonly backgroundAgentSpawnsByAgentId: Map<string, string>;
   /** Nested Agent spawn ids (tool_use blocks issued inside a subagent's own
    *  conversation) mapped to the top-level collab tool item that owns the
    *  popover. Depth-2+ subagent messages carry the nested spawn id as
@@ -2092,6 +2100,10 @@ const SUBAGENT_SPAWN_ANCESTRY_MAX_ENTRIES = 1_024;
  *  long-running agent fleet can issue thousands of tools; the map only has to
  *  outlive the window between a tool_use and its task_started. */
 const SUBAGENT_TOOL_USE_OWNERS_MAX_ENTRIES = 8_192;
+
+/** The tool the model uses to resume a background agent, addressing it by the
+ *  agent id its launch result reported. */
+const SEND_MESSAGE_TOOL_NAME = "SendMessage";
 
 /** Role recorded on a promoted `codex exec` row. The agents panel renders the
  *  role as the row's name, so this is what the row reads as. */
@@ -4026,7 +4038,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.tasks.set(task.taskId, {
       ...previous,
       ...(task.description ? { description: task.description } : {}),
-      ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
+      ...(task.toolUseId && !previous?.toolUseId ? { toolUseId: task.toolUseId } : {}),
       ...(task.subagentType ? { subagentType: task.subagentType } : {}),
       ...(task.taskType ? { taskType: task.taskType } : {}),
       ...(task.ownerAgentToolUseId ? { ownerAgentToolUseId: task.ownerAgentToolUseId } : {}),
@@ -4351,8 +4363,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       if (!notification.toolUseId) {
         return;
       }
-      const tool = context.collabAgentToolsByItemId.get(notification.toolUseId);
       const knownTask = context.tasks.get(notification.taskId);
+      // A resumed agent notifies under the call that revived it; its row and
+      // its result belong to the spawn item, which the task snapshot still
+      // names.
+      const spawnToolUseId = knownTask?.toolUseId ?? notification.toolUseId;
+      const tool =
+        context.collabAgentToolsByItemId.get(notification.toolUseId) ??
+        context.collabAgentToolsByItemId.get(spawnToolUseId);
       // Background commands notify through the same channel; only agent tasks
       // get their notification replayed as a collab-agent completion.
       const isAgentTask =
@@ -4360,11 +4378,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         isClaudeAgentTaskType(knownTask?.taskType) ||
         knownTask?.subagentType !== undefined ||
         isAgentTaskNotificationSummary(notification.summary);
-      if (!isAgentTask || context.completedCollabAgentItemIds.has(notification.toolUseId)) {
+      const itemId = tool?.itemId ?? spawnToolUseId;
+      if (!isAgentTask || context.completedCollabAgentItemIds.has(itemId)) {
         return;
       }
-      context.completedCollabAgentItemIds.add(notification.toolUseId);
-      const itemId = tool?.itemId ?? notification.toolUseId;
+      context.completedCollabAgentItemIds.add(itemId);
       const detail = tool?.detail ?? notification.summary;
 
       const stamp = yield* makeEventStamp();
@@ -4479,6 +4497,55 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * Re-opens a background agent the model revived by sending it a message.
+   *
+   * Everything about the agent's previous run is settled by the time the
+   * `SendMessage` goes out: its roster row reads completed, its task is
+   * terminal, and both the result replay and the live-text forwarder stop at
+   * item ids they have already finished. Clearing that bookkeeping lets the run
+   * the model just started report as its own — the SDK repeats `task_started`
+   * under the same task id, which settles the row again when it ends.
+   *
+   * Does nothing when the target is not a background agent this session
+   * launched. A teammate name, a cross-session address or a cloud task must
+   * never invent a row for an agent this thread cannot show.
+   */
+  const reviveResumedSubagent = Effect.fn("reviveResumedSubagent")(function* (
+    context: ClaudeSessionContext,
+    agentId: string,
+  ) {
+    const itemId = context.backgroundAgentSpawnsByAgentId.get(agentId);
+    if (!itemId) {
+      return;
+    }
+    context.completedCollabAgentItemIds.delete(itemId);
+    context.structuredCompletedCollabAgentItemIds.delete(itemId);
+
+    const settled = Array.from(context.tasks.entries()).find(
+      ([, task]) =>
+        task.toolUseId === itemId && completedTaskStatusFromClaudeStatus(task.status) !== undefined,
+    );
+    if (settled) {
+      const [taskId, task] = settled;
+      context.tasks.set(taskId, { ...task, status: "running" });
+      // The start edge the SDK repeats for the new run is what pairs with its
+      // completion, so the pending background count rises before it falls.
+      context.startedTaskIds.delete(taskId);
+    }
+
+    const tool = context.collabAgentToolsByItemId.get(itemId);
+    const role = nonEmptyString(tool?.input.subagent_type);
+    const objective = nonEmptyString(tool?.input.description);
+    yield* emitSubagentMetadata(context, {
+      callId: itemId,
+      agentThreadId: itemId,
+      status: "running",
+      ...(role ? { agentRole: role } : {}),
+      ...(objective ? { objective } : {}),
+    });
+  });
+
   const handleUserMessage = Effect.fn("handleUserMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -4497,6 +4564,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // tool_result when this field is present; do not guess if that changes.
     const structuredAgentResult =
       toolResults.length === 1 ? structuredAgentToolResultFromUserMessage(message) : undefined;
+    // A background launch is the only place the SDK states the agent id the
+    // model addresses later with `SendMessage`. Remember which spawn owns it.
+    const launchedToolResult = toolResults[0];
+    if (structuredAgentResult?.status === "async_launched" && launchedToolResult) {
+      context.backgroundAgentSpawnsByAgentId.set(
+        structuredAgentResult.agentId,
+        launchedToolResult.toolUseId,
+      );
+    }
     for (const toolResult of toolResults) {
       const toolEntry = Array.from(context.inFlightTools.entries()).find(
         ([, tool]) => tool.itemId === toolResult.toolUseId,
@@ -4755,7 +4831,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           name?: unknown;
           input?: unknown;
         };
-        if (toolUse.type !== "tool_use" || toolUse.name !== "ExitPlanMode") {
+        if (toolUse.type !== "tool_use") {
+          continue;
+        }
+        // Resuming a background agent is a plain tool call, not a spawn: the
+        // agent it addresses already has a row, which its previous run settled.
+        if (toolUse.name === SEND_MESSAGE_TOOL_NAME) {
+          const target = nonEmptyString(
+            (toolUse.input as { readonly to?: unknown } | undefined)?.to,
+          );
+          if (target) {
+            yield* reviveResumedSubagent(context, target);
+          }
+          continue;
+        }
+        if (toolUse.name !== "ExitPlanMode") {
           continue;
         }
         const planMarkdown = extractExitPlanModePlan(toolUse.input);
@@ -5066,7 +5156,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
           return;
         }
-        const toolUseId = nonEmptyString(message.tool_use_id) ?? previous?.toolUseId;
+        const toolUseId = previous?.toolUseId ?? nonEmptyString(message.tool_use_id);
         const subagentType = nonEmptyString(message.subagent_type) ?? previous?.subagentType;
         const ownerAgentToolUseId =
           (toolUseId ? context.subagentToolUseOwners.get(toolUseId) : undefined) ??
@@ -5155,7 +5245,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
           return;
         }
-        const toolUseId = nonEmptyString(message.tool_use_id) ?? previous?.toolUseId;
+        const toolUseId = previous?.toolUseId ?? nonEmptyString(message.tool_use_id);
         yield* emitTaskCompletedOnce(
           context,
           {
@@ -6484,6 +6574,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         collabAgentToolsByItemId: new Map(),
         completedCollabAgentItemIds: new Set(),
         structuredCompletedCollabAgentItemIds: new Set(),
+        backgroundAgentSpawnsByAgentId: new Map(),
         subagentSpawnAncestry: new Map(),
         subagentToolUseOwners: new Map(),
         fileChangeStatsByToolUseId,

@@ -4423,6 +4423,194 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("re-opens a background agent the model resumes with SendMessage", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate in the background",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "stream-resumed-agent-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-resumed-agent",
+            name: "Agent",
+            input: {
+              description: "Build worktree cleanup",
+              prompt: "Build it and report back.",
+              subagent_type: "claude",
+              run_in_background: true,
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "user-resumed-agent-launch",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-resumed-agent",
+              content: "Async agent launched successfully.",
+            },
+          ],
+        },
+        tool_use_result: {
+          status: "async_launched",
+          isAsync: true,
+          agentId: "agent-resumed-identity",
+          description: "Build worktree cleanup",
+          prompt: "Build it and report back.",
+          outputFile: "/tmp/tasks/agent-resumed-identity.output",
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-resumed-agent",
+        tool_use_id: "tool-resumed-agent",
+        description: "Build worktree cleanup",
+        subagent_type: "claude",
+        task_type: "local_agent",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "resumed-agent-task-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-resumed-agent",
+        tool_use_id: "tool-resumed-agent",
+        status: "completed",
+        summary: "First pass done.",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "resumed-agent-first-notification",
+      } as unknown as SDKMessage);
+
+      // The model sends the settled agent more work. Its later runs report
+      // under the resuming call, not the spawn.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "assistant-resumed-agent-send",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg-resumed-agent-send",
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-resume-call",
+              name: "SendMessage",
+              input: { to: "agent-resumed-identity", summary: "Rework the dialog" },
+            },
+            {
+              type: "tool_use",
+              id: "tool-resume-unknown",
+              name: "SendMessage",
+              input: { to: "someone-else", summary: "Not an agent of this thread" },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-resumed-agent",
+        tool_use_id: "tool-resume-call",
+        description: "Build worktree cleanup",
+        subagent_type: "claude",
+        task_type: "local_agent",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "resumed-agent-second-task-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-resumed-agent",
+        tool_use_id: "tool-resume-call",
+        status: "completed",
+        summary: "Rework shipped.",
+        session_id: "sdk-session-resumed-agent",
+        uuid: "resumed-agent-second-notification",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-resumed-agent",
+        uuid: "result-resumed-agent",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+      // Exactly one agent is revived, keyed by the spawn that owns its row.
+      const revivals = runtimeEvents.filter((event) => event.type === "subagent.metadata.updated");
+      assert.equal(revivals.length, 1);
+      const revival = revivals[0];
+      if (revival?.type === "subagent.metadata.updated") {
+        assert.equal(revival.payload.callId, "tool-resumed-agent");
+        assert.equal(revival.payload.agentThreadId, "tool-resumed-agent");
+        assert.equal(revival.payload.status, "running");
+        assert.equal(revival.payload.agentRole, "claude");
+      }
+
+      // The second run is a run of its own: it starts again and settles again.
+      const starts = runtimeEvents.filter(
+        (event) => event.type === "task.started" && event.payload.taskId === "task-resumed-agent",
+      );
+      assert.equal(starts.length, 2);
+      const completions = runtimeEvents.filter(
+        (event) => event.type === "task.completed" && event.payload.taskId === "task-resumed-agent",
+      );
+      assert.equal(completions.length, 2);
+      if (completions[1]?.type === "task.completed") {
+        assert.equal(completions[1].payload.summary, "Rework shipped.");
+        // The spawn still owns the agent's row, so the completion links there
+        // rather than to the call that resumed it.
+        assert.equal(completions[1].payload.toolUseId, "tool-resumed-agent");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards authoritative background task snapshots without inferring edges", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
