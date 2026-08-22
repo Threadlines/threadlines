@@ -548,8 +548,13 @@ export function selectTurnAgents(input: {
     const turnIdentities = new Set(byTurn.map(subagentIdentity));
     return [
       ...byTurn,
+      // The spawn fallback only names agents no turn claims. An agent with a
+      // turn attribution is already summarized by the group that owns that
+      // turn's tracker; re-selecting it here would render a second "Agent
+      // working" tracker under the turnless tail group its background stream
+      // creates below the settled response.
       ...selectSubagentsForSpawnIds(subagents, spawnCallIds).filter(
-        (item) => !turnIdentities.has(subagentIdentity(item)),
+        (item) => item.turnId === null && !turnIdentities.has(subagentIdentity(item)),
       ),
     ];
   };

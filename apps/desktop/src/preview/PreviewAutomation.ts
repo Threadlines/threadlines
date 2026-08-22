@@ -1002,6 +1002,15 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       yield* sendCommand(contents, method);
     }
 
+    // The guest believes it is focused even while the user's caret is
+    // elsewhere in the embedding window. Agent input pulls focus onto the
+    // <webview> and the web client hands it straight back (browserFocusGuard);
+    // without this, that hand-back would fire blur into the page and close
+    // the menus and dropdowns the agent just opened.
+    yield* sendCommand(contents, "Emulation.setFocusEmulationEnabled", { enabled: true }).pipe(
+      Effect.ignore,
+    );
+
     return buildStatus(webContentsId, contents);
   });
 

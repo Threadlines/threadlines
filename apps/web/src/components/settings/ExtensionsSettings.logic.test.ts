@@ -14,14 +14,21 @@ import {
   extensionMcpNeedsAuthStatus,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
+  extensionBrowserStatusLine,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   formatExtensionGroupLabel,
   isLikelyLocalPath,
+  isProviderCoverageMissing,
   makeExtensionInventoryCacheKey,
   formatSkillDisplayName,
   formatTokenCount,
+  groupExtensionSkills,
+  bucketSkillsByPlugin,
+  dedupeShadowedSkills,
   groupPluginComponents,
+  parseExtensionsSettingsTab,
+  resolveExtensionsSettingsTab,
   makeExtensionJsonSchemaFormDefaults,
   resolvePluginComponentTarget,
   selectCuratedPlugins,
@@ -31,6 +38,172 @@ import {
 } from "./ExtensionsSettings.logic";
 
 describe("ExtensionsSettings logic", () => {
+  it("takes the tab from the URL and falls back to the remembered one", () => {
+    expect(parseExtensionsSettingsTab("skills")).toBe("skills");
+    expect(parseExtensionsSettingsTab("nonsense")).toBeUndefined();
+    expect(parseExtensionsSettingsTab(undefined)).toBeUndefined();
+
+    // An explicit link wins over whatever the last visit left behind.
+    expect(resolveExtensionsSettingsTab("plugins", "skills")).toBe("plugins");
+    expect(resolveExtensionsSettingsTab(undefined, "skills")).toBe("skills");
+    expect(resolveExtensionsSettingsTab(undefined, undefined)).toBe("plugins");
+  });
+
+  it("groups skills by origin and sorts each group by name", () => {
+    const skills = [
+      { name: "zebra", scope: "user" },
+      { name: "shipped", scope: "system" },
+      { name: "alpha", scope: "user" },
+      { name: "repo-check", scope: "project" },
+      { name: "bundled", scope: "user", bundleId: "helper@market" },
+    ];
+
+    const groups = groupExtensionSkills(skills, (skill) => ({
+      scope: skill.scope,
+      bundleId: skill.bundleId,
+      sortKey: skill.name,
+    }));
+
+    expect(groups.map((group) => group.label)).toEqual([
+      "Project skills",
+      "Personal skills",
+      "From plugins",
+      "Built in",
+    ]);
+    expect(groups[1]?.items.map((skill) => skill.name)).toEqual(["alpha", "zebra"]);
+    // A bundled skill belongs to its plugin no matter which root it was found in.
+    expect(groups[2]?.items.map((skill) => skill.name)).toEqual(["bundled"]);
+  });
+
+  it("hides a Codex built-in skill that the user has their own copy of", () => {
+    const skills = [
+      { id: "user-imagegen", providerId: "codex", name: "imagegen", scope: "user" },
+      { id: "system-imagegen", providerId: "codex", name: "imagegen", scope: "system" },
+      { id: "system-openai-docs", providerId: "codex", name: "openai-docs", scope: "system" },
+      // Same name, different provider: not a collision, both stay.
+      { id: "claude-imagegen", providerId: "claudeAgent", name: "imagegen", scope: "user" },
+    ];
+
+    const visible = dedupeShadowedSkills(skills, (skill) => ({
+      providerId: skill.providerId,
+      name: skill.name,
+      scope: skill.scope,
+    }));
+
+    expect(visible.map((skill) => skill.id)).toEqual([
+      "user-imagegen",
+      "system-openai-docs",
+      "claude-imagegen",
+    ]);
+  });
+
+  it("buckets bundled skills per plugin and opens only the narrowed ones", () => {
+    const skills = [
+      { id: "a", bundle: "posthog@official", label: "PostHog", name: "alpha", matches: true },
+      { id: "b", bundle: "posthog@official", label: "PostHog", name: "beta", matches: false },
+      { id: "c", bundle: "figma@official", label: "Figma", name: "gamma", matches: true },
+      { id: "d", bundle: "figma@official", label: "Figma", name: "delta", matches: true },
+      { id: "e", bundle: "stripe@official", label: "Stripe", name: "eps", matches: false },
+    ];
+
+    const buckets = bucketSkillsByPlugin(skills, (skill) => ({
+      bundleId: skill.bundle,
+      label: skill.label,
+      sortKey: skill.name,
+      matches: skill.matches,
+    }));
+
+    // Sorted by plugin name; the plugin with nothing matching drops out.
+    expect(buckets.map((bucket) => bucket.label)).toEqual(["Figma", "PostHog"]);
+    // Every Figma skill matched, so the query was about the plugin, not a skill inside it.
+    expect(buckets[0]?.autoExpand).toBe(false);
+    expect(buckets[0]?.matching.map((skill) => skill.name)).toEqual(["delta", "gamma"]);
+    // PostHog matched one of two, so the match is the point and the group opens.
+    expect(buckets[1]?.autoExpand).toBe(true);
+    expect(buckets[1]?.total).toBe(2);
+    expect(buckets[1]?.matching.map((skill) => skill.id)).toEqual(["a"]);
+  });
+
+  it("knows when the loaded inventory cannot answer for the selected provider", () => {
+    const base = {
+      providerInstanceId: "codex",
+      hasInventory: true,
+      hasError: false,
+    };
+
+    // The bug: a Claude-scoped fetch leaves an inventory with no Codex entry, so selecting the
+    // Codex chip filtered to nothing and every section claimed to be empty.
+    expect(
+      isProviderCoverageMissing({ ...base, inventoryProviderInstanceIds: ["claudeAgent"] }),
+    ).toBe(true);
+
+    expect(
+      isProviderCoverageMissing({
+        ...base,
+        inventoryProviderInstanceIds: ["codex", "claudeAgent"],
+      }),
+    ).toBe(false);
+    // No filter means the inventory covers whatever it returned.
+    expect(
+      isProviderCoverageMissing({
+        ...base,
+        providerInstanceId: "",
+        inventoryProviderInstanceIds: ["claudeAgent"],
+      }),
+    ).toBe(false);
+    // Nothing loaded yet is the ordinary initial load, not a coverage gap.
+    expect(
+      isProviderCoverageMissing({ ...base, hasInventory: false, inventoryProviderInstanceIds: [] }),
+    ).toBe(false);
+    // A failed fetch keeps its own error presentation rather than pretending to load.
+    expect(
+      isProviderCoverageMissing({ ...base, hasError: true, inventoryProviderInstanceIds: [] }),
+    ).toBe(false);
+  });
+
+  it("says the browse catalog is still loading even when rows are already showing", () => {
+    const base = {
+      providerLabel: "Codex",
+      sectionTitle: "Apps",
+      visibleCount: 9,
+      totalCount: 9,
+      isCurated: false,
+    };
+
+    // The bug: 9 connected apps render immediately, so a plain count read as finished for the
+    // ~12s the directory took to arrive.
+    const loading = extensionBrowserStatusLine({ ...base, isLoading: true, hasError: false });
+    expect(loading.state).toBe("loading");
+    expect(loading.text).toBe("Codex - 9 shown, loading all apps");
+
+    const failed = extensionBrowserStatusLine({ ...base, isLoading: false, hasError: true });
+    expect(failed.state).toBe("error");
+    expect(failed.text).toBe("Codex - 9 shown, could not load all apps");
+
+    const ready = extensionBrowserStatusLine({
+      ...base,
+      totalCount: 109,
+      isLoading: false,
+      hasError: false,
+    });
+    expect(ready.state).toBe("ready");
+    expect(ready.text).toBe("Codex - 9 visible from 109 total");
+
+    // Loading wins over an error left from a previous attempt.
+    expect(extensionBrowserStatusLine({ ...base, isLoading: true, hasError: true }).state).toBe(
+      "loading",
+    );
+  });
+
+  it("drops skill groups that have no members", () => {
+    const groups = groupExtensionSkills([{ name: "solo", scope: "user" }], (skill) => ({
+      scope: skill.scope,
+      sortKey: skill.name,
+    }));
+
+    expect(groups.map((group) => group.key)).toEqual(["personal"]);
+  });
+
   it("matches extension records case-insensitively across provided fields", () => {
     expect(extensionTextMatchesFilter(["Browser", "Control the in-app browser"], "BROW")).toBe(
       true,

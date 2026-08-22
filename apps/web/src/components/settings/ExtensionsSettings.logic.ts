@@ -22,6 +22,234 @@ export {
   type ExtensionMcpOAuthActionIntent,
 } from "../../mcpAuthStatus";
 
+// ── Page tabs ────────────────────────────────────────────────────────
+//
+// The page holds two unrelated jobs — installing plugins and managing skills — so
+// it splits into tabs. The tab lives in the URL so a link can point at either one,
+// and is remembered so returning to settings lands where you left.
+
+export const EXTENSIONS_SETTINGS_TABS = ["plugins", "skills"] as const;
+export type ExtensionsSettingsTab = (typeof EXTENSIONS_SETTINGS_TABS)[number];
+
+/** Route search validation. Returns undefined for a missing or unknown tab. */
+export function parseExtensionsSettingsTab(value: unknown): ExtensionsSettingsTab | undefined {
+  return EXTENSIONS_SETTINGS_TABS.find((tab) => tab === value);
+}
+
+/** The URL is explicit intent, so it beats the remembered tab. */
+export function resolveExtensionsSettingsTab(
+  searchTab: ExtensionsSettingsTab | undefined,
+  rememberedTab: ExtensionsSettingsTab | undefined,
+): ExtensionsSettingsTab {
+  return searchTab ?? rememberedTab ?? "plugins";
+}
+
+// ── Skill grouping ───────────────────────────────────────────────────
+
+export type ExtensionSkillGroupKey = "project" | "personal" | "plugin" | "builtin";
+
+/**
+ * Where a skill came from, which is what a reader wants to know first: one they wrote for this
+ * project, one they wrote for themselves, one a plugin brought, or one the provider ships.
+ */
+export function extensionSkillGroupKey(skill: {
+  readonly scope?: string | undefined;
+  readonly bundleId?: string | undefined;
+}): ExtensionSkillGroupKey {
+  if (skill.bundleId?.trim()) return "plugin";
+  const scope = skill.scope?.trim().toLowerCase();
+  if (scope === "project") return "project";
+  if (scope === "system") return "builtin";
+  return "personal";
+}
+
+const EXTENSION_SKILL_GROUP_ORDER = [
+  "project",
+  "personal",
+  "plugin",
+  "builtin",
+] as const satisfies ReadonlyArray<ExtensionSkillGroupKey>;
+
+export const EXTENSION_SKILL_GROUP_LABELS: Record<ExtensionSkillGroupKey, string> = {
+  project: "Project skills",
+  personal: "Personal skills",
+  plugin: "From plugins",
+  builtin: "Built in",
+};
+
+export interface ExtensionSkillGroup<T> {
+  readonly key: ExtensionSkillGroupKey;
+  readonly label: string;
+  readonly items: ReadonlyArray<T>;
+}
+
+/** Groups in a fixed origin order, each sorted by the name shown on the row. Empty groups drop. */
+export function groupExtensionSkills<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => {
+    readonly scope?: string | undefined;
+    readonly bundleId?: string | undefined;
+    readonly sortKey: string;
+  },
+): ReadonlyArray<ExtensionSkillGroup<T>> {
+  return EXTENSION_SKILL_GROUP_ORDER.flatMap((key) => {
+    const matching = items.filter((item) => extensionSkillGroupKey(read(item)) === key);
+    if (matching.length === 0) return [];
+    return [
+      {
+        key,
+        label: EXTENSION_SKILL_GROUP_LABELS[key],
+        items: matching.toSorted((left, right) =>
+          read(left).sortKey.localeCompare(read(right).sortKey),
+        ),
+      },
+    ];
+  });
+}
+
+export interface ExtensionSkillIdentity {
+  readonly providerId: string;
+  readonly name: string;
+  readonly scope?: string | undefined;
+}
+
+/**
+ * Codex ships built-in skills under its own `.system` root, and installing the same skill yourself
+ * leaves both reported under one name. The user's copy is the one that shadows the built-in and the
+ * only one with edit and delete affordances, so the built-in is dropped from the list.
+ */
+export function dedupeShadowedSkills<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => ExtensionSkillIdentity,
+): ReadonlyArray<T> {
+  const key = (entry: ExtensionSkillIdentity) =>
+    `${entry.providerId}\0${entry.name.trim().toLowerCase()}`;
+  const shadowedByUserCopy = new Set(
+    items.flatMap((item) => {
+      const entry = read(item);
+      return entry.scope?.trim().toLowerCase() === "user" ? [key(entry)] : [];
+    }),
+  );
+  return items.filter((item) => {
+    const entry = read(item);
+    if (entry.scope?.trim().toLowerCase() !== "system") return true;
+    return !shadowedByUserCopy.has(key(entry));
+  });
+}
+
+export interface ExtensionSkillPluginBucket<T> {
+  readonly bundleId: string;
+  readonly label: string;
+  /** Every skill the plugin ships, matching or not. */
+  readonly total: number;
+  readonly matching: ReadonlyArray<T>;
+  /**
+   * The query narrowed this plugin to some of its skills, so the matches are the point and the
+   * group opens itself. A query that matches the plugin's own name matches all of them, which is
+   * not a reason to unfold a hundred rows.
+   */
+  readonly autoExpand: boolean;
+}
+
+/**
+ * One bucket per plugin, so a plugin shipping a hundred skills is one row until it is asked for.
+ * Buckets with nothing matching drop out entirely.
+ */
+export function bucketSkillsByPlugin<T>(
+  items: ReadonlyArray<T>,
+  read: (item: T) => {
+    readonly bundleId: string;
+    readonly label: string;
+    readonly sortKey: string;
+    readonly matches: boolean;
+  },
+): ReadonlyArray<ExtensionSkillPluginBucket<T>> {
+  const buckets = new Map<string, T[]>();
+  for (const item of items) {
+    const bundleId = read(item).bundleId;
+    const existing = buckets.get(bundleId);
+    if (existing) existing.push(item);
+    else buckets.set(bundleId, [item]);
+  }
+
+  return [...buckets.entries()]
+    .flatMap(([bundleId, bucketItems]) => {
+      const matching = bucketItems
+        .filter((item) => read(item).matches)
+        .toSorted((left, right) => read(left).sortKey.localeCompare(read(right).sortKey));
+      if (matching.length === 0) return [];
+      return [
+        {
+          bundleId,
+          label: read(bucketItems[0]!).label,
+          total: bucketItems.length,
+          matching,
+          autoExpand: matching.length < bucketItems.length,
+        },
+      ];
+    })
+    .toSorted((left, right) => left.label.localeCompare(right.label));
+}
+
+/**
+ * Whether the loaded inventory can say anything about the provider currently filtered to. A
+ * provider-scoped fetch only returns that provider, so selecting a different chip leaves an
+ * inventory that legitimately has no entry for it. Every section would then render its real empty
+ * label ("No plugins installed") while the refetch is still running, which reads as a definitive
+ * answer rather than a gap. A real error is not this case: the error presentation owns that.
+ */
+export function isProviderCoverageMissing(input: {
+  readonly providerInstanceId: string;
+  readonly inventoryProviderInstanceIds: ReadonlyArray<string>;
+  readonly hasInventory: boolean;
+  readonly hasError: boolean;
+}): boolean {
+  if (!input.providerInstanceId || !input.hasInventory || input.hasError) return false;
+  return !input.inventoryProviderInstanceIds.includes(input.providerInstanceId);
+}
+
+export type ExtensionBrowserLoadState = "ready" | "loading" | "error";
+
+export interface ExtensionBrowserStatusLine {
+  readonly state: ExtensionBrowserLoadState;
+  readonly text: string;
+}
+
+/**
+ * What the Browse dialog says under its title. A deferred catalog is fetched when the dialog
+ * opens, and for apps that takes seconds while the already-connected rows are on screen. Without
+ * this the line reads "9 visible from 9 total" the whole time and the dialog looks finished.
+ */
+export function extensionBrowserStatusLine(input: {
+  readonly providerLabel: string;
+  readonly sectionTitle: string;
+  readonly visibleCount: number;
+  readonly totalCount: number;
+  readonly isCurated: boolean;
+  readonly isLoading: boolean;
+  readonly hasError: boolean;
+}): ExtensionBrowserStatusLine {
+  const subject = input.sectionTitle.toLowerCase();
+  if (input.isLoading) {
+    return {
+      state: "loading",
+      text: `${input.providerLabel} - ${input.visibleCount} shown, loading all ${subject}`,
+    };
+  }
+  if (input.hasError) {
+    return {
+      state: "error",
+      text: `${input.providerLabel} - ${input.visibleCount} shown, could not load all ${subject}`,
+    };
+  }
+  return {
+    state: "ready",
+    text: input.isCurated
+      ? `${input.providerLabel} - featured and most installed. Search to reach all ${input.totalCount}.`
+      : `${input.providerLabel} - ${input.visibleCount} visible from ${input.totalCount} total`,
+  };
+}
+
 export function extensionProviderDriverSortRank(driverKind: string): number {
   if (driverKind === "codex") return 0;
   if (driverKind === "claudeAgent") return 1;

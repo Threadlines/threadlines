@@ -22,6 +22,7 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   CornerLeftUpIcon,
+  FileTextIcon,
   FolderIcon,
   FolderPlusIcon,
   GaugeIcon,
@@ -1638,6 +1639,17 @@ function OpenCommandPaletteDialog() {
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/settings" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:skills",
+    searchTerms: ["skills", "plugins", "extensions", "agents", "capabilities"],
+    title: "Open skills",
+    icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/plugins", search: { tab: "skills" } });
     },
   });
 

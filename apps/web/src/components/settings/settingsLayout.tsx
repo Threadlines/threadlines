@@ -8,6 +8,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function SettingsSection({
   title,
+  description,
   icon,
   headerAction,
   children,
@@ -16,6 +17,8 @@ export function SettingsSection({
   ...sectionProps
 }: ComponentPropsWithoutRef<"section"> & {
   title?: string;
+  /** One line saying what this section is, for surfaces whose subject is not self-evident. */
+  description?: ReactNode;
   icon?: ReactNode;
   headerAction?: ReactNode;
   children: ReactNode;
@@ -24,13 +27,16 @@ export function SettingsSection({
   return (
     <section {...sectionProps} className={cn("space-y-2.5", className)}>
       {title !== undefined ? (
-        <div className="flex items-center justify-between px-1">
-          <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
-            <SectionTick />
-            {icon}
-            {title}
-          </h2>
-          <div className="flex h-5 min-w-5 items-center justify-end">{headerAction}</div>
+        <div className="space-y-1 px-1">
+          <div className="flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
+              <SectionTick />
+              {icon}
+              {title}
+            </h2>
+            <div className="flex h-5 min-w-5 items-center justify-end">{headerAction}</div>
+          </div>
+          {description ? <p className="text-xs text-muted-foreground/80">{description}</p> : null}
         </div>
       ) : null}
       <div

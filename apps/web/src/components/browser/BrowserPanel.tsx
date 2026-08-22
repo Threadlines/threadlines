@@ -70,6 +70,7 @@ import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
+import { installBrowserFocusGuard, noteBrowserUserIntent } from "./browserFocusGuard";
 import { resolveBrowserViewportLayout } from "./browserViewportLayout";
 import { AgentPointer, POINTER_RETIRE_MS, type AgentPointerPosition } from "./AgentPointer";
 import { completeUrl } from "./urlCompletion";
@@ -173,6 +174,11 @@ export function BrowserPanel({
   );
   const { approveHost } = useBrowserApprovals(threadRef, projectId);
   const { resolvedTheme } = useTheme();
+
+  // While the panel exists its webviews can pull focus out of whatever the
+  // user is typing into whenever agent input lands in a page; the guard
+  // notices and hands the focus back.
+  useEffect(() => installBrowserFocusGuard(), []);
   const guestColorScheme = appearance === "system" ? resolvedTheme : appearance;
 
   const activeTab = selectActiveTab(browserState);
@@ -666,8 +672,16 @@ export function BrowserPanel({
       style={{ flex: `${flexGrow} 1 0%` }}
       data-testid="browser-panel"
       aria-label="Browser preview"
-      onPointerDownCapture={() => markBrowserUserControlled(threadRef)}
-      onKeyDownCapture={() => markBrowserUserControlled(threadRef)}
+      onPointerDownCapture={() => {
+        markBrowserUserControlled(threadRef);
+        // Interaction with the panel is the one kind of click that makes the
+        // webview's next focus grab legitimate; see browserFocusGuard.
+        noteBrowserUserIntent();
+      }}
+      onKeyDownCapture={() => {
+        markBrowserUserControlled(threadRef);
+        noteBrowserUserIntent();
+      }}
       onWheelCapture={() => markBrowserUserControlled(threadRef)}
     >
       <div className="flex h-9 shrink-0 items-stretch border-b border-border px-1.5 pt-1.5">

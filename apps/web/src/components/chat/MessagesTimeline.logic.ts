@@ -69,9 +69,11 @@ export type MessagesTimelineRow =
       trackerTurnIds: TurnId[];
       /** Spawn call ids the tracker falls back to when the group has no turn to
        *  key on. A background agent keeps streaming after its spawning turn
-       *  settles, and that activity arrives turnless — without this the group
-       *  at the tail of the conversation would show nothing at all while the
-       *  agent works. Only populated when `trackerTurnIds` is empty. */
+       *  settles, and that activity arrives turnless — these ids let the tail
+       *  group name an agent no turn claims. The selector ignores ids whose
+       *  agent carries a turn attribution: that agent's tracker lives with the
+       *  spawning turn's group, and repeating it here would double the "Agent
+       *  working" row. Only populated when `trackerTurnIds` is empty. */
       trackerAgentSpawnIds: string[];
       isLive: boolean;
       liveStartedAt: string | null;

@@ -98,6 +98,10 @@ import type {
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionPluginUpdateInput,
   ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillCreateInput,
+  ProviderExtensionSkillCreateResult,
+  ProviderExtensionSkillDeleteInput,
+  ProviderExtensionSkillDeleteResult,
   ProviderExtensionSkillReadInput,
   ProviderExtensionSkillReadResult,
   ProviderExtensionSkillToggleInput,
@@ -1107,6 +1111,12 @@ export interface LocalApi {
     readProviderExtensionSkill: (
       input: ProviderExtensionSkillReadInput,
     ) => Promise<ProviderExtensionSkillReadResult>;
+    createProviderExtensionSkill: (
+      input: ProviderExtensionSkillCreateInput,
+    ) => Promise<ProviderExtensionSkillCreateResult>;
+    deleteProviderExtensionSkill: (
+      input: ProviderExtensionSkillDeleteInput,
+    ) => Promise<ProviderExtensionSkillDeleteResult>;
     readProviderExtensionPlugin: (
       input: ProviderExtensionPluginReadInput,
     ) => Promise<ProviderExtensionPluginReadResult>;
@@ -1208,6 +1218,12 @@ export interface EnvironmentApi {
     readExtensionSkill: (
       input: ProviderExtensionSkillReadInput,
     ) => Promise<ProviderExtensionSkillReadResult>;
+    createExtensionSkill: (
+      input: ProviderExtensionSkillCreateInput,
+    ) => Promise<ProviderExtensionSkillCreateResult>;
+    deleteExtensionSkill: (
+      input: ProviderExtensionSkillDeleteInput,
+    ) => Promise<ProviderExtensionSkillDeleteResult>;
     readExtensionPlugin: (
       input: ProviderExtensionPluginReadInput,
     ) => Promise<ProviderExtensionPluginReadResult>;

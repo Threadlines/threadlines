@@ -19,10 +19,10 @@ export const HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" a
 export const VISIBLE_SETTINGS_SECTION_PATHS = [
   DEFAULT_SETTINGS_SECTION_PATH,
   "/settings/providers",
+  "/settings/plugins",
   "/settings/connections",
   "/settings/source-control",
   "/settings/instructions",
-  "/settings/plugins",
   "/settings/keybindings",
   "/settings/archived",
 ] as const;
@@ -32,10 +32,10 @@ export type SettingsSectionPath = (typeof VISIBLE_SETTINGS_SECTION_PATHS)[number
 export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
   HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
   "/settings/providers",
+  "/settings/plugins",
   "/settings/connections",
   "/settings/source-control",
   "/settings/instructions",
-  "/settings/plugins",
   "/settings/archived",
 ] as const satisfies ReadonlyArray<SettingsSectionPath>;
 
@@ -48,10 +48,11 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
+  // The route stays /settings/plugins: links, panel memory, and the tab search param all key off it.
+  { label: "Plugins & Skills", to: "/settings/plugins", icon: PlugIcon },
   { label: "Connections", to: CONNECTIONS_SETTINGS_SECTION_PATH, icon: SmartphoneIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
   { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
-  { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
 ];

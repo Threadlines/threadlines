@@ -61,6 +61,10 @@ import {
   type ProviderExtensionsInventoryResult,
   type ProviderExtensionProviderInventory,
   type ProviderExtensionSkill,
+  type ProviderExtensionSkillCreateInput,
+  type ProviderExtensionSkillCreateResult,
+  type ProviderExtensionSkillDeleteInput,
+  type ProviderExtensionSkillDeleteResult,
   type ProviderExtensionSkillReadInput,
   type ProviderExtensionSkillReadResult,
   type ProviderExtensionSkillToggleInput,
@@ -79,8 +83,12 @@ import {
 } from "@threadlines/contracts";
 
 import { codexAppServerCommandOptions } from "./codexAppServerArgs.ts";
-import { makeClaudeEnvironment } from "./Drivers/ClaudeHome.ts";
-import { materializeCodexShadowHome, resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
+import { makeClaudeEnvironment, resolveClaudeHomePath } from "./Drivers/ClaudeHome.ts";
+import {
+  materializeCodexShadowHome,
+  resolveCodexHomeLayout,
+  type CodexHomeLayout,
+} from "./Drivers/CodexHomeLayout.ts";
 import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
 import { deriveProviderInstanceConfigMap } from "./Layers/ProviderInstanceRegistryHydration.ts";
 import { mergeProviderInstanceEnvironment } from "./ProviderInstanceEnvironment.ts";
@@ -109,6 +117,8 @@ const CODEX_MCP_ORIGIN_TIMEOUT = Duration.seconds(3);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
 const CODEX_EXTENSION_INVENTORY_PAGE_LIMIT = 100;
+/** `app/read` accepts at most this many ids per call. */
+const CODEX_APP_READ_MAX_IDS = 100;
 const MAX_CODEX_MCP_ORIGIN_PLUGINS = 40;
 const CODEX_MCP_OAUTH_DEFAULT_TIMEOUT_SECONDS = 300;
 const CODEX_MCP_OAUTH_MAX_TIMEOUT_SECONDS = 900;
@@ -785,6 +795,19 @@ export function codexMarketplaceLoadErrorMessage(
   );
 }
 
+/**
+ * User skills live in `<CODEX_HOME>/skills`. With a shadow home in play the app-server reports
+ * paths through the shadow, which symlinks that directory back to the shared home, so both spellings
+ * count as the same root.
+ */
+export function codexUserSkillsRoots(path: Path.Path, layout: CodexHomeLayout): string[] {
+  const roots = [path.join(layout.sharedHomePath, "skills")];
+  if (layout.effectiveHomePath && layout.effectiveHomePath !== layout.sharedHomePath) {
+    roots.push(path.join(layout.effectiveHomePath, "skills"));
+  }
+  return roots;
+}
+
 function mapCodexSkills(
   response: CodexSchema.V2SkillsListResponse,
   cwd: string,
@@ -814,6 +837,41 @@ function mapCodexSkills(
       ];
     })
     .toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
+/** Scopes whose entries a name-matched toggle is allowed to touch. */
+const CODEX_SHADOWABLE_SKILL_SCOPES = new Set(["user", "system"]);
+
+/**
+ * Codex keys a skill's enabled state by path, so a personal copy and the built-in it shadows carry
+ * two independent flags under one name. The list shows them as a single row, so its toggle has to
+ * govern both: writing only one leaves the other live and the row lying about it.
+ *
+ * Project-scoped (`repo`) and plugin-bundled entries never participate. Two projects using the
+ * same skill name are genuinely unrelated.
+ */
+export function codexShadowedSkillWritePaths(
+  response: CodexSchema.V2SkillsListResponse,
+  target: { readonly name?: string | undefined; readonly path?: string | undefined },
+): string[] {
+  const entries = response.data.flatMap((entry) => entry.skills);
+  const nameKey = (value: string | null | undefined) => optionalText(value)?.toLowerCase();
+  const targetPath = optionalText(target.path);
+  const targetName =
+    nameKey(target.name) ??
+    nameKey(entries.find((entry) => requiredText(entry.path) === targetPath)?.name);
+  if (!targetName) return [];
+
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    if (!CODEX_SHADOWABLE_SKILL_SCOPES.has(entry.scope)) continue;
+    if (nameKey(entry.name) !== targetName) continue;
+    const path = requiredText(entry.path);
+    // The requested path is written on its own; this is only the copies alongside it.
+    if (!path || path === targetPath) continue;
+    paths.add(path);
+  }
+  return [...paths];
 }
 
 function codexMcpAuthStatusLabel(
@@ -983,12 +1041,18 @@ const readCodexMcpPluginOwners = Effect.fn("providerExtensions.readCodexMcpPlugi
   },
 );
 
+function compareAppsByName(left: ProviderExtensionApp, right: ProviderExtensionApp): number {
+  return left.name.localeCompare(right.name);
+}
+
 function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensionApp[] {
   return response.data
     .flatMap((app) => {
       const id = requiredText(app.id);
       const name = requiredText(app.name);
       if (!id || !name) return [];
+      const iconUrl = optionalText(app.logoUrl ?? null);
+      const iconUrlDark = optionalText(app.logoUrlDark ?? null);
       return [
         {
           id,
@@ -996,10 +1060,99 @@ function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensi
           description: optionalText(app.description ?? app.appMetadata?.seoDescription ?? null),
           enabled: app.isEnabled,
           accessible: app.isAccessible,
+          ...(iconUrl ? { iconUrl } : {}),
+          ...(iconUrlDark ? { iconUrlDark } : {}),
         },
       ];
     })
-    .toSorted((left, right) => left.name.localeCompare(right.name));
+    .toSorted(compareAppsByName);
+}
+
+/**
+ * `app/installed` reads a locally committed runtime snapshot, so it answers without a backend
+ * round-trip. It carries connectivity but only a best-effort name, which `app/read` then fills in.
+ */
+export function mapCodexInstalledApps(
+  response: CodexSchema.V2AppsInstalledResponse,
+): ProviderExtensionApp[] {
+  return response.apps
+    .flatMap((app) => {
+      const id = requiredText(app.id);
+      if (!id) return [];
+      return [
+        {
+          id,
+          name: optionalText(app.runtimeName ?? null) ?? id,
+          enabled: app.enabled,
+          // Being in the snapshot is what "connected" means; the directory says nothing about it.
+          accessible: true,
+        },
+      ];
+    })
+    .toSorted(compareAppsByName);
+}
+
+/** Canonical names, descriptions, and logos for apps already known to be installed. */
+export function mergeCodexAppMetadata(
+  apps: ReadonlyArray<ProviderExtensionApp>,
+  response: CodexSchema.V2AppsReadResponse,
+): ProviderExtensionApp[] {
+  const metadataById = new Map(
+    response.apps.flatMap((entry) => {
+      const id = requiredText(entry.id);
+      return id ? [[id, entry] as const] : [];
+    }),
+  );
+  return apps
+    .map((app) => {
+      const metadata = metadataById.get(app.id);
+      if (!metadata) return app;
+      const description = optionalText(metadata.description ?? null);
+      const iconUrl = optionalText(metadata.iconUrl ?? null);
+      const iconUrlDark = optionalText(metadata.iconUrlDark ?? null);
+      return {
+        ...app,
+        name: requiredText(metadata.name) ?? app.name,
+        ...(description ? { description } : {}),
+        ...(iconUrl ? { iconUrl } : {}),
+        ...(iconUrlDark ? { iconUrlDark } : {}),
+      };
+    })
+    .toSorted(compareAppsByName);
+}
+
+/**
+ * The connected snapshot and the full directory describe the same apps from different angles.
+ * Connectivity is only the snapshot's to state; everything descriptive takes whichever source
+ * actually has a value.
+ */
+export function mergeCodexAppSources(
+  installed: ReadonlyArray<ProviderExtensionApp>,
+  catalog: ReadonlyArray<ProviderExtensionApp>,
+): ProviderExtensionApp[] {
+  const merged = new Map<string, ProviderExtensionApp>();
+  for (const app of catalog) merged.set(app.id, app);
+  for (const app of installed) {
+    const listed = merged.get(app.id);
+    if (!listed) {
+      merged.set(app.id, app);
+      continue;
+    }
+    // A snapshot name that fell back to the id carries no information, so the directory wins.
+    const name = app.name === app.id ? listed.name : app.name;
+    const description = app.description ?? listed.description;
+    const iconUrl = app.iconUrl ?? listed.iconUrl;
+    const iconUrlDark = app.iconUrlDark ?? listed.iconUrlDark;
+    merged.set(app.id, {
+      ...listed,
+      ...app,
+      name,
+      ...(description ? { description } : {}),
+      ...(iconUrl ? { iconUrl } : {}),
+      ...(iconUrlDark ? { iconUrlDark } : {}),
+    });
+  }
+  return [...merged.values()].toSorted(compareAppsByName);
 }
 
 /**
@@ -1358,6 +1511,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       | "mcpServersTruncated"
       | "apps"
       | "appsStatus"
+      | "appsCatalogStatus"
       | "appsMessage"
       | "appsTruncated"
       | "status"
@@ -1366,6 +1520,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     never,
     FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
   > {
+    const path = yield* Path.Path;
     const layout = yield* resolveCodexHomeLayout(input.config);
     const materialized = yield* materializeCodexShadowHome(layout).pipe(Effect.result);
     if (Result.isFailure(materialized)) {
@@ -1429,6 +1584,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const appListWithoutThreadParams = {
           limit: CODEX_EXTENSION_INVENTORY_PAGE_LIMIT,
         };
+        const appInstalledParams: CodexSchema.V2AppsInstalledParams =
+          input.providerThreadId !== undefined ? { threadId: input.providerThreadId } : {};
         const emptyMcpServerResponse: CodexSchema.V2ListMcpServerStatusResponse = {
           data: [],
         };
@@ -1444,6 +1601,32 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
               collectCodexRequest("MCP servers"),
             )
           : Effect.succeed(Result.succeed(emptyMcpServerResponse));
+
+        // The connected set is a local snapshot read, so it runs on every inventory load and the
+        // Apps section can render immediately. The directory behind `app/list` stays deferred.
+        const installedAppsEffect = client.request("app/installed", appInstalledParams).pipe(
+          Effect.catch((cause) =>
+            input.providerThreadId !== undefined && isThreadNotFoundError(cause)
+              ? client.request("app/installed", {})
+              : Effect.fail(cause),
+          ),
+          Effect.flatMap((snapshot) => {
+            const base = mapCodexInstalledApps(snapshot);
+            if (base.length === 0) return Effect.succeed(base);
+            return client
+              .request("app/read", {
+                appIds: base.slice(0, CODEX_APP_READ_MAX_IDS).map((app) => app.id),
+                includeTools: false,
+              })
+              .pipe(
+                // Names and logos are a nicety. Losing them leaves the connected list intact,
+                // which beats reporting the whole section as failed.
+                Effect.map((metadata) => mergeCodexAppMetadata(base, metadata)),
+                Effect.catch(() => Effect.succeed(base)),
+              );
+          }),
+          collectCodexRequest("connected apps"),
+        );
 
         const appsEffect = fetchApps
           ? client.request("app/list", appListParams).pipe(
@@ -1515,8 +1698,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         ).pipe(Effect.forkScoped);
 
         // The requests are independent JSON-RPC calls; serializing them just delays whichever
-        // runs last and starts its timeout window late, so let all four go at once.
-        const [plugins, skills, mcpServerResponse, apps] = yield* Effect.all(
+        // runs last and starts its timeout window late, so let them all go at once.
+        const [plugins, skills, mcpServerResponse, apps, installedApps] = yield* Effect.all(
           [
             pluginsEffect,
             client.request("skills/list", { cwds: [input.cwd] }).pipe(
@@ -1525,8 +1708,9 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             ),
             mcpServersEffect,
             appsEffect,
+            installedAppsEffect,
           ],
-          { concurrency: 4 },
+          { concurrency: 5 },
         );
         const mcpPluginOwnersExit = mcpPluginOwnersFiber.pollUnsafe();
         const mcpPluginOwners =
@@ -1536,7 +1720,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const mcpServers = Result.isFailure(mcpServerResponse)
           ? Result.fail(mcpServerResponse.failure)
           : Result.succeed(mapCodexMcpServers(mcpServerResponse.success, mcpPluginOwners));
-        return { includeMcpServers, plugins, skills, mcpServers, apps };
+        return { includeMcpServers, plugins, skills, mcpServers, apps, installedApps };
       }),
     ).pipe(
       Effect.result,
@@ -1580,25 +1764,44 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     const mcpServersMessage = Result.isFailure(data.mcpServers)
       ? resultMessage(data.mcpServers)
       : undefined;
-    // Apps failures report through their own section like MCP servers do: the Apps tab shows the
-    // error and a retry, without flagging the whole provider as "loaded with issues". When a
+    // Apps failures report through their own section like MCP servers do: the Apps section shows
+    // the error and a retry, without flagging the whole provider as "loaded with issues". When a
     // refresh fails but an earlier read succeeded, the stale list beats an empty error state.
     const appsFailureMessage = Result.isFailure(data.apps) ? resultMessage(data.apps) : undefined;
     const staleAppsFallback =
       Result.isFailure(data.apps) && cachedApps !== undefined ? cachedApps.apps : undefined;
-    const apps = Result.isSuccess(data.apps) ? data.apps.success : (staleAppsFallback ?? []);
-    const appsLoaded = Result.isSuccess(data.apps) || staleAppsFallback !== undefined;
-    const appsStatus =
-      includeApps || freshCachedApps !== undefined ? (appsLoaded ? "ready" : "error") : "deferred";
+    const catalogApps = Result.isSuccess(data.apps) ? data.apps.success : (staleAppsFallback ?? []);
+    const catalogLoaded = Result.isSuccess(data.apps) || staleAppsFallback !== undefined;
+    const installedApps = Result.isSuccess(data.installedApps) ? data.installedApps.success : [];
+    const apps = mergeCodexAppSources(installedApps, catalogApps);
+    const installedAppsFailureMessage = Result.isFailure(data.installedApps)
+      ? resultMessage(data.installedApps)
+      : undefined;
+    // The connected list is what the section renders, so its own read decides the section status.
+    const appsStatus = Result.isSuccess(data.installedApps) ? "ready" : "error";
+    const appsCatalogStatus =
+      includeApps || freshCachedApps !== undefined
+        ? catalogLoaded
+          ? "ready"
+          : "error"
+        : "deferred";
     const appsMessage =
-      appsFailureMessage !== undefined && staleAppsFallback !== undefined
-        ? `${appsFailureMessage} Showing the last loaded apps.`
-        : appsFailureMessage;
+      [
+        installedAppsFailureMessage,
+        appsFailureMessage !== undefined && staleAppsFallback !== undefined
+          ? `${appsFailureMessage} Showing the last loaded apps.`
+          : appsFailureMessage,
+      ]
+        .filter((message): message is string => Boolean(message))
+        .join(" ") || undefined;
 
     const plugins = Result.isSuccess(data.plugins) ? data.plugins.success.plugins : [];
     const marketplaces = Result.isSuccess(data.plugins) ? data.plugins.success.marketplaces : [];
     const skills = Result.isSuccess(data.skills)
-      ? annotatePluginBackedSkills(data.skills.success, plugins)
+      ? annotateCodexSkillCapabilities(annotatePluginBackedSkills(data.skills.success, plugins), {
+          path,
+          userSkillsRoots: codexUserSkillsRoots(path, layout),
+        })
       : [];
     const mcpServersStatus = data.includeMcpServers
       ? Result.isSuccess(data.mcpServers)
@@ -1621,8 +1824,11 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         : {}),
       apps,
       appsStatus,
+      appsCatalogStatus,
       ...(appsMessage ? { appsMessage } : {}),
-      ...(apps.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT ? { appsTruncated: true } : {}),
+      ...(catalogApps.length === CODEX_EXTENSION_INVENTORY_PAGE_LIMIT
+        ? { appsTruncated: true }
+        : {}),
     };
   },
 );
@@ -2364,20 +2570,52 @@ const waitForClaudeMcpLoginStatus = Effect.fn("providerExtensions.waitForClaudeM
   },
 );
 
+/** The block scalar openers worth supporting: plugin authors use these for long descriptions. */
+const SKILL_BLOCK_SCALAR_MARKERS = new Set([">", ">-", "|", "|-"]);
+
+/**
+ * Front matter is read by hand rather than with a YAML library, because these files only ever use
+ * top-level `key: value` plus block scalars. A folded block (`>`) joins its lines with spaces, a
+ * literal block (`|`) keeps the newlines. Without this a long description reads as just ">".
+ */
+export function parseSkillFrontMatter(frontMatter: string): Map<string, string> {
+  const metadata = new Map<string, string>();
+  const lines = frontMatter.split(/\r?\n/g);
+  for (let index = 0; index < lines.length; index += 1) {
+    // Only top-level keys: anything indented belongs to the value above it.
+    const match = lines[index]!.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
+    if (!match) continue;
+    const key = normalizeSkillMetadataKey(match[1]!);
+    const rawValue = match[2] ?? "";
+    if (!SKILL_BLOCK_SCALAR_MARKERS.has(rawValue)) {
+      metadata.set(key, parseSkillMetadataValue(rawValue));
+      continue;
+    }
+
+    const body: string[] = [];
+    while (index + 1 < lines.length) {
+      const next = lines[index + 1]!;
+      // A blank line stays inside the block; anything back at the left margin ends it.
+      if (next.trim().length > 0 && !/^\s/.test(next)) break;
+      body.push(next.trim());
+      index += 1;
+    }
+    const folded = rawValue.startsWith(">");
+    metadata.set(
+      key,
+      folded ? body.filter((entry) => entry.length > 0).join(" ") : body.join("\n").trim(),
+    );
+  }
+  return metadata;
+}
+
 function parseSkillMarkdown(input: {
   readonly name: string;
   readonly path: string;
   readonly contents: string;
 }) {
   const frontMatter = input.contents.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  const metadata = new Map<string, string>();
-  if (frontMatter) {
-    for (const line of frontMatter[1]!.split(/\r?\n/g)) {
-      const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
-      if (!match) continue;
-      metadata.set(normalizeSkillMetadataKey(match[1]!), parseSkillMetadataValue(match[2] ?? ""));
-    }
-  }
+  const metadata = frontMatter ? parseSkillFrontMatter(frontMatter[1]!) : new Map<string, string>();
   const enabled = parseSkillMetadataBoolean(metadata.get("defaultenabled")) ?? true;
   return {
     name: optionalText(metadata.get("name")) ?? input.name,
@@ -2498,6 +2736,109 @@ export function derivePluginBackedSkillBundle(skillPath: string): PluginBackedSk
   }
 
   return null;
+}
+
+/**
+ * Claude auto-loads each folder in the user skills dir as a plugin named `<folder>@skills-dir`,
+ * which is what `claude plugin enable|disable` takes and what lands in settings.json.
+ */
+export const CLAUDE_SKILLS_DIR_PLUGIN_SUFFIX = "@skills-dir";
+
+/**
+ * A skill is only managed when its folder sits directly inside a root, `<root>/<folder>/SKILL.md`.
+ * Namespaced skills nested deeper belong to a layout Threadlines did not create, so they are left
+ * alone. Returns the skill's own directory when it matches.
+ */
+export function skillDirectoryUnderRoots(
+  path: Path.Path,
+  roots: ReadonlyArray<string>,
+  skillPath: string,
+): string | null {
+  const directory = path.dirname(path.resolve(skillPath));
+  const parent = normalizedPathKey(path.dirname(directory));
+  return roots.some((root) => normalizedPathKey(path.resolve(root)) === parent) ? directory : null;
+}
+
+/** `enabledPlugins` in a Claude settings.json, ignoring anything that is not a boolean. */
+export function parseClaudeEnabledPlugins(contents: string): Map<string, boolean> {
+  const enabled = new Map<string, boolean>();
+  if (contents.trim().length === 0) return enabled;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    return enabled;
+  }
+  if (typeof parsed !== "object" || parsed === null) return enabled;
+  const map = (parsed as { readonly enabledPlugins?: unknown }).enabledPlugins;
+  if (typeof map !== "object" || map === null) return enabled;
+  for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+    if (typeof value === "boolean") enabled.set(key, value);
+  }
+  return enabled;
+}
+
+/**
+ * `claude plugin list --json` does not report skills-dir entries (checked on 2.1.239), so the
+ * enabled state for a user skill comes from the settings.json map the CLI writes. A missing entry
+ * means the skill is enabled.
+ */
+const readClaudeEnabledPlugins = Effect.fn("providerExtensions.readClaudeEnabledPlugins")(
+  function* (
+    claudeHome: string,
+  ): Effect.fn.Return<Map<string, boolean>, never, FileSystem.FileSystem | Path.Path> {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const contents = yield* fileSystem
+      .readFileString(path.join(claudeHome, ".claude", "settings.json"))
+      .pipe(Effect.catch(() => Effect.succeed("")));
+    return parseClaudeEnabledPlugins(contents);
+  },
+);
+
+export function annotateClaudeSkillCapabilities(
+  skills: ReadonlyArray<ProviderExtensionSkill>,
+  input: {
+    readonly path: Path.Path;
+    readonly userSkillsRoot: string;
+    readonly writableRoots: ReadonlyArray<string>;
+    readonly enabledPlugins: ReadonlyMap<string, boolean>;
+  },
+): ProviderExtensionSkill[] {
+  return skills.map((skill) => {
+    // A bundled skill follows the plugin that ships it; it is neither toggled nor deleted here.
+    if (skill.bundleId !== undefined) return skill;
+    const skillsDirDirectory = skillDirectoryUnderRoots(
+      input.path,
+      [input.userSkillsRoot],
+      skill.path,
+    );
+    const pluginId = skillsDirDirectory
+      ? `${input.path.basename(skillsDirDirectory)}${CLAUDE_SKILLS_DIR_PLUGIN_SUFFIX}`
+      : null;
+    const canDelete =
+      skillDirectoryUnderRoots(input.path, input.writableRoots, skill.path) !== null;
+    return {
+      ...skill,
+      ...(pluginId ? { enabled: input.enabledPlugins.get(pluginId) ?? true, canToggle: true } : {}),
+      ...(canDelete ? { canDelete: true } : {}),
+    };
+  });
+}
+
+export function annotateCodexSkillCapabilities(
+  skills: ReadonlyArray<ProviderExtensionSkill>,
+  input: { readonly path: Path.Path; readonly userSkillsRoots: ReadonlyArray<string> },
+): ProviderExtensionSkill[] {
+  return skills.map((skill) => {
+    if (skill.bundleId !== undefined) return skill;
+    // Codex toggles every skill it reports through `skills/config/write`. Its own bundled skills
+    // live a level deeper (`skills/.system/<name>/`), so the direct-child rule excludes them from
+    // deletion on its own.
+    const canDelete =
+      skillDirectoryUnderRoots(input.path, input.userSkillsRoots, skill.path) !== null;
+    return { ...skill, canToggle: true, ...(canDelete ? { canDelete: true } : {}) };
+  });
 }
 
 function annotatePluginBackedSkills(
@@ -2805,25 +3146,54 @@ export function claudePluginSkillRoots(
   });
 }
 
+/** The user skills root Claude auto-loads as `<name>@skills-dir` plugins. */
+export function claudeUserSkillsRoot(path: Path.Path, claudeHome: string): string {
+  return path.join(claudeHome, ".claude", "skills");
+}
+
+/**
+ * Every skills root Threadlines is allowed to write to or delete from: the user root plus the
+ * project roots discovered around the cwd. Plugin-bundled roots are deliberately excluded — those
+ * belong to the plugin that installed them.
+ */
+const claudeWritableSkillRoots = Effect.fn("providerExtensions.claudeWritableSkillRoots")(
+  function* (
+    claudeHome: string,
+    cwd: string,
+  ): Effect.fn.Return<ClaudeSkillRoot[], never, FileSystem.FileSystem | Path.Path> {
+    const path = yield* Path.Path;
+    const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
+    // A project under the home directory walks its ancestors up through ~/.claude/skills, which
+    // would re-file every personal skill as a project skill. The user root keeps its own identity.
+    const userRootKey = normalizedPathKey(path.resolve(claudeUserSkillsRoot(path, claudeHome)));
+    const ancestorRoots = claudeAncestorSkillRoots(path, cwd).filter(
+      (root) => normalizedPathKey(path.resolve(root.root)) !== userRootKey,
+    );
+    return uniqueClaudeSkillRoots(
+      [
+        ...nestedProjectRoots,
+        ...ancestorRoots,
+        {
+          root: claudeUserSkillsRoot(path, claudeHome),
+          scope: "user",
+          source: "Claude user",
+          priority: 0,
+        },
+      ],
+      path,
+    );
+  },
+);
+
 const readClaudeSkills = Effect.fn("providerExtensions.readClaudeSkills")(function* (
   claudeHome: string,
   cwd: string,
   plugins: ReadonlyArray<ProviderExtensionPlugin> = [],
 ) {
   const path = yield* Path.Path;
-  const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
+  const writableRoots = yield* claudeWritableSkillRoots(claudeHome, cwd);
   const skillRoots = uniqueClaudeSkillRoots(
-    [
-      ...nestedProjectRoots,
-      ...claudeAncestorSkillRoots(path, cwd),
-      {
-        root: path.join(claudeHome, ".claude", "skills"),
-        scope: "user",
-        source: "Claude user",
-        priority: 0,
-      },
-      ...claudePluginSkillRoots(path, plugins),
-    ],
+    [...writableRoots, ...claudePluginSkillRoots(path, plugins)],
     path,
   );
   const discovered = yield* Effect.forEach(skillRoots, readSkillsFromRoot, {
@@ -3198,7 +3568,8 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     marketplaces,
     marketplaceManifests,
   );
-  const skillsResult = yield* readClaudeSkills(path.resolve(claudeHome), input.cwd, plugins).pipe(
+  const resolvedClaudeHome = path.resolve(claudeHome);
+  const skillsResult = yield* readClaudeSkills(resolvedClaudeHome, input.cwd, plugins).pipe(
     Effect.result,
   );
   const messages = [
@@ -3206,8 +3577,17 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     resultMessage(mcpResult),
     resultMessage(skillsResult),
   ].filter((message): message is string => Boolean(message));
+  const [enabledPlugins, writableRoots] = yield* Effect.all([
+    readClaudeEnabledPlugins(resolvedClaudeHome),
+    claudeWritableSkillRoots(resolvedClaudeHome, input.cwd),
+  ]);
   const skills = Result.isSuccess(skillsResult)
-    ? annotatePluginBackedSkills(skillsResult.success, plugins)
+    ? annotateClaudeSkillCapabilities(annotatePluginBackedSkills(skillsResult.success, plugins), {
+        path,
+        userSkillsRoot: claudeUserSkillsRoot(path, resolvedClaudeHome),
+        writableRoots: writableRoots.map((root) => root.root),
+        enabledPlugins,
+      })
     : [];
   return {
     status: messages.length > 0 ? "partial" : "ready",
@@ -3601,6 +3981,241 @@ export const reloadProviderExtensionMcpServers = Effect.fn(
   return { reloaded: true };
 });
 
+/**
+ * Which skills roots a provider lets Threadlines write to and delete from, and where a newly
+ * created skill goes. Resolved from settings alone — no provider process is started, because
+ * create and delete are plain filesystem work on both drivers.
+ */
+interface ProviderSkillRoots {
+  readonly driver: string;
+  /** Where `createProviderExtensionSkill` scaffolds. User scope only in v1. */
+  readonly userSkillsRoot: string;
+  /** Every root a skill may be deleted from, user and project. */
+  readonly writableRoots: ReadonlyArray<string>;
+}
+
+const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderSkillRoots")(
+  function* (input: {
+    readonly cwd?: string | undefined;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly settings: ServerSettings;
+  }): Effect.fn.Return<
+    ProviderSkillRoots,
+    ProviderExtensionsError,
+    FileSystem.FileSystem | Path.Path
+  > {
+    const path = yield* Path.Path;
+    const cwd = input.cwd ?? machineScopeCwd();
+    const providerConfig = yield* resolveProviderActionConfig(input);
+
+    if (providerConfig.driver === CLAUDE_DRIVER) {
+      const decoded = yield* Effect.try({
+        try: () => decodeClaudeSettings(providerConfig.config ?? {}),
+        catch: (cause) =>
+          new ProviderExtensionsError({
+            message: `Could not decode Claude settings for ${input.providerInstanceId}.`,
+            cause,
+          }),
+      });
+      if (!(providerConfig.enabled ?? decoded.enabled)) {
+        return yield* new ProviderExtensionsError({ message: "Provider is disabled." });
+      }
+      const claudeHome = yield* resolveClaudeHomePath(decoded);
+      const roots = yield* claudeWritableSkillRoots(claudeHome, cwd);
+      return {
+        driver: providerConfig.driver,
+        userSkillsRoot: claudeUserSkillsRoot(path, claudeHome),
+        writableRoots: roots.map((root) => root.root),
+      };
+    }
+
+    if (providerConfig.driver === CODEX_DRIVER) {
+      const decoded = yield* Effect.try({
+        try: () => decodeCodexSettings(providerConfig.config ?? {}),
+        catch: (cause) =>
+          new ProviderExtensionsError({
+            message: `Could not decode Codex settings for ${input.providerInstanceId}.`,
+            cause,
+          }),
+      });
+      if (!(providerConfig.enabled ?? decoded.enabled)) {
+        return yield* new ProviderExtensionsError({ message: "Provider is disabled." });
+      }
+      const layout = yield* resolveCodexHomeLayout(decoded);
+      const roots = codexUserSkillsRoots(path, layout);
+      return {
+        driver: providerConfig.driver,
+        userSkillsRoot: roots[0]!,
+        writableRoots: roots,
+      };
+    }
+
+    return yield* new ProviderExtensionsError({
+      message: "Managing skills is only available for Codex and Claude providers.",
+    });
+  },
+);
+
+function skillMarkdownTemplate(input: {
+  readonly name: string;
+  readonly description: string;
+}): string {
+  // JSON quoting doubles as a valid YAML double-quoted scalar, so a description with a colon or a
+  // quote in it cannot break the front matter.
+  return `---
+name: ${input.name}
+description: ${JSON.stringify(input.description)}
+---
+
+# ${input.name}
+
+${input.description}
+
+Replace this with the steps the agent should follow.
+`;
+}
+
+export const createProviderExtensionSkill = Effect.fn(
+  "providerExtensions.createProviderExtensionSkill",
+)(function* (input: {
+  readonly request: ProviderExtensionSkillCreateInput;
+  readonly settings: ServerSettings;
+}): Effect.fn.Return<
+  ProviderExtensionSkillCreateResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const name = input.request.name;
+  // The schema already enforces this, but the check is cheap and keeps a malformed name from ever
+  // reaching a path join.
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) {
+    return yield* new ProviderExtensionsError({
+      message:
+        "Skill names use lower-case letters, digits, and single hyphens, up to 64 characters.",
+    });
+  }
+
+  const roots = yield* resolveProviderSkillRoots({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  const directory = path.join(roots.userSkillsRoot, name);
+  const exists = yield* fileSystem
+    .exists(directory)
+    .pipe(Effect.catch(() => Effect.succeed(false)));
+  if (exists) {
+    return yield* new ProviderExtensionsError({
+      message: `A skill named ${name} already exists at ${directory}.`,
+    });
+  }
+
+  const skillPath = path.join(directory, "SKILL.md");
+  const description =
+    optionalText(input.request.description) ?? `Describe when ${name} should be used.`;
+  yield* fileSystem.makeDirectory(directory, { recursive: true }).pipe(
+    Effect.andThen(
+      fileSystem.writeFileString(skillPath, skillMarkdownTemplate({ name, description })),
+    ),
+    Effect.mapError(
+      (cause) =>
+        new ProviderExtensionsError({
+          message: `Could not create the skill at ${skillPath}.`,
+          cause,
+        }),
+    ),
+  );
+  return { path: skillPath };
+});
+
+export const deleteProviderExtensionSkill = Effect.fn(
+  "providerExtensions.deleteProviderExtensionSkill",
+)(function* (input: {
+  readonly request: ProviderExtensionSkillDeleteInput;
+  readonly settings: ServerSettings;
+}): Effect.fn.Return<
+  ProviderExtensionSkillDeleteResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const skillPath = input.request.path;
+  if (!isCurrentProviderExtensionSkillPath(skillPath)) {
+    return yield* new ProviderExtensionsError({
+      message: "Skill is not in the current provider extensions inventory.",
+    });
+  }
+  if (derivePluginBackedSkillBundle(skillPath)) {
+    return yield* new ProviderExtensionsError({
+      message: "This skill is installed by a plugin. Uninstall the plugin to remove it.",
+    });
+  }
+
+  const roots = yield* resolveProviderSkillRoots({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+
+  const linkTarget = yield* fileSystem
+    .readLink(skillPath)
+    .pipe(Effect.catch(() => Effect.succeed(null)));
+  if (linkTarget !== null) {
+    return yield* new ProviderExtensionsError({
+      message: "Skill could not be deleted because the inventory entry is not a regular file.",
+    });
+  }
+  const stat = yield* fileSystem
+    .stat(skillPath)
+    .pipe(
+      Effect.mapError(() => new ProviderExtensionsError({ message: "Skill could not be read." })),
+    );
+  if (stat.type !== "File") {
+    return yield* new ProviderExtensionsError({
+      message: "Skill could not be deleted because the inventory entry is not a regular file.",
+    });
+  }
+
+  // Compare real paths so a symlinked skills root (the Codex shadow home) resolves to the same
+  // place as the shared one, and so no `..` segment can walk out of a root.
+  const realDirectory = yield* fileSystem
+    .realPath(path.dirname(path.resolve(skillPath)))
+    .pipe(
+      Effect.mapError(
+        () => new ProviderExtensionsError({ message: "Skill directory could not be resolved." }),
+      ),
+    );
+  const realRoots = yield* Effect.forEach(roots.writableRoots, (root) =>
+    fileSystem.realPath(root).pipe(Effect.catch(() => Effect.succeed(null))),
+  );
+  const parent = normalizedPathKey(path.dirname(realDirectory));
+  const insideRoot = realRoots.some((root) => root !== null && normalizedPathKey(root) === parent);
+  if (!insideRoot) {
+    return yield* new ProviderExtensionsError({
+      message: "Skill is not in a skills folder Threadlines manages.",
+    });
+  }
+
+  yield* fileSystem.remove(realDirectory, { recursive: true }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderExtensionsError({
+          message: `Could not delete the skill folder ${realDirectory}.`,
+          cause,
+        }),
+    ),
+  );
+  return { deleted: true };
+});
+
+/**
+ * Codex has a first-class per-skill toggle. Claude has no skill toggle, but it auto-loads each
+ * folder in the user skills dir as a `<name>@skills-dir` plugin, so the normal plugin
+ * enable/disable path reaches it.
+ */
 export const setProviderExtensionSkillEnabled = Effect.fn(
   "providerExtensions.setProviderExtensionSkillEnabled",
 )(function* (input: {
@@ -3611,6 +4226,36 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
   ProviderExtensionsError,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+
+  if (providerConfig.driver === CLAUDE_DRIVER) {
+    const path = yield* Path.Path;
+    const context = yield* resolveClaudeActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+    });
+    const skillPath = optionalText(input.request.path);
+    const claudeHome = yield* resolveClaudeHomePath(context.config);
+    const directory = skillPath
+      ? skillDirectoryUnderRoots(path, [claudeUserSkillsRoot(path, claudeHome)], skillPath)
+      : null;
+    if (!directory) {
+      return yield* new ProviderExtensionsError({
+        message: "Claude can only enable or disable skills in your personal skills folder.",
+      });
+    }
+    yield* runClaudePluginAction(context, [
+      "plugin",
+      input.request.enabled ? "enable" : "disable",
+      `${path.basename(directory)}${CLAUDE_SKILLS_DIR_PLUGIN_SUFFIX}`,
+    ]);
+    return { effectiveEnabled: input.request.enabled };
+  }
+
   const params = codexSkillConfigWriteParams(input.request);
   if (!params) {
     return yield* new ProviderExtensionsError({
@@ -3623,7 +4268,24 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
     settings: input.settings,
   });
   const response = yield* runCodexAppServerAction(context, (client) =>
-    mapCodexRequestError(client.request("skills/config/write", params)),
+    Effect.gen(function* () {
+      // A failed listing must not block the toggle: writing the requested path alone is a partial
+      // result, which still beats refusing to change anything.
+      const shadowedPaths = yield* client.request("skills/list", { cwds: [context.cwd] }).pipe(
+        Effect.map((listed) => codexShadowedSkillWritePaths(listed, input.request)),
+        Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])),
+      );
+      const written = yield* mapCodexRequestError(client.request("skills/config/write", params));
+      yield* Effect.forEach(
+        shadowedPaths,
+        (path) =>
+          mapCodexRequestError(
+            client.request("skills/config/write", { enabled: input.request.enabled, path }),
+          ),
+        { discard: true },
+      );
+      return written;
+    }),
   );
   return { effectiveEnabled: response.effectiveEnabled };
 });
