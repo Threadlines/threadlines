@@ -121,6 +121,7 @@ import { useStore } from "~/store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "~/storeSelectors";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { resolvePathLinkTarget } from "~/terminal-links";
+import { getVcsRefBadge } from "~/worktreeCleanup";
 import { PublishRepositoryDialog } from "../GitActionsControl";
 import { GitAuthRemediationDialog } from "./GitAuthRemediationDialog";
 import { ProviderReviewDialog } from "./ProviderReviewDialog";
@@ -1819,13 +1820,7 @@ function SourceControlBranchMenu({
                     >
                       <span className="min-w-0 truncate">{ref.name}</span>
                       <span className="shrink-0 text-[10px] text-muted-foreground/60">
-                        {ref.current
-                          ? "current"
-                          : ref.isRemote
-                            ? "remote"
-                            : ref.isDefault
-                              ? "default"
-                              : ""}
+                        {getVcsRefBadge(ref, target.projectCwd) ?? ""}
                       </span>
                     </MenuItem>
                   ))

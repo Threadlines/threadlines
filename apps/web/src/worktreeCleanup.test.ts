@@ -1,8 +1,18 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type VcsRef,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "./worktreeCleanup";
+import {
+  formatWorktreePathForDisplay,
+  getOrphanedWorktreePathForThread,
+  getVcsRefBadge,
+} from "./worktreeCleanup";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -85,6 +95,41 @@ describe("getOrphanedWorktreePathForThread", () => {
     ];
     const result = getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"));
     expect(result).toBe("/tmp/repo/worktrees/feature-a");
+  });
+});
+
+describe("getVcsRefBadge", () => {
+  function makeRef(overrides: Partial<VcsRef> = {}): VcsRef {
+    return {
+      name: "feature",
+      current: false,
+      isDefault: false,
+      worktreePath: null,
+      ...overrides,
+    };
+  }
+
+  it("tags a branch checked out in a secondary worktree", () => {
+    const ref = makeRef({ worktreePath: "/repo/.worktrees/feature", isDefault: true });
+    expect(getVcsRefBadge(ref, "/repo")).toBe("worktree");
+  });
+
+  // The panel's picker looks at whichever checkout is being viewed, which may
+  // itself be a worktree; the badge must compare against the project root.
+  it("does not tag the branch that occupies the project's root checkout", () => {
+    const ref = makeRef({ worktreePath: "/repo", isDefault: true });
+    expect(getVcsRefBadge(ref, "/repo")).toBe("default");
+  });
+
+  it("prefers current over every other tag", () => {
+    const ref = makeRef({ current: true, worktreePath: "/repo/.worktrees/feature" });
+    expect(getVcsRefBadge(ref, "/repo")).toBe("current");
+  });
+
+  it("falls back to remote and then default", () => {
+    expect(getVcsRefBadge(makeRef({ isRemote: true, isDefault: true }), "/repo")).toBe("remote");
+    expect(getVcsRefBadge(makeRef({ isDefault: true }), "/repo")).toBe("default");
+    expect(getVcsRefBadge(makeRef(), "/repo")).toBeNull();
   });
 });
 
