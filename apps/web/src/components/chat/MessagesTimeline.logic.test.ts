@@ -499,6 +499,99 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRows[1]?.showCompletionDivider).toBe(true);
   });
 
+  it("moves settled-turn work that trails the response above the assistant message", () => {
+    const workEntry = (id: string, createdAt: string) => ({
+      id,
+      kind: "work" as const,
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        label: id,
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        workEntry("ran-command", "2026-01-01T00:00:05Z"),
+        {
+          id: "assistant-final-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant",
+            text: "All done.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            completedAt: "2026-01-01T00:00:20Z",
+            streaming: false,
+          },
+        },
+        // Turn-end bookkeeping (the checkpoint's changed-files activity) is
+        // recorded after the response completes.
+        workEntry("checkpoint-files", "2026-01-01T00:00:21Z"),
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // The trailing activity folds into the work group above the response; the
+    // response stays the turn's last row.
+    expect(rows.map((row) => row.kind)).toEqual(["work", "message"]);
+    const [workRow] = rows;
+    expect(
+      workRow?.kind === "work" ? workRow.groupedEntries.map((entry) => entry.id) : null,
+    ).toEqual(["ran-command", "checkpoint-files"]);
+  });
+
+  it("keeps the active turn's trailing work below its streamed commentary", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-commentary-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: "assistant-commentary" as never,
+            role: "assistant",
+            text: "Let me check that file.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:05Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "live-read",
+          kind: "work" as const,
+          createdAt: "2026-01-01T00:00:10Z",
+          entry: {
+            id: "live-read",
+            createdAt: "2026-01-01T00:00:10Z",
+            label: "live-read",
+            tone: "tool" as const,
+            turnId: "turn-1" as never,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // Mid-turn a tool that starts after streamed commentary is the newest
+    // activity — it must not jump above the text.
+    expect(rows.map((row) => row.kind)).toEqual(["message", "work", "working"]);
+  });
+
   it("marks only the active assistant turn as streaming for copy controls", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
