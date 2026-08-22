@@ -51,7 +51,8 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Connections", to: CONNECTIONS_SETTINGS_SECTION_PATH, icon: SmartphoneIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
   { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
-  { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
+  // The route stays /settings/plugins: links, panel memory, and the tab search param all key off it.
+  { label: "Plugins & Skills", to: "/settings/plugins", icon: PlugIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
 ];
