@@ -88,6 +88,8 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import {
   addProviderExtensionMarketplace,
   callProviderExtensionMcpTool,
+  createProviderExtensionSkill,
+  deleteProviderExtensionSkill,
   getProviderExtensionOperationStatus,
   installProviderExtensionPlugin,
   readProviderInstructionFiles,
@@ -1365,6 +1367,24 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
               return yield* readProviderExtensionSkill({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCreateProviderExtensionSkill]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCreateProviderExtensionSkill,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* createProviderExtensionSkill({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverDeleteProviderExtensionSkill]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverDeleteProviderExtensionSkill,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* deleteProviderExtensionSkill({ request: input, settings });
             }),
             { "rpc.aggregate": "server" },
           ),

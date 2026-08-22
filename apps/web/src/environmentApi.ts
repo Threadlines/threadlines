@@ -39,6 +39,8 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       getExtensionOperationStatus: rpcClient.server.getProviderExtensionOperationStatus,
       reloadExtensionMcpServers: rpcClient.server.reloadProviderExtensionMcpServers,
       setExtensionSkillEnabled: rpcClient.server.setProviderExtensionSkillEnabled,
+      createExtensionSkill: rpcClient.server.createProviderExtensionSkill,
+      deleteExtensionSkill: rpcClient.server.deleteProviderExtensionSkill,
       readExtensionSkill: rpcClient.server.readProviderExtensionSkill,
       readExtensionPlugin: rpcClient.server.readProviderExtensionPlugin,
       installExtensionPlugin: rpcClient.server.installProviderExtensionPlugin,
