@@ -288,6 +288,41 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           { dirty: messy?.dirty, unmerged: messy?.unmergedCommitCount, isRoot: messy?.isRoot },
           { dirty: true, unmerged: 1, isRoot: false },
         );
+        assert.isFalse(clean?.unrelatedHistory);
+        assert.isFalse(messy?.unrelatedHistory);
+      }),
+    );
+
+    // Checkouts left over from before a history rewrite share no commit with
+    // the default branch. Counting there reports the branch's whole history as
+    // unshipped work, so the listing says "unrelated" and skips the number.
+    it.effect("flags a checkout whose branch shares no history with the base", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+
+        yield* git(cwd, ["checkout", "--orphan", "ancient-branch"]);
+        yield* git(cwd, ["rm", "-rf", "--cached", "."]);
+        yield* writeTextFile(cwd, "ancient.ts", "export const ancient = true;\n");
+        yield* git(cwd, ["add", "ancient.ts"]);
+        yield* git(cwd, ["commit", "-m", "history from before the rewrite"]);
+        // Forced: the orphan commit leaves the base branch's files untracked.
+        yield* git(cwd, ["checkout", "-f", initialBranch]);
+        const ancientPath = path.join(cwd, "worktrees", "ancient");
+        yield* git(cwd, ["worktree", "add", ancientPath, "ancient-branch"]);
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd });
+
+        const ancient = worktrees.find((worktree) => worktree.refName === "ancient-branch");
+        assert.deepStrictEqual(
+          {
+            unrelated: ancient?.unrelatedHistory,
+            unmerged: ancient?.unmergedCommitCount,
+          },
+          { unrelated: true, unmerged: null },
+        );
       }),
     );
 

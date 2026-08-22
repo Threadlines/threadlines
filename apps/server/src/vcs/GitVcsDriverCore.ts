@@ -3866,18 +3866,40 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.catch(() => Effect.succeed(false)),
     );
 
-  /** Commits on `branch` the repository's default branch cannot reach. */
-  const readUnmergedCommitCount = (
+  /**
+   * Commits on `branch` the repository's default branch cannot reach.
+   *
+   * A branch with no merge base against that default branch reports
+   * `unrelatedHistory` and no count: `rev-list` would answer with the whole of
+   * its history, which reads as a mountain of unshipped work when the truth is
+   * that the two histories were never joined (checkouts predating a history
+   * rewrite are the usual source).
+   */
+  const readUnmergedCommits = (
     cwd: string,
     branch: string | null,
-  ): Effect.Effect<number | null> =>
+  ): Effect.Effect<{ readonly count: number | null; readonly unrelatedHistory: boolean }> =>
     Effect.gen(function* () {
       if (branch === null) {
-        return null;
+        return { count: null, unrelatedHistory: false };
       }
       const baseRef = yield* resolveBaseBranchForNoUpstream(cwd, branch);
       if (!baseRef) {
-        return null;
+        return { count: null, unrelatedHistory: false };
+      }
+      const mergeBase = yield* executeGit(
+        "GitVcsDriver.listWorktreeStatuses.mergeBase",
+        cwd,
+        ["merge-base", baseRef, branch],
+        { timeoutMs: 10_000, allowNonZeroExit: true },
+      );
+      // Exit 1 is git's specific "no merge base"; anything higher is a broken
+      // ref or a failed call, which says nothing about the histories.
+      if (mergeBase.exitCode === 1) {
+        return { count: null, unrelatedHistory: true };
+      }
+      if (mergeBase.exitCode !== 0 || mergeBase.stdout.trim().length === 0) {
+        return { count: null, unrelatedHistory: false };
       }
       const result = yield* executeGit(
         "GitVcsDriver.listWorktreeStatuses.revList",
@@ -3886,11 +3908,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { timeoutMs: 10_000, allowNonZeroExit: true },
       );
       if (result.exitCode !== 0) {
-        return null;
+        return { count: null, unrelatedHistory: false };
       }
       const parsed = Number.parseInt(result.stdout.trim(), 10);
-      return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
-    }).pipe(Effect.catch(() => Effect.succeed(null)));
+      return {
+        count: Number.isFinite(parsed) ? Math.max(0, parsed) : null,
+        unrelatedHistory: false,
+      };
+    }).pipe(Effect.catch(() => Effect.succeed({ count: null, unrelatedHistory: false })));
 
   const listWorktreeStatuses: GitVcsDriver.GitVcsDriverShape["listWorktreeStatuses"] = Effect.fn(
     "listWorktreeStatuses",
@@ -3906,12 +3931,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     for (const entry of entries) {
       const entryRealPath = yield* realPathOrSelf(entry.path);
       const isRoot = mainRealPath !== null && entryRealPath === mainRealPath;
+      const unmerged = yield* readUnmergedCommits(entry.path, entry.branch);
       worktrees.push({
         path: entry.path,
         refName: entry.branch,
         isRoot,
         dirty: yield* readWorktreeDirty(entry.path),
-        unmergedCommitCount: yield* readUnmergedCommitCount(entry.path, entry.branch),
+        unmergedCommitCount: unmerged.count,
+        unrelatedHistory: unmerged.unrelatedHistory,
       });
     }
     return { worktrees };

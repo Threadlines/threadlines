@@ -117,9 +117,16 @@ export const VcsWorktreeStatus = Schema.Struct({
   /**
    * Commits on this checkout's branch that the default branch cannot reach.
    * Null when the repository has no resolvable default branch, when the
-   * checkout is detached, or when the count could not be read.
+   * checkout is detached, when the histories are unrelated, or when the count
+   * could not be read.
    */
   unmergedCommitCount: Schema.NullOr(NonNegativeInt),
+  /**
+   * The branch shares no commit at all with the default branch, so a count of
+   * "unmerged" commits would be the whole of its history. Happens to checkouts
+   * left over from before a history rewrite.
+   */
+  unrelatedHistory: Schema.Boolean,
 });
 export type VcsWorktreeStatus = typeof VcsWorktreeStatus.Type;
 const GitResolvedPullRequest = Schema.Struct({
