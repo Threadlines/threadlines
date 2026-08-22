@@ -49,6 +49,7 @@ import {
   deleteProviderExtensionSkill,
   setProviderExtensionSkillEnabled,
   parseClaudeEnabledPlugins,
+  parseSkillFrontMatter,
   skillDirectoryUnderRoots,
   annotateClaudeSkillCapabilities,
   refreshProviderExtensionPluginMarketplaces,
@@ -1733,6 +1734,37 @@ Per-component (rounded)
 
       assert.equal(error.message, "Skill is not in the current provider extensions inventory.");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it("reads folded and literal block scalars in skill front matter", () => {
+    // Shape taken from a real plugin-bundled skill, which rendered as just ">" before this.
+    const folded = parseSkillFrontMatter(
+      [
+        "name: analyzing-expensive-users",
+        "description: >",
+        "  Analyze the most expensive users in AI observability and explain why they cost so much.",
+        "  Use when the user asks about top spenders, expensive users, per-user LLM cost.",
+        "allowed-tools: Read",
+      ].join("\n"),
+    );
+    assert.equal(
+      folded.get("description"),
+      "Analyze the most expensive users in AI observability and explain why they cost so much. Use when the user asks about top spenders, expensive users, per-user LLM cost.",
+    );
+    // The key after the block must still be read, not swallowed by it.
+    assert.equal(folded.get("allowedtools"), "Read");
+
+    const literal = parseSkillFrontMatter(
+      ["description: |-", "  First line.", "  Second line.", "name: keeper"].join("\n"),
+    );
+    assert.equal(literal.get("description"), "First line.\nSecond line.");
+    assert.equal(literal.get("name"), "keeper");
+
+    // Plain scalars keep working, quotes and all.
+    assert.equal(
+      parseSkillFrontMatter('description: "Trade: from chat."').get("description"),
+      "Trade: from chat.",
+    );
   });
 
   it("reads the enabled state Claude writes for skills-dir plugins", () => {

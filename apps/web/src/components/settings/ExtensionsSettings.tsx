@@ -83,6 +83,10 @@ import {
   formatSkillDisplayName,
   formatTokenCount,
   groupExtensionSkills,
+  bucketSkillsByPlugin,
+  dedupeShadowedSkills,
+  EXTENSION_SKILL_GROUP_LABELS,
+  type ExtensionSkillPluginBucket,
   parseExtensionsSettingsTab,
   resolveExtensionsSettingsTab,
   type ExtensionsSettingsTab,
@@ -249,6 +253,8 @@ interface ExtensionsSettingsPanelMemoryState {
   showAdvancedContext?: boolean | undefined;
   /** Overridden by a `tab` search param, so a shared link still opens where it points. */
   tab?: ExtensionsSettingsTab | undefined;
+  /** Plugin bundles left open on the Skills tab. */
+  expandedSkillPlugins?: ReadonlyArray<string> | undefined;
 }
 
 type ExtensionProvidersApi = NonNullable<EnvironmentApi["providers"]>;
@@ -2836,88 +2842,6 @@ function groupExtensionItems(
   }));
 }
 
-interface ExtensionSkillBundleControl {
-  readonly kind: "plugin" | "skills";
-  readonly provider: ProviderExtensionProviderInventory;
-  readonly plugin: ProviderExtensionPlugin;
-  readonly label: string;
-  readonly skillCount: number;
-  readonly busyKey: string;
-  readonly badgeLabel: string;
-  readonly badgeVariant: "outline" | "success";
-  readonly actionLabel: string;
-  readonly nextEnabled: boolean;
-  readonly skills?: ReadonlyArray<ProviderExtensionSkill> | undefined;
-}
-
-function skillBundleControlForGroup(
-  items: ReadonlyArray<ExtensionItem>,
-  filter: ExtensionBrowserFilter,
-): ExtensionSkillBundleControl | null {
-  const skillItems = items.filter(
-    (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
-  );
-  if (skillItems.length !== items.length || skillItems.length === 0) return null;
-
-  const first = skillItems[0]!;
-  const bundleId = first.skill.bundleId?.trim();
-  if (!bundleId) return null;
-  if (skillItems.some((item) => item.skill.bundleId !== bundleId)) return null;
-
-  const plugin = skillBundlePlugin(first);
-  if (!plugin || plugin.installed !== true) return null;
-  const visibleDisabledCount = skillItems.filter((item) => item.skill.enabled === false).length;
-  const visibleEnabledCount = skillItems.filter((item) => item.skill.enabled !== false).length;
-  const label = skillBundleLabel(first.skill);
-
-  if (filter === "disabled" && visibleDisabledCount > 0) {
-    return {
-      kind: "skills",
-      provider: first.provider,
-      plugin,
-      label,
-      skillCount: visibleDisabledCount,
-      busyKey: `${plugin.id}:visible-disabled`,
-      badgeLabel: "Off",
-      badgeVariant: "outline",
-      actionLabel: "Enable",
-      nextEnabled: true,
-      skills: skillItems.map((item) => item.skill),
-    };
-  }
-
-  if (filter === "enabled" && visibleEnabledCount > 0) {
-    return {
-      kind: "skills",
-      provider: first.provider,
-      plugin,
-      label,
-      skillCount: visibleEnabledCount,
-      busyKey: `${plugin.id}:visible-enabled`,
-      badgeLabel: "On",
-      badgeVariant: "success",
-      actionLabel: "Disable",
-      nextEnabled: false,
-      skills: skillItems.map((item) => item.skill),
-    };
-  }
-
-  const pluginEnabled = plugin.enabled !== false;
-
-  return {
-    kind: "plugin",
-    provider: first.provider,
-    plugin,
-    label,
-    skillCount: skillItems.length,
-    busyKey: plugin.id,
-    badgeLabel: pluginEnabled ? "On" : "Off",
-    badgeVariant: pluginEnabled ? "success" : "outline",
-    actionLabel: pluginEnabled ? "Disable" : "Enable",
-    nextEnabled: !pluginEnabled,
-  };
-}
-
 function ExtensionItemGlyph({
   item,
   environmentId,
@@ -3456,7 +3380,6 @@ function ExtensionBrowserDialog({
   environmentId,
   onClose,
   onSelect,
-  onToggleSkillBundle,
 }: {
   section: ExtensionSectionConfig | null;
   providerLabel: string;
@@ -3464,14 +3387,12 @@ function ExtensionBrowserDialog({
   environmentId: EnvironmentId | null;
   onClose: () => void;
   onSelect: (item: ExtensionItem) => void;
-  onToggleSkillBundle: (bundle: ExtensionSkillBundleControl) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ExtensionBrowserFilter>("all");
   const [sort, setSort] = useState<ExtensionBrowserSort>("recommended");
   const [visibleLimit, setVisibleLimit] = useState(EXTENSION_BROWSER_PAGE_SIZE);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [busyBundleId, setBusyBundleId] = useState<string | null>(null);
   const [showEntireCatalog, setShowEntireCatalog] = useState(false);
   const sortOptions = useMemo(
     () =>
@@ -3487,7 +3408,6 @@ function ExtensionBrowserDialog({
     setSort(defaultExtensionBrowserSort(section));
     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
     setCollapsedGroups({});
-    setBusyBundleId(null);
     setShowEntireCatalog(false);
   }, [initialQuery, section?.key]);
 
@@ -3570,41 +3490,6 @@ function ExtensionBrowserDialog({
   const toggleGroup = useCallback((groupKey: string) => {
     setCollapsedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
   }, []);
-
-  const toggleSkillBundle = useCallback(
-    async (bundle: ExtensionSkillBundleControl) => {
-      setBusyBundleId(bundle.busyKey);
-      try {
-        await onToggleSkillBundle(bundle);
-        toastManager.add({
-          type: "success",
-          title:
-            bundle.kind === "skills"
-              ? bundle.nextEnabled
-                ? "Skills enabled"
-                : "Skills disabled"
-              : bundle.nextEnabled
-                ? "Bundle enabled"
-                : "Bundle disabled",
-          description:
-            bundle.kind === "skills"
-              ? `${bundle.label}: ${bundle.skillCount} visible skills updated.`
-              : `${bundle.label} controls ${bundle.skillCount} skills.`,
-        });
-      } catch (error) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Bundle toggle failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      } finally {
-        setBusyBundleId((current) => (current === bundle.busyKey ? null : current));
-      }
-    },
-    [onToggleSkillBundle],
-  );
 
   return (
     <Dialog
@@ -3744,12 +3629,6 @@ function ExtensionBrowserDialog({
                   <div className="divide-y divide-border/45">
                     {groups.map((group) => {
                       const collapsed = collapsedGroups[group.key] === true;
-                      const bundleControl =
-                        section.key === "skills"
-                          ? skillBundleControlForGroup(group.items, filter)
-                          : null;
-                      const bundleBusy =
-                        bundleControl !== null && busyBundleId === bundleControl.busyKey;
                       return (
                         <section key={group.key}>
                           <div className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 backdrop-blur">
@@ -3762,34 +3641,9 @@ function ExtensionBrowserDialog({
                               <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/70">
                                 {group.label}
                               </span>
-                              {bundleControl ? (
-                                <Badge
-                                  size="sm"
-                                  variant={bundleControl.badgeVariant}
-                                  className="shrink-0"
-                                >
-                                  {bundleControl.badgeLabel}
-                                </Badge>
-                              ) : null}
                             </button>
                             <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
                               <span className="font-mono tabular-nums">{group.items.length}</span>
-                              {bundleControl ? (
-                                <Button
-                                  size="xs"
-                                  variant="outline"
-                                  className="h-6 rounded-sm px-2 text-[10px]"
-                                  disabled={bundleBusy}
-                                  onClick={() => void toggleSkillBundle(bundleControl)}
-                                >
-                                  {bundleBusy ? (
-                                    <LoaderIcon className="size-3 animate-spin" />
-                                  ) : (
-                                    <PowerIcon className="size-3" />
-                                  )}
-                                  {bundleControl.actionLabel}
-                                </Button>
-                              ) : null}
                               <button
                                 type="button"
                                 className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-ring"
@@ -3889,7 +3743,10 @@ function SkillListRow({
   environmentId: EnvironmentId | null;
   isBusy: boolean;
   onSelect: (item: ExtensionItem) => void;
-  onToggle: (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => void;
+  /** Omitted for plugin-bundled rows, which follow their plugin's switch instead. */
+  onToggle?:
+    | ((item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => void)
+    | undefined;
 }) {
   const ProviderGlyph = providerIconForDriverLabel(String(item.provider.driver));
   const enabled = item.skill.enabled !== false;
@@ -3912,7 +3769,7 @@ function SkillListRow({
           <span className="block truncate text-[11px] text-muted-foreground/70">{description}</span>
         </span>
       </button>
-      {item.skill.canToggle === true ? (
+      {item.skill.canToggle === true && onToggle ? (
         <Switch
           checked={enabled}
           disabled={isBusy}
@@ -3924,6 +3781,97 @@ function SkillListRow({
           {enabled ? "On" : "Off"}
         </Badge>
       )}
+    </div>
+  );
+}
+
+/**
+ * A plugin's skills, behind one disclosure row. A single plugin can ship a hundred of them, which
+ * as a flat list buries everything the user actually wrote. The switch is the plugin's own
+ * enable/disable: bundled skills follow their plugin rather than toggling one by one.
+ */
+function SkillPluginGroup({
+  bucket,
+  plugin,
+  environmentId,
+  expanded,
+  isBusy,
+  onToggleExpanded,
+  onTogglePlugin,
+  onSelect,
+}: {
+  bucket: ExtensionSkillPluginBucket<Extract<ExtensionItem, { kind: "skill" }>>;
+  plugin: ProviderExtensionPlugin | null;
+  environmentId: EnvironmentId | null;
+  expanded: boolean;
+  isBusy: boolean;
+  onToggleExpanded: () => void;
+  onTogglePlugin: (nextEnabled: boolean) => void;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  const enabled = plugin?.enabled !== false;
+  const countLabel =
+    bucket.matching.length === bucket.total
+      ? `${bucket.total} ${bucket.total === 1 ? "skill" : "skills"}`
+      : `${bucket.matching.length} of ${bucket.total} matching`;
+
+  return (
+    <div className="border-t border-border/40 first:border-t-0">
+      <div className="flex min-h-11 items-center gap-2.5 px-4 sm:px-5">
+        <button
+          type="button"
+          className="-mx-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1 py-2.5 text-left transition-colors hover:text-foreground focus-ring"
+          onClick={onToggleExpanded}
+          aria-expanded={expanded}
+        >
+          <ChevronDownIcon
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/60 transition-transform",
+              expanded ? "" : "-rotate-90",
+            )}
+          />
+          <PluginIcon
+            environmentId={environmentId}
+            iconUrl={plugin?.iconUrl}
+            iconPath={plugin?.iconPath}
+            sizeClassName="size-4"
+            fallback={<PlugIcon className="size-4 shrink-0 text-muted-foreground/45" />}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-foreground">
+              {bucket.label}
+            </span>
+            <span className="block truncate text-[11px] text-muted-foreground/70">
+              {countLabel}
+            </span>
+          </span>
+        </button>
+        {plugin ? (
+          <Switch
+            checked={enabled}
+            disabled={isBusy}
+            aria-label={`${enabled ? "Disable" : "Enable"} ${bucket.label}`}
+            onCheckedChange={(checked) => onTogglePlugin(Boolean(checked))}
+          />
+        ) : (
+          <Badge size="sm" variant={enabled ? "success" : "outline"}>
+            {enabled ? "On" : "Off"}
+          </Badge>
+        )}
+      </div>
+      {expanded ? (
+        <div className="pl-4 sm:pl-6">
+          {bucket.matching.map((item) => (
+            <SkillListRow
+              key={item.skill.path}
+              item={item}
+              environmentId={environmentId}
+              isBusy={false}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4352,6 +4300,10 @@ export function ExtensionsSettingsPanel() {
   );
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
   const [busySkillPath, setBusySkillPath] = useState<string | null>(null);
+  const [busySkillPluginId, setBusySkillPluginId] = useState<string | null>(null);
+  const [expandedSkillPlugins, setExpandedSkillPlugins] = useState<ReadonlyArray<string>>(
+    () => extensionsSettingsPanelMemoryState.expandedSkillPlugins ?? [],
+  );
   const [pageQuery, setPageQuery] = useState("");
   const deferredPageQuery = useDeferredValue(pageQuery);
   const refreshRequestRef = useRef(0);
@@ -4489,6 +4441,10 @@ export function ExtensionsSettingsPanel() {
   useEffect(() => {
     extensionsSettingsPanelMemoryState.tab = tab;
   }, [tab]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.expandedSkillPlugins = expandedSkillPlugins;
+  }, [expandedSkillPlugins]);
 
   // Only this device's provider list is authoritative about this device. A remote
   // scope's chips come from its own inventory, so nothing here may clear them.
@@ -4713,15 +4669,34 @@ export function ExtensionsSettingsPanel() {
   // Both tabs read the same single inventory load; nothing here refetches per tab.
   const allSkillItems = useMemo(
     () =>
-      providerScopedInventory.flatMap((provider) =>
-        provider.skills.map((skill) => skillExtensionItem(provider, skill)),
+      dedupeShadowedSkills(
+        providerScopedInventory.flatMap((provider) =>
+          provider.skills.map((skill) => skillExtensionItem(provider, skill)),
+        ),
+        (item) => ({
+          providerId: String(item.provider.instanceId),
+          name: item.kind === "skill" ? item.skill.name : item.title,
+          scope: item.kind === "skill" ? item.skill.scope : undefined,
+        }),
       ),
     [providerScopedInventory],
   );
+  const skillItems = useMemo(
+    () =>
+      allSkillItems.filter(
+        (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
+      ),
+    [allSkillItems],
+  );
+  // Bundled skills are bucketed per plugin instead of listed flat, so the groups only ever hold
+  // the skills a person wrote themselves.
   const skillGroups = useMemo(
     () =>
       groupExtensionSkills(
-        filterExtensionItems(allSkillItems, deferredPageQuery).filter(
+        filterExtensionItems(
+          skillItems.filter((item) => !item.skill.bundleId?.trim()),
+          deferredPageQuery,
+        ).filter(
           (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
         ),
         (item) => ({
@@ -4730,7 +4705,47 @@ export function ExtensionsSettingsPanel() {
           sortKey: item.title.toLowerCase(),
         }),
       ),
-    [allSkillItems, deferredPageQuery],
+    [deferredPageQuery, skillItems],
+  );
+  const skillPluginBuckets = useMemo(() => {
+    const bundled = skillItems.filter((item) => Boolean(item.skill.bundleId?.trim()));
+    const matching = new Set(
+      filterExtensionItems(bundled, deferredPageQuery).map((item) => item.id),
+    );
+    return bucketSkillsByPlugin(bundled, (item) => ({
+      bundleId: item.skill.bundleId ?? "",
+      label: skillBundleLabel(item.skill),
+      sortKey: item.title.toLowerCase(),
+      matches: matching.has(item.id),
+    }));
+  }, [deferredPageQuery, skillItems]);
+  const toggleSkillPlugin = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      const plugin = skillBundlePlugin(item);
+      if (!providersApi || !plugin) return;
+      setBusySkillPluginId(plugin.id);
+      try {
+        await providersApi.setExtensionPluginEnabled({
+          ...actionBaseInput(item, cwd),
+          pluginId: plugin.id,
+          ...(plugin.scope ? { scope: plugin.scope } : {}),
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true });
+      } catch (toggleError) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `${nextEnabled ? "Enable" : "Disable"} plugin failed`,
+            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusySkillPluginId((current) => (current === plugin.id ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
   );
   const skillCreateProviders = useMemo(
     () =>
@@ -5094,24 +5109,62 @@ export function ExtensionsSettingsPanel() {
             <div id="extensions-tab-skills" role="tabpanel">
               {isInitialInventoryLoading ? (
                 <SkillListSkeleton />
-              ) : skillGroups.length > 0 ? (
-                skillGroups.map((group) => (
-                  <div key={group.key}>
-                    <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 first:border-t-0 sm:px-5">
-                      {group.label}
+              ) : skillGroups.length > 0 || skillPluginBuckets.length > 0 ? (
+                <>
+                  {skillGroups.map((group) => (
+                    <div key={group.key}>
+                      <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 first:border-t-0 sm:px-5">
+                        {group.label}
+                      </div>
+                      {group.items.map((item) => (
+                        <SkillListRow
+                          key={item.skill.path}
+                          item={item}
+                          environmentId={selectedEnvironmentId}
+                          isBusy={busySkillPath === item.skill.path}
+                          onSelect={setSelectedItem}
+                          onToggle={(target, nextEnabled) =>
+                            void toggleSkillRow(target, nextEnabled)
+                          }
+                        />
+                      ))}
                     </div>
-                    {group.items.map((item) => (
-                      <SkillListRow
-                        key={item.skill.path}
-                        item={item}
-                        environmentId={selectedEnvironmentId}
-                        isBusy={busySkillPath === item.skill.path}
-                        onSelect={setSelectedItem}
-                        onToggle={(target, nextEnabled) => void toggleSkillRow(target, nextEnabled)}
-                      />
-                    ))}
-                  </div>
-                ))
+                  ))}
+                  {skillPluginBuckets.length > 0 ? (
+                    <div>
+                      <div className="border-t border-border/50 bg-muted/15 px-4 py-1.5 text-[11px] font-semibold uppercase text-muted-foreground/70 sm:px-5">
+                        {EXTENSION_SKILL_GROUP_LABELS.plugin}
+                      </div>
+                      {skillPluginBuckets.map((bucket) => {
+                        const first = bucket.matching[0]!;
+                        const plugin = skillBundlePlugin(first);
+                        return (
+                          <SkillPluginGroup
+                            key={bucket.bundleId}
+                            bucket={bucket}
+                            plugin={plugin}
+                            environmentId={selectedEnvironmentId}
+                            expanded={
+                              bucket.autoExpand || expandedSkillPlugins.includes(bucket.bundleId)
+                            }
+                            isBusy={busySkillPluginId === plugin?.id}
+                            onToggleExpanded={() =>
+                              setExpandedSkillPlugins((current) =>
+                                current.includes(bucket.bundleId)
+                                  ? current.filter((id) => id !== bucket.bundleId)
+                                  : [...current, bucket.bundleId],
+                              )
+                            }
+                            onTogglePlugin={(nextEnabled) =>
+                              void toggleSkillPlugin(first, nextEnabled)
+                            }
+                            onSelect={setSelectedItem}
+                          />
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <SettingsRow
                   title={
@@ -5283,7 +5336,6 @@ export function ExtensionsSettingsPanel() {
             setIsBrowsingCatalog(false);
             setSelectedItem(item);
           }}
-          onToggleSkillBundle={async () => {}}
         />
         <ExtensionBrowserDialog
           environmentId={selectedEnvironmentId}
@@ -5297,7 +5349,6 @@ export function ExtensionsSettingsPanel() {
             setIsBrowsingApps(false);
             setSelectedItem(item);
           }}
-          onToggleSkillBundle={async () => {}}
         />
         <NewSkillDialog
           open={isCreatingSkill}

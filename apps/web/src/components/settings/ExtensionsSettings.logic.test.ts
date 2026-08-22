@@ -22,6 +22,8 @@ import {
   formatSkillDisplayName,
   formatTokenCount,
   groupExtensionSkills,
+  bucketSkillsByPlugin,
+  dedupeShadowedSkills,
   groupPluginComponents,
   parseExtensionsSettingsTab,
   resolveExtensionsSettingsTab,
@@ -69,6 +71,55 @@ describe("ExtensionsSettings logic", () => {
     expect(groups[1]?.items.map((skill) => skill.name)).toEqual(["alpha", "zebra"]);
     // A bundled skill belongs to its plugin no matter which root it was found in.
     expect(groups[2]?.items.map((skill) => skill.name)).toEqual(["bundled"]);
+  });
+
+  it("hides a Codex built-in skill that the user has their own copy of", () => {
+    const skills = [
+      { id: "user-imagegen", providerId: "codex", name: "imagegen", scope: "user" },
+      { id: "system-imagegen", providerId: "codex", name: "imagegen", scope: "system" },
+      { id: "system-openai-docs", providerId: "codex", name: "openai-docs", scope: "system" },
+      // Same name, different provider: not a collision, both stay.
+      { id: "claude-imagegen", providerId: "claudeAgent", name: "imagegen", scope: "user" },
+    ];
+
+    const visible = dedupeShadowedSkills(skills, (skill) => ({
+      providerId: skill.providerId,
+      name: skill.name,
+      scope: skill.scope,
+    }));
+
+    expect(visible.map((skill) => skill.id)).toEqual([
+      "user-imagegen",
+      "system-openai-docs",
+      "claude-imagegen",
+    ]);
+  });
+
+  it("buckets bundled skills per plugin and opens only the narrowed ones", () => {
+    const skills = [
+      { id: "a", bundle: "posthog@official", label: "PostHog", name: "alpha", matches: true },
+      { id: "b", bundle: "posthog@official", label: "PostHog", name: "beta", matches: false },
+      { id: "c", bundle: "figma@official", label: "Figma", name: "gamma", matches: true },
+      { id: "d", bundle: "figma@official", label: "Figma", name: "delta", matches: true },
+      { id: "e", bundle: "stripe@official", label: "Stripe", name: "eps", matches: false },
+    ];
+
+    const buckets = bucketSkillsByPlugin(skills, (skill) => ({
+      bundleId: skill.bundle,
+      label: skill.label,
+      sortKey: skill.name,
+      matches: skill.matches,
+    }));
+
+    // Sorted by plugin name; the plugin with nothing matching drops out.
+    expect(buckets.map((bucket) => bucket.label)).toEqual(["Figma", "PostHog"]);
+    // Every Figma skill matched, so the query was about the plugin, not a skill inside it.
+    expect(buckets[0]?.autoExpand).toBe(false);
+    expect(buckets[0]?.matching.map((skill) => skill.name)).toEqual(["delta", "gamma"]);
+    // PostHog matched one of two, so the match is the point and the group opens.
+    expect(buckets[1]?.autoExpand).toBe(true);
+    expect(buckets[1]?.total).toBe(2);
+    expect(buckets[1]?.matching.map((skill) => skill.id)).toEqual(["a"]);
   });
 
   it("drops skill groups that have no members", () => {

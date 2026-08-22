@@ -2535,20 +2535,52 @@ const waitForClaudeMcpLoginStatus = Effect.fn("providerExtensions.waitForClaudeM
   },
 );
 
+/** The block scalar openers worth supporting: plugin authors use these for long descriptions. */
+const SKILL_BLOCK_SCALAR_MARKERS = new Set([">", ">-", "|", "|-"]);
+
+/**
+ * Front matter is read by hand rather than with a YAML library, because these files only ever use
+ * top-level `key: value` plus block scalars. A folded block (`>`) joins its lines with spaces, a
+ * literal block (`|`) keeps the newlines. Without this a long description reads as just ">".
+ */
+export function parseSkillFrontMatter(frontMatter: string): Map<string, string> {
+  const metadata = new Map<string, string>();
+  const lines = frontMatter.split(/\r?\n/g);
+  for (let index = 0; index < lines.length; index += 1) {
+    // Only top-level keys: anything indented belongs to the value above it.
+    const match = lines[index]!.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
+    if (!match) continue;
+    const key = normalizeSkillMetadataKey(match[1]!);
+    const rawValue = match[2] ?? "";
+    if (!SKILL_BLOCK_SCALAR_MARKERS.has(rawValue)) {
+      metadata.set(key, parseSkillMetadataValue(rawValue));
+      continue;
+    }
+
+    const body: string[] = [];
+    while (index + 1 < lines.length) {
+      const next = lines[index + 1]!;
+      // A blank line stays inside the block; anything back at the left margin ends it.
+      if (next.trim().length > 0 && !/^\s/.test(next)) break;
+      body.push(next.trim());
+      index += 1;
+    }
+    const folded = rawValue.startsWith(">");
+    metadata.set(
+      key,
+      folded ? body.filter((entry) => entry.length > 0).join(" ") : body.join("\n").trim(),
+    );
+  }
+  return metadata;
+}
+
 function parseSkillMarkdown(input: {
   readonly name: string;
   readonly path: string;
   readonly contents: string;
 }) {
   const frontMatter = input.contents.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  const metadata = new Map<string, string>();
-  if (frontMatter) {
-    for (const line of frontMatter[1]!.split(/\r?\n/g)) {
-      const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
-      if (!match) continue;
-      metadata.set(normalizeSkillMetadataKey(match[1]!), parseSkillMetadataValue(match[2] ?? ""));
-    }
-  }
+  const metadata = frontMatter ? parseSkillFrontMatter(frontMatter[1]!) : new Map<string, string>();
   const enabled = parseSkillMetadataBoolean(metadata.get("defaultenabled")) ?? true;
   return {
     name: optionalText(metadata.get("name")) ?? input.name,
