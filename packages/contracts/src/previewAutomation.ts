@@ -261,6 +261,16 @@ export const PreviewAutomationTabSchema = Schema.Struct({
 
 export const PreviewAutomationTabsSchema = Schema.Struct({
   tabs: Schema.Array(PreviewAutomationTabSchema),
+  /** Whether the browser panel remains visible after this operation. */
+  panelOpen: Schema.Boolean,
+  /** The page that was closed, present only on a successful close. */
+  closedTab: Schema.optionalKey(
+    Schema.Struct({
+      id: Schema.String,
+      title: Schema.String,
+      url: Schema.String,
+    }),
+  ),
 });
 
 /** Pin the agent to another tab, optionally leaving the user's view alone. */

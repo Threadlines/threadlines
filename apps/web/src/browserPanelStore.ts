@@ -58,6 +58,15 @@ export interface ThreadBrowserState {
   activeTabId: string;
 }
 
+export interface ThreadBrowserOwnership {
+  /** Who caused the currently open panel to appear. Runtime-only. */
+  openedBy: "user" | "agent" | null;
+  /** Once true, the agent must stop treating the panel as its private workspace. */
+  userControlled: boolean;
+  /** Tab id to the agent that created (or inherited) it. Runtime-only. */
+  agentOwnerByTabId: Readonly<Record<string, string>>;
+}
+
 const BROWSER_PANEL_STORAGE_KEY = "threadlines:browser-panel:v2";
 
 /**
@@ -116,6 +125,12 @@ const EMPTY_THREAD_STATE: ThreadBrowserState = Object.freeze({
   activeTabId: "",
 });
 
+const EMPTY_BROWSER_OWNERSHIP: ThreadBrowserOwnership = Object.freeze({
+  openedBy: null,
+  userControlled: false,
+  agentOwnerByTabId: {},
+});
+
 /** Chrome's range, so the familiar steps land on familiar numbers. */
 export const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
 
@@ -128,7 +143,7 @@ export function clampZoomFactor(factor: number): number {
 
 /** The next step up or down, so zooming lands on round values rather than drifting. */
 export function steppedZoom(current: number, direction: 1 | -1): number {
-  const steps = direction === 1 ? ZOOM_STEPS : [...ZOOM_STEPS].reverse();
+  const steps = direction === 1 ? ZOOM_STEPS : ZOOM_STEPS.toReversed();
   const next = steps.find((step) =>
     direction === 1 ? step > current + 0.001 : step < current - 0.001,
   );
@@ -346,6 +361,7 @@ export interface PendingBrowserApproval {
 interface BrowserPanelStoreState {
   browserStateByThreadKey: Record<string, ThreadBrowserState>;
   agentStateByThreadKey: Record<string, ThreadBrowserAgentState>;
+  browserOwnershipByThreadKey: Record<string, ThreadBrowserOwnership>;
   pendingApprovalByThreadKey: Record<string, PendingBrowserApproval | null>;
   splitChatFraction: number;
   /** Hides the chat so the page gets the whole centre; the split is remembered. */
@@ -358,6 +374,7 @@ interface BrowserPanelStoreState {
   deviceToolbarOpen: boolean;
   appearance: BrowserAppearance;
   setBrowserOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
+  openBrowserForAgent: (threadRef: ScopedThreadRef, agentId: string) => void;
   toggleBrowserOpen: (threadRef: ScopedThreadRef) => void;
   openTab: (threadRef: ScopedThreadRef, activate?: boolean) => string;
   /**
@@ -369,6 +386,17 @@ interface BrowserPanelStoreState {
    */
   openTabWithUrl: (threadRef: ScopedThreadRef, url: string, activate?: boolean) => string;
   closeTab: (threadRef: ScopedThreadRef, tabId: string) => void;
+  openAgentTab: (
+    threadRef: ScopedThreadRef,
+    agentId: string,
+    input: { url?: string | null; background?: boolean | undefined },
+  ) => string;
+  closeAgentTab: (
+    threadRef: ScopedThreadRef,
+    agentId: string,
+    tabId: string,
+  ) => { closed: boolean; panelOpen: boolean };
+  markBrowserUserControlled: (threadRef: ScopedThreadRef) => void;
   selectTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   setTabUrl: (threadRef: ScopedThreadRef, tabId: string, url: string) => void;
   /**
@@ -424,6 +452,18 @@ function updateAgentState(
   return { agentStateByThreadKey: { ...state.agentStateByThreadKey, [key]: update(current) } };
 }
 
+function updateOwnership(
+  state: BrowserPanelStoreState,
+  threadRef: ScopedThreadRef,
+  update: (current: ThreadBrowserOwnership) => ThreadBrowserOwnership,
+): Pick<BrowserPanelStoreState, "browserOwnershipByThreadKey"> {
+  const key = scopedThreadKey(threadRef);
+  const current = state.browserOwnershipByThreadKey[key] ?? EMPTY_BROWSER_OWNERSHIP;
+  return {
+    browserOwnershipByThreadKey: { ...state.browserOwnershipByThreadKey, [key]: update(current) },
+  };
+}
+
 function updateTab(
   current: ThreadBrowserState,
   tabId: string,
@@ -435,22 +475,102 @@ function updateTab(
   };
 }
 
+function assignAgentOwner(
+  ownership: ThreadBrowserOwnership,
+  tabId: string,
+  agentId: string,
+): ThreadBrowserOwnership {
+  return {
+    ...ownership,
+    agentOwnerByTabId: { ...ownership.agentOwnerByTabId, [tabId]: agentId },
+  };
+}
+
+function removeAgentOwner(
+  ownership: ThreadBrowserOwnership,
+  tabId: string,
+): ThreadBrowserOwnership {
+  const { [tabId]: _removed, ...agentOwnerByTabId } = ownership.agentOwnerByTabId;
+  return {
+    ...ownership,
+    agentOwnerByTabId,
+  };
+}
+
+function shouldForceAgentTabActive(ownership: ThreadBrowserOwnership): boolean {
+  return ownership.openedBy === "agent" && !ownership.userControlled;
+}
+
+function isOnlyEmptyTab(state: ThreadBrowserState): boolean {
+  return (
+    state.tabs.length === 1 &&
+    state.activeTabId === state.tabs[0]?.id &&
+    state.tabs[0]?.url === null
+  );
+}
+
 export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
   persist(
     (set) => ({
       browserStateByThreadKey: {},
       agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
       pendingApprovalByThreadKey: {},
       splitChatFraction: DEFAULT_BROWSER_SPLIT_CHAT_FRACTION,
       expanded: false,
       deviceToolbarOpen: false,
       appearance: "system",
       setBrowserOpen: (threadRef, open) =>
-        set((state) => updateThread(state, threadRef, (current) => ({ ...current, open }))),
+        set((state) => ({
+          ...updateThread(state, threadRef, (current) => ({ ...current, open })),
+          ...updateOwnership(state, threadRef, () =>
+            open
+              ? {
+                  openedBy: "user",
+                  userControlled: true,
+                  agentOwnerByTabId:
+                    state.browserOwnershipByThreadKey[scopedThreadKey(threadRef)]
+                      ?.agentOwnerByTabId ?? {},
+                }
+              : EMPTY_BROWSER_OWNERSHIP,
+          ),
+        })),
+      openBrowserForAgent: (threadRef, agentId) =>
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const current = state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE;
+          const ownership = state.browserOwnershipByThreadKey[key] ?? EMPTY_BROWSER_OWNERSHIP;
+          return {
+            ...updateThread(state, threadRef, (thread) => ({ ...thread, open: true })),
+            ...updateOwnership(state, threadRef, () =>
+              current.open
+                ? ownership.openedBy === null
+                  ? { ...ownership, openedBy: "user", userControlled: true }
+                  : ownership
+                : {
+                    openedBy: "agent",
+                    userControlled: false,
+                    agentOwnerByTabId: isOnlyEmptyTab(current)
+                      ? { [current.activeTabId]: agentId }
+                      : {},
+                  },
+            ),
+          };
+        }),
       toggleBrowserOpen: (threadRef) =>
-        set((state) =>
-          updateThread(state, threadRef, (current) => ({ ...current, open: !current.open })),
-        ),
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const current = state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE;
+          const nextOpen = !current.open;
+          return {
+            ...updateThread(state, threadRef, () => ({ ...current, open: nextOpen })),
+            ...updateOwnership(state, threadRef, () =>
+              nextOpen
+                ? { openedBy: "user", userControlled: true, agentOwnerByTabId: {} }
+                : EMPTY_BROWSER_OWNERSHIP,
+            ),
+          };
+        }),
       openTab: (threadRef, activate = true) => {
         const tab = makeBrowserTab();
         set((state) =>
@@ -479,8 +599,8 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
         return tab.id;
       },
       closeTab: (threadRef, tabId) =>
-        set((state) =>
-          updateThread(state, threadRef, (current) => {
+        set((state) => ({
+          ...updateThread(state, threadRef, (current) => {
             const nextActive = nextActiveTabId(current.tabs, tabId, current.activeTabId);
             if (nextActive === null) {
               // Never leave the panel with no tab at all: closing the last one
@@ -494,6 +614,98 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
               activeTabId: nextActive,
             };
           }),
+          ...updateOwnership(state, threadRef, (current) => removeAgentOwner(current, tabId)),
+        })),
+      openAgentTab: (threadRef, agentId, input) => {
+        const tab = { ...makeBrowserTab(), url: input.url ?? null };
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const ownership = state.browserOwnershipByThreadKey[key] ?? EMPTY_BROWSER_OWNERSHIP;
+          const forceActive = shouldForceAgentTabActive(ownership);
+          const activate = forceActive || input.background !== true;
+          return {
+            ...updateThread(state, threadRef, (current) => {
+              const replacingBlank = forceActive && isOnlyEmptyTab(current);
+              return {
+                ...current,
+                tabs: replacingBlank ? [tab] : [...current.tabs, tab],
+                activeTabId: activate ? tab.id : current.activeTabId,
+              };
+            }),
+            ...updateOwnership(state, threadRef, (current) => {
+              const replacingBlank =
+                forceActive &&
+                isOnlyEmptyTab(state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE);
+              const withoutReplaced = replacingBlank
+                ? removeAgentOwner(
+                    current,
+                    (state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE).activeTabId,
+                  )
+                : current;
+              return assignAgentOwner(withoutReplaced, tab.id, agentId);
+            }),
+            visitedUrls:
+              tab.url === null
+                ? state.visitedUrls
+                : rememberVisit(state.visitedUrls, tab.url, Date.now()),
+          };
+        });
+        return tab.id;
+      },
+      closeAgentTab: (threadRef, agentId, tabId) => {
+        let result = { closed: false, panelOpen: true };
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const ownership = state.browserOwnershipByThreadKey[key] ?? EMPTY_BROWSER_OWNERSHIP;
+          const browser = state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE;
+          if (
+            ownership.agentOwnerByTabId[tabId] !== agentId ||
+            !browser.tabs.some((tab) => tab.id === tabId)
+          ) {
+            result = { closed: false, panelOpen: browser.open };
+            return state;
+          }
+          const nextOwnership = removeAgentOwner(ownership, tabId);
+          const shouldClosePanel =
+            ownership.openedBy === "agent" &&
+            !ownership.userControlled &&
+            Object.keys(nextOwnership.agentOwnerByTabId).length === 0;
+          const threadUpdate = updateThread(state, threadRef, (current) => {
+            if (shouldClosePanel) {
+              return { ...DEFAULT_THREAD_STATE, open: false };
+            }
+            const nextActive = nextActiveTabId(current.tabs, tabId, current.activeTabId);
+            if (nextActive === null) {
+              const replacement = makeBrowserTab();
+              return { ...current, tabs: [replacement], activeTabId: replacement.id };
+            }
+            return {
+              ...current,
+              tabs: current.tabs.filter((tab) => tab.id !== tabId),
+              activeTabId: nextActive,
+            };
+          });
+          result = { closed: true, panelOpen: !shouldClosePanel && browser.open };
+          return {
+            ...threadUpdate,
+            ...updateOwnership(state, threadRef, (current) =>
+              shouldClosePanel ? EMPTY_BROWSER_OWNERSHIP : removeAgentOwner(current, tabId),
+            ),
+          };
+        });
+        return result;
+      },
+      markBrowserUserControlled: (threadRef) =>
+        set((state) =>
+          updateOwnership(state, threadRef, (current) =>
+            current.openedBy === null
+              ? {
+                  openedBy: "user",
+                  userControlled: true,
+                  agentOwnerByTabId: current.agentOwnerByTabId,
+                }
+              : { ...current, userControlled: true },
+          ),
         ),
       selectTab: (threadRef, tabId) =>
         set((state) =>
@@ -589,6 +801,14 @@ export function selectThreadAgentState(
     return EMPTY_AGENT_STATE;
   }
   return agentStateByThreadKey[scopedThreadKey(threadRef)] ?? EMPTY_AGENT_STATE;
+}
+
+export function selectThreadBrowserOwnership(
+  ownershipByThreadKey: Record<string, ThreadBrowserOwnership>,
+  threadRef: ScopedThreadRef | null,
+): ThreadBrowserOwnership {
+  if (threadRef === null) return EMPTY_BROWSER_OWNERSHIP;
+  return ownershipByThreadKey[scopedThreadKey(threadRef)] ?? EMPTY_BROWSER_OWNERSHIP;
 }
 
 export function selectPendingBrowserApproval(

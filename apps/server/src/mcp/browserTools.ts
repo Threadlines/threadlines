@@ -96,7 +96,7 @@ export const BrowserTabsTool = readsOnly(
 export const BrowserOpenTabTool = changesThePage(
   Tool.make("browser_open_tab", {
     description:
-      "Create a browser tab and pin your future browser actions to it. Give a URL to load it immediately. Set background true to leave the user's visible tab alone; otherwise the new tab is brought to the front.",
+      "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately. If the agent had to open a closed browser panel, the new tab is shown even when background is true; otherwise background leaves the user's visible tab alone.",
     parameters: PreviewAutomationOpenTabInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
@@ -107,7 +107,7 @@ export const BrowserOpenTabTool = changesThePage(
 export const BrowserCloseTabTool = changesThePage(
   Tool.make("browser_close_tab", {
     description:
-      "Close a browser tab. Omit tabId to close your pinned tab, or use a stable id from browser_tabs. Returns the remaining tabs.",
+      "Close one of this agent's own browser tabs. Omit tabId to close the pinned tab, or use an owned stable id from browser_tabs. The result reports the closed page, remaining tabs, and whether the browser panel stayed open.",
     parameters: PreviewAutomationCloseTabInputSchema,
     success: PreviewAutomationTabsSchema,
     failure: PreviewAutomationErrorSchema,

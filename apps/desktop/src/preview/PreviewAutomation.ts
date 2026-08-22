@@ -26,6 +26,7 @@ import type {
   DesktopPreviewNetworkFailure,
   DesktopPreviewMoveInput,
   DesktopPreviewNavigationBlocked,
+  DesktopPreviewUserControl,
   DesktopPreviewPressInput,
   DesktopPreviewScrollInput,
   DesktopPreviewSnapshot,
@@ -275,6 +276,20 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) {
         window.webContents.send(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, payload);
+      }
+    }
+  };
+
+  const reportUserControl = (contents: WebContents) => {
+    const payload: DesktopPreviewUserControl = { webContentsId: contents.id };
+    const embedder = contents.hostWebContents;
+    if (embedder !== null && !embedder.isDestroyed()) {
+      embedder.send(IpcChannels.PREVIEW_USER_CONTROL_CHANNEL, payload);
+      return;
+    }
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(IpcChannels.PREVIEW_USER_CONTROL_CHANNEL, payload);
       }
     }
   };
@@ -858,6 +873,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     const onBeforeInput = (_event: unknown, input: { type?: string }) => {
       if (input.type === "keyDown" && !consumeExpectedAgentInput("keyDown")) {
         tab.controlEpoch += 1;
+        reportUserControl(contents);
       }
     };
     const onBeforeMouse = (_event: unknown, input: { type?: string }) => {
@@ -867,7 +883,10 @@ export const make = Effect.sync(function PreviewAutomationMake() {
           : input.type === "mouseWheel"
             ? "mouseWheel"
             : null;
-      if (kind !== null && !consumeExpectedAgentInput(kind)) tab.controlEpoch += 1;
+      if (kind !== null && !consumeExpectedAgentInput(kind)) {
+        tab.controlEpoch += 1;
+        reportUserControl(contents);
+      }
     };
     contents.on("before-input-event", onBeforeInput);
     contents.on("before-mouse-event", onBeforeMouse);

@@ -82,13 +82,17 @@ export interface PreviewAutomationHostTarget {
     active: boolean;
     agent: boolean;
   }>;
+  /** Whether the panel is still visible after a tab lifecycle operation. */
+  readonly panelOpen?: (() => boolean) | undefined;
   /** Create and resolve a tab for this agent session. */
   readonly openTab?: (input: {
     url?: string | undefined;
     background?: boolean | undefined;
   }) => Promise<PreviewAutomationHostTarget>;
   /** Close a tab and return the listing that remains. */
-  readonly closeTab?: (tabId: string | null) => Promise<void>;
+  readonly closeTab?: (
+    tabId: string | null,
+  ) => Promise<{ id: string; title: string; url: string } | void>;
   /** Pin this agent to a tab, optionally without moving the user's view. */
   readonly selectTab: (input: {
     tabId?: string | undefined;
@@ -97,6 +101,8 @@ export interface PreviewAutomationHostTarget {
   }) => Promise<PreviewAutomationHostTarget> | PreviewAutomationHostTarget | void;
   /** What the agent is doing, in words, for the line under the toolbar. */
   readonly onAgentActivity: (activity: AgentActivity) => void;
+  /** The tab changed under the agent because the user acted while it was running. */
+  readonly onUserTakeover?: (() => void) | undefined;
 }
 
 /**
@@ -283,6 +289,7 @@ export function createPreviewAutomationHandler(
             ? await bridge.previewStatus({ webContentsId: target.webContentsId as number })
             : null;
         if (before !== null && after !== null && before.controlEpoch !== after.controlEpoch) {
+          target.onUserTakeover?.();
           throw new Error(
             "The browser action was interrupted because the user took control of this tab.",
           );
@@ -377,7 +384,7 @@ async function dispatch(
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
     }
     case "tabs":
-      return { tabs: target.tabs() };
+      return { tabs: target.tabs(), panelOpen: target.panelOpen?.() ?? true };
     case "openTab": {
       if (target.openTab === undefined) throw new Error("This build cannot open browser tabs.");
       const opened = await target.openTab(input);
@@ -388,10 +395,22 @@ async function dispatch(
         opened.viewport(),
       );
     }
-    case "closeTab":
+    case "closeTab": {
       if (target.closeTab === undefined) throw new Error("This build cannot close browser tabs.");
-      await target.closeTab(typeof input.tabId === "string" ? input.tabId : (target.tabId ?? null));
-      return { tabs: target.tabs() };
+      const closingTabId = typeof input.tabId === "string" ? input.tabId : (target.tabId ?? null);
+      const beforeClose = target.tabs().find((tab) => tab.id === closingTabId);
+      const reportedClosedTab = await target.closeTab(closingTabId);
+      const closedTab =
+        reportedClosedTab ??
+        (beforeClose === undefined
+          ? undefined
+          : { id: beforeClose.id, title: beforeClose.title, url: beforeClose.url });
+      return {
+        tabs: target.tabs(),
+        panelOpen: target.panelOpen?.() ?? true,
+        ...(closedTab === undefined ? {} : { closedTab }),
+      };
+    }
     case "selectTab": {
       const selected = await target.selectTab(input);
       if (selected === undefined) throw new Error("The browser tab could not be selected.");

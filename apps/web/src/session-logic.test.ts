@@ -409,9 +409,9 @@ describe("deriveThreadSubagentHistory", () => {
       updatedAt: "2026-08-11T19:34:59.000Z",
     };
     const [turnPreparing, turnStarted, spawn, wait] = codexSpawnActivities();
-    const collabSpawn = structuredClone(spawn) as typeof spawn;
+    const collabSpawn = structuredClone(spawn!) as NonNullable<typeof spawn>;
     const collabItem = (
-      (collabSpawn?.payload as { data: { item: Record<string, unknown> } }).data as {
+      (collabSpawn.payload as { data: { item: Record<string, unknown> } }).data as {
         item: Record<string, unknown>;
       }
     ).item;
@@ -3050,6 +3050,100 @@ describe("deriveWorkLogEntries", () => {
       id: "browser-started",
       toolTitle: "Browser control",
       detail: "Opening http://localhost:3000",
+      executionState: "completed",
+    });
+  });
+
+  it("collapses Threadlines browser work into a durable verification receipt", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "browser-open-tab",
+        sequence: 1,
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          data: {
+            item: {
+              server: "browser",
+              tool: "browser_open_tab",
+              arguments: {
+                url: "https://docs.example.com/manual",
+                background: true,
+              },
+              result: {
+                structuredContent: {
+                  tabId: "tab-agent-1",
+                  url: "https://docs.example.com/manual",
+                  title: "Manual",
+                },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "browser-wait",
+        sequence: 2,
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          data: {
+            item: {
+              server: "browser",
+              tool: "browser_wait_for",
+              arguments: { tabId: "tab-agent-1", text: "AFP-100" },
+              result: {
+                structuredContent: {
+                  tabId: "tab-agent-1",
+                  url: "https://docs.example.com/manual#verified",
+                  title: "Manual",
+                },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "browser-close-tab",
+        sequence: 3,
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          data: {
+            item: {
+              server: "browser",
+              tool: "browser_close_tab",
+              arguments: {
+                tabId: "tab-agent-1",
+              },
+              result: {
+                structuredContent: {
+                  tabs: [],
+                  panelOpen: false,
+                  closedTab: {
+                    id: "tab-agent-1",
+                    url: "https://docs.example.com/manual#verified",
+                    title: "Manual",
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      toolTitle: "Browser receipt",
+      detail:
+        "Opened https://docs.example.com/manual · Final https://docs.example.com/manual#verified · Verified address, load state, and page content · Closed tab and browser",
       executionState: "completed",
     });
   });

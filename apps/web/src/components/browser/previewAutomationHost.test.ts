@@ -59,18 +59,34 @@ describe("createPreviewAutomationHandler", () => {
 
   it("reports human takeover of the tab as an interrupted action", async () => {
     let controlEpoch = 0;
-    const handle = handlerFor({
-      previewClick: () => {
-        controlEpoch += 1;
-        return Promise.resolve({ x: 10, y: 20 });
-      },
-      previewStatus: () =>
-        Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch }) as never,
-    });
+    let takeoverCount = 0;
+    const handle = createPreviewAutomationHandler(
+      {
+        previewClick: () => {
+          controlEpoch += 1;
+          return Promise.resolve({ x: 10, y: 20 });
+        },
+        previewStatus: () =>
+          Promise.resolve({ url: "http://x/", title: "X", loading: false, controlEpoch }) as never,
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
+        onAgentActivity: () => {},
+        onUserTakeover: () => {
+          takeoverCount += 1;
+        },
+      }),
+    );
 
     const response = await handle(request("click", { target: { ref: "e1" } }));
 
     expect(response.error).toContain("user took control");
+    expect(takeoverCount).toBe(1);
   });
 
   it("sends the operation's input to the bridge along with the tab it acts on", async () => {
@@ -218,6 +234,7 @@ describe("createPreviewAutomationHandler", () => {
     const response = await handle(request("tabs", {}));
 
     expect(response.result).toEqual({
+      panelOpen: true,
       tabs: [
         {
           id: "tab-fixture",
@@ -234,6 +251,51 @@ describe("createPreviewAutomationHandler", () => {
           agent: false,
         },
       ],
+    });
+  });
+
+  it("reports the closed page and whether cleanup closed the panel", async () => {
+    let open = true;
+    let tabs = [
+      {
+        id: "tab-agent",
+        title: "Manual",
+        url: "https://example.com/manual",
+        active: true,
+        agent: true,
+      },
+    ];
+    const handle = createPreviewAutomationHandler({} as DesktopBridge, () => ({
+      tabId: "tab-agent",
+      webContentsId: 42,
+      navigate: () => Promise.resolve(),
+      viewport: () => ({ width: 800, height: 600 }),
+      onAgentPoint: () => {},
+      onAgentActivity: () => {},
+      selectTab: () => {},
+      tabs: () => tabs,
+      panelOpen: () => open,
+      closeTab: async () => {
+        tabs = [];
+        open = false;
+        return {
+          id: "tab-agent",
+          title: "Manual",
+          url: "https://example.com/manual",
+        };
+      },
+    }));
+
+    const response = await handle(request("closeTab"));
+
+    expect(response.result).toEqual({
+      tabs: [],
+      panelOpen: false,
+      closedTab: {
+        id: "tab-agent",
+        title: "Manual",
+        url: "https://example.com/manual",
+      },
     });
   });
 

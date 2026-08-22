@@ -56,7 +56,11 @@ function panelState() {
 describe("openUrlInBrowserPanel", () => {
   beforeEach(() => {
     useStore.setState({ activeEnvironmentId: null, environmentStateById: {} });
-    useBrowserPanelStore.setState({ browserStateByThreadKey: {}, visitedUrls: [] });
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+      visitedUrls: [],
+    });
     useComposerDraftStore.setState({ draftThreadsByThreadKey: {} });
     resetPreviewWebviewsForTests();
   });
