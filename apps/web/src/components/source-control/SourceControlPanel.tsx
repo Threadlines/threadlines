@@ -1915,7 +1915,17 @@ function SourceControlBranchMenu({
             branch,
             worktreePath,
           })
-          .catch(() => undefined);
+          .catch(() => {
+            // The optimistic local update below is now wrong; a switch that
+            // silently stays put is this panel's worst failure mode.
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Couldn't move the thread",
+                description: "The checkout switch didn't reach the server. Try again.",
+              }),
+            );
+          });
       }
       setThreadBranch(activeThreadRef, branch, worktreePath);
     },
@@ -1959,6 +1969,13 @@ function SourceControlBranchMenu({
   const switchCheckoutToWorktree = useCallback(
     (row: WorktreeCleanupRow) => {
       if (!row.refName) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Can't switch to this worktree",
+            description: "It has no branch checked out, so the thread can't follow it.",
+          }),
+        );
         return;
       }
       setCleanupRows(null);
@@ -1997,9 +2014,25 @@ function SourceControlBranchMenu({
     [applyCheckoutSwitch, checkoutMutation, refreshPanel, target.projectCwd, target.worktreePath],
   );
 
+  /**
+   * A refused action must say why. The branch menu shows the safety reason in
+   * place, but these handlers are also reachable from rows and dialogs that
+   * render no reason — a silent return there reads as a dead button.
+   */
+  const notifyRepositorySafetyBlocked = useCallback((reason: string) => {
+    toastManager.add(
+      stackedThreadToast({
+        type: "warning",
+        title: "Action paused",
+        description: reason,
+      }),
+    );
+  }, []);
+
   const runSwitchRef = useCallback(
     (ref: VcsRef) => {
       if (repositorySafetyReason) {
+        notifyRepositorySafetyBlocked(repositorySafetyReason);
         return;
       }
       const selectionTarget = resolveBranchSelectionTarget({
@@ -2019,6 +2052,7 @@ function SourceControlBranchMenu({
     [
       activeThreadSession,
       executeSwitchRef,
+      notifyRepositorySafetyBlocked,
       repositorySafetyReason,
       target.projectCwd,
       target.worktreePath,
@@ -2027,6 +2061,7 @@ function SourceControlBranchMenu({
 
   const runCreateBranch = useCallback(() => {
     if (repositorySafetyReason) {
+      notifyRepositorySafetyBlocked(repositorySafetyReason);
       return;
     }
     const refName = createBranchName.trim();
@@ -2054,13 +2089,18 @@ function SourceControlBranchMenu({
   }, [
     createBranchMutation,
     createBranchName,
+    notifyRepositorySafetyBlocked,
     refreshPanel,
     repositorySafetyReason,
     syncActiveThreadBranch,
   ]);
 
   const runMergeRef = useCallback(() => {
-    if (!pendingMergeRef || repositorySafetyReason) {
+    if (!pendingMergeRef) {
+      return;
+    }
+    if (repositorySafetyReason) {
+      notifyRepositorySafetyBlocked(repositorySafetyReason);
       return;
     }
     const refName = pendingMergeRef.name;
@@ -2088,7 +2128,14 @@ function SourceControlBranchMenu({
       }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
-  }, [currentBranch, mergeMutation, pendingMergeRef, refreshPanel, repositorySafetyReason]);
+  }, [
+    currentBranch,
+    mergeMutation,
+    notifyRepositorySafetyBlocked,
+    pendingMergeRef,
+    refreshPanel,
+    repositorySafetyReason,
+  ]);
 
   return (
     <>
@@ -4855,12 +4902,17 @@ export function SourceControlPanel({
             </div>
           ) : changedFiles.length === 0 ? (
             // Nothing to show is a line, not a box. The left sidebar's empty
-            // states are flat text and this one is no different.
+            // states are flat text and this one is no different. While the
+            // parent-repository gate is up the list is empty because queries
+            // are paused, not because the tree is clean — saying "no changes"
+            // there sends people hunting for a different bug.
             <div
               className="border-t border-border/40 py-2 text-[12px] text-muted-foreground/55"
               data-source-control-empty="true"
             >
-              No working tree changes
+              {isParentRepositoryConfirmationRequired
+                ? "Changes are hidden until you confirm the parent repository above."
+                : "No working tree changes"}
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35 recess">

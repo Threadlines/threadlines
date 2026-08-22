@@ -841,6 +841,87 @@ describe("orchestration projector", () => {
     expect(afterUpdate.threads[0]?.updatedAt).toBe(updatedAt);
   });
 
+  it("clears a stale session effectiveCwd when a stopped thread's worktree changes", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    let sequence = 0;
+    let model = createEmptyReadModel(createdAt);
+    const apply = async (type: Parameters<typeof makeEvent>[0]["type"], payload: unknown) => {
+      sequence += 1;
+      model = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence,
+            type,
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: createdAt,
+            commandId: `cmd-${sequence}`,
+            payload,
+          }),
+        ),
+      );
+    };
+
+    await apply("thread.created", {
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "demo",
+      modelSelection: {
+        provider: ProviderDriverKind.make("codex"),
+        model: "gpt-5.3-codex",
+      },
+      runtimeMode: "full-access",
+      branch: "feature-a",
+      worktreePath: "/repo/.worktrees/feature-a",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const session = {
+      threadId: "thread-1",
+      status: "running",
+      providerName: "codex",
+      providerSessionId: "session-1",
+      providerThreadId: "provider-thread-1",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: createdAt,
+    };
+    await apply("thread.session-set", { threadId: "thread-1", session });
+    await apply("thread.effective-cwd-set", {
+      threadId: "thread-1",
+      effectiveCwd: "/repo/.worktrees/feature-a",
+      effectiveCwdSource: "session",
+      updatedAt: createdAt,
+    });
+
+    // A running session keeps its effective cwd: the switch is queued, and
+    // the session really is still working in the old checkout.
+    await apply("thread.meta-updated", {
+      threadId: "thread-1",
+      branch: "main",
+      worktreePath: null,
+      updatedAt: createdAt,
+    });
+    expect(model.threads[0]?.effectiveCwd).toBe("/repo/.worktrees/feature-a");
+
+    // Once the session is stopped the same switch applies immediately, so
+    // the leftover session cwd must stop shadowing the new checkout.
+    await apply("thread.session-set", {
+      threadId: "thread-1",
+      session: { ...session, status: "stopped" },
+    });
+    await apply("thread.meta-updated", {
+      threadId: "thread-1",
+      branch: "main",
+      worktreePath: null,
+      updatedAt: createdAt,
+    });
+    expect(model.threads[0]?.effectiveCwd).toBeNull();
+    expect(model.threads[0]?.worktreePath).toBeNull();
+  });
+
   it("marks assistant messages completed with non-streaming updates", async () => {
     const createdAt = "2026-02-23T09:00:00.000Z";
     const deltaAt = "2026-02-23T09:00:01.000Z";

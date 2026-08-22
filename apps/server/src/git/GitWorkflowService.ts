@@ -1,4 +1,7 @@
-import * as nodePath from "node:path";
+import {
+  areFilesystemPathsEqual,
+  normalizeFilesystemPathForComparison,
+} from "@threadlines/shared/path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -178,9 +181,36 @@ function withRepositoryContext<T extends VcsStatusLocalResult>(
   return {
     ...status,
     repositoryRoot,
-    repositoryRootRelation:
-      nodePath.resolve(repositoryRoot) === nodePath.resolve(cwd) ? "same" : "ancestor",
+    repositoryRootRelation: resolveRepositoryRootRelation(repositoryRoot, cwd),
   };
+}
+
+/**
+ * "ancestor" gates the whole source-control panel behind a confirmation, so
+ * it must mean exactly one thing: the repository root is a genuine parent
+ * directory of the panel's cwd. Plain string comparison used to report
+ * "ancestor" for any mismatch, which raised the gate for healthy checkouts
+ * whenever git's resolved root differed from the configured cwd only by
+ * symlinks, casing, or separators (worktrees under /tmp on macOS, drive
+ * casing on Windows). Divergence that is not a real parent/child pair reads
+ * as "same": git resolved this cwd to that root, so the panel is operating
+ * on its own repository.
+ */
+export function resolveRepositoryRootRelation(
+  repositoryRoot: string,
+  cwd: string,
+): "same" | "ancestor" {
+  if (areFilesystemPathsEqual(repositoryRoot, cwd)) {
+    return "same";
+  }
+  const rootNormalized = normalizeFilesystemPathForComparison(repositoryRoot);
+  const cwdNormalized = normalizeFilesystemPathForComparison(cwd);
+  const separator = rootNormalized.includes("\\") ? "\\" : "/";
+  return cwdNormalized.startsWith(
+    rootNormalized.endsWith(separator) ? rootNormalized : `${rootNormalized}${separator}`,
+  )
+    ? "ancestor"
+    : "same";
 }
 
 const unsupportedGitWorkflow = (operation: string, cwd: string, detail: string) =>

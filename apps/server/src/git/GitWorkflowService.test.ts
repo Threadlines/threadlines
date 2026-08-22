@@ -345,3 +345,39 @@ describe("GitWorkflowService", () => {
     }).pipe(Effect.provide(testLayer));
   });
 });
+
+describe("resolveRepositoryRootRelation", () => {
+  it("reads a worktree root as same across separators and casing", () => {
+    assert.equal(GitWorkflowService.resolveRepositoryRootRelation("/repo/wt", "/repo/wt"), "same");
+    assert.equal(GitWorkflowService.resolveRepositoryRootRelation("/repo/wt", "/repo/wt/"), "same");
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation(
+        "C:\\Users\\Will\\repo",
+        "c:/users/will/repo",
+      ),
+      "same",
+    );
+  });
+
+  it("reads a genuine subdirectory as ancestor", () => {
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation("/repo", "/repo/apps/web"),
+      "ancestor",
+    );
+  });
+
+  it("does not read symlink-style divergence as ancestor", () => {
+    // git resolves /tmp to /private/tmp on macOS; the configured cwd may not.
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation("/private/tmp/wt", "/tmp/wt"),
+      "same",
+    );
+  });
+
+  it("does not read a sibling path with a shared prefix as ancestor", () => {
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation("/repo", "/repo-archive/apps"),
+      "same",
+    );
+  });
+});

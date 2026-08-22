@@ -1179,7 +1179,17 @@ export default function GitActionsControl({
               branch,
               worktreePath,
             })
-            .catch(() => undefined);
+            .catch(() => {
+              // The optimistic update below already happened; a branch label
+              // that silently disagrees with the server is a lying UI.
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Couldn't save the branch change",
+                  description: "The update didn't reach the server. Try again.",
+                }),
+              );
+            });
         }
 
         setThreadBranch(activeThreadRef, branch, worktreePath);
