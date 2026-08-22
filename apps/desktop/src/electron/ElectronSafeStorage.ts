@@ -68,3 +68,36 @@ const make = ElectronSafeStorage.of({
 });
 
 export const layer = Layer.succeed(ElectronSafeStorage, make);
+
+/**
+ * Marks plain-text payloads so they can never be mistaken for (or fed to) the
+ * OS-encrypted format, and so real encrypted payloads fail cleanly here.
+ */
+const PLAIN_TEXT_PREFIX = "threadlines-dev-plaintext:";
+
+const makePlainText = ElectronSafeStorage.of({
+  isEncryptionAvailable: Effect.succeed(true),
+  encryptString: (value) =>
+    Effect.sync(() => new TextEncoder().encode(`${PLAIN_TEXT_PREFIX}${value}`)),
+  decryptString: (value) =>
+    Effect.suspend(() => {
+      const decoded = new TextDecoder().decode(value);
+      if (!decoded.startsWith(PLAIN_TEXT_PREFIX)) {
+        return Effect.fail(
+          new ElectronSafeStorageDecryptError({
+            cause: new Error("Payload is not in the dev plain-text format."),
+          }),
+        );
+      }
+      return Effect.succeed(decoded.slice(PLAIN_TEXT_PREFIX.length));
+    }),
+});
+
+/**
+ * Dev-only substitute that skips the OS keychain. Development runs use the
+ * ad-hoc-signed Electron binary from node_modules, which macOS cannot pin in
+ * keychain ACLs, so every launch re-prompts for the login keychain password.
+ * Dev secrets are confined to the isolated dev state directory, where plain
+ * text is acceptable.
+ */
+export const layerPlainText = Layer.succeed(ElectronSafeStorage, makePlainText);

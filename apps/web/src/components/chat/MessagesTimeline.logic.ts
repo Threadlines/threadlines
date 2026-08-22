@@ -284,7 +284,10 @@ export function deriveMessagesTimelineRows(input: {
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  const visibleTimelineEntries = deriveVisibleTimelineEntries(input);
+  const visibleTimelineEntries = hoistTrailingTurnWorkAboveResponse(
+    deriveVisibleTimelineEntries(input),
+    input.isWorking ? (input.activeTurnId ?? null) : null,
+  );
   const durationStartByMessageId = computeMessageDurationStart(
     visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
@@ -567,6 +570,68 @@ function deriveTrackerAgentSpawnIds(
     }
   }
   return spawnIds;
+}
+
+/**
+ * A turn's response reads as its final word, but turn-end bookkeeping — the
+ * checkpoint's changed-files activity, a tool event that settles late — is
+ * recorded after the assistant message and would otherwise render below it.
+ * For every settled turn, work entries trailing the turn's last assistant
+ * message move to just above that message. The turn named by `activeTurnId`
+ * keeps raw order: while it is still working, activity that starts after a
+ * streamed commentary segment really is the newest thing and belongs below it.
+ */
+function hoistTrailingTurnWorkAboveResponse(
+  entries: TimelineEntry[],
+  activeTurnId: TurnId | null,
+): TimelineEntry[] {
+  const lastAssistantIndexByTurn = new Map<TurnId, number>();
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.kind !== "message" || entry.message.role !== "assistant") {
+      continue;
+    }
+    const turnId = entry.message.turnId;
+    if (turnId != null && turnId !== activeTurnId) {
+      lastAssistantIndexByTurn.set(turnId, index);
+    }
+  }
+  if (lastAssistantIndexByTurn.size === 0) {
+    return entries;
+  }
+
+  const hoistedByAnchorIndex = new Map<number, TimelineEntry[]>();
+  const hoistedIndices = new Set<number>();
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.kind !== "work" || entry.entry.turnId == null) {
+      continue;
+    }
+    const anchorIndex = lastAssistantIndexByTurn.get(entry.entry.turnId);
+    if (anchorIndex === undefined || index <= anchorIndex) {
+      continue;
+    }
+    const hoisted = hoistedByAnchorIndex.get(anchorIndex) ?? [];
+    hoisted.push(entry);
+    hoistedByAnchorIndex.set(anchorIndex, hoisted);
+    hoistedIndices.add(index);
+  }
+  if (hoistedIndices.size === 0) {
+    return entries;
+  }
+
+  const result: TimelineEntry[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    if (hoistedIndices.has(index)) {
+      continue;
+    }
+    const hoisted = hoistedByAnchorIndex.get(index);
+    if (hoisted) {
+      result.push(...hoisted);
+    }
+    result.push(entries[index]!);
+  }
+  return result;
 }
 
 function deriveVisibleTimelineEntries(input: {

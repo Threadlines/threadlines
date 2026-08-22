@@ -716,7 +716,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [activeSearchTargetMessageId, setActiveSearchTargetMessageId] = useState<MessageId | null>(
     null,
   );
+  const [legendListEpoch, setLegendListEpoch] = useState(0);
   const lastHandledStickToBottomRequestKeyRef = useRef(stickToBottomRequestKey);
+  const previousActiveTurnInProgressRef = useRef(activeTurnInProgress);
   const userScrollLockTimerRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1121,13 +1123,48 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const hasRows = rows.length > 0;
 
+  // LegendList can retain the live tail's old total size when the working row
+  // disappears, leaving scrollable space below the settled response. Reset its
+  // layout only for a pinned active-to-settled transition; a reader who has
+  // scrolled up keeps the current list and position.
   useEffect(() => {
-    if (!hasRows || searchTargetRowIndex >= 0) {
+    const wasActiveTurnInProgress = previousActiveTurnInProgressRef.current;
+    previousActiveTurnInProgressRef.current = activeTurnInProgress;
+    if (!wasActiveTurnInProgress || activeTurnInProgress || !hasRows || searchTargetRowIndex >= 0) {
+      return;
+    }
+    if (!autoStickToBottomRef.current && !isTimelineListAtEnd(listRef.current)) {
+      return;
+    }
+
+    clearUserScrollLockTimer();
+    setAutoStickToBottomState(true);
+    onIsAtEndChange(true);
+    setLegendListEpoch((epoch) => epoch + 1);
+  }, [
+    activeTurnInProgress,
+    clearUserScrollLockTimer,
+    hasRows,
+    listRef,
+    onIsAtEndChange,
+    searchTargetRowIndex,
+    setAutoStickToBottomState,
+  ]);
+
+  useEffect(() => {
+    if (!legendListReady || !hasRows || searchTargetRowIndex >= 0) {
       return;
     }
 
     return scheduleStickToBottomFrames(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT, stickToBottomNow);
-  }, [hasRows, routeThreadKey, searchTargetRowIndex, stickToBottomNow]);
+  }, [
+    hasRows,
+    legendListEpoch,
+    legendListReady,
+    routeThreadKey,
+    searchTargetRowIndex,
+    stickToBottomNow,
+  ]);
 
   useEffect(() => {
     if (!hasRows || stickToBottomRequestKey === lastHandledStickToBottomRequestKeyRef.current) {
@@ -1202,23 +1239,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [legendListReady, stickToBottomNow]);
 
   useEffect(() => {
-    if (!hasRows || (!activeTurnInProgress && !stickToBottomRequestPending)) {
-      return;
-    }
-    if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
+    if (!hasRows || (!autoStickToBottomRef.current && !stickToBottomRequestPending)) {
       return;
     }
 
-    // Live rows above the stable working anchor can change height without
-    // changing the last row. LegendList settles those measurements across a
-    // few frames, so keep the pinned tail aligned throughout that window.
+    // Rows above the visual tail can change height both while a turn is live
+    // and just after it settles (completion metadata, receipts, late measured
+    // markdown). LegendList settles those measurements across a few frames, so
+    // keep the pinned tail aligned throughout that window.
     return scheduleStickToBottomFrames(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT, () => {
       if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
         return;
       }
       void listRef.current?.scrollToEnd?.({ animated: false });
     });
-  }, [activeTurnInProgress, hasRows, listRef, rows, stickToBottomRequestPending]);
+  }, [hasRows, listRef, rows, stickToBottomRequestPending]);
 
   useEffect(() => {
     return () => {
@@ -1334,6 +1369,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           onKeyUpCapture={handleTranscriptSelectionEnd}
         >
           <LegendList<MessagesTimelineRow>
+            key={`${routeThreadKey}:${legendListEpoch}`}
             ref={assignLegendListRef}
             data={rows}
             keyExtractor={keyExtractor}

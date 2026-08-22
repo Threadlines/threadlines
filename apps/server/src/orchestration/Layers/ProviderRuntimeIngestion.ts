@@ -479,25 +479,6 @@ function isMarkdownBoundaryBefore(char: string | undefined): boolean {
   );
 }
 
-function isMarkdownBoundaryAfter(char: string | undefined): boolean {
-  return (
-    char === undefined ||
-    /\s/u.test(char) ||
-    char === "." ||
-    char === "," ||
-    char === ":" ||
-    char === ";" ||
-    char === "!" ||
-    char === "?" ||
-    char === ")" ||
-    char === "]" ||
-    char === "}" ||
-    char === ">" ||
-    char === '"' ||
-    char === "'"
-  );
-}
-
 interface MarkdownLine {
   readonly text: string;
   readonly start: number;
@@ -788,7 +769,11 @@ function findUnclosedEmphasisStart(text: string): number | null {
       isMarkdownBoundaryBefore(previousChar) &&
       isAsciiAlphaNumeric(nextChar) &&
       (marker === "*" || length === 2);
-    const canClose = isAsciiAlphaNumeric(previousChar) && isMarkdownBoundaryAfter(nextChar);
+    // Closing only needs a non-space character before the run (CommonMark's
+    // right-flanking rule). Requiring more — e.g. an alphanumeric — misses
+    // closers like "**done.**" or "**Note:**", leaving a phantom open span
+    // that wedges the streaming flush until the message completes.
+    const canClose = previousChar !== undefined && !/\s/u.test(previousChar);
     const openIndex = markerStack.findLastIndex(
       (entry) => entry.marker === marker && entry.length === length,
     );

@@ -171,6 +171,18 @@ const desktopEnvironmentLayer = Layer.unwrap(
   }),
 );
 
+// Keychain-backed secret storage in production; plain text in dev, where the
+// ad-hoc-signed Electron binary would otherwise trigger a keychain password
+// prompt on every launch (see ElectronSafeStorage.layerPlainText).
+const desktopSecretStorageLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    return environment.isDevelopment
+      ? DesktopSecretStorage.layerPlainText
+      : DesktopSecretStorage.layer;
+  }),
+);
+
 const resolveDesktopSshCliRunner = (
   environment: DesktopEnvironment.DesktopEnvironmentShape,
   settings: DesktopSettingsValue,
@@ -209,7 +221,6 @@ const electronLayer = Layer.mergeAll(
   ElectronDialog.layer,
   ElectronMenu.layer,
   ElectronProtocol.layer,
-  DesktopSecretStorage.layer,
   ElectronGlobalShortcut.layer,
   ElectronShell.layer,
   ElectronSpelling.layer.pipe(Layer.provide(NodeServices.layer)),
@@ -228,7 +239,7 @@ const desktopFoundationLayer = Layer.mergeAll(
   DesktopSavedEnvironments.layer,
   DesktopAssets.layer,
   DesktopObservability.layer.pipe(Layer.provideMerge(DesktopDataMigration.layer)),
-).pipe(Layer.provideMerge(desktopEnvironmentLayer));
+).pipe(Layer.provideMerge(desktopSecretStorageLayer), Layer.provideMerge(desktopEnvironmentLayer));
 
 const desktopSshLayer = Layer.mergeAll(desktopSshEnvironmentLayer, DesktopSshRemoteApi.layer).pipe(
   Layer.provideMerge(DesktopSshPasswordPrompts.layer()),
