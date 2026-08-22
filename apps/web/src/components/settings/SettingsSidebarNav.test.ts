@@ -18,10 +18,10 @@ describe("SETTINGS_NAV_ITEMS", () => {
     expect(SETTINGS_NAV_ITEMS.map((item) => item.label)).toEqual([
       "General",
       "Providers",
+      "Plugins & Skills",
       "Connections",
       "Source Control",
       "Agent Instructions",
-      "Plugins",
       "Keybindings",
       "Archives",
     ]);
@@ -35,10 +35,10 @@ describe("SETTINGS_NAV_ITEMS", () => {
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
       "/settings/general",
       "/settings/providers",
+      "/settings/plugins",
       "/settings/connections",
       "/settings/source-control",
       "/settings/instructions",
-      "/settings/plugins",
       "/settings/archived",
     ]);
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
