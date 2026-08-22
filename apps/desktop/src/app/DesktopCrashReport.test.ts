@@ -66,6 +66,18 @@ describe("resolveTelemetryConsent", () => {
     );
   });
 
+  it("reads JSONC settings the way the server does", () => {
+    assert.isFalse(
+      resolveTelemetryConsent({
+        envOverride: undefined,
+        rawSettingsJson: `{
+          // telemetry disabled by hand
+          "usageAnalyticsEnabled": false,
+        }`,
+      }),
+    );
+  });
+
   it("keeps the default when settings are unreadable", () => {
     assert.isTrue(resolveTelemetryConsent({ envOverride: undefined, rawSettingsJson: "not json" }));
   });

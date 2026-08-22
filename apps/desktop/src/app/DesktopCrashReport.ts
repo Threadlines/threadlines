@@ -16,8 +16,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import * as Crypto from "node:crypto";
+
+import { DEFAULT_SERVER_SETTINGS, ServerSettings } from "@threadlines/contracts";
+import { fromLenientJson } from "@threadlines/shared/schemaJson";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
@@ -82,10 +86,14 @@ export function truncateTail(text: string, maxChars: number = STDERR_TAIL_MAX_CH
   return text.length <= maxChars ? text : text.slice(text.length - maxChars);
 }
 
+const ServerSettingsJson = fromLenientJson(ServerSettings);
+const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
+
 /**
  * Mirrors the server's telemetry consent: `THREADLINES_TELEMETRY_ENABLED`
- * wins when set, otherwise `usageAnalyticsEnabled` from settings.json,
- * defaulting to enabled when the file is absent or unreadable.
+ * wins when set, otherwise `usageAnalyticsEnabled` from settings.json decoded
+ * with the same lenient JSONC parser the server uses, defaulting to enabled
+ * when the file is absent or undecodable.
  */
 export function resolveTelemetryConsent(input: {
   readonly envOverride: string | undefined;
@@ -96,17 +104,12 @@ export function resolveTelemetryConsent(input: {
   if (override === "true") return true;
 
   if (input.rawSettingsJson === undefined) {
-    return true;
+    return DEFAULT_SERVER_SETTINGS.usageAnalyticsEnabled;
   }
-  try {
-    const parsed: unknown = JSON.parse(input.rawSettingsJson);
-    if (typeof parsed === "object" && parsed !== null && "usageAnalyticsEnabled" in parsed) {
-      return (parsed as { usageAnalyticsEnabled?: unknown }).usageAnalyticsEnabled !== false;
-    }
-  } catch {
-    // Unreadable settings keep the default.
-  }
-  return true;
+  return Option.match(decodeServerSettingsJson(input.rawSettingsJson), {
+    onNone: () => DEFAULT_SERVER_SETTINGS.usageAnalyticsEnabled,
+    onSome: (settings) => settings.usageAnalyticsEnabled,
+  });
 }
 
 const hashIdentifier = (value: string): string =>
@@ -120,17 +123,22 @@ const makeDesktopCrashReport = Effect.gen(function* () {
 
   // Same file the server uses, so the crash report and later usage telemetry
   // count as one install. Created here when the backend never got far enough
-  // to create it itself.
+  // to create it itself. Like the server, sending is skipped when the id
+  // cannot be persisted: an unpersisted id would make every report look like
+  // a fresh installation.
   const getIdentifier = Effect.gen(function* () {
     const existing = yield* fileSystem
       .readFileString(anonymousIdPath)
       .pipe(Effect.map(Option.some), Effect.orElseSucceed(Option.none<string>));
     if (Option.isSome(existing)) {
-      return hashIdentifier(existing.value);
+      return Option.some(hashIdentifier(existing.value));
     }
     const generated = Crypto.randomUUID();
-    yield* fileSystem.writeFileString(anonymousIdPath, generated).pipe(Effect.ignore);
-    return hashIdentifier(generated);
+    const persisted = yield* fileSystem.writeFileString(anonymousIdPath, generated).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    return persisted ? Option.some(hashIdentifier(generated)) : Option.none<string>();
   });
 
   const reportStartupFailure: DesktopCrashReportShape["reportStartupFailure"] = (report) =>
@@ -150,13 +158,14 @@ const makeDesktopCrashReport = Effect.gen(function* () {
       if (!consented) return;
 
       const identifier = yield* getIdentifier;
+      if (Option.isNone(identifier)) return;
       const scrub = (text: string) => scrubUserPaths(text, environment.homeDirectory);
       const payload = {
         api_key: posthogKey,
         batch: [
           {
             event: "desktop.backend.startup_failed",
-            distinct_id: identifier,
+            distinct_id: identifier.value,
             properties: {
               $process_person_profile: false,
               platform: environment.platform,

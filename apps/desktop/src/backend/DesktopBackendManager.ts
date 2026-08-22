@@ -42,6 +42,8 @@ const MAX_RESTART_DELAY = Duration.seconds(10);
 const MAX_STARTUP_ATTEMPTS = 3;
 // Cap on the retained stderr needed for a useful crash report.
 const STDERR_TAIL_MAX_CHARS = 8_192;
+// How long a finished process's output drains may lag its exit.
+const DRAIN_FLUSH_TIMEOUT = Duration.seconds(1);
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
@@ -151,6 +153,8 @@ interface BackendManagerState {
   readonly active: Option.Option<ActiveBackendRun>;
   readonly restartAttempt: number;
   readonly restartFiber: Option.Option<Fiber.Fiber<void, never>>;
+  /** Startup-failure dialog in flight; interrupted by stop(). */
+  readonly promptFiber: Option.Option<Fiber.Fiber<void, never>>;
   readonly nextRunId: number;
 }
 
@@ -162,6 +166,7 @@ const initialState: BackendManagerState = {
   active: Option.none(),
   restartAttempt: 0,
   restartFiber: Option.none(),
+  promptFiber: Option.none(),
   nextRunId: 1,
 };
 
@@ -268,7 +273,11 @@ const encodeBootstrapJson = Schema.encodeEffect(Schema.fromJsonString(DesktopBac
 
 const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   options: RunBackendProcessOptions,
-): Effect.fn.Return<BackendProcessExit, BackendProcessError, BackendProcessRunRequirements> {
+): Effect.fn.Return<
+  { readonly exit: BackendProcessExit; readonly flushOutput: Effect.Effect<void> },
+  BackendProcessError,
+  BackendProcessRunRequirements
+> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const bootstrapJson = yield* encodeBootstrapJson(options.bootstrap).pipe(
     Effect.mapError((cause) => new BackendProcessBootstrapEncodeError({ cause })),
@@ -302,9 +311,12 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     .pipe(Effect.mapError((cause) => new BackendProcessSpawnError({ cause })));
 
   yield* options.onStarted?.(handle.pid) ?? Effect.void;
+  const drainFibers: Array<Fiber.Fiber<void, never>> = [];
   if (options.captureOutput) {
-    yield* drainBackendOutput("stdout", handle.stdout, onOutput).pipe(Effect.forkScoped);
-    yield* drainBackendOutput("stderr", handle.stderr, onOutput).pipe(Effect.forkScoped);
+    drainFibers.push(
+      yield* drainBackendOutput("stdout", handle.stdout, onOutput).pipe(Effect.forkScoped),
+      yield* drainBackendOutput("stderr", handle.stderr, onOutput).pipe(Effect.forkScoped),
+    );
   }
   yield* waitForHttpReady(
     options.httpBaseUrl,
@@ -316,7 +328,14 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     Effect.forkScoped,
   );
 
-  return describeProcessExit(yield* Effect.result(handle.exitCode));
+  const exit = describeProcessExit(yield* Effect.result(handle.exitCode));
+  // Joining the drains here would delay finalization (and make a dead run
+  // look active to start()), so the caller decides when to flush: bounded,
+  // and only where the buffered tail is actually read.
+  const flushOutput = Effect.forEach(drainFibers, (fiber) =>
+    Fiber.await(fiber).pipe(Effect.timeoutOption(DRAIN_FLUSH_TIMEOUT), Effect.asVoid),
+  ).pipe(Effect.asVoid);
+  return { exit, flushOutput };
 });
 
 const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(function* () {
@@ -432,6 +451,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         const finalizeRun = Effect.fn("desktop.backendManager.finalizeRun")(function* (
           reason: string,
           exitCode: Option.Option<number>,
+          flushOutput: Effect.Effect<void>,
         ) {
           yield* mutex.withPermits(1)(
             Effect.gen(function* () {
@@ -504,6 +524,8 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                 ...latest,
                 desiredRunning: false,
               }));
+              // Let buffered output land in the tail before reading it.
+              yield* flushOutput;
               const stderrTail = yield* Ref.get(stderrTailRef);
               yield* triggerStartupFailure({
                 failureKind: Option.isSome(readinessTimeout) ? "readiness-timeout" : "process-exit",
@@ -598,8 +620,8 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Scope.provide(runScope),
           Effect.matchEffect({
-            onFailure: (error) => finalizeRun(error.message, Option.none()),
-            onSuccess: (exit) => finalizeRun(exit.reason, exit.code),
+            onFailure: (error) => finalizeRun(error.message, Option.none(), Effect.void),
+            onSuccess: ({ exit, flushOutput }) => finalizeRun(exit.reason, exit.code, flushOutput),
           }),
           Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
         );
@@ -675,39 +697,63 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
 
   // Forked so the (possibly minutes-long) dialog never blocks the manager
   // mutex. "quit" is handled inside the prompt; "retry" resets the failure
-  // budget and starts over.
-  const triggerStartupFailure = (report: DesktopCrashReport.DesktopStartupFailureReport) =>
-    Effect.forkIn(
-      Effect.gen(function* () {
-        yield* logBackendManagerError("backend failed to start; showing startup failure prompt", {
-          failureKind: report.failureKind,
-          attempts: report.attempts,
-          reason: report.lastReason,
-        });
-        const action = yield* startupFailurePrompt.handle(report);
-        if (action === "retry") {
-          yield* Ref.update(state, (latest) => ({ ...latest, restartAttempt: 0 }));
-          yield* start;
-        }
-      }).pipe(
-        Effect.catchCause((cause) =>
-          logBackendManagerError("startup failure prompt failed", {
-            cause: Cause.pretty(cause),
-          }),
+  // budget and starts over. The fiber is tracked in state so stop() can
+  // cancel a pending dialog's consequences.
+  const triggerStartupFailure = Effect.fn("desktop.backendManager.triggerStartupFailure")(
+    function* (report: DesktopCrashReport.DesktopStartupFailureReport) {
+      const promptFiber = yield* Effect.forkIn(
+        Effect.gen(function* () {
+          yield* logBackendManagerError("backend failed to start; showing startup failure prompt", {
+            failureKind: report.failureKind,
+            attempts: report.attempts,
+            reason: report.lastReason,
+          });
+          const action = yield* startupFailurePrompt.handle(report);
+          if (action !== "retry") {
+            return;
+          }
+          // Someone may have started the backend while the dialog was open;
+          // retry must not fight them.
+          const shouldStart = yield* Ref.modify(state, (latest) =>
+            latest.desiredRunning
+              ? ([false, latest] as const)
+              : ([true, { ...latest, restartAttempt: 0 }] as const),
+          );
+          if (shouldStart) {
+            yield* start;
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            logBackendManagerError("startup failure prompt failed", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.ensuring(
+            Ref.update(state, (latest) => ({
+              ...latest,
+              promptFiber: Option.none<Fiber.Fiber<void, never>>(),
+            })),
+          ),
         ),
-      ),
-      parentScope,
-    ).pipe(Effect.asVoid);
+        parentScope,
+      );
+      yield* Ref.update(state, (latest) => ({
+        ...latest,
+        promptFiber: Option.some(promptFiber),
+      }));
+    },
+  );
 
   const stop = Effect.fn("desktop.backendManager.stop")(function* (options?: {
     readonly timeout?: Duration.Duration;
   }) {
-    const { active, restartFiber } = yield* mutex.withPermits(1)(
+    const { active, restartFiber, promptFiber } = yield* mutex.withPermits(1)(
       Effect.gen(function* () {
         const result = yield* Ref.modify(state, (latest) => [
           {
             active: latest.active,
             restartFiber: latest.restartFiber,
+            promptFiber: latest.promptFiber,
           },
           {
             ...latest,
@@ -715,6 +761,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
             ready: false,
             active: Option.none<ActiveBackendRun>(),
             restartFiber: Option.none<Fiber.Fiber<void, never>>(),
+            promptFiber: Option.none<Fiber.Fiber<void, never>>(),
           },
         ]);
         yield* Ref.set(desktopState.backendReady, false);
@@ -723,6 +770,12 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
     );
 
     yield* Option.match(restartFiber, {
+      onNone: () => Effect.void,
+      onSome: (fiber) => Fiber.interrupt(fiber).pipe(Effect.asVoid),
+    });
+    // A stale startup-failure dialog must not resurrect the backend after a
+    // stop; the OS dialog itself stays visible but its choice goes nowhere.
+    yield* Option.match(promptFiber, {
       onNone: () => Effect.void,
       onSome: (fiber) => Fiber.interrupt(fiber).pipe(Effect.asVoid),
     });
