@@ -98,6 +98,7 @@ const makeElectronShellLayer = (openedExternalUrl: Deferred.Deferred<string>) =>
       typeof rawUrl === "string"
         ? Deferred.succeed(openedExternalUrl, rawUrl).pipe(Effect.as(true))
         : Effect.succeed(false),
+    openPath: () => Effect.die("unexpected openPath"),
     openScreenClip: () => Effect.die("unexpected openScreenClip"),
     copyText: () => Effect.die("unexpected copyText"),
   } satisfies ElectronShell.ElectronShellShape);

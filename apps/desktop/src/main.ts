@@ -31,6 +31,7 @@ import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
+import * as DesktopCrashReport from "./app/DesktopCrashReport.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
 import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
@@ -55,6 +56,7 @@ import * as DesktopRelay from "./relay/DesktopRelay.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
+import * as DesktopStartupFailurePrompt from "./window/DesktopStartupFailurePrompt.ts";
 import * as DesktopStatusIndicator from "./window/DesktopStatusIndicator.ts";
 import {
   readDesktopUserDataConfigFromEnv,
@@ -147,7 +149,7 @@ async function exitAfterSecondaryInstanceHandoff(): Promise<void> {
   // Safe before "ready": showErrorBox is the one dialog Electron allows early.
   Electron.dialog.showErrorBox(
     "Threadlines is already running",
-    "Another Threadlines process is already running on this computer but is not responding. Quit Threadlines from Task Manager (Windows) or Activity Monitor (Mac) and try again.",
+    "Another Threadlines process is already running on this computer but is not responding. It may be showing a startup error dialog. Check the taskbar and Alt+Tab first. Otherwise quit Threadlines from Task Manager (use the Details tab on Windows) or Activity Monitor (Mac) and try again.",
   );
   Electron.app.exit(1);
 }
@@ -253,6 +255,8 @@ const desktopServerExposureLayer = DesktopServerExposure.layer.pipe(
 const desktopWindowLayer = DesktopWindow.layer.pipe(Layer.provideMerge(desktopServerExposureLayer));
 
 const desktopBackendLayer = DesktopBackendManager.layer.pipe(
+  Layer.provideMerge(DesktopStartupFailurePrompt.layer),
+  Layer.provideMerge(DesktopCrashReport.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
   Layer.provideMerge(desktopWindowLayer),

@@ -164,6 +164,7 @@ const electronGlobalShortcutLayer = Layer.succeed(ElectronGlobalShortcut.Electro
 
 const electronShellLayer = Layer.succeed(ElectronShell.ElectronShell, {
   openExternal: () => Effect.succeed(true),
+  openPath: () => Effect.succeed(true),
   openScreenClip: () => Effect.succeed(true),
   copyText: () => Effect.void,
 } satisfies ElectronShell.ElectronShellShape);
@@ -834,6 +835,7 @@ describe("DesktopWindow", () => {
         platform: "win32",
         electronShell: {
           openExternal: () => Effect.succeed(true),
+          openPath: () => Effect.succeed(true),
           openScreenClip,
           copyText: () => Effect.void,
         },
@@ -884,6 +886,7 @@ describe("DesktopWindow", () => {
         },
         electronShell: {
           openExternal: () => Effect.succeed(true),
+          openPath: () => Effect.succeed(true),
           openScreenClip,
           copyText: () => Effect.void,
         },
@@ -924,6 +927,7 @@ describe("DesktopWindow", () => {
         platform: "win32",
         electronShell: {
           openExternal: () => Effect.succeed(true),
+          openPath: () => Effect.succeed(true),
           openScreenClip,
           copyText: () => Effect.void,
         },
@@ -952,6 +956,7 @@ describe("DesktopWindow", () => {
         platform: "win32",
         electronShell: {
           openExternal: () => Effect.succeed(true),
+          openPath: () => Effect.succeed(true),
           openScreenClip,
           copyText: () => Effect.void,
         },

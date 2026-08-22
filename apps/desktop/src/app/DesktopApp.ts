@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
+import * as Duration from "effect/Duration";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -36,6 +37,20 @@ class DesktopDevelopmentBackendPortRequiredError extends Data.TaggedError(
 )<{}> {
   override get message() {
     return "THREADLINES_PORT is required in desktop development.";
+  }
+}
+
+// Port discovery runs before the backend manager exists, so a probe that a
+// security product leaves hanging would wedge startup with no window and no
+// recovery prompt. The deadline turns that into the visible fatal-startup
+// error box instead.
+const BACKEND_PORT_DISCOVERY_TIMEOUT = Duration.seconds(30);
+
+class DesktopBackendPortDiscoveryTimeoutError extends Data.TaggedError(
+  "DesktopBackendPortDiscoveryTimeoutError",
+)<{}> {
+  override get message() {
+    return `Timed out selecting a local port for the Threadlines background service after ${Duration.toSeconds(BACKEND_PORT_DISCOVERY_TIMEOUT)}s. A firewall or security tool may be blocking local network probes.`;
   }
 }
 
@@ -99,7 +114,12 @@ const bootstrap = Effect.gen(function* () {
   const backendPortSelection = yield* resolveDesktopBackendPort({
     configuredPort: environment.configuredBackendPort,
     probeHosts,
-  });
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: BACKEND_PORT_DISCOVERY_TIMEOUT,
+      orElse: () => new DesktopBackendPortDiscoveryTimeoutError(),
+    }),
+  );
   const backendPort = backendPortSelection.port;
   yield* logBootstrapInfo(
     backendPortSelection.selectedByScan
