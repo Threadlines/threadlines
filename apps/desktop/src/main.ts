@@ -35,6 +35,7 @@ import * as DesktopCrashReport from "./app/DesktopCrashReport.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
 import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
+import * as DesktopDatabaseRecovery from "./backend/DesktopDatabaseRecovery.ts";
 import * as DesktopBackendManager from "./backend/DesktopBackendManager.ts";
 import * as DesktopDataMigration from "./app/DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./app/DesktopEnvironment.ts";
@@ -259,6 +260,7 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(DesktopCrashReport.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
+  Layer.provideMerge(DesktopDatabaseRecovery.layer),
   Layer.provideMerge(desktopWindowLayer),
 );
 

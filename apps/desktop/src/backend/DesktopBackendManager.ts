@@ -32,6 +32,7 @@ import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopStartupFailurePrompt from "../window/DesktopStartupFailurePrompt.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import * as DesktopDatabaseRecovery from "./DesktopDatabaseRecovery.ts";
 
 const INITIAL_RESTART_DELAY = Duration.millis(500);
 const MAX_RESTART_DELAY = Duration.seconds(10);
@@ -146,6 +147,8 @@ interface ActiveBackendRun {
 
 interface BackendManagerState {
   readonly desiredRunning: boolean;
+  /** Changes whenever an explicit start or stop supersedes automatic work. */
+  readonly intentGeneration: number;
   readonly ready: boolean;
   /** True once any run reached readiness in this app session. */
   readonly everReady: boolean;
@@ -155,11 +158,16 @@ interface BackendManagerState {
   readonly restartFiber: Option.Option<Fiber.Fiber<void, never>>;
   /** Startup-failure dialog in flight; interrupted by stop(). */
   readonly promptFiber: Option.Option<Fiber.Fiber<void, never>>;
+  /** Prevents an automatic recovery loop until the user explicitly retries. */
+  readonly automaticDatabaseRecoveryAttempted: boolean;
+  /** Shown only after the replacement database reaches readiness. */
+  readonly pendingDatabaseRecoveryNotice: Option.Option<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>;
   readonly nextRunId: number;
 }
 
 const initialState: BackendManagerState = {
   desiredRunning: false,
+  intentGeneration: 0,
   ready: false,
   everReady: false,
   config: Option.none(),
@@ -167,6 +175,8 @@ const initialState: BackendManagerState = {
   restartAttempt: 0,
   restartFiber: Option.none(),
   promptFiber: Option.none(),
+  automaticDatabaseRecoveryAttempted: false,
+  pendingDatabaseRecoveryNotice: Option.none(),
   nextRunId: 1,
 };
 
@@ -346,6 +356,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
   const desktopState = yield* DesktopState.DesktopState;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const startupFailurePrompt = yield* DesktopStartupFailurePrompt.DesktopStartupFailurePrompt;
+  const databaseRecovery = yield* DesktopDatabaseRecovery.DesktopDatabaseRecovery;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
   const state = yield* Ref.make(initialState);
@@ -382,27 +393,77 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
     });
   });
 
-  const start: Effect.Effect<void> = Effect.suspend(() =>
+  const startIfDesired: Effect.Effect<void> = Effect.suspend(() =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
+        // Automatic work may only continue an existing run intent. If stop()
+        // won first, do not turn the backend back on.
+        if (!current.desiredRunning) {
+          return;
+        }
         if (Option.isSome(current.active)) {
           return;
         }
 
+        const startIntentGeneration = current.intentGeneration;
+
         yield* Ref.set(desktopState.backendReady, false);
+        const pendingRecovery = yield* Effect.result(databaseRecovery.completePendingRecovery);
+        if (Result.isFailure(pendingRecovery)) {
+          const shouldReport = yield* Ref.modify(state, (latest) =>
+            latest.intentGeneration === startIntentGeneration
+              ? ([true, { ...latest, desiredRunning: false }] as const)
+              : ([false, latest] as const),
+          );
+          if (!shouldReport) {
+            return;
+          }
+          yield* logBackendManagerError("pending database recovery could not be completed", {
+            message: pendingRecovery.failure.message,
+            backupDir: pendingRecovery.failure.backupDir,
+          });
+          yield* triggerStartupFailure({
+            failureKind: "process-exit",
+            attempts: 1,
+            lastExitCode: Option.none(),
+            lastReason: "database recovery could not be completed",
+            outputTail: `[cause]: DesktopDatabaseRecoveryError: ${pendingRecovery.failure.message}`,
+          });
+          return;
+        }
+        if (Option.isSome(pendingRecovery.success)) {
+          yield* logBackendManagerWarning("interrupted database recovery completed", {
+            backupDir: pendingRecovery.success.value.backupDir,
+            preservedFiles: pendingRecovery.success.value.preservedFiles.join(","),
+          });
+          yield* Ref.update(state, (latest) => ({
+            ...latest,
+            automaticDatabaseRecoveryAttempted: true,
+            pendingDatabaseRecoveryNotice: pendingRecovery.success,
+          }));
+        }
         const config = yield* configuration.resolve;
         const entryExists = yield* fileSystem
           .exists(config.entryPath)
           .pipe(Effect.orElseSucceed(() => false));
 
         yield* cancelRestart;
-        yield* Ref.update(state, (latest) => ({
-          ...latest,
-          desiredRunning: true,
-          ready: false,
-          config: Option.some(config),
-        }));
+        const shouldContinue = yield* Ref.modify(state, (latest) =>
+          latest.intentGeneration === startIntentGeneration && latest.desiredRunning
+            ? ([
+                true,
+                {
+                  ...latest,
+                  ready: false,
+                  config: Option.some(config),
+                },
+              ] as const)
+            : ([false, latest] as const),
+        );
+        if (!shouldContinue) {
+          return;
+        }
 
         if (!entryExists) {
           const reason = `missing server entry at ${config.entryPath}`;
@@ -410,17 +471,20 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
           // Same cap as a crashing spawn: a broken install must not retry
           // invisibly forever either.
           if (!latest.everReady && latest.restartAttempt >= MAX_STARTUP_ATTEMPTS - 1) {
-            yield* Ref.update(state, (current) => ({
-              ...current,
-              desiredRunning: false,
-            }));
-            yield* triggerStartupFailure({
-              failureKind: "process-exit",
-              attempts: latest.restartAttempt + 1,
-              lastExitCode: Option.none(),
-              lastReason: reason,
-              outputTail: "",
-            });
+            const shouldReport = yield* Ref.modify(state, (current) =>
+              current.intentGeneration === startIntentGeneration
+                ? ([true, { ...current, desiredRunning: false }] as const)
+                : ([false, current] as const),
+            );
+            if (shouldReport) {
+              yield* triggerStartupFailure({
+                failureKind: "process-exit",
+                attempts: latest.restartAttempt + 1,
+                lastExitCode: Option.none(),
+                lastReason: reason,
+                outputTail: "",
+              });
+            }
             return;
           }
           yield* scheduleRestart(reason);
@@ -438,26 +502,35 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         const stdoutDecoder = new TextDecoder();
         const stderrDecoder = new TextDecoder();
         const readinessTimeoutRef = yield* Ref.make(Option.none<BackendTimeoutError>());
-        const runId = yield* Ref.modify(state, (latest) => [
-          latest.nextRunId,
-          {
-            ...latest,
-            active: Option.some({
-              id: latest.nextRunId,
-              scope: runScope,
-              fiber: Option.none(),
-              pid: Option.none(),
-            } satisfies ActiveBackendRun),
-            nextRunId: latest.nextRunId + 1,
-          },
-        ]);
+        const runIdOption = yield* Ref.modify(state, (latest) =>
+          latest.intentGeneration === startIntentGeneration && latest.desiredRunning
+            ? ([
+                Option.some(latest.nextRunId),
+                {
+                  ...latest,
+                  active: Option.some({
+                    id: latest.nextRunId,
+                    scope: runScope,
+                    fiber: Option.none(),
+                    pid: Option.none(),
+                  } satisfies ActiveBackendRun),
+                  nextRunId: latest.nextRunId + 1,
+                },
+              ] as const)
+            : ([Option.none<number>(), latest] as const),
+        );
+        if (Option.isNone(runIdOption)) {
+          yield* Scope.close(runScope, Exit.void).pipe(Effect.ignore);
+          return;
+        }
+        const runId = runIdOption.value;
 
         const finalizeRun = Effect.fn("desktop.backendManager.finalizeRun")(function* (
           reason: string,
           exitCode: Option.Option<number>,
           flushOutput: Effect.Effect<void>,
         ) {
-          yield* mutex.withPermits(1)(
+          const restartAfterRecovery = yield* mutex.withPermits(1)(
             Effect.gen(function* () {
               const { isCurrentRun, nextState, pid } = yield* Ref.modify(
                 state,
@@ -510,7 +583,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               }
 
               if (!isCurrentRun || !nextState.desiredRunning) {
-                return;
+                return false;
               }
 
               const readinessTimeout = yield* Ref.get(readinessTimeoutRef);
@@ -520,18 +593,22 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   nextState.restartAttempt >= MAX_STARTUP_ATTEMPTS - 1);
               if (!startupFailed) {
                 yield* scheduleRestart(reason);
-                return;
+                return false;
               }
 
               // Stop trying; the prompt fiber owns what happens next.
-              yield* Ref.update(state, (latest) => ({
-                ...latest,
-                desiredRunning: false,
-              }));
+              yield* Ref.update(state, (latest) =>
+                latest.intentGeneration === nextState.intentGeneration
+                  ? { ...latest, desiredRunning: false }
+                  : latest,
+              );
               // Let buffered output land in the tail before reading it.
               yield* flushOutput;
+              if ((yield* Ref.get(state)).intentGeneration !== nextState.intentGeneration) {
+                return false;
+              }
               const outputTail = yield* Ref.get(outputTailRef);
-              yield* triggerStartupFailure({
+              let report: DesktopCrashReport.DesktopStartupFailureReport = {
                 failureKind: Option.isSome(readinessTimeout) ? "readiness-timeout" : "process-exit",
                 attempts: nextState.restartAttempt + 1,
                 lastExitCode: exitCode,
@@ -540,9 +617,68 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   onSome: (timeout) => timeout.message,
                 }),
                 outputTail,
-              });
+              };
+
+              if (
+                !nextState.automaticDatabaseRecoveryAttempted &&
+                DesktopDatabaseRecovery.isDefinitiveSqliteCorruption(report)
+              ) {
+                yield* Ref.update(state, (latest) => ({
+                  ...latest,
+                  automaticDatabaseRecoveryAttempted: true,
+                }));
+                const recoveryResult = yield* Effect.result(
+                  databaseRecovery.recoverIfCorrupt(report),
+                );
+                if (Result.isSuccess(recoveryResult)) {
+                  const recovered = recoveryResult.success;
+                  if (Option.isSome(recovered)) {
+                    yield* logBackendManagerWarning(
+                      "damaged SQLite database preserved; restarting with fresh state",
+                      {
+                        backupDir: recovered.value.backupDir,
+                        preservedFiles: recovered.value.preservedFiles.join(","),
+                      },
+                    );
+                    return yield* Ref.modify(state, (latest) => {
+                      const intentIsCurrent =
+                        latest.intentGeneration === nextState.intentGeneration;
+                      return [
+                        intentIsCurrent,
+                        {
+                          ...latest,
+                          ...(intentIsCurrent ? { desiredRunning: true, restartAttempt: 0 } : {}),
+                          pendingDatabaseRecoveryNotice: recovered,
+                        },
+                      ] as const;
+                    });
+                  }
+                } else {
+                  yield* logBackendManagerError("automatic database recovery failed", {
+                    message: recoveryResult.failure.message,
+                    backupDir: recoveryResult.failure.backupDir,
+                  });
+                  const recoveryDetail = `[cause]: DesktopDatabaseRecoveryError: ${recoveryResult.failure.message}`;
+                  const combinedOutput = `${report.outputTail}\n${recoveryDetail}`;
+                  report = {
+                    ...report,
+                    outputTail:
+                      combinedOutput.length <= OUTPUT_TAIL_MAX_CHARS
+                        ? combinedOutput
+                        : combinedOutput.slice(combinedOutput.length - OUTPUT_TAIL_MAX_CHARS),
+                  };
+                }
+              }
+
+              if ((yield* Ref.get(state)).intentGeneration === nextState.intentGeneration) {
+                yield* triggerStartupFailure(report);
+              }
+              return false;
             }),
           );
+          if (restartAfterRecovery) {
+            yield* startIfDesired;
+          }
         });
 
         const program = runBackendProcess({
@@ -558,22 +694,45 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
             });
           }),
           onReady: Effect.fn("desktop.backendManager.onReady")(function* () {
-            const isCurrentRun = yield* Ref.modify(state, (latest) => {
-              const activeRun = Option.getOrUndefined(latest.active);
-              if (activeRun?.id !== runId) {
-                return [false, latest] as const;
-              }
-
-              return [
-                true,
+            const { isCurrentRun, recoveryNotice } = yield* Ref.modify(
+              state,
+              (
+                latest,
+              ): readonly [
                 {
-                  ...latest,
-                  restartAttempt: 0,
-                  ready: true,
-                  everReady: true,
+                  readonly isCurrentRun: boolean;
+                  readonly recoveryNotice: Option.Option<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>;
                 },
-              ] as const;
-            });
+                BackendManagerState,
+              ] => {
+                const activeRun = Option.getOrUndefined(latest.active);
+                if (activeRun?.id !== runId) {
+                  return [
+                    {
+                      isCurrentRun: false,
+                      recoveryNotice:
+                        Option.none<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>(),
+                    },
+                    latest,
+                  ] as const;
+                }
+
+                return [
+                  {
+                    isCurrentRun: true,
+                    recoveryNotice: latest.pendingDatabaseRecoveryNotice,
+                  },
+                  {
+                    ...latest,
+                    restartAttempt: 0,
+                    ready: true,
+                    everReady: true,
+                    pendingDatabaseRecoveryNotice:
+                      Option.none<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>(),
+                  },
+                ] as const;
+              },
+            );
             if (!isCurrentRun) {
               return;
             }
@@ -590,6 +749,12 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                 ),
               ),
             );
+            if (Option.isSome(recoveryNotice)) {
+              yield* Effect.forkIn(
+                startupFailurePrompt.notifyDatabaseRecovery(recoveryNotice.value),
+                parentScope,
+              );
+            }
           }),
           onReadinessFailure: (error) =>
             Effect.gen(function* () {
@@ -642,6 +807,21 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
     ),
   ).pipe(Effect.withSpan("desktop.backendManager.start"));
 
+  const start = Ref.modify(state, (latest) => {
+    if (Option.isSome(latest.active)) {
+      return [false, latest] as const;
+    }
+    const intentGeneration = latest.intentGeneration + 1;
+    return [
+      true,
+      {
+        ...latest,
+        desiredRunning: true,
+        intentGeneration,
+      },
+    ] as const;
+  }).pipe(Effect.flatMap((shouldStart) => (shouldStart ? startIfDesired : Effect.void)));
+
   const scheduleRestart = Effect.fn("desktop.backendManager.scheduleRestart")(function* (
     reason: string,
   ) {
@@ -681,7 +861,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                 ] as const;
               }),
             ),
-            Effect.flatMap((shouldRestart) => (shouldRestart ? start : Effect.void)),
+            Effect.flatMap((shouldRestart) => (shouldRestart ? startIfDesired : Effect.void)),
             Effect.catchCause((cause) =>
               logBackendManagerError("desktop backend restart fiber failed", {
                 cause: Cause.pretty(cause),
@@ -724,7 +904,14 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
           const shouldStart = yield* Ref.modify(state, (latest) =>
             latest.desiredRunning
               ? ([false, latest] as const)
-              : ([true, { ...latest, restartAttempt: 0 }] as const),
+              : ([
+                  true,
+                  {
+                    ...latest,
+                    restartAttempt: 0,
+                    automaticDatabaseRecoveryAttempted: false,
+                  },
+                ] as const),
           );
           if (shouldStart) {
             yield* start;
@@ -754,6 +941,14 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
   const stop = Effect.fn("desktop.backendManager.stop")(function* (options?: {
     readonly timeout?: Duration.Duration;
   }) {
+    // Publish stop intent before waiting for the manager mutex. Recovery may
+    // be holding it while copying files; its generation check must see quit
+    // immediately and must not schedule a replacement backend afterward.
+    yield* Ref.update(state, (latest) => ({
+      ...latest,
+      desiredRunning: false,
+      intentGeneration: latest.intentGeneration + 1,
+    }));
     const { active, restartFiber, promptFiber } = yield* mutex.withPermits(1)(
       Effect.gen(function* () {
         const result = yield* Ref.modify(state, (latest) => [

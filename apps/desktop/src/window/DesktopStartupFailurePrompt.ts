@@ -15,11 +15,13 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as DesktopCrashReport from "../app/DesktopCrashReport.ts";
+import type { DesktopDatabaseRecoveryResult } from "../backend/DesktopDatabaseRecovery.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
 const CRASH_REPORT_TIMEOUT = Duration.seconds(3);
@@ -28,6 +30,7 @@ const DETAIL_REASON_MAX_CHARS = 300;
 const TRY_AGAIN_BUTTON_INDEX = 0;
 const OPEN_LOGS_BUTTON_INDEX = 1;
 const QUIT_BUTTON_INDEX = 2;
+const OPEN_RECOVERY_FOLDER_BUTTON_INDEX = 1;
 
 export type DesktopStartupFailureAction = "retry" | "quit";
 
@@ -40,6 +43,8 @@ export interface DesktopStartupFailurePromptShape {
   readonly handle: (
     report: DesktopCrashReport.DesktopStartupFailureReport,
   ) => Effect.Effect<DesktopStartupFailureAction>;
+  /** Shows where the damaged database was preserved after startup recovers. */
+  readonly notifyDatabaseRecovery: (result: DesktopDatabaseRecoveryResult) => Effect.Effect<void>;
 }
 
 export class DesktopStartupFailurePrompt extends Context.Service<
@@ -47,18 +52,49 @@ export class DesktopStartupFailurePrompt extends Context.Service<
   DesktopStartupFailurePromptShape
 >()("threadlines/desktop/StartupFailurePrompt") {}
 
+function extractStartupFailureCause(outputTail: string): string | undefined {
+  const normalized = outputTail.replaceAll("\u001b", "").replace(/\[[0-9;]*m/g, "");
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines.toReversed()) {
+    const causeMatch = line.match(/\[cause\]:\s*(?:[\w./-]*Error:\s*)?(.+)/i);
+    const cause = causeMatch?.[1]?.trim();
+    if (cause) return cause;
+  }
+
+  for (const line of lines.toReversed()) {
+    const errorMatch = line.match(/(?:^|\s)[\w./-]*Error:\s*(.+)$/i);
+    const error = errorMatch?.[1]?.trim();
+    if (error) return error;
+  }
+
+  return undefined;
+}
+
 export function describeStartupFailure(input: {
   readonly displayName: string;
   readonly report: DesktopCrashReport.DesktopStartupFailureReport;
   readonly logDir: string;
+  readonly homeDirectory: string;
 }): { readonly message: string; readonly detail: string } {
-  const { displayName, report, logDir } = input;
+  const { displayName, report, logDir, homeDirectory } = input;
   const attemptsText = report.attempts === 1 ? "1 attempt" : `${report.attempts} attempts`;
   const kindText =
     report.failureKind === "readiness-timeout"
       ? `The ${displayName} background service started but never responded.`
       : `The ${displayName} background service stopped unexpectedly while starting (${attemptsText}).`;
-  const reason = report.lastReason.trim();
+  const sanitize = (text: string) =>
+    DesktopCrashReport.redactSecrets(DesktopCrashReport.scrubUserPaths(text, homeDirectory));
+  const reason = sanitize(
+    extractStartupFailureCause(report.outputTail) ?? report.lastReason,
+  ).trim();
+  const exitCodeText = Option.match(report.lastExitCode, {
+    onNone: () => "",
+    onSome: (exitCode) => ` (exit code ${exitCode})`,
+  });
   const reasonText =
     reason.length === 0
       ? ""
@@ -66,7 +102,7 @@ export function describeStartupFailure(input: {
           reason.length <= DETAIL_REASON_MAX_CHARS
             ? reason
             : `${reason.slice(0, DETAIL_REASON_MAX_CHARS)}…`
-        }`;
+        }${exitCodeText}`;
   return {
     message: `${displayName} couldn't start`,
     detail: `${kindText} You can try again, or open the logs folder to see what happened.${reasonText}\n\nLogs: ${logDir}`,
@@ -86,6 +122,7 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
         displayName: environment.displayName,
         report,
         logDir: environment.logDir,
+        homeDirectory: environment.homeDirectory,
       });
 
       while (true) {
@@ -138,7 +175,26 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
     return action;
   });
 
-  return DesktopStartupFailurePrompt.of({ handle });
+  const notifyDatabaseRecovery: DesktopStartupFailurePromptShape["notifyDatabaseRecovery"] =
+    Effect.fn("desktop.startupFailurePrompt.notifyDatabaseRecovery")((result) =>
+      Effect.gen(function* () {
+        const response = yield* electronDialog.showMessageBox({
+          type: "warning",
+          title: `${environment.displayName} repaired its local data`,
+          message: `${environment.displayName} recovered and started`,
+          detail: `A damaged local database prevented startup. It was preserved here:\n\n${result.backupDir}\n\n${environment.displayName} started with a new database. Your old database files are preserved in that folder.`,
+          buttons: ["OK", "Open Recovery Folder"],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        if (response.response === OPEN_RECOVERY_FOLDER_BUTTON_INDEX) {
+          yield* electronShell.openPath(result.backupDir);
+        }
+      }).pipe(Effect.catchCause(() => Effect.void)),
+    );
+
+  return DesktopStartupFailurePrompt.of({ handle, notifyDatabaseRecovery });
 });
 
 export const layer = Layer.effect(DesktopStartupFailurePrompt, makeDesktopStartupFailurePrompt);
