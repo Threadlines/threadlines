@@ -469,6 +469,7 @@ describe("setThreadBranch", () => {
     const session: ThreadSession = {
       provider: ProviderDriverKind.make("codex"),
       status: "running",
+      orchestrationStatus: "running",
       checkoutCwd: "/tmp/worktree-a",
       createdAt: "2026-02-13T00:00:00.000Z",
       updatedAt: "2026-02-13T00:00:00.000Z",
