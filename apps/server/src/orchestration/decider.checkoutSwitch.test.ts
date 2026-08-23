@@ -56,6 +56,7 @@ function makeReadModel(input: {
         scripts: [],
         createdAt: now,
         updatedAt: now,
+        deletedAt: null,
       },
     ],
     threads: [
@@ -105,7 +106,6 @@ function metaUpdateCommand(input: {
     ...(input.worktreePath !== undefined
       ? { branch: "main", worktreePath: input.worktreePath }
       : {}),
-    createdAt: "2026-01-01T00:00:10.000Z",
   };
 }
 
