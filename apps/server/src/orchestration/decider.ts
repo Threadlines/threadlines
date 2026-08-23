@@ -581,7 +581,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? undefined
           : normalizeWorktreePath(command.worktreePath, project.workspaceRoot);
       const occurredAt = yield* nowIso;
-      return {
+      const metaUpdatedEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -599,7 +599,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(worktreePath !== undefined ? { worktreePath } : {}),
           updatedAt: occurredAt,
         },
-      };
+      } as const;
+
+      // A checkout move with no live session applies now, so the stale
+      // session-scoped effectiveCwd must stop shadowing the new checkout.
+      // Emitted as a real event rather than special-cased in the folds: the
+      // in-memory projector, the SQLite pipeline, and the web store all
+      // already know what thread.effective-cwd-set means. Only an actual
+      // move clears — branch-only updates carry the unchanged worktree path
+      // and must not wipe a valid cwd-follow value.
+      const checkoutChanged =
+        worktreePath !== undefined &&
+        (worktreePath === null || thread.worktreePath === null
+          ? worktreePath !== thread.worktreePath
+          : !areFilesystemPathsEqual(worktreePath, thread.worktreePath));
+      const sessionInactive = thread.session == null || thread.session.status === "stopped";
+      if (!checkoutChanged || !sessionInactive || thread.effectiveCwd == null) {
+        return metaUpdatedEvent;
+      }
+      return [
+        metaUpdatedEvent,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          causationEventId: metaUpdatedEvent.eventId,
+          type: "thread.effective-cwd-set",
+          payload: {
+            threadId: command.threadId,
+            effectiveCwd: null,
+            updatedAt: occurredAt,
+          },
+        },
+      ];
     }
 
     case "thread.runtime-mode.set": {
@@ -1124,12 +1159,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.set": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const sessionSetEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1142,7 +1177,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           session: command.session,
         },
-      };
+      } as const;
+
+      // A session stopping with a queued checkout switch applies the switch:
+      // the effectiveCwd the dead session left behind must not keep pointing
+      // panels at the checkout the user already moved away from. A session
+      // stopping in its own configured checkout keeps its effectiveCwd, so a
+      // cwd-follow into a subfolder still reads correctly after a stop.
+      const configuredCheckout = thread.worktreePath ?? null;
+      const sessionCheckout = command.session.checkoutCwd ?? null;
+      const checkoutDiffers =
+        configuredCheckout === null || sessionCheckout === null
+          ? configuredCheckout !== sessionCheckout
+          : !areFilesystemPathsEqual(configuredCheckout, sessionCheckout);
+      if (command.session.status !== "stopped" || !checkoutDiffers || thread.effectiveCwd == null) {
+        return sessionSetEvent;
+      }
+      return [
+        sessionSetEvent,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+            metadata: {},
+          }),
+          causationEventId: sessionSetEvent.eventId,
+          type: "thread.effective-cwd-set",
+          payload: {
+            threadId: command.threadId,
+            effectiveCwd: null,
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
     }
 
     case "thread.realtime.state.set": {

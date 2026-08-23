@@ -1817,6 +1817,10 @@ function SourceControlBranchMenu({
 }) {
   const queryClient = useQueryClient();
   const setThreadBranch = useStore((store) => store.setThreadBranch);
+  const restoreThreadCheckout = useStore((store) => store.restoreThreadCheckout);
+  // Identifies the newest optimistic checkout dispatch so a stale rejection
+  // cannot roll back state a later dispatch already replaced.
+  const checkoutDispatchIdRef = useRef(0);
   const activeThreadSession =
     useStore(useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]))
       ?.session ?? null;
@@ -1906,22 +1910,58 @@ function SourceControlBranchMenu({
         return;
       }
       const api = readEnvironmentApi(target.environmentId);
-      if (api) {
-        void api.orchestration
-          .dispatchCommand({
-            type: "thread.meta.update",
-            commandId: newCommandId(),
-            threadId: activeThreadRef.threadId,
-            branch,
-            worktreePath,
-          })
-          .catch(() => undefined);
+      if (!api) {
+        // No connection means the switch cannot happen at all; applying the
+        // optimistic update anyway would leave the panel lying indefinitely.
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn't move the thread",
+            description: "Not connected to the environment. Try again once it reconnects.",
+          }),
+        );
+        return;
       }
+      const snapshot = {
+        branch: currentBranch,
+        worktreePath: target.worktreePath,
+        session: activeThreadSession,
+      };
+      checkoutDispatchIdRef.current += 1;
+      const dispatchId = checkoutDispatchIdRef.current;
+      void api.orchestration
+        .dispatchCommand({
+          type: "thread.meta.update",
+          commandId: newCommandId(),
+          threadId: activeThreadRef.threadId,
+          branch,
+          worktreePath,
+        })
+        .catch(() => {
+          // Roll the optimistic update back to what the panel showed before —
+          // including the session the optimistic switch cleared. A switch
+          // that silently stays put is this panel's worst failure mode, and
+          // one that lies about having happened is the second. A stale
+          // rejection never overwrites a newer dispatch's state.
+          if (checkoutDispatchIdRef.current === dispatchId) {
+            restoreThreadCheckout(activeThreadRef, snapshot);
+          }
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Couldn't move the thread",
+              description: "The checkout switch didn't reach the server. Try again.",
+            }),
+          );
+        });
       setThreadBranch(activeThreadRef, branch, worktreePath);
     },
     [
       activeThreadRef,
+      activeThreadSession,
+      currentBranch,
       onActiveBranchChange,
+      restoreThreadCheckout,
       setThreadBranch,
       target.environmentId,
       target.worktreePath,
@@ -1959,6 +1999,13 @@ function SourceControlBranchMenu({
   const switchCheckoutToWorktree = useCallback(
     (row: WorktreeCleanupRow) => {
       if (!row.refName) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Can't switch to this worktree",
+            description: "It has no branch checked out, so the thread can't follow it.",
+          }),
+        );
         return;
       }
       setCleanupRows(null);
@@ -1997,9 +2044,25 @@ function SourceControlBranchMenu({
     [applyCheckoutSwitch, checkoutMutation, refreshPanel, target.projectCwd, target.worktreePath],
   );
 
+  /**
+   * A refused action must say why. The branch menu shows the safety reason in
+   * place, but these handlers are also reachable from rows and dialogs that
+   * render no reason — a silent return there reads as a dead button.
+   */
+  const notifyRepositorySafetyBlocked = useCallback((reason: string) => {
+    toastManager.add(
+      stackedThreadToast({
+        type: "warning",
+        title: "Action paused",
+        description: reason,
+      }),
+    );
+  }, []);
+
   const runSwitchRef = useCallback(
     (ref: VcsRef) => {
       if (repositorySafetyReason) {
+        notifyRepositorySafetyBlocked(repositorySafetyReason);
         return;
       }
       const selectionTarget = resolveBranchSelectionTarget({
@@ -2019,6 +2082,7 @@ function SourceControlBranchMenu({
     [
       activeThreadSession,
       executeSwitchRef,
+      notifyRepositorySafetyBlocked,
       repositorySafetyReason,
       target.projectCwd,
       target.worktreePath,
@@ -2027,6 +2091,7 @@ function SourceControlBranchMenu({
 
   const runCreateBranch = useCallback(() => {
     if (repositorySafetyReason) {
+      notifyRepositorySafetyBlocked(repositorySafetyReason);
       return;
     }
     const refName = createBranchName.trim();
@@ -2054,13 +2119,18 @@ function SourceControlBranchMenu({
   }, [
     createBranchMutation,
     createBranchName,
+    notifyRepositorySafetyBlocked,
     refreshPanel,
     repositorySafetyReason,
     syncActiveThreadBranch,
   ]);
 
   const runMergeRef = useCallback(() => {
-    if (!pendingMergeRef || repositorySafetyReason) {
+    if (!pendingMergeRef) {
+      return;
+    }
+    if (repositorySafetyReason) {
+      notifyRepositorySafetyBlocked(repositorySafetyReason);
       return;
     }
     const refName = pendingMergeRef.name;
@@ -2088,7 +2158,14 @@ function SourceControlBranchMenu({
       }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
-  }, [currentBranch, mergeMutation, pendingMergeRef, refreshPanel, repositorySafetyReason]);
+  }, [
+    currentBranch,
+    mergeMutation,
+    notifyRepositorySafetyBlocked,
+    pendingMergeRef,
+    refreshPanel,
+    repositorySafetyReason,
+  ]);
 
   return (
     <>
@@ -4855,12 +4932,17 @@ export function SourceControlPanel({
             </div>
           ) : changedFiles.length === 0 ? (
             // Nothing to show is a line, not a box. The left sidebar's empty
-            // states are flat text and this one is no different.
+            // states are flat text and this one is no different. While the
+            // parent-repository gate is up the list is empty because queries
+            // are paused, not because the tree is clean — saying "no changes"
+            // there sends people hunting for a different bug.
             <div
               className="border-t border-border/40 py-2 text-[12px] text-muted-foreground/55"
               data-source-control-empty="true"
             >
-              No working tree changes
+              {isParentRepositoryConfirmationRequired
+                ? "Changes are hidden until you confirm the parent repository above."
+                : "No working tree changes"}
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35 recess">

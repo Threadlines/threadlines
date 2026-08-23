@@ -1,4 +1,5 @@
-import * as nodePath from "node:path";
+import * as NodeFS from "node:fs";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -178,9 +179,40 @@ function withRepositoryContext<T extends VcsStatusLocalResult>(
   return {
     ...status,
     repositoryRoot,
-    repositoryRootRelation:
-      nodePath.resolve(repositoryRoot) === nodePath.resolve(cwd) ? "same" : "ancestor",
+    repositoryRootRelation: resolveRepositoryRootRelation(repositoryRoot, cwd),
   };
+}
+
+/** Symlink-resolved form for comparison; the raw value when resolution fails. */
+function toComparableRealPath(value: string): string {
+  try {
+    return NodeFS.realpathSync.native(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * "ancestor" gates the whole source-control panel behind a confirmation.
+ * Plain string comparison used to raise that gate for healthy checkouts
+ * whenever git's resolved root differed from the configured cwd only by
+ * symlinks, casing, or separators (git realpaths its answers; the configured
+ * cwd may be the symlinked spelling). Compare after resolving symlinks and
+ * normalizing separators and case instead. Anything still unequal keeps the
+ * gate up: a false gate is a visible, dismissible banner, while a false
+ * "same" would silently expose repository-wide actions — e.g. a cwd
+ * symlinked into a subdirectory of a larger repository.
+ */
+export function resolveRepositoryRootRelation(
+  repositoryRoot: string,
+  cwd: string,
+): "same" | "ancestor" {
+  if (areFilesystemPathsEqual(repositoryRoot, cwd)) {
+    return "same";
+  }
+  return areFilesystemPathsEqual(toComparableRealPath(repositoryRoot), toComparableRealPath(cwd))
+    ? "same"
+    : "ancestor";
 }
 
 const unsupportedGitWorkflow = (operation: string, cwd: string, detail: string) =>

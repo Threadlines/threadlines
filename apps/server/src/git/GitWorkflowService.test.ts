@@ -2,6 +2,7 @@ import { assert, describe, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -343,5 +344,58 @@ describe("GitWorkflowService", () => {
       assert.equal(mergeRef.mock.calls.length, 0);
       assert.equal(pushCurrentBranch.mock.calls.length, 0);
     }).pipe(Effect.provide(testLayer));
+  });
+});
+
+describe("resolveRepositoryRootRelation", () => {
+  it("reads normalization-only differences as same", () => {
+    assert.equal(GitWorkflowService.resolveRepositoryRootRelation("/repo/wt", "/repo/wt"), "same");
+    assert.equal(GitWorkflowService.resolveRepositoryRootRelation("/repo/wt", "/repo/wt/"), "same");
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation(
+        "C:\\Users\\Will\\repo",
+        "c:/users/will/repo",
+      ),
+      "same",
+    );
+  });
+
+  it("reads a genuine subdirectory as ancestor", () => {
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation("/repo", "/repo/apps/web"),
+      "ancestor",
+    );
+  });
+
+  it("resolves symlinks before comparing", () => {
+    const base = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "tl-root-relation-"));
+    try {
+      const repo = NodePath.join(base, "repo");
+      const sub = NodePath.join(repo, "packages", "app");
+      NodeFS.mkdirSync(sub, { recursive: true });
+      const rootLink = NodePath.join(base, "root-link");
+      const subLink = NodePath.join(base, "sub-link");
+      NodeFS.symlinkSync(repo, rootLink);
+      NodeFS.symlinkSync(sub, subLink);
+
+      // A symlinked spelling of the repository root is the same checkout —
+      // this was the false "ancestor" that locked healthy panels.
+      assert.equal(GitWorkflowService.resolveRepositoryRootRelation(repo, rootLink), "same");
+      // A symlink INTO the repository is a genuine parent situation and must
+      // keep the safety gate up.
+      assert.equal(GitWorkflowService.resolveRepositoryRootRelation(repo, subLink), "ancestor");
+    } finally {
+      NodeFS.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the gate up when paths still diverge after resolution", () => {
+    assert.equal(
+      GitWorkflowService.resolveRepositoryRootRelation(
+        "/definitely-not-here-a/x",
+        "/definitely-not-here-b/x",
+      ),
+      "ancestor",
+    );
   });
 });
