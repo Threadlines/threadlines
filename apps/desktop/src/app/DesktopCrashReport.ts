@@ -39,7 +39,7 @@ const bundledPosthogHost =
     : "https://us.i.posthog.com";
 
 const ANONYMOUS_ID_FILE_NAME = "anonymous-id";
-const STDERR_TAIL_MAX_CHARS = 2_000;
+const OUTPUT_TAIL_MAX_CHARS = 2_000;
 
 // Values following credential-shaped labels are cut before anything leaves
 // the machine. Boot-phase stderr should never contain these, but a config
@@ -56,7 +56,8 @@ export interface DesktopStartupFailureReport {
   readonly attempts: number;
   readonly lastExitCode: Option.Option<number>;
   readonly lastReason: string;
-  readonly stderrTail: string;
+  /** Interleaved stdout+stderr tail; the server logs fatal causes on stdout. */
+  readonly outputTail: string;
 }
 
 export interface DesktopCrashReportShape {
@@ -92,7 +93,7 @@ export function scrubUserPaths(text: string, homeDirectory: string): string {
 }
 
 /** Keeps the end of the captured stderr, where the fatal error lands. */
-export function truncateTail(text: string, maxChars: number = STDERR_TAIL_MAX_CHARS): string {
+export function truncateTail(text: string, maxChars: number = OUTPUT_TAIL_MAX_CHARS): string {
   return text.length <= maxChars ? text : text.slice(text.length - maxChars);
 }
 
@@ -187,7 +188,7 @@ const makeDesktopCrashReport = Effect.gen(function* () {
               attempts: report.attempts,
               exitCode: Option.getOrNull(report.lastExitCode),
               reason: scrub(report.lastReason),
-              stderrTail: scrub(truncateTail(report.stderrTail)),
+              outputTail: scrub(truncateTail(report.outputTail)),
             },
             timestamp: new Date().toISOString(),
           },

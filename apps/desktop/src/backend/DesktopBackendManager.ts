@@ -40,8 +40,8 @@ const MAX_RESTART_DELAY = Duration.seconds(10);
 // session, restarts stay unbounded: the window exists, so a crash there is
 // not an invisible wedge.
 const MAX_STARTUP_ATTEMPTS = 3;
-// Cap on the retained stderr needed for a useful crash report.
-const STDERR_TAIL_MAX_CHARS = 8_192;
+// Cap on the retained stdout+stderr needed for a useful crash report.
+const OUTPUT_TAIL_MAX_CHARS = 8_192;
 // How long a finished process's output drains may lag its exit.
 const DRAIN_FLUSH_TIMEOUT = Duration.seconds(1);
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
@@ -419,7 +419,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               attempts: latest.restartAttempt + 1,
               lastExitCode: Option.none(),
               lastReason: reason,
-              stderrTail: "",
+              outputTail: "",
             });
             return;
           }
@@ -428,10 +428,14 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         }
 
         const runScope = yield* Scope.make("sequential");
-        // Per-run crash-report inputs: the stderr tail carries the fatal
+        // Per-run crash-report inputs: the output tail carries the fatal
         // error when the process dies, the timeout marker reroutes a
-        // killed-for-unresponsiveness exit away from the restart path.
-        const stderrTailRef = yield* Ref.make("");
+        // killed-for-unresponsiveness exit away from the restart path. Both
+        // streams feed the tail — the server's Effect logger reports fatal
+        // causes on stdout, and field crash reports came back empty when
+        // only stderr was kept.
+        const outputTailRef = yield* Ref.make("");
+        const stdoutDecoder = new TextDecoder();
         const stderrDecoder = new TextDecoder();
         const readinessTimeoutRef = yield* Ref.make(Option.none<BackendTimeoutError>());
         const runId = yield* Ref.modify(state, (latest) => [
@@ -526,7 +530,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               }));
               // Let buffered output land in the tail before reading it.
               yield* flushOutput;
-              const stderrTail = yield* Ref.get(stderrTailRef);
+              const outputTail = yield* Ref.get(outputTailRef);
               yield* triggerStartupFailure({
                 failureKind: Option.isSome(readinessTimeout) ? "readiness-timeout" : "process-exit",
                 attempts: nextState.restartAttempt + 1,
@@ -535,7 +539,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   onNone: () => reason,
                   onSome: (timeout) => timeout.message,
                 }),
-                stderrTail,
+                outputTail,
               });
             }),
           );
@@ -607,18 +611,17 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               }
             }),
           onOutput: (streamName, chunk) =>
-            streamName === "stderr"
-              ? backendOutputLog.writeOutputChunk(streamName, chunk).pipe(
-                  Effect.andThen(
-                    Ref.update(stderrTailRef, (tail) => {
-                      const appended = tail + stderrDecoder.decode(chunk, { stream: true });
-                      return appended.length <= STDERR_TAIL_MAX_CHARS
-                        ? appended
-                        : appended.slice(appended.length - STDERR_TAIL_MAX_CHARS);
-                    }),
-                  ),
-                )
-              : backendOutputLog.writeOutputChunk(streamName, chunk),
+            backendOutputLog.writeOutputChunk(streamName, chunk).pipe(
+              Effect.andThen(
+                Ref.update(outputTailRef, (tail) => {
+                  const decoder = streamName === "stderr" ? stderrDecoder : stdoutDecoder;
+                  const appended = tail + decoder.decode(chunk, { stream: true });
+                  return appended.length <= OUTPUT_TAIL_MAX_CHARS
+                    ? appended
+                    : appended.slice(appended.length - OUTPUT_TAIL_MAX_CHARS);
+                }),
+              ),
+            ),
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(HttpClient.HttpClient, httpClient),

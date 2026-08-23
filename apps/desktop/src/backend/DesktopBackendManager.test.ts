@@ -587,7 +587,13 @@ describe("DesktopBackendManager", () => {
               const close = Deferred.succeed(closed, void 0).pipe(Effect.asVoid);
               yield* Scope.addFinalizer(scope, close);
               return makeProcess({
-                stderr: Stream.make(new TextEncoder().encode("EADDRINUSE: port already bound\n")),
+                // The fatal cause lands on stdout, like the server's Effect
+                // logger; stderr carries a secondary line. Both must reach
+                // the crash-report tail.
+                stdout: Stream.make(
+                  new TextEncoder().encode("[FATAL] EADDRINUSE: port already bound\n"),
+                ),
+                stderr: Stream.make(new TextEncoder().encode("node exited\n")),
                 exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(143))),
                 kill: () => close,
               });
@@ -615,7 +621,8 @@ describe("DesktopBackendManager", () => {
           assert.equal(report.failureKind, "readiness-timeout");
           assert.equal(report.attempts, 1);
           assert.include(report.lastReason, "Timed out");
-          assert.include(report.stderrTail, "EADDRINUSE");
+          assert.include(report.outputTail, "EADDRINUSE");
+          assert.include(report.outputTail, "node exited");
 
           // The unresponsive process was killed and nothing respawns.
           yield* TestClock.adjust(Duration.seconds(30));
