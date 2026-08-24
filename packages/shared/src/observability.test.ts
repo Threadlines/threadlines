@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import fs from "node:fs";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -7,7 +10,9 @@ import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
+import { vi } from "vitest";
 
 import {
   compactTraceAttributes,
@@ -149,6 +154,45 @@ describe("observability", () => {
       ),
     );
 
+    it.effect("flushes traces after the batch window and re-arms for later records", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes: 1024,
+            maxFiles: 2,
+            batchWindowMs: 1_000,
+          });
+
+          sink.push(makeRecord("first"));
+          assert.equal(fs.existsSync(tracePath), false);
+          yield* TestClock.adjust("999 millis");
+          yield* Effect.yieldNow;
+          assert.equal(fs.existsSync(tracePath), false);
+          yield* TestClock.adjust("1 millis");
+          yield* Effect.yieldNow;
+          assert.equal(fs.existsSync(tracePath), true);
+
+          sink.push(makeRecord("second"));
+          assert.equal(fs.readFileSync(tracePath, "utf8").includes('"name":"second"'), false);
+          yield* TestClock.adjust("1 second");
+          yield* Effect.yieldNow;
+
+          const records = yield* readTraceRecords(tracePath);
+          assert.deepStrictEqual(
+            records.map((record) => record.name),
+            ["first", "second"],
+          );
+          yield* sink.close();
+        }),
+      ),
+    );
+
     it.effect("applies local tracer record filters after a span ends", () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -193,9 +237,11 @@ describe("observability", () => {
           const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
 
+          const record = makeRecord("rotate", `0-${"x".repeat(48)}`);
+          const recordBytes = Buffer.byteLength(`${JSON.stringify(record)}\n`);
           const sink = yield* makeTraceSink({
             filePath: tracePath,
-            maxBytes: 180,
+            maxBytes: recordBytes,
             maxFiles: 2,
             batchWindowMs: 10_000,
           });
@@ -220,6 +266,273 @@ describe("observability", () => {
           assert.equal(
             matchingFiles.some((entry) => entry === "shared.trace.ndjson.3"),
             false,
+          );
+          for (const entry of matchingFiles) {
+            assert.equal(fs.statSync(path.join(tempDir, entry)).size <= recordBytes, true);
+          }
+        }),
+      ),
+    );
+
+    it.effect("chunks buffered trace records without exceeding the rotation size", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const first = makeRecord("first", "\u{1F642}".repeat(32));
+          const second = makeRecord("second", "\u{1F642}".repeat(32));
+          const maxBytes = Math.max(
+            Buffer.byteLength(`${JSON.stringify(first)}\n`),
+            Buffer.byteLength(`${JSON.stringify(second)}\n`),
+          );
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes,
+            maxFiles: 2,
+            batchWindowMs: 10_000,
+          });
+
+          sink.push(first);
+          sink.push(second);
+          yield* sink.close();
+
+          const files = ["shared.trace.ndjson.1", "shared.trace.ndjson"].filter((entry) =>
+            fs.existsSync(path.join(tempDir, entry)),
+          );
+          assert.deepStrictEqual(files, ["shared.trace.ndjson.1", "shared.trace.ndjson"]);
+          for (const entry of files) {
+            assert.equal(fs.statSync(path.join(tempDir, entry)).size <= maxBytes, true);
+          }
+          const names = files.flatMap((entry) =>
+            fs
+              .readFileSync(path.join(tempDir, entry), "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => decodeTraceRecordLine(line).name),
+          );
+          assert.deepStrictEqual(names, ["first", "second"]);
+        }),
+      ),
+    );
+
+    it.effect("drops an oversized trace record without dropping later records", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const valid = makeRecord("valid");
+          const maxBytes = Buffer.byteLength(`${JSON.stringify(valid)}\n`);
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes,
+            maxFiles: 2,
+            batchWindowMs: 10_000,
+          });
+
+          sink.push(makeRecord("oversized", "x".repeat(maxBytes)));
+          sink.push(valid);
+          yield* sink.close();
+
+          const lines = yield* readTraceRecords(tracePath);
+          assert.deepStrictEqual(
+            lines.map((line) => line.name),
+            ["valid"],
+          );
+          assert.equal(fs.statSync(tracePath).size <= maxBytes, true);
+        }),
+      ),
+    );
+
+    it.effect("bounds failed trace retries without duplicating earlier records", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const first = makeRecord("first");
+          const second = makeRecord("second");
+          const third = makeRecord("third");
+          const fourth = makeRecord("fourth");
+          const recordBytes = (record: TraceRecord) =>
+            Buffer.byteLength(`${JSON.stringify(record)}\n`);
+          const maxBytes = Math.max(
+            recordBytes(first),
+            recordBytes(second),
+            recordBytes(third),
+            recordBytes(fourth),
+          );
+          const maxBufferedBytes = Math.max(
+            recordBytes(second) + recordBytes(third),
+            recordBytes(third) + recordBytes(fourth),
+          );
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes,
+            maxFiles: 2,
+            batchWindowMs: 10_000,
+            maxBufferedBytes,
+          });
+
+          const blockingBackup = `${tracePath}.2`;
+          fs.mkdirSync(path.join(blockingBackup, "child"), { recursive: true });
+          sink.push(first);
+          sink.push(second);
+          yield* sink.flush;
+          sink.push(third);
+          sink.push(fourth);
+          fs.rmSync(blockingBackup, { recursive: true, force: true });
+          yield* sink.flush;
+
+          const names = [
+            "shared.trace.ndjson.2",
+            "shared.trace.ndjson.1",
+            "shared.trace.ndjson",
+          ].flatMap((entry) =>
+            fs
+              .readFileSync(path.join(tempDir, entry), "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => decodeTraceRecordLine(line).name),
+          );
+          assert.deepStrictEqual(names, ["first", "third", "fourth"]);
+        }),
+      ),
+    );
+
+    it.effect("leaves failed trace recovery to the retry timer", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const first = makeRecord("first");
+          const second = makeRecord("second");
+          const third = makeRecord("third", "x");
+          const recordBytes = (record: TraceRecord) =>
+            Buffer.byteLength(`${JSON.stringify(record)}\n`);
+          const maxBytes = Math.max(recordBytes(first), recordBytes(second), recordBytes(third));
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes,
+            maxFiles: 2,
+            batchWindowMs: 1_000,
+            maxBufferedBytes: recordBytes(second) + recordBytes(third),
+          });
+
+          const blockingBackup = `${tracePath}.2`;
+          fs.mkdirSync(path.join(blockingBackup, "child"), { recursive: true });
+          sink.push(first);
+          sink.push(second);
+          yield* sink.flush;
+
+          fs.rmSync(blockingBackup, { recursive: true, force: true });
+          sink.push(third);
+          assert.equal(fs.existsSync(`${tracePath}.1`), false);
+          assert.deepStrictEqual(
+            (yield* readTraceRecords(tracePath)).map((record) => record.name),
+            ["first"],
+          );
+
+          yield* TestClock.adjust("1 second");
+          yield* Effect.yieldNow;
+
+          const names = ["shared.trace.ndjson.2", "shared.trace.ndjson.1", "shared.trace.ndjson"]
+            .filter((entry) => fs.existsSync(path.join(tempDir, entry)))
+            .flatMap((entry) =>
+              fs
+                .readFileSync(path.join(tempDir, entry), "utf8")
+                .trim()
+                .split("\n")
+                .map((line) => decodeTraceRecordLine(line).name),
+            );
+          assert.deepStrictEqual(names, ["first", "second", "third"]);
+        }),
+      ),
+    );
+
+    it.effect("backs off persistent trace failures with an immediate batch window", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const realAppendFileSync = fs.appendFileSync.bind(fs);
+          let appendAttempts = 0;
+          let failWrites = true;
+          const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation((...args) => {
+            appendAttempts += 1;
+            if (failWrites) {
+              throw new Error("simulated trace write failure");
+            }
+            Reflect.apply(realAppendFileSync, fs, args);
+          });
+          yield* Effect.addFinalizer(() => Effect.sync(() => appendSpy.mockRestore()));
+          yield* TestClock.setTime(0);
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes: 4_096,
+            maxFiles: 2,
+            batchWindowMs: 0,
+            maxBufferedBytes: 4_096,
+          });
+
+          sink.push(makeRecord("first"));
+          assert.equal(appendAttempts, 1);
+          sink.push(makeRecord("second"));
+          assert.equal(appendAttempts, 1);
+
+          yield* TestClock.adjust("199 millis");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 1);
+          yield* TestClock.adjust("1 millis");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 2);
+
+          sink.push(makeRecord("third"));
+          assert.equal(appendAttempts, 2);
+          yield* TestClock.adjust("399 millis");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 2);
+          yield* TestClock.adjust("1 millis");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 3);
+
+          let expectedAttempts = 3;
+          for (const delayMs of [800, 1_600, 3_200, 6_400, 12_800, 25_600, 30_000]) {
+            yield* TestClock.adjust(`${delayMs} millis`);
+            yield* Effect.yieldNow;
+            expectedAttempts += 1;
+            assert.equal(appendAttempts, expectedAttempts);
+          }
+          assert.equal(appendAttempts, 10);
+          yield* TestClock.adjust("29999 millis");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 10);
+          yield* TestClock.adjust("1 millis");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 11);
+          yield* TestClock.adjust("30 seconds");
+          yield* Effect.yieldNow;
+          assert.equal(appendAttempts, 12);
+
+          failWrites = false;
+          yield* sink.close();
+          const records = yield* readTraceRecords(tracePath);
+          assert.deepStrictEqual(
+            records.map((record) => record.name),
+            ["first", "second", "third"],
           );
         }),
       ),
