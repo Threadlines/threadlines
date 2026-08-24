@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp test run"
+    "test": "vp exec vp test run"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

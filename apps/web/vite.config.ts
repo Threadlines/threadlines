@@ -104,7 +104,7 @@ export default defineConfig({
       // and a task that reads-and-writes an input is never cacheable —
       // exclude those artifacts from the input fingerprint.
       "test:browser": {
-        command: "vp test run --config vitest.browser.config.ts",
+        command: "vp exec vp test run --config vitest.browser.config.ts",
         input: [{ auto: true }, "!src/**/preview-output/**", "!src/**/__screenshots__/**"],
       },
     },

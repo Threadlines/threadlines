@@ -7,7 +7,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "test": "vp test run",
+    "test": "vp exec vp test run",
     "typecheck": "astro check"
   },
   "dependencies": {

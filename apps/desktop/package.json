@@ -13,7 +13,7 @@
     "dev:server-bundle": "vp run --filter @threadlines/server dev:bundle",
     "smoke-test": "node scripts/smoke-test.mjs",
     "start": "node scripts/start-electron.mjs",
-    "test": "vp test run --passWithNoTests",
+    "test": "vp exec vp test run --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "vendor:playwright": "node ../../scripts/extract-playwright-injected.ts"
   },

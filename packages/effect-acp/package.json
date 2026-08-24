@@ -34,7 +34,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp test run --testTimeout=30000",
+    "test": "vp exec vp test run --testTimeout=30000",
     "generate": "node scripts/generate.ts"
   },
   "dependencies": {
