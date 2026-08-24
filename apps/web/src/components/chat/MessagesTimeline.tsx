@@ -37,11 +37,11 @@ import {
   type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
 import {
-  formatLiveAgentStatusLine,
+  formatLiveAgentStatusRows,
   formatSubagentReceiptSummary,
   selectTurnAgents,
   summarizeTurnAgents,
-  type LiveAgentStatusLine,
+  type LiveAgentStatusRoster,
   type TurnAgentSummary,
 } from "./agentsPanel.logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
@@ -2506,7 +2506,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
   const agentSummary = summarizeTurnAgents(liveSubagents);
-  const liveAgentStatus = formatLiveAgentStatusLine(liveSubagents);
+  const liveAgentRoster = formatLiveAgentStatusRows(liveSubagents);
 
   return (
     // No node at all: the label shimmer is the anchor's whole "alive" signal,
@@ -2536,10 +2536,10 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             </>
           ) : null}
         </p>
-        {/* Once the turn has agents the status line's slot stays reserved, so
-            agents going live and idle swing the text, not the row height. */}
+        {/* Each live agent keeps its own row, so concurrent updates change the
+            action text in place instead of replacing another agent's status. */}
         <div className={agentSummary ? "min-h-4" : undefined}>
-          <SpineLiveAgentStatus status={liveAgentStatus} />
+          <LiveAgentRoster roster={liveAgentRoster} />
         </div>
       </div>
     </div>
@@ -2934,32 +2934,66 @@ function LiveActivitySpine({
   );
 }
 
-/** The freshest live agent signal, pinned to the turn's working anchor where
- *  the eye already is — one named line however many agents are live, never
- *  buried under the churn of the steps above. */
-function SpineLiveAgentStatus({ status }: { status: LiveAgentStatusLine | null }) {
+/** A flat, stable mini-roster for the live agents on this turn. Accent stays on
+ *  the status dot; the neutral name and quieter action remain easy to separate. */
+function LiveAgentRoster({ roster }: { roster: LiveAgentStatusRoster }) {
   const { onOpenAgentsPanel } = use(TimelineRowCtx);
-  if (!status || !onOpenAgentsPanel) {
+  if (roster.rows.length === 0 || !onOpenAgentsPanel) {
     return null;
   }
+
   return (
-    <button
-      type="button"
-      className="work-meta-enter ml-1 block w-full min-w-0 truncate text-left text-[11px] leading-4 text-primary-readable/70 transition-colors duration-150 hover:text-primary-readable"
-      data-turn-live-agent-status="true"
-      title={`${status.name}: ${status.step}`}
-      onClick={() => onOpenAgentsPanel(null)}
-    >
-      <span className="text-primary-readable/85">{status.name}</span>
-      <span className="px-1.5 text-muted-foreground/30">·</span>
-      <span>{status.step}</span>
-    </button>
+    <div className="work-meta-enter ml-1 min-w-0" data-turn-live-agent-roster="true">
+      {roster.rows.map((row) => (
+        <button
+          key={row.id}
+          type="button"
+          className="group/live-agent grid w-full min-w-0 cursor-pointer grid-cols-[0.375rem_minmax(0,7rem)_minmax(0,1fr)] items-center gap-x-1.5 text-left text-[11px] leading-4 outline-none focus-ring"
+          data-turn-live-agent-status="true"
+          data-turn-live-agent-state={row.status}
+          title={`${row.name}: ${row.step}`}
+          aria-label={`Open ${row.name}: ${row.step}`}
+          onClick={() => onOpenAgentsPanel(row.agentThreadId)}
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              "size-1.5 rounded-full",
+              row.status === "waiting" ? "bg-amber-500" : "bg-primary-graph",
+            )}
+          />
+          <span
+            className="truncate font-medium text-foreground/70 transition-colors duration-150 group-hover/live-agent:text-foreground/90"
+            data-turn-live-agent-name="true"
+          >
+            {row.name}
+          </span>
+          <span
+            className="truncate text-muted-foreground/55 transition-colors duration-150 group-hover/live-agent:text-muted-foreground/80"
+            data-turn-live-agent-action="true"
+          >
+            {row.step}
+          </span>
+        </button>
+      ))}
+      {roster.hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="ml-3 block cursor-pointer text-[10px] leading-4 text-muted-foreground/45 outline-none transition-colors duration-150 hover:text-muted-foreground/75 focus-ring"
+          data-turn-live-agent-overflow="true"
+          aria-label={`Open ${roster.hiddenCount.toLocaleString()} more active ${roster.hiddenCount === 1 ? "subagent" : "subagents"}`}
+          onClick={() => onOpenAgentsPanel(null)}
+        >
+          +{roster.hiddenCount.toLocaleString()} more active
+        </button>
+      ) : null}
+    </div>
   );
 }
 
 interface TurnAgentTracker {
   readonly summary: TurnAgentSummary | null;
-  readonly liveStatus: LiveAgentStatusLine | null;
+  readonly liveRoster: LiveAgentStatusRoster;
 }
 
 /** The turn's agents, resolved from the turns this group owns the tracker for —
@@ -2990,7 +3024,7 @@ function useTurnAgentTracker(
     // An empty selection summarizes to null on its own, so a turn that ran no
     // agents has no tracker whether or not the thread has agent state at all.
     summary: summarizeTurnAgents(turnSubagents),
-    liveStatus: formatLiveAgentStatusLine(turnSubagents),
+    liveRoster: formatLiveAgentStatusRows(turnSubagents),
   };
 }
 
@@ -3021,6 +3055,7 @@ function TurnAgentTrackerButton({
               segment.status === "running" && "bg-primary-graph",
               segment.status === "waiting" && "bg-amber-500",
               segment.status === "failed" && "bg-destructive",
+              segment.status === "stopped" && "bg-muted-foreground/35",
               segment.status === "completed" && "bg-muted-foreground/35",
             )}
           />
@@ -3051,7 +3086,7 @@ function ActivityReceipt({
   const summary = summarizeActivityReceipt(entries);
   const actionCount = entries.length;
   const duration = formatActivityDuration(durationEntries);
-  const { summary: agentSummary, liveStatus: liveAgentStatus } = tracker;
+  const { summary: agentSummary, liveRoster: liveAgentRoster } = tracker;
   // A group whose visible work is all delegation reads as the agents' receipt,
   // not the main model's: "Activity · 0 actions" would claim the model did the
   // work the rail attributes to its agents.
@@ -3097,21 +3132,7 @@ function ActivityReceipt({
             </>
           ) : null}
         </p>
-        {/* One line for every live agent on this turn, not one per agent: the
-            freshest signal, named. Disappears the moment nothing is live. */}
-        {liveAgentStatus && onOpenAgentsPanel ? (
-          <button
-            type="button"
-            className="block w-full min-w-0 truncate text-left text-[11px] leading-4 text-primary-readable/70 transition-colors duration-150 hover:text-primary-readable"
-            data-turn-live-agent-status="true"
-            title={`${liveAgentStatus.name}: ${liveAgentStatus.step}`}
-            onClick={() => onOpenAgentsPanel(null)}
-          >
-            <span className="text-primary-readable/85">{liveAgentStatus.name}</span>
-            <span className="px-1.5 text-muted-foreground/30">·</span>
-            <span>{liveAgentStatus.step}</span>
-          </button>
-        ) : null}
+        <LiveAgentRoster roster={liveAgentRoster} />
         {summary ? (
           <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
         ) : null}

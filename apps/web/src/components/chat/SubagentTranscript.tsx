@@ -81,6 +81,11 @@ interface SubagentTranscriptProps {
   /** Shown when the provider has no transcript yet, so a just-spawned agent
    *  still says something useful. */
   fallbackBody?: string | null;
+  /** A neutral lifecycle receipt shown after the provider transcript. */
+  terminalNotice?: {
+    readonly label: string;
+    readonly createdAt: string | null;
+  } | null;
   /** Child-owned work from the parent activity projection. Codex code-mode
    *  calls currently live here even when `thread/read` omits them. */
   activityEntries?: ReadonlyArray<WorkLogEntry> | undefined;
@@ -227,6 +232,7 @@ export function SubagentTranscript({
   cwd,
   objective,
   fallbackBody = null,
+  terminalNotice = null,
   activityEntries = EMPTY_WORK_ENTRIES,
   onAgentResolved,
   onInstructionResolved,
@@ -335,10 +341,11 @@ export function SubagentTranscript({
     };
   }, [agentIdsKey, environmentId, follow, threadId]);
 
-  const revision = useMemo(
-    () => (state.status === "loaded" ? transcriptRevision(state.sections) : state.status),
-    [state],
-  );
+  const revision = useMemo(() => {
+    const transcript =
+      state.status === "loaded" ? transcriptRevision(state.sections) : state.status;
+    return `${transcript}\u0000${terminalNotice?.label ?? ""}\u0000${terminalNotice?.createdAt ?? ""}`;
+  }, [state, terminalNotice]);
 
   /** Per-section view state, built once so the instruction the panel renders is
    *  the same one it reports to the header. */
@@ -564,6 +571,8 @@ export function SubagentTranscript({
                 follow &&
                 sectionIndex === sectionViews.length - 1 &&
                 shouldShowSubagentLiveTail(items, fallbackBody);
+              const showTerminalNotice =
+                !follow && sectionIndex === sectionViews.length - 1 && terminalNotice !== null;
               return (
                 <div key={section.agentId} className="space-y-2">
                   {section.result.nextCursor !== undefined || (section.result.offset ?? 0) > 0 ? (
@@ -612,7 +621,7 @@ export function SubagentTranscript({
                           // the step's first line of text.
                           nodeOffset={subagentStepNodeOffsetPx(step)}
                           connectTop={stepIndex > 0}
-                          connectBottom={!lastItem || showLiveTail}
+                          connectBottom={!lastItem || showLiveTail || showTerminalNotice}
                           style={
                             follow
                               ? spineAccentRowStyle(
@@ -656,7 +665,7 @@ export function SubagentTranscript({
                         }
                         nodeOffset={14}
                         connectTop={groupedSteps.length > 0}
-                        connectBottom={showLiveTail}
+                        connectBottom={showLiveTail || showTerminalNotice}
                         style={follow ? spineAccentRowStyle(showLiveTail ? 1 : 0) : undefined}
                       >
                         <div className="py-1">
@@ -673,6 +682,31 @@ export function SubagentTranscript({
                       >
                         <div className="py-1">
                           <LiveTail body={fallbackBody} />
+                        </div>
+                      </SpineRow>
+                    ) : null}
+                    {showTerminalNotice ? (
+                      <SpineRow
+                        node={
+                          <span
+                            aria-hidden="true"
+                            className="block size-1.5 rounded-full bg-muted-foreground/35"
+                          />
+                        }
+                        nodeOffset={14}
+                        connectTop={groupedSteps.length > 0 || activityRun !== null}
+                        connectBottom={false}
+                      >
+                        <div
+                          className="py-1 text-[11px] leading-5 text-muted-foreground/60"
+                          data-subagent-transcript-terminal="true"
+                        >
+                          <TranscriptTimestamp
+                            at={terminalNotice?.createdAt ?? null}
+                            timestampFormat={timestampFormat}
+                            float
+                          />
+                          {terminalNotice?.label}
                         </div>
                       </SpineRow>
                     ) : null}

@@ -133,6 +133,12 @@ describe("AgentsPanel", () => {
           statusLabel: "Failed",
         }),
         buildSubagent({
+          id: "stopped",
+          label: "Stopped reviewer",
+          status: "interrupted",
+          statusLabel: "Stopped",
+        }),
+        buildSubagent({
           id: "done",
           label: "Doc reader",
           status: "completed",
@@ -151,8 +157,44 @@ describe("AgentsPanel", () => {
         "running",
         "waiting",
         "failed",
+        "stopped",
         "completed",
       ]);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("shows an interrupted agent as neutrally stopped through its transcript", async () => {
+    const mounted = await renderPanel({
+      subagents: [
+        buildSubagent({
+          id: "stopped",
+          agentThreadId: "stopped",
+          transcriptAgentId: "stopped",
+          label: "Production review",
+          status: "interrupted",
+          statusLabel: "Stopped",
+          updatedAt: "2026-08-11T10:04:00.000Z",
+        }),
+      ],
+    });
+
+    try {
+      const branch = document.querySelector("[data-agent-branch='true']");
+      expect(branch?.getAttribute("data-agent-branch-status")).toBe("stopped");
+      expect(
+        branch?.querySelector("[data-agent-branch-node='true'] span")?.className,
+      ).not.toContain("bg-destructive");
+
+      await page.getByRole("button", { name: "Open Production review transcript" }).click();
+
+      await expect.element(page.getByText("Stopped", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Stopped before completion")).toBeVisible();
+      expect(
+        document.querySelector("[data-subagent-inspector-status='true']")?.className,
+      ).not.toContain("text-destructive");
+      expect(document.querySelector("[data-subagent-transcript-terminal='true']")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }

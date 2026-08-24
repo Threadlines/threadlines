@@ -33,6 +33,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
+  /** Retry one transient snapshot sooner than the normal maintenance cadence. */
+  readonly shouldRetrySnapshot?: (snapshot: ServerProvider) => boolean;
+  readonly retryDelay?: Duration.Input;
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
   const refreshSemaphore = yield* Semaphore.make(1);
   const changesPubSub = yield* Effect.acquireRelease(
@@ -47,6 +50,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
+  const retryFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
   const scope = yield* Effect.scope;
 
   const publishEnrichedSnapshot = Effect.fn("publishEnrichedSnapshot")(function* (
@@ -99,7 +103,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const applySnapshotBase = Effect.fn("applySnapshot")(function* (
     nextSettings: Settings,
-    options?: { readonly forceRefresh?: boolean },
+    options?: { readonly forceRefresh?: boolean; readonly scheduleRetry?: boolean },
   ) {
     const forceRefresh = options?.forceRefresh === true;
     const previousSettings = yield* Ref.get(settingsRef);
@@ -126,8 +130,43 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
     return nextSnapshot;
   });
-  const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
-    refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
+  const applySnapshot = (
+    nextSettings: Settings,
+    options?: { readonly forceRefresh?: boolean; readonly scheduleRetry?: boolean },
+  ) => {
+    const applied = refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
+    if (!input.shouldRetrySnapshot || options?.scheduleRetry === false) {
+      return applied;
+    }
+    return applied.pipe(Effect.tap(reconcileSnapshotRetry));
+  };
+
+  function reconcileSnapshotRetry(snapshot: ServerProvider): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      const previousFiber = yield* Ref.getAndSet(retryFiberRef, null);
+      if (previousFiber) {
+        yield* Fiber.interrupt(previousFiber).pipe(Effect.ignore);
+      }
+      if (!input.shouldRetrySnapshot?.(snapshot)) {
+        return;
+      }
+
+      // A timeout is weak evidence on a busy machine. Give it one quiet retry
+      // before falling back to the normal maintenance interval; repeated fast
+      // probes would only make an overloaded machine worse.
+      const fiber = yield* Effect.sleep(input.retryDelay ?? "60 seconds").pipe(
+        Effect.flatMap(() => Ref.set(retryFiberRef, null)),
+        Effect.flatMap(() => input.getSettings),
+        Effect.flatMap((nextSettings) =>
+          applySnapshot(nextSettings, { forceRefresh: true, scheduleRetry: false }),
+        ),
+        Effect.asVoid,
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(scope),
+      );
+      yield* Ref.set(retryFiberRef, fiber);
+    });
+  }
 
   const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
     const nextSettings = yield* input.getSettings;
@@ -157,6 +196,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return;
     }
     yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    if (input.shouldRetrySnapshot) {
+      yield* reconcileSnapshotRetry(snapshotToPublish);
+    }
   });
 
   yield* Stream.runForEach(input.streamSettings, (nextSettings) =>

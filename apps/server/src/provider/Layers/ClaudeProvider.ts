@@ -659,7 +659,9 @@ export function claudeAuthCapabilities(input: {
 
 // ── SDK capability probe ────────────────────────────────────────────
 
-const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
+// Claude's SDK initialization can be slow on a busy Windows machine even when
+// the same CLI is already serving live turns.
+const CAPABILITIES_PROBE_TIMEOUT_MS = 30_000;
 
 function nonEmptyProbeString(value: string): string | undefined {
   const candidate = value.trim();
@@ -995,6 +997,7 @@ export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(
 // capabilities probe above never reaches the API, so it renews nothing).
 const CREDENTIAL_REFRESH_TIMEOUT_MS = 60_000;
 const CREDENTIAL_REFRESH_PROMPT = "Reply with exactly: ok";
+const CLAUDE_VERSION_PROBE_TIMEOUT_MS = 30_000;
 
 /**
  * Run one minimal Haiku turn on normal Claude sign-in (token/API-key env
@@ -1097,7 +1100,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   }
 
   const versionProbe = yield* runClaudeCommand(claudeSettings, ["--version"], environment).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+    Effect.timeoutOption(CLAUDE_VERSION_PROBE_TIMEOUT_MS),
     Effect.result,
   );
 
@@ -1131,10 +1134,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       probe: {
         installed: true,
         version: null,
-        status: "error",
+        status: "warning",
+        statusReason: "provider_probe_timeout",
         auth: { status: "unknown" },
         message:
-          "Claude Agent CLI is installed but failed to run. Timed out while running command.",
+          "Claude status check timed out after 30 seconds. Existing sessions may still work; Threadlines will retry in the background.",
       },
     });
   }

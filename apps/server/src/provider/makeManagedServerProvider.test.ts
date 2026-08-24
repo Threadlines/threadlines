@@ -11,6 +11,7 @@ import * as Fiber from "effect/Fiber";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { makeManagedServerProvider } from "./makeManagedServerProvider.ts";
 
@@ -92,6 +93,13 @@ const refreshedSnapshotSecond: ServerProvider = {
   ...refreshedSnapshot,
   checkedAt: "2026-04-10T00:00:03.000Z",
   message: "Refreshed provider availability again.",
+};
+
+const timedOutSnapshot: ServerProvider = {
+  ...initialSnapshot,
+  checkedAt: "2026-04-10T00:00:01.000Z",
+  message: "Provider status check timed out.",
+  statusReason: "provider_probe_timeout",
 };
 
 const enrichedSnapshotSecond: ServerProvider = {
@@ -190,6 +198,50 @@ describe("makeManagedServerProvider", () => {
 
         assert.deepStrictEqual(updates, [refreshedSnapshot, refreshedSnapshotSecond]);
         assert.deepStrictEqual(latest, refreshedSnapshotSecond);
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+      }),
+    ),
+  );
+
+  it.effect("quietly retries a recoverable timeout before the normal refresh interval", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const checkCalls = yield* Ref.make(0);
+        const releaseInitialCheck = yield* Deferred.make<void>();
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 1
+                ? Deferred.await(releaseInitialCheck).pipe(Effect.as(timedOutSnapshot))
+                : Effect.succeed(refreshedSnapshot),
+            ),
+          ),
+          refreshInterval: "1 hour",
+          shouldRetrySnapshot: (snapshot) => snapshot.statusReason === "provider_probe_timeout",
+          retryDelay: "1 minute",
+        });
+
+        const updatesFiber = yield* Stream.take(provider.streamChanges, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 1);
+
+        yield* Deferred.succeed(releaseInitialCheck, undefined);
+        yield* TestClock.adjust("1 minute");
+        yield* Effect.yieldNow;
+
+        const updates = Array.from(yield* Fiber.join(updatesFiber));
+        const latest = yield* provider.getSnapshot;
+
+        assert.deepStrictEqual(updates, [timedOutSnapshot, refreshedSnapshot]);
+        assert.deepStrictEqual(latest, refreshedSnapshot);
         assert.strictEqual(yield* Ref.get(checkCalls), 2);
       }),
     ),

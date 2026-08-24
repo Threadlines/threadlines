@@ -1,6 +1,6 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
-import { CloudIcon, HeartIcon, MessagesSquareIcon, MonitorIcon, StarIcon } from "lucide-react";
+import { CloudIcon, MessagesSquareIcon, MonitorIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -14,6 +14,7 @@ import { selectGeneralChatsProjectAcrossEnvironments, useStore } from "../../sto
 import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
+import { OpenSourceSupportLinks } from "../OpenSourceSupportLinks";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { TooltipWrapper } from "../ui/tooltip";
 import {
@@ -223,34 +224,7 @@ export function DraftEmptyState({
         testId="draft-empty-recent-thread"
       />
 
-      {/* Quiet open-source footer. The draft canvas is the one surface every
-          user sees daily, so the repo links live here — muted, text-and-glyph
-          only, never a banner. Plain anchors: the desktop window's
-          setWindowOpenHandler already routes target="_blank" to the system
-          browser. */}
-      <div
-        className="no-thread-rise mt-12 flex items-center justify-center gap-6"
-        style={riseDelay("0.34s")}
-      >
-        <a
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"
-          href="https://github.com/Threadlines/threadlines"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <StarIcon className="size-3.5" />
-          Star on GitHub
-        </a>
-        <a
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"
-          href="https://github.com/sponsors/Threadlines"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <HeartIcon className="size-3.5" />
-          Sponsor
-        </a>
-      </div>
+      <OpenSourceSupportLinks />
     </div>
   );
 }

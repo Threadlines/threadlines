@@ -10,7 +10,7 @@
  *
  * @module providerStatusNotice
  */
-import { ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import type { ServerProvider } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
 import { SettingsIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -27,34 +27,36 @@ import {
 } from "./providerSignIn";
 import { StatusNoticeActionButtons, useProviderStatusRefresh } from "./statusNotice";
 
-const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
-export const PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS = 25_000;
+export const PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS = 45_000;
+export const PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS = 120_000;
 
-function isCodexProviderProbeStatus(status: ServerProvider): boolean {
+function isRecoverableProviderProbeStatus(status: ServerProvider): boolean {
   return (
-    status.driver === CODEX_DRIVER_KIND &&
-    (status.statusReason === "provider_probe_pending" ||
-      status.statusReason === "provider_probe_timeout")
+    status.statusReason === "provider_probe_pending" ||
+    status.statusReason === "provider_probe_timeout"
   );
 }
 
 function providerStatusAgeMs(status: ServerProvider, nowMs: number): number {
   const checkedAtMs = Date.parse(status.checkedAt);
   if (!Number.isFinite(checkedAtMs)) {
-    return PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS;
+    return PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS;
   }
   return Math.max(0, nowMs - checkedAtMs);
 }
 
 export function getPendingProbeNoticeDelayMs(status: ServerProvider, nowMs: number): number {
-  if (
-    status.status !== "warning" ||
-    status.statusReason !== "provider_probe_pending" ||
-    !isCodexProviderProbeStatus(status)
-  ) {
+  if (status.status !== "warning" || status.statusReason !== "provider_probe_pending") {
     return 0;
   }
   return Math.max(0, PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS - providerStatusAgeMs(status, nowMs));
+}
+
+export function getTimedOutProbeNoticeDelayMs(status: ServerProvider, nowMs: number): number {
+  if (status.statusReason !== "provider_probe_timeout") {
+    return 0;
+  }
+  return Math.max(0, PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS - providerStatusAgeMs(status, nowMs));
 }
 
 export function shouldShowProviderStatusNotice(
@@ -68,16 +70,26 @@ export function shouldShowProviderStatusNotice(
     return false;
   }
   if (status.status === "error") {
+    if (isRecoverableProviderProbeStatus(status)) {
+      if (options?.activeTurnInProgress === true) {
+        return false;
+      }
+      if (getTimedOutProbeNoticeDelayMs(status, options?.nowMs ?? Date.now()) > 0) {
+        return false;
+      }
+    }
     return true;
   }
   if (options?.activeTurnInProgress === true) {
     return false;
   }
   if (
-    isCodexProviderProbeStatus(status) &&
     status.statusReason === "provider_probe_pending" &&
     getPendingProbeNoticeDelayMs(status, options?.nowMs ?? Date.now()) > 0
   ) {
+    return false;
+  }
+  if (getTimedOutProbeNoticeDelayMs(status, options?.nowMs ?? Date.now()) > 0) {
     return false;
   }
   return true;
@@ -124,10 +136,9 @@ export function resolveProviderStatusNoticeActions(
 }
 
 /**
- * Builds the provider-status notice, including the delayed reveal for a Codex
- * probe that is merely slow: a probe that has not answered yet is usually
- * about to, so it only earns the row once it has been pending long enough to
- * be worth mentioning.
+ * Builds the provider-status notice, including delayed reveals for recoverable
+ * probes. A slow or timed-out health check is usually about to heal in the
+ * background, so it only earns the row after a sustained failure.
  */
 export function useProviderStatusNotice(input: {
   readonly status: ServerProvider | null;
@@ -156,13 +167,16 @@ export function useProviderStatusNotice(input: {
   const statusReason = status?.statusReason;
   useEffect(() => {
     setNowMs(Date.now());
-  }, [checkedAt, instanceId, statusReason]);
+  }, [activeTurnInProgress, checkedAt, instanceId, statusReason]);
 
   useEffect(() => {
     if (!status || activeTurnInProgress) {
       return;
     }
-    const remainingMs = getPendingProbeNoticeDelayMs(status, nowMs);
+    const remainingMs = Math.max(
+      getPendingProbeNoticeDelayMs(status, nowMs),
+      getTimedOutProbeNoticeDelayMs(status, nowMs),
+    );
     if (remainingMs <= 0) {
       return;
     }

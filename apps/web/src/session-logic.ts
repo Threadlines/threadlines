@@ -292,6 +292,7 @@ export interface SubagentProgressState {
   activeCount: number;
   completedCount: number;
   failedCount: number;
+  stoppedCount: number;
   totalCount: number;
   summary: string;
   badge: SubagentProgressBadgeState;
@@ -838,7 +839,7 @@ export function deriveSubagentProgressState(input: {
   // Finished agents remain useful while their parent turn is still running:
   // they explain a shrinking active count and make the completed badge/state
   // reachable. Once the turn settles, successful agents clear with the rest
-  // of the transient activity UI while failures remain actionable.
+  // of the transient activity UI while failed and stopped work remains visible.
   const visibleRecords = records.filter(
     (record) => record.status !== "completed" || input.latestTurnSettled === false,
   );
@@ -849,7 +850,13 @@ export function deriveSubagentProgressState(input: {
 
   const activeCount = items.filter((item) => isActiveSubagentStatus(item.status)).length;
   const failedCount = items.filter((item) => isFailedSubagentStatus(item.status)).length;
-  if (input.latestTurnSettled === true && activeCount === 0 && failedCount === 0) {
+  const stoppedCount = items.filter((item) => item.status === "interrupted").length;
+  if (
+    input.latestTurnSettled === true &&
+    activeCount === 0 &&
+    failedCount === 0 &&
+    stoppedCount === 0
+  ) {
     return null;
   }
 
@@ -859,12 +866,14 @@ export function deriveSubagentProgressState(input: {
     activeCount,
     completedCount,
     failedCount,
+    stoppedCount,
     totalCount,
   });
   const badge = deriveSubagentProgressBadge({
     activeCount,
     completedCount,
     failedCount,
+    stoppedCount,
     totalCount,
   });
 
@@ -873,6 +882,7 @@ export function deriveSubagentProgressState(input: {
     activeCount,
     completedCount,
     failedCount,
+    stoppedCount,
     totalCount,
     summary,
     badge,
@@ -1896,7 +1906,7 @@ export function isActiveSubagentStatus(status: SubagentProgressStatus): boolean 
 }
 
 function isFailedSubagentStatus(status: SubagentProgressStatus): boolean {
-  return status === "failed" || status === "interrupted";
+  return status === "failed";
 }
 
 function subagentProgressStatusLabel(status: SubagentProgressStatus): string {
@@ -1912,7 +1922,7 @@ function subagentProgressStatusLabel(status: SubagentProgressStatus): string {
     case "failed":
       return "Error";
     case "interrupted":
-      return "Interrupted";
+      return "Stopped";
   }
 }
 
@@ -1967,6 +1977,7 @@ function summarizeSubagentProgress(input: {
   activeCount: number;
   completedCount: number;
   failedCount: number;
+  stoppedCount: number;
   totalCount: number;
 }): string {
   if (input.activeCount > 0) {
@@ -1979,6 +1990,9 @@ function summarizeSubagentProgress(input: {
       "subagents need attention",
     );
   }
+  if (input.stoppedCount > 0) {
+    return formatSubagentCount(input.stoppedCount, "subagent stopped", "subagents stopped");
+  }
   if (input.completedCount > 0) {
     return formatSubagentCount(input.completedCount, "subagent finished", "subagents finished");
   }
@@ -1989,6 +2003,7 @@ function deriveSubagentProgressBadge(input: {
   activeCount: number;
   completedCount: number;
   failedCount: number;
+  stoppedCount: number;
   totalCount: number;
 }): SubagentProgressBadgeState {
   if (input.activeCount > 0) {
@@ -2008,6 +2023,14 @@ function deriveSubagentProgressBadge(input: {
         "subagents need attention",
       ),
       tone: "warning",
+      pulse: false,
+    };
+  }
+  if (input.stoppedCount > 0) {
+    return {
+      label: String(input.stoppedCount),
+      ariaLabel: formatSubagentCount(input.stoppedCount, "subagent stopped", "subagents stopped"),
+      tone: "idle",
       pulse: false,
     };
   }

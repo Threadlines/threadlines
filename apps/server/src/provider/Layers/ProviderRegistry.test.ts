@@ -1192,6 +1192,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         } satisfies ServerProvider;
         const mergedLaterProbe = mergeProviderSnapshot(mergedSuccess, laterLocalProbe);
         assert.strictEqual(mergedLaterProbe.auth.capabilities?.chat?.status, "verified");
+
+        const timedOutAfterLiveChat = {
+          ...mergedLaterProbe,
+          checkedAt: "2026-07-15T22:15:00.000Z",
+          status: "warning",
+          statusReason: "provider_probe_timeout",
+          message:
+            "Claude status check timed out after 30 seconds. Existing sessions may still work; Threadlines will retry in the background.",
+        } as const satisfies ServerProvider;
+        const repairedByNextAssistantMessage = patchClaudeChatAuthState(
+          timedOutAfterLiveChat,
+          "verified",
+        );
+        assert.isNotNull(repairedByNextAssistantMessage);
+        assert.strictEqual(repairedByNextAssistantMessage?.status, "ready");
+        assert.strictEqual(repairedByNextAssistantMessage?.statusReason, undefined);
+        assert.strictEqual(repairedByNextAssistantMessage?.message, undefined);
       });
 
       it("does not preserve usage when the usage auth email changes", () => {
@@ -2618,6 +2635,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             }),
           ),
         ),
+      );
+
+      it.effect("returns a recoverable warning when the Claude CLI version check times out", () =>
+        Effect.gen(function* () {
+          const killCalls = yield* Ref.make(0);
+          const statusFiber = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          ).pipe(Effect.provide(hangingScopedSpawnerLayer(killCalls)), Effect.forkChild);
+
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("31 seconds");
+          yield* Effect.yieldNow;
+
+          const status = yield* Fiber.join(statusFiber);
+          assert.strictEqual(status.status, "warning");
+          assert.strictEqual(status.statusReason, "provider_probe_timeout");
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.auth.status, "unknown");
+          assert.strictEqual(
+            status.message,
+            "Claude status check timed out after 30 seconds. Existing sessions may still work; Threadlines will retry in the background.",
+          );
+          assert.strictEqual(yield* Ref.get(killCalls), 1);
+        }),
       );
 
       it.effect("attaches subscription account usage from the usage resolver", () =>

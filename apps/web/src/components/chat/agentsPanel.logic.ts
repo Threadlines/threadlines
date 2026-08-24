@@ -24,9 +24,10 @@ import {
 
 /**
  * What the branch's status dot says. `waiting` is the only one that asks
- * something of the user, which is why it reads amber rather than accent.
+ * something of the user, while `stopped` records unfinished work without
+ * presenting it as a failure.
  */
-export type AgentBranchStatus = "running" | "waiting" | "failed" | "completed";
+export type AgentBranchStatus = "running" | "waiting" | "failed" | "stopped" | "completed";
 
 interface AgentBranchBase {
   /** Stable across re-derivations so React keeps row state. */
@@ -88,15 +89,19 @@ const STATUS_ORDER: Readonly<Record<AgentBranchStatus, number>> = {
   running: 0,
   waiting: 1,
   failed: 2,
-  completed: 3,
+  stopped: 3,
+  completed: 4,
 };
 
 export function subagentBranchStatus(status: SubagentProgressItem["status"]): AgentBranchStatus {
   if (status === "completed") {
     return "completed";
   }
-  if (status === "failed" || status === "interrupted") {
+  if (status === "failed") {
     return "failed";
+  }
+  if (status === "interrupted") {
+    return "stopped";
   }
   if (status === "waiting") {
     return "waiting";
@@ -365,47 +370,49 @@ export function findAgentsPanelSubagent(
   return null;
 }
 
-export interface LiveAgentStatusLine {
+export type LiveAgentBranchStatus = Extract<AgentBranchStatus, "running" | "waiting">;
+
+export interface LiveAgentStatusRow {
+  readonly id: string;
   readonly agentThreadId: string | null;
   readonly name: string;
   /** The freshest thing the agent has said it is doing. */
   readonly step: string;
+  readonly status: LiveAgentBranchStatus;
 }
 
+export interface LiveAgentStatusRoster {
+  readonly rows: ReadonlyArray<LiveAgentStatusRow>;
+  readonly hiddenCount: number;
+}
+
+const DEFAULT_LIVE_AGENT_STATUS_LIMIT = 3;
+
 /**
- * One line for the whole turn, no matter how many agents are running: the
- * freshest signal any live agent has emitted, named so it is clear whose it is.
- * A count of live agents already sits on the tracker row above; repeating a line
- * per agent would turn the conversation into the panel.
+ * A stable, compact roster for the turn's live agents. It follows the panel's
+ * status/start-time order rather than update time, so one agent reporting a new
+ * step cannot displace another agent's row.
  */
-export function formatLiveAgentStatusLine(
+export function formatLiveAgentStatusRows(
   subagents: ReadonlyArray<SubagentProgressItem>,
-): LiveAgentStatusLine | null {
-  let freshest: {
-    readonly item: SubagentProgressItem;
-    readonly step: string;
-    readonly at: number;
-  } | null = null;
-  for (const item of subagents) {
-    if (!isLiveAgentBranchStatus(subagentBranchStatus(item.status))) {
-      continue;
-    }
-    const step = liveAgentStep(item);
-    if (step === null) {
-      continue;
-    }
-    const at = parseTimestamp(item.updatedAt) ?? 0;
-    if (freshest === null || at >= freshest.at) {
-      freshest = { item, step, at };
-    }
-  }
-  if (freshest === null) {
-    return null;
-  }
+  limit: number = DEFAULT_LIVE_AGENT_STATUS_LIMIT,
+): LiveAgentStatusRoster {
+  const liveBranches = buildAgentBranches({ subagents }).filter((branch) =>
+    isLiveAgentBranchStatus(branch.status),
+  );
+  const visibleLimit = Math.max(0, Math.trunc(limit));
+
   return {
-    agentThreadId: freshest.item.agentThreadId,
-    name: formatSubagentDisplayName(freshest.item),
-    step: freshest.step,
+    rows: liveBranches.slice(0, visibleLimit).map((branch) => ({
+      id: branch.item.id,
+      agentThreadId: branch.item.agentThreadId,
+      name: branch.name,
+      step:
+        liveAgentStep(branch.item) ??
+        (branch.status === "waiting" ? "Needs input" : branch.statusLabel.trim() || "Working"),
+      status: branch.status === "waiting" ? "waiting" : "running",
+    })),
+    hiddenCount: Math.max(0, liveBranches.length - visibleLimit),
   };
 }
 
@@ -572,9 +579,8 @@ export function selectTurnAgents(input: {
 }
 
 /**
- * The turn row's compact read: how many agents ran, how many finished, and
- * how many are asking for something. Counts that are zero stay out of the line
- * so it never pads itself with nothing.
+ * The turn row's compact read: how many agents ran, how they settled, and how
+ * many are asking for something. Counts that are zero stay out of the line.
  */
 export function summarizeTurnAgents(
   subagents: ReadonlyArray<SubagentProgressItem>,
@@ -590,12 +596,17 @@ export function summarizeTurnAgents(
     statuses.filter((candidate) => candidate.status === status).length;
   const doneCount = countOf("completed");
   const failedCount = countOf("failed");
+  const runningCount = countOf("running");
+  const stoppedCount = countOf("stopped");
   const waitingCount = countOf("waiting");
+  const hasMixedStates = doneCount + failedCount + stoppedCount + waitingCount > 0;
 
   const parts = [
     pluralize(statuses.length, "subagent"),
+    runningCount > 0 && hasMixedStates ? `${runningCount} running` : null,
     doneCount > 0 ? `${doneCount} done` : null,
     failedCount > 0 ? `${failedCount} failed` : null,
+    stoppedCount > 0 ? `${stoppedCount} stopped` : null,
     waitingCount > 0 ? `${waitingCount} needs you` : null,
   ].filter((part): part is string => part !== null);
 

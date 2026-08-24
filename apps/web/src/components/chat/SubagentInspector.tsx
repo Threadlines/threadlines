@@ -40,15 +40,18 @@ interface SubagentInspectorProps {
 
 /**
  * Chroma is for the states that want the reader: running, waiting on them, or
- * failed. "Done" is the ordinary outcome of every agent that ever ran, so it
- * reads as muted text with no fill behind it -- a receipt, not an alert.
+ * failed. Done and intentionally stopped work stay neutral -- receipts, not
+ * alerts.
  */
 function statusClassName(status: SubagentProgressItem["status"]): string {
   if (status === "completed") {
     return "text-muted-foreground/55";
   }
-  if (status === "failed" || status === "interrupted") {
+  if (status === "failed") {
     return "bg-destructive/10 text-destructive";
+  }
+  if (status === "interrupted") {
+    return "bg-muted text-muted-foreground/70";
   }
   if (status === "waiting") {
     return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
@@ -202,6 +205,11 @@ export function SubagentInspector({
         cwd={cwd}
         objective={goal}
         fallbackBody={item.liveBody}
+        terminalNotice={
+          item.status === "interrupted"
+            ? { label: "Stopped before completion", createdAt: item.updatedAt }
+            : null
+        }
         activityEntries={activityEntries}
         onAgentResolved={handleAgentResolved}
         onInstructionResolved={handleInstructionResolved}

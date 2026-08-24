@@ -141,7 +141,7 @@ describe("WebSocketConnectionSurface.logic", () => {
           reconnectAttemptCount: 1,
           reconnectPhase: "waiting",
         }),
-        new Date("2026-04-03T20:00:05.000Z").getTime(),
+        new Date("2026-04-03T20:00:29.999Z").getTime(),
       ),
     ).toBe(false);
   });
@@ -156,7 +156,7 @@ describe("WebSocketConnectionSurface.logic", () => {
           reconnectAttemptCount: 1,
           reconnectPhase: "waiting",
         }),
-        new Date("2026-04-03T20:00:10.000Z").getTime(),
+        new Date("2026-04-03T20:00:30.000Z").getTime(),
       ),
     ).toBe(true);
   });

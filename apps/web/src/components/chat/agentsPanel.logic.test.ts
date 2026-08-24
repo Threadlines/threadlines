@@ -10,7 +10,7 @@ import {
   formatAgentsPanelSummary,
   findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
-  formatLiveAgentStatusLine,
+  formatLiveAgentStatusRows,
   selectSubagentsForTurns,
   selectTurnAgents,
   summarizeLiveAgents,
@@ -81,6 +81,12 @@ describe("buildAgentBranches", () => {
           createdAt: "2026-08-11T10:01:00.000Z",
         }),
         buildSubagent({
+          id: "stopped",
+          status: "interrupted",
+          statusLabel: "Stopped",
+          createdAt: "2026-08-11T10:01:30.000Z",
+        }),
+        buildSubagent({
           id: "running-early",
           status: "running",
           createdAt: "2026-08-11T10:02:00.000Z",
@@ -99,6 +105,7 @@ describe("buildAgentBranches", () => {
       "subagent:running-late",
       "subagent:waiting",
       "subagent:failed",
+      "subagent:stopped",
       "subagent:done",
     ]);
   });
@@ -137,7 +144,7 @@ describe("buildAgentBranches", () => {
     });
   });
 
-  it("treats a started agent as running and an interrupted one as failed", () => {
+  it("treats a started agent as running and an interrupted one as stopped", () => {
     const branches = buildAgentBranches({
       subagents: [
         buildSubagent({ id: "starting", status: "starting" }),
@@ -147,7 +154,7 @@ describe("buildAgentBranches", () => {
 
     expect(branches.map((branch) => `${branch.key}:${branch.status}`)).toEqual([
       "subagent:starting:running",
-      "subagent:interrupted:failed",
+      "subagent:interrupted:stopped",
     ]);
   });
 
@@ -480,11 +487,13 @@ describe("findAgentsPanelSubagent", () => {
   });
 });
 
-describe("formatLiveAgentStatusLine", () => {
-  it("names the freshest live signal and nothing else", () => {
-    const line = formatLiveAgentStatusLine([
+describe("formatLiveAgentStatusRows", () => {
+  it("keeps every visible live agent in stable start-time order", () => {
+    const roster = formatLiveAgentStatusRows([
       buildSubagent({
-        id: "stale",
+        id: "first",
+        agentThreadId: "agent-first",
+        nickname: "Router sweep",
         status: "running",
         telemetry: {
           step: "Reading the router",
@@ -495,10 +504,12 @@ describe("formatLiveAgentStatusLine", () => {
           additions: null,
           deletions: null,
         },
-        updatedAt: "2026-08-11T10:00:00.000Z",
+        createdAt: "2026-08-11T10:00:00.000Z",
+        updatedAt: "2026-08-11T10:00:40.000Z",
       }),
       buildSubagent({
-        id: "fresh",
+        id: "second",
+        agentThreadId: "agent-second",
         nickname: "Agent panel tests",
         status: "running",
         telemetry: {
@@ -510,28 +521,59 @@ describe("formatLiveAgentStatusLine", () => {
           additions: null,
           deletions: null,
         },
+        createdAt: "2026-08-11T10:00:30.000Z",
         updatedAt: "2026-08-11T10:00:30.000Z",
       }),
     ]);
 
-    expect(line).toEqual({
-      agentThreadId: "agent-thread-1",
-      name: "Agent panel tests",
-      step: "reading AgentsPanel.browser.tsx",
+    expect(roster).toEqual({
+      rows: [
+        {
+          id: "first",
+          agentThreadId: "agent-first",
+          name: "Router sweep",
+          step: "Reading the router",
+          status: "running",
+        },
+        {
+          id: "second",
+          agentThreadId: "agent-second",
+          name: "Agent panel tests",
+          step: "reading AgentsPanel.browser.tsx",
+          status: "running",
+        },
+      ],
+      hiddenCount: 0,
     });
   });
 
   it("falls back to the agent's own newest prose when there is no reported step", () => {
-    const line = formatLiveAgentStatusLine([
+    const roster = formatLiveAgentStatusRows([
       buildSubagent({ status: "running", liveBody: "  Walking the\n  route files  " }),
     ]);
 
-    expect(line?.step).toBe("Walking the");
+    expect(roster.rows[0]?.step).toBe("Walking the");
   });
 
-  it("says nothing once no agent is live", () => {
+  it("caps the roster and reports hidden live agents", () => {
+    const roster = formatLiveAgentStatusRows(
+      [
+        buildSubagent({ id: "one" }),
+        buildSubagent({ id: "two" }),
+        buildSubagent({ id: "three" }),
+        buildSubagent({ id: "four" }),
+        buildSubagent({ id: "done", status: "completed" }),
+      ],
+      3,
+    );
+
+    expect(roster.rows.map((row) => row.id)).toEqual(["one", "two", "three"]);
+    expect(roster.hiddenCount).toBe(1);
+  });
+
+  it("falls back to a useful state label and omits settled agents", () => {
     expect(
-      formatLiveAgentStatusLine([
+      formatLiveAgentStatusRows([
         buildSubagent({
           status: "completed",
           telemetry: {
@@ -545,8 +587,13 @@ describe("formatLiveAgentStatusLine", () => {
           },
         }),
       ]),
-    ).toBeNull();
-    expect(formatLiveAgentStatusLine([buildSubagent({ status: "running" })])).toBeNull();
+    ).toEqual({ rows: [], hiddenCount: 0 });
+    expect(
+      formatLiveAgentStatusRows([
+        buildSubagent({ status: "running", statusLabel: "Running" }),
+        buildSubagent({ id: "waiting", status: "waiting", statusLabel: "Waiting" }),
+      ]).rows.map((row) => row.step),
+    ).toEqual(["Running", "Needs input"]);
   });
 });
 
@@ -581,7 +628,7 @@ describe("summarizeTurnAgents", () => {
       buildSubagent({ id: "d", status: "waiting" }),
     ]);
 
-    expect(summary?.text).toBe("4 subagents · 1 done · 1 needs you");
+    expect(summary?.text).toBe("4 subagents · 2 running · 1 done · 1 needs you");
     expect(summary?.total).toBe(4);
     expect(summary?.segments.map((segment) => segment.status)).toEqual([
       "running",
@@ -597,13 +644,19 @@ describe("summarizeTurnAgents", () => {
     expect(summary?.text).toBe("1 subagent");
   });
 
-  it("reports failures", () => {
+  it("reports failures separately from stopped agents", () => {
     const summary = summarizeTurnAgents([
       buildSubagent({ id: "a", status: "failed" }),
       buildSubagent({ id: "b", status: "completed" }),
+      buildSubagent({ id: "c", status: "interrupted" }),
     ]);
 
-    expect(summary?.text).toBe("2 subagents · 1 done · 1 failed");
+    expect(summary?.text).toBe("3 subagents · 1 done · 1 failed · 1 stopped");
+    expect(summary?.segments.map((segment) => segment.status)).toEqual([
+      "failed",
+      "stopped",
+      "completed",
+    ]);
   });
 });
 

@@ -19,7 +19,7 @@ import {
 import { AccessRemovedState } from "./ConnectionStatusStates";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
-const RECONNECT_TOAST_GRACE_MS = 10_000;
+const RECONNECT_TOAST_GRACE_MS = 30_000;
 type WsAutoReconnectTrigger = "focus" | "online";
 
 const connectionTimeFormatter = new Intl.DateTimeFormat(undefined, {

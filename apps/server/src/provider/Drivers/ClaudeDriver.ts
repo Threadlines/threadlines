@@ -72,9 +72,22 @@ const UNCLASSIFIED_ERROR_PROBE_MIN_INTERVAL_MS = 15_000;
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 const CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE = "Claude sign-in expired. Sign in again, then retry.";
 
-function clearClaudeChatAuthRequiredMessage(provider: ServerProvider): ServerProvider {
-  const { message, ...providerWithoutMessage } = provider;
-  return message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE ? providerWithoutMessage : provider;
+function hasTransientClaudeProbeStatus(provider: ServerProvider): boolean {
+  return (
+    provider.statusReason === "provider_probe_pending" ||
+    provider.statusReason === "provider_probe_timeout"
+  );
+}
+
+function clearClaudeLiveVerifiedStatus(provider: ServerProvider): ServerProvider {
+  if (
+    provider.message !== CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE &&
+    !hasTransientClaudeProbeStatus(provider)
+  ) {
+    return provider;
+  }
+  const { message: _message, statusReason: _statusReason, ...verifiedProvider } = provider;
+  return verifiedProvider;
 }
 
 export function patchClaudeChatAuthState(
@@ -93,21 +106,25 @@ export function patchClaudeChatAuthState(
           detail: "Chat sign-in expired. Sign in again.",
         };
   const nextAuthStatus = state === "verified" ? "authenticated" : "unauthenticated";
+  const liveVerificationNeedsStatusRepair =
+    state === "verified" &&
+    (provider.message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE ||
+      hasTransientClaudeProbeStatus(provider));
   if (
     previousChatStatus === nextChat.status &&
     provider.auth.status === nextAuthStatus &&
+    !liveVerificationNeedsStatusRepair &&
     (state === "verified" || provider.message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE)
   ) {
     return null;
   }
 
-  const baseProvider =
-    state === "verified" ? clearClaudeChatAuthRequiredMessage(provider) : provider;
+  const baseProvider = state === "verified" ? clearClaudeLiveVerifiedStatus(provider) : provider;
   return {
     ...baseProvider,
     status:
       state === "verified"
-        ? provider.message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE
+        ? liveVerificationNeedsStatusRepair
           ? "ready"
           : provider.status
         : provider.status === "disabled"
@@ -376,6 +393,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        shouldRetrySnapshot: (provider) => provider.statusReason === "provider_probe_timeout",
+        retryDelay: Duration.minutes(1),
       }).pipe(
         Effect.mapError(
           (cause) =>

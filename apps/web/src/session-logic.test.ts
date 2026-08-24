@@ -5483,11 +5483,14 @@ describe("deriveSubagentResultEntries", () => {
       expect.objectContaining({
         agentThreadId: "tool-agent-bg",
         status: "interrupted",
-        statusLabel: "Interrupted",
+        statusLabel: "Stopped",
       }),
     ]);
     expect(progress?.activeCount).toBe(0);
-    expect(progress?.failedCount).toBe(1);
+    expect(progress?.failedCount).toBe(0);
+    expect(progress?.stoppedCount).toBe(1);
+    expect(progress?.summary).toBe("1 subagent stopped");
+    expect(progress?.badge).toMatchObject({ tone: "idle", pulse: false });
 
     // A newer turn on top: the settled task no longer pins the old spawn into
     // view, same as a completion that carries its toolUseId.

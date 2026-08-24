@@ -3758,13 +3758,26 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
       message: `Opening ${input.request.serverName} login with Claude.`,
     });
 
-    yield* runClaudeCommandInPty({
+    // Stale OAuth client registrations make the authorize page fail ("Unrecognized client_id")
+    // and `claude mcp login` reuses them as-is. A server that still needs authentication has no
+    // working credentials to lose, so clear them first and let the login register a fresh client.
+    const clearStaleCredentials = runClaudeCommand({
       binaryPath: context.config.binaryPath,
-      args,
+      args: ["mcp", "logout", claudeShellArg(input.request.serverName)],
       cwd: context.cwd,
       env: context.environment,
-      timeout: Duration.seconds(timeoutSecs),
-    }).pipe(
+    }).pipe(Effect.ignore);
+
+    yield* clearStaleCredentials.pipe(
+      Effect.andThen(
+        runClaudeCommandInPty({
+          binaryPath: context.config.binaryPath,
+          args,
+          cwd: context.cwd,
+          env: context.environment,
+          timeout: Duration.seconds(timeoutSecs),
+        }),
+      ),
       Effect.tap((result) =>
         Effect.gen(function* () {
           const completedAt = yield* nowIsoString;

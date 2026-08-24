@@ -247,7 +247,10 @@ function buildOverflowingWorkTimelineEntries() {
   }));
 }
 
-function buildTurnSubagent(id: string, status: "running" | "completed" | "waiting") {
+function buildTurnSubagent(
+  id: string,
+  status: "running" | "completed" | "waiting" | "interrupted",
+) {
   return {
     id,
     agentThreadId: id,
@@ -257,7 +260,14 @@ function buildTurnSubagent(id: string, status: "running" | "completed" | "waitin
     role: null,
     objective: "Review the change",
     status,
-    statusLabel: status === "waiting" ? "Needs approval" : "Running",
+    statusLabel:
+      status === "waiting"
+        ? "Needs approval"
+        : status === "completed"
+          ? "Done"
+          : status === "interrupted"
+            ? "Stopped"
+            : "Running",
     model: null,
     reasoningEffort: null,
     liveBody: null,
@@ -1152,6 +1162,7 @@ describe("MessagesTimeline", () => {
             buildTurnSubagent("agent-2", "running"),
             buildTurnSubagent("agent-3", "completed"),
             buildTurnSubagent("agent-4", "waiting"),
+            buildTurnSubagent("agent-stopped", "interrupted"),
             // A different turn's agent must not be counted on this row.
             { ...buildTurnSubagent("agent-5", "running"), turnId: TurnId.make("turn-other") },
           ],
@@ -1161,7 +1172,7 @@ describe("MessagesTimeline", () => {
 
     try {
       const summary = page.getByRole("button", {
-        name: "4 subagents · 1 done · 1 needs you. Open the agents panel.",
+        name: "5 subagents · 2 running · 1 done · 1 stopped · 1 needs you. Open the agents panel.",
       });
       await expect.element(summary).toBeVisible();
 
@@ -1336,11 +1347,12 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("shows one live agent status line under the tracker row and drops it when nothing is live", async () => {
+  it("keeps one stable, visually distinct status row per live agent", async () => {
     const onOpenAgentsPanel = vi.fn();
-    const liveSubagent = (id: string, step: string, updatedAt: string) => ({
+    const props = buildProps();
+    const liveSubagent = (id: string, step: string, createdAt: string, updatedAt: string) => ({
       ...buildTurnSubagent(id, "running"),
-      nickname: id === "agent-fresh" ? "Agent panel tests" : "Router sweep",
+      nickname: id === "agent-tests" ? "Agent panel tests" : "Router sweep",
       telemetry: {
         step,
         lastToolName: null,
@@ -1350,44 +1362,121 @@ describe("MessagesTimeline", () => {
         additions: null,
         deletions: null,
       },
+      createdAt,
       updatedAt,
     });
+    const routerAgent = (step: string, updatedAt: string) =>
+      liveSubagent("agent-router", step, "2026-04-13T12:00:00.000Z", updatedAt);
+    const testsAgent = (step: string, updatedAt: string) =>
+      liveSubagent("agent-tests", step, "2026-04-13T12:00:05.000Z", updatedAt);
 
     const screen = await renderTimeline(
       <MessagesTimeline
-        {...buildProps()}
+        {...props}
         timelineEntries={buildOverflowingWorkTimelineEntries()}
         onOpenAgentsPanel={onOpenAgentsPanel}
         turnAgents={{
           subagents: [
-            liveSubagent("agent-stale", "reading the router", "2026-04-13T12:00:10.000Z"),
-            liveSubagent(
-              "agent-fresh",
-              "reading AgentsPanel.browser.tsx",
-              "2026-04-13T12:00:40.000Z",
-            ),
+            routerAgent("reading the router", "2026-04-13T12:00:10.000Z"),
+            testsAgent("reading AgentsPanel.browser.tsx", "2026-04-13T12:00:40.000Z"),
           ],
         }}
       />,
     );
 
     try {
-      // Two agents are live, but the conversation gets exactly one line: the
-      // freshest signal, named.
-      const statusLines = document.querySelectorAll("[data-turn-live-agent-status='true']");
-      expect(statusLines.length).toBe(1);
-      expect(statusLines[0]?.textContent).toContain("Agent panel tests");
-      expect(statusLines[0]?.textContent).toContain("reading AgentsPanel.browser.tsx");
+      let statusLines = document.querySelectorAll("[data-turn-live-agent-status='true']");
+      expect(statusLines.length).toBe(2);
+      expect(statusLines[0]?.textContent).toContain("Router sweep");
+      expect(statusLines[0]?.textContent).toContain("reading the router");
+      expect(statusLines[1]?.textContent).toContain("Agent panel tests");
+      expect(statusLines[1]?.textContent).toContain("reading AgentsPanel.browser.tsx");
+
+      const name = statusLines[0]?.querySelector("[data-turn-live-agent-name='true']");
+      const action = statusLines[0]?.querySelector("[data-turn-live-agent-action='true']");
+      expect(name?.className).toContain("text-foreground/70");
+      expect(action?.className).toContain("text-muted-foreground/55");
 
       (statusLines[0] as HTMLElement).click();
-      expect(onOpenAgentsPanel).toHaveBeenCalledWith(null);
+      expect(onOpenAgentsPanel).toHaveBeenCalledWith("agent-router");
+
+      // The router reports after the test agent. Its action changes in place;
+      // the start-time ordering keeps the two identities from trading rows.
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          timelineEntries={buildOverflowingWorkTimelineEntries()}
+          onOpenAgentsPanel={onOpenAgentsPanel}
+          turnAgents={{
+            subagents: [
+              routerAgent("checking route output", "2026-04-13T12:00:50.000Z"),
+              testsAgent("running browser coverage", "2026-04-13T12:00:45.000Z"),
+            ],
+          }}
+        />,
+      );
+
+      statusLines = document.querySelectorAll("[data-turn-live-agent-status='true']");
+      expect(statusLines[0]?.textContent).toContain("Router sweep");
+      expect(statusLines[0]?.textContent).toContain("checking route output");
+      expect(statusLines[1]?.textContent).toContain("Agent panel tests");
+      expect(statusLines[1]?.textContent).toContain("running browser coverage");
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          timelineEntries={buildOverflowingWorkTimelineEntries()}
+          onOpenAgentsPanel={onOpenAgentsPanel}
+          turnAgents={{
+            subagents: [
+              routerAgent("checking route output", "2026-04-13T12:00:50.000Z"),
+              testsAgent("running browser coverage", "2026-04-13T12:00:45.000Z"),
+              {
+                ...liveSubagent(
+                  "agent-docs",
+                  "waiting for input",
+                  "2026-04-13T12:00:10.000Z",
+                  "2026-04-13T12:00:46.000Z",
+                ),
+                nickname: "Docs review",
+                status: "waiting",
+                statusLabel: "Waiting",
+              },
+              {
+                ...liveSubagent(
+                  "agent-api",
+                  "waiting for input",
+                  "2026-04-13T12:00:15.000Z",
+                  "2026-04-13T12:00:47.000Z",
+                ),
+                nickname: "API review",
+                status: "waiting",
+                statusLabel: "Waiting",
+              },
+            ],
+          }}
+        />,
+      );
+
+      statusLines = document.querySelectorAll("[data-turn-live-agent-status='true']");
+      expect(statusLines.length).toBe(3);
+      expect(statusLines[2]?.textContent).toContain("Docs review");
+      expect(statusLines[2]?.getAttribute("data-turn-live-agent-state")).toBe("waiting");
+      expect(statusLines[2]?.querySelector("[aria-hidden='true']")?.className).toContain(
+        "bg-amber-500",
+      );
+
+      const overflow = page.getByRole("button", { name: "Open 1 more active subagent" });
+      await expect.element(overflow).toBeVisible();
+      await overflow.click();
+      expect(onOpenAgentsPanel).toHaveBeenLastCalledWith(null);
     } finally {
       await screen.unmount();
     }
 
     const settled = await renderTimeline(
       <MessagesTimeline
-        {...buildProps()}
+        {...props}
         timelineEntries={buildOverflowingWorkTimelineEntries()}
         onOpenAgentsPanel={onOpenAgentsPanel}
         turnAgents={{ subagents: [buildTurnSubagent("agent-done", "completed")] }}

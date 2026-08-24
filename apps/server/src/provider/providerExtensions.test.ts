@@ -2414,8 +2414,14 @@ Per-component (rounded)
         "login",
         process.platform === "win32" ? '"claude.ai Google Drive"' : "claude.ai Google Drive",
       ]);
-      // Verification still goes through the ordinary child process.
-      assert.deepEqual(calls[0]?.args, ["mcp", "list"]);
+      // Stale credentials are cleared first so the login registers a fresh OAuth client, and the
+      // verification still goes through the ordinary child process.
+      assert.deepEqual(calls[0]?.args, [
+        "mcp",
+        "logout",
+        process.platform === "win32" ? '"claude.ai Google Drive"' : "claude.ai Google Drive",
+      ]);
+      assert.deepEqual(calls[1]?.args, ["mcp", "list"]);
       assert.equal(status.status, "completed");
     }).pipe(
       Effect.provide(

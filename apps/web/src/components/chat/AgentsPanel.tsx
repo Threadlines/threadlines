@@ -89,6 +89,7 @@ function BranchNode({ status }: { status: AgentBranchStatus }) {
         "block size-2 shrink-0 rounded-full",
         status === "waiting" && "bg-amber-500",
         status === "failed" && "bg-destructive",
+        status === "stopped" && "bg-muted-foreground/35",
         status === "completed" && "bg-muted-foreground/35",
       )}
     />

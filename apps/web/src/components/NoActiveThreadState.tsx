@@ -28,6 +28,7 @@ import {
   useStore,
 } from "../store";
 import { useFirstRunSetupCard } from "./chat/FirstRunSetupCard";
+import { OpenSourceSupportLinks } from "./OpenSourceSupportLinks";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { RecentThreadsList } from "./RecentThreadsList";
 import { resolveSidebarNewThreadEnvMode } from "./Sidebar.logic";
@@ -293,6 +294,8 @@ export function NoActiveThreadState() {
                 limit={3}
                 testId="no-thread-recent-thread"
               />
+
+              <OpenSourceSupportLinks delay="0.54s" />
             </div>
           )}
         </Empty>

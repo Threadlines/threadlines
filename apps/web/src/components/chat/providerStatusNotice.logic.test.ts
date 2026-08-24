@@ -7,6 +7,7 @@ import {
 
 import {
   PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS,
+  PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS,
   resolveProviderStatusNoticeActions,
   shouldShowProviderStatusNotice,
 } from "./providerStatusNotice";
@@ -61,6 +62,22 @@ describe("shouldShowProviderStatusNotice", () => {
     ).toBe(false);
   });
 
+  it("hides pending non-Codex probe status before the slow notice delay", () => {
+    expect(
+      shouldShowProviderStatusNotice(
+        makeProvider({
+          displayName: "Claude",
+          driver: ProviderDriverKind.make("claudeAgent"),
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          statusReason: "provider_probe_pending",
+        }),
+        {
+          nowMs: CHECKED_AT_MS + PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS - 1,
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("shows pending Codex probe status after the slow notice delay", () => {
     expect(
       shouldShowProviderStatusNotice(
@@ -74,20 +91,42 @@ describe("shouldShowProviderStatusNotice", () => {
     ).toBe(true);
   });
 
-  it("shows Codex probe timeouts immediately", () => {
+  it("hides provider probe timeouts before the timeout notice delay", () => {
     expect(
       shouldShowProviderStatusNotice(
         makeProvider({
           statusReason: "provider_probe_timeout",
         }),
         {
-          nowMs: CHECKED_AT_MS,
+          nowMs: CHECKED_AT_MS + PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS - 1,
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("shows provider probe timeouts after the timeout notice delay", () => {
+    expect(
+      shouldShowProviderStatusNotice(
+        makeProvider({
+          statusReason: "provider_probe_timeout",
+        }),
+        {
+          nowMs: CHECKED_AT_MS + PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS,
         },
       ),
     ).toBe(true);
   });
 
-  it("still shows warning-level provider probes while idle", () => {
+  it("suppresses recoverable provider probe timeouts while a turn is active", () => {
+    expect(
+      shouldShowProviderStatusNotice(makeProvider({ statusReason: "provider_probe_timeout" }), {
+        activeTurnInProgress: true,
+        nowMs: CHECKED_AT_MS + PROVIDER_STATUS_TIMEOUT_NOTICE_DELAY_MS,
+      }),
+    ).toBe(false);
+  });
+
+  it("still shows non-probe provider warnings while idle", () => {
     expect(
       shouldShowProviderStatusNotice(makeProvider({ status: "warning" }), {
         activeTurnInProgress: false,
