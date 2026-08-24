@@ -1498,7 +1498,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
-    iconOnly: isComposerFooterIconOnly,
+    iconOnly: isComposerFooterCompact,
   });
   const pendingPrimaryAction = useMemo(
     () =>
@@ -3622,7 +3622,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               >
                 <ProviderModelPicker
-                  compact={isComposerFooterIconOnly}
+                  compact={isComposerFooterCompact}
                   activeInstanceId={selectedInstanceId}
                   model={selectedModelForPickerWithCustomFallback}
                   lockedProvider={lockedProvider}

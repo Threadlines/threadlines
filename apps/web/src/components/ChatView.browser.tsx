@@ -1746,6 +1746,37 @@ function findComposerProviderModelPicker(): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]');
 }
 
+function findVisibleComposerFooter(): HTMLElement | null {
+  return (
+    Array.from(document.querySelectorAll<HTMLElement>('[data-chat-composer-footer="true"]')).find(
+      (candidate) => candidate.getBoundingClientRect().width > 0,
+    ) ?? null
+  );
+}
+
+function findVisibleComposerForm(): HTMLFormElement | null {
+  return (
+    Array.from(document.querySelectorAll<HTMLFormElement>('[data-chat-composer-form="true"]')).find(
+      (candidate) => candidate.getBoundingClientRect().width > 0,
+    ) ?? null
+  );
+}
+
+async function setVisibleComposerFormWidth(targetWidth: number): Promise<void> {
+  // Resize the element observed by ChatComposer. Shell chrome has a larger
+  // min-content width in some renderers and is not part of this footer contract.
+  const composerForm = await waitForElement(
+    findVisibleComposerForm,
+    "Unable to find visible composer form.",
+  );
+  composerForm.style.width = `${targetWidth}px`;
+  composerForm.style.maxWidth = `${targetWidth}px`;
+  await waitForLayout();
+  await vi.waitFor(() => {
+    expect(composerForm.clientWidth).toBe(targetWidth);
+  });
+}
+
 function findButtonByText(text: string): HTMLButtonElement | null {
   return (Array.from(document.querySelectorAll("button")).find(
     (button) => button.textContent?.trim() === text,
@@ -9146,20 +9177,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
 
       const footer = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        findVisibleComposerFooter,
         "Unable to find composer footer.",
       );
       const leftActions = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
+        () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
         "Unable to find left composer actions.",
       );
       const rightActions = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
+        () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
         "Unable to find right composer actions.",
       );
       const moreControlsButton = await waitForElement(
         () =>
-          document.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
+          footer.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
         "Unable to find compact composer controls.",
       );
 
@@ -9194,7 +9225,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("protects model and reasoning labels before shrinking interaction and access", async () => {
+  it("keeps model and reasoning labels while secondary controls are icon-only", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
@@ -9235,28 +9266,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await mounted.setContainerSize({
-        width: 900,
-        height: WIDE_FOOTER_VIEWPORT.height,
-      });
+      await setVisibleComposerFormWidth(560);
 
       const footer = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        findVisibleComposerFooter,
         "Unable to find composer footer.",
       );
+      await vi.waitFor(() => {
+        expect(footer.dataset.chatComposerFooterIconOnly).toBe("true");
+        expect(footer.dataset.chatComposerFooterCompact).toBe("false");
+      });
       const modelButton = await waitForElement(
-        findComposerProviderModelPicker,
+        () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find provider model picker.",
       );
       const reasoningButton = await waitForButtonByTextWithin(footer, "Medium");
-      const interactionButton = await waitForButtonByTextWithin(footer, "Build");
-      const accessButton = await waitForButtonByTextWithin(footer, "Full access");
-
-      expect(footer.dataset.chatComposerFooterIconOnly).toBe("false");
-      expect(getComputedStyle(modelButton).flexShrink).toBe("0");
-      expect(getComputedStyle(reasoningButton).flexShrink).toBe("0");
-      expect(getComputedStyle(interactionButton).flexShrink).toBe("1");
-      expect(getComputedStyle(accessButton).flexShrink).toBe("1");
+      expect(modelButton.textContent).toContain("GPT-5");
+      expect(reasoningButton.textContent).toBe("Medium");
+      expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(32);
+      expect(reasoningButton.getBoundingClientRect().width).toBeGreaterThan(32);
+      expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
     } finally {
       await mounted.cleanup();
     }
@@ -9269,13 +9298,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await mounted.setContainerSize({
-        width: 760,
-        height: WIDE_FOOTER_VIEWPORT.height,
-      });
+      await setVisibleComposerFormWidth(560);
 
       const footer = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        findVisibleComposerFooter,
         "Unable to find composer footer.",
       );
       await vi.waitFor(() => {
@@ -9283,11 +9309,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
         expect(footer.dataset.chatComposerFooterCompact).toBe("false");
       });
       const interactionButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('button[aria-label^="Interaction mode:"]'),
+        () => footer.querySelector<HTMLButtonElement>('button[aria-label^="Interaction mode:"]'),
         "Unable to find icon-only interaction mode.",
       );
       const accessButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]'),
+        () => footer.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]'),
         "Unable to find icon-only access level.",
       );
       const iconButtons = [interactionButton, accessButton];
