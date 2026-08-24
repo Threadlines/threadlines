@@ -297,6 +297,7 @@ export interface TraitsMenuContentProps {
   modelOptions?: ProviderOptions | null | undefined;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
+  iconOnly?: boolean;
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
@@ -430,6 +431,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   modelOptions,
   triggerVariant,
   triggerClassName,
+  iconOnly = false,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -483,17 +485,24 @@ export const TraitsPicker = memo(function TraitsPicker({
       <MenuTrigger
         render={
           <Button
-            size="sm"
+            size={iconOnly ? "icon-sm" : "sm"}
             variant={triggerVariant ?? "ghost"}
+            aria-label={
+              iconOnly ? `Reasoning settings: ${primaryTriggerLabel ?? "Options"}` : undefined
+            }
+            tooltip={iconOnly ? (primaryTriggerLabel ?? "Reasoning settings") : undefined}
             className={cn(
-              "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:max-w-48 sm:px-3 [&_svg]:mx-0",
+              "text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
+              iconOnly
+                ? "shrink-0"
+                : "min-w-0 max-w-40 shrink-0 justify-start overflow-hidden whitespace-nowrap px-2 sm:max-w-48 sm:px-3",
               ultracodeActive && "ultracode-trait-trigger",
               triggerClassName,
             )}
           />
         }
       >
-        <span className="flex min-w-0 w-full items-center gap-1.5 overflow-hidden">
+        <span className="flex min-w-0 w-full items-center justify-center gap-1.5 overflow-hidden">
           <SlidersHorizontalIcon
             aria-hidden="true"
             className={cn(
@@ -501,23 +510,25 @@ export const TraitsPicker = memo(function TraitsPicker({
               ultracodeActive && "text-[#7c3aed] dark:text-[#c9a8ff]",
             )}
           />
-          {primaryTriggerLabel ? (
+          {!iconOnly && primaryTriggerLabel ? (
             <span className={cn("min-w-0 truncate", ultracodeActive && "ultracode-trait-label")}>
               {primaryTriggerLabel}
             </span>
           ) : null}
-          {activeFastModeControl ? (
+          {!iconOnly && activeFastModeControl ? (
             <>
               <ZapIcon aria-hidden="true" className="size-3 shrink-0 text-primary-readable" />
               <span className="sr-only">Fast Mode enabled</span>
             </>
           ) : null}
-          {extraTraitCount > 0 ? (
+          {!iconOnly && extraTraitCount > 0 ? (
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
               +{extraTraitCount}
             </span>
           ) : null}
-          <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+          {!iconOnly ? (
+            <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+          ) : null}
         </span>
       </MenuTrigger>
       <MenuPopup align="start">

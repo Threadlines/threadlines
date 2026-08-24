@@ -2,7 +2,7 @@
 
 import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import {
-  DEFAULT_RUNTIME_MODE,
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
   type EnvironmentId,
   type FilesystemBrowseResult,
   type ProviderExternalThreadCandidate,
@@ -1423,7 +1423,9 @@ function OpenCommandPaletteDialog() {
             model,
           },
           runtimeMode:
-            activeThread?.runtimeMode ?? activeDraftThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+            activeThread?.runtimeMode ??
+            activeDraftThread?.runtimeMode ??
+            DEFAULT_NEW_THREAD_RUNTIME_MODE,
         });
         closeIfGeneration(sessionGeneration);
         await navigate({

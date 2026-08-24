@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import {
+  gitForWindowsUpdateRecipe,
   sourceControlToolLabel,
   sourceControlToolPackageRecipe,
   TOOL_RELEASE_URLS,
@@ -202,6 +203,19 @@ function windowsUpdateActions(input: {
       ? ([{ label: "Copy WinGet command", kind: "copyCommand", value: input.copyCommand }] as const)
       : []),
     { label: input.openLabel, kind: "openUrl", value: input.openUrl },
+  ];
+}
+
+function gitForWindowsUpdateActions(input: {
+  readonly canRunUpdate: boolean;
+}): SourceControlToolVersionAdvisory["actions"] {
+  const recipe = gitForWindowsUpdateRecipe();
+  return [
+    ...(input.canRunUpdate
+      ? ([{ label: "Update now", kind: "runUpdate", target: "git" }] as const)
+      : []),
+    { label: recipe.copyLabel, kind: "copyCommand", value: recipe.copyCommand },
+    { label: "Open official release", kind: "openUrl", value: GIT_FOR_WINDOWS_RELEASES_URL },
   ];
 }
 
@@ -462,37 +476,24 @@ function createGitHubCliAdvisory(input: {
 function createGitForWindowsAdvisory(input: {
   readonly currentVersion: string | null;
   readonly latestVersion: string | null;
-  readonly winGetVersion: string | null;
   readonly platform: NodeJS.Platform;
   readonly checkedAt: string;
   readonly canRunUpdate: boolean;
-  readonly packageManager: SourceControlToolPackageManager | null | undefined;
 }): SourceControlToolVersionAdvisory | undefined {
   if (input.platform !== "win32") {
     return undefined;
   }
 
-  const actions = windowsUpdateActions({
-    target: "git",
-    currentVersion: input.currentVersion,
-    winGetVersion: input.winGetVersion,
-    canRunUpdate: input.canRunUpdate,
-    copyCommand:
-      "winget upgrade --id Git.Git --exact --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
-    openLabel: "Open official release",
-    openUrl: GIT_FOR_WINDOWS_RELEASES_URL,
-  });
+  if (input.currentVersion !== null && !/\.windows\.\d+$/iu.test(input.currentVersion)) {
+    return undefined;
+  }
+
+  const actions = gitForWindowsUpdateActions({ canRunUpdate: input.canRunUpdate });
 
   if (
     input.currentVersion !== null &&
     compareToolVersions(input.currentVersion, GIT_FOR_WINDOWS_SECURITY_VERSION) < 0
   ) {
-    const availabilityNote = winGetAvailabilityNote({
-      label: "Git for Windows",
-      currentVersion: input.currentVersion,
-      targetVersion: GIT_FOR_WINDOWS_SECURITY_VERSION,
-      winGetVersion: input.winGetVersion,
-    });
     return advisory({
       status: "recommended_update",
       severity: "warning",
@@ -500,12 +501,8 @@ function createGitForWindowsAdvisory(input: {
       latestVersion: input.latestVersion,
       recommendedVersion: GIT_FOR_WINDOWS_SECURITY_VERSION,
       checkedAt: input.checkedAt,
-      message: [
-        "This Git for Windows version is below the recommended security-fix release.",
-        availabilityNote,
-      ]
-        .filter((part): part is string => part !== null)
-        .join(" "),
+      message:
+        "This Git for Windows version is below the recommended security-fix release. The official updater may close open Git Bash windows during installation.",
       notificationKey: `git-for-windows:security:${GIT_FOR_WINDOWS_SECURITY_VERSION}`,
       actions,
     });
@@ -516,12 +513,6 @@ function createGitForWindowsAdvisory(input: {
     input.latestVersion !== null &&
     compareToolVersions(input.currentVersion, input.latestVersion) < 0
   ) {
-    const availabilityNote = winGetAvailabilityNote({
-      label: "Git for Windows",
-      currentVersion: input.currentVersion,
-      targetVersion: input.latestVersion,
-      winGetVersion: input.winGetVersion,
-    });
     return advisory({
       status: "behind_latest",
       severity: "info",
@@ -529,7 +520,8 @@ function createGitForWindowsAdvisory(input: {
       latestVersion: input.latestVersion,
       recommendedVersion: input.latestVersion,
       checkedAt: input.checkedAt,
-      message: availabilityNote ?? "A newer Git for Windows release is available.",
+      message:
+        "A newer Git for Windows release is available. The official updater may close open Git Bash windows during installation.",
       notificationKey: null,
       actions,
     });
@@ -611,21 +603,14 @@ export function withSourceControlToolVersionAdvisory<
     }
 
     const currentVersion = parseGitVersion(versionLine);
-    return Effect.all({
-      latestVersion: resolver("git-for-windows"),
-      winGetVersion: input.winGetVersionResolver
-        ? input.winGetVersionResolver("git")
-        : Effect.succeed(null),
-    }).pipe(
-      Effect.map(({ latestVersion, winGetVersion }) => {
+    return resolver("git-for-windows").pipe(
+      Effect.map((latestVersion) => {
         const versionAdvisory = createGitForWindowsAdvisory({
           currentVersion,
           latestVersion,
-          winGetVersion,
           platform: input.platform,
           checkedAt,
           canRunUpdate: input.canRunUpdate === true,
-          packageManager: input.packageManager,
         });
         return versionAdvisory ? ({ ...input.item, versionAdvisory } as Item) : input.item;
       }),

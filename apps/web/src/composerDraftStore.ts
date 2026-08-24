@@ -33,7 +33,7 @@ import { getLocalStorageItemWithLegacyKeys } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
+  DEFAULT_COMPOSER_RUNTIME_MODE,
   type ChatFileAttachment,
   type ChatImageAttachment,
 } from "./types";
@@ -1541,7 +1541,8 @@ function createDraftThreadState(
     projectId: projectRef.projectId,
     logicalProjectKey,
     createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
-    runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+    runtimeMode:
+      options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_COMPOSER_RUNTIME_MODE,
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
     branch: nextBranch,
@@ -1720,7 +1721,7 @@ function normalizePersistedDraftThreads(
             : new Date().toISOString(),
         runtimeMode: isRuntimeMode(candidateDraftThread.runtimeMode)
           ? candidateDraftThread.runtimeMode
-          : DEFAULT_RUNTIME_MODE,
+          : DEFAULT_COMPOSER_RUNTIME_MODE,
         interactionMode:
           candidateDraftThread.interactionMode === "plan" ||
           candidateDraftThread.interactionMode === "default"
@@ -1769,7 +1770,7 @@ function normalizePersistedDraftThreads(
           projectId: projectRef.projectId,
           logicalProjectKey,
           createdAt: new Date().toISOString(),
-          runtimeMode: DEFAULT_RUNTIME_MODE,
+          runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
           interactionMode: DEFAULT_INTERACTION_MODE,
           branch: null,
           worktreePath: null,

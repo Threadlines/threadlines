@@ -93,7 +93,7 @@ it.effect("recommends GitHub CLI security floor across platforms", () =>
   }),
 );
 
-it.effect("recommends the Git for Windows security baseline without executing updates", () =>
+it.effect("offers the official Git for Windows updater for the security baseline", () =>
   Effect.gen(function* () {
     const item: VcsDiscoveryItem = {
       kind: "git",
@@ -109,13 +109,19 @@ it.effect("recommends the Git for Windows security baseline without executing up
       platform: "win32",
       canRunUpdate: true,
       latestVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
-      winGetVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
       item,
     });
 
     assert.strictEqual(enriched.versionAdvisory?.status, "recommended_update");
     assert.strictEqual(enriched.versionAdvisory?.recommendedVersion, "2.55.0.windows.4");
-    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
+    assert.deepStrictEqual(
+      enriched.versionAdvisory?.actions.find((action) => action.kind === "copyCommand"),
+      {
+        label: "Copy Git for Windows update command",
+        kind: "copyCommand",
+        value: "git update-git-for-windows --yes",
+      },
+    );
     assert.deepStrictEqual(
       enriched.versionAdvisory?.actions.find((action) => action.kind === "runUpdate"),
       { label: "Update now", kind: "runUpdate", target: "git" },
@@ -123,8 +129,9 @@ it.effect("recommends the Git for Windows security baseline without executing up
   }),
 );
 
-it.effect("does not offer a stale WinGet update after its catalog version is installed", () =>
+it.effect("does not wait for WinGet when the official Git updater is available", () =>
   Effect.gen(function* () {
+    let winGetResolverCalls = 0;
     const item: VcsDiscoveryItem = {
       kind: "git",
       label: "Git",
@@ -139,20 +146,24 @@ it.effect("does not offer a stale WinGet update after its catalog version is ins
       platform: "win32",
       canRunUpdate: true,
       latestVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
-      winGetVersionResolver: () => Effect.succeed("2.55.0.windows.3"),
+      winGetVersionResolver: () => {
+        winGetResolverCalls += 1;
+        return Effect.succeed("2.55.0.windows.3");
+      },
       item,
     });
 
     assert.strictEqual(enriched.versionAdvisory?.status, "recommended_update");
     assert.strictEqual(enriched.versionAdvisory?.latestVersion, "2.55.0.windows.4");
-    assert.match(enriched.versionAdvisory?.message ?? "", /has not reached WinGet yet/i);
+    assert.notMatch(enriched.versionAdvisory?.message ?? "", /WinGet/i);
     assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "openUrl"));
-    assert.ok(!enriched.versionAdvisory?.actions.some((action) => action.kind === "runUpdate"));
-    assert.ok(!enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
+    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "runUpdate"));
+    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
+    assert.strictEqual(winGetResolverCalls, 0);
   }),
 );
 
-it.effect("offers the newer WinGet package while explaining when it trails upstream", () =>
+it.effect("does not offer the Git for Windows updater to another Windows Git build", () =>
   Effect.gen(function* () {
     const item: VcsDiscoveryItem = {
       kind: "git",
@@ -160,7 +171,7 @@ it.effect("offers the newer WinGet package while explaining when it trails upstr
       executable: "git",
       implemented: true,
       status: "available",
-      version: Option.some("git version 2.54.0.windows.1"),
+      version: Option.some("git version 2.54.0"),
       installHint: "Install Git.",
       detail: Option.none(),
     };
@@ -168,13 +179,10 @@ it.effect("offers the newer WinGet package while explaining when it trails upstr
       platform: "win32",
       canRunUpdate: true,
       latestVersionResolver: () => Effect.succeed("2.55.0.windows.4"),
-      winGetVersionResolver: () => Effect.succeed("2.55.0.windows.3"),
       item,
     });
 
-    assert.match(enriched.versionAdvisory?.message ?? "", /currently offers 2\.55\.0\.windows\.3/i);
-    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "runUpdate"));
-    assert.ok(enriched.versionAdvisory?.actions.some((action) => action.kind === "copyCommand"));
+    assert.strictEqual(enriched.versionAdvisory, undefined);
   }),
 );
 

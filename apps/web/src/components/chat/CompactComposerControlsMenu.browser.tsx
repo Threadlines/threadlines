@@ -18,6 +18,7 @@ import { render } from "vitest-browser-react";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import type { ComposerStashControlProps } from "./ComposerStashControl";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { runtimeModeConfig, type RuntimeModeOption } from "../../runtimeModeOptions";
@@ -32,6 +33,17 @@ const TEST_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = (
   description: runtimeModeConfig[mode].description,
   icon: runtimeModeConfig[mode].icon,
 }));
+
+const EMPTY_STASH_CONTROL_PROPS = {
+  entries: [],
+  open: false,
+  onOpenChange: () => undefined,
+  canStash: false,
+  stashShortcutLabel: null,
+  onStash: () => undefined,
+  onRestore: () => undefined,
+  onDelete: () => undefined,
+} satisfies ComposerStashControlProps;
 
 function selectDescriptor(
   id: string,
@@ -138,6 +150,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
       runtimeMode="approval-required"
       runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
       showInteractionModeToggle
+      stashControlProps={EMPTY_STASH_CONTROL_PROPS}
       traitsMenuContent={
         <TraitsMenuContent
           provider={provider}
@@ -169,6 +182,7 @@ async function mountTraitsPicker(props: {
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions?: ReadonlyArray<ProviderOptionSelection>;
+  iconOnly?: boolean;
 }) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -179,6 +193,7 @@ async function mountTraitsPicker(props: {
       models={props.models}
       model={props.model}
       modelOptions={props.modelOptions}
+      {...(props.iconOnly !== undefined ? { iconOnly: props.iconOnly } : {})}
       onModelOptionsChange={(nextOptions) => {
         changes.push(nextOptions);
       }}
@@ -311,6 +326,38 @@ describe("CompactComposerControlsMenu", () => {
     expect(zapIcon?.getAttribute("class") ?? "").toContain("text-primary-readable");
   });
 
+  it("shrinks the reasoning trigger to its icon while preserving its menu", async () => {
+    const provider = ProviderDriverKind.make("codex");
+    const model = "gpt-5.5";
+    await using _ = await mountTraitsPicker({
+      provider,
+      model,
+      iconOnly: true,
+      models: [
+        {
+          slug: model,
+          name: "GPT-5.5",
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("reasoningEffort", "Reasoning", [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ]),
+            ],
+          }),
+        },
+      ],
+    });
+
+    const trigger = page.getByRole("button", { name: "Reasoning settings: Medium" });
+    await expect.element(trigger).toBeInTheDocument();
+    expect(trigger.element().getBoundingClientRect().width).toBeLessThanOrEqual(32);
+    await trigger.click();
+    await expect.element(page.getByRole("menuitemradio", { name: "High" })).toBeInTheDocument();
+  });
+
   it("hides fast mode controls for non-Opus Claude models", async () => {
     await using _ = await mountMenu({
       modelSelection: createModelSelection(
@@ -372,6 +419,7 @@ describe("CompactComposerControlsMenu", () => {
         runtimeMode="approval-required"
         runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
         showInteractionModeToggle={false}
+        stashControlProps={EMPTY_STASH_CONTROL_PROPS}
         onInteractionModeChange={vi.fn()}
         onRuntimeModeChange={vi.fn()}
       />,

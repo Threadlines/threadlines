@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  DEFAULT_RUNTIME_MODE,
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@threadlines/contracts";
-import type { Thread } from "../types";
+import { DEFAULT_COMPOSER_RUNTIME_MODE, type Thread } from "../types";
 import { getLatestThreadForProject, selectActiveAndRecentThreads, sortThreads } from "./threadSort";
 
 const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -21,7 +20,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     projectId: PROJECT_ID,
     title: "Thread",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-    runtimeMode: DEFAULT_RUNTIME_MODE,
+    runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
     interactionMode: "default",
     session: null,
     messages: [],

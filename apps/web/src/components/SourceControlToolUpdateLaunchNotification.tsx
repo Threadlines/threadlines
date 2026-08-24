@@ -1,7 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef } from "react";
 
-import { useSourceControlDiscovery } from "../lib/sourceControlDiscoveryState";
+import {
+  updateSourceControlTool,
+  useSourceControlDiscovery,
+} from "../lib/sourceControlDiscoveryState";
 import { useDismissedSourceControlToolAdvisoryKeys } from "../sourceControlToolAdvisoryDismissal";
 import { useStore } from "../store";
 import { useActiveEnvironmentFirstRunSetupPending } from "./chat/firstRunSetupState";
@@ -58,6 +61,10 @@ export function SourceControlToolUpdateLaunchNotification() {
     seenSourceControlToolWarningSetKeys.add(warningSetKey);
     const dismissalKeys = warnings.map((warning) => warning.dismissalKey);
     const labels = warnings.map((warning) => warning.label).join(" and ");
+    const directUpdateAction =
+      warnings.length === 1
+        ? warnings[0]!.advisory.actions.find((action) => action.kind === "runUpdate")
+        : undefined;
     const title =
       warnings.length === 1
         ? `${warnings[0]!.label} update recommended`
@@ -79,6 +86,45 @@ export function SourceControlToolUpdateLaunchNotification() {
       toastManager.close(toastId);
       void navigate({ to: "/settings/source-control" });
     };
+    const runUpdate = () => {
+      if (!directUpdateAction || !activeEnvironmentId) return;
+      const warning = warnings[0]!;
+      dismiss();
+      toastManager.close(toastId);
+
+      void updateSourceControlTool({
+        environmentId: activeEnvironmentId,
+        target: directUpdateAction.target,
+        ...(directUpdateAction.operation ? { operation: directUpdateAction.operation } : {}),
+      })
+        .then((result) => {
+          toastManager.add({
+            type: result.status === "succeeded" ? "success" : "info",
+            title:
+              result.status === "succeeded"
+                ? `${warning.label} updated`
+                : result.status === "started"
+                  ? `${warning.label} update started`
+                  : `${warning.label} is unchanged`,
+            description:
+              result.status === "succeeded"
+                ? `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
+                : result.status === "started"
+                  ? "The official installer is running. Finish any Windows permission prompt, then check again."
+                  : "The update command finished, but the detected version did not change.",
+          });
+        })
+        .catch((error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: `Could not update ${warning.label}`,
+              description:
+                error instanceof Error ? error.message : "The verified update command failed.",
+            }),
+          );
+        });
+    };
 
     toastId = toastManager.add(
       stackedThreadToast({
@@ -87,8 +133,8 @@ export function SourceControlToolUpdateLaunchNotification() {
         description,
         timeout: 0,
         actionProps: {
-          children: "Settings",
-          onClick: openSettings,
+          children: directUpdateAction?.label ?? "Settings",
+          onClick: directUpdateAction ? runUpdate : openSettings,
         },
         actionVariant: "outline",
         data: {

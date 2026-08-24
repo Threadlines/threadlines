@@ -43,6 +43,7 @@ function advisoryTitle(advisory: SourceControlToolVersionAdvisory): string {
 }
 
 function packageManagerLabel(copyLabel: string | undefined): string {
+  if (copyLabel?.toLowerCase().includes("git for windows")) return "Git for Windows updater";
   if (copyLabel?.toLowerCase().includes("homebrew")) return "Homebrew";
   if (copyLabel?.toLowerCase().includes("winget")) return "WinGet";
   return "package manager";
@@ -93,7 +94,9 @@ export function CompactVersionAdvisory({
               ? result.operation === "install"
                 ? `${label} installed`
                 : `${label} updated`
-              : `${label} is unchanged`,
+              : result.status === "started"
+                ? `${label} update started`
+                : `${label} is unchanged`,
           description:
             result.status === "succeeded"
               ? result.operation === "install"
@@ -101,7 +104,9 @@ export function CompactVersionAdvisory({
                   ? `Installed ${result.currentVersion}`
                   : "Installed successfully."
                 : `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
-              : `${packageManagerLabel(copyAction?.label)} completed, but the detected version did not change.`,
+              : result.status === "started"
+                ? "The official installer is running. Finish any Windows permission prompt, then check again."
+                : `${packageManagerLabel(copyAction?.label)} completed, but the detected version did not change.`,
         });
       })
       .catch((error: unknown) => {
@@ -176,13 +181,6 @@ export function CompactVersionAdvisory({
                 <p className="flex items-center justify-between gap-3">
                   <span>Latest</span>
                   <code className="truncate text-foreground">{advisory.latestVersion}</code>
-                </p>
-              ) : null}
-              {advisory.recommendedVersion &&
-              advisory.recommendedVersion !== advisory.latestVersion ? (
-                <p className="flex items-center justify-between gap-3">
-                  <span>Security baseline</span>
-                  <code className="truncate text-foreground">{advisory.recommendedVersion}</code>
                 </p>
               ) : null}
             </div>
@@ -264,10 +262,12 @@ export function CompactVersionAdvisory({
           >
             <AlertCircleIcon className="mt-0.5 size-3 shrink-0" aria-hidden />
             {updateAction
-              ? packageManagerLabel(copyAction?.label) === "WinGet" &&
-                (updateAction.operation ?? "update") === "update"
-                ? "Threadlines runs only the verified WinGet package shown above after you click Update now. Windows may ask for permission."
-                : `Threadlines runs only the verified ${packageManagerLabel(copyAction?.label)} ${updateAction.operation === "install" ? "install" : "update"} recipe shown above after you click ${updateAction.label}.`
+              ? packageManagerLabel(copyAction?.label) === "Git for Windows updater"
+                ? "Threadlines runs Git for Windows' official updater after you click Update now. Windows may ask for permission."
+                : packageManagerLabel(copyAction?.label) === "WinGet" &&
+                    (updateAction.operation ?? "update") === "update"
+                  ? "Threadlines runs only the verified WinGet package shown above after you click Update now. Windows may ask for permission."
+                  : `Threadlines runs only the verified ${packageManagerLabel(copyAction?.label)} ${updateAction.operation === "install" ? "install" : "update"} recipe shown above after you click ${updateAction.label}.`
               : copyAction
                 ? "Threadlines cannot run this automatically. Use the copied command on this environment's host."
                 : advisory.status === "current"

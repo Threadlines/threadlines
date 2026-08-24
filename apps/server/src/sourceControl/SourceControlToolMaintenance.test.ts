@@ -129,13 +129,13 @@ it("verifies installed versions from raw discovery output without an advisory", 
   );
 });
 
-it.effect("runs only the allowlisted source control WinGet update recipes", () => {
+it.effect("uses the official Git updater while other Windows tools keep using WinGet", () => {
   const calls: VcsProcess.VcsProcessInput[] = [];
   const layer = Layer.effect(
     SourceControlToolMaintenance.SourceControlToolMaintenance,
     SourceControlToolMaintenance.make({
       platform: "win32",
-      commandAvailable: (command) => command === "winget",
+      commandAvailable: (command) => command === "winget" || command === "git",
     }),
   ).pipe(
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
@@ -176,7 +176,50 @@ it.effect("runs only the allowlisted source control WinGet update recipes", () =
       maxOutputBytes: 10_000,
       appendTruncationMarker: true,
     });
-    assert.deepStrictEqual(calls[1]?.args.slice(0, 3), ["upgrade", "--id", "Git.Git"]);
+    assert.deepStrictEqual(calls[1], {
+      operation: "source-control.tool.update",
+      command: "git",
+      args: ["update-git-for-windows", "--yes"],
+      cwd: process.cwd(),
+      timeoutMs: 300_000,
+      maxOutputBytes: 10_000,
+      appendTruncationMarker: true,
+      allowNonZeroExit: true,
+    });
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("treats Git for Windows exit code 2 as an installer launch", () => {
+  const calls: VcsProcess.VcsProcessInput[] = [];
+  const layer = Layer.effect(
+    SourceControlToolMaintenance.SourceControlToolMaintenance,
+    SourceControlToolMaintenance.make({
+      platform: "win32",
+      commandAvailable: (command) => command === "git",
+    }),
+  ).pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
+    Layer.provide(
+      Layer.mock(VcsProcess.VcsProcess)({
+        run: (input) => {
+          calls.push(input);
+          return Effect.succeed({
+            ...processOutput,
+            exitCode: ChildProcessSpawner.ExitCode(2),
+            stderr: "Update 2.55.0.windows.5 is available",
+          });
+        },
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+    const result = yield* maintenance.update({ target: "git" });
+
+    assert.deepStrictEqual(result, { status: "started" });
+    assert.deepStrictEqual(calls[0]?.args, ["update-git-for-windows", "--yes"]);
   }).pipe(Effect.provide(layer));
 });
 
@@ -249,7 +292,7 @@ it.effect("runs allowlisted Homebrew install and update recipes on macOS", () =>
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("explains when WinGet has no applicable package update", () => {
+it.effect("explains when WinGet has no applicable GitHub CLI update", () => {
   const layer = Layer.effect(
     SourceControlToolMaintenance.SourceControlToolMaintenance,
     SourceControlToolMaintenance.make({
@@ -277,11 +320,14 @@ it.effect("explains when WinGet has no applicable package update", () => {
 
   return Effect.gen(function* () {
     const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
-    const result = yield* Effect.result(maintenance.update({ target: "git" }));
+    const result = yield* Effect.result(maintenance.update({ target: "github-cli" }));
 
     assert.strictEqual(result._tag, "Failure");
     if (result._tag === "Failure") {
-      assert.match(result.failure.reason, /does not currently offer a newer compatible Git/i);
+      assert.match(
+        result.failure.reason,
+        /does not currently offer a newer compatible GitHub CLI/i,
+      );
       assert.match(result.failure.reason, /official release/i);
     }
   }).pipe(Effect.provide(layer));
@@ -335,7 +381,7 @@ it.effect("serializes all source control updates through one WinGet lock", () =>
       SourceControlToolMaintenance.SourceControlToolMaintenance,
       SourceControlToolMaintenance.make({
         platform: "win32",
-        commandAvailable: (command) => command === "winget",
+        commandAvailable: (command) => command === "winget" || command === "git",
       }),
     ).pipe(
       Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),

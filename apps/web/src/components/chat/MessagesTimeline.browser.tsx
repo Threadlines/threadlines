@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
 import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
+import { ThreadlinesFigure } from "../ThreadlinesFigure";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
@@ -275,6 +276,41 @@ describe("MessagesTimeline", () => {
     __resetClientSettingsPersistenceForTests();
     vi.restoreAllMocks();
     document.body.innerHTML = "";
+  });
+
+  it("keeps a decorative empty state inside an extra-narrow timeline", async () => {
+    const screen = await renderTimeline(
+      <div className="h-[400px] w-[240px]">
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[]}
+          emptyState={
+            <div
+              className="flex w-full min-w-0 flex-col items-center"
+              data-testid="narrow-timeline-empty-state"
+            >
+              <ThreadlinesFigure />
+              <span>Empty thread</span>
+            </div>
+          }
+        />
+      </div>,
+    );
+
+    try {
+      const emptyState = page.getByTestId("narrow-timeline-empty-state").element();
+      const scroller = emptyState.parentElement?.parentElement;
+      const figure = emptyState.querySelector("svg");
+
+      expect(scroller).toBeTruthy();
+      expect(figure).toBeTruthy();
+      expect(getComputedStyle(scroller!).overflowX).toBe("hidden");
+      expect(figure!.getBoundingClientRect().width).toBeLessThanOrEqual(
+        emptyState.getBoundingClientRect().width,
+      );
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it("renders activity rows instead of the empty placeholder when a thread has non-message timeline data", async () => {

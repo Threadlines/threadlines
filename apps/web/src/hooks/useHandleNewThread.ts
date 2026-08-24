@@ -1,5 +1,5 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
-import { DEFAULT_RUNTIME_MODE, type ScopedProjectRef } from "@threadlines/contracts";
+import { DEFAULT_NEW_THREAD_RUNTIME_MODE, type ScopedProjectRef } from "@threadlines/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -169,7 +169,7 @@ function useNewThreadState() {
           branch: options?.branch ?? null,
           worktreePath: options?.worktreePath ?? null,
           envMode: options?.envMode ?? "local",
-          runtimeMode: DEFAULT_RUNTIME_MODE,
+          runtimeMode: DEFAULT_NEW_THREAD_RUNTIME_MODE,
         });
         applyStickyState(draftId);
 

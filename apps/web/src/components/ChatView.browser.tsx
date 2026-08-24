@@ -7045,6 +7045,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       const newDraftId = draftIdFromPath(newThreadPath);
 
+      expect(useComposerDraftStore.getState().getDraftSession(newDraftId)?.runtimeMode).toBe(
+        "auto",
+      );
       expect(composerDraftFor(newDraftId)).toBe(undefined);
     } finally {
       await mounted.cleanup();
@@ -9130,6 +9133,178 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps one composer row and moves stash into the overflow menu in an extra-narrow pane", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: fixture.snapshot,
+    });
+
+    try {
+      await mounted.setContainerSize({
+        width: 250,
+        height: WIDE_FOOTER_VIEWPORT.height,
+      });
+
+      const footer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        "Unable to find composer footer.",
+      );
+      const leftActions = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
+        "Unable to find left composer actions.",
+      );
+      const rightActions = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
+        "Unable to find right composer actions.",
+      );
+      const moreControlsButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
+        "Unable to find compact composer controls.",
+      );
+
+      await vi.waitFor(
+        () => {
+          const footerRect = footer.getBoundingClientRect();
+          const leftRect = leftActions.getBoundingClientRect();
+          const rightRect = rightActions.getBoundingClientRect();
+
+          const leftCenter = (leftRect.top + leftRect.bottom) / 2;
+          const rightCenter = (rightRect.top + rightRect.bottom) / 2;
+          expect(Math.abs(leftCenter - rightCenter)).toBeLessThanOrEqual(1);
+          expect(moreControlsButton.getBoundingClientRect().right).toBeLessThanOrEqual(
+            leftRect.right + 0.5,
+          );
+          expect(leftRect.right).toBeLessThanOrEqual(rightRect.left + 0.5);
+          expect(rightRect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
+          expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+          expect(footer.dataset.chatComposerFooterCompact).toBe("true");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(document.querySelector('button[aria-label^="Stashed prompts"]')).toBeNull();
+      moreControlsButton.click();
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-slot="menu-sub-trigger"]'),
+        "Unable to find the stashed prompts submenu.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("protects model and reasoning labels before shrinking interaction and access", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: fixture.snapshot,
+      configureFixture: (nextFixture) => {
+        const [codexProvider] = nextFixture.serverConfig.providers;
+        if (!codexProvider) return;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...codexProvider,
+              models: [
+                {
+                  slug: "gpt-5",
+                  name: "GPT-5",
+                  isCustom: false,
+                  capabilities: createModelCapabilities({
+                    optionDescriptors: [
+                      {
+                        id: "reasoningEffort",
+                        label: "Reasoning",
+                        type: "select" as const,
+                        options: [
+                          { id: "low", label: "Low" },
+                          { id: "medium", label: "Medium", isDefault: true },
+                          { id: "high", label: "High" },
+                        ],
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await mounted.setContainerSize({
+        width: 900,
+        height: WIDE_FOOTER_VIEWPORT.height,
+      });
+
+      const footer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        "Unable to find composer footer.",
+      );
+      const modelButton = await waitForElement(
+        findComposerProviderModelPicker,
+        "Unable to find provider model picker.",
+      );
+      const reasoningButton = await waitForButtonByTextWithin(footer, "Medium");
+      const interactionButton = await waitForButtonByTextWithin(footer, "Build");
+      const accessButton = await waitForButtonByTextWithin(footer, "Full access");
+
+      expect(footer.dataset.chatComposerFooterIconOnly).toBe("false");
+      expect(getComputedStyle(modelButton).flexShrink).toBe("0");
+      expect(getComputedStyle(reasoningButton).flexShrink).toBe("0");
+      expect(getComputedStyle(interactionButton).flexShrink).toBe("1");
+      expect(getComputedStyle(accessButton).flexShrink).toBe("1");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shrinks interaction and access controls to icons before using the overflow menu", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: fixture.snapshot,
+    });
+
+    try {
+      await mounted.setContainerSize({
+        width: 760,
+        height: WIDE_FOOTER_VIEWPORT.height,
+      });
+
+      const footer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        "Unable to find composer footer.",
+      );
+      await vi.waitFor(() => {
+        expect(footer.dataset.chatComposerFooterIconOnly).toBe("true");
+        expect(footer.dataset.chatComposerFooterCompact).toBe("false");
+      });
+      const interactionButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label^="Interaction mode:"]'),
+        "Unable to find icon-only interaction mode.",
+      );
+      const accessButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]'),
+        "Unable to find icon-only access level.",
+      );
+      const iconButtons = [interactionButton, accessButton];
+      const visibleSeparators = Array.from(
+        footer.querySelectorAll<HTMLElement>('[data-slot="separator"]'),
+      ).filter((separator) => getComputedStyle(separator).display !== "none");
+
+      expect(document.querySelector('button[aria-label="More composer controls"]')).toBeNull();
+      expect(visibleSeparators.length).toBeGreaterThanOrEqual(2);
+      for (const button of iconButtons) {
+        expect(button.getBoundingClientRect().width).toBeLessThanOrEqual(32);
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("submits pending user input after the final option selection resolves the draft answers", async () => {
     let resolveDispatch!: (value: { sequence: number }) => void;
     const pendingDispatch = new Promise<{ sequence: number }>((resolve) => {
@@ -9292,7 +9467,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("compacts the footer when a wide desktop follow-up layout starts overflowing", async () => {
+  it("uses icon-only footer controls when a wide desktop follow-up layout starts overflowing", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotWithPlanFollowUpPrompt({
@@ -9321,7 +9496,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           const actions = document.querySelector<HTMLElement>(
             '[data-chat-composer-actions="right"]',
           );
-          expect(footer?.dataset.chatComposerFooterCompact).toBe("true");
+          expect(footer?.dataset.chatComposerFooterIconOnly).toBe("true");
+          expect(footer?.dataset.chatComposerFooterCompact).toBe("false");
           expect(actions?.dataset.chatComposerPrimaryActionsCompact).toBe("true");
         },
         { timeout: 8_000, interval: 16 },

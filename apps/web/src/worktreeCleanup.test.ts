@@ -7,7 +7,7 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
+import { DEFAULT_COMPOSER_RUNTIME_MODE, DEFAULT_INTERACTION_MODE, type Thread } from "./types";
 import {
   describeWorktreeRisks,
   formatWorktreePathForDisplay,
@@ -31,7 +31,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5.3-codex",
     },
-    runtimeMode: DEFAULT_RUNTIME_MODE,
+    runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     messages: [],

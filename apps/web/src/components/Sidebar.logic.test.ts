@@ -37,7 +37,7 @@ import {
 } from "@threadlines/contracts";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
+  DEFAULT_COMPOSER_RUNTIME_MODE,
   type Project,
   type Thread,
 } from "../types";
@@ -749,7 +749,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
       model: "gpt-5.4",
       ...overrides?.modelSelection,
     },
-    runtimeMode: DEFAULT_RUNTIME_MODE,
+    runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     messages: [],

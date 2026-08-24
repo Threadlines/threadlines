@@ -125,7 +125,10 @@ export const RuntimeMode = Schema.Literals([
   "full-access",
 ]);
 export type RuntimeMode = typeof RuntimeMode.Type;
+/** Historical wire fallback for events and commands that predate runtime modes. */
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+/** Access level shown for a new composer until the user chooses another one. */
+export const DEFAULT_NEW_THREAD_RUNTIME_MODE: RuntimeMode = "auto";
 /** Every runtime mode, ordered from most supervised to most permissive. */
 export const RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
   "approval-required",

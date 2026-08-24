@@ -93,6 +93,7 @@ import type {
 import {
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
+  shouldUseIconOnlyComposerFooter,
 } from "../composerFooterLayout";
 import {
   type ComposerPromptEditorHandle,
@@ -266,6 +267,7 @@ function formatModelDisplayName(modelId: string, options: ReadonlyArray<AppModel
 }
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
+  iconOnly: boolean;
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
@@ -291,16 +293,20 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         <>
           <Button
             variant="ghost"
-            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-            size="sm"
+            className={cn(
+              "min-w-0 whitespace-nowrap text-muted-foreground/70 hover:text-foreground/80",
+              props.iconOnly ? "shrink-0" : "max-w-24 shrink px-2 sm:px-3",
+            )}
+            size={props.iconOnly ? "icon-sm" : "sm"}
             type="button"
+            aria-label={`Interaction mode: ${interactionModeConfig[props.interactionMode].label}`}
             onClick={props.onToggleInteractionMode}
             tooltip={getInteractionModeToggleTitle(props.interactionMode)}
           >
             <InteractionModeIcon
               className={cn(isPlanInteraction && "text-primary-readable opacity-100")}
             />
-            <span className="sr-only sm:not-sr-only">
+            <span className={cn("sr-only", !props.iconOnly && "min-w-0 truncate sm:not-sr-only")}>
               {interactionModeConfig[props.interactionMode].label}
             </span>
           </Button>
@@ -316,8 +322,14 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         <SelectTrigger
           variant="ghost"
           size="sm"
-          className={cn("font-medium", isPlanInteraction && "opacity-65")}
-          aria-label="Runtime mode"
+          className={cn(
+            "font-medium",
+            props.iconOnly &&
+              "min-h-7 w-7 justify-center gap-0 px-0 [&_[data-slot=select-icon]]:hidden",
+            !props.iconOnly && "min-w-0 max-w-32 shrink",
+            isPlanInteraction && "opacity-65",
+          )}
+          aria-label={`Access level: ${currentRuntimeModeOption.label}`}
           title={
             isPlanInteraction
               ? "Plan turns don't edit files. This access level applies when you build."
@@ -325,7 +337,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
           }
         >
           <RuntimeModeIcon className="size-3.5" />
-          <SelectValue>{currentRuntimeModeOption.label}</SelectValue>
+          {!props.iconOnly ? <SelectValue>{currentRuntimeModeOption.label}</SelectValue> : null}
         </SelectTrigger>
         <SelectPopup alignItemWithTrigger={false}>
           {props.runtimeModeOptions.map((option) => {
@@ -1128,6 +1140,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
+  const [isComposerFooterIconOnly, setIsComposerFooterIconOnly] = useState(false);
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
@@ -1485,6 +1498,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    iconOnly: isComposerFooterIconOnly,
   });
   const pendingPrimaryAction = useMemo(
     () =>
@@ -2158,17 +2172,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const measureComposerFormWidth = () => composerForm.clientWidth;
     const measureFooterCompactness = () => {
       const composerFormWidth = measureComposerFormWidth();
-      const footerCompact = shouldUseCompactComposerFooter(composerFormWidth, {
+      const footerCompact = shouldUseCompactComposerFooter(composerFormWidth);
+      const footerIconOnly = shouldUseIconOnlyComposerFooter(composerFormWidth, {
         hasWideActions: composerFooterHasWideActions,
       });
-      const primaryActionsCompact =
-        footerCompact &&
-        shouldUseCompactComposerPrimaryActions(composerFormWidth, {
-          hasWideActions: composerFooterHasWideActions,
-        });
+      const primaryActionsCompact = shouldUseCompactComposerPrimaryActions(composerFormWidth, {
+        hasWideActions: composerFooterHasWideActions,
+      });
       return {
         primaryActionsCompact,
         footerCompact,
+        footerIconOnly,
       };
     };
 
@@ -2176,6 +2190,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const initialCompactness = measureFooterCompactness();
     setIsComposerPrimaryActionsCompact(initialCompactness.primaryActionsCompact);
     setIsComposerFooterCompact(initialCompactness.footerCompact);
+    setIsComposerFooterIconOnly(initialCompactness.footerIconOnly);
     if (typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver((entries) => {
@@ -2189,6 +2204,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       setIsComposerFooterCompact((previous) =>
         previous === nextCompactness.footerCompact ? previous : nextCompactness.footerCompact,
+      );
+      setIsComposerFooterIconOnly((previous) =>
+        previous === nextCompactness.footerIconOnly ? previous : nextCompactness.footerIconOnly,
       );
       const nextHeight = entry.contentRect.height;
       const previousHeight = composerFormHeightRef.current;
@@ -3589,15 +3607,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             <div
               data-chat-composer-footer="true"
               data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
+              data-chat-composer-footer-icon-only={isComposerFooterIconOnly ? "true" : "false"}
               className={cn(
-                "flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
-                isComposerFooterCompact ? "gap-1.5" : "gap-2 sm:gap-0",
+                "flex min-w-0 flex-nowrap items-center justify-between overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
+                isComposerFooterIconOnly ? "gap-x-1.5 gap-y-1.5" : "gap-x-2 gap-y-1.5 sm:gap-x-0",
                 showMobilePendingAnswerActions && "hidden sm:flex",
               )}
             >
-              <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div
+                data-chat-composer-actions="left"
+                className={cn(
+                  "-m-1 flex flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                  "min-w-0",
+                )}
+              >
                 <ProviderModelPicker
-                  compact={isComposerFooterCompact}
+                  compact={isComposerFooterIconOnly}
                   activeInstanceId={selectedInstanceId}
                   model={selectedModelForPickerWithCustomFallback}
                   lockedProvider={lockedProvider}
@@ -3626,14 +3651,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           data-chat-model-fallback-chip="true"
                           className={cn(
                             "inline-flex h-7 max-w-52 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
-                            isComposerFooterCompact ? "max-w-36" : "max-w-52",
+                            isComposerFooterIconOnly ? "max-w-36" : "max-w-52",
                           )}
                         />
                       }
                     >
                       <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
                       <span className="min-w-0 truncate">
-                        {isComposerFooterCompact
+                        {isComposerFooterIconOnly
                           ? activeFallbackModelDisplayName
                           : `Fallback: ${activeFallbackModelDisplayName}`}
                       </span>
@@ -3652,6 +3677,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeModeOptions={composerProviderControls.runtimeModeOptions}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
+                    stashControlProps={stashControlProps}
                     onInteractionModeChange={handleInteractionModeChange}
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />
@@ -3664,6 +3690,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </>
                     ) : null}
                     <ComposerFooterModeControls
+                      iconOnly={isComposerFooterIconOnly}
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
@@ -3681,7 +3708,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 data-chat-composer-primary-actions-compact={
                   isComposerPrimaryActionsCompact ? "true" : "false"
                 }
-                className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
+                className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
                 <input
                   ref={imageFileInputRef}
@@ -3703,7 +3730,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   aria-hidden="true"
                   onChange={onAttachmentFileInputChange}
                 />
-                <ComposerStashControl {...stashControlProps} />
+                {!isComposerFooterCompact ? <ComposerStashControl {...stashControlProps} /> : null}
                 <ComposerAttachmentMenu
                   canCaptureScreenshot={canCaptureScreenshot}
                   isCapturingScreenshot={isCapturingScreenshot}

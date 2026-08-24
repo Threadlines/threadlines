@@ -12,6 +12,12 @@ export interface SourceControlToolPackageStep {
   readonly args: ReadonlyArray<string>;
 }
 
+export interface SourceControlToolUpdateRecipe {
+  readonly steps: ReadonlyArray<SourceControlToolPackageStep>;
+  readonly copyCommand: string;
+  readonly copyLabel: string;
+}
+
 export interface SourceControlToolPackageRecipe {
   readonly manager: SourceControlToolPackageManager;
   readonly steps: ReadonlyArray<SourceControlToolPackageStep>;
@@ -55,6 +61,21 @@ export function winGetPackageId(target: SourceControlToolUpdateTarget): string {
   return WINGET_PACKAGE_IDS[target];
 }
 
+/** Git for Windows ships its own architecture-aware updater. It follows the
+ *  official release directly, so it remains useful while WinGet's catalog is
+ *  still catching up. Exit code 2 means the updater launched the installer. */
+export function gitForWindowsUpdateRecipe(): SourceControlToolUpdateRecipe {
+  const step = {
+    command: "git",
+    args: ["update-git-for-windows", "--yes"],
+  } as const;
+  return {
+    steps: [step],
+    copyCommand: commandLine(step),
+    copyLabel: "Copy Git for Windows update command",
+  };
+}
+
 /**
  * Whether an executable on the PATH is actually a Homebrew keg. `brew upgrade`
  * only works on formulae Homebrew itself installed; a tool that merely shares
@@ -69,8 +90,8 @@ export function isHomebrewCellarExecutable(input: {
   readonly brewCommandPath: string | null;
 }): boolean {
   if (!input.executableRealPath || !input.brewCommandPath) return false;
-  const brewPrefix = path.dirname(path.dirname(input.brewCommandPath));
-  const cellar = path.join(brewPrefix, "Cellar") + path.sep;
+  const brewPrefix = path.posix.dirname(path.posix.dirname(input.brewCommandPath));
+  const cellar = path.posix.join(brewPrefix, "Cellar") + path.posix.sep;
   return input.executableRealPath.startsWith(cellar);
 }
 

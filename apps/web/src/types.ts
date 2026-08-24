@@ -1,3 +1,4 @@
+import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
   ChatFileAttachmentKind,
   ChatSkillReference,
@@ -26,7 +27,8 @@ import type {
 } from "@threadlines/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
-export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+/** Composer default; historical wire payloads keep their contract-level fallback. */
+export const DEFAULT_COMPOSER_RUNTIME_MODE: RuntimeMode = DEFAULT_NEW_THREAD_RUNTIME_MODE;
 
 export const DEFAULT_INTERACTION_MODE: ProviderInteractionMode = "default";
 export const DEFAULT_THREAD_TERMINAL_HEIGHT = 180;

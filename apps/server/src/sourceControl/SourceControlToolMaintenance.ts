@@ -15,6 +15,7 @@ import * as Ref from "effect/Ref";
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import {
+  gitForWindowsUpdateRecipe,
   selectSourceControlToolPackageManager,
   sourceControlToolLabel,
   sourceControlToolPackageRecipe,
@@ -28,7 +29,11 @@ const UPDATE_OUTPUT_MAX_BYTES = 10_000;
 export interface SourceControlToolMaintenanceShape {
   readonly update: (
     input: SourceControlToolUpdateInput,
-  ) => Effect.Effect<void, SourceControlToolUpdateError>;
+  ) => Effect.Effect<SourceControlToolMaintenanceResult, SourceControlToolUpdateError>;
+}
+
+export interface SourceControlToolMaintenanceResult {
+  readonly status: "completed" | "started";
 }
 
 export interface SourceControlToolMaintenanceOptions {
@@ -152,23 +157,35 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
     "SourceControlToolMaintenance.update",
   )(function* (input) {
     const { target } = input;
-    const packageManager = selectSourceControlToolPackageManager({ platform, commandAvailable });
-    if (packageManager === null) {
+    const operation = input.operation ?? "update";
+    const useGitForWindowsUpdater =
+      platform === "win32" && operation === "update" && target === "git";
+    if (useGitForWindowsUpdater && !commandAvailable("git")) {
+      return yield* updateError(
+        target,
+        "The official Git for Windows updater is not available on this server.",
+      );
+    }
+    const packageManager = useGitForWindowsUpdater
+      ? null
+      : selectSourceControlToolPackageManager({ platform, commandAvailable });
+    if (!useGitForWindowsUpdater && packageManager === null) {
       return yield* updateError(
         target,
         "No supported package manager is available on this server for one-click source control tool maintenance.",
       );
     }
-    const operation = input.operation ?? "update";
-    const recipe = sourceControlToolPackageRecipe({
-      manager: packageManager,
-      target,
-      operation,
-    });
+    const recipe = useGitForWindowsUpdater
+      ? gitForWindowsUpdateRecipe()
+      : sourceControlToolPackageRecipe({
+          manager: packageManager!,
+          target,
+          operation,
+        });
     if (recipe === null) {
       return yield* updateError(
         target,
-        `${sourceControlToolLabel(target)} does not have a verified ${packageManager} package recipe yet.`,
+        `${sourceControlToolLabel(target)} does not have a verified ${packageManager ?? "official"} update recipe yet.`,
       );
     }
 
@@ -178,8 +195,9 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
     }
 
     return yield* Effect.gen(function* () {
+      let updaterStarted = false;
       for (const step of recipe.steps) {
-        yield* vcsProcess
+        const output = yield* vcsProcess
           .run({
             operation: `source-control.tool.${operation}`,
             command: step.command,
@@ -188,16 +206,39 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
             timeoutMs: UPDATE_TIMEOUT_MS,
             maxOutputBytes: UPDATE_OUTPUT_MAX_BYTES,
             appendTruncationMarker: true,
+            ...(useGitForWindowsUpdater ? { allowNonZeroExit: true } : {}),
           })
           .pipe(
             Effect.mapError((cause) =>
-              updateError(
-                target,
-                packageManagerFailureReason({ target, operation, manager: packageManager, cause }),
-              ),
+              useGitForWindowsUpdater
+                ? updateError(
+                    target,
+                    `The official Git for Windows updater failed: ${cause.message || "unknown process error"}`,
+                  )
+                : updateError(
+                    target,
+                    packageManagerFailureReason({
+                      target,
+                      operation,
+                      manager: packageManager!,
+                      cause,
+                    }),
+                  ),
             ),
           );
+
+        if (useGitForWindowsUpdater) {
+          if (output.exitCode !== 0 && output.exitCode !== 2) {
+            const detail = output.stderr.trim() || output.stdout.trim();
+            return yield* updateError(
+              target,
+              `The official Git for Windows updater exited with code ${output.exitCode}${detail ? `: ${detail}` : "."}`,
+            );
+          }
+          updaterStarted ||= output.exitCode === 2;
+        }
       }
+      return { status: updaterStarted ? "started" : "completed" } as const;
     }).pipe(Effect.ensuring(Ref.set(updateActive, false)));
   });
 

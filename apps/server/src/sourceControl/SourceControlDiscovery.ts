@@ -138,16 +138,18 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
         brewCommandPath: resolveCommandPath("brew", { platform }),
       });
     });
-  // Any verified package manager can run one-click updates: winget on Windows,
-  // Homebrew on macOS and Linux. WinGet addresses packages by catalog id, so
-  // where the executable came from does not matter there; `brew upgrade` only
-  // works on kegs Homebrew itself installed, so the tool in use must resolve
+  // Git for Windows has its own official updater, so it does not have to wait
+  // for WinGet. Other Windows tools still use WinGet. `brew upgrade` only works
+  // on kegs Homebrew itself installed, so the tool in use must resolve
   // into the Cellar — Apple's `/usr/bin/git` or a `gh` from its own installer
   // would make it fail with "Error: <formula> not installed".
-  const canRunToolUpdateFor = (executable: string | undefined): boolean => {
+  const canRunToolUpdateFor = (
+    item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem,
+  ): boolean => {
+    if (platform === "win32" && item.status === "available" && item.kind === "git") return true;
     if (sourceControlToolPackageManager === "winget") return true;
     if (sourceControlToolPackageManager !== "homebrew") return false;
-    return executable !== undefined && homebrewManagedExecutable(executable);
+    return item.executable !== undefined && homebrewManagedExecutable(item.executable);
   };
 
   const probe = <Kind extends VcsDriverKind>(
@@ -217,7 +219,7 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
       ...(options?.winGetVersionResolver
         ? { winGetVersionResolver: options.winGetVersionResolver }
         : {}),
-      canRunUpdate: canRunToolUpdateFor(item.executable),
+      canRunUpdate: canRunToolUpdateFor(item),
       packageManager: sourceControlToolPackageManager,
       canRunInstall:
         sourceControlToolPackageManager !== null &&

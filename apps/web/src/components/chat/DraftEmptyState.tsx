@@ -1,6 +1,6 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
-import { CloudIcon, MessagesSquareIcon, MonitorIcon } from "lucide-react";
+import { CloudIcon, HeartIcon, MessagesSquareIcon, MonitorIcon, StarIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -87,24 +87,27 @@ export function DraftEmptyState({
   );
 
   return (
-    <div className="flex w-full max-w-xl flex-col items-center">
+    <div className="flex w-full min-w-0 max-w-xl flex-col items-center">
       <ThreadlinesFigure />
 
       <h2
-        className="no-thread-rise text-xl tracking-tight text-foreground"
+        className="no-thread-rise max-w-full text-center text-xl tracking-tight text-foreground"
         style={riseDelay("0.16s")}
       >
         What's next in{" "}
         <Menu>
           <MenuTrigger
             render={
-              <button className="group cursor-pointer font-medium text-foreground" type="button" />
+              <button
+                className="group inline-flex max-w-full min-w-0 cursor-pointer font-medium text-foreground"
+                type="button"
+              />
             }
           >
             {/* Chrome never paints text-decoration under a replaced element, so
                 the dotted rule is a border on a flex wrapper — that's what keeps
                 the icon inside the underline instead of beside it. */}
-            <span className="inline-flex items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground">
+            <span className="inline-flex max-w-full min-w-0 items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground">
               {isGeneralChat ? (
                 <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
               ) : currentProject ? (
@@ -114,7 +117,7 @@ export function DraftEmptyState({
                   name={currentProjectName ?? currentProject.name}
                 />
               ) : null}
-              {targetName}
+              <span className="min-w-0 truncate">{targetName}</span>
             </span>
           </MenuTrigger>
           <MenuPopup align="center">
@@ -219,6 +222,35 @@ export function DraftEmptyState({
         scope={isGeneralChat ? "chats" : "projects"}
         testId="draft-empty-recent-thread"
       />
+
+      {/* Quiet open-source footer. The draft canvas is the one surface every
+          user sees daily, so the repo links live here — muted, text-and-glyph
+          only, never a banner. Plain anchors: the desktop window's
+          setWindowOpenHandler already routes target="_blank" to the system
+          browser. */}
+      <div
+        className="no-thread-rise mt-12 flex items-center justify-center gap-6"
+        style={riseDelay("0.34s")}
+      >
+        <a
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"
+          href="https://github.com/Threadlines/threadlines"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <StarIcon className="size-3.5" />
+          Star on GitHub
+        </a>
+        <a
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"
+          href="https://github.com/sponsors/Threadlines"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <HeartIcon className="size-3.5" />
+          Sponsor
+        </a>
+      </div>
     </div>
   );
 }

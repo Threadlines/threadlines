@@ -1343,7 +1343,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   if (rows.length === 0 && !isWorking) {
     if (emptyState) {
       return (
-        <div className="h-full overflow-y-auto overscroll-y-contain">
+        <div className="h-full overflow-x-hidden overflow-y-auto overscroll-y-contain">
           <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
             {emptyState}
           </div>

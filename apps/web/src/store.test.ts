@@ -32,7 +32,7 @@ import {
 } from "./store";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
+  DEFAULT_COMPOSER_RUNTIME_MODE,
   type Thread,
   type ThreadSession,
 } from "./types";
@@ -79,7 +79,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
     },
-    runtimeMode: DEFAULT_RUNTIME_MODE,
+    runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     messages: [],
@@ -559,7 +559,7 @@ describe("incremental orchestration updates", () => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
-          runtimeMode: DEFAULT_RUNTIME_MODE,
+          runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
           interactionMode: DEFAULT_INTERACTION_MODE,
           branch: null,
           worktreePath: null,
@@ -914,7 +914,7 @@ describe("incremental orchestration updates", () => {
           instanceId: ProviderInstanceId.make("codex"),
           model: DEFAULT_MODEL,
         },
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
         interactionMode: DEFAULT_INTERACTION_MODE,
         branch: null,
         worktreePath: null,
@@ -966,7 +966,7 @@ describe("incremental orchestration updates", () => {
           instanceId: ProviderInstanceId.make("codex"),
           model: DEFAULT_MODEL,
         },
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
         interactionMode: DEFAULT_INTERACTION_MODE,
         branch: null,
         worktreePath: null,
@@ -994,7 +994,7 @@ describe("incremental orchestration updates", () => {
       makeEvent("thread.turn-start-requested", {
         threadId,
         messageId,
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
         interactionMode: DEFAULT_INTERACTION_MODE,
         createdAt: "2026-02-27T00:00:02.000Z",
       }),

@@ -18,19 +18,15 @@ export function ThreadlinesFigure({
   return (
     <div
       aria-hidden="true"
-      className={compact ? "no-thread-rise relative mb-4" : "no-thread-rise relative mb-7"}
+      className={
+        compact
+          ? "no-thread-rise relative mb-4 w-full max-w-[200px] sm:max-w-[224px]"
+          : "no-thread-rise relative mb-7 w-full max-w-[300px] sm:max-w-[336px] lg:max-w-[384px]"
+      }
       style={riseDelay("0.05s")}
     >
       <div className="pointer-events-none absolute -inset-x-14 -inset-y-8 rounded-full bg-primary-graph/[0.05] blur-2xl dark:bg-primary-graph/[0.07]" />
-      <svg
-        className={
-          compact
-            ? "relative h-auto w-[200px] sm:w-[224px]"
-            : "relative h-auto w-[300px] sm:w-[336px] lg:w-[384px]"
-        }
-        fill="none"
-        viewBox="0 0 360 120"
-      >
+      <svg className="relative h-auto w-full" fill="none" viewBox="0 0 360 120">
         <defs>
           <linearGradient
             gradientUnits="userSpaceOnUse"

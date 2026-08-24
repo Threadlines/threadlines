@@ -8,6 +8,7 @@ import {
   ChatAttachmentListLenient,
   CodexInlineVisualizationReadInput,
   ClientOrchestrationCommand,
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
@@ -65,6 +66,11 @@ const decodeThreadForkContextPayload = Schema.decodeUnknownEffect(ThreadForkCont
 const decodeCodexInlineVisualizationReadInput = Schema.decodeUnknownEffect(
   CodexInlineVisualizationReadInput,
 );
+
+it("defaults new composers to auto access without changing the historical wire fallback", () => {
+  assert.strictEqual(DEFAULT_NEW_THREAD_RUNTIME_MODE, "auto");
+  assert.strictEqual(DEFAULT_RUNTIME_MODE, "full-access");
+});
 
 it.effect("defaults the durable subagent roster for older thread snapshots", () =>
   Effect.gen(function* () {

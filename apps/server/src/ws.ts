@@ -1229,7 +1229,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 input.target,
               );
 
-              yield* sourceControlToolMaintenance.update({ ...input, operation });
+              const maintenanceResult = yield* sourceControlToolMaintenance.update({
+                ...input,
+                operation,
+              });
 
               const discovery = yield* sourceControlDiscovery.discover;
               const currentVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
@@ -1247,7 +1250,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               return {
                 target: input.target,
                 operation,
-                status: previousVersion === currentVersion ? "unchanged" : "succeeded",
+                status:
+                  previousVersion !== currentVersion
+                    ? "succeeded"
+                    : maintenanceResult.status === "started"
+                      ? "started"
+                      : "unchanged",
                 previousVersion,
                 currentVersion,
                 discovery,

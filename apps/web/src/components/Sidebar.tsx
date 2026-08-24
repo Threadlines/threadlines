@@ -1550,7 +1550,7 @@ export default function Sidebar() {
                   className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
                 <SidebarContent className="gap-0">
-                  <div className="group/chats-row relative px-2 py-1">
+                  <div className="group/chats-row relative mt-1 mb-4 px-2 py-1">
                     <button
                       type="button"
                       data-testid="sidebar-general-chats"
@@ -1562,7 +1562,7 @@ export default function Sidebar() {
                         // and the row should not go dark under your cursor.
                         isOnChats
                           ? "bg-sidebar-accent text-foreground"
-                          : "text-muted-foreground/80 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
+                          : "text-foreground/85 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
                       )}
                       onClick={handleOpenChats}
                     >

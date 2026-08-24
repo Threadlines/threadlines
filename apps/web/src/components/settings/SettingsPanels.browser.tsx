@@ -2727,7 +2727,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
     });
   });
 
-  it("shows the official release without Update now while WinGet trails upstream", async () => {
+  it("offers the official Git for Windows updater without waiting for WinGet", async () => {
     setSourceControlDiscoveryStub(async () => ({
       versionControlSystems: [
         {
@@ -2747,9 +2747,19 @@ describe("SourceControlSettingsPanel discovery states", () => {
             recommendedVersion: "2.55.0.windows.4",
             checkedAt: "2026-08-14T00:00:00.000Z",
             message:
-              "This Git for Windows version is below the recommended security-fix release. Git for Windows 2.55.0.windows.4 has not reached WinGet yet; use the official release link or check again later.",
+              "This Git for Windows version is below the recommended security-fix release. The official updater may close open Git Bash windows during installation.",
             notificationKey: "git-for-windows:security:2.55.0.windows.4",
             actions: [
+              {
+                label: "Update now",
+                kind: "runUpdate",
+                target: "git",
+              },
+              {
+                label: "Copy Git for Windows update command",
+                kind: "copyCommand",
+                value: "git update-git-for-windows --yes",
+              },
               {
                 label: "Open official release",
                 kind: "openUrl",
@@ -2770,13 +2780,14 @@ describe("SourceControlSettingsPanel discovery states", () => {
 
     await page.getByRole("button", { name: "Git update advisory" }).click();
 
-    await expect.element(page.getByRole("button", { name: "Update now" })).not.toBeInTheDocument();
-    await expect.element(page.getByText(/has not reached WinGet yet/i)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Update now" })).toBeVisible();
+    await expect.element(page.getByText("git update-git-for-windows --yes")).toBeVisible();
+    await expect.element(page.getByText(/may close open Git Bash windows/i)).toBeVisible();
     await expect.element(page.getByRole("button", { name: "Open official release" })).toBeVisible();
     await expect
       .element(
         page.getByText(
-          "Threadlines cannot run this update automatically yet. Use the official release link or check again after WinGet publishes it.",
+          "Threadlines runs Git for Windows' official updater after you click Update now. Windows may ask for permission.",
         ),
       )
       .toBeVisible();

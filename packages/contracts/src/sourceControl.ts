@@ -230,7 +230,7 @@ export type SourceControlToolUpdateInput = typeof SourceControlToolUpdateInput.T
 export const SourceControlToolUpdateResult = Schema.Struct({
   target: SourceControlToolUpdateTarget,
   operation: SourceControlToolUpdateOperation,
-  status: Schema.Literals(["succeeded", "unchanged"]),
+  status: Schema.Literals(["succeeded", "started", "unchanged"]),
   previousVersion: Schema.NullOr(TrimmedNonEmptyString),
   currentVersion: Schema.NullOr(TrimmedNonEmptyString),
   discovery: SourceControlDiscoveryResult,

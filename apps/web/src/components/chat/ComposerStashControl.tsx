@@ -34,6 +34,31 @@ export interface ComposerStashControlProps {
   onDelete: (entry: PromptStashEntry) => void;
 }
 
+export function useComposerStashDelete(onDelete: ComposerStashControlProps["onDelete"]) {
+  // The entry survives past close so the dialog text stays put while the
+  // popup animates out; only the open flag drives visibility.
+  const [pendingDelete, setPendingDelete] = useState<PromptStashEntry | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const requestDelete = useCallback((entry: PromptStashEntry) => {
+    setPendingDelete(entry);
+    setDeleteConfirmOpen(true);
+  }, []);
+  const confirmPendingDelete = useCallback(() => {
+    if (pendingDelete !== null) {
+      onDelete(pendingDelete);
+    }
+    setDeleteConfirmOpen(false);
+  }, [onDelete, pendingDelete]);
+
+  return {
+    pendingDelete,
+    deleteConfirmOpen,
+    setDeleteConfirmOpen,
+    requestDelete,
+    confirmPendingDelete,
+  };
+}
+
 /** Attachments that did not make it into the entry, whatever the reason. */
 function missingAttachmentCount(entry: PromptStashEntry): number {
   return entry.droppedAttachmentNames.length + (entry.unreadableAttachmentNames?.length ?? 0);
@@ -138,7 +163,9 @@ const StashEntryRow = memo(function StashEntryRow(props: {
  * on; keeping the harmless action there means that path never crosses an
  * entry's delete button.
  */
-const ComposerStashList = memo(function ComposerStashList(props: ComposerStashControlProps) {
+export const ComposerStashMenuItems = memo(function ComposerStashMenuItems(
+  props: ComposerStashControlProps,
+) {
   const { entries, canStash, stashShortcutLabel, onStash, onRestore, onDelete } = props;
 
   return (
@@ -169,6 +196,35 @@ const ComposerStashList = memo(function ComposerStashList(props: ComposerStashCo
   );
 });
 
+export const ComposerStashDeleteConfirmation = memo(
+  function ComposerStashDeleteConfirmation(props: {
+    pendingDelete: PromptStashEntry | null;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    onConfirm: () => void;
+  }) {
+    return (
+      <AlertDialog open={props.open} onOpenChange={props.onOpenChange}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete stashed prompt?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "{props.pendingDelete !== null ? stashEntrySnippet(props.pendingDelete) : ""}" will be
+              removed from the stash. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button variant="destructive" onClick={props.onConfirm}>
+              Delete
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    );
+  },
+);
+
 /**
  * Composer footer stash control: a bookmark button carrying the queue depth,
  * opening the stashed prompts above it. Always visible, so the queue is never
@@ -178,35 +234,20 @@ export const ComposerStashControl = memo(function ComposerStashControl(
   props: ComposerStashControlProps,
 ) {
   const { entries, open, onOpenChange, onDelete } = props;
-  // The entry survives past close so the dialog text stays put while the
-  // popup animates out; only the open flag drives visibility.
-  const [pendingDelete, setPendingDelete] = useState<PromptStashEntry | null>(null);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-
-  const requestDelete = useCallback((entry: PromptStashEntry) => {
-    setPendingDelete(entry);
-    setDeleteConfirmOpen(true);
-  }, []);
+  const stashDelete = useComposerStashDelete(onDelete);
 
   // The confirm dialog steals focus from the menu; without this guard the
   // menu would close underneath it and the stash list would be gone once
   // the dialog resolves.
   const handleMenuOpenChange = useCallback(
     (nextOpen: boolean) => {
-      if (!nextOpen && deleteConfirmOpen) {
+      if (!nextOpen && stashDelete.deleteConfirmOpen) {
         return;
       }
       onOpenChange(nextOpen);
     },
-    [onOpenChange, deleteConfirmOpen],
+    [onOpenChange, stashDelete.deleteConfirmOpen],
   );
-
-  const confirmPendingDelete = useCallback(() => {
-    if (pendingDelete !== null) {
-      onDelete(pendingDelete);
-    }
-    setDeleteConfirmOpen(false);
-  }, [onDelete, pendingDelete]);
 
   return (
     <>
@@ -243,26 +284,15 @@ export const ComposerStashControl = memo(function ComposerStashControl(
           side="top"
           className="w-96 max-w-[min(24rem,calc(100vw-2rem))]"
         >
-          <ComposerStashList {...props} onDelete={requestDelete} />
+          <ComposerStashMenuItems {...props} onDelete={stashDelete.requestDelete} />
         </MenuPopup>
       </Menu>
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete stashed prompt?</AlertDialogTitle>
-            <AlertDialogDescription>
-              "{pendingDelete !== null ? stashEntrySnippet(pendingDelete) : ""}" will be removed
-              from the stash. This can't be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button variant="destructive" onClick={confirmPendingDelete}>
-              Delete
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      <ComposerStashDeleteConfirmation
+        pendingDelete={stashDelete.pendingDelete}
+        open={stashDelete.deleteConfirmOpen}
+        onOpenChange={stashDelete.setDeleteConfirmOpen}
+        onConfirm={stashDelete.confirmPendingDelete}
+      />
     </>
   );
 });
