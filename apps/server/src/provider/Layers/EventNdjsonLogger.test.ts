@@ -6,8 +6,14 @@ import path from "node:path";
 import { ThreadId } from "@threadlines/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vitest";
 
-import { cleanupProviderEventLogDirectory, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  cleanupProviderEventLogDirectory,
+  type EventNdjsonLogger,
+  makeEventNdjsonLogger,
+} from "./EventNdjsonLogger.ts";
 
 function parseLogLine(line: string) {
   const match = /^\[([^\]]+)\] ([A-Z]+): (.+)$/.exec(line);
@@ -147,6 +153,264 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("flushes after the batch window and re-arms for later writes", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-canonical.ndjson");
+      const globalPath = path.join(tempDir, "_global.log");
+      let logger: EventNdjsonLogger | undefined;
+
+      try {
+        logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          batchWindowMs: 1_000,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write({ id: "evt-first" }, null);
+        assert.equal(fs.existsSync(globalPath), false);
+        yield* TestClock.adjust("999 millis");
+        yield* Effect.yieldNow;
+        assert.equal(fs.existsSync(globalPath), false);
+        yield* TestClock.adjust("1 millis");
+        yield* Effect.yieldNow;
+        assert.equal(fs.existsSync(globalPath), true);
+
+        yield* logger.write({ id: "evt-second" }, null);
+        assert.equal(fs.readFileSync(globalPath, "utf8").includes("evt-second"), false);
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+
+        const lines = fs
+          .readFileSync(globalPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => parseLogLine(line));
+        assert.deepEqual(
+          lines.map((line) => line.payload),
+          ['{"id":"evt-first"}', '{"id":"evt-second"}'],
+        );
+      } finally {
+        if (logger) {
+          yield* logger.close();
+        }
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("flushes immediately when buffered bytes reach the configured cap", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-native.ndjson");
+      const globalPath = path.join(tempDir, "_global.log");
+      let logger: EventNdjsonLogger | undefined;
+
+      try {
+        logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "native",
+          batchWindowMs: 10_000,
+          maxBufferedBytes: 350,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write({ id: "evt-byte-threshold", payload: "\u{1F642}".repeat(100) }, null);
+        assert.equal(fs.existsSync(globalPath), true);
+        assert.equal(fs.readFileSync(globalPath, "utf8").includes("evt-byte-threshold"), true);
+      } finally {
+        if (logger) {
+          yield* logger.close();
+        }
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("drops oversized records before the rotating sink can append them", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-canonical.ndjson");
+      const globalPath = path.join(tempDir, "_global.log");
+      const blockingBackup = `${globalPath}.2`;
+      let logger: EventNdjsonLogger | undefined;
+
+      try {
+        yield* TestClock.setTime(0);
+        logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          maxBytes: 180,
+          maxFiles: 2,
+          batchWindowMs: 0,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        fs.mkdirSync(path.join(blockingBackup, "child"), { recursive: true });
+        yield* logger.write({ id: "evt-oversized", payload: "x".repeat(300) }, null);
+        fs.rmSync(blockingBackup, { recursive: true, force: true });
+        yield* TestClock.adjust("200 millis");
+        yield* Effect.yieldNow;
+        yield* logger.write({ id: "evt-small" }, null);
+
+        const payloadIds = fs
+          .readdirSync(tempDir)
+          .filter((entry) => entry === "_global.log" || entry.startsWith("_global.log."))
+          .flatMap((entry) =>
+            fs
+              .readFileSync(path.join(tempDir, entry), "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(parseLogLine(line).payload).id as string),
+          );
+        assert.deepEqual(payloadIds, ["evt-small"]);
+      } finally {
+        if (logger) {
+          yield* logger.close();
+        }
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("waits for the retry timer and does not duplicate completed chunks", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-canonical.ndjson");
+      const realAppendFileSync = fs.appendFileSync.bind(fs);
+      let appendAttempts = 0;
+      let failWritesAfterFirst = true;
+      let logger: EventNdjsonLogger | undefined;
+      const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation((...args) => {
+        appendAttempts += 1;
+        if (failWritesAfterFirst && appendAttempts > 1) {
+          throw new Error("simulated provider log write failure");
+        }
+        Reflect.apply(realAppendFileSync, fs, args);
+      });
+
+      try {
+        yield* TestClock.setTime(0);
+        logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          maxBytes: 180,
+          maxFiles: 10,
+          batchWindowMs: 1_000,
+          maxBufferedBytes: 2_000,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write({ id: "evt-1", payload: "x".repeat(60) }, null);
+        yield* logger.write({ id: "evt-2", payload: "x".repeat(60) }, null);
+        yield* logger.write({ id: "evt-3", payload: "x".repeat(60) }, null);
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+        assert.equal(appendAttempts, 2);
+
+        yield* logger.write({ id: "evt-4", payload: "x".repeat(60) }, null);
+        assert.equal(appendAttempts, 2);
+        yield* TestClock.adjust("999 millis");
+        yield* Effect.yieldNow;
+        assert.equal(appendAttempts, 2);
+
+        failWritesAfterFirst = false;
+        yield* TestClock.adjust("1 millis");
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+        const payloadIds = fs
+          .readdirSync(tempDir)
+          .filter((entry) => entry === "_global.log" || entry.startsWith("_global.log."))
+          .flatMap((entry) =>
+            fs
+              .readFileSync(path.join(tempDir, entry), "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(parseLogLine(line).payload).id as string),
+          )
+          .toSorted();
+        assert.deepEqual(payloadIds, ["evt-1", "evt-2", "evt-3", "evt-4"]);
+      } finally {
+        if (logger) {
+          yield* logger.close();
+        }
+        appendSpy.mockRestore();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("bounds buffered records globally across thread writers", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-canonical.ndjson");
+      const realAppendFileSync = fs.appendFileSync.bind(fs);
+      let failWrites = true;
+      let logger: EventNdjsonLogger | undefined;
+      const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation((...args) => {
+        if (failWrites) {
+          throw new Error("simulated provider log write failure");
+        }
+        Reflect.apply(realAppendFileSync, fs, args);
+      });
+
+      try {
+        yield* TestClock.setTime(0);
+        logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          batchWindowMs: 1_000,
+          maxBufferedBytes: 500,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        for (let index = 0; index < 20; index += 1) {
+          yield* logger.write(
+            { id: `evt-${index}`, payload: "x".repeat(40) },
+            ThreadId.make(`thread-${index}`),
+          );
+        }
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+
+        failWrites = false;
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+        const logFiles = fs.readdirSync(tempDir).filter((entry) => entry.endsWith(".log"));
+        const persistedBytes = logFiles.reduce(
+          (total, entry) => total + fs.statSync(path.join(tempDir, entry)).size,
+          0,
+        );
+        const persistedRecords = logFiles.reduce(
+          (total, entry) =>
+            total + fs.readFileSync(path.join(tempDir, entry), "utf8").trim().split("\n").length,
+          0,
+        );
+        assert.equal(persistedBytes <= 500, true);
+        assert.equal(persistedRecords > 0, true);
+        assert.equal(persistedRecords < 20, true);
+      } finally {
+        if (logger) {
+          yield* logger.close();
+        }
+        appendSpy.mockRestore();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect(
     "falls back to a global segment when orchestration thread id is missing or invalid",
     () =>
@@ -236,7 +500,7 @@ describe("EventNdjsonLogger", () => {
       try {
         const logger = yield* makeEventNdjsonLogger(basePath, {
           stream: "native",
-          maxBytes: 120,
+          maxBytes: 200,
           maxFiles: 2,
         });
         assert.notEqual(logger, undefined);

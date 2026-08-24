@@ -22,7 +22,9 @@ import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_FILES = 10;
 const DEFAULT_BATCH_WINDOW_MS = 200;
+const MAX_RETRY_DELAY_MS = 30_000;
 const FLUSH_BUFFER_THRESHOLD = 32;
+const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
 const GLOBAL_THREAD_SEGMENT = "_global";
 const LOG_SCOPE = "provider-observability";
 const DEFAULT_LOG_CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -43,6 +45,7 @@ export interface EventNdjsonLoggerOptions {
   readonly maxBytes?: number;
   readonly maxFiles?: number;
   readonly batchWindowMs?: number;
+  readonly maxBufferedBytes?: number;
 }
 
 export interface ProviderEventLogCleanupOptions {
@@ -63,6 +66,16 @@ export interface ProviderEventLogCleanupResult {
 interface ThreadWriter {
   writeMessage: (message: string) => Effect.Effect<void>;
   close: () => Effect.Effect<void>;
+}
+
+interface BufferBudget {
+  readonly maxBytes: number;
+  readonly usedBytes: number;
+  reserve: (
+    bytes: number,
+    allowTemporaryOverflow: boolean,
+  ) => { readonly reserved: boolean; readonly reportDrop: boolean };
+  release: (bytes: number) => void;
 }
 
 interface LoggerState {
@@ -243,11 +256,39 @@ const toLogMessage = Effect.fnUntraced(function* (
   return serialized.value;
 });
 
+function makeBufferBudget(maxBytes: number): BufferBudget {
+  let usedBytes = 0;
+  let dropReported = false;
+
+  return {
+    maxBytes,
+    get usedBytes() {
+      return usedBytes;
+    },
+    reserve(bytes, allowTemporaryOverflow) {
+      if (bytes > maxBytes - usedBytes && !(allowTemporaryOverflow && usedBytes === 0)) {
+        const reportDrop = !dropReported;
+        dropReported = true;
+        return { reserved: false, reportDrop };
+      }
+      usedBytes += bytes;
+      return { reserved: true, reportDrop: false };
+    },
+    release(bytes) {
+      usedBytes = Math.max(0, usedBytes - bytes);
+      if (usedBytes < maxBytes) {
+        dropReported = false;
+      }
+    },
+  };
+}
+
 const makeThreadWriter = Effect.fnUntraced(function* (input: {
   readonly filePath: string;
   readonly maxBytes: number;
   readonly maxFiles: number;
   readonly batchWindowMs: number;
+  readonly bufferBudget: BufferBudget;
   readonly streamLabel: string;
 }): Effect.fn.Return<ThreadWriter | undefined> {
   const sinkResult = yield* Effect.sync(() => {
@@ -276,68 +317,256 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
 
   const sink = sinkResult.sink;
   const scope = yield* Scope.make();
+  const initialRetryDelayMs =
+    input.batchWindowMs > 0 ? input.batchWindowMs : DEFAULT_BATCH_WINDOW_MS;
   let closed = false;
-  let buffer: string[] = [];
+  let flushScheduled = false;
+  let recovering = false;
+  let failureReported = false;
+  let oversizedRecordWarningReported = false;
+  let nextRetryDelayMs = initialRetryDelayMs;
+  let bufferedBytes = 0;
+  let buffer: Array<{ readonly line: string; readonly bytes: number }> = [];
 
-  const flushUnsafe = (): { ok: true } | { ok: false; error: unknown } => {
+  const flushUnsafe = ():
+    | { ok: true; attempted: boolean }
+    | {
+        ok: false;
+        error: unknown;
+        droppedRecords: number;
+        droppedBytes: number;
+      } => {
     if (buffer.length === 0) {
-      return { ok: true };
+      return { ok: true, attempted: false };
     }
 
     const messages = buffer;
     buffer = [];
+    bufferedBytes = 0;
+    let persistedCount = 0;
 
     try {
-      for (const message of messages) {
-        sink.write(message);
+      while (persistedCount < messages.length) {
+        const firstMessage = messages[persistedCount];
+        if (!firstMessage) {
+          break;
+        }
+        let nextIndex = persistedCount + 1;
+        let chunkBytes = firstMessage.bytes;
+        while (nextIndex < messages.length) {
+          const nextMessage = messages[nextIndex];
+          if (!nextMessage || chunkBytes + nextMessage.bytes > input.maxBytes) {
+            break;
+          }
+          chunkBytes += nextMessage.bytes;
+          nextIndex += 1;
+        }
+        sink.write(
+          messages
+            .slice(persistedCount, nextIndex)
+            .map((message) => message.line)
+            .join(""),
+        );
+        input.bufferBudget.release(chunkBytes);
+        persistedCount = nextIndex;
       }
-      return { ok: true };
+      return { ok: true, attempted: true };
     } catch (error) {
-      buffer = [...messages, ...buffer];
-      return { ok: false, error };
+      buffer = [...messages.slice(persistedCount), ...buffer];
+      bufferedBytes = buffer.reduce((total, message) => total + message.bytes, 0);
+      let droppedRecords = 0;
+      let droppedBytes = 0;
+      while (input.bufferBudget.usedBytes > input.bufferBudget.maxBytes && buffer.length > 0) {
+        const dropped = buffer.pop();
+        if (!dropped) {
+          break;
+        }
+        bufferedBytes -= dropped.bytes;
+        input.bufferBudget.release(dropped.bytes);
+        droppedRecords += 1;
+        droppedBytes += dropped.bytes;
+      }
+      return { ok: false, error, droppedRecords, droppedBytes };
     }
   };
 
-  const reportFlushResult = (result: ReturnType<typeof flushUnsafe>) =>
-    result.ok
+  const runFlushUnsafe = () => {
+    const result = flushUnsafe();
+    if (result.ok) {
+      if (result.attempted) {
+        recovering = false;
+        failureReported = false;
+        nextRetryDelayMs = initialRetryDelayMs;
+      }
+      return { result, reportFailure: false };
+    }
+
+    nextRetryDelayMs = recovering
+      ? Math.min(MAX_RETRY_DELAY_MS, nextRetryDelayMs * 2)
+      : initialRetryDelayMs;
+    recovering = true;
+    const reportFailure = !failureReported;
+    failureReported = true;
+    return { result, reportFailure };
+  };
+
+  const reportFlushResult = (outcome: ReturnType<typeof runFlushUnsafe>) =>
+    outcome.result.ok || !outcome.reportFailure
       ? Effect.void
       : logWarning("provider event log batch flush failed", {
           filePath: input.filePath,
-          error: result.error,
+          error: outcome.result.error,
+          droppedRecords: outcome.result.droppedRecords,
+          droppedBytes: outcome.result.droppedBytes,
         });
 
-  const flush = Effect.sync(flushUnsafe).pipe(
+  const flush = Effect.sync(runFlushUnsafe).pipe(
     Effect.flatMap(reportFlushResult),
     Effect.withTracerEnabled(false),
   );
 
-  if (input.batchWindowMs > 0) {
-    yield* Effect.sleep(`${input.batchWindowMs} millis`).pipe(
-      Effect.andThen(flush),
-      Effect.forever,
-      Effect.forkIn(scope),
-    );
+  function scheduleFlush(): Effect.Effect<void> {
+    const delayMs = recovering ? nextRetryDelayMs : initialRetryDelayMs;
+    return Effect.forkIn(
+      Effect.sleep(`${delayMs} millis`).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const outcome = yield* Effect.sync(() => {
+              flushScheduled = false;
+              return runFlushUnsafe();
+            });
+            yield* reportFlushResult(outcome);
+
+            const retry = yield* Effect.sync(() => {
+              if (closed || buffer.length === 0 || flushScheduled) {
+                return false;
+              }
+              flushScheduled = true;
+              return true;
+            });
+            if (retry) {
+              yield* scheduleFlush();
+            }
+          }),
+        ),
+      ),
+      scope,
+      { startImmediately: true },
+    ).pipe(Effect.asVoid);
   }
 
   const writeMessage = (message: string) =>
     Effect.gen(function* () {
       const observedAt = DateTime.formatIso(yield* DateTime.now);
 
-      return yield* Effect.sync(() => {
+      const action = yield* Effect.sync(() => {
         if (closed) {
-          return { ok: true as const };
+          return {
+            outcome: undefined,
+            schedule: false,
+            droppedBytes: 0,
+            reportDrop: false,
+            reportOversized: false,
+          };
         }
-        buffer.push(formatLogLine(input.streamLabel, observedAt, message));
-        return input.batchWindowMs <= 0 || buffer.length >= FLUSH_BUFFER_THRESHOLD
-          ? flushUnsafe()
-          : { ok: true as const };
+        const line = formatLogLine(input.streamLabel, observedAt, message);
+        const bytes = Buffer.byteLength(line);
+        if (bytes > input.maxBytes) {
+          const reportOversized = !oversizedRecordWarningReported;
+          oversizedRecordWarningReported = true;
+          return {
+            outcome: undefined,
+            schedule: false,
+            droppedBytes: bytes,
+            reportDrop: false,
+            reportOversized,
+          };
+        }
+        const reservation = input.bufferBudget.reserve(bytes, !recovering);
+        if (!reservation.reserved) {
+          return {
+            outcome: undefined,
+            schedule: false,
+            droppedBytes: bytes,
+            reportDrop: reservation.reportDrop,
+            reportOversized: false,
+          };
+        }
+        buffer.push({ line, bytes });
+        bufferedBytes += bytes;
+
+        if (
+          !recovering &&
+          (input.batchWindowMs <= 0 ||
+            buffer.length >= FLUSH_BUFFER_THRESHOLD ||
+            bufferedBytes >= input.bufferBudget.maxBytes)
+        ) {
+          const outcome = runFlushUnsafe();
+          const schedule = !outcome.result.ok && buffer.length > 0 && !flushScheduled;
+          if (schedule) {
+            flushScheduled = true;
+          }
+          return {
+            outcome,
+            schedule,
+            droppedBytes: 0,
+            reportDrop: false,
+            reportOversized: false,
+          };
+        }
+
+        if (!flushScheduled && (input.batchWindowMs > 0 || recovering)) {
+          flushScheduled = true;
+          return {
+            outcome: undefined,
+            schedule: true,
+            droppedBytes: 0,
+            reportDrop: false,
+            reportOversized: false,
+          };
+        }
+        return {
+          outcome: undefined,
+          schedule: false,
+          droppedBytes: 0,
+          reportDrop: false,
+          reportOversized: false,
+        };
       });
-    }).pipe(Effect.flatMap(reportFlushResult), Effect.withTracerEnabled(false));
+      if (action.reportOversized) {
+        yield* logWarning("provider event log record exceeds file limit; dropping record", {
+          filePath: input.filePath,
+          maxBytes: input.maxBytes,
+          droppedRecords: 1,
+          droppedBytes: action.droppedBytes,
+        });
+      }
+      if (action.reportDrop) {
+        yield* logWarning("provider event log buffer limit reached; dropping record", {
+          filePath: input.filePath,
+          maxBufferedBytes: input.bufferBudget.maxBytes,
+          bufferedBytes: input.bufferBudget.usedBytes,
+          droppedRecords: 1,
+          droppedBytes: action.droppedBytes,
+        });
+      }
+      if (action.outcome) {
+        yield* reportFlushResult(action.outcome);
+      }
+      if (action.schedule) {
+        yield* scheduleFlush();
+      }
+    }).pipe(Effect.uninterruptible, Effect.withTracerEnabled(false));
 
   const close = Effect.gen(function* () {
     closed = true;
     yield* Scope.close(scope, Exit.void);
     yield* flush;
+    yield* Effect.sync(() => {
+      input.bufferBudget.release(bufferedBytes);
+      bufferedBytes = 0;
+      buffer = [];
+    });
   }).pipe(Effect.withTracerEnabled(false));
 
   return {
@@ -353,6 +582,10 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const batchWindowMs = options.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS;
+  const requestedMaxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+  const maxBufferedBytes = Number.isFinite(requestedMaxBufferedBytes)
+    ? Math.max(1, Math.trunc(requestedMaxBufferedBytes))
+    : DEFAULT_MAX_BUFFERED_BYTES;
   const streamLabel = resolveStreamLabel(options.stream);
 
   const directoryReady = yield* Effect.sync(() => {
@@ -375,6 +608,7 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
     threadWriters: new Map(),
     failedSegments: new Set(),
   });
+  const bufferBudget = makeBufferBudget(maxBufferedBytes);
 
   const resolveThreadWriter = Effect.fnUntraced(function* (
     threadSegment: string,
@@ -394,6 +628,7 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
         maxBytes,
         maxFiles,
         batchWindowMs,
+        bufferBudget,
         streamLabel,
       }).pipe(
         Effect.map((writer) => {

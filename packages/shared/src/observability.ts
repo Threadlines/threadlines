@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import type * as Exit from "effect/Exit";
 import * as ExitRuntime from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Tracer from "effect/Tracer";
 import { OtlpResource, OtlpTracer } from "effect/unstable/observability";
@@ -9,6 +10,10 @@ import { OtlpResource, OtlpTracer } from "effect/unstable/observability";
 import { RotatingFileSink } from "./logging.ts";
 
 const FLUSH_BUFFER_THRESHOLD = 32;
+const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
+const DEFAULT_RETRY_DELAY_MS = 200;
+const MAX_RETRY_DELAY_MS = 30_000;
+const traceTextEncoder = new TextEncoder();
 
 export type TraceAttributes = Readonly<Record<string, unknown>>;
 
@@ -78,6 +83,7 @@ export interface TraceSinkOptions {
   readonly maxBytes: number;
   readonly maxFiles: number;
   readonly batchWindowMs: number;
+  readonly maxBufferedBytes?: number;
 }
 
 export interface TraceSink {
@@ -241,50 +247,175 @@ export function spanToTraceRecord(span: SerializableSpan): EffectTraceRecord {
 }
 
 export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: TraceSinkOptions) {
+  const batchWindowMs = Number.isFinite(options.batchWindowMs)
+    ? Math.max(0, options.batchWindowMs)
+    : 0;
+  const initialRetryDelayMs =
+    batchWindowMs > 0
+      ? Math.max(1, Math.min(MAX_RETRY_DELAY_MS, batchWindowMs))
+      : DEFAULT_RETRY_DELAY_MS;
+  const requestedMaxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+  const maxBufferedBytes = Number.isFinite(requestedMaxBufferedBytes)
+    ? Math.max(1, Math.trunc(requestedMaxBufferedBytes))
+    : DEFAULT_MAX_BUFFERED_BYTES;
   const sink = new RotatingFileSink({
     filePath: options.filePath,
     maxBytes: options.maxBytes,
     maxFiles: options.maxFiles,
+    throwOnError: true,
   });
 
-  let buffer: Array<string> = [];
+  const runFork = Effect.runForkWith(yield* Effect.context());
+  let closed = false;
+  let flushFiber: Fiber.Fiber<void, never> | undefined;
+  let flushFailed = false;
+  let nextRetryDelayMs = initialRetryDelayMs;
+  let bufferedBytes = 0;
+  let buffer: Array<{ readonly line: string; readonly bytes: number }> = [];
+
+  const trimRetryBuffer = (): void => {
+    while (bufferedBytes > maxBufferedBytes && buffer.length > 0) {
+      const dropped = buffer.shift();
+      if (!dropped) {
+        break;
+      }
+      bufferedBytes -= dropped.bytes;
+    }
+  };
 
   const flushUnsafe = () => {
     if (buffer.length === 0) {
       return;
     }
 
-    const chunk = buffer.join("");
+    const records = buffer;
     buffer = [];
+    bufferedBytes = 0;
+    let persistedCount = 0;
 
-    try {
-      sink.write(chunk);
-    } catch {
-      buffer.unshift(chunk);
+    while (persistedCount < records.length) {
+      const firstRecord = records[persistedCount];
+      if (!firstRecord) {
+        break;
+      }
+      if (firstRecord.bytes > options.maxBytes) {
+        persistedCount += 1;
+        continue;
+      }
+
+      let nextIndex = persistedCount + 1;
+      let chunkBytes = firstRecord.bytes;
+      while (nextIndex < records.length) {
+        const nextRecord = records[nextIndex];
+        if (!nextRecord || chunkBytes + nextRecord.bytes > options.maxBytes) {
+          break;
+        }
+        chunkBytes += nextRecord.bytes;
+        nextIndex += 1;
+      }
+
+      const chunk = records
+        .slice(persistedCount, nextIndex)
+        .map((record) => record.line)
+        .join("");
+      try {
+        sink.write(chunk);
+      } catch {
+        buffer = [...records.slice(persistedCount), ...buffer];
+        bufferedBytes = buffer.reduce((total, record) => total + record.bytes, 0);
+        trimRetryBuffer();
+        nextRetryDelayMs = flushFailed
+          ? Math.min(MAX_RETRY_DELAY_MS, nextRetryDelayMs * 2)
+          : initialRetryDelayMs;
+        flushFailed = buffer.length > 0;
+        return;
+      }
+      persistedCount = nextIndex;
     }
+    flushFailed = false;
+    nextRetryDelayMs = initialRetryDelayMs;
   };
 
-  const flush = Effect.sync(flushUnsafe).pipe(Effect.withTracerEnabled(false));
+  const scheduleFlush = (): void => {
+    if (closed || flushFiber !== undefined || buffer.length === 0) {
+      return;
+    }
 
-  yield* Effect.addFinalizer(() => flush.pipe(Effect.ignore));
-  yield* Effect.forkScoped(
-    Effect.sleep(`${options.batchWindowMs} millis`).pipe(Effect.andThen(flush), Effect.forever),
-  );
+    const delayMs = flushFailed ? nextRetryDelayMs : batchWindowMs;
+    if (delayMs <= 0) {
+      return;
+    }
+
+    flushFiber = runFork(
+      Effect.sleep(`${delayMs} millis`).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            flushFiber = undefined;
+            flushUnsafe();
+            scheduleFlush();
+          }),
+        ),
+        Effect.withTracerEnabled(false),
+      ),
+    );
+  };
+
+  const flush = Effect.gen(function* () {
+    const scheduled = flushFiber;
+    flushFiber = undefined;
+    if (scheduled) {
+      yield* Fiber.interrupt(scheduled).pipe(Effect.ignore);
+    }
+    yield* Effect.sync(() => {
+      flushUnsafe();
+      scheduleFlush();
+    });
+  }).pipe(Effect.withTracerEnabled(false));
+
+  const close = Effect.gen(function* () {
+    closed = true;
+    const scheduled = flushFiber;
+    flushFiber = undefined;
+    if (scheduled) {
+      yield* Fiber.interrupt(scheduled).pipe(Effect.ignore);
+    }
+    yield* Effect.sync(flushUnsafe);
+  }).pipe(Effect.withTracerEnabled(false));
+
+  yield* Effect.addFinalizer(() => close.pipe(Effect.ignore));
 
   return {
     filePath: options.filePath,
     push(record) {
+      if (closed) {
+        return;
+      }
       try {
-        buffer.push(`${JSON.stringify(record)}\n`);
-        if (buffer.length >= FLUSH_BUFFER_THRESHOLD) {
+        const line = `${JSON.stringify(record)}\n`;
+        const bytes = traceTextEncoder.encode(line).byteLength;
+        if (bytes > options.maxBytes) {
+          return;
+        }
+        buffer.push({ line, bytes });
+        bufferedBytes += bytes;
+        if (flushFailed) {
+          trimRetryBuffer();
+        }
+        if (
+          !flushFailed &&
+          (batchWindowMs <= 0 ||
+            buffer.length >= FLUSH_BUFFER_THRESHOLD ||
+            bufferedBytes >= maxBufferedBytes)
+        ) {
           flushUnsafe();
         }
+        scheduleFlush();
       } catch {
         return;
       }
     },
     flush,
-    close: () => flush,
+    close: () => close,
   } satisfies TraceSink;
 });
 
@@ -375,6 +506,9 @@ export const makeLocalFileTracer = Effect.fn("makeLocalFileTracer")(function* (
       maxBytes: options.maxBytes,
       maxFiles: options.maxFiles,
       batchWindowMs: options.batchWindowMs,
+      ...(options.maxBufferedBytes === undefined
+        ? {}
+        : { maxBufferedBytes: options.maxBufferedBytes }),
     }));
 
   const delegate =
