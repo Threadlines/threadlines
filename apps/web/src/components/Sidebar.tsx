@@ -433,7 +433,6 @@ export default function Sidebar() {
   const isOnSettings = pathname.startsWith("/settings");
   const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
-  const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
@@ -801,7 +800,6 @@ export default function Sidebar() {
       entryByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))!;
     const liveEntries = sortInboxThreads(
       scoped.filter((entry) => !entry.isDone).map((entry) => entry.thread),
-      sidebarThreadSortOrder,
     ).map(lookup);
     const doneEntries = sortDoneThreads(
       scoped.filter((entry) => entry.isDone).map((entry) => entry.thread),
@@ -812,7 +810,7 @@ export default function Sidebar() {
         ),
     ).map(lookup);
     return { liveEntries, doneEntries };
-  }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue, sidebarThreadSortOrder]);
+  }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and anything with a status stays put.

@@ -1,8 +1,5 @@
 import * as React from "react";
-import type {
-  SidebarProjectSortOrder,
-  SidebarThreadSortOrder,
-} from "@threadlines/contracts/settings";
+import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
 import {
   getThreadInFlightStatus,
   getThreadSortTimestamp,
@@ -419,10 +416,9 @@ export function getFallbackThreadIdAfterDelete<
 >(input: {
   threads: readonly T[];
   deletedThreadId: T["id"];
-  sortOrder: SidebarThreadSortOrder;
   deletedThreadIds?: ReadonlySet<T["id"]>;
 }): T["id"] | null {
-  const { deletedThreadId, deletedThreadIds, sortOrder, threads } = input;
+  const { deletedThreadId, deletedThreadIds, threads } = input;
   const deletedThread = threads.find((thread) => thread.id === deletedThreadId);
   if (!deletedThread) {
     return null;
@@ -436,7 +432,6 @@ export function getFallbackThreadIdAfterDelete<
           thread.id !== deletedThreadId &&
           !deletedThreadIds?.has(thread.id),
       ),
-      sortOrder,
     )[0]?.id ?? null
   );
 }
@@ -713,13 +708,12 @@ export function isThreadDone(
 }
 
 /**
- * Pins are a deliberate, stable group at the top. Everything else follows
- * the user's thread sort preference; the default tracks their latest message
- * rather than background agent activity.
+ * Pins are a deliberate, stable group at the top. Everything else tracks the
+ * user's latest message rather than background agent activity.
  */
 export function sortInboxThreads<
   T extends Pick<Thread, "id"> & ThreadSortInput & { readonly pinnedAt: string | null },
->(threads: readonly T[], sortOrder: SidebarThreadSortOrder): T[] {
+>(threads: readonly T[]): T[] {
   const pinned = threads
     .filter((thread) => thread.pinnedAt !== null)
     .toSorted((left, right) => {
@@ -732,10 +726,7 @@ export function sortInboxThreads<
         (toSortableTimestamp(right.createdAt) ?? 0) - (toSortableTimestamp(left.createdAt) ?? 0);
       return byCreated !== 0 ? byCreated : left.id.localeCompare(right.id);
     });
-  const unpinned = sortThreads(
-    threads.filter((thread) => thread.pinnedAt === null),
-    sortOrder,
-  );
+  const unpinned = sortThreads(threads.filter((thread) => thread.pinnedAt === null));
 
   return [...pinned, ...unpinned];
 }

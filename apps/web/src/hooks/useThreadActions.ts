@@ -45,7 +45,6 @@ async function confirmOrphanedWorktreeDeletion(worktreePath: string): Promise<bo
 }
 
 export function useThreadActions() {
-  const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useSettings((settings) => settings.confirmThreadDelete);
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
@@ -273,7 +272,6 @@ export function useThreadActions() {
         threads,
         deletedThreadId: threadRef.threadId,
         deletedThreadIds,
-        sortOrder: sidebarThreadSortOrder,
       });
       await api.orchestration.dispatchCommand({
         type: "thread.delete",
@@ -329,7 +327,6 @@ export function useThreadActions() {
       removeOrphanedWorktree,
       router,
       resolveThreadTarget,
-      sidebarThreadSortOrder,
     ],
   );
 

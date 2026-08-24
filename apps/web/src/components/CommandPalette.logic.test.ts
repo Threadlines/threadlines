@@ -70,7 +70,6 @@ describe("buildThreadActionItems", () => {
           }),
         ],
         projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-        sortOrder: "updated_at",
         icon: null,
         runThread: async (_thread) => undefined,
       });
@@ -102,7 +101,6 @@ describe("buildThreadActionItems", () => {
         }),
       ],
       projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-      sortOrder: "updated_at",
       icon: null,
       runThread: async (_thread) => undefined,
     });
@@ -257,7 +255,6 @@ describe("buildThreadActionItems", () => {
         }),
       ],
       projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-      sortOrder: "updated_at",
       icon: null,
       runThread: async (_thread) => undefined,
     });
@@ -278,7 +275,6 @@ describe("buildThreadActionItems", () => {
         }),
       ],
       projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-      sortOrder: "updated_at",
       icon: null,
       runThread: async (_thread) => undefined,
     });
@@ -326,7 +322,6 @@ describe("buildThreadActionItems", () => {
         makeThread({ id: ThreadId.make("thread-ordered"), title: "Unrelated three" }),
       ],
       projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-      sortOrder: "updated_at",
       icon: null,
       runThread: async (_thread) => undefined,
     });

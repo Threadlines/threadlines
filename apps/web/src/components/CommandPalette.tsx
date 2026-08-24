@@ -821,7 +821,6 @@ function OpenCommandPaletteDialog() {
       const latestThread = getLatestThreadForProject(
         threads.filter((thread) => thread.environmentId === project.environmentId),
         project.id,
-        settings.sidebarThreadSortOrder,
       );
       if (latestThread) {
         await navigate({
@@ -837,13 +836,7 @@ function OpenCommandPaletteDialog() {
         envMode: settings.defaultThreadEnvMode,
       });
     },
-    [
-      handleNewThread,
-      navigate,
-      settings.defaultThreadEnvMode,
-      settings.sidebarThreadSortOrder,
-      threads,
-    ],
+    [handleNewThread, navigate, settings.defaultThreadEnvMode, threads],
   );
 
   const projectSearchItems = useMemo(
@@ -906,7 +899,6 @@ function OpenCommandPaletteDialog() {
         threads,
         ...(activeThreadId ? { activeThreadId } : {}),
         projectTitleById,
-        sortOrder: settings.sidebarThreadSortOrder,
         icon: (thread) => {
           const project = projectByScopedKey.get(
             scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -935,14 +927,7 @@ function OpenCommandPaletteDialog() {
           });
         },
       }),
-    [
-      activeThreadId,
-      navigate,
-      projectByScopedKey,
-      projectTitleById,
-      settings.sidebarThreadSortOrder,
-      threads,
-    ],
+    [activeThreadId, navigate, projectByScopedKey, projectTitleById, threads],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
   const threadContentSearchTargets = useMemo<ReadonlyArray<ThreadSearchTarget>>(() => {
@@ -1371,7 +1356,6 @@ function OpenCommandPaletteDialog() {
             threads: projectThreads,
             ...(activeThreadId ? { activeThreadId } : {}),
             projectTitleById,
-            sortOrder: settings.sidebarThreadSortOrder,
             icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
             renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
             renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
@@ -1385,15 +1369,7 @@ function OpenCommandPaletteDialog() {
         },
       ],
     });
-  }, [
-    activeThreadId,
-    clearOpenIntent,
-    navigate,
-    openIntent,
-    projectTitleById,
-    settings.sidebarThreadSortOrder,
-    threads,
-  ]);
+  }, [activeThreadId, clearOpenIntent, navigate, openIntent, projectTitleById, threads]);
 
   const importExternalCodexSession = useCallback(
     async (candidate: ProviderExternalThreadCandidate): Promise<void> => {
@@ -1714,7 +1690,6 @@ function OpenCommandPaletteDialog() {
         const latestThread = getLatestThreadForProject(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
           existing.id,
-          settings.sidebarThreadSortOrder,
         );
         if (latestThread) {
           await navigate({
@@ -1775,7 +1750,6 @@ function OpenCommandPaletteDialog() {
       projects,
       sessionGeneration,
       settings.defaultThreadEnvMode,
-      settings.sidebarThreadSortOrder,
       threads,
     ],
   );

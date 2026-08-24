@@ -5,7 +5,6 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useSettings } from "../hooks/useSettings";
 import { startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import { sortThreads } from "../lib/threadSort";
@@ -60,7 +59,6 @@ export function ChatsDestinationView() {
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const threadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
 
   const generalChatsProjectRef = useMemo(
     () =>
@@ -83,9 +81,8 @@ export function ChatsDestinationView() {
           thread.environmentId === generalChatsProject.environmentId &&
           thread.projectId === generalChatsProject.id,
       ),
-      threadSortOrder,
     );
-  }, [generalChatsProject, threadSortOrder, threads]);
+  }, [generalChatsProject, threads]);
 
   const groups = useMemo(() => {
     const nowMs = Date.now();

@@ -1,8 +1,5 @@
 import type { ProjectId } from "@threadlines/contracts";
-import type {
-  SidebarProjectSortOrder,
-  SidebarThreadSortOrder,
-} from "@threadlines/contracts/settings";
+import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
 import type { Thread } from "../types";
 
 export type ThreadSortInput = Pick<Thread, "createdAt" | "updatedAt"> & {
@@ -45,7 +42,7 @@ function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
 
 export function getThreadSortTimestamp(
   thread: ThreadSortInput,
-  sortOrder: SidebarThreadSortOrder | Exclude<SidebarProjectSortOrder, "manual">,
+  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
 ): number {
   if (sortOrder === "created_at") {
     return toSortableTimestamp(thread.createdAt) ?? Number.NEGATIVE_INFINITY;
@@ -56,10 +53,9 @@ export function getThreadSortTimestamp(
 function compareThreadsByTimestamp<T extends Pick<Thread, "id"> & ThreadSortInput>(
   left: T,
   right: T,
-  sortOrder: SidebarThreadSortOrder,
 ): number {
-  const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
-  const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
+  const rightTimestamp = getLatestUserMessageTimestamp(right);
+  const leftTimestamp = getLatestUserMessageTimestamp(left);
   const byTimestamp =
     rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
   if (byTimestamp !== 0) return byTimestamp;
@@ -68,7 +64,6 @@ function compareThreadsByTimestamp<T extends Pick<Thread, "id"> & ThreadSortInpu
 
 export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
   threads: readonly T[],
-  sortOrder: SidebarThreadSortOrder,
 ): T[] {
   return threads.toSorted((left, right) => {
     const rightPinned = right.pinnedAt !== null && right.pinnedAt !== undefined;
@@ -77,7 +72,7 @@ export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
       return rightPinned ? 1 : -1;
     }
 
-    return compareThreadsByTimestamp(left, right, sortOrder);
+    return compareThreadsByTimestamp(left, right);
   });
 }
 
@@ -105,7 +100,7 @@ export function selectActiveAndRecentThreads<
 
   const byRecency = threads
     .filter((thread) => thread.archivedAt === null)
-    .toSorted((left, right) => compareThreadsByTimestamp(left, right, "updated_at"));
+    .toSorted(compareThreadsByTimestamp);
   const activeThreads = byRecency.filter((thread) => getThreadInFlightStatus(thread) !== null);
   const recentThreads = byRecency.filter((thread) => getThreadInFlightStatus(thread) === null);
   const remainingRecentThreadCount = Math.max(0, limit - activeThreads.length);
@@ -115,11 +110,10 @@ export function selectActiveAndRecentThreads<
 
 export function getLatestThreadForProject<
   T extends Pick<Thread, "id" | "projectId" | "archivedAt"> & ThreadSortInput,
->(threads: readonly T[], projectId: ProjectId, sortOrder: SidebarThreadSortOrder): T | null {
+>(threads: readonly T[], projectId: ProjectId): T | null {
   return (
     sortThreads(
       threads.filter((thread) => thread.projectId === projectId && thread.archivedAt === null),
-      sortOrder,
     )[0] ?? null
   );
 }

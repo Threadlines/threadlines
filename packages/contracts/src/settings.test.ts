@@ -34,6 +34,11 @@ describe("ClientSettings defaults", () => {
     expect(decodeClientSettings({}).diffWordWrap).toBe(true);
   });
 
+  it("ignores the retired thread sort preference in legacy profiles", () => {
+    const settings = decodeClientSettings({ sidebarThreadSortOrder: "created_at" });
+    expect(settings).not.toHaveProperty("sidebarThreadSortOrder");
+  });
+
   it("decodes cross-provider warning suppression patches", () => {
     const patch = decodeClientSettingsPatch({ suppressCrossProviderSwitchWarning: true });
     expect(patch.suppressCrossProviderSwitchWarning).toBe(true);

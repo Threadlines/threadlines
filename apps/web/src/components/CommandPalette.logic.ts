@@ -4,7 +4,6 @@ import {
   type FilesystemBrowseEntry,
   type MessageId,
 } from "@threadlines/contracts";
-import type { SidebarThreadSortOrder } from "@threadlines/contracts/settings";
 import {
   analyzeSearchText,
   parseSearchQuery,
@@ -147,7 +146,6 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   threads: ReadonlyArray<TThread>;
   activeThreadId?: Thread["id"];
   projectTitleById: ReadonlyMap<Project["id"], string>;
-  sortOrder: SidebarThreadSortOrder;
   icon: ReactNode | ((thread: TThread) => ReactNode);
   /** Optional content rendered inline before the title text per-thread. */
   renderLeadingContent?: (thread: TThread) => ReactNode;
@@ -156,10 +154,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   runThread: (thread: Pick<SidebarThreadSummary, "environmentId" | "id">) => Promise<void>;
   limit?: number;
 }): CommandPaletteActionItem[] {
-  const sortedThreads = sortThreads(
-    input.threads.filter((thread) => thread.archivedAt === null),
-    input.sortOrder,
-  );
+  const sortedThreads = sortThreads(input.threads.filter((thread) => thread.archivedAt === null));
   const visibleThreads =
     input.limit === undefined ? sortedThreads : sortedThreads.slice(0, input.limit);
 
