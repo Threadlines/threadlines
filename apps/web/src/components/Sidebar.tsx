@@ -410,12 +410,11 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
 /**
  * The sidebar is an inbox.
  *
- * One live list holding every thread that is still open, ordered by when it
- * was created and never reordered by activity, so a row keeps its place from
- * open until it is marked done. Below it, the Done tail, ordered by when the
- * work ended. Projects are a scope filter across the top rather than a tree:
- * every row names its own project, so nothing has to be traced back to a
- * group header.
+ * One live list holding every thread that is still open, with deliberate pins
+ * first and the rest following the user's thread sort preference. Below it,
+ * the Done tail, ordered by when the work ended. Projects are a scope filter
+ * across the top rather than a tree: every row names its own project, so
+ * nothing has to be traced back to a group header.
  */
 export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
@@ -434,6 +433,7 @@ export default function Sidebar() {
   const isOnSettings = pathname.startsWith("/settings");
   const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
@@ -801,6 +801,7 @@ export default function Sidebar() {
       entryByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))!;
     const liveEntries = sortInboxThreads(
       scoped.filter((entry) => !entry.isDone).map((entry) => entry.thread),
+      sidebarThreadSortOrder,
     ).map(lookup);
     const doneEntries = sortDoneThreads(
       scoped.filter((entry) => entry.isDone).map((entry) => entry.thread),
@@ -811,7 +812,7 @@ export default function Sidebar() {
         ),
     ).map(lookup);
     return { liveEntries, doneEntries };
-  }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue]);
+  }, [doneThreadOverlays, machineScopedEntries, scopedProjectKeyValue, sidebarThreadSortOrder]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and anything with a status stays put.

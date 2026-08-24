@@ -713,27 +713,31 @@ export function isThreadDone(
 }
 
 /**
- * The live list holds still. Creation order, newest first; activity never
- * reorders it, so a row keeps its place from open until it is marked done
- * and the thing you were reaching for never jumps. Pins are the one
- * exception, and they move only when you pin -- your action, your motion.
+ * Pins are a deliberate, stable group at the top. Everything else follows
+ * the user's thread sort preference; the default tracks their latest message
+ * rather than background agent activity.
  */
 export function sortInboxThreads<
-  T extends { readonly id: string; readonly createdAt: string; readonly pinnedAt: string | null },
->(threads: readonly T[]): T[] {
-  return [...threads].toSorted((left, right) => {
-    if ((left.pinnedAt !== null) !== (right.pinnedAt !== null)) {
-      return left.pinnedAt !== null ? -1 : 1;
-    }
-    if (left.pinnedAt !== null && right.pinnedAt !== null) {
+  T extends Pick<Thread, "id"> & ThreadSortInput & { readonly pinnedAt: string | null },
+>(threads: readonly T[], sortOrder: SidebarThreadSortOrder): T[] {
+  const pinned = threads
+    .filter((thread) => thread.pinnedAt !== null)
+    .toSorted((left, right) => {
       const byPin =
-        (toSortableTimestamp(right.pinnedAt) ?? 0) - (toSortableTimestamp(left.pinnedAt) ?? 0);
+        (toSortableTimestamp(right.pinnedAt ?? undefined) ?? 0) -
+        (toSortableTimestamp(left.pinnedAt ?? undefined) ?? 0);
       if (byPin !== 0) return byPin;
-    }
-    const byCreated =
-      (toSortableTimestamp(right.createdAt) ?? 0) - (toSortableTimestamp(left.createdAt) ?? 0);
-    return byCreated !== 0 ? byCreated : left.id.localeCompare(right.id);
-  });
+
+      const byCreated =
+        (toSortableTimestamp(right.createdAt) ?? 0) - (toSortableTimestamp(left.createdAt) ?? 0);
+      return byCreated !== 0 ? byCreated : left.id.localeCompare(right.id);
+    });
+  const unpinned = sortThreads(
+    threads.filter((thread) => thread.pinnedAt === null),
+    sortOrder,
+  );
+
+  return [...pinned, ...unpinned];
 }
 
 type DoneSortInput = Pick<

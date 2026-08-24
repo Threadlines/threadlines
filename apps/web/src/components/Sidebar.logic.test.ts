@@ -1239,16 +1239,42 @@ describe("merging device-local and server-held inbox state", () => {
 });
 
 describe("sortInboxThreads", () => {
-  it("holds creation order and floats pins, nothing else", () => {
+  it("keeps pins first and otherwise follows the thread sort preference", () => {
     const rows = [
-      { id: "old", createdAt: "2026-07-20T00:00:00.000Z", pinnedAt: null },
-      { id: "pinned", createdAt: "2026-07-18T00:00:00.000Z", pinnedAt: "2026-07-27T00:00:00.000Z" },
-      { id: "new", createdAt: "2026-07-27T00:00:00.000Z", pinnedAt: null },
+      {
+        id: ThreadId.make("old-recently-used"),
+        createdAt: "2026-07-20T00:00:00.000Z",
+        updatedAt: "2026-07-29T00:00:00.000Z",
+        latestUserMessageAt: "2026-07-29T00:00:00.000Z",
+        pinnedAt: null,
+      },
+      {
+        id: ThreadId.make("pinned"),
+        createdAt: "2026-07-18T00:00:00.000Z",
+        updatedAt: "2026-07-18T00:00:00.000Z",
+        latestUserMessageAt: "2026-07-18T00:00:00.000Z",
+        pinnedAt: "2026-07-27T00:00:00.000Z",
+      },
+      {
+        id: ThreadId.make("newer-less-recent"),
+        createdAt: "2026-07-27T00:00:00.000Z",
+        updatedAt: "2026-07-28T00:00:00.000Z",
+        latestUserMessageAt: "2026-07-28T00:00:00.000Z",
+        pinnedAt: null,
+      },
     ];
 
-    // Activity timestamps are deliberately absent from the input type: the
-    // list must be un-reorderable by anything but creation and pinning.
-    expect(sortInboxThreads(rows).map((row) => row.id)).toEqual(["pinned", "new", "old"]);
+    expect(sortInboxThreads(rows, "updated_at").map((row) => row.id)).toEqual([
+      "pinned",
+      "old-recently-used",
+      "newer-less-recent",
+    ]);
+
+    expect(sortInboxThreads(rows, "created_at").map((row) => row.id)).toEqual([
+      "pinned",
+      "newer-less-recent",
+      "old-recently-used",
+    ]);
   });
 });
 
