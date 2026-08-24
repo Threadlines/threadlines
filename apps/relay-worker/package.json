@@ -7,7 +7,7 @@
     "build": "tsc --noEmit",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "vp test run",
+    "test": "vp exec vp test run",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types src/worker-configuration.d.ts"
   },
