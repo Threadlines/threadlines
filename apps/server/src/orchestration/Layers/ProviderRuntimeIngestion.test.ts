@@ -864,6 +864,54 @@ describe("ProviderRuntimeIngestion", () => {
       expect((await harness.readModel()).threads[0]?.effectiveCwd).toBe(sessionCwd);
     });
 
+    it("does not reassert a subagent worktree after the user selects the project checkout", async () => {
+      const harness = await createClaudeHarness();
+      const worktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
+      harness.setRepositoryWorktrees([harness.workspaceRoot, worktree]);
+      harness.setSubagentWorktree("toolu_a", worktree);
+
+      startAgentTask(harness, "task-a", "toolu_a");
+      await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === worktree);
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.checkout.select",
+          commandId: CommandId.make("cmd-select-project-checkout"),
+          threadId: ThreadId.make("thread-1"),
+          branch: "main",
+          worktreePath: null,
+        }),
+      );
+      await waitForThread(
+        harness.readModel,
+        (thread) => thread.effectiveCwd === null && thread.effectiveCwdSource === "selection",
+      );
+
+      // Model a lookup that read the old state before the selection but only
+      // reached the serialized decider afterward.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.effective-cwd.set",
+          commandId: CommandId.make("cmd-stale-subagent-result"),
+          threadId: ThreadId.make("thread-1"),
+          effectiveCwd: worktree,
+          effectiveCwdSource: "subagent",
+          createdAt: "2026-01-01T00:00:05.000Z",
+        }),
+      );
+      await waitForThread(
+        harness.readModel,
+        (thread) => thread.effectiveCwd === null && thread.effectiveCwdSource === "selection",
+      );
+
+      completeTask(harness, "task-a");
+      await harness.drain();
+      await Effect.runPromise(Effect.sleep("100 millis"));
+      const selected = (await harness.readModel()).threads[0];
+      expect(selected?.effectiveCwd).toBeNull();
+      expect(selected?.effectiveCwdSource).not.toBe("subagent");
+    });
+
     it("stops following when the provider session exits", async () => {
       const harness = await createClaudeHarness();
       const worktree = `${harness.workspaceRoot}/.claude/worktrees/agent-a`;
@@ -1194,6 +1242,50 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session?.providerInstanceId).toBe("codex");
     expect(thread?.session?.status).toBe("ready");
     expect(thread?.session?.updatedAt).toBe(reboundAt);
+  });
+
+  it("settles an idle session restart instead of inventing a pending turn", async () => {
+    const harness = await createHarness();
+    const restartAt = "2026-01-01T00:00:01.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-idle-session-restart-starting"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "starting",
+          providerName: "codex",
+          providerSessionId: null,
+          providerThreadId: null,
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: restartAt,
+        },
+        createdAt: restartAt,
+      }),
+    );
+
+    harness.emit({
+      type: "session.started",
+      eventId: asEventId("evt-idle-session-restarted"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+      payload: {
+        message: "ready",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session?.status).toBe("ready");
+    expect(thread?.session?.activeTurnId).toBeNull();
+    expect(thread?.session?.updatedAt).toBe("2026-01-01T00:00:05.000Z");
   });
 
   it("keeps pending turn startup visible until the provider turn starts", async () => {

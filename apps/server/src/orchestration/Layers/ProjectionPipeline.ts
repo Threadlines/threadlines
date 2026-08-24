@@ -762,9 +762,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             effectiveCwd: event.payload.effectiveCwd,
             effectiveCwdSource:
-              event.payload.effectiveCwd === null
-                ? null
-                : (event.payload.effectiveCwdSource ?? "session"),
+              event.payload.effectiveCwdSource ??
+              (event.payload.effectiveCwd === null ? null : "session"),
             updatedAt: event.payload.updatedAt,
           });
           return;

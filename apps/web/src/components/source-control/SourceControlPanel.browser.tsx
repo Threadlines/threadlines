@@ -345,6 +345,7 @@ function seedWorktreeThread(worktreePath: string): void {
           },
         },
         threadIds: [threadId],
+        threadIdsByProjectId: { [projectId]: [threadId] },
         threadShellById: {
           [threadId]: {
             id: threadId,
@@ -369,6 +370,8 @@ function seedWorktreeThread(worktreePath: string): void {
         proposedPlanByThreadId: {},
         turnDiffIdsByThreadId: {},
         turnDiffSummaryByThreadId: {},
+        sidebarThreadSummaryById: {},
+        bootstrapComplete: true,
       },
     },
   } as never);
@@ -1900,7 +1903,7 @@ describe("SourceControlPanel changes", () => {
     }
   });
 
-  it("clears worktree context when switching a worktree target to the primary checkout", async () => {
+  it("can leave a dirty worktree for the primary checkout without rewriting either checkout", async () => {
     const projectCwd = "C:\\Users\\Ada\\Code\\Threadlines";
     const primaryWorktreePath = "c:/users/ada/code/threadlines/";
     const worktreePath = "C:\\Users\\Ada\\.threadlines\\worktrees\\feature-source-control";
@@ -1927,7 +1930,9 @@ describe("SourceControlPanel changes", () => {
     const switchRef: EnvironmentApi["vcs"]["switchRef"] = vi.fn(async (input) => ({
       refName: input.refName,
     }));
-    const onActiveBranchChange = vi.fn();
+    const dispatchCommand = vi.fn(async () => ({ sequence: 1 }));
+    const liveThreadId = ThreadId.make("source-control-live-thread");
+    seedWorktreeThread(worktreePath);
     const mounted = await renderPanel({
       target: {
         ...TARGET,
@@ -1935,9 +1940,28 @@ describe("SourceControlPanel changes", () => {
         cwd: worktreePath,
         worktreePath,
       },
-      status: makeStatus({ refName: "feature/source-control" }),
-      environmentApi: makeEnvironmentApi({ vcs: { listRefs, switchRef } }),
-      onActiveBranchChange,
+      status: makeStatus({
+        refName: "feature/source-control",
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [
+            {
+              path: "src/changed.ts",
+              indexStatus: null,
+              worktreeStatus: "modified",
+              insertions: 1,
+              deletions: 0,
+            },
+          ],
+          insertions: 1,
+          deletions: 0,
+        },
+      }),
+      activeThreadRef: scopeThreadRef(ENVIRONMENT_ID, liveThreadId),
+      environmentApi: makeEnvironmentApi({
+        vcs: { listRefs, switchRef },
+        orchestration: { dispatchCommand },
+      }),
     });
 
     try {
@@ -1951,12 +1975,79 @@ describe("SourceControlPanel changes", () => {
       await expect.element(mainMenuItem).toBeVisible();
       await mainMenuItem.click();
 
-      await vi.waitFor(() => {
-        expect(switchRef).toHaveBeenCalledWith({ cwd: primaryWorktreePath, refName: "main" });
-      });
-      expect(onActiveBranchChange).toHaveBeenCalledWith("main", null);
+      expect(switchRef).not.toHaveBeenCalled();
+      expect(dispatchCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "thread.checkout.select",
+          threadId: "source-control-live-thread",
+          branch: "main",
+          worktreePath: null,
+        }),
+      );
+      const selected =
+        useStore.getState().environmentStateById[ENVIRONMENT_ID]?.threadShellById[liveThreadId];
+      expect(selected).toMatchObject({ branch: "main", worktreePath: null, effectiveCwd: null });
     } finally {
       await mounted.cleanup();
+      resetSeededThreads();
+    }
+  });
+
+  it("restores the checkout when the shared selection command is rejected", async () => {
+    const worktreePath = "C:\\Users\\Ada\\.threadlines\\worktrees\\feature-source-control";
+    const listRefs: EnvironmentApi["vcs"]["listRefs"] = vi.fn(async () => ({
+      refs: [
+        {
+          name: "main",
+          current: false,
+          isDefault: true,
+          isRemote: false,
+          worktreePath: CWD,
+        },
+        {
+          name: "feature/source-control",
+          current: true,
+          isDefault: false,
+          isRemote: false,
+          worktreePath,
+        },
+      ],
+      isRepo: true,
+      hasPrimaryRemote: true,
+      nextCursor: null,
+      totalCount: 2,
+    }));
+    const dispatchCommand = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const liveThreadId = ThreadId.make("source-control-live-thread");
+    seedWorktreeThread(worktreePath);
+    const mounted = await renderPanel({
+      target: { ...TARGET, cwd: worktreePath, worktreePath },
+      status: makeStatus({ refName: "feature/source-control" }),
+      activeThreadRef: scopeThreadRef(ENVIRONMENT_ID, liveThreadId),
+      environmentApi: makeEnvironmentApi({
+        vcs: { listRefs },
+        orchestration: { dispatchCommand },
+      }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Branch: feature/source-control" }).click();
+      await page.getByText("Switch to").hover();
+      await page.getByRole("menuitem", { name: /main/ }).click();
+
+      await vi.waitFor(() => {
+        const restored =
+          useStore.getState().environmentStateById[ENVIRONMENT_ID]?.threadShellById[liveThreadId];
+        expect(restored).toMatchObject({ branch: null, worktreePath, effectiveCwd: null });
+      });
+      expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Couldn't move the thread" }),
+      );
+    } finally {
+      await mounted.cleanup();
+      resetSeededThreads();
     }
   });
 

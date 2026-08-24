@@ -19,13 +19,13 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { readEnvironmentApi } from "../environmentApi";
 import { gitBranchSearchInfiniteQueryOptions, gitQueryKeys } from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
-import { newCommandId } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { parsePullRequestReference } from "../pullRequestReference";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
 import { getVcsRefBadge } from "../worktreeCleanup";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { useThreadCheckoutSelection } from "../hooks/useThreadCheckoutSelection";
 import {
   annotateMissingCheckoutLabel,
   deriveLocalBranchNameFromRemoteRef,
@@ -122,7 +122,6 @@ export function BranchToolbarBranchSelector({
   const serverThreadSelector = useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]);
   const serverThread = useStore(serverThreadSelector);
   const serverSession = serverThread?.session ?? null;
-  const setThreadBranchAction = useStore((store) => store.setThreadBranch);
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
@@ -163,29 +162,20 @@ export function BranchToolbarBranchSelector({
       draftThreadEnvMode: draftThread?.envMode,
     });
 
+  const selectServerThreadCheckout = useThreadCheckoutSelection({
+    threadRef: serverThread ? threadRef : null,
+    thread: serverThread ?? null,
+    onBranchOverrideChange: onActiveThreadBranchOverrideChange,
+  });
+
   // ---------------------------------------------------------------------------
   // Thread branch mutation (colocated — only this component calls it)
   // ---------------------------------------------------------------------------
   const setThreadBranch = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       if (!activeThreadId || !activeProject) return;
-      const api = readEnvironmentApi(environmentId);
-      // Picking a checkout never stops a live session. It records the thread's
-      // target checkout for the next turn, exactly like the model picker
-      // records a model; the server cycles the runtime into the new checkout
-      // when that turn is dispatched.
-      if (api && hasServerThread) {
-        void api.orchestration.dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          branch,
-          worktreePath,
-        });
-      }
       if (hasServerThread) {
-        onActiveThreadBranchOverrideChange?.(branch);
-        setThreadBranchAction(threadRef, branch, worktreePath);
+        selectServerThreadCheckout(branch, worktreePath);
         return;
       }
       const nextDraftEnvMode = resolveDraftEnvModeAfterBranchChange({
@@ -205,8 +195,7 @@ export function BranchToolbarBranchSelector({
       activeProject,
       activeWorktreePath,
       hasServerThread,
-      onActiveThreadBranchOverrideChange,
-      setThreadBranchAction,
+      selectServerThreadCheckout,
       setDraftThreadContext,
       draftId,
       threadRef,

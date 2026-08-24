@@ -730,6 +730,9 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly excludeContextSeedMessageId?: MessageId;
+      /** Keep the projected startup state until a requested turn reaches the
+       *  provider. Idle session recycling must settle back to ready. */
+      readonly preservePendingTurnStartup?: boolean;
       /** Same-driver native fork request for a fresh session start. Falls
        *  back to a plain start (context-seed seeding) when the fork fails. */
       readonly forkFrom?: ProviderSessionForkFrom;
@@ -923,7 +926,9 @@ const make = Effect.gen(function* () {
         const latestSession = latestThread.session;
         const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
         const shouldPreservePendingTurnStartup =
-          latestSession?.status === "starting" && mappedStatus === "ready";
+          options?.preservePendingTurnStartup === true &&
+          latestSession?.status === "starting" &&
+          mappedStatus === "ready";
         // Provider-side identifiers can arrive through runtime ingestion or
         // directly on the started session. Prefer the durable projection, but
         // let the runtime heal an older missing value. Projected identifiers
@@ -1192,6 +1197,7 @@ const make = Effect.gen(function* () {
     const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       excludeContextSeedMessageId: input.messageId,
+      preservePendingTurnStartup: true,
       ...(forkFrom !== undefined ? { forkFrom } : {}),
     });
     const nativeForkApplied = ensured.nativeForkApplied;

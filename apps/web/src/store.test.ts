@@ -25,6 +25,7 @@ import {
   selectThreadExistsByRef,
   selectSidebarThreadsForProjectRef,
   restoreThreadCheckout,
+  selectThreadCheckout,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
   type AppState,
@@ -427,6 +428,22 @@ describe("thread selection memoization", () => {
 });
 
 describe("setThreadBranch", () => {
+  it("an explicit main selection replaces a followed worktree immediately", () => {
+    const thread = makeThread({
+      branch: "main",
+      worktreePath: null,
+      effectiveCwd: "/tmp/project-worktree",
+    });
+    const state = makeState(thread);
+    const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
+
+    const next = selectThreadCheckout(state, threadRef, "main", null);
+    const shell = environmentStateOf(next, localEnvironmentId).threadShellById[thread.id];
+    expect(shell?.branch).toBe("main");
+    expect(shell?.worktreePath).toBeNull();
+    expect(shell?.effectiveCwd).toBeNull();
+  });
+
   it("updates only the scoped thread environment", () => {
     const sharedThreadId = ThreadId.make("thread-shared");
     const localThread = makeThread({
@@ -477,24 +494,31 @@ describe("setThreadBranch", () => {
     const thread = makeThread({
       branch: "feature-a",
       worktreePath: "/tmp/worktree-a",
+      effectiveCwd: "/tmp/worktree-a",
       session,
     });
     const state = makeState(thread);
     const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
 
-    const afterOptimistic = setThreadBranch(state, threadRef, "main", null);
+    const afterOptimistic = selectThreadCheckout(state, threadRef, "main", null);
     expect(
       environmentStateOf(afterOptimistic, localEnvironmentId).threadSessionById[thread.id],
+    ).toBeNull();
+    expect(
+      environmentStateOf(afterOptimistic, localEnvironmentId).threadShellById[thread.id]
+        ?.effectiveCwd,
     ).toBeNull();
 
     const restored = restoreThreadCheckout(afterOptimistic, threadRef, {
       branch: "feature-a",
       worktreePath: "/tmp/worktree-a",
+      effectiveCwd: "/tmp/worktree-a",
       session,
     });
     const shell = environmentStateOf(restored, localEnvironmentId).threadShellById[thread.id];
     expect(shell?.branch).toBe("feature-a");
     expect(shell?.worktreePath).toBe("/tmp/worktree-a");
+    expect(shell?.effectiveCwd).toBe("/tmp/worktree-a");
     expect(environmentStateOf(restored, localEnvironmentId).threadSessionById[thread.id]).toEqual(
       session,
     );

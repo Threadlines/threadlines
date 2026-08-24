@@ -443,6 +443,26 @@ it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   }),
 );
 
+it.effect("decodes an explicit thread checkout selection", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.checkout.select",
+      commandId: "cmd-checkout-select",
+      threadId: "thread-1",
+      branch: "main",
+      worktreePath: null,
+    });
+
+    assert.deepStrictEqual(parsed, {
+      type: "thread.checkout.select",
+      commandId: "cmd-checkout-select",
+      threadId: "thread-1",
+      branch: "main",
+      worktreePath: null,
+    });
+  }),
+);
+
 it.effect("decodes thread archive, unarchive, pin, and unpin commands", () =>
   Effect.gen(function* () {
     const archive = yield* decodeOrchestrationCommand({

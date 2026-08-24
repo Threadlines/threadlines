@@ -2370,11 +2370,34 @@ export function setThreadBranch(
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 
+/** Optimistically applies the user's checkout selection, including the cwd
+ * surfaces should show while the provider catches up. */
+export function selectThreadCheckout(
+  state: AppState,
+  threadRef: ScopedThreadRef,
+  branch: string | null,
+  worktreePath: string | null,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, threadRef.environmentId);
+  const nextEnvironmentState = updateThreadState(environmentState, threadRef.threadId, (thread) => {
+    const cwdChanged = thread.worktreePath !== worktreePath;
+    return {
+      ...thread,
+      branch,
+      worktreePath,
+      // `effectiveCwd` is observed runtime state, not the configured checkout.
+      // The server keeps a separate selection marker while old work settles.
+      effectiveCwd: null,
+      ...(cwdChanged ? { session: null } : {}),
+    };
+  });
+  return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
+}
+
 /**
  * Restores a checkout snapshot captured before an optimistic
- * `setThreadBranch`, including the session that call clears when the cwd
- * changes. Used to roll back a thread.meta.update dispatch that never
- * reached the server; plain `setThreadBranch` cannot bring the session back.
+ * a branch/checkout update, including the session an optimistic cwd change
+ * clears and the effective cwd an explicit selection replaces.
  */
 export function restoreThreadCheckout(
   state: AppState,
@@ -2383,6 +2406,7 @@ export function restoreThreadCheckout(
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly session: ThreadSession | null;
+    readonly effectiveCwd?: string | null;
   },
 ): AppState {
   const nextEnvironmentState = updateThreadState(
@@ -2393,6 +2417,7 @@ export function restoreThreadCheckout(
       branch: snapshot.branch,
       worktreePath: snapshot.worktreePath,
       session: snapshot.session,
+      ...(snapshot.effectiveCwd !== undefined ? { effectiveCwd: snapshot.effectiveCwd } : {}),
     }),
   );
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
@@ -2418,12 +2443,18 @@ interface AppStore extends AppState {
     branch: string | null,
     worktreePath: string | null,
   ) => void;
+  selectThreadCheckout: (
+    threadRef: ScopedThreadRef,
+    branch: string | null,
+    worktreePath: string | null,
+  ) => void;
   restoreThreadCheckout: (
     threadRef: ScopedThreadRef,
     snapshot: {
       readonly branch: string | null;
       readonly worktreePath: string | null;
       readonly session: ThreadSession | null;
+      readonly effectiveCwd?: string | null;
     },
   ) => void;
 }
@@ -2447,6 +2478,8 @@ export const useStore = create<AppStore>((set) => ({
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadRef, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),
+  selectThreadCheckout: (threadRef, branch, worktreePath) =>
+    set((state) => selectThreadCheckout(state, threadRef, branch, worktreePath)),
   restoreThreadCheckout: (threadRef, snapshot) =>
     set((state) => restoreThreadCheckout(state, threadRef, snapshot)),
 }));

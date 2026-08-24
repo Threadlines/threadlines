@@ -107,10 +107,11 @@ import {
   useGitStatus,
 } from "~/lib/gitStatusState";
 import { copyTextToClipboard } from "~/lib/clipboard";
-import { cn, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
+import { cn, newThreadId, randomUUID } from "~/lib/utils";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useSettings } from "~/hooks/useSettings";
 import { useCheckoutRecovery } from "~/hooks/useCheckoutRecovery";
+import { useThreadCheckoutSelection } from "~/hooks/useThreadCheckoutSelection";
 import { readLocalApi } from "~/localApi";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import {
@@ -1471,6 +1472,9 @@ function getBranchActionDisabledReason(input: {
   readonly isBusy: boolean;
   readonly action: "switch" | "create" | "merge";
   readonly repositorySafetyReason?: string | null;
+  /** Cross-checkout picks do not rewrite this working tree, so keep the menu
+   *  reachable and validate the selected ref in the handler. */
+  readonly allowDirtyCheckoutExit?: boolean;
 }): string | null {
   if (input.repositorySafetyReason) {
     return input.repositorySafetyReason;
@@ -1482,7 +1486,7 @@ function getBranchActionDisabledReason(input: {
     return "No Git repository.";
   }
   if (input.action === "switch") {
-    if (input.status.hasWorkingTreeChanges) {
+    if (input.status.hasWorkingTreeChanges && input.allowDirtyCheckoutExit !== true) {
       return "Commit or stash changes before switching branches.";
     }
   }
@@ -1816,14 +1820,14 @@ function SourceControlBranchMenu({
   readonly refreshPanel: () => void;
 }) {
   const queryClient = useQueryClient();
-  const setThreadBranch = useStore((store) => store.setThreadBranch);
-  const restoreThreadCheckout = useStore((store) => store.restoreThreadCheckout);
-  // Identifies the newest optimistic checkout dispatch so a stale rejection
-  // cannot roll back state a later dispatch already replaced.
-  const checkoutDispatchIdRef = useRef(0);
-  const activeThreadSession =
-    useStore(useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]))
-      ?.session ?? null;
+  const activeThread = useStore(
+    useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]),
+  );
+  const activeThreadSession = activeThread?.session ?? null;
+  const selectServerThreadCheckout = useThreadCheckoutSelection({
+    threadRef: activeThread ? activeThreadRef : null,
+    thread: activeThread ?? null,
+  });
   const [pendingWorkingTreeSwitchRef, setPendingWorkingTreeSwitchRef] = useState<VcsRef | null>(
     null,
   );
@@ -1885,7 +1889,11 @@ function SourceControlBranchMenu({
     status,
     isBusy: isBusy || checkoutMutation.isPending || createBranchMutation.isPending,
     action: "switch",
-    repositorySafetyReason,
+    // Picking a branch that already has another checkout only changes thread
+    // metadata. The handler still enforces repository safety before any Git
+    // mutation inside the checkout currently shown here.
+    repositorySafetyReason: null,
+    allowDirtyCheckoutExit: true,
   });
   const createDisabledReason = getBranchActionDisabledReason({
     status,
@@ -1909,71 +1917,16 @@ function SourceControlBranchMenu({
       if (!activeThreadRef) {
         return;
       }
-      const api = readEnvironmentApi(target.environmentId);
-      if (!api) {
-        // No connection means the switch cannot happen at all; applying the
-        // optimistic update anyway would leave the panel lying indefinitely.
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Couldn't move the thread",
-            description: "Not connected to the environment. Try again once it reconnects.",
-          }),
-        );
-        return;
-      }
-      const snapshot = {
-        branch: currentBranch,
-        worktreePath: target.worktreePath,
-        session: activeThreadSession,
-      };
-      checkoutDispatchIdRef.current += 1;
-      const dispatchId = checkoutDispatchIdRef.current;
-      void api.orchestration
-        .dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: activeThreadRef.threadId,
-          branch,
-          worktreePath,
-        })
-        .catch(() => {
-          // Roll the optimistic update back to what the panel showed before —
-          // including the session the optimistic switch cleared. A switch
-          // that silently stays put is this panel's worst failure mode, and
-          // one that lies about having happened is the second. A stale
-          // rejection never overwrites a newer dispatch's state.
-          if (checkoutDispatchIdRef.current === dispatchId) {
-            restoreThreadCheckout(activeThreadRef, snapshot);
-          }
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Couldn't move the thread",
-              description: "The checkout switch didn't reach the server. Try again.",
-            }),
-          );
-        });
-      setThreadBranch(activeThreadRef, branch, worktreePath);
+      selectServerThreadCheckout(branch, worktreePath);
     },
-    [
-      activeThreadRef,
-      activeThreadSession,
-      currentBranch,
-      onActiveBranchChange,
-      restoreThreadCheckout,
-      setThreadBranch,
-      target.environmentId,
-      target.worktreePath,
-    ],
+    [activeThreadRef, onActiveBranchChange, selectServerThreadCheckout, target.worktreePath],
   );
 
   /**
    * Points the thread at a checkout. Nothing runs in git: the thread records
-   * where its next turn belongs, and the server cycles the runtime there when
-   * that turn is dispatched. A pick that leaves the live session in a different
-   * checkout is queued, not applied, and the composer chip saying so is easy to
-   * miss, so it is announced here too.
+   * where its next turn belongs, and the server cycles an idle runtime there as
+   * soon as it is safe. An active turn finishes first, so that queued move is
+   * announced here too.
    */
   const applyCheckoutSwitch = useCallback(
     (branch: string | null, nextWorktreePath: string | null) => {
@@ -2021,6 +1974,10 @@ function SourceControlBranchMenu({
         activeWorktreePath: target.worktreePath,
         refName: ref,
       });
+      if (selectionTarget.reuseExistingWorktree) {
+        applyCheckoutSwitch(ref.name, selectionTarget.nextWorktreePath);
+        return;
+      }
       const promise = checkoutMutation
         .mutateAsync({ cwd: selectionTarget.checkoutCwd, refName: ref.name })
         .then((result) => {
@@ -2061,15 +2018,19 @@ function SourceControlBranchMenu({
 
   const runSwitchRef = useCallback(
     (ref: VcsRef) => {
-      if (repositorySafetyReason) {
-        notifyRepositorySafetyBlocked(repositorySafetyReason);
-        return;
-      }
       const selectionTarget = resolveBranchSelectionTarget({
         activeProjectCwd: target.projectCwd,
         activeWorktreePath: target.worktreePath,
         refName: ref,
       });
+      if (!selectionTarget.reuseExistingWorktree && repositorySafetyReason) {
+        notifyRepositorySafetyBlocked(repositorySafetyReason);
+        return;
+      }
+      if (!selectionTarget.reuseExistingWorktree && status?.hasWorkingTreeChanges) {
+        notifyRepositorySafetyBlocked("Commit or stash changes before switching branches.");
+        return;
+      }
       // Switching a branch inside the checkout an agent is working in swaps
       // its files mid-turn. Selecting a ref that lives in another checkout is
       // a checkout switch instead, and the next turn picks that up on its own.
@@ -2084,6 +2045,7 @@ function SourceControlBranchMenu({
       executeSwitchRef,
       notifyRepositorySafetyBlocked,
       repositorySafetyReason,
+      status?.hasWorkingTreeChanges,
       target.projectCwd,
       target.worktreePath,
     ],
