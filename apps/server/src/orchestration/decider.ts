@@ -637,6 +637,67 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ];
     }
 
+    case "thread.checkout.select": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: thread.projectId,
+      });
+      const worktreePath = normalizeWorktreePath(command.worktreePath, project.workspaceRoot);
+      const occurredAt = yield* nowIso;
+      const metaUpdatedEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          branch: command.branch,
+          worktreePath,
+          updatedAt: occurredAt,
+        },
+      } as const;
+      const hasLiveWork =
+        thread.session?.status === "starting" ||
+        thread.session?.status === "running" ||
+        thread.session?.activeTurnId != null ||
+        (thread.session?.pendingBackgroundTaskCount ?? 0) > 0;
+      const selectionAuthorityRequired = thread.effectiveCwd !== null || hasLiveWork;
+      if (!selectionAuthorityRequired && thread.effectiveCwdSource !== "selection") {
+        return metaUpdatedEvent;
+      }
+      if (selectionAuthorityRequired && thread.effectiveCwdSource === "selection") {
+        return metaUpdatedEvent;
+      }
+      return [
+        metaUpdatedEvent,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          causationEventId: metaUpdatedEvent.eventId,
+          type: "thread.effective-cwd-set",
+          payload: {
+            threadId: command.threadId,
+            effectiveCwd: null,
+            ...(selectionAuthorityRequired ? { effectiveCwdSource: "selection" as const } : {}),
+            updatedAt: occurredAt,
+          },
+        },
+      ];
+    }
+
     case "thread.runtime-mode.set": {
       yield* requireThread({
         readModel,
@@ -1164,6 +1225,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: thread.projectId,
+      });
       const sessionSetEvent = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1184,13 +1250,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // panels at the checkout the user already moved away from. A session
       // stopping in its own configured checkout keeps its effectiveCwd, so a
       // cwd-follow into a subfolder still reads correctly after a stop.
-      const configuredCheckout = thread.worktreePath ?? null;
+      const configuredCheckout = thread.worktreePath ?? project.workspaceRoot;
       const sessionCheckout = command.session.checkoutCwd ?? null;
       const checkoutDiffers =
         configuredCheckout === null || sessionCheckout === null
           ? configuredCheckout !== sessionCheckout
           : !areFilesystemPathsEqual(configuredCheckout, sessionCheckout);
-      if (command.session.status !== "stopped" || !checkoutDiffers || thread.effectiveCwd == null) {
+      const selectionSettled =
+        thread.effectiveCwdSource === "selection" &&
+        command.session.status !== "starting" &&
+        command.session.status !== "running" &&
+        command.session.activeTurnId === null &&
+        (command.session.pendingBackgroundTaskCount ?? 0) === 0 &&
+        (command.session.status === "stopped" || !checkoutDiffers);
+      const stoppedCheckoutMove =
+        command.session.status === "stopped" && checkoutDiffers && thread.effectiveCwd !== null;
+      if (!selectionSettled && !stoppedCheckoutMove) {
         return sessionSetEvent;
       }
       return [
@@ -1238,11 +1313,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.effective-cwd.set": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // A lookup can finish after a user has explicitly moved the thread.
+      // Re-check authority here, inside the serialized decider, so that stale
+      // subagent inference cannot win the race after its earlier snapshot.
+      if (command.effectiveCwdSource === "subagent" && thread.effectiveCwdSource === "selection") {
+        const retainedAt = yield* nowIso;
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: retainedAt,
+            commandId: command.commandId,
+            metadata: {},
+          }),
+          type: "thread.effective-cwd-set",
+          payload: {
+            threadId: command.threadId,
+            effectiveCwd: null,
+            effectiveCwdSource: "selection",
+            updatedAt: retainedAt,
+          },
+        };
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",

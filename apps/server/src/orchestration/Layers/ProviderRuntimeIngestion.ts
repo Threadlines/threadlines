@@ -2504,13 +2504,20 @@ const make = Effect.gen(function* () {
               return activeTurnId !== null ? "running" : "ready";
           }
         })();
-        const shouldPreservePendingTurnStartup =
+        const canPreservePendingTurnStartup =
           thread.session?.status === "starting" &&
           nextActiveTurnId === null &&
           runtimeStatus === "ready" &&
           (event.type === "session.started" ||
             event.type === "thread.started" ||
             event.type === "session.state.changed");
+        const shouldPreservePendingTurnStartup = canPreservePendingTurnStartup
+          ? Option.isSome(
+              yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+                threadId: thread.id,
+              }),
+            )
+          : false;
         const status = shouldPreservePendingTurnStartup ? "starting" : runtimeStatus;
         const sessionUpdatedAt = shouldPreservePendingTurnStartup
           ? (thread.session?.updatedAt ?? now)

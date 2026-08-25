@@ -166,6 +166,9 @@ describe("ProviderCommandReactor", () => {
     readonly failNativeForkStart?: boolean;
     readonly failRealtimeStart?: boolean;
     readonly interruptTurn?: ProviderServiceShape["interruptTurn"];
+    /** Mirror the provider lifecycle's projected `starting` state while a
+     *  replacement session is being bound. */
+    readonly projectStartingDuringRestart?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -184,6 +187,8 @@ describe("ProviderCommandReactor", () => {
       model: "gpt-5-codex",
     };
     const failNativeForkStart = input?.failNativeForkStart === true;
+    const projectStartingDuringRestart = input?.projectStartingDuringRestart === true;
+    let projectRestartStarting: ((session: ProviderSession) => Effect.Effect<void>) | null = null;
     const startSession = vi.fn(
       (_: unknown, input: unknown): Effect.Effect<ProviderSession, ProviderAdapterRequestError> => {
         if (
@@ -254,7 +259,11 @@ describe("ProviderCommandReactor", () => {
           updatedAt: now,
         };
         runtimeSessions.push(session);
-        return Effect.succeed(session);
+        const projectStarting =
+          projectStartingDuringRestart && sessionIndex > 1 && projectRestartStarting
+            ? projectRestartStarting(session)
+            : Effect.void;
+        return projectStarting.pipe(Effect.as(session));
       },
     );
     const sendTurn = vi.fn((_: unknown) =>
@@ -507,6 +516,28 @@ describe("ProviderCommandReactor", () => {
     runtime = ManagedRuntime.make(layer);
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    projectRestartStarting = (session) =>
+      engine
+        .dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-project-restart-starting-${nextSessionIndex}`),
+          threadId: session.threadId,
+          session: {
+            threadId: session.threadId,
+            status: "starting",
+            providerName: session.provider,
+            providerInstanceId: session.providerInstanceId,
+            providerSessionId: null,
+            providerThreadId: session.providerThreadId ?? null,
+            runtimeMode: session.runtimeMode,
+            checkoutCwd: session.cwd ?? null,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        })
+        .pipe(Effect.orDie, Effect.asVoid);
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -2506,7 +2537,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("applies a checkout switch immediately when the session is idle", async () => {
-    const harness = await createHarness();
+    const harness = await createHarness({ projectStartingDuringRestart: true });
     const threadId = ThreadId.make("thread-1");
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -2565,6 +2596,15 @@ describe("ProviderCommandReactor", () => {
     });
     expect(harness.sendTurn.mock.calls.length).toBe(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
+    await waitFor(async () => {
+      const current = await harness.readModel();
+      const restarted = current.threads.find((thread) => thread.id === threadId)?.session;
+      return (
+        restarted?.status === "ready" &&
+        restarted.activeTurnId === null &&
+        restarted.checkoutCwd === PROJECT_WORKTREE_ROOT
+      );
+    });
   });
 
   it("keeps a running turn in its original checkout when a follow-up arrives after a checkout switch", async () => {

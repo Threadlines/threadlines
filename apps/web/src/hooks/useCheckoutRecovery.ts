@@ -123,9 +123,10 @@ export function useCheckoutRecovery(input: {
     // into it on the next turn.
     void run((api) =>
       api.orchestration.dispatchCommand({
-        type: "thread.meta.update",
+        type: "thread.checkout.select",
         commandId: newCommandId(),
         threadId,
+        branch: null,
         worktreePath: null,
       }),
     );

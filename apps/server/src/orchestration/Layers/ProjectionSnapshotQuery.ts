@@ -25,6 +25,7 @@ import {
   type OrchestrationThreadDiffStat,
   type OrchestrationThreadDoneOverride,
   type OrchestrationThreadShell,
+  type ThreadEffectiveCwdSource,
   ModelSelection,
   OrchestrationThreadGoal,
   ProjectId,
@@ -110,6 +111,15 @@ const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
   }),
 );
+
+function projectEffectiveCwdSource(input: {
+  readonly effectiveCwd: string | null;
+  readonly effectiveCwdSource?: ThreadEffectiveCwdSource | null | undefined;
+}): { readonly effectiveCwdSource?: ThreadEffectiveCwdSource } {
+  const source =
+    input.effectiveCwdSource ?? (input.effectiveCwd === null ? null : ("session" as const));
+  return source === null ? {} : { effectiveCwdSource: source };
+}
 /**
  * Per-thread rollup of the turn file summaries the checkpoints projector
  * writes into `projection_turns.checkpoint_files_json`. Aggregated in SQL so a
@@ -1688,9 +1698,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 branch: row.branch,
                 worktreePath: row.worktreePath,
                 effectiveCwd: row.effectiveCwd,
-                ...(row.effectiveCwd === null
-                  ? {}
-                  : { effectiveCwdSource: row.effectiveCwdSource ?? "session" }),
+                ...projectEffectiveCwdSource(row),
                 goal: row.goal,
                 voiceActive: (row.voiceActive ?? 0) > 0,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -1933,9 +1941,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   branch: row.branch,
                   worktreePath: row.worktreePath,
                   effectiveCwd: row.effectiveCwd,
-                  ...(row.effectiveCwd === null
-                    ? {}
-                    : { effectiveCwdSource: row.effectiveCwdSource ?? "session" }),
+                  ...projectEffectiveCwdSource(row),
                   goal: row.goal,
                   voiceActive: (row.voiceActive ?? 0) > 0,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -2084,9 +2090,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       branch: row.branch,
                       worktreePath: row.worktreePath,
                       effectiveCwd: row.effectiveCwd,
-                      ...(row.effectiveCwd === null
-                        ? {}
-                        : { effectiveCwdSource: row.effectiveCwdSource ?? "session" }),
+                      ...projectEffectiveCwdSource(row),
                       goal: row.goal,
                       voiceActive: (row.voiceActive ?? 0) > 0,
                       latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -2238,9 +2242,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     branch: row.branch,
                     worktreePath: row.worktreePath,
                     effectiveCwd: row.effectiveCwd,
-                    ...(row.effectiveCwd === null
-                      ? {}
-                      : { effectiveCwdSource: row.effectiveCwdSource ?? "session" }),
+                    ...projectEffectiveCwdSource(row),
                     goal: row.goal,
                     voiceActive: (row.voiceActive ?? 0) > 0,
                     latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -2521,9 +2523,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
         effectiveCwd: threadRow.value.effectiveCwd,
-        ...(threadRow.value.effectiveCwd === null
-          ? {}
-          : { effectiveCwdSource: threadRow.value.effectiveCwdSource ?? "session" }),
+        ...projectEffectiveCwdSource(threadRow.value),
         goal: threadRow.value.goal,
         voiceActive: (threadRow.value.voiceActive ?? 0) > 0,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
@@ -2635,9 +2635,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
         effectiveCwd: threadRow.value.effectiveCwd,
-        ...(threadRow.value.effectiveCwd === null
-          ? {}
-          : { effectiveCwdSource: threadRow.value.effectiveCwdSource ?? "session" }),
+        ...projectEffectiveCwdSource(threadRow.value),
         goal: threadRow.value.goal,
         voiceActive: (threadRow.value.voiceActive ?? 0) > 0,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,

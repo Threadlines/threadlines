@@ -460,11 +460,11 @@ export type ThreadForkSeedOutcomePayload = typeof ThreadForkSeedOutcomePayload.T
 
 /**
  * Payload of the `thread.checkout.switch-deferred` activity. A queued checkout
- * switch normally applies by cycling the provider session when the next turn
- * dispatches, but the session's background tasks (subagents, backgrounded
- * commands) live inside that runtime and would be killed. When any are still
- * running the turn runs in the session's current checkout instead and the
- * switch stays queued; this activity records that once per deferral streak.
+ * switch applies as soon as the provider session is idle, but the session's
+ * background tasks (subagents, backgrounded commands) live inside that runtime
+ * and would be killed. While any are still running, turns stay in the current
+ * checkout and the switch remains queued until those tasks settle; this
+ * activity records that once per deferral streak.
  */
 export const ThreadCheckoutSwitchDeferredActivityKind = "thread.checkout.switch-deferred";
 export const ThreadCheckoutSwitchDeferredPayload = Schema.Struct({
@@ -725,7 +725,7 @@ export const OrchestrationLatestTurn = Schema.Struct({
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 /** Where a thread's `effectiveCwd` came from. See OrchestrationThread. */
-export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent"]);
+export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent", "selection"]);
 export type ThreadEffectiveCwdSource = typeof ThreadEffectiveCwdSource.Type;
 
 export const OrchestrationThread = Schema.Struct({
@@ -749,12 +749,12 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   /**
-   * Why `effectiveCwd` holds what it holds. `session` means the provider
-   * session itself reported working there; `subagent` means it was inferred
-   * from an isolated subagent's checkout. Inference must never overwrite or
-   * clear a session-sourced value, so this has to outlive a server restart.
-   * Clients do not need to read it — the same chip renders either way.
-   * Always null while `effectiveCwd` is null.
+   * Why the effective-cwd state is authoritative. `session` means the provider
+   * reported the divergent cwd; `subagent` means it was inferred from an
+   * isolated subagent; `selection` is a temporary marker that the user chose
+   * the configured checkout while prior work was still active. That marker has
+   * a null `effectiveCwd`, so configured and observed cwd remain distinct.
+   * Clients do not need to read it — only server-side inference does.
    */
   effectiveCwdSource: Schema.optional(Schema.NullOr(ThreadEffectiveCwdSource)),
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
@@ -1105,6 +1105,19 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
+/**
+ * Select the checkout a thread should show and use for its next safe turn.
+ * Kept separate from generic metadata updates so provider-driven branch/title
+ * bookkeeping cannot accidentally override an explicit user selection.
+ */
+const ThreadCheckoutSelectCommand = Schema.Struct({
+  type: Schema.Literal("thread.checkout.select"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+});
+
 const ThreadRuntimeModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.runtime-mode.set"),
   commandId: CommandId,
@@ -1345,6 +1358,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadMetaUpdateCommand,
+  ThreadCheckoutSelectCommand,
   ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -1379,6 +1393,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadMetaUpdateCommand,
+  ThreadCheckoutSelectCommand,
   ClientThreadForkCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -1425,8 +1440,8 @@ const ThreadEffectiveCwdSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
-  /** Omitted means `session`, which is what every emitter did before subagent
-   *  worktree inference existed. Ignored when `effectiveCwd` is null. */
+  /** Omitted means `session` for a non-null cwd. Subagent emitters include
+   *  their source even when clearing so stale inference can be rejected. */
   effectiveCwdSource: Schema.optional(ThreadEffectiveCwdSource),
   createdAt: IsoDateTime,
 });
@@ -1841,8 +1856,8 @@ export const ThreadSessionSetPayload = Schema.Struct({
 export const ThreadEffectiveCwdSetPayload = Schema.Struct({
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
-  /** Absent on events recorded before subagent worktree inference shipped;
-   *  those were all session-sourced. */
+  /** Absent on events recorded before cwd source tracking shipped; those were
+   *  all session-sourced. */
   effectiveCwdSource: Schema.optional(ThreadEffectiveCwdSource),
   updatedAt: IsoDateTime,
 });

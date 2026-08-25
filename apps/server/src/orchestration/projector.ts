@@ -660,7 +660,7 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             effectiveCwd: payload.effectiveCwd,
             effectiveCwdSource:
-              payload.effectiveCwd === null ? null : (payload.effectiveCwdSource ?? "session"),
+              payload.effectiveCwdSource ?? (payload.effectiveCwd === null ? null : "session"),
             updatedAt: event.occurredAt,
           }),
         };
