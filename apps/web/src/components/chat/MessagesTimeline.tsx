@@ -31,6 +31,7 @@ import {
   deriveTimelineEntries,
   formatElapsed,
   formatSubagentDisplayName,
+  isActiveSubagentStatus,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
   type SubagentProgressItem,
@@ -178,6 +179,10 @@ interface TimelineRowSharedState {
   proposedPlanState: TimelineProposedPlanState | null;
   turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
+  /** True while the working anchor at the tail is mounted. The per-agent live
+   *  status rows render there and only there; a receipt keeps its compact
+   *  tracker chip but must not repeat those rows above the exchange. */
+  anchorOwnsLiveAgents: boolean;
 }
 
 /** The turn's spawned agents, summarized on the turn's activity row. */
@@ -662,6 +667,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   turnAgents = null,
   onOpenAgentsPanel = null,
 }: MessagesTimelineProps) {
+  const liveAgentCount = useMemo(
+    () =>
+      (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
+    [turnAgents?.subagents],
+  );
   const rawRows = useMemo(
     () =>
       deriveMessagesTimelineRows({
@@ -669,6 +679,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         completionDividerBeforeEntryId,
         completionSummary,
         isWorking,
+        liveAgentCount,
         activeStatusLabel,
         activeTurnInProgress,
         activeTurnId: activeTurnId ?? null,
@@ -681,6 +692,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionDividerBeforeEntryId,
       completionSummary,
       isWorking,
+      liveAgentCount,
       activeStatusLabel,
       activeTurnInProgress,
       activeTurnId,
@@ -690,6 +702,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
   const resolvedProviderAuthReconnectIds = useMemo(
     () => deriveResolvedProviderAuthReconnectIds(rows),
     [rows],
@@ -1291,6 +1304,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      anchorOwnsLiveAgents,
     }),
     [
       timestampFormat,
@@ -1320,6 +1334,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      anchorOwnsLiveAgents,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -3086,7 +3101,7 @@ function ActivityReceipt({
   /** Null when the group has nothing to expand, which drops the toggle. */
   onToggle: (() => void) | null;
 }) {
-  const { onOpenAgentsPanel } = use(TimelineRowCtx);
+  const { onOpenAgentsPanel, anchorOwnsLiveAgents } = use(TimelineRowCtx);
   const summary = summarizeActivityReceipt(entries);
   const actionCount = entries.length;
   const duration = formatActivityDuration(durationEntries);
@@ -3136,7 +3151,7 @@ function ActivityReceipt({
             </>
           ) : null}
         </p>
-        <LiveAgentRoster roster={liveAgentRoster} />
+        {anchorOwnsLiveAgents ? null : <LiveAgentRoster roster={liveAgentRoster} />}
         {summary ? (
           <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
         ) : null}

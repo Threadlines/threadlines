@@ -4025,7 +4025,6 @@ describe("subagent.metadata promoted-run lifecycle", () => {
     createdAt: "2026-08-16T22:45:20.385Z",
     payload: {
       callId: "toolu_01VFJG1vAyYoJLjP3U38mFfk",
-      agentThreadId: "codex-exec:01a00cbf",
       status: "completed",
       resultBody: "**Verdict:** Partially sound.",
     },
@@ -4048,6 +4047,43 @@ describe("subagent.metadata promoted-run lifecycle", () => {
     expect(entry?.item.status).toBe("completed");
     expect(entry?.item.role).toBe("codex");
     expect(entry?.resultBody).toBe("**Verdict:** Partially sound.");
+  });
+
+  it("settles a roster-seeded promoted run from call-id-only lifecycle updates", () => {
+    const state = deriveSubagentProgressState({
+      activities: [spawnMetadata, linkMetadata, completionMetadata],
+      latestTurnId: TurnId.make("76441666-8b1e-471f-973f-9a4df8c68929"),
+      latestTurnSettled: false,
+      subagents: [
+        {
+          id: "codex-exec:01a00cbf",
+          agentThreadId: "codex-exec:01a00cbf",
+          parentAgentThreadId: null,
+          spawnCallId: "toolu_01VFJG1vAyYoJLjP3U38mFfk",
+          transcriptAgentId: "codex-exec:01a00cbf",
+          turnId: TurnId.make("76441666-8b1e-471f-973f-9a4df8c68929"),
+          agentPath: null,
+          parentAgentPath: null,
+          treeDepth: 0,
+          nickname: null,
+          role: "codex",
+          objective: "Run sol second-opinion review of sanitizer commit",
+          status: "completed",
+          requestedModel: null,
+          resolvedModel: "gpt-5.5",
+          reasoningEffort: "medium",
+          modelProvenance: null,
+          reasoningEffortProvenance: "provider",
+          resultBody: "**Verdict:** Partially sound.",
+          resultCreatedAt: "2026-08-16T22:45:20.385Z",
+          createdAt: "2026-08-16T22:44:40.796Z",
+          updatedAt: "2026-08-16T22:45:20.385Z",
+        },
+      ],
+    });
+    expect(state?.items).toHaveLength(1);
+    expect(state?.items[0]?.agentThreadId).toBe("codex-exec:01a00cbf");
+    expect(state?.items[0]?.status).toBe("completed");
   });
 });
 

@@ -1347,6 +1347,32 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("shows a settled turn's live agent once, on the working anchor", async () => {
+    // A background agent outlives its turn. Its live status row has one home,
+    // the anchor at the tail; the turn's receipt keeps only the tracker chip.
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking={false}
+        timelineEntries={buildOverflowingWorkTimelineEntries()}
+        onOpenAgentsPanel={vi.fn()}
+        turnAgents={{ subagents: [buildTurnSubagent("agent-1", "running")] }}
+      />,
+    );
+
+    try {
+      const anchor = document.querySelector("[data-turn-working-anchor='true']");
+      expect(anchor).not.toBeNull();
+      expect(anchor?.textContent).toContain("Agent working");
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll("[data-turn-live-agent-name='true']").length).toBe(1);
+      });
+      expect(anchor?.querySelector("[data-turn-live-agent-name='true']")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps one stable, visually distinct status row per live agent", async () => {
     const onOpenAgentsPanel = vi.fn();
     const props = buildProps();

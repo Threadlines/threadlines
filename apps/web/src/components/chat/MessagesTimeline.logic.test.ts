@@ -436,6 +436,27 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("keeps the working anchor up for live agents after the turn settles", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      liveAgentCount: 1,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toEqual([
+      {
+        kind: "working",
+        id: "working-indicator-row",
+        createdAt: null,
+        label: "Agent working",
+      },
+    ]);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

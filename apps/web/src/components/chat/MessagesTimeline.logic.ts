@@ -278,6 +278,10 @@ export function deriveMessagesTimelineRows(input: {
   completionDividerBeforeEntryId: string | null;
   completionSummary?: string | null;
   isWorking: boolean;
+  /** Agents still running or waiting, whichever turn spawned them. The working
+   *  anchor stays up for them after the turn settles, so a background agent's
+   *  live line keeps one home at the tail instead of vanishing. */
+  liveAgentCount?: number | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress?: boolean;
   activeTurnId?: TurnId | null;
@@ -456,6 +460,7 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
+  const liveAgentCount = input.liveAgentCount ?? 0;
   if (input.isWorking) {
     // The working row is the turn's one fixed anchor: it renders for the whole
     // turn, whatever the tail is, so the live node, the timer, and the agent
@@ -467,6 +472,15 @@ export function deriveMessagesTimelineRows(input: {
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
       label: resolveWorkingAnchorLabel(visibleTimelineEntries, input.activeStatusLabel),
+    });
+  } else if (liveAgentCount > 0) {
+    // The turn settled but agents it delegated to are still going: the anchor
+    // stays as their tracker, without a turn timer, until the last one lands.
+    nextRows.push({
+      kind: "working",
+      id: "working-indicator-row",
+      createdAt: null,
+      label: liveAgentCount === 1 ? "Agent working" : "Agents working",
     });
   }
 

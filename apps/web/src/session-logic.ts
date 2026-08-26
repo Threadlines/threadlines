@@ -1658,7 +1658,13 @@ function applySubagentMetadataActivity(
 ): void {
   const agentThreadId = asTrimmedString(payload.agentThreadId);
   const callId = asTrimmedString(payload.spawnCallId) ?? asTrimmedString(payload.callId);
-  const key = agentThreadId ?? (callId ? `pending:${callId}` : null);
+  // Later updates (notably completion) usually carry only the call id, so
+  // resolve through the record that already owns it: either the roster seed
+  // or the earlier update that migrated the pending record onto the agent id.
+  // Otherwise the completion would land on a fresh pending record and the
+  // real one would stay "Running" forever.
+  const ownerKey = callId ? findSubagentKeyBySpawnCallId(byAgentId, callId) : null;
+  const key = agentThreadId ?? ownerKey ?? (callId ? `pending:${callId}` : null);
   if (!key) {
     return;
   }
@@ -1680,7 +1686,7 @@ function applySubagentMetadataActivity(
       }
       pendingSpawnKeysByCallId.delete(callId);
     }
-  } else if (!agentThreadId && callId) {
+  } else if (!agentThreadId && callId && key.startsWith("pending:")) {
     pendingSpawnKeysByCallId.set(callId, key);
   }
 
@@ -1760,6 +1766,18 @@ function applySubagentMetadataActivity(
       ? (asTrimmedString(payload.resultCreatedAt) ?? activity.createdAt)
       : (previous?.resultCreatedAt ?? null),
   });
+}
+
+function findSubagentKeyBySpawnCallId(
+  byAgentId: ReadonlyMap<string, InternalSubagentRecord>,
+  callId: string,
+): string | null {
+  for (const [key, record] of byAgentId) {
+    if (record.spawnCallId === callId) {
+      return key;
+    }
+  }
+  return null;
 }
 
 function extractCollabAgentStates(value: unknown): Map<string, CollabAgentStateSnapshot> {
