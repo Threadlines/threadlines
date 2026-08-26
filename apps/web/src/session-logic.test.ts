@@ -513,6 +513,7 @@ describe("derivePendingApprovals", () => {
         payload: {
           requestId: "req-1",
           requestKind: "command",
+          toolName: "Bash",
           detail: "bun run lint",
         },
       }),
@@ -539,6 +540,7 @@ describe("derivePendingApprovals", () => {
         requestId: "req-1",
         requestKind: "command",
         createdAt: "2026-02-23T00:00:01.000Z",
+        toolName: "Bash",
         detail: "bun run lint",
       },
     ]);

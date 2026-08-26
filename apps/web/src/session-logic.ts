@@ -190,6 +190,9 @@ export interface PendingApproval {
   requestKind: "command" | "file-read" | "file-change" | "permissions";
   createdAt: string;
   environmentId?: string;
+  /** Provider tool being approved (e.g. "Bash", "Agent"). Claude only. */
+  toolName?: string;
+  /** What is being approved: the command, path, or tool summary. */
   detail?: string;
 }
 
@@ -590,6 +593,8 @@ export function derivePendingApprovals(
         return [];
       }
       const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+      const toolName =
+        payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
       const environmentId =
         payload && typeof payload.environmentId === "string" ? payload.environmentId : undefined;
       return [
@@ -598,6 +603,7 @@ export function derivePendingApprovals(
           requestKind,
           createdAt: activity.createdAt,
           ...(environmentId ? { environmentId } : {}),
+          ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
         },
       ];

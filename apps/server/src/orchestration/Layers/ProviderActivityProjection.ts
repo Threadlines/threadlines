@@ -36,6 +36,18 @@ function toApprovalRequestId(value: string | undefined): ApprovalRequestId | und
   return value === undefined ? undefined : ApprovalRequestId.make(value);
 }
 
+const APPROVAL_DETAIL_LIMIT = 600;
+
+// Claude approvals carry the SDK tool name in `args.toolName`; Codex approvals
+// don't name a tool, so this returns undefined for them.
+function approvalToolName(args: unknown): string | undefined {
+  if (!args || typeof args !== "object") {
+    return undefined;
+  }
+  const toolName = (args as Record<string, unknown>).toolName;
+  return typeof toolName === "string" && toolName.trim().length > 0 ? toolName.trim() : undefined;
+}
+
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
@@ -575,6 +587,7 @@ export function projectRuntimeEventToActivities(
         return [];
       }
       const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
+      const toolName = approvalToolName(event.payload.args);
       return [
         baseActivity(event, {
           id: event.eventId,
@@ -595,7 +608,12 @@ export function projectRuntimeEventToActivities(
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.environmentId ? { environmentId: event.payload.environmentId } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(toolName ? { toolName } : {}),
+            // The approval panel shows this as the thing being approved, so
+            // keep more of it than a one-line activity detail.
+            ...(event.payload.detail
+              ? { detail: truncateDetail(event.payload.detail, APPROVAL_DETAIL_LIMIT) }
+              : {}),
           },
         }),
       ];
