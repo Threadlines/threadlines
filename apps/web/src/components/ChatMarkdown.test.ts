@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { splitMarkdownBlocks } from "./ChatMarkdown.tsx";
+import { repairStreamingMarkdownTail, splitMarkdownBlocks } from "./ChatMarkdown.tsx";
 import {
   parseCodexInlineVisualizations,
   stripCodexInlineVisualizationDirectives,
@@ -51,6 +51,86 @@ describe("splitMarkdownBlocks", () => {
     const text = "# h\n\npara one\n\n```js\nlet x;\n\nlet y;\n```\n\n- item\n- item2";
     const blocks = splitMarkdownBlocks(text);
     expect(blocks.join("\n\n")).toBe(text);
+  });
+
+  it("cuts before a heading and around a thematic break with no blank line", () => {
+    expect(splitMarkdownBlocks("intro text\n## Section\nbody\n***\nafter")).toEqual([
+      "intro text",
+      "## Section\nbody",
+      "***",
+      "after",
+    ]);
+  });
+
+  it("keeps a setext underline with the paragraph it underlines", () => {
+    expect(splitMarkdownBlocks("Heading\n---\nbody")).toEqual(["Heading\n---\nbody"]);
+    expect(splitMarkdownBlocks("para\n\n---\n\nnext")).toEqual(["para", "---", "next"]);
+  });
+
+  it("leaves indented and fenced heading lines inside their block", () => {
+    expect(splitMarkdownBlocks("- item\n  # not a top-level heading")).toEqual([
+      "- item\n  # not a top-level heading",
+    ]);
+    expect(splitMarkdownBlocks("```md\n# inside\n---\n```")).toEqual(["```md\n# inside\n---\n```"]);
+  });
+
+  it("does not treat a hashtag or a seventh hash as a heading", () => {
+    expect(splitMarkdownBlocks("tag line\n#hashtag\n####### seven")).toEqual([
+      "tag line\n#hashtag\n####### seven",
+    ]);
+  });
+});
+
+describe("repairStreamingMarkdownTail", () => {
+  it("closes an emphasis marker still waiting for its partner", () => {
+    expect(repairStreamingMarkdownTail("This is **bold so f")).toBe("This is **bold so f**");
+    expect(repairStreamingMarkdownTail("An *aside")).toBe("An *aside*");
+    expect(repairStreamingMarkdownTail("A ~~struck")).toBe("A ~~struck~~");
+    expect(repairStreamingMarkdownTail("Run `npm insta")).toBe("Run `npm insta`");
+  });
+
+  it("closes nested markers innermost first", () => {
+    expect(repairStreamingMarkdownTail("**bold and *both")).toBe("**bold and *both***");
+    expect(repairStreamingMarkdownTail("**bold `code")).toBe("**bold `code`**");
+  });
+
+  it("leaves balanced text untouched", () => {
+    expect(repairStreamingMarkdownTail("**bold** and `code` and *em*")).toBe(
+      "**bold** and `code` and *em*",
+    );
+    expect(repairStreamingMarkdownTail("")).toBe("");
+  });
+
+  it("only repairs the last line", () => {
+    expect(repairStreamingMarkdownTail("A **bold line\nplain tail")).toBe(
+      "A **bold line\nplain tail",
+    );
+    expect(repairStreamingMarkdownTail("plain line\nA **bold tai")).toBe(
+      "plain line\nA **bold tai**",
+    );
+  });
+
+  it("stays out of fenced code", () => {
+    expect(repairStreamingMarkdownTail("```ts\nconst a = 2 * b\nconst c = *d")).toBe(
+      "```ts\nconst a = 2 * b\nconst c = *d",
+    );
+    expect(repairStreamingMarkdownTail("```ts\nconst a = 1;\n```")).toBe(
+      "```ts\nconst a = 1;\n```",
+    );
+  });
+
+  it("skips runs that could not open emphasis anyway", () => {
+    // A freshly typed opener: closing it would render `****` instead of nothing.
+    expect(repairStreamingMarkdownTail("Here it comes **")).toBe("Here it comes **");
+    expect(repairStreamingMarkdownTail("width = 2 * height")).toBe("width = 2 * height");
+    expect(repairStreamingMarkdownTail("call snake_case_name")).toBe("call snake_case_name");
+    expect(repairStreamingMarkdownTail("escaped \\*star")).toBe("escaped \\*star");
+  });
+
+  it("ignores list and quote markers at the start of the line", () => {
+    expect(repairStreamingMarkdownTail("- item one")).toBe("- item one");
+    expect(repairStreamingMarkdownTail("> * * *")).toBe("> * * *");
+    expect(repairStreamingMarkdownTail("- **item")).toBe("- **item**");
   });
 });
 

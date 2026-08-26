@@ -47,3 +47,7 @@ squashfs-root/
 dist-electron/
 .electron-runtime/
 .claude/
+
+# streaming benchmark recordings
+apps/web/bench/output/
+apps/web/bench/dist/

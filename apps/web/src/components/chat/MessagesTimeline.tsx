@@ -121,6 +121,7 @@ import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@threadlines/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
 import { useSettings } from "../../hooks/useSettings";
+import { useStreamingTextReveal } from "../../hooks/useStreamingTextReveal";
 import { findSearchTextHighlightSpans } from "../../lib/searchTextHighlight";
 
 import {
@@ -2225,6 +2226,8 @@ function FallbackAssistantResponseContainer({
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const revealRef = useRef<HTMLDivElement>(null);
+  useStreamingTextReveal(revealRef, Boolean(row.message.streaming));
   const authReconnect =
     ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
       ? ctx.providerAuthReconnect
@@ -2253,6 +2256,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           ) : (
             <FallbackAssistantResponseContainer row={row}>
               <div
+                ref={revealRef}
                 data-agent-response-body="true"
                 data-assistant-message-body="true"
                 data-transcript-message-body="true"

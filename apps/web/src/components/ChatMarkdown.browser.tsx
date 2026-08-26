@@ -572,6 +572,71 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("grows a streaming message without remounting the DOM it already rendered", async () => {
+    const opening = "Reading [the plan](https://example.com/plan) now";
+    const screen = await render(<ChatMarkdown text={opening} cwd="/repo/project" isStreaming />);
+
+    try {
+      const paragraph = document.querySelector<HTMLParagraphElement>(".chat-markdown p");
+      expect(paragraph?.textContent).toContain("Reading");
+      const link = paragraph!.querySelector("a");
+      expect(link).not.toBeNull();
+
+      await screen.rerender(
+        <ChatMarkdown
+          text={`${opening} and checking the rest of it.`}
+          cwd="/repo/project"
+          isStreaming
+        />,
+      );
+      await vi.waitFor(() => {
+        expect(document.querySelector(".chat-markdown p")?.textContent).toContain(
+          "checking the rest of it",
+        );
+      });
+
+      // The delta appended text; it did not rebuild the paragraph around it.
+      expect(paragraph!.isConnected).toBe(true);
+      expect(document.querySelector(".chat-markdown p")).toBe(paragraph);
+      expect(paragraph!.querySelector("a")).toBe(link);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("colors an open fence while it streams and keeps the color when it settles", async () => {
+    const openFence = "```ts\nconst answer = 1;\nfunction identity(value) {}";
+    const screen = await render(<ChatMarkdown text={openFence} cwd="/repo/project" isStreaming />);
+
+    try {
+      await vi.waitFor(() => {
+        const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre.shiki");
+        expect(pre).not.toBeNull();
+        expect(pre!.querySelector('span[style*="color"]')).not.toBeNull();
+        // The one-shot HTML carries the theme background inline; the streamed
+        // block does not, so this is still the open fence being tokenized.
+        expect(pre!.style.backgroundColor).toBe("");
+      });
+
+      await screen.rerender(
+        <ChatMarkdown text={`${openFence}\n\`\`\``} cwd="/repo/project" isStreaming={false} />,
+      );
+
+      // The frame the fence closed on: still the streamed tokens, never plain.
+      const settling = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre");
+      expect(settling?.classList.contains("shiki")).toBe(true);
+      expect(settling?.querySelector('span[style*="color"]')).not.toBeNull();
+
+      await vi.waitFor(() => {
+        const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre.shiki");
+        expect(pre?.style.backgroundColor).not.toBe("");
+        expect(pre?.textContent).toContain("function identity(value) {}");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("wraps long fenced text and shows copy feedback", async () => {
     const code = `Please run ${"a-very-long-unbroken-value".repeat(20)} when ready.`;
     const writeText = vi.fn(async () => undefined);

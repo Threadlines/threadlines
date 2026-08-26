@@ -110,6 +110,11 @@ export default defineConfig({
     },
   },
   plugins: createWebPlugins(),
+  // Module workers, matching what the dev server already serves. The default
+  // IIFE build cannot code-split, so the highlighting worker's reach into
+  // Shiki's bundled-grammar table would inline every grammar into one 11 MB
+  // script instead of chunks it never loads.
+  worker: { format: "es" },
   optimizeDeps: {
     include: [
       "@pierre/diffs",
