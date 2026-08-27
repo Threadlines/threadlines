@@ -166,7 +166,7 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
 
       assert.equal(
         error.message,
-        'SchemaError(Expected string, got undefined\n  at ["GITHUB_OUTPUT"])',
+        'SchemaError(Expected string\n  at ["GITHUB_OUTPUT"])',
       );
     }),
   );

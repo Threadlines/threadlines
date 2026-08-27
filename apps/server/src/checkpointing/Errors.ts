@@ -5,7 +5,7 @@ import type { VcsError } from "@threadlines/contracts";
 /**
  * CheckpointUnavailableError - Expected checkpoint does not exist.
  */
-export class CheckpointUnavailableError extends Schema.TaggedErrorClass<CheckpointUnavailableError>()(
+export class CheckpointUnavailableError extends Schema.TaggedError<CheckpointUnavailableError>()(
   "CheckpointUnavailableError",
   {
     threadId: Schema.String,
@@ -22,7 +22,7 @@ export class CheckpointUnavailableError extends Schema.TaggedErrorClass<Checkpoi
 /**
  * CheckpointInvariantError - Inconsistent provider/filesystem/catalog state.
  */
-export class CheckpointInvariantError extends Schema.TaggedErrorClass<CheckpointInvariantError>()(
+export class CheckpointInvariantError extends Schema.TaggedError<CheckpointInvariantError>()(
   "CheckpointInvariantError",
   {
     operation: Schema.String,

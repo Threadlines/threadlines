@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
 import { resolvePrimaryEnvironmentHttpUrl } from "../environments/primary";
 import { isElectron } from "../env";
@@ -25,6 +25,7 @@ const CLIENT_TRACING_RESOURCE = {
 const delegateRuntimeLayer = Layer.mergeAll(
   FetchHttpClient.layer,
   OtlpSerialization.layerJson,
+  OtlpExporter.layerFlusher,
   Layer.succeed(HttpClient.TracerDisabledWhen, () => true),
 );
 

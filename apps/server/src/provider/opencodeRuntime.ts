@@ -32,7 +32,7 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@threadlines/shared/Net";
-const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
+const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";

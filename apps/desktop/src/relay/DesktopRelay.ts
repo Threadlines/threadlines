@@ -80,7 +80,7 @@ const decodeRelayCreateSessionResult = Schema.decodeUnknownEffect(RelayCreateSes
 const decodeRelayRenewSessionResult = Schema.decodeUnknownEffect(RelayRenewSessionResult);
 const decodeAuthBearerBootstrapResult = Schema.decodeUnknownEffect(AuthBearerBootstrapResult);
 const decodeAuthWebSocketTokenResult = Schema.decodeUnknownEffect(AuthWebSocketTokenResult);
-const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeBootstrapBearerRequestBody = Schema.encodeEffect(
   Schema.fromJsonString(BootstrapBearerRequestBody),
 );

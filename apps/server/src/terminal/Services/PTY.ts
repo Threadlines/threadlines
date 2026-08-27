@@ -13,7 +13,7 @@ import * as Context from "effect/Context";
 /**
  * PtyError - Error type for PTY adapter operations.
  */
-export class PtySpawnError extends Schema.TaggedErrorClass<PtySpawnError>()("PtySpawnError", {
+export class PtySpawnError extends Schema.TaggedError<PtySpawnError>()("PtySpawnError", {
   adapter: Schema.String,
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),

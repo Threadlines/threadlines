@@ -29,7 +29,6 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
@@ -67,7 +66,7 @@ export const ResolvedKeybindingFromConfig = KeybindingRule.pipe(
           Effect.filterOrFail(
             Predicate.isNotNull,
             () =>
-              new SchemaIssue.InvalidValue(Option.some(rule), {
+              new SchemaIssue.InvalidValue({
                 message: "Invalid keybinding rule",
               }),
           ),
@@ -79,7 +78,7 @@ export const ResolvedKeybindingFromConfig = KeybindingRule.pipe(
           const key = encodeShortcut(resolved.shortcut);
           if (!key) {
             return yield* Effect.fail(
-              new SchemaIssue.InvalidValue(Option.some(resolved), {
+              new SchemaIssue.InvalidValue({
                 message: "Resolved shortcut cannot be encoded to key string",
               }),
             );

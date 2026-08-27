@@ -19,7 +19,7 @@ import type {
   ProjectSearchEntriesResult,
 } from "@threadlines/contracts";
 
-export class WorkspaceEntriesError extends Schema.TaggedErrorClass<WorkspaceEntriesError>()(
+export class WorkspaceEntriesError extends Schema.TaggedError<WorkspaceEntriesError>()(
   "WorkspaceEntriesError",
   {
     cwd: Schema.String,
@@ -29,7 +29,7 @@ export class WorkspaceEntriesError extends Schema.TaggedErrorClass<WorkspaceEntr
   },
 ) {}
 
-export class WorkspaceEntriesBrowseError extends Schema.TaggedErrorClass<WorkspaceEntriesBrowseError>()(
+export class WorkspaceEntriesBrowseError extends Schema.TaggedError<WorkspaceEntriesBrowseError>()(
   "WorkspaceEntriesBrowseError",
   {
     cwd: Schema.optional(Schema.String),

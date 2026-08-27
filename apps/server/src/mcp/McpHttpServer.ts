@@ -19,7 +19,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
-import { McpSchema, McpServer, Tool } from "effect/unstable/ai";
+import { McpSchema, McpProtocol, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -272,6 +272,7 @@ export const layer = McpServer.toolkit(BrowserStandardToolkit).pipe(
       name: "threadlines-browser",
       version: "1",
       path: MCP_ROUTE_PATH,
+      protocols: [McpProtocol.v2025_06_18],
     }).pipe(Layer.provide(AuthenticationLive)),
   ),
   Layer.provideMerge(noServerStreamRoute),

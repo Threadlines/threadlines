@@ -11,13 +11,13 @@ import { assert, it } from "@effect/vitest";
 import * as CodexError from "./errors.ts";
 import * as CodexProtocol from "./protocol.ts";
 import { makeInMemoryStdio } from "./_internal/stdio.ts";
-const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const encoder = new TextEncoder();
 
 const encodeJsonl = (value: unknown) => encoder.encode(`${encodeUnknownJsonString(value)}\n`);
 
-const decodeJson = Schema.decodeEffect(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
   it.effect(

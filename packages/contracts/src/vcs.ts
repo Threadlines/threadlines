@@ -86,7 +86,7 @@ export interface VcsProcessTimeoutFailure {
   readonly timeoutMs: number;
 }
 
-export class VcsProcessSpawnError extends Schema.TaggedErrorClass<VcsProcessSpawnError>()(
+export class VcsProcessSpawnError extends Schema.TaggedError<VcsProcessSpawnError>()(
   "VcsProcessSpawnError",
   {
     operation: Schema.String,
@@ -107,7 +107,7 @@ export class VcsProcessSpawnError extends Schema.TaggedErrorClass<VcsProcessSpaw
   }
 }
 
-export class VcsProcessExitError extends Schema.TaggedErrorClass<VcsProcessExitError>()(
+export class VcsProcessExitError extends Schema.TaggedError<VcsProcessExitError>()(
   "VcsProcessExitError",
   {
     operation: Schema.String,
@@ -122,7 +122,7 @@ export class VcsProcessExitError extends Schema.TaggedErrorClass<VcsProcessExitE
   }
 }
 
-export class VcsProcessTimeoutError extends Schema.TaggedErrorClass<VcsProcessTimeoutError>()(
+export class VcsProcessTimeoutError extends Schema.TaggedError<VcsProcessTimeoutError>()(
   "VcsProcessTimeoutError",
   {
     operation: Schema.String,
@@ -143,7 +143,7 @@ export class VcsProcessTimeoutError extends Schema.TaggedErrorClass<VcsProcessTi
   }
 }
 
-export class VcsOutputDecodeError extends Schema.TaggedErrorClass<VcsOutputDecodeError>()(
+export class VcsOutputDecodeError extends Schema.TaggedError<VcsOutputDecodeError>()(
   "VcsOutputDecodeError",
   {
     operation: Schema.String,
@@ -194,7 +194,7 @@ export class VcsOutputDecodeError extends Schema.TaggedErrorClass<VcsOutputDecod
   }
 }
 
-export class VcsRepositoryDetectionError extends Schema.TaggedErrorClass<VcsRepositoryDetectionError>()(
+export class VcsRepositoryDetectionError extends Schema.TaggedError<VcsRepositoryDetectionError>()(
   "VcsRepositoryDetectionError",
   {
     operation: Schema.String,
@@ -208,7 +208,7 @@ export class VcsRepositoryDetectionError extends Schema.TaggedErrorClass<VcsRepo
   }
 }
 
-export class VcsUnsupportedOperationError extends Schema.TaggedErrorClass<VcsUnsupportedOperationError>()(
+export class VcsUnsupportedOperationError extends Schema.TaggedError<VcsUnsupportedOperationError>()(
   "VcsUnsupportedOperationError",
   {
     operation: Schema.String,

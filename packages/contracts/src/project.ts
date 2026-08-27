@@ -35,7 +35,7 @@ export const ProjectSearchEntriesResult = Schema.Struct({
 });
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
-export class ProjectSearchEntriesError extends Schema.TaggedErrorClass<ProjectSearchEntriesError>()(
+export class ProjectSearchEntriesError extends Schema.TaggedError<ProjectSearchEntriesError>()(
   "ProjectSearchEntriesError",
   {
     message: TrimmedNonEmptyString,
@@ -90,7 +90,7 @@ export type ProjectWriteFileConflict = typeof ProjectWriteFileConflict.Type;
 export const ProjectWriteFileResult = Schema.Union([ProjectFileWritten, ProjectWriteFileConflict]);
 export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
 
-export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteFileError>()(
+export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",
   {
     message: TrimmedNonEmptyString,
@@ -109,7 +109,7 @@ export const ProjectListEntriesResult = Schema.Struct({
 });
 export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
 
-export class ProjectListEntriesError extends Schema.TaggedErrorClass<ProjectListEntriesError>()(
+export class ProjectListEntriesError extends Schema.TaggedError<ProjectListEntriesError>()(
   "ProjectListEntriesError",
   {
     message: TrimmedNonEmptyString,
@@ -176,7 +176,7 @@ export const ProjectReadFileResult = Schema.Union([
 ]);
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
 
-export class ProjectReadFileError extends Schema.TaggedErrorClass<ProjectReadFileError>()(
+export class ProjectReadFileError extends Schema.TaggedError<ProjectReadFileError>()(
   "ProjectReadFileError",
   {
     message: TrimmedNonEmptyString,
@@ -206,7 +206,7 @@ export const ProjectFaviconResult = Schema.Struct({
 });
 export type ProjectFaviconResult = typeof ProjectFaviconResult.Type;
 
-export class ProjectFaviconError extends Schema.TaggedErrorClass<ProjectFaviconError>()(
+export class ProjectFaviconError extends Schema.TaggedError<ProjectFaviconError>()(
   "ProjectFaviconError",
   {
     message: TrimmedNonEmptyString,

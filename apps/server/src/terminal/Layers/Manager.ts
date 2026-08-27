@@ -86,7 +86,7 @@ const POWERSHELL_PROMPT_HOOK =
   "} } | Out-Null";
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubprocessCheckError>()(
+class TerminalSubprocessCheckError extends Schema.TaggedError<TerminalSubprocessCheckError>()(
   "TerminalSubprocessCheckError",
   {
     message: Schema.String,
@@ -95,7 +95,7 @@ class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubpr
   },
 ) {}
 
-class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcessSignalError>()(
+class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSignalError>()(
   "TerminalProcessSignalError",
   {
     message: Schema.String,

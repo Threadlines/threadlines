@@ -49,7 +49,7 @@ const CODEX_COMMIT_MESSAGE_TIMEOUT_MS = 120_000;
 // Codex one-shot responses have been observed to take 15-20s even for tiny
 // prompts (server-side floor), so the title budget needs tail headroom.
 const CODEX_THREAD_TITLE_TIMEOUT_MS = 90_000;
-const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
+const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 type CodexTextGenerationOperation =
   | "generateCommitMessage"

@@ -75,7 +75,7 @@ export class ProcessSnapshot extends Context.Service<ProcessSnapshot, ProcessSna
   "threadlines/diagnostics/ProcessSnapshot",
 ) {}
 
-export class ProcessDiagnosticsError extends Schema.TaggedErrorClass<ProcessDiagnosticsError>()(
+export class ProcessDiagnosticsError extends Schema.TaggedError<ProcessDiagnosticsError>()(
   "ProcessDiagnosticsError",
   {
     message: Schema.String,

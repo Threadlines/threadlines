@@ -7,13 +7,22 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import * as Tracer from "effect/Tracer";
-import { OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import {
+  OtlpExporter,
+  OtlpMetrics,
+  OtlpSerialization,
+  OtlpTracer,
+} from "effect/unstable/observability";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerLoggerLive } from "../../serverLogger.ts";
 import { BrowserTraceCollector } from "../Services/BrowserTraceCollector.ts";
 
-const otlpSerializationLayer = OtlpSerialization.layerJson;
+// Exporters need the JSON codec plus the shared flush registry (one per layer build).
+const otlpSerializationLayer = Layer.mergeAll(
+  OtlpSerialization.layerJson,
+  OtlpExporter.layerFlusher,
+);
 const SLOW_TRACE_RECORD_THRESHOLD_MS = 1_000;
 const SQL_TRACE_SAMPLE_MODULO = 100;
 const PROJECTION_TRACE_SAMPLE_MODULO = 20;

@@ -115,7 +115,7 @@ export type PreviewAutomationTarget = typeof PreviewAutomationTargetSchema.Type;
  * Collapsing them into one string would make all three look like the tool being
  * broken.
  */
-export class PreviewAutomationNoHostError extends Schema.TaggedErrorClass<PreviewAutomationNoHostError>()(
+export class PreviewAutomationNoHostError extends Schema.TaggedError<PreviewAutomationNoHostError>()(
   "PreviewAutomationNoHostError",
   { threadId: ThreadId, operation: PreviewAutomationOperationSchema },
 ) {
@@ -124,7 +124,7 @@ export class PreviewAutomationNoHostError extends Schema.TaggedErrorClass<Previe
   }
 }
 
-export class PreviewAutomationUnsupportedError extends Schema.TaggedErrorClass<PreviewAutomationUnsupportedError>()(
+export class PreviewAutomationUnsupportedError extends Schema.TaggedError<PreviewAutomationUnsupportedError>()(
   "PreviewAutomationUnsupportedError",
   { operation: PreviewAutomationOperationSchema },
 ) {
@@ -133,7 +133,7 @@ export class PreviewAutomationUnsupportedError extends Schema.TaggedErrorClass<P
   }
 }
 
-export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<PreviewAutomationTimeoutError>()(
+export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAutomationTimeoutError>()(
   "PreviewAutomationTimeoutError",
   { operation: PreviewAutomationOperationSchema, timeoutMs: Schema.Finite },
 ) {
@@ -142,7 +142,7 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<Previ
   }
 }
 
-export class PreviewAutomationDisconnectedError extends Schema.TaggedErrorClass<PreviewAutomationDisconnectedError>()(
+export class PreviewAutomationDisconnectedError extends Schema.TaggedError<PreviewAutomationDisconnectedError>()(
   "PreviewAutomationDisconnectedError",
   { operation: PreviewAutomationOperationSchema },
 ) {
@@ -152,7 +152,7 @@ export class PreviewAutomationDisconnectedError extends Schema.TaggedErrorClass<
 }
 
 /** The page was reached and said no: a bad selector, a missing element, a throw. */
-export class PreviewAutomationExecutionError extends Schema.TaggedErrorClass<PreviewAutomationExecutionError>()(
+export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewAutomationExecutionError>()(
   "PreviewAutomationExecutionError",
   { operation: PreviewAutomationOperationSchema, detail: Schema.String },
 ) {
@@ -162,7 +162,7 @@ export class PreviewAutomationExecutionError extends Schema.TaggedErrorClass<Pre
 }
 
 /** A page can hand back more than a context window can hold. Refuse, don't truncate silently. */
-export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClass<PreviewAutomationResultTooLargeError>()(
+export class PreviewAutomationResultTooLargeError extends Schema.TaggedError<PreviewAutomationResultTooLargeError>()(
   "PreviewAutomationResultTooLargeError",
   {
     operation: PreviewAutomationOperationSchema,

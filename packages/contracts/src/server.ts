@@ -828,7 +828,7 @@ export const ServerProviderUpdateBlockerResolutionResult = Schema.Struct({
 export type ServerProviderUpdateBlockerResolutionResult =
   typeof ServerProviderUpdateBlockerResolutionResult.Type;
 
-export class ServerProviderRateLimitResetCreditError extends Schema.TaggedErrorClass<ServerProviderRateLimitResetCreditError>()(
+export class ServerProviderRateLimitResetCreditError extends Schema.TaggedError<ServerProviderRateLimitResetCreditError>()(
   "ServerProviderRateLimitResetCreditError",
   {
     instanceId: ProviderInstanceId,
@@ -841,7 +841,7 @@ export class ServerProviderRateLimitResetCreditError extends Schema.TaggedErrorC
   }
 }
 
-export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
+export class ServerProviderUpdateError extends Schema.TaggedError<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",
   {
     provider: ProviderDriverKind,

@@ -34,7 +34,7 @@ const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "notifications",
 ]);
 
-export class PreviewSessionCreationError extends Schema.TaggedErrorClass<PreviewSessionCreationError>()(
+export class PreviewSessionCreationError extends Schema.TaggedError<PreviewSessionCreationError>()(
   "PreviewSessionCreationError",
   { partition: Schema.String, cause: Schema.Defect() },
 ) {
