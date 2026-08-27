@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Format, Lint, Typecheck, Test, Browser Test, Build
+    name: Format, Lint, Typecheck, Test, Build
     runs-on: ubuntu-latest
     # 20 minutes starves dependency-bump branches: a lockfile change cold-starts
     # every cache and slow runners then hit the cap mid-pipeline.
@@ -62,6 +62,35 @@ jobs:
         # the server suite (~2.5 min) waits for the web suite (~3 min) to finish.
         run: vp exec vp run --parallel --concurrency-limit 4 test
 
+      - name: Build desktop pipeline
+        run: vp exec vp run build:desktop
+
+      - name: Verify preload bundle output
+        run: |
+          test -f apps/desktop/dist-electron/preload.cjs
+          grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
+
+  browser:
+    # Runs beside `quality` rather than after it: the browser suite is the
+    # second-longest step and shares nothing with the unit suite.
+    name: Browser Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.2.4"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
       # Hosted runners point apt at azure.archive.ubuntu.com, which
       # intermittently stalls for 20+ minutes and starves the job timeout.
       # Ubuntu 24.04 keeps the active mirror in apt-mirrors.txt, while older
@@ -85,14 +114,6 @@ jobs:
           name: browser-test-screenshots
           path: apps/web/src/**/__screenshots__/**
           if-no-files-found: ignore
-
-      - name: Build desktop pipeline
-        run: vp exec vp run build:desktop
-
-      - name: Verify preload bundle output
-        run: |
-          test -f apps/desktop/dist-electron/preload.cjs
-          grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
 
   release_smoke:
     name: Release Smoke
@@ -120,6 +141,7 @@ jobs:
     name: Deploy app.threadlines.dev
     needs:
       - quality
+      - browser
       - release_smoke
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true
     uses: ./.github/workflows/deploy-web.yml
