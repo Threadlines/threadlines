@@ -45,7 +45,9 @@ permissions:
 
 concurrency:
   group: desktop-release-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a publisher mid-run: a second nightly on main queues instead
+  # of leaving a half-uploaded draft release behind.
+  cancel-in-progress: false
 
 jobs:
   preflight:

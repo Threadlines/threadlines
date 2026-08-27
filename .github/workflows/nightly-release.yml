@@ -2,8 +2,10 @@ name: Nightly Release Cron
 
 on:
   schedule:
-    # 06:00 ET daily; skips when main has not moved since the newest release.
-    - cron: "0 10 * * *"
+    # 06:07 ET daily; skips when main has not moved since the newest release.
+    # Minute 7, not 0: GitHub queues top-of-the-hour crons the longest (ours
+    # started 14-22 minutes late).
+    - cron: "7 10 * * *"
   workflow_dispatch:
 
 permissions:
