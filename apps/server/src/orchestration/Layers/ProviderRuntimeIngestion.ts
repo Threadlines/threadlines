@@ -2614,7 +2614,11 @@ const make = Effect.gen(function* () {
       // absolute count so missed or reordered task edges cannot wedge the
       // session in a stale background-work state.
       if (event.type === "task.snapshot.updated" && thread.session != null) {
-        const nextPendingCount = new Set(event.payload.tasks.map((task) => task.taskId)).size;
+        // Ambient housekeeping (e.g. live-update watchers) is not work the
+        // user is waiting on, so it never holds the thread in "Background".
+        const nextPendingCount = new Set(
+          event.payload.tasks.filter((task) => task.ambient !== true).map((task) => task.taskId),
+        ).size;
         if (nextPendingCount !== (thread.session.pendingBackgroundTaskCount ?? 0)) {
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
