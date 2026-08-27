@@ -8,12 +8,12 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@oxlint/plugins": "^1.80.0",
+    "@oxlint/plugins": "^1.79.0",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "oxlint": "^1.80.0",
+    "oxlint": "^1.79.0",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
