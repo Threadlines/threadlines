@@ -83,6 +83,7 @@ const handleMethod = (message: Record<string, unknown>) => {
         itemId: "item-approval-1",
         threadId: "thread-1",
         turnId: "turn-1",
+        isBlocking: true,
         questions: [
           {
             id: "approved",

@@ -977,6 +977,7 @@ describe("openCodexThread", () => {
         preview: "",
         cwd: "/tmp/project",
         cliVersion: "0.145.0",
+        projectId: null,
         modelProvider: "openai",
         createdAt: 1_760_000_000,
         updatedAt: 1_760_000_001,

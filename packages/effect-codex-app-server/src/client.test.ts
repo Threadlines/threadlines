@@ -100,6 +100,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
           itemId: "item-approval-1",
           threadId: "thread-1",
           turnId: "turn-1",
+          isBlocking: true,
           questions: [
             {
               id: "approved",

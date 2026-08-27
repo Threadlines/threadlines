@@ -47,6 +47,7 @@ it("accepts Codex 0.150 multi-agent values", () => {
       id: "root-thread",
       modelProvider: "openai",
       preview: "",
+      projectId: null,
       sessionId: "session-1",
       source: "cli",
       status: { type: "idle" },
