@@ -151,6 +151,7 @@ describe("CodexAdapter item mapping", () => {
             agentNickname: "Mercury",
             agentRole: "explorer",
             cliVersion: "1.0.0",
+            projectId: null,
             createdAt: 1_786_650_001,
             cwd: "C:/repo",
             ephemeral: false,

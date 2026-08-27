@@ -878,6 +878,8 @@ function codexMcpAuthStatusLabel(
   authStatus: CodexSchema.V2ListMcpServerStatusResponse__McpAuthStatus,
 ): string {
   switch (authStatus) {
+    case "unknown":
+      return "Auth status unknown";
     case "unsupported":
       return "No auth required";
     case "notLoggedIn":

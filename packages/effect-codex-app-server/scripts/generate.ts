@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const CODEX_PROTOCOL_VERSION = "0.146.0";
+const CODEX_PROTOCOL_VERSION = "0.150.1";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
 const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
 
@@ -130,37 +130,6 @@ const ManualSchemas: Record<string, Schema.Json> = {
       },
     },
     required: ["authMethod", "authToken", "requiresOpenaiAuth"],
-  },
-};
-
-// Codex 0.150 added these multi-agent values ahead of our next full protocol
-// refresh (which pulls unrelated changes and can break older Codex releases).
-// Widening the definitions here keeps every generated response namespace
-// compatible: a persisted `subAgentActivity` with `kind: "completed"` would
-// otherwise reject `thread/resume`, and the new collab tools would drop live
-// events during decoding.
-const Codex0150DefinitionSchemas: Record<string, Schema.Json> = {
-  CollabAgentTool: {
-    type: "string",
-    enum: [
-      "spawnAgent",
-      "sendInput",
-      "resumeAgent",
-      "wait",
-      "closeAgent",
-      "sendMessage",
-      "followupTask",
-      "interruptAgent",
-      "listAgents",
-    ],
-  },
-  CollabAgentToolCallStatus: {
-    type: "string",
-    enum: ["inProgress", "completed", "failed", "interrupted"],
-  },
-  SubAgentActivityKind: {
-    type: "string",
-    enum: ["started", "interacted", "interrupted", "completed"],
   },
 };
 
@@ -365,16 +334,22 @@ function toPascalCaseMethod(method: string) {
 }
 
 function parseRequestEntries(fileContents: string): ReadonlyArray<MethodEntry> {
-  const entryPattern = /\{\s*"method":\s*"([^"]+)",\s*id:\s*RequestId,\s*params:\s*([^,}]+)/g;
+  // `params?:` marks a request whose params may be omitted (0.150+, e.g.
+  // account/usage/read). The generated client still sends the object form.
+  const entryPattern = /\{\s*"method":\s*"([^"]+)",\s*id:\s*RequestId,\s*params\??:\s*([^,}]+)/g;
   const entries: Array<MethodEntry> = [];
   let match: RegExpExecArray | null;
   while ((match = entryPattern.exec(fileContents)) !== null) {
     entries.push({
       method: match[1]!,
       // Some compatibility endpoints accept either their ordinary params object
-      // or null. The generated client always sends the object form, so retain
-      // the concrete schema name used for request validation and inference.
-      paramsType: match[2]!.trim().replace(/\s*\|\s*null$/, ""),
+      // or null/undefined. The generated client always sends the object form,
+      // so retain the concrete schema name used for request validation and
+      // inference.
+      paramsType: match[2]!
+        .trim()
+        .replace(/\s*\|\s*undefined$/, "")
+        .replace(/\s*\|\s*null$/, ""),
     });
   }
   return entries;
@@ -619,12 +594,10 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     );
 
     for (const [definitionName, definitionSchema] of Object.entries(parsed.definitions ?? {})) {
-      const compatibleDefinitionSchema =
-        Codex0150DefinitionSchemas[definitionName] ?? definitionSchema;
       aggregateSchemas[localDefinitionNames.get(definitionName)!] = stripNullDefaults(
         normalizeNullableTypes(
           rewriteExternalRefs(
-            compatibleDefinitionSchema,
+            definitionSchema,
             localDefinitionNames,
             file.namespace,
             exportNameByQualifiedName,
