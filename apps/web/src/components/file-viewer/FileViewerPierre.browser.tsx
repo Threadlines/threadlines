@@ -6,8 +6,8 @@ import { userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 import type { SelectedLineRange } from "@pierre/diffs";
 import { getFiletypeFromFileName, preloadHighlighter } from "@pierre/diffs";
-import { Editor } from "@pierre/diffs/editor";
-import { EditorProvider, File as PierreFile } from "@pierre/diffs/react";
+import { Editor } from "@pierre/diffs/edit";
+import { EditProvider, File as PierreFile } from "@pierre/diffs/react";
 
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
@@ -218,7 +218,7 @@ describe("FileViewer pierre integration", () => {
   });
 });
 
-// Mirrors the editable-file wiring (EditorProvider + contentEditable File) so
+// Mirrors the editable-file wiring (EditProvider + edit File) so
 // editor attachment regressions surface here instead of in the app.
 function EditableHarness({
   path,
@@ -231,12 +231,12 @@ function EditableHarness({
 }) {
   return (
     <DiffWorkerPoolProvider>
-      <EditorProvider editor={editor}>
+      <EditProvider createEditor={() => editor}>
         <div style={{ height: 300, overflow: "auto" }}>
           <PierreFile
             key={path}
             file={{ name: path, contents, cacheKey: `test:${path}:${contents.length}` }}
-            contentEditable
+            edit
             options={{
               disableFileHeader: true,
               theme: "pierre-dark",
@@ -245,7 +245,7 @@ function EditableHarness({
             }}
           />
         </div>
-      </EditorProvider>
+      </EditProvider>
     </DiffWorkerPoolProvider>
   );
 }
@@ -260,7 +260,7 @@ async function waitForEditorDocument(editor: Editor<undefined>, timeoutMs = 25_0
   const deadline = performance.now() + timeoutMs;
   const ready = () => {
     try {
-      return editor.getState().file != null;
+      return editor.getFile() != null;
     } catch {
       return false;
     }
@@ -312,7 +312,7 @@ describe("FileViewer pierre editing", () => {
     screen.unmount();
   });
 
-  it("accepts typed input through the contentEditable surface", async () => {
+  it("accepts typed input through the editable surface", async () => {
     const changes: string[] = [];
     const editor = new Editor<undefined>({
       onChange: (file) => {
@@ -355,11 +355,11 @@ describe("FileViewer pierre editing", () => {
     function WrapHarness({ wrap }: { wrap: boolean }) {
       return (
         <DiffWorkerPoolProvider>
-          <EditorProvider editor={editor}>
+          <EditProvider createEditor={() => editor}>
             <div style={{ height: 300, overflow: "auto" }}>
               <PierreFile
                 file={{ name: "w2.ts", contents: "const w = 0;\n", cacheKey: "edit:w2.ts" }}
-                contentEditable
+                edit
                 options={{
                   disableFileHeader: true,
                   theme: "pierre-dark",
@@ -368,7 +368,7 @@ describe("FileViewer pierre editing", () => {
                 }}
               />
             </div>
-          </EditorProvider>
+          </EditProvider>
         </DiffWorkerPoolProvider>
       );
     }
@@ -386,12 +386,12 @@ describe("FileViewer pierre editing", () => {
       true,
     );
     await settle(100);
-    expect(editor.getState().file.contents).toContain("const w = 7;");
+    expect(editor.getText()).toContain("const w = 7;");
 
     screen.rerender(<WrapHarness wrap={true} />);
     await settle();
 
-    expect(editor.getState().file.contents).toContain("const w = 7;");
+    expect(editor.getText()).toContain("const w = 7;");
     expect(editor.canUndo).toBe(true);
 
     screen.unmount();
@@ -418,11 +418,11 @@ describe("FileViewer pierre editing", () => {
     await waitForEditorDocument(editor);
 
     const deadline = performance.now() + 15_000;
-    while (!editor.getState().file.contents.includes("start!") && performance.now() < deadline) {
+    while (!editor.getText().includes("start!") && performance.now() < deadline) {
       await settle(150);
     }
 
-    expect(editor.getState().file.contents).toContain("start!\nnext");
+    expect(editor.getText()).toContain("start!\nnext");
     expect(editor.getState().selections?.[0]).toMatchObject({
       start: { line: 0, character: 6 },
       end: { line: 0, character: 6 },
@@ -436,7 +436,7 @@ describe("FileViewer pierre editing", () => {
     // Attaching during mount is unsafe under StrictMode: the doubled mount
     // effect runs edit → cleanUp → edit, and pierre's re-attach render sync
     // short-circuits on cached content, leaving the editor without a
-    // document. Deferring `contentEditable` to a post-mount effect makes the
+    // document. Deferring `edit` to a post-mount effect makes the
     // attach a dep-change effect run, which StrictMode does not double.
     let editorRef: Editor<undefined> | null = null;
     function DeferredEditableHarness({ path, contents }: { path: string; contents: string }) {
@@ -448,16 +448,16 @@ describe("FileViewer pierre editing", () => {
       editorRef = editor;
       return (
         <DiffWorkerPoolProvider>
-          <EditorProvider editor={editor}>
+          <EditProvider createEditor={() => editor}>
             <div style={{ height: 300, overflow: "auto" }}>
               <PierreFile
                 key={path}
                 file={{ name: path, contents, cacheKey: `test:${path}:${contents.length}` }}
-                contentEditable={editableReady}
+                edit={editableReady}
                 options={{ disableFileHeader: true, theme: "pierre-dark", themeType: "dark" }}
               />
             </div>
-          </EditorProvider>
+          </EditProvider>
         </DiffWorkerPoolProvider>
       );
     }
@@ -482,7 +482,7 @@ describe("FileViewer pierre editing", () => {
       true,
     );
     await settle(100);
-    expect(editor.getState().file.contents).toContain("const s = 9;");
+    expect(editor.getText()).toContain("const s = 9;");
 
     screen.unmount();
   });
