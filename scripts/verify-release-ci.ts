@@ -27,7 +27,8 @@ type CheckRunEvaluation = {
 };
 
 const DEFAULT_REQUIRED_CHECKS = [
-  "Format, Lint, Typecheck, Test, Browser Test, Build",
+  "Format, Lint, Typecheck, Test, Build",
+  "Browser Test",
   "Release Smoke",
 ];
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 15 * 60;
