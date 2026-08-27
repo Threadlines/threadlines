@@ -579,7 +579,6 @@ jobs:
     timeout-minutes: 50
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix: ${{ fromJSON(needs.preflight.outputs.macos_matrix) }}
     steps:
       - name: Checkout
