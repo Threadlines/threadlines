@@ -58,7 +58,9 @@ jobs:
         run: vp exec vp run -r --concurrency-limit 2 typecheck
 
       - name: Test
-        run: vp exec vp run test
+        # --parallel drops package ordering: server depends on web, so without it
+        # the server suite (~2.5 min) waits for the web suite (~3 min) to finish.
+        run: vp exec vp run --parallel --concurrency-limit 4 test
 
       # Hosted runners point apt at azure.archive.ubuntu.com, which
       # intermittently stalls for 20+ minutes and starves the job timeout.
