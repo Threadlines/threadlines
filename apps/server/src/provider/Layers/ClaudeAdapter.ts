@@ -328,6 +328,9 @@ interface ClaudeTaskSnapshot {
    *  by the main model. Learned at task_started and replayed on later task
    *  events, which do not restate the originating tool. */
   readonly ownerAgentToolUseId?: string;
+  /** Housekeeping the SDK does not count as user work (task_started.ambient).
+   *  Remembered so the completion edge stays out of the pending count too. */
+  readonly ambient?: boolean;
 }
 
 type ClaudeStructuredAgentToolResult =
@@ -4028,6 +4031,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       readonly subagentType?: string;
       readonly taskType?: string;
       readonly ownerAgentToolUseId?: string;
+      readonly isBackgrounded?: boolean;
+      readonly spawnDepth?: number;
+      readonly ambient?: boolean;
     },
     message: SDKMessage,
   ) {
@@ -4042,6 +4048,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(task.subagentType ? { subagentType: task.subagentType } : {}),
       ...(task.taskType ? { taskType: task.taskType } : {}),
       ...(task.ownerAgentToolUseId ? { ownerAgentToolUseId: task.ownerAgentToolUseId } : {}),
+      ...(task.ambient === true ? { ambient: true } : {}),
       status: "running",
     });
     if (context.startedTaskIds.has(task.taskId)) {
@@ -4064,7 +4071,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
         ...(task.subagentType ? { subagentType: task.subagentType } : {}),
         ...(task.ownerAgentToolUseId ? { ownerAgentToolUseId: task.ownerAgentToolUseId } : {}),
-        ...(context.backgroundTaskSnapshotObserved ? { pendingCountManagedBySnapshot: true } : {}),
+        ...(task.isBackgrounded !== undefined ? { isBackgrounded: task.isBackgrounded } : {}),
+        ...(task.spawnDepth !== undefined ? { spawnDepth: task.spawnDepth } : {}),
+        ...(task.ambient === true ? { ambient: true } : {}),
+        // Ambient housekeeping never counts as pending background work.
+        ...(context.backgroundTaskSnapshotObserved || task.ambient === true
+          ? { pendingCountManagedBySnapshot: true }
+          : {}),
       },
       providerRefs: nativeProviderRefs(context),
       raw: {
@@ -4120,7 +4133,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(task.usage !== undefined ? { usage: task.usage } : {}),
         ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
         ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
-        ...(context.backgroundTaskSnapshotObserved ? { pendingCountManagedBySnapshot: true } : {}),
+        ...(context.backgroundTaskSnapshotObserved || previous?.ambient === true
+          ? { pendingCountManagedBySnapshot: true }
+          : {}),
       },
       providerRefs: nativeProviderRefs(context),
       raw: {
@@ -5108,6 +5123,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             readonly taskId: RuntimeTaskId;
             readonly taskType?: string;
             readonly description?: string;
+            readonly ambient?: boolean;
           }
         >();
         for (const task of message.tasks) {
@@ -5117,6 +5133,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             taskId: RuntimeTaskId.make(task.task_id),
             ...(description ? { description } : {}),
             ...(taskType ? { taskType } : {}),
+            ...(task.ambient === true ? { ambient: true } : {}),
           });
         }
         yield* offerRuntimeEvent({
@@ -5136,6 +5153,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const ownerAgentToolUseId = toolUseId
           ? context.subagentToolUseOwners.get(toolUseId)
           : undefined;
+        const isBackgrounded =
+          typeof message.is_backgrounded === "boolean" ? message.is_backgrounded : undefined;
+        const spawnDepth =
+          typeof message.spawn_depth === "number" && Number.isInteger(message.spawn_depth)
+            ? Math.max(0, message.spawn_depth)
+            : undefined;
+        const ambient = message.ambient === true;
         yield* emitTaskStartedOnce(
           context,
           {
@@ -5145,9 +5169,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(subagentType ? { subagentType } : {}),
             ...(taskType ? { taskType } : {}),
             ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
+            ...(isBackgrounded !== undefined ? { isBackgrounded } : {}),
+            ...(spawnDepth !== undefined ? { spawnDepth } : {}),
+            ...(ambient ? { ambient } : {}),
           },
           message,
         );
+        // The SDK states an agent's nesting depth only here; the spawn call
+        // is what the roster row is keyed by until the agent id is known.
+        if (spawnDepth !== undefined && toolUseId) {
+          yield* emitSubagentMetadata(context, { callId: toolUseId, treeDepth: spawnDepth });
+        }
         return;
       }
       case "task_progress": {
@@ -6474,6 +6506,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // and streams them into the collab tool item instead. Travels via the
         // control-protocol initConfig, so older CLIs just ignore it.
         forwardSubagentText: true,
+        // Stop ends the current turn only; background agents and workflows
+        // keep running and are stopped one at a time from the Agents tab.
+        // Without this the CLI fails closed and an interrupt kills them all.
+        perTaskStopAffordance: true,
         canUseTool,
         hooks: {
           PostToolUse: [

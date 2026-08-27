@@ -3354,8 +3354,37 @@ describe("ClaudeAdapterLive", () => {
           description: "Run dev server",
           tool_use_id: "toolu-main-bash",
           task_type: "local_bash",
+          is_backgrounded: true,
           session_id: "sdk-session-owned-task",
           uuid: "main-task-started",
+        } as unknown as SDKMessage);
+
+        // The agent's own task states its nesting depth; that is the only
+        // place the SDK does, and the spawn call keys the roster row.
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-agent",
+          description: "Fix the reactor",
+          tool_use_id: "tool-task-owner",
+          task_type: "local_agent",
+          subagent_type: "claude",
+          is_backgrounded: false,
+          spawn_depth: 1,
+          session_id: "sdk-session-owned-task",
+          uuid: "agent-task-started",
+        } as unknown as SDKMessage);
+
+        // Ambient housekeeping is reported but never counts as pending work.
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-watch",
+          description: "Live update watcher",
+          task_type: "local_bash",
+          ambient: true,
+          session_id: "sdk-session-owned-task",
+          uuid: "watch-task-started",
         } as unknown as SDKMessage);
 
         harness.query.emit({
@@ -3394,6 +3423,34 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(mainStarted?.type, "task.started");
         if (mainStarted?.type === "task.started") {
           assert.isUndefined(mainStarted.payload.ownerAgentToolUseId);
+          assert.equal(mainStarted.payload.isBackgrounded, true);
+        }
+        const agentStarted = startedEvents.find(
+          (event) => event.type === "task.started" && String(event.payload.taskId) === "task-agent",
+        );
+        assert.equal(agentStarted?.type, "task.started");
+        if (agentStarted?.type === "task.started") {
+          assert.equal(agentStarted.payload.isBackgrounded, false);
+          assert.equal(agentStarted.payload.spawnDepth, 1);
+          assert.isUndefined(agentStarted.payload.ambient);
+        }
+        const depthMetadata = runtimeEvents.find(
+          (event) =>
+            event.type === "subagent.metadata.updated" &&
+            event.payload.callId === "tool-task-owner" &&
+            event.payload.treeDepth !== undefined,
+        );
+        assert.equal(depthMetadata?.type, "subagent.metadata.updated");
+        if (depthMetadata?.type === "subagent.metadata.updated") {
+          assert.equal(depthMetadata.payload.treeDepth, 1);
+        }
+        const watchStarted = startedEvents.find(
+          (event) => event.type === "task.started" && String(event.payload.taskId) === "task-watch",
+        );
+        assert.equal(watchStarted?.type, "task.started");
+        if (watchStarted?.type === "task.started") {
+          assert.equal(watchStarted.payload.ambient, true);
+          assert.equal(watchStarted.payload.pendingCountManagedBySnapshot, true);
         }
         const ownedCompleted = runtimeEvents.find(
           (event) =>
