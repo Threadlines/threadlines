@@ -759,7 +759,9 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
 }
 
 function canonicalSubAgentActivityItem(item: CodexSubAgentActivityItem): Record<string, unknown> {
-  const running = item.kind !== "interrupted";
+  // "completed" (Codex 0.150+) and "interrupted" both end the agent; only the
+  // first is a clean finish.
+  const running = item.kind === "started" || item.kind === "interacted";
   return {
     ...item,
     // Keep the native fields above while exposing the stable collab-agent
@@ -774,7 +776,7 @@ function canonicalSubAgentActivityItem(item: CodexSubAgentActivityItem): Record<
     receiverThreadIds: [item.agentThreadId],
     agentsStates: {
       [item.agentThreadId]: {
-        status: running ? "running" : "interrupted",
+        status: running ? "running" : item.kind === "interrupted" ? "interrupted" : "completed",
       },
     },
   };

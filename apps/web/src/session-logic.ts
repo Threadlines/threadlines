@@ -3584,7 +3584,7 @@ function extractSubagentWorkOperation(
   if (nativeKind === "started") {
     return "delegation";
   }
-  if (nativeKind === "interacted" || nativeKind === "interrupted") {
+  if (nativeKind === "interacted" || nativeKind === "interrupted" || nativeKind === "completed") {
     return "coordination";
   }
 

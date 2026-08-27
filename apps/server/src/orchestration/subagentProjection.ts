@@ -54,7 +54,16 @@ function lifecycleStatus(input: {
   }
   if (status === "completed" || status === "done") return "completed";
   if (status === "waiting" || input.tool === "wait") return "waiting";
-  if (input.nativeKind === "interrupted" || input.tool === "closeAgent") return "interrupted";
+  // Codex 0.150 ends an agent with kind "completed" (clean) or the
+  // interruptAgent tool (stopped), alongside the older interrupted/closeAgent.
+  if (input.nativeKind === "completed") return "completed";
+  if (
+    input.nativeKind === "interrupted" ||
+    input.tool === "closeAgent" ||
+    input.tool === "interruptAgent"
+  ) {
+    return "interrupted";
+  }
   return input.nativeKind === "started" ? "starting" : "running";
 }
 
