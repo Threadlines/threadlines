@@ -540,8 +540,11 @@ export function deriveActiveStatusLabel(input: {
   if (input.isSendBusy) return input.phase === "disconnected" ? "Connecting" : "Sending";
   // Private reasoning renders no timeline row; the working anchor's label is
   // where the user sees it. Only the word changes — the anchor keeps timing
-  // the whole turn.
-  const lastEntry = input.workLogEntries[input.workLogEntries.length - 1];
+  // the whole turn. Spawned agents' rows share this log, so read the main
+  // agent's newest row: a child's thinking must not flip the parent's word.
+  const lastEntry = input.workLogEntries.findLast(
+    (entry) => entry.sourceAgentThreadId === undefined,
+  );
   if (lastEntry?.redactedThinking && lastEntry.executionState === "running") {
     return "Thinking";
   }

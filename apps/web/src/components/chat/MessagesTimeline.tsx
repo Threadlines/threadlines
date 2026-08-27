@@ -132,6 +132,11 @@ import {
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
 import { SubagentTranscript } from "./SubagentTranscript";
+import {
+  WorkingAnchorDots,
+  isWaitingOnUserState,
+  workingDotsStateForLabel,
+} from "./WorkingAnchorDots";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -561,6 +566,9 @@ function revealTimelineSearchMatch(
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
   isWorking: boolean;
+  /** The turn settled but provider background work (a command, a cron) will
+   *  wake it again; the anchor stays up as "Waiting" until then. */
+  isWaitingOnBackgroundTasks?: boolean | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
@@ -628,6 +636,7 @@ interface MessagesTimelineProps {
 export const MessagesTimeline = memo(function MessagesTimeline({
   emptyState,
   isWorking,
+  isWaitingOnBackgroundTasks = false,
   activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
@@ -680,6 +689,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         completionSummary,
         isWorking,
         liveAgentCount,
+        isWaitingOnBackgroundTasks,
         activeStatusLabel,
         activeTurnInProgress,
         activeTurnId: activeTurnId ?? null,
@@ -693,6 +703,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionSummary,
       isWorking,
       liveAgentCount,
+      isWaitingOnBackgroundTasks,
       activeStatusLabel,
       activeTurnInProgress,
       activeTurnId,
@@ -2526,24 +2537,38 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   const liveSubagents = turnAgents?.subagents ?? [];
   const agentSummary = summarizeTurnAgents(liveSubagents);
   const liveAgentRoster = formatLiveAgentStatusRows(liveSubagents);
+  const liveAgentCount = liveSubagents.filter((item) => isActiveSubagentStatus(item.status)).length;
+  const dotsState = workingDotsStateForLabel(row.label, liveAgentCount);
+  const waitingOnUser = isWaitingOnUserState(dotsState);
 
   return (
-    // No node at all: the label shimmer is the anchor's whole "alive" signal,
-    // and accent dots stay reserved for the activity rows above. The pl-6
-    // keeps the text on the same column as the spine rows' text.
+    // The three dots are the anchor's whole "alive" signal; accent dots stay
+    // reserved for the activity rows above. The pl-6 keeps the text on the
+    // same column as the spine rows' text. Amber means the agent stopped and
+    // needs the user.
     <div className="py-0.5" data-turn-working-anchor="true">
       <div className="min-w-0 pl-6">
         <p className="flex min-w-0 items-center gap-1.5 pt-0.5 text-[11px] leading-4 text-muted-foreground/70">
-          <span className="shrink-0 tabular-nums">
+          <span className="flex shrink-0 items-center gap-1 tabular-nums">
+            <span
+              className={cn(
+                "flex items-center gap-1.5",
+                waitingOnUser && "text-warning-foreground",
+              )}
+            >
+              {/* -top-px: the 12px box centers half a pixel low against the
+                  11px type's caps, and dots read best a hair above middle. */}
+              <WorkingAnchorDots state={dotsState} className="relative -top-px -mr-0.5" />
+              <span className="working-shimmer" data-tone={waitingOnUser ? "warning" : undefined}>
+                {row.createdAt ? row.label : `${row.label}...`}
+              </span>
+            </span>
             {row.createdAt ? (
               <>
-                <span className="working-shimmer">{row.label}</span>{" "}
-                <span className="text-muted-foreground/40">·</span>{" "}
+                <span className="text-muted-foreground/40">·</span>
                 <WorkingTimer createdAt={row.createdAt} />
               </>
-            ) : (
-              <span className="working-shimmer">{`${row.label}...`}</span>
-            )}
+            ) : null}
           </span>
           {agentSummary && onOpenAgentsPanel ? (
             <>

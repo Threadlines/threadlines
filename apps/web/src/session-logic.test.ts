@@ -5995,6 +5995,48 @@ describe("deriveActiveStatusLabel", () => {
     ).toBe("Working");
   });
 
+  it("reads thinking from the main agent's newest row, not a spawned agent's", () => {
+    const mainThinking = {
+      id: "main-thinking",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      label: "Thinking",
+      tone: "thinking" as const,
+      turnId: TurnId.make("turn-1"),
+      redactedThinking: true,
+      executionState: "running" as const,
+    };
+    const childThinking = {
+      ...mainThinking,
+      id: "child-thinking",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      sourceAgentThreadId: "agent-1",
+    };
+    const mainCommand = {
+      id: "main-command",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      label: "Ran command",
+      tone: "tool" as const,
+      turnId: TurnId.make("turn-1"),
+    };
+    const childCommand = { ...mainCommand, id: "child-command", sourceAgentThreadId: "agent-1" };
+    const base = { phase: "running" as const, latestTurnId: TurnId.make("turn-1") };
+
+    // A child's thinking after the parent's tool work stays "Working"...
+    expect(
+      deriveActiveStatusLabel({
+        ...base,
+        workLogEntries: [mainCommand, childThinking],
+      }),
+    ).toBe("Working");
+    // ...and the parent's own thinking holds through the child's later rows.
+    expect(
+      deriveActiveStatusLabel({
+        ...base,
+        workLogEntries: [mainThinking, childThinking, childCommand],
+      }),
+    ).toBe("Thinking");
+  });
+
   it("keeps the generic live footer as working when no visible activity is available", () => {
     expect(
       deriveActiveStatusLabel({

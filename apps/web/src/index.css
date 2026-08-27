@@ -1054,10 +1054,8 @@ label:has(> select#reasoning-effort) select {
   animation: work-meta-enter 240ms ease-out;
 }
 
-/* The working anchor's "alive" signal: a soft sheen sweeps through the status
-   word, then rests for the second half of the cycle. The anchor's accent dot
-   stays still — motion lives in the typography, so it never competes with the
-   pulsing ticks on running activity rows. */
+/* The working anchor's status word: a soft sheen sweeps through it, then
+   rests for the second half of the cycle. Rides next to the dots below. */
 .working-shimmer {
   --shimmer-base: color-mix(in srgb, var(--muted-foreground) 72%, transparent);
   --shimmer-glint: color-mix(in srgb, var(--foreground) 95%, transparent);
@@ -1072,6 +1070,12 @@ label:has(> select#reasoning-effort) select {
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
+}
+
+/* Amber word for "the agent stopped and needs you" states. */
+.working-shimmer[data-tone="warning"] {
+  --shimmer-base: color-mix(in srgb, var(--warning-foreground) 88%, transparent);
+  --shimmer-glint: color-mix(in srgb, var(--warning-foreground) 55%, var(--foreground));
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -1093,6 +1097,580 @@ label:has(> select#reasoning-effort) select {
   }
   to {
     background-position: -100% 0;
+  }
+}
+
+/* The working anchor's live mark: three 3px dots in a 15×12 box whose motion
+   says what the turn is doing (WorkingAnchorDots.tsx). Dots only ever move;
+   they never stretch or scale. Every rest position is a whole pixel so
+   they stay crisp between moves. Motion is transform/opacity only, and most
+   loops hold still for part of each cycle.
+     .working-dots > span         pose wrapper: translate(--x, --y). A state
+                                  may spin the whole pose around the box center.
+     .working-dots > span > span  the dot: the state's loop runs here, relative
+                                  to the pose. Every loop starts and ends at rest.
+   Loops set --anim/--dur/--ease/--d instead of the `animation` shorthand so
+   the shared .6s head start survives: on a state change the component hops
+   each dot to its new pose with a script animation, and the head start keeps
+   the new loop from cutting in before the landing. */
+.working-dots {
+  --dots-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dots-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --dots-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --dots-rise: cubic-bezier(0.25, 0.6, 0.4, 1);
+  --dots-fall: cubic-bezier(0.6, 0, 0.75, 0.4);
+  position: relative;
+  display: inline-block;
+  width: 15px;
+  height: 12px;
+  flex: none;
+  color: currentColor;
+}
+
+.working-dots > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  width: 3px;
+  height: 3px;
+  transform-origin: 7.5px 6.5px;
+  transform: translate(var(--x), var(--y));
+  transition: transform 0.4s var(--dots-out);
+  animation-delay: 0.6s;
+}
+
+.working-dots > span > span {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+  transition: opacity 0.3s ease;
+  animation-name: var(--anim, none);
+  animation-duration: var(--dur, 2.8s);
+  animation-timing-function: var(--ease, ease-in-out);
+  animation-delay: calc(var(--d, 0s) + 0.6s);
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working-dots > span,
+  .working-dots > span > span {
+    animation-name: none !important;
+  }
+}
+
+/* Poses (top-left of each dot). Default = row. */
+.working-dots > span:nth-child(1) {
+  --x: 0px;
+  --y: 5px;
+}
+.working-dots > span:nth-child(2) {
+  --x: 6px;
+  --y: 5px;
+}
+.working-dots > span:nth-child(3) {
+  --x: 12px;
+  --y: 5px;
+}
+/* triangle around the box center */
+.working-dots[data-state="thinking"] > span:nth-child(1) {
+  --x: 6px;
+  --y: 2px;
+}
+.working-dots[data-state="thinking"] > span:nth-child(2) {
+  --x: 2px;
+  --y: 8px;
+}
+.working-dots[data-state="thinking"] > span:nth-child(3) {
+  --x: 10px;
+  --y: 8px;
+}
+/* column, centered: the caret */
+.working-dots[data-state="input"] > span:nth-child(1) {
+  --x: 6px;
+  --y: 1px;
+}
+.working-dots[data-state="input"] > span:nth-child(2) {
+  --x: 6px;
+  --y: 5px;
+}
+.working-dots[data-state="input"] > span:nth-child(3) {
+  --x: 6px;
+  --y: 9px;
+}
+/* column, left: lanes */
+.working-dots[data-state="agents"] > span:nth-child(1) {
+  --x: 0px;
+  --y: 1px;
+}
+.working-dots[data-state="agents"] > span:nth-child(2) {
+  --x: 0px;
+  --y: 5px;
+}
+.working-dots[data-state="agents"] > span:nth-child(3) {
+  --x: 0px;
+  --y: 9px;
+}
+
+/* Working — leapfrog. The back dot hops over the other two and lands in
+   front while they slide up a slot; three hops bring everyone home. */
+.working-dots[data-state="working"] > span > span {
+  --dur: 3.3s;
+}
+.working-dots[data-state="working"] > span:nth-child(1) > span {
+  --anim: working-dots-leap-1;
+}
+.working-dots[data-state="working"] > span:nth-child(2) > span {
+  --anim: working-dots-leap-2;
+}
+.working-dots[data-state="working"] > span:nth-child(3) > span {
+  --anim: working-dots-leap-3;
+}
+@keyframes working-dots-leap-1 {
+  0% {
+    transform: translate(0, 0);
+    animation-timing-function: var(--dots-rise);
+  }
+  9% {
+    transform: translate(6px, -5px);
+    animation-timing-function: var(--dots-fall);
+  }
+  18% {
+    transform: translate(12px, 0);
+    animation-timing-function: var(--dots-out);
+  }
+  21% {
+    transform: translate(12px, -1px);
+    animation-timing-function: var(--dots-in);
+  }
+  24%,
+  37.3% {
+    transform: translate(12px, 0);
+    animation-timing-function: var(--dots-spring);
+  }
+  50.3%,
+  70.6% {
+    transform: translate(6px, 0);
+    animation-timing-function: var(--dots-spring);
+  }
+  83.6%,
+  100% {
+    transform: translate(0, 0);
+  }
+}
+@keyframes working-dots-leap-2 {
+  0%,
+  4% {
+    transform: translate(0, 0);
+    animation-timing-function: var(--dots-spring);
+  }
+  17%,
+  33.3% {
+    transform: translate(-6px, 0);
+    animation-timing-function: var(--dots-rise);
+  }
+  42.3% {
+    transform: translate(0, -5px);
+    animation-timing-function: var(--dots-fall);
+  }
+  51.3% {
+    transform: translate(6px, 0);
+    animation-timing-function: var(--dots-out);
+  }
+  54.3% {
+    transform: translate(6px, -1px);
+    animation-timing-function: var(--dots-in);
+  }
+  57.3%,
+  70.6% {
+    transform: translate(6px, 0);
+    animation-timing-function: var(--dots-spring);
+  }
+  83.6%,
+  100% {
+    transform: translate(0, 0);
+  }
+}
+@keyframes working-dots-leap-3 {
+  0%,
+  4% {
+    transform: translate(0, 0);
+    animation-timing-function: var(--dots-spring);
+  }
+  17%,
+  37.3% {
+    transform: translate(-6px, 0);
+    animation-timing-function: var(--dots-spring);
+  }
+  50.3%,
+  66.6% {
+    transform: translate(-12px, 0);
+    animation-timing-function: var(--dots-rise);
+  }
+  75.6% {
+    transform: translate(-6px, -5px);
+    animation-timing-function: var(--dots-fall);
+  }
+  84.6% {
+    transform: translate(0, 0);
+    animation-timing-function: var(--dots-out);
+  }
+  87.6% {
+    transform: translate(0, -1px);
+    animation-timing-function: var(--dots-in);
+  }
+  90.6%,
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+/* Thinking — gather + spin. The triangle turns once every 8s (the pose
+   wrapper spins, so it starts at the resting triangle). Every 3.6s the dots
+   are pulled into the center, merge, hold a beat, and spring back out. The
+   pull runs on the dot inside the spinning frame, so it always aims at the
+   center. */
+.working-dots[data-state="thinking"] > span {
+  animation: working-dots-orbit 8s linear 0.6s infinite;
+}
+@keyframes working-dots-orbit {
+  from {
+    transform: rotate(0deg) translate(var(--x), var(--y));
+  }
+  to {
+    transform: rotate(360deg) translate(var(--x), var(--y));
+  }
+}
+.working-dots[data-state="thinking"] > span > span {
+  --anim: working-dots-gather;
+  --dur: 3.6s;
+}
+.working-dots[data-state="thinking"] > span:nth-child(1) > span {
+  --cx: 0px;
+  --cy: 3px;
+}
+.working-dots[data-state="thinking"] > span:nth-child(2) > span {
+  --cx: 4px;
+  --cy: -3px;
+}
+.working-dots[data-state="thinking"] > span:nth-child(3) > span {
+  --cx: -4px;
+  --cy: -3px;
+}
+@keyframes working-dots-gather {
+  0%,
+  14% {
+    transform: translate(0, 0);
+    animation-timing-function: var(--dots-in);
+  }
+  30%,
+  42% {
+    transform: translate(var(--cx), var(--cy));
+    animation-timing-function: var(--dots-spring);
+  }
+  58%,
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+/* Sending — off the edge. Each dot is pulled right, gaining speed, and drops
+   off the box edge, nearest first. They fade back in at rest. */
+.working-dots[data-state="sending"] > span > span {
+  --anim: working-dots-leave;
+  --dur: 3s;
+}
+.working-dots[data-state="sending"] > span:nth-child(1) > span {
+  --tx: 15px;
+  --d: 0.4s;
+}
+.working-dots[data-state="sending"] > span:nth-child(2) > span {
+  --tx: 9px;
+  --d: 0.2s;
+}
+.working-dots[data-state="sending"] > span:nth-child(3) > span {
+  --tx: 3px;
+}
+@keyframes working-dots-leave {
+  0% {
+    transform: translateX(0);
+    opacity: 1;
+    animation-timing-function: var(--dots-in);
+  }
+  24% {
+    transform: translateX(var(--tx));
+    opacity: 1;
+    animation-timing-function: linear;
+  }
+  30% {
+    transform: translateX(calc(var(--tx) + 3px));
+    opacity: 0;
+  }
+  31% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  52%,
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Connecting — meet. The outer dots accelerate inward and tap the middle
+   one; it hops on impact. Everyone eases back out. */
+.working-dots[data-state="connecting"] > span > span {
+  --dur: 2.8s;
+}
+.working-dots[data-state="connecting"] > span:nth-child(1) > span {
+  --anim: working-dots-meet;
+  --cx: 3px;
+}
+.working-dots[data-state="connecting"] > span:nth-child(3) > span {
+  --anim: working-dots-meet;
+  --cx: -3px;
+}
+.working-dots[data-state="connecting"] > span:nth-child(2) > span {
+  --anim: working-dots-meet-hit;
+}
+@keyframes working-dots-meet {
+  0%,
+  10% {
+    transform: translateX(0);
+    animation-timing-function: var(--dots-in);
+  }
+  36%,
+  40% {
+    transform: translateX(var(--cx));
+    animation-timing-function: var(--dots-out);
+  }
+  64%,
+  100% {
+    transform: translateX(0);
+  }
+}
+@keyframes working-dots-meet-hit {
+  0%,
+  36% {
+    transform: translateY(0);
+    animation-timing-function: var(--dots-out);
+  }
+  40% {
+    transform: translateY(-2px);
+    animation-timing-function: var(--dots-in);
+  }
+  46%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* Preparing — drop in. Blink the row out, then each dot falls into place
+   from above with a small bounce, one after another; the hold comes at the
+   end of the cycle so the loop is visibly moving as soon as it starts. */
+.working-dots[data-state="preparing"] > span > span {
+  --anim: working-dots-drop;
+  --dur: 3.2s;
+}
+.working-dots[data-state="preparing"] > span:nth-child(2) > span {
+  --d: 0.22s;
+}
+.working-dots[data-state="preparing"] > span:nth-child(3) > span {
+  --d: 0.44s;
+}
+@keyframes working-dots-drop {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  4% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  5% {
+    transform: translateY(-7px);
+    opacity: 0;
+  }
+  10% {
+    transform: translateY(-7px);
+    opacity: 1;
+    animation-timing-function: var(--dots-in);
+  }
+  20% {
+    transform: translateY(0);
+    animation-timing-function: var(--dots-out);
+  }
+  24% {
+    transform: translateY(-1.5px);
+    animation-timing-function: var(--dots-in);
+  }
+  28%,
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Waiting (for the model, or for background work to wake the turn) — ping
+   pong. The middle dot rolls into one neighbour, then the other; each
+   neighbour is knocked a pixel and settles back. */
+.working-dots[data-state="waiting"] > span > span {
+  --dur: 2.8s;
+}
+.working-dots[data-state="waiting"] > span:nth-child(2) > span {
+  --anim: working-dots-pong;
+}
+.working-dots[data-state="waiting"] > span:nth-child(3) > span {
+  --anim: working-dots-knocked;
+  --nx: 1px;
+}
+.working-dots[data-state="waiting"] > span:nth-child(1) > span {
+  --anim: working-dots-knocked;
+  --nx: -1px;
+  --d: 1.4s;
+}
+@keyframes working-dots-pong {
+  0% {
+    transform: translateX(0);
+    animation-timing-function: var(--dots-in);
+  }
+  22% {
+    transform: translateX(3px);
+    animation-timing-function: var(--dots-out);
+  }
+  47% {
+    transform: translateX(0);
+    animation-timing-function: var(--dots-in);
+  }
+  72% {
+    transform: translateX(-3px);
+    animation-timing-function: var(--dots-out);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+@keyframes working-dots-knocked {
+  0%,
+  21% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(var(--nx));
+    animation-timing-function: var(--dots-out);
+  }
+  38%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* Waiting for approval — knock knock. All three hop twice, a ripple from
+   left to right, then rest. */
+.working-dots[data-state="approval"] > span > span {
+  --anim: working-dots-hop2;
+  --dur: 3s;
+}
+.working-dots[data-state="approval"] > span:nth-child(2) > span {
+  --d: 0.07s;
+}
+.working-dots[data-state="approval"] > span:nth-child(3) > span {
+  --d: 0.14s;
+}
+@keyframes working-dots-hop2 {
+  0%,
+  6% {
+    transform: translateY(0);
+    animation-timing-function: var(--dots-rise);
+  }
+  12% {
+    transform: translateY(-2.5px);
+    animation-timing-function: var(--dots-fall);
+  }
+  18% {
+    transform: translateY(0);
+    animation-timing-function: var(--dots-rise);
+  }
+  24% {
+    transform: translateY(-2.5px);
+    animation-timing-function: var(--dots-fall);
+  }
+  30%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* Waiting for input — caret. The dots stack into a dotted cursor and blink. */
+.working-dots[data-state="input"] > span > span {
+  --anim: working-dots-blink;
+  --dur: 1.2s;
+  --ease: steps(1);
+}
+@keyframes working-dots-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Reverting checkpoint — rewind. A wave rolls left through the row: last
+   dot, middle, first. */
+.working-dots[data-state="reverting"] > span > span {
+  --anim: working-dots-rewind;
+  --dur: 2.2s;
+}
+.working-dots[data-state="reverting"] > span:nth-child(2) > span {
+  --d: 0.14s;
+}
+.working-dots[data-state="reverting"] > span:nth-child(1) > span {
+  --d: 0.28s;
+}
+@keyframes working-dots-rewind {
+  0% {
+    transform: translateX(0);
+    animation-timing-function: var(--dots-out);
+  }
+  20% {
+    transform: translateX(-3px);
+    animation-timing-function: var(--dots-spring);
+  }
+  42%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* Agents working — shuttles. Stacked; each dot glides along its own lane and
+   back at its own pace. */
+.working-dots[data-state="agents"] > span > span {
+  --anim: working-dots-shuttle;
+  --ease: ease-in-out;
+}
+.working-dots[data-state="agents"] > span:nth-child(1) > span {
+  --dur: 3.2s;
+}
+.working-dots[data-state="agents"] > span:nth-child(2) > span {
+  --dur: 4.1s;
+  --d: 0.5s;
+}
+.working-dots[data-state="agents"] > span:nth-child(3) > span {
+  --dur: 3.6s;
+  --d: 1s;
+}
+@keyframes working-dots-shuttle {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(12px);
   }
 }
 

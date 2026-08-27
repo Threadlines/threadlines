@@ -721,14 +721,38 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
     expect(markup).toContain('data-turn-working-anchor="true"');
-    // The anchor's accent dot holds still; the status word's shimmer is the
-    // "alive" signal, so no halo pulses anywhere in the timeline.
+    // The anchor's three dots and the shimmering word are the "alive" signal,
+    // so no halo pulses anywhere in the timeline.
+    expect(markup).toContain('class="working-dots relative -top-px -mr-0.5" data-state="working"');
     expect(markup).toContain('<span class="working-shimmer">Working</span>');
+    expect(markup).not.toContain("text-warning-foreground");
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
     expect(markup).toContain("animate-status-pulse rounded-full bg-primary-graph/80");
     expect(markup).not.toContain("Tool still running");
     expect(markup).not.toContain("Explored project");
     expect(markup).not.toContain("Show activity");
+  });
+
+  it("gives the working anchor the label's dot motion and turns amber when waiting on the user", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={TurnId.make("turn-1")}
+        activeStatusLabel="Waiting for approval"
+        activeTurnStartedAt="2026-03-17T19:12:21.000Z"
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain('data-turn-working-anchor="true"');
+    expect(markup).toContain('data-state="approval"');
+    expect(markup).toContain("text-warning-foreground");
+    expect(markup).toContain(
+      '<span class="working-shimmer" data-tone="warning">Waiting for approval</span>',
+    );
   });
 
   it("renders warning and error work activity with solid threadline spine dots", async () => {
@@ -807,10 +831,10 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-live-activity-strip="true"');
     expect(markup).not.toContain('data-work-activity-inline="true"');
     expect(markup).toContain("Working through the next step");
-    // The working anchor terminates the thread with a still accent dot and a
-    // shimmering status word — no halo pulses in the timeline.
+    // The working anchor terminates the thread with its dots — no halo pulses
+    // in the timeline.
     expect(markup).toContain('data-turn-working-anchor="true"');
-    expect(markup).toContain("working-shimmer");
+    expect(markup).toContain('class="working-dots');
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);
   });
 
@@ -1482,10 +1506,10 @@ describe("MessagesTimeline", () => {
 
     // The work group is no longer the tail, so it freezes in place (no accent,
     // no receipt collapse mid-turn) while the working anchor holds the bottom
-    // with its still dot and shimmering status word.
+    // with its dots.
     expect(markup).toContain('data-live-activity-frozen="true"');
     expect(markup).toContain('data-turn-working-anchor="true"');
-    expect(markup).toContain("working-shimmer");
+    expect(markup).toContain('class="working-dots');
     expect(markup).not.toContain("data-work-activity-receipt");
     expect(markup).toContain("The resource probe returned");
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(0);

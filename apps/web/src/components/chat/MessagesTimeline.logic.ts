@@ -282,6 +282,8 @@ export function deriveMessagesTimelineRows(input: {
    *  anchor stays up for them after the turn settles, so a background agent's
    *  live line keeps one home at the tail instead of vanishing. */
   liveAgentCount?: number | undefined;
+  /** The turn settled but provider background work will wake it again. */
+  isWaitingOnBackgroundTasks?: boolean | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress?: boolean;
   activeTurnId?: TurnId | null;
@@ -481,6 +483,15 @@ export function deriveMessagesTimelineRows(input: {
       id: "working-indicator-row",
       createdAt: null,
       label: liveAgentCount === 1 ? "Agent working" : "Agents working",
+    });
+  } else if (input.isWaitingOnBackgroundTasks) {
+    // The turn settled but a background task (a command, a cron) will wake
+    // it: the anchor stays up as a plain wait, without a turn timer.
+    nextRows.push({
+      kind: "working",
+      id: "working-indicator-row",
+      createdAt: null,
+      label: "Waiting",
     });
   }
 

@@ -1213,6 +1213,8 @@ describe("MessagesTimeline", () => {
       const anchor = document.querySelector("[data-turn-working-anchor='true']");
       expect(anchor).not.toBeNull();
       expect(anchor?.querySelector("[data-turn-agents-summary='true']")).not.toBeNull();
+      // The word stays the turn's own status; the dots say agents are running.
+      expect(anchor?.querySelector<HTMLElement>(".working-dots")?.dataset.state).toBe("agents");
       expect(document.querySelector("[data-live-activity-strip='true']")).not.toBeNull();
     } finally {
       await screen.unmount();
@@ -1364,6 +1366,8 @@ describe("MessagesTimeline", () => {
       const anchor = document.querySelector("[data-turn-working-anchor='true']");
       expect(anchor).not.toBeNull();
       expect(anchor?.textContent).toContain("Agent working");
+      // The settled turn is only waiting on its agent: the dots say so.
+      expect(anchor?.querySelector<HTMLElement>(".working-dots")?.dataset.state).toBe("agents");
       await vi.waitFor(() => {
         expect(document.querySelectorAll("[data-turn-live-agent-name='true']").length).toBe(1);
       });

@@ -1388,6 +1388,10 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [activeThreadKey, existingOpenTerminalThreadKeys, terminalState.terminalOpen]);
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
+  // Same rule as the sidebar's "Background" pill: settled, but a provider
+  // task will start the thread back up on its own.
+  const isWaitingOnBackgroundTasks =
+    latestTurnSettled && (activeThread?.session?.pendingBackgroundTaskCount ?? 0) > 0;
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -6651,6 +6655,7 @@ export default function ChatView(props: ChatViewProps) {
               key={activeThread.id}
               emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
               isWorking={isWorking}
+              isWaitingOnBackgroundTasks={isWaitingOnBackgroundTasks}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}

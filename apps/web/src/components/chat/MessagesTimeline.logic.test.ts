@@ -457,6 +457,28 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("keeps the working anchor up as a wait while background tasks will wake the settled turn", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      liveAgentCount: 0,
+      isWaitingOnBackgroundTasks: true,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toEqual([
+      {
+        kind: "working",
+        id: "working-indicator-row",
+        createdAt: null,
+        label: "Waiting",
+      },
+    ]);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
