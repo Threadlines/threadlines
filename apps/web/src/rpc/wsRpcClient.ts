@@ -13,6 +13,8 @@ import {
   type ProviderExternalThreadImportResult,
   type ProviderExternalThreadListInput,
   type ProviderExternalThreadListResult,
+  type ProviderSubagentInputRequest,
+  type ProviderSubagentInputResult,
   type ProviderSubagentTranscriptInput,
   type ProviderSubagentTranscriptResult,
   type ProviderStartReviewResult,
@@ -191,6 +193,9 @@ export interface WsRpcClient {
     readonly readSubagentTranscript: (
       input: ProviderSubagentTranscriptInput,
     ) => Promise<ProviderSubagentTranscriptResult>;
+    readonly sendSubagentInput: (
+      input: ProviderSubagentInputRequest,
+    ) => Promise<ProviderSubagentInputResult>;
     readonly listExternalProviderThreads: (
       input: ProviderExternalThreadListInput,
     ) => Promise<ProviderExternalThreadListResult>;
@@ -568,6 +573,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverStartProviderReview](input)),
       readSubagentTranscript: (input) =>
         transport.request((client) => client[WS_METHODS.serverReadSubagentTranscript](input)),
+      sendSubagentInput: (input) =>
+        transport.request((client) => client[WS_METHODS.serverSendSubagentInput](input)),
       listExternalProviderThreads: (input) =>
         transport.request((client) => client[WS_METHODS.serverListExternalProviderThreads](input)),
       importExternalProviderThread: (input) =>

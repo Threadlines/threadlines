@@ -401,6 +401,29 @@ export class ProviderSubagentTranscriptError extends Schema.TaggedError<Provider
   },
 ) {}
 
+/** A user message sent straight to a spawned subagent, bypassing the parent. */
+export const ProviderSubagentInputRequest = Schema.Struct({
+  threadId: ThreadId,
+  /** Provider-side subagent id, as on ProviderSubagentTranscriptInput. */
+  agentId: TrimmedNonEmptyString,
+  text: TrimmedNonEmptyString,
+});
+export type ProviderSubagentInputRequest = typeof ProviderSubagentInputRequest.Type;
+
+export const ProviderSubagentInputResult = Schema.Struct({
+  /** The provider's id for the turn the message started, when it reports one. */
+  turnId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderSubagentInputResult = typeof ProviderSubagentInputResult.Type;
+
+export class ProviderSubagentInputError extends Schema.TaggedError<ProviderSubagentInputError>()(
+  "ProviderSubagentInputError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),

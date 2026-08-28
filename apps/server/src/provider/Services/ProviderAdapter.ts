@@ -24,6 +24,8 @@ import type {
   ProviderRealtimeAppendAudioInput,
   ProviderRealtimeListVoicesResult,
   ProviderRealtimeOutputModality,
+  ProviderSubagentInputRequest,
+  ProviderSubagentInputResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderSteerTurnInput,
@@ -282,6 +284,16 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     input: ProviderSubagentTranscriptInput,
   ) => Effect.Effect<ProviderSubagentTranscriptResult, TError>;
+
+  /**
+   * Send a user message straight to a spawned subagent, starting a turn on
+   * its own thread. Optional: only providers whose runtime accepts direct
+   * input to a child (Codex) implement it.
+   */
+  readonly sendSubagentInput?: (
+    threadId: ThreadId,
+    input: ProviderSubagentInputRequest,
+  ) => Effect.Effect<ProviderSubagentInputResult, TError>;
 
   /**
    * Where a spawned subagent is working, when it was given its own checkout.

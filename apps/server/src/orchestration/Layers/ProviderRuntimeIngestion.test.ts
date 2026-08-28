@@ -141,6 +141,7 @@ function createProviderServiceHarness() {
     },
     rollbackConversation: () => unsupported(),
     readSubagentTranscript: () => unsupported(),
+    sendSubagentInput: () => unsupported(),
     resolveSubagentWorktree: ({ toolUseId }) =>
       Effect.succeed(subagentWorktreesByToolUseId.get(toolUseId) ?? null),
     deleteThread: () => unsupported(),

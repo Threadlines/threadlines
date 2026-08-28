@@ -284,6 +284,13 @@ export interface CodexSessionRuntimeShape {
   readonly readStoredThreadItems: (
     input: EffectCodexSchema.V2ThreadItemsListParams,
   ) => Effect.Effect<EffectCodexSchema.V2ThreadItemsListResponse, CodexSessionRuntimeError>;
+  /** Start a turn on another loaded provider thread (a spawned subagent) with
+   *  a plain text message. Callers must authorize the thread first; the
+   *  app-server rejects threads that do not accept direct input. */
+  readonly startStoredThreadTurn: (
+    providerThreadId: string,
+    text: string,
+  ) => Effect.Effect<EffectCodexSchema.V2TurnStartResponse, CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
   ) => Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
@@ -2428,6 +2435,11 @@ export const makeCodexSessionRuntime = (
           })
           .pipe(Effect.map((response) => response.thread)),
       readStoredThreadItems: (input) => client.request("thread/items/list", input),
+      startStoredThreadTurn: (providerThreadId, text) =>
+        client.request("turn/start", {
+          threadId: providerThreadId,
+          input: [{ type: "text", text }],
+        }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
