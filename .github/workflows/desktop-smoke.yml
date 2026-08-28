@@ -127,7 +127,7 @@ jobs:
         run: vp install --frozen-lockfile
 
       - name: Build Linux AppImage
-        run: vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.2.2-smoke.0
+        run: vp run dist:desktop:artifact --platform linux --target AppImage --arch x64 --build-version 0.2.2-smoke.0
 
       - name: Boot AppImage and verify backend serves
         timeout-minutes: 3
