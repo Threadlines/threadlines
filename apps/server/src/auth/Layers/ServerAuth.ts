@@ -197,15 +197,13 @@ export const makeServerAuth = Effect.gen(function* () {
         },
       })
       .pipe(
-        Effect.map(
-          (session): AuthenticatedSession => ({
-            sessionId: session.sessionId,
-            subject: TRUSTED_LOOPBACK_BROWSER_DEV_SUBJECT,
-            method: session.method,
-            role: session.role,
-            expiresAt: session.expiresAt,
-          }),
-        ),
+        Effect.map((session): AuthenticatedSession => ({
+          sessionId: session.sessionId,
+          subject: TRUSTED_LOOPBACK_BROWSER_DEV_SUBJECT,
+          method: session.method,
+          role: session.role,
+          expiresAt: session.expiresAt,
+        })),
         Effect.mapError(
           (cause) =>
             new AuthError({
@@ -418,12 +416,10 @@ export const makeServerAuth = Effect.gen(function* () {
       ),
       Effect.map((clientSessions) =>
         clientSessions
-          .map(
-            (clientSession): AuthClientSession => ({
-              ...clientSession,
-              current: clientSession.sessionId === currentSessionId,
-            }),
-          )
+          .map((clientSession): AuthClientSession => ({
+            ...clientSession,
+            current: clientSession.sessionId === currentSessionId,
+          }))
           .filter(
             (clientSession) => clientSession.current || !isInternalClientSession(clientSession),
           ),

@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import * as Crypto from "node:crypto";
 import { ServerConfig } from "../config.ts";
 
-class IdentifyUserError extends Schema.TaggedErrorClass<IdentifyUserError>()("IdentifyUserError", {
+class IdentifyUserError extends Schema.TaggedError<IdentifyUserError>()("IdentifyUserError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

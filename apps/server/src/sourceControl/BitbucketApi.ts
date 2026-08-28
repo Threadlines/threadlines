@@ -60,7 +60,7 @@ const BitbucketApiEnvConfig = Config.all({
   ),
 });
 
-export class BitbucketApiError extends Schema.TaggedErrorClass<BitbucketApiError>()(
+export class BitbucketApiError extends Schema.TaggedError<BitbucketApiError>()(
   "BitbucketApiError",
   {
     operation: Schema.String,

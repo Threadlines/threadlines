@@ -50,7 +50,7 @@ export const LaunchEditorInput = Schema.Struct({
 });
 export type LaunchEditorInput = typeof LaunchEditorInput.Type;
 
-export class ExternalLauncherError extends Schema.TaggedErrorClass<ExternalLauncherError>()(
+export class ExternalLauncherError extends Schema.TaggedError<ExternalLauncherError>()(
   "ExternalLauncherError",
   {
     message: Schema.String,

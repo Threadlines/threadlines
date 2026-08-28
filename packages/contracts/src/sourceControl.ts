@@ -237,7 +237,7 @@ export const SourceControlToolUpdateResult = Schema.Struct({
 });
 export type SourceControlToolUpdateResult = typeof SourceControlToolUpdateResult.Type;
 
-export class SourceControlToolUpdateError extends Schema.TaggedErrorClass<SourceControlToolUpdateError>()(
+export class SourceControlToolUpdateError extends Schema.TaggedError<SourceControlToolUpdateError>()(
   "SourceControlToolUpdateError",
   {
     target: SourceControlToolUpdateTarget,
@@ -249,7 +249,7 @@ export class SourceControlToolUpdateError extends Schema.TaggedErrorClass<Source
   }
 }
 
-export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceControlProviderError>()(
+export class SourceControlProviderError extends Schema.TaggedError<SourceControlProviderError>()(
   "SourceControlProviderError",
   {
     provider: SourceControlProviderKind,
@@ -263,7 +263,7 @@ export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceCo
   }
 }
 
-export class SourceControlRepositoryError extends Schema.TaggedErrorClass<SourceControlRepositoryError>()(
+export class SourceControlRepositoryError extends Schema.TaggedError<SourceControlRepositoryError>()(
   "SourceControlRepositoryError",
   {
     provider: SourceControlProviderKind,

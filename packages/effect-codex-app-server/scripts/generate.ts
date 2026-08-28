@@ -49,7 +49,7 @@ interface ProtocolSchemaPaths {
   readonly typescriptDir: string;
 }
 
-class GeneratorError extends Schema.TaggedErrorClass<GeneratorError>()("GeneratorError", {
+class GeneratorError extends Schema.TaggedError<GeneratorError>()("GeneratorError", {
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {

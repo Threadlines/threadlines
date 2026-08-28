@@ -64,7 +64,7 @@ export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(functi
   };
 });
 
-export class CodexShadowHomeError extends Schema.TaggedErrorClass<CodexShadowHomeError>()(
+export class CodexShadowHomeError extends Schema.TaggedError<CodexShadowHomeError>()(
   "CodexShadowHomeError",
   {
     detail: Schema.String,

@@ -5,7 +5,7 @@ import * as SchemaIssue from "effect/SchemaIssue";
 // Core Persistence Errors
 // ===============================
 
-export class PersistenceSqlError extends Schema.TaggedErrorClass<PersistenceSqlError>()(
+export class PersistenceSqlError extends Schema.TaggedError<PersistenceSqlError>()(
   "PersistenceSqlError",
   {
     operation: Schema.String,
@@ -18,7 +18,7 @@ export class PersistenceSqlError extends Schema.TaggedErrorClass<PersistenceSqlE
   }
 }
 
-export class PersistenceDecodeError extends Schema.TaggedErrorClass<PersistenceDecodeError>()(
+export class PersistenceDecodeError extends Schema.TaggedError<PersistenceDecodeError>()(
   "PersistenceDecodeError",
   {
     operation: Schema.String,
@@ -67,7 +67,7 @@ export const isPersistenceError = (u: unknown) =>
 // Provider Session Repository Errors
 // ===============================
 
-export class ProviderSessionRepositoryValidationError extends Schema.TaggedErrorClass<ProviderSessionRepositoryValidationError>()(
+export class ProviderSessionRepositoryValidationError extends Schema.TaggedError<ProviderSessionRepositoryValidationError>()(
   "ProviderSessionRepositoryValidationError",
   {
     operation: Schema.String,
@@ -80,7 +80,7 @@ export class ProviderSessionRepositoryValidationError extends Schema.TaggedError
   }
 }
 
-export class ProviderSessionRepositoryPersistenceError extends Schema.TaggedErrorClass<ProviderSessionRepositoryPersistenceError>()(
+export class ProviderSessionRepositoryPersistenceError extends Schema.TaggedError<ProviderSessionRepositoryPersistenceError>()(
   "ProviderSessionRepositoryPersistenceError",
   {
     operation: Schema.String,

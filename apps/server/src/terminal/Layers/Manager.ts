@@ -86,7 +86,7 @@ const POWERSHELL_PROMPT_HOOK =
   "} } | Out-Null";
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubprocessCheckError>()(
+class TerminalSubprocessCheckError extends Schema.TaggedError<TerminalSubprocessCheckError>()(
   "TerminalSubprocessCheckError",
   {
     message: Schema.String,
@@ -95,7 +95,7 @@ class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubpr
   },
 ) {}
 
-class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcessSignalError>()(
+class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSignalError>()(
   "TerminalProcessSignalError",
   {
     message: Schema.String,
@@ -2446,20 +2446,18 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             const currentActivityEvents = yield* modifyManagerState((state) => {
               terminalEventListeners.add(bufferedListener);
               return [
-                [...state.sessions.values()].map(
-                  (session): TerminalEvent => ({
-                    type: "activity",
-                    threadId: session.threadId,
-                    terminalId: session.terminalId,
-                    createdAt: session.updatedAt,
-                    hasRunningSubprocess:
-                      session.status === "running" && session.hasRunningSubprocess,
-                    command:
-                      session.status === "running" && session.hasRunningSubprocess
-                        ? session.runningSubprocessCommand
-                        : null,
-                  }),
-                ),
+                [...state.sessions.values()].map((session): TerminalEvent => ({
+                  type: "activity",
+                  threadId: session.threadId,
+                  terminalId: session.terminalId,
+                  createdAt: session.updatedAt,
+                  hasRunningSubprocess:
+                    session.status === "running" && session.hasRunningSubprocess,
+                  command:
+                    session.status === "running" && session.hasRunningSubprocess
+                      ? session.runningSubprocessCommand
+                      : null,
+                })),
                 state,
               ] as const;
             });

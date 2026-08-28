@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -293,7 +292,7 @@ export const ChatAttachmentReadResult = Schema.Struct({
 });
 export type ChatAttachmentReadResult = typeof ChatAttachmentReadResult.Type;
 
-export class ChatAttachmentReadError extends Schema.TaggedErrorClass<ChatAttachmentReadError>()(
+export class ChatAttachmentReadError extends Schema.TaggedError<ChatAttachmentReadError>()(
   "ChatAttachmentReadError",
   {
     message: TrimmedNonEmptyString,
@@ -325,7 +324,7 @@ export const CodexInlineVisualizationReadResult = Schema.Struct({
 });
 export type CodexInlineVisualizationReadResult = typeof CodexInlineVisualizationReadResult.Type;
 
-export class CodexInlineVisualizationReadError extends Schema.TaggedErrorClass<CodexInlineVisualizationReadError>()(
+export class CodexInlineVisualizationReadError extends Schema.TaggedError<CodexInlineVisualizationReadError>()(
   "CodexInlineVisualizationReadError",
   {
     message: TrimmedNonEmptyString,
@@ -2153,7 +2152,7 @@ export const TurnCountRange = Schema.Struct({
   Schema.makeFilter(
     (input) =>
       input.fromTurnCount <= input.toTurnCount ||
-      new SchemaIssue.InvalidValue(Option.some(input.fromTurnCount), {
+      new SchemaIssue.InvalidValue({
         message: "fromTurnCount must be less than or equal to toTurnCount",
       }),
     { identifier: "OrchestrationTurnDiffRange" },
@@ -2358,7 +2357,7 @@ export const OrchestrationRpcSchemas = {
   },
 } as const;
 
-export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
+export class OrchestrationGetSnapshotError extends Schema.TaggedError<OrchestrationGetSnapshotError>()(
   "OrchestrationGetSnapshotError",
   {
     message: TrimmedNonEmptyString,
@@ -2366,7 +2365,7 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<Orche
   },
 ) {}
 
-export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<OrchestrationDispatchCommandError>()(
+export class OrchestrationDispatchCommandError extends Schema.TaggedError<OrchestrationDispatchCommandError>()(
   "OrchestrationDispatchCommandError",
   {
     message: TrimmedNonEmptyString,
@@ -2374,7 +2373,7 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<O
   },
 ) {}
 
-export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<OrchestrationGetTurnDiffError>()(
+export class OrchestrationGetTurnDiffError extends Schema.TaggedError<OrchestrationGetTurnDiffError>()(
   "OrchestrationGetTurnDiffError",
   {
     message: TrimmedNonEmptyString,
@@ -2382,7 +2381,7 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<Orche
   },
 ) {}
 
-export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass<OrchestrationGetFullThreadDiffError>()(
+export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
   {
     message: TrimmedNonEmptyString,
@@ -2390,7 +2389,7 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass
   },
 ) {}
 
-export class OrchestrationGetRevertPlanError extends Schema.TaggedErrorClass<OrchestrationGetRevertPlanError>()(
+export class OrchestrationGetRevertPlanError extends Schema.TaggedError<OrchestrationGetRevertPlanError>()(
   "OrchestrationGetRevertPlanError",
   {
     message: TrimmedNonEmptyString,
@@ -2398,7 +2397,7 @@ export class OrchestrationGetRevertPlanError extends Schema.TaggedErrorClass<Orc
   },
 ) {}
 
-export class OrchestrationThreadSearchError extends Schema.TaggedErrorClass<OrchestrationThreadSearchError>()(
+export class OrchestrationThreadSearchError extends Schema.TaggedError<OrchestrationThreadSearchError>()(
   "OrchestrationThreadSearchError",
   {
     message: TrimmedNonEmptyString,
@@ -2406,7 +2405,7 @@ export class OrchestrationThreadSearchError extends Schema.TaggedErrorClass<Orch
   },
 ) {}
 
-export class OrchestrationReplayEventsError extends Schema.TaggedErrorClass<OrchestrationReplayEventsError>()(
+export class OrchestrationReplayEventsError extends Schema.TaggedError<OrchestrationReplayEventsError>()(
   "OrchestrationReplayEventsError",
   {
     message: TrimmedNonEmptyString,

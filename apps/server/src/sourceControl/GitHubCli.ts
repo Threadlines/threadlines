@@ -17,7 +17,7 @@ import * as GitHubPullRequests from "./gitHubPullRequests.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("GitHubCliError", {
+export class GitHubCliError extends Schema.TaggedError<GitHubCliError>()("GitHubCliError", {
   operation: Schema.String,
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),

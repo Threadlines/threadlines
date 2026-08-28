@@ -551,12 +551,10 @@ export function usePreviewAutomationHost(input: {
         // through anyway must still answer: an unhandled rejection here is
         // twenty seconds of silence for the agent, with nothing logged.
         void handle(request)
-          .catch(
-            (cause): PreviewAutomationResponse => ({
-              requestId: request.requestId,
-              error: describe(cause),
-            }),
-          )
+          .catch((cause): PreviewAutomationResponse => ({
+            requestId: request.requestId,
+            error: describe(cause),
+          }))
           .then((response) => api.previewAutomation.respond(response));
       },
     );

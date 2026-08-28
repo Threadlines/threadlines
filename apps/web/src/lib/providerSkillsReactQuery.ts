@@ -53,17 +53,15 @@ export function providerSkillsQueryOptions(input: {
       if (provider.status === "error") {
         throw new Error(provider.message || "Could not load project skills.");
       }
-      return provider.skills.map(
-        (skill): ServerProviderSkill => ({
-          name: skill.name,
-          path: skill.path,
-          enabled: skill.enabled ?? true,
-          ...(skill.displayName ? { displayName: skill.displayName } : {}),
-          ...(skill.description ? { description: skill.description } : {}),
-          ...(skill.shortDescription ? { shortDescription: skill.shortDescription } : {}),
-          ...(skill.scope ? { scope: skill.scope } : {}),
-        }),
-      );
+      return provider.skills.map((skill): ServerProviderSkill => ({
+        name: skill.name,
+        path: skill.path,
+        enabled: skill.enabled ?? true,
+        ...(skill.displayName ? { displayName: skill.displayName } : {}),
+        ...(skill.description ? { description: skill.description } : {}),
+        ...(skill.shortDescription ? { shortDescription: skill.shortDescription } : {}),
+        ...(skill.scope ? { scope: skill.scope } : {}),
+      }));
     },
     enabled:
       (input.enabled ?? true) &&

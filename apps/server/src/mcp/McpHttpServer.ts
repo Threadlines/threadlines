@@ -19,7 +19,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
-import { McpSchema, McpServer, Tool } from "effect/unstable/ai";
+import { McpSchema, McpProtocol, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -139,29 +139,6 @@ const AuthenticationLive = HttpRouter.middleware<{
 }>()(authenticate).layer;
 
 /**
- * The stream this server does not offer, said properly.
- *
- * Streamable HTTP lets a client open a GET stream for server-initiated
- * messages, and a server that has none must answer 405. Ours had no GET route
- * at all, so the request fell through to the web app's catch-all and came back
- * a 302 to an HTML page -- which a client reads as neither "here is the stream"
- * nor "there is no stream", and sits in connecting on.
- */
-const noServerStreamRoute = HttpRouter.add(
-  "GET",
-  MCP_ROUTE_PATH,
-  Effect.succeed(
-    HttpServerResponse.jsonUnsafe(
-      {
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "This server does not offer an event stream." },
-      },
-      { status: 405, headers: { allow: "POST" } },
-    ),
-  ),
-);
-
-/**
  * The screenshot tool, registered by hand so it can answer with a picture.
  *
  * A toolkit puts whatever a tool returns into `structuredContent`, which for a
@@ -272,7 +249,7 @@ export const layer = McpServer.toolkit(BrowserStandardToolkit).pipe(
       name: "threadlines-browser",
       version: "1",
       path: MCP_ROUTE_PATH,
+      protocols: [McpProtocol.v2025_06_18],
     }).pipe(Layer.provide(AuthenticationLive)),
   ),
-  Layer.provideMerge(noServerStreamRoute),
 );

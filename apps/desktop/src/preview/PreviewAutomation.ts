@@ -73,7 +73,7 @@ const DRAG_MOVE_STEPS = 10;
 
 const MAX_NETWORK_FAILURES = 100;
 
-export class PreviewTargetMissingError extends Schema.TaggedErrorClass<PreviewTargetMissingError>()(
+export class PreviewTargetMissingError extends Schema.TaggedError<PreviewTargetMissingError>()(
   "PreviewTargetMissingError",
   { webContentsId: Schema.Number },
 ) {
@@ -82,7 +82,7 @@ export class PreviewTargetMissingError extends Schema.TaggedErrorClass<PreviewTa
   }
 }
 
-export class PreviewCommandError extends Schema.TaggedErrorClass<PreviewCommandError>()(
+export class PreviewCommandError extends Schema.TaggedError<PreviewCommandError>()(
   "PreviewCommandError",
   { webContentsId: Schema.Number, method: Schema.String, cause: Schema.Defect() },
 ) {

@@ -1,12 +1,13 @@
 /**
  * Editable surface for the file viewer's edit mode.
  *
- * Wraps a `contentEditable` pierre File in an `EditorProvider`. The attach is
+ * Wraps an `edit` pierre File in an `EditProvider` whose factory hands back
+ * the single Editor this pane owns. The attach is
  * deferred to a post-mount effect: attaching during mount is unsafe under
  * StrictMode (the doubled mount effect runs edit → cleanUp → edit and
  * pierre's re-attach render sync short-circuits on cached content, leaving
  * the editor without a document). The dep-change effect run that flips
- * `contentEditable` on is not doubled, so the editor attaches exactly once —
+ * `edit` on is not doubled, so the editor attaches exactly once —
  * see FileViewerPierre.browser.tsx for the regression test.
  *
  * The pierre editor owns the document after mount: React never feeds edited
@@ -17,8 +18,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Editor } from "@pierre/diffs/editor";
-import { EditorProvider, File as PierreFile } from "@pierre/diffs/react";
+import { Editor } from "@pierre/diffs/edit";
+import { EditProvider, File as PierreFile } from "@pierre/diffs/react";
 
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useTheme } from "../../hooks/useTheme";
@@ -134,7 +135,7 @@ export function FileEditorPane({
   );
 
   return (
-    <EditorProvider editor={editor}>
+    <EditProvider createEditor={() => editor}>
       <PierreFile
         file={{
           name: path,
@@ -144,13 +145,13 @@ export function FileEditorPane({
           contents: latestContentsRef.current,
           cacheKey: `edit:${context.cwd}:${path}`,
         }}
-        contentEditable={editableReady}
+        edit={editableReady}
         // The editor re-tokenizes synchronously through its token
         // transformer; the async worker-pool highlighter cannot serve those
         // per-keystroke updates and lines degrade to plain text.
         disableWorkerPool
         options={pierreOptions}
       />
-    </EditorProvider>
+    </EditProvider>
   );
 }

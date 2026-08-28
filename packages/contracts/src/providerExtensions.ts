@@ -608,7 +608,7 @@ export const ProviderExtensionMcpResourceReadResult = Schema.Struct({
 export type ProviderExtensionMcpResourceReadResult =
   typeof ProviderExtensionMcpResourceReadResult.Type;
 
-export class ProviderExtensionsError extends Schema.TaggedErrorClass<ProviderExtensionsError>()(
+export class ProviderExtensionsError extends Schema.TaggedError<ProviderExtensionsError>()(
   "ProviderExtensionsError",
   {
     message: TrimmedNonEmptyString,

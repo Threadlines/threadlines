@@ -125,14 +125,13 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         timeoutMs: GH_PROBE_TIMEOUT_MS,
       })
       .pipe(
-        Effect.map(
-          (result): RemediationProbe =>
-            result.exitCode === 0
-              ? { applicable: true, reason: null }
-              : {
-                  applicable: false,
-                  reason: `GitHub CLI is installed but not logged in to ${host}. Run "gh auth login" in a terminal first.`,
-                },
+        Effect.map((result): RemediationProbe =>
+          result.exitCode === 0
+            ? { applicable: true, reason: null }
+            : {
+                applicable: false,
+                reason: `GitHub CLI is installed but not logged in to ${host}. Run "gh auth login" in a terminal first.`,
+              },
         ),
         Effect.catch(() =>
           Effect.succeed<RemediationProbe>({
@@ -153,14 +152,13 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         timeoutMs: SSH_PROBE_TIMEOUT_MS,
       })
       .pipe(
-        Effect.map(
-          (result): RemediationProbe =>
-            result.exitCode === 0
-              ? { applicable: true, reason: null }
-              : {
-                  applicable: false,
-                  reason: `SSH access to ${host} is not set up on this machine (no usable key).`,
-                },
+        Effect.map((result): RemediationProbe =>
+          result.exitCode === 0
+            ? { applicable: true, reason: null }
+            : {
+                applicable: false,
+                reason: `SSH access to ${host} is not set up on this machine (no usable key).`,
+              },
         ),
         Effect.catch(() =>
           Effect.succeed<RemediationProbe>({

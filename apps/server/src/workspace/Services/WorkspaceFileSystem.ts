@@ -18,7 +18,7 @@ import type {
 } from "@threadlines/contracts";
 import { WorkspacePathOutsideRootError } from "./WorkspacePaths.ts";
 
-export class WorkspaceFileSystemError extends Schema.TaggedErrorClass<WorkspaceFileSystemError>()(
+export class WorkspaceFileSystemError extends Schema.TaggedError<WorkspaceFileSystemError>()(
   "WorkspaceFileSystemError",
   {
     cwd: Schema.String,

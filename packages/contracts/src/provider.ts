@@ -234,7 +234,7 @@ export const ProviderStartReviewResult = Schema.Struct({
 });
 export type ProviderStartReviewResult = typeof ProviderStartReviewResult.Type;
 
-export class ProviderStartReviewError extends Schema.TaggedErrorClass<ProviderStartReviewError>()(
+export class ProviderStartReviewError extends Schema.TaggedError<ProviderStartReviewError>()(
   "ProviderStartReviewError",
   {
     message: TrimmedNonEmptyString,
@@ -327,7 +327,7 @@ export const ProviderExternalThreadImportResult = Schema.Struct({
 });
 export type ProviderExternalThreadImportResult = typeof ProviderExternalThreadImportResult.Type;
 
-export class ProviderExternalThreadError extends Schema.TaggedErrorClass<ProviderExternalThreadError>()(
+export class ProviderExternalThreadError extends Schema.TaggedError<ProviderExternalThreadError>()(
   "ProviderExternalThreadError",
   {
     message: TrimmedNonEmptyString,
@@ -393,7 +393,7 @@ export const ProviderSubagentTranscriptResult = Schema.Struct({
 });
 export type ProviderSubagentTranscriptResult = typeof ProviderSubagentTranscriptResult.Type;
 
-export class ProviderSubagentTranscriptError extends Schema.TaggedErrorClass<ProviderSubagentTranscriptError>()(
+export class ProviderSubagentTranscriptError extends Schema.TaggedError<ProviderSubagentTranscriptError>()(
   "ProviderSubagentTranscriptError",
   {
     message: TrimmedNonEmptyString,
@@ -454,7 +454,7 @@ export const ProviderRealtimeListVoicesResult = Schema.Struct({
 });
 export type ProviderRealtimeListVoicesResult = typeof ProviderRealtimeListVoicesResult.Type;
 
-export class ProviderRealtimeError extends Schema.TaggedErrorClass<ProviderRealtimeError>()(
+export class ProviderRealtimeError extends Schema.TaggedError<ProviderRealtimeError>()(
   "ProviderRealtimeError",
   {
     message: TrimmedNonEmptyString,

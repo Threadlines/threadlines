@@ -516,23 +516,19 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
 
       const directoryEntries = [...directorySet]
         .toSorted((left, right) => left.localeCompare(right))
-        .map(
-          (directoryPath): ProjectEntry => ({
-            path: directoryPath,
-            kind: "directory",
-            parentPath: parentPathOf(directoryPath),
-          }),
-        )
+        .map((directoryPath): ProjectEntry => ({
+          path: directoryPath,
+          kind: "directory",
+          parentPath: parentPathOf(directoryPath),
+        }))
         .map(toSearchableWorkspaceEntry);
       const fileEntries = [...new Set(filePaths)]
         .toSorted((left, right) => left.localeCompare(right))
-        .map(
-          (filePath): ProjectEntry => ({
-            path: filePath,
-            kind: "file",
-            parentPath: parentPathOf(filePath),
-          }),
-        )
+        .map((filePath): ProjectEntry => ({
+          path: filePath,
+          kind: "file",
+          parentPath: parentPathOf(filePath),
+        }))
         .map(toSearchableWorkspaceEntry);
 
       const now = yield* DateTime.now;
@@ -835,13 +831,11 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
     const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
     return yield* Cache.get(workspaceIndexCache, normalizedCwd).pipe(
       Effect.map((index) => ({
-        entries: index.entries.map(
-          (entry): ProjectEntry => ({
-            path: entry.path,
-            kind: entry.kind,
-            parentPath: entry.parentPath,
-          }),
-        ),
+        entries: index.entries.map((entry): ProjectEntry => ({
+          path: entry.path,
+          kind: entry.kind,
+          parentPath: entry.parentPath,
+        })),
         truncated: index.truncated,
       })),
     );

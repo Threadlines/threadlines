@@ -15,7 +15,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Tracer from "effect/Tracer";
-import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
 import * as DesktopDataMigration from "./DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -415,7 +415,7 @@ const tracerLayer = Layer.unwrap(
 
     return Layer.succeed(Tracer.Tracer, tracer);
   }),
-).pipe(Layer.provideMerge(OtlpSerialization.layerJson));
+).pipe(Layer.provideMerge(Layer.mergeAll(OtlpSerialization.layerJson, OtlpExporter.layerFlusher)));
 
 export const layer = Layer.mergeAll(
   backendOutputLogLayer,

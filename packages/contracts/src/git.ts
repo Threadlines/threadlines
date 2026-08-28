@@ -730,7 +730,7 @@ export const VcsDropStashResult = Schema.Struct({
 export type VcsDropStashResult = typeof VcsDropStashResult.Type;
 
 // RPC / domain errors
-export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()("GitCommandError", {
+export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitCommandError", {
   operation: Schema.String,
   command: Schema.String,
   cwd: Schema.String,
@@ -753,7 +753,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
  * executable does, and the provider SDKs report that as a missing binary, which
  * sends the user looking for the wrong problem.
  */
-export class CheckoutMissingError extends Schema.TaggedErrorClass<CheckoutMissingError>()(
+export class CheckoutMissingError extends Schema.TaggedError<CheckoutMissingError>()(
   "CheckoutMissingError",
   {
     threadId: TrimmedNonEmptyStringSchema,
@@ -779,7 +779,7 @@ export class CheckoutMissingError extends Schema.TaggedErrorClass<CheckoutMissin
  * deliberately no force flag: the caller stops or moves those threads first,
  * which the existing UI already allows.
  */
-export class VcsWorktreeInUseError extends Schema.TaggedErrorClass<VcsWorktreeInUseError>()(
+export class VcsWorktreeInUseError extends Schema.TaggedError<VcsWorktreeInUseError>()(
   "VcsWorktreeInUseError",
   {
     /** Absolute path of the worktree that was not removed. */
@@ -805,7 +805,7 @@ export class VcsWorktreeInUseError extends Schema.TaggedErrorClass<VcsWorktreeIn
   }
 }
 
-export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationError>()(
+export class TextGenerationError extends Schema.TaggedError<TextGenerationError>()(
   "TextGenerationError",
   {
     operation: Schema.String,
@@ -818,7 +818,7 @@ export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationE
   }
 }
 
-export class GitManagerError extends Schema.TaggedErrorClass<GitManagerError>()("GitManagerError", {
+export class GitManagerError extends Schema.TaggedError<GitManagerError>()("GitManagerError", {
   operation: Schema.String,
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),
