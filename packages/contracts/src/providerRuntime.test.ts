@@ -188,6 +188,35 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.answers.sandbox_mode).toBe("workspace-write");
   });
 
+  it("decodes structured approval-review task completions", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "task.completed",
+      eventId: "event-review-1",
+      provider: "codex",
+      createdAt: "2026-08-28T12:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {
+        taskId: "review-1",
+        status: "failed",
+        taskType: "approval-review",
+        summary: "Auto-review denied command",
+        approvalReview: {
+          status: "denied",
+          rationale: "The requested command exceeds the authorized scope.",
+          riskLevel: "high",
+          userAuthorization: "low",
+        },
+      },
+    });
+
+    expect(parsed.type).toBe("task.completed");
+    if (parsed.type === "task.completed") {
+      expect(parsed.payload.approvalReview?.status).toBe("denied");
+      expect(parsed.payload.approvalReview?.riskLevel).toBe("high");
+    }
+  });
+
   it("rejects legacy message.delta type", () => {
     expect(() =>
       decodeRuntimeEvent({

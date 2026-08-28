@@ -905,6 +905,37 @@ function summarizeReviewAction(action: unknown): string | undefined {
   return firstStringField(action, ["type", "kind", "name", "command", "tool"]);
 }
 
+type ApprovalReviewStatus =
+  EffectCodexSchema.V2ItemGuardianApprovalReviewCompletedNotification["review"]["status"];
+
+function approvalReviewTaskStatus(
+  status: ApprovalReviewStatus,
+): "completed" | "failed" | "stopped" {
+  if (status === "approved") {
+    return "completed";
+  }
+  if (status === "aborted") {
+    return "stopped";
+  }
+  return "failed";
+}
+
+function approvalReviewSummary(status: ApprovalReviewStatus, action: string | undefined): string {
+  const target = action ? ` ${action}` : " request";
+  switch (status) {
+    case "approved":
+      return `Auto-approved${target}`;
+    case "denied":
+      return `Auto-review denied${target}`;
+    case "timedOut":
+      return `Auto-review timed out for${target}`;
+    case "aborted":
+      return `Auto-review stopped for${target}`;
+    case "inProgress":
+      return `Auto-review ended without a decision for${target}`;
+  }
+}
+
 function summarizePatchChanges(
   changes: ReadonlyArray<{ readonly kind: unknown; readonly path: string }>,
 ): string {
@@ -1861,10 +1892,7 @@ export function mapToRuntimeEvents(
       return [];
     }
     const action = summarizeReviewAction(payload.action);
-    const decision =
-      typeof payload.decisionSource === "string"
-        ? payload.decisionSource
-        : firstStringField(payload.decisionSource, ["type", "kind", "decision"]);
+    const rationale = trimText(payload.review.rationale ?? undefined);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -1873,10 +1901,17 @@ export function mapToRuntimeEvents(
         type: "task.completed",
         payload: {
           taskId: RuntimeTaskId.make(payload.reviewId),
-          status: "completed",
-          summary: action
-            ? `Approval review completed for ${action}${decision ? `: ${decision}` : ""}`
-            : "Approval review completed",
+          status: approvalReviewTaskStatus(payload.review.status),
+          taskType: "approval-review",
+          summary: approvalReviewSummary(payload.review.status, action),
+          approvalReview: {
+            status: payload.review.status,
+            ...(rationale ? { rationale } : {}),
+            ...(payload.review.riskLevel ? { riskLevel: payload.review.riskLevel } : {}),
+            ...(payload.review.userAuthorization
+              ? { userAuthorization: payload.review.userAuthorization }
+              : {}),
+          },
         },
       },
     ];
@@ -2608,6 +2643,7 @@ export function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           message,
+          warningKind: "guardian",
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
