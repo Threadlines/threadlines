@@ -353,6 +353,8 @@ export const SubagentMetadataUpdatedPayload = Schema.Struct({
   /** Nesting depth (1 = spawned by the main agent), for providers that report
    *  it directly instead of through an agent path. */
   treeDepth: Schema.optional(NonNegativeInt),
+  /** See OrchestrationSubagent.isBackgrounded. */
+  isBackgrounded: Schema.optional(Schema.Boolean),
   agentNickname: Schema.optional(TrimmedNonEmptyStringSchema),
   agentRole: Schema.optional(TrimmedNonEmptyStringSchema),
   taskName: Schema.optional(TrimmedNonEmptyStringSchema),

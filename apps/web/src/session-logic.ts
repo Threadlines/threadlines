@@ -265,6 +265,8 @@ export interface SubagentProgressItem {
   parentAgentPath?: string | null;
   /** Visual nesting below the first child of `/root`. */
   treeDepth?: number;
+  /** See OrchestrationSubagent.isBackgrounded. */
+  isBackgrounded?: boolean;
   turnId: TurnId | null;
   label: string;
   nickname?: string | null;
@@ -1212,6 +1214,7 @@ function collectSubagentActivityRecords(
       agentPath: subagent.agentPath,
       parentAgentPath: subagent.parentAgentPath,
       treeDepth: subagent.treeDepth,
+      ...(subagent.isBackgrounded !== undefined ? { isBackgrounded: subagent.isBackgrounded } : {}),
       turnId: subagent.turnId,
       label,
       ...(subagent.nickname ? { nickname: subagent.nickname } : {}),
@@ -1743,6 +1746,7 @@ function applySubagentMetadataActivity(
     agentPath: asTrimmedString(payload.agentPath) ?? previous?.agentPath ?? null,
     parentAgentPath: asTrimmedString(payload.parentAgentPath) ?? previous?.parentAgentPath ?? null,
     treeDepth: previous?.treeDepth ?? 0,
+    ...(previous?.isBackgrounded !== undefined ? { isBackgrounded: previous.isBackgrounded } : {}),
     turnId: activity.turnId ?? previous?.turnId ?? null,
     label: subagentDisplayLabel({ role, nickname: null }),
     ...(nickname ? { nickname } : {}),

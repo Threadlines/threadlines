@@ -361,6 +361,33 @@ describe("buildAgentsPanelView", () => {
     expect(view.current[0]?.meta).toEqual(["gpt-5.6-sol", "high", "36s"]);
   });
 
+  it("marks a live agent the provider runs in the background, after its identity", () => {
+    const build = (isBackgrounded: boolean, status: SubagentProgressItem["status"]) =>
+      buildSubagent({
+        id: `bg-${String(isBackgrounded)}-${status}`,
+        agentThreadId: `bg-${String(isBackgrounded)}-${status}`,
+        status,
+        statusLabel: status === "running" ? "Running" : "Done",
+        model: "claude-opus-5",
+        reasoningEffort: null,
+        telemetry: null,
+        isBackgrounded,
+        createdAt: "2026-08-11T10:11:24.000Z",
+        updatedAt: "2026-08-11T10:11:54.000Z",
+      });
+    const view = buildAgentsPanelView({
+      subagents: [build(true, "running"), build(false, "running"), build(true, "completed")],
+      nowMs: Date.parse("2026-08-11T10:12:00.000Z"),
+    });
+
+    // A finished row is a receipt; how it was launched no longer matters there.
+    expect(view.current.map((branch) => branch.meta)).toEqual([
+      ["claude-opus-5", "background", "36s"],
+      ["claude-opus-5", "36s"],
+      ["claude-opus-5"],
+    ]);
+  });
+
   it("closes the meta line with what the agent wrote, live and in history", () => {
     const telemetry = {
       step: null,
