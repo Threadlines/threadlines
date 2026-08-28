@@ -350,6 +350,9 @@ export const SubagentMetadataUpdatedPayload = Schema.Struct({
    *  from `agentThreadId`. */
   transcriptAgentId: Schema.optional(TrimmedNonEmptyStringSchema),
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Nesting depth (1 = spawned by the main agent), for providers that report
+   *  it directly instead of through an agent path. */
+  treeDepth: Schema.optional(NonNegativeInt),
   agentNickname: Schema.optional(TrimmedNonEmptyStringSchema),
   agentRole: Schema.optional(TrimmedNonEmptyStringSchema),
   taskName: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -604,6 +607,15 @@ const TaskStartedPayload = Schema.Struct({
    *  run the agent kicked off). Lets consumers attribute the task's rows to
    *  the agent instead of narrating them as the conversation's own work. */
   ownerAgentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The task runs in the background (its spawning tool call returned at
+   *  once) rather than blocking the turn. */
+  isBackgrounded: Schema.optional(Schema.Boolean),
+  /** Nesting depth of a spawned agent task: 1 for a top-level spawn, N+1
+   *  when spawned from inside a depth-N agent. */
+  spawnDepth: Schema.optional(NonNegativeInt),
+  /** Housekeeping the provider does not count as user work (e.g. live-update
+   *  watchers). Never counts toward pending background work. */
+  ambient: Schema.optional(Schema.Boolean),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
@@ -615,6 +627,9 @@ const TaskSnapshotUpdatedPayload = Schema.Struct({
       taskId: RuntimeTaskId,
       taskType: Schema.optional(TrimmedNonEmptyStringSchema),
       description: Schema.optional(TrimmedNonEmptyStringSchema),
+      /** See TaskStartedPayload.ambient. Ambient tasks stay in the snapshot
+       *  for task panels but do not count as pending background work. */
+      ambient: Schema.optional(Schema.Boolean),
     }),
   ),
 });

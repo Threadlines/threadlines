@@ -69,6 +69,7 @@ it.effect("discovers compatible root Codex conversations without exposing subage
     preview: `Preview for ${id}`,
     cwd: "/tmp/project",
     cliVersion: "0.145.0",
+    projectId: null,
     modelProvider: "openai",
     createdAt: 1_760_000_000,
     updatedAt: 1_760_000_100,
@@ -2331,6 +2332,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             itemId: "item-user-input-1",
             threadId: "thread-1",
             turnId: "turn-1",
+            isBlocking: true,
             questions: [
               {
                 id: "sandbox_mode",

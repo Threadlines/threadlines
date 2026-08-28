@@ -1042,6 +1042,8 @@ describe("ProviderRuntimeIngestion", () => {
           // provider accidentally repeats an id in its array.
           { taskId: "background-task-snapshot-1", taskType: "local_agent" },
           { taskId: "background-task-snapshot-2", taskType: "local_bash" },
+          // Ambient housekeeping is listed but is not work the user waits on.
+          { taskId: "background-task-snapshot-ambient", taskType: "local_bash", ambient: true },
         ],
       },
     });
