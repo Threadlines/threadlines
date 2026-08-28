@@ -488,7 +488,7 @@ jobs:
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
           THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
         run: >
-          vp exec vp run dist:desktop:artifact --
+          vp exec vp run dist:desktop:artifact
           --platform win
           --target nsis
           --arch x64
@@ -665,7 +665,7 @@ jobs:
           chmod 600 "$apple_api_key_path"
           unset APPLE_API_KEY_CONTENT
 
-          APPLE_API_KEY="$apple_api_key_path" vp exec vp run dist:desktop:artifact -- \
+          APPLE_API_KEY="$apple_api_key_path" vp exec vp run dist:desktop:artifact \
             --platform mac \
             --target dmg \
             --arch "${{ matrix.arch }}" \
@@ -807,7 +807,7 @@ jobs:
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
           THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
         run: >
-          vp exec vp run dist:desktop:artifact --
+          vp exec vp run dist:desktop:artifact
           --platform linux
           --target AppImage
           --arch x64
