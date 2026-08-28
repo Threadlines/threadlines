@@ -159,6 +159,9 @@ function subagentBranch(
     // with the model also keeps the line still while the clock ticks.
     meta: [
       ...agentIdentityMetaParts(item),
+      // Launched without the turn waiting on it: the parent is not blocked
+      // here, and the row can outlive the turn.
+      ...(live && item.isBackgrounded === true ? ["background"] : []),
       ...formatSubagentMetaParts(item, {
         context: details.context,
         elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,

@@ -5178,7 +5178,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // The SDK states an agent's nesting depth only here; the spawn call
         // is what the roster row is keyed by until the agent id is known.
         if (spawnDepth !== undefined && toolUseId) {
-          yield* emitSubagentMetadata(context, { callId: toolUseId, treeDepth: spawnDepth });
+          yield* emitSubagentMetadata(context, {
+            callId: toolUseId,
+            treeDepth: spawnDepth,
+            ...(isBackgrounded !== undefined ? { isBackgrounded } : {}),
+          });
         }
         return;
       }
@@ -5255,6 +5259,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(description ? { description } : {}),
           ...(status ? { status } : {}),
         });
+        // A foreground agent moved to the background (Ctrl+B, or the model
+        // backgrounding it): the roster row should say so from now on.
+        if (patch.is_backgrounded === true && previous?.toolUseId) {
+          yield* emitSubagentMetadata(context, {
+            callId: previous.toolUseId,
+            isBackgrounded: true,
+          });
+        }
 
         yield* offerRuntimeEvent({
           ...base,

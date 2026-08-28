@@ -688,6 +688,10 @@ export const OrchestrationSubagent = Schema.Struct({
   agentPath: Schema.NullOr(TrimmedNonEmptyString),
   parentAgentPath: Schema.NullOr(TrimmedNonEmptyString),
   treeDepth: NonNegativeInt,
+  /** The provider runs this agent in the background: its spawn returned at
+   *  once instead of blocking the turn. Absent when the provider does not say
+   *  (Codex agents always block their parent). */
+  isBackgrounded: Schema.optional(Schema.Boolean),
   nickname: Schema.NullOr(TrimmedNonEmptyString),
   role: Schema.NullOr(TrimmedNonEmptyString),
   objective: Schema.NullOr(TrimmedNonEmptyString),

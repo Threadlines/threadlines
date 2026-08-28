@@ -53,7 +53,10 @@ import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionT
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
-import { ProjectionThreadSubagent } from "../../persistence/Services/ProjectionThreadSubagents.ts";
+import {
+  ProjectionThreadSubagentDbRowSchema,
+  toProjectionThreadSubagent,
+} from "../../persistence/Layers/ProjectionThreadSubagents.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
@@ -105,7 +108,6 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   }),
 );
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
-const ProjectionThreadSubagentDbRowSchema = ProjectionThreadSubagent;
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -337,7 +339,7 @@ function mapThreadActivityRow(
 function mapThreadSubagentRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSubagentDbRowSchema>,
 ): OrchestrationSubagent {
-  const { threadId: _threadId, ...subagent } = row;
+  const { threadId: _threadId, ...subagent } = toProjectionThreadSubagent(row);
   return subagent;
 }
 
@@ -754,7 +756,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         parent_agent_thread_id AS "parentAgentThreadId",
         spawn_call_id AS "spawnCallId", transcript_agent_id AS "transcriptAgentId",
         turn_id AS "turnId", agent_path AS "agentPath", parent_agent_path AS "parentAgentPath",
-        tree_depth AS "treeDepth", nickname, role, objective, status,
+        tree_depth AS "treeDepth", is_backgrounded AS "isBackgrounded",
+        nickname, role, objective, status,
         requested_model AS "requestedModel", resolved_model AS "resolvedModel",
         reasoning_effort AS "reasoningEffort", model_provenance AS "modelProvenance",
         reasoning_effort_provenance AS "reasoningEffortProvenance",
@@ -1298,6 +1301,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           agent_path AS "agentPath",
           parent_agent_path AS "parentAgentPath",
           tree_depth AS "treeDepth",
+          is_backgrounded AS "isBackgrounded",
           nickname,
           role,
           objective,

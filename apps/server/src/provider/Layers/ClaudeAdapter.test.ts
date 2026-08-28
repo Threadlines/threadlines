@@ -3443,6 +3443,7 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(depthMetadata?.type, "subagent.metadata.updated");
         if (depthMetadata?.type === "subagent.metadata.updated") {
           assert.equal(depthMetadata.payload.treeDepth, 1);
+          assert.equal(depthMetadata.payload.isBackgrounded, false);
         }
         const watchStarted = startedEvents.find(
           (event) => event.type === "task.started" && String(event.payload.taskId) === "task-watch",

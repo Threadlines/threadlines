@@ -1,6 +1,8 @@
 import type { OrchestrationSubagent } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
@@ -12,19 +14,38 @@ import {
   type ProjectionThreadSubagentRepositoryShape,
 } from "../Services/ProjectionThreadSubagents.ts";
 
+/** SQLite keeps the optional flag as NULL/0/1. */
+export const ProjectionThreadSubagentDbRowSchema = ProjectionThreadSubagent.mapFields(
+  Struct.assign({
+    isBackgrounded: Schema.NullOr(Schema.Number),
+  }),
+);
+
+export function toProjectionThreadSubagent(
+  row: Schema.Schema.Type<typeof ProjectionThreadSubagentDbRowSchema>,
+): ProjectionThreadSubagent {
+  const { isBackgrounded, ...rest } = row;
+  return isBackgrounded === null ? rest : { ...rest, isBackgrounded: isBackgrounded === 1 };
+}
+
+export function subagentBackgroundedColumn(row: OrchestrationSubagent): number | null {
+  return row.isBackgrounded === undefined ? null : row.isBackgrounded ? 1 : 0;
+}
+
 const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   const listRows = SqlSchema.findAll({
     Request: ProjectionThreadSubagentThreadInput,
-    Result: ProjectionThreadSubagent,
+    Result: ProjectionThreadSubagentDbRowSchema,
     execute: ({ threadId }) => sql`
       SELECT
         thread_id AS "threadId", subagent_id AS "id", agent_thread_id AS "agentThreadId",
         parent_agent_thread_id AS "parentAgentThreadId",
         spawn_call_id AS "spawnCallId", transcript_agent_id AS "transcriptAgentId",
         turn_id AS "turnId", agent_path AS "agentPath", parent_agent_path AS "parentAgentPath",
-        tree_depth AS "treeDepth", nickname, role, objective, status,
+        tree_depth AS "treeDepth", is_backgrounded AS "isBackgrounded",
+        nickname, role, objective, status,
         requested_model AS "requestedModel", resolved_model AS "resolvedModel",
         reasoning_effort AS "reasoningEffort", model_provenance AS "modelProvenance",
         reasoning_effort_provenance AS "reasoningEffortProvenance",
@@ -38,6 +59,7 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
 
   const listByThreadId: ProjectionThreadSubagentRepositoryShape["listByThreadId"] = (input) =>
     listRows(input).pipe(
+      Effect.map((rows) => rows.map(toProjectionThreadSubagent)),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadSubagentRepository.listByThreadId:query"),
       ),
@@ -63,6 +85,7 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
             agent_path: row.agentPath,
             parent_agent_path: row.parentAgentPath,
             tree_depth: row.treeDepth,
+            is_backgrounded: subagentBackgroundedColumn(row),
             nickname: row.nickname,
             role: row.role,
             objective: row.objective,

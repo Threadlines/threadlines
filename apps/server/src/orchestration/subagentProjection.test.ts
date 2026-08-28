@@ -82,6 +82,42 @@ describe("projectSubagentActivity", () => {
     expect(agent?.status).toBe("running");
   });
 
+  it("records whether the provider runs the agent in the background, and a later move", () => {
+    const spawned = projectSubagentActivity(
+      [],
+      claudeSpawnActivity({
+        id: "a1",
+        kind: "tool.started",
+        status: "inProgress",
+        turnId: TURN_ID,
+      }),
+    );
+    // Unknown until the provider says: the flag stays absent, not false.
+    expect(spawned[0]?.isBackgrounded).toBeUndefined();
+
+    const foreground = projectSubagentActivity(
+      spawned,
+      activity({
+        id: "m1",
+        kind: "subagent.metadata",
+        payload: { callId: SPAWN_TOOL_USE_ID, treeDepth: 1, isBackgrounded: false },
+      }),
+    );
+    expect(foreground[0]?.isBackgrounded).toBe(false);
+    expect(foreground[0]?.treeDepth).toBe(1);
+
+    const moved = projectSubagentActivity(
+      foreground,
+      activity({
+        id: "m2",
+        kind: "subagent.metadata",
+        payload: { callId: SPAWN_TOOL_USE_ID, isBackgrounded: true },
+      }),
+    );
+    expect(moved[0]?.isBackgrounded).toBe(true);
+    expect(moved[0]?.treeDepth).toBe(1);
+  });
+
   it("keeps the spawn turn when later live-text updates arrive without a turn", () => {
     const spawned = projectSubagentActivity(
       [],

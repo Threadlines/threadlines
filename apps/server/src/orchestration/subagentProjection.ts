@@ -73,6 +73,14 @@ function parentPath(agentPath: string | null): string | null {
   return segments.length > 2 ? `/${segments.slice(0, -1).join("/")}` : null;
 }
 
+/** The optional flag as an object spread, so an unknown value stays absent
+ *  instead of becoming `undefined` under exact optional property types. */
+function backgroundedField(
+  value: boolean | undefined,
+): { readonly isBackgrounded: boolean } | Record<never, never> {
+  return value === undefined ? {} : { isBackgrounded: value };
+}
+
 function treeDepth(agentPath: string | null): number {
   return Math.max(0, (agentPath?.split("/").filter(Boolean).length ?? 1) - 2);
 }
@@ -87,6 +95,7 @@ interface SubagentPatch {
   readonly agentPath?: string | null;
   readonly parentAgentPath?: string | null;
   readonly treeDepth?: number;
+  readonly isBackgrounded?: boolean;
   readonly nickname?: string | null;
   readonly role?: string | null;
   readonly objective?: string | null;
@@ -115,6 +124,7 @@ function metadataPatch(activity: OrchestrationThreadActivity): SubagentPatch | n
   );
   const model = text(payload.model);
   const status = explicitStatus(payload.status);
+  const depth = integer(payload.treeDepth) ?? (agentPath === null ? null : treeDepth(agentPath));
   return {
     id,
     agentThreadId,
@@ -124,7 +134,12 @@ function metadataPatch(activity: OrchestrationThreadActivity): SubagentPatch | n
     turnId: (text(payload.turnId) as TurnId | null) ?? activity.turnId,
     agentPath,
     parentAgentPath: text(payload.parentAgentPath) ?? parentPath(agentPath),
-    treeDepth: integer(payload.treeDepth) ?? treeDepth(agentPath),
+    // Only a payload that knows the depth may set it: a metadata update about
+    // something else (a move to the background) must not reset it to 0.
+    ...(depth === null ? {} : { treeDepth: depth }),
+    ...backgroundedField(
+      typeof payload.isBackgrounded === "boolean" ? payload.isBackgrounded : undefined,
+    ),
     nickname: text(payload.nickname) ?? text(payload.agentNickname),
     role: text(payload.role) ?? text(payload.agentRole) ?? text(payload.taskName),
     objective: text(payload.objective) ?? text(payload.prompt),
@@ -241,6 +256,7 @@ function mergeSubagent(
     agentPath: mergeValue(patch.agentPath, current?.agentPath ?? null),
     parentAgentPath: mergeValue(patch.parentAgentPath, current?.parentAgentPath ?? null),
     treeDepth: patch.treeDepth ?? current?.treeDepth ?? 0,
+    ...backgroundedField(patch.isBackgrounded ?? current?.isBackgrounded),
     nickname: mergeValue(patch.nickname, current?.nickname ?? null),
     role: mergeValue(patch.role, current?.role ?? null),
     objective: mergeValue(patch.objective, current?.objective ?? null),
@@ -443,6 +459,7 @@ function duplicatePatchFrom(duplicate: OrchestrationSubagent): SubagentPatch {
     agentPath: duplicate.agentPath,
     parentAgentPath: duplicate.parentAgentPath,
     treeDepth: duplicate.treeDepth,
+    ...backgroundedField(duplicate.isBackgrounded),
     nickname: duplicate.nickname,
     role: duplicate.role,
     objective: duplicate.objective,
