@@ -73,6 +73,7 @@ import {
   deriveCompletionDividerBeforeEntryId,
   derivePendingApprovals,
   derivePendingUserInputs,
+  isBlockingUserInput,
   derivePhase,
   deriveTimelineEntries,
   deriveForkContextEntries,
@@ -2066,7 +2067,9 @@ export default function ChatView(props: ChatViewProps) {
     isSessionStarting,
     isRevertingCheckpoint,
     pendingApprovalCount: pendingApprovals.length,
-    pendingUserInputCount: pendingUserInputs.length,
+    // A non-blocking question does not hold the turn, so it must not read as
+    // "Waiting for input" while the agent is still working.
+    pendingUserInputCount: pendingUserInputs.filter(isBlockingUserInput).length,
   });
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,

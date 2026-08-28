@@ -200,6 +200,15 @@ export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  /** False when the agent keeps working while the question is open. Absent
+   *  means the turn is paused on the answer. */
+  isBlocking?: boolean;
+}
+
+/** Only a blocking question holds the turn; a non-blocking one is a question
+ *  asked in passing while the agent keeps working. */
+export function isBlockingUserInput(input: Pick<PendingUserInput, "isBlocking">): boolean {
+  return input.isBlocking !== false;
 }
 
 export interface ActivePlanState {
@@ -686,6 +695,7 @@ export function derivePendingUserInputs(
           requestId: ApprovalRequestId.make(requestId),
           createdAt: activity.createdAt,
           questions,
+          ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
         },
       ];
     })

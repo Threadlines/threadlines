@@ -583,6 +583,9 @@ export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
+  /** False when the agent keeps working while the question is open (Codex
+   *  0.150+ non-blocking `request_user_input`). Absent means blocking. */
+  isBlocking: Schema.optional(Schema.Boolean),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 

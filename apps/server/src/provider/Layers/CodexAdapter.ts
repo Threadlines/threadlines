@@ -1450,6 +1450,9 @@ export function mapToRuntimeEvents(
           type: "user-input.requested",
           payload: {
             questions,
+            ...(payload && "isBlocking" in payload && typeof payload.isBlocking === "boolean"
+              ? { isBlocking: payload.isBlocking }
+              : {}),
           },
         },
       ];

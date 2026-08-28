@@ -193,6 +193,14 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         </span>
       </button>
       <p className="mt-1 text-sm text-foreground/90">{activeQuestion.question}</p>
+      {prompt.isBlocking === false ? (
+        <p
+          className="mt-0.5 text-[11px] leading-4 text-muted-foreground/55"
+          data-composer-question-nonblocking="true"
+        >
+          The agent keeps working while you answer.
+        </p>
+      ) : null}
       <div className="mt-2 space-y-0.5">
         {activeQuestion.options.map((option, index) => {
           const isSelected = progress.selectedOptionLabels.includes(option.label);
