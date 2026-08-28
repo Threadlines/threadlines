@@ -164,10 +164,7 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
         Effect.flip,
       );
 
-      assert.equal(
-        error.message,
-        'SchemaError(Expected string\n  at ["GITHUB_OUTPUT"])',
-      );
+      assert.equal(error.message, 'SchemaError(Expected string\n  at ["GITHUB_OUTPUT"])');
     }),
   );
 

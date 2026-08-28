@@ -270,22 +270,21 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
-  public readonly interruptTurnImpl = vi.fn(
-    (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
+  public readonly interruptTurnImpl = vi.fn((_turnId?: TurnId): Promise<void> =>
+    Promise.resolve(undefined),
   );
   public readonly realtimeStartImpl = vi.fn(
     (_input?: CodexSessionRuntimeRealtimeStartInput): Promise<void> => Promise.resolve(undefined),
   );
   public readonly realtimeStopImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
   public readonly realtimeAppendAudioImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
-  public readonly realtimeListVoicesImpl = vi.fn(
-    (): Promise<ProviderRealtimeVoicesList> =>
-      Promise.resolve({
-        v1: ["juniper"],
-        v2: ["alloy"],
-        defaultV1: "juniper",
-        defaultV2: "alloy",
-      }),
+  public readonly realtimeListVoicesImpl = vi.fn((): Promise<ProviderRealtimeVoicesList> =>
+    Promise.resolve({
+      v1: ["juniper"],
+      v2: ["alloy"],
+      defaultV1: "juniper",
+      defaultV2: "alloy",
+    }),
   );
 
   public readonly compactContextImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
@@ -317,12 +316,11 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Promise.resolve(undefined);
   });
 
-  public readonly readThreadImpl = vi.fn(
-    (): Promise<CodexThreadSnapshot> =>
-      Promise.resolve({
-        threadId: "provider-thread-1",
-        turns: [],
-      }),
+  public readonly readThreadImpl = vi.fn((): Promise<CodexThreadSnapshot> =>
+    Promise.resolve({
+      threadId: "provider-thread-1",
+      turns: [],
+    }),
   );
 
   public readonly readProviderThreadIdImpl = vi.fn(() => Promise.resolve("provider-thread-1"));
@@ -347,12 +345,11 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     ): Promise<EffectCodexSchema.V2ThreadItemsListResponse> => Promise.resolve({ data: [] }),
   );
 
-  public readonly rollbackThreadImpl = vi.fn(
-    (_numTurns: number): Promise<CodexThreadSnapshot> =>
-      Promise.resolve({
-        threadId: "provider-thread-1",
-        turns: [],
-      }),
+  public readonly rollbackThreadImpl = vi.fn((_numTurns: number): Promise<CodexThreadSnapshot> =>
+    Promise.resolve({
+      threadId: "provider-thread-1",
+      turns: [],
+    }),
   );
 
   public readonly deleteThreadImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));

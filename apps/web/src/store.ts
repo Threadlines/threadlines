@@ -186,28 +186,27 @@ function resolveSessionProviderFromModelSelection(input: {
 }
 
 function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage): ChatMessage {
-  const attachments = message.attachments?.map(
-    (attachment): ChatAttachment =>
-      attachment.type === "image"
-        ? {
-            type: "image",
-            id: attachment.id,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            previewUrl: resolveEnvironmentHttpUrl({
-              environmentId,
-              pathname: attachmentPreviewRoutePath(attachment.id),
-            }),
-          }
-        : {
-            type: "file",
-            kind: attachment.kind,
-            id: attachment.id,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-          },
+  const attachments = message.attachments?.map((attachment): ChatAttachment =>
+    attachment.type === "image"
+      ? {
+          type: "image",
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          previewUrl: resolveEnvironmentHttpUrl({
+            environmentId,
+            pathname: attachmentPreviewRoutePath(attachment.id),
+          }),
+        }
+      : {
+          type: "file",
+          kind: attachment.kind,
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        },
   );
 
   return {

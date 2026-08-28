@@ -2446,20 +2446,18 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             const currentActivityEvents = yield* modifyManagerState((state) => {
               terminalEventListeners.add(bufferedListener);
               return [
-                [...state.sessions.values()].map(
-                  (session): TerminalEvent => ({
-                    type: "activity",
-                    threadId: session.threadId,
-                    terminalId: session.terminalId,
-                    createdAt: session.updatedAt,
-                    hasRunningSubprocess:
-                      session.status === "running" && session.hasRunningSubprocess,
-                    command:
-                      session.status === "running" && session.hasRunningSubprocess
-                        ? session.runningSubprocessCommand
-                        : null,
-                  }),
-                ),
+                [...state.sessions.values()].map((session): TerminalEvent => ({
+                  type: "activity",
+                  threadId: session.threadId,
+                  terminalId: session.terminalId,
+                  createdAt: session.updatedAt,
+                  hasRunningSubprocess:
+                    session.status === "running" && session.hasRunningSubprocess,
+                  command:
+                    session.status === "running" && session.hasRunningSubprocess
+                      ? session.runningSubprocessCommand
+                      : null,
+                })),
                 state,
               ] as const;
             });

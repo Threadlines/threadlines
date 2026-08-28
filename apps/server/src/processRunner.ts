@@ -179,13 +179,11 @@ const collectText = Effect.fn("processRunner.collectText")(function* (input: {
         });
       },
     ),
-    Effect.map(
-      (state): CollectedUint8StreamText => ({
-        text: Buffer.concat(state.chunks, state.bytes).toString("utf8"),
-        bytes: state.bytes,
-        truncated: false,
-      }),
-    ),
+    Effect.map((state): CollectedUint8StreamText => ({
+      text: Buffer.concat(state.chunks, state.bytes).toString("utf8"),
+      bytes: state.bytes,
+      truncated: false,
+    })),
   );
 });
 

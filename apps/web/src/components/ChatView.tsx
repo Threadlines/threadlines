@@ -1254,8 +1254,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const openTerminalThreadKeys = useTerminalStateStore(
     useShallow((state) =>
-      Object.entries(state.terminalStateByThreadKey).flatMap(([nextThreadKey, nextTerminalState]) =>
-        nextTerminalState.terminalOpen ? [nextThreadKey] : [],
+      Object.entries(state.terminalStateByThreadKey).flatMap(
+        ([nextThreadKey, nextTerminalState]) =>
+          nextTerminalState.terminalOpen ? [nextThreadKey] : [],
       ),
     ),
   );
@@ -4706,25 +4707,24 @@ export default function ChatView(props: ChatViewProps) {
         dataUrl: await readFileAsDataUrl(attachment.file),
       })),
     ).then((attachments) => [...attachments, ...drawingAttachments]);
-    const optimisticAttachments = composerAttachmentsSnapshot.map(
-      (attachment): ChatAttachment =>
-        attachment.type === "image"
-          ? {
-              type: "image",
-              id: attachment.id,
-              name: attachment.name,
-              mimeType: attachment.mimeType,
-              sizeBytes: attachment.sizeBytes,
-              previewUrl: attachment.previewUrl,
-            }
-          : {
-              type: "file",
-              kind: attachment.kind,
-              id: attachment.id,
-              name: attachment.name,
-              mimeType: attachment.mimeType,
-              sizeBytes: attachment.sizeBytes,
-            },
+    const optimisticAttachments = composerAttachmentsSnapshot.map((attachment): ChatAttachment =>
+      attachment.type === "image"
+        ? {
+            type: "image",
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: attachment.previewUrl,
+          }
+        : {
+            type: "file",
+            kind: attachment.kind,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          },
     );
     const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
     const optimisticMessage: ChatMessage = {
