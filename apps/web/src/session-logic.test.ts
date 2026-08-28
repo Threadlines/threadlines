@@ -3299,6 +3299,102 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("replaces approved guardian warnings while preserving denied warnings", () => {
+    const pairedWarning = makeActivity({
+      id: "guardian-warning",
+      createdAt: "2026-08-28T12:00:00.000Z",
+      sequence: 1,
+      kind: "runtime.warning",
+      summary: "Runtime warning",
+      tone: "warning",
+      payload: {
+        message: "Automatic approval review completed.",
+        warningKind: "guardian",
+      },
+    });
+
+    const approved = deriveWorkLogEntries([
+      pairedWarning,
+      makeActivity({
+        id: "approval-review-approved",
+        createdAt: "2026-08-28T12:00:00.001Z",
+        sequence: 2,
+        kind: "task.completed",
+        summary: "Auto-approved command",
+        tone: "info",
+        payload: {
+          taskId: "review-approved",
+          status: "completed",
+          taskType: "approval-review",
+          summary: "Auto-approved command",
+          detail: "The requested check is read-only.",
+          approvalReview: { status: "approved" },
+        },
+      }),
+    ]);
+
+    expect(approved).toHaveLength(1);
+    expect(approved[0]).toMatchObject({
+      id: "approval-review-approved",
+      label: "Auto-approved command",
+      detail: "The requested check is read-only.",
+      tone: "info",
+    });
+
+    const denied = deriveWorkLogEntries([
+      pairedWarning,
+      makeActivity({
+        id: "approval-review-denied",
+        createdAt: "2026-08-28T12:00:00.001Z",
+        sequence: 2,
+        kind: "task.completed",
+        summary: "Auto-review denied command",
+        tone: "warning",
+        payload: {
+          taskId: "review-denied",
+          status: "failed",
+          taskType: "approval-review",
+          summary: "Auto-review denied command",
+          detail: "The command exceeded the authorized scope.",
+          approvalReview: { status: "denied" },
+        },
+      }),
+    ]);
+
+    expect(denied).toHaveLength(2);
+    expect(denied[0]).toMatchObject({
+      id: "guardian-warning",
+      tone: "warning",
+    });
+    expect(denied[1]).toMatchObject({
+      id: "approval-review-denied",
+      label: "Auto-review denied command",
+      detail: "The command exceeded the authorized scope.",
+      tone: "warning",
+    });
+  });
+
+  it("keeps standalone guardian warnings visible", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "guardian-circuit-breaker",
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "warning",
+        payload: {
+          message: "Automatic approval review rejected too many requests; interrupting the turn.",
+          warningKind: "guardian",
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "guardian-circuit-breaker",
+      tone: "warning",
+      detail: "Automatic approval review rejected too many requests; interrupting the turn.",
+    });
+  });
+
   it("marks failed command executions distinctly", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({

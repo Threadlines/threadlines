@@ -18,6 +18,100 @@ import {
 } from "./CodexAdapter.ts";
 
 describe("CodexAdapter item mapping", () => {
+  it("maps structured automatic approval review outcomes", () => {
+    const cases = [
+      { reviewStatus: "approved", taskStatus: "completed", summary: "Auto-approved command" },
+      { reviewStatus: "denied", taskStatus: "failed", summary: "Auto-review denied command" },
+      {
+        reviewStatus: "timedOut",
+        taskStatus: "failed",
+        summary: "Auto-review timed out for command",
+      },
+      {
+        reviewStatus: "aborted",
+        taskStatus: "stopped",
+        summary: "Auto-review stopped for command",
+      },
+    ] as const;
+
+    for (const { reviewStatus, taskStatus, summary } of cases) {
+      const [runtimeEvent] = mapToRuntimeEvents(
+        {
+          id: EventId.make(`evt-review-${reviewStatus}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-08-28T12:00:00.000Z",
+          method: "item/autoApprovalReview/completed",
+          threadId: ThreadId.make("thread-1"),
+          payload: {
+            action: {
+              command: "Get-ChildItem",
+              cwd: "C:/repo",
+              source: "unifiedExec",
+              type: "command",
+            },
+            completedAtMs: 1_788_000_001_000,
+            decisionSource: "agent",
+            review: {
+              status: reviewStatus,
+              rationale: "The requested check is read-only.",
+              riskLevel: "low",
+              userAuthorization: "high",
+            },
+            reviewId: `review-${reviewStatus}`,
+            startedAtMs: 1_788_000_000_000,
+            targetItemId: "command-1",
+            threadId: "provider-thread-1",
+            turnId: "turn-1",
+          },
+        },
+        ThreadId.make("thread-1"),
+      );
+
+      assert.equal(runtimeEvent?.type, "task.completed");
+      if (runtimeEvent?.type !== "task.completed") {
+        continue;
+      }
+      assert.equal(runtimeEvent.turnId, "turn-1");
+      assert.equal(runtimeEvent.itemId, "command-1");
+      assert.deepStrictEqual(runtimeEvent.payload, {
+        taskId: `review-${reviewStatus}`,
+        status: taskStatus,
+        taskType: "approval-review",
+        summary,
+        approvalReview: {
+          status: reviewStatus,
+          rationale: "The requested check is read-only.",
+          riskLevel: "low",
+          userAuthorization: "high",
+        },
+      });
+    }
+  });
+
+  it("classifies guardian notices without inferring their outcome from text", () => {
+    const [runtimeEvent] = mapToRuntimeEvents(
+      {
+        id: EventId.make("evt-guardian-warning"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-08-28T12:00:00.000Z",
+        method: "guardianWarning",
+        threadId: ThreadId.make("thread-1"),
+        payload: {
+          message: "Automatic approval review approved: safe read-only check.",
+          threadId: "provider-thread-1",
+        },
+      },
+      ThreadId.make("thread-1"),
+    );
+
+    assert.equal(runtimeEvent?.type, "runtime.warning");
+    if (runtimeEvent?.type === "runtime.warning") {
+      assert.equal(runtimeEvent.payload.warningKind, "guardian");
+    }
+  });
+
   it("maps native subagent activity into the canonical collab-agent shape", () => {
     const [runtimeEvent, metadataEvent] = mapToRuntimeEvents(
       {

@@ -2089,10 +2089,11 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activeTurnId?: TurnId | null,
 ): WorkLogEntry[] {
-  const ordered =
+  const ordered = filterPairedGuardianReviewWarnings(
     filterSupersededManualContextCompactionActivities(activities).toSorted(
       compareActivitiesByOrder,
-    );
+    ),
+  );
   const agentTaskIndex = collectAgentTaskIndex(ordered);
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
@@ -2125,6 +2126,34 @@ export function deriveWorkLogEntries(
       collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
     ),
   ).map(({ collapseKey: _collapseKey, browserReceipt: _browserReceipt, ...entry }) => entry);
+}
+
+/** Codex emits a human-readable guardian warning immediately before the
+ *  structured approval-review completion that replaces it. Drop only the
+ *  harmless approved duplicate; every non-approved guardian warning remains
+ *  visible. */
+function filterPairedGuardianReviewWarnings(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): OrchestrationThreadActivity[] {
+  const filtered: OrchestrationThreadActivity[] = [];
+  for (const activity of activities) {
+    const payload = asRecord(activity.payload);
+    const isApprovedReviewCompletion =
+      activity.kind === "task.completed" &&
+      asTrimmedString(payload?.taskType) === "approval-review" &&
+      asTrimmedString(asRecord(payload?.approvalReview)?.status) === "approved";
+    const previous = filtered.at(-1);
+    const previousPayload = previous ? asRecord(previous.payload) : null;
+    if (
+      isApprovedReviewCompletion &&
+      previous?.kind === "runtime.warning" &&
+      asTrimmedString(previousPayload?.warningKind) === "guardian"
+    ) {
+      filtered.pop();
+    }
+    filtered.push(activity);
+  }
+  return filtered;
 }
 
 /** The task-notification completion replay re-emits the original Task tool

@@ -574,4 +574,46 @@ describe("ProviderActivityProjection", () => {
       }),
     ]);
   });
+
+  it("projects structured approval-review outcomes with their real tone", () => {
+    const [activity] = projectRuntimeEventToActivities({
+      type: "task.completed",
+      eventId: EventId.make("evt-approval-review-denied"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-08-28T12:00:00.000Z",
+      payload: {
+        taskId: RuntimeTaskId.make("review-1"),
+        status: "failed",
+        taskType: "approval-review",
+        summary: "Auto-review denied command",
+        approvalReview: {
+          status: "denied",
+          rationale: "The command exceeded the authorized scope.",
+          riskLevel: "high",
+          userAuthorization: "low",
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activity).toMatchObject({
+      kind: "task.completed",
+      tone: "warning",
+      summary: "Auto-review denied command",
+      payload: {
+        taskId: "review-1",
+        status: "failed",
+        taskType: "approval-review",
+        summary: "Auto-review denied command",
+        detail: "The command exceeded the authorized scope.",
+        approvalReview: {
+          status: "denied",
+          rationale: "The command exceeded the authorized scope.",
+          riskLevel: "high",
+          userAuthorization: "low",
+        },
+      },
+    });
+  });
 });

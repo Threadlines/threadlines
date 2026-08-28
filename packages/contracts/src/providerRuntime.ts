@@ -648,10 +648,29 @@ const TaskProgressPayload = Schema.Struct({
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
+const TaskApprovalReviewStatus = Schema.Literals([
+  "inProgress",
+  "approved",
+  "denied",
+  "timedOut",
+  "aborted",
+]);
+
+const TaskApprovalReviewResult = Schema.Struct({
+  status: TaskApprovalReviewStatus,
+  rationale: Schema.optional(TrimmedNonEmptyStringSchema),
+  riskLevel: Schema.optional(Schema.Literals(["low", "medium", "high", "critical"])),
+  userAuthorization: Schema.optional(Schema.Literals(["unknown", "low", "medium", "high"])),
+});
+
 const TaskCompletedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   status: Schema.Literals(["completed", "failed", "stopped"]),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
+  taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Structured outcome for Codex approval-review tasks. Consumers use this
+   *  instead of parsing the provider's human-readable guardian warning. */
+  approvalReview: Schema.optional(TaskApprovalReviewResult),
   usage: Schema.optional(Schema.Unknown),
   /** Tool call that started the task (e.g. a background subagent's Task tool
    *  use), so consumers can settle the originating tool's UI state. */

@@ -786,14 +786,22 @@ export function projectRuntimeEventToActivities(
         }),
       ];
 
-    case "task.completed":
+    case "task.completed": {
+      const approvalReview =
+        event.payload.taskType === "approval-review" ? event.payload.approvalReview : undefined;
       return [
         baseActivity(event, {
           id: event.eventId,
-          tone: event.payload.status === "failed" ? "error" : "info",
+          tone:
+            approvalReview && approvalReview.status !== "approved"
+              ? "warning"
+              : event.payload.status === "failed"
+                ? "error"
+                : "info",
           kind: "task.completed",
-          summary:
-            event.payload.status === "failed"
+          summary: approvalReview
+            ? (event.payload.summary ?? "Approval review completed")
+            : event.payload.status === "failed"
               ? "Task failed"
               : event.payload.status === "stopped"
                 ? "Task stopped"
@@ -801,7 +809,16 @@ export function projectRuntimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             status: event.payload.status,
-            ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
+            ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
+            ...(approvalReview ? { approvalReview } : {}),
+            ...(approvalReview && event.payload.summary
+              ? { summary: truncateDetail(event.payload.summary) }
+              : {}),
+            ...(approvalReview?.rationale
+              ? { detail: truncateDetail(approvalReview.rationale) }
+              : event.payload.summary
+                ? { detail: truncateDetail(event.payload.summary) }
+                : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
             ...(event.payload.ownerAgentToolUseId
@@ -810,6 +827,7 @@ export function projectRuntimeEventToActivities(
           },
         }),
       ];
+    }
 
     case "hook.started":
       return [
