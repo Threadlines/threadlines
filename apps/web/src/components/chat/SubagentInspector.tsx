@@ -24,6 +24,7 @@ import {
   SubagentModelMeta,
 } from "./subagentMeta";
 import { SubagentTranscript } from "./SubagentTranscript";
+import { sendSubagentInput } from "./subagentTranscriptClient";
 
 interface SubagentInspectorProps {
   environmentId: EnvironmentId;
@@ -35,6 +36,9 @@ interface SubagentInspectorProps {
   /** `back` returns to a list the inspector was drilled into (the agents
    *  panel); `close` dismisses the surface entirely (the dialog). */
   dismissVariant?: "close" | "back";
+  /** The provider can take a message straight to this agent (Codex). The
+   *  composer only shows while the agent is live. */
+  canSendInput?: boolean | undefined;
   onClose: () => void;
 }
 
@@ -67,6 +71,7 @@ export function SubagentInspector({
   details,
   cwd,
   dismissVariant = "close",
+  canSendInput = false,
   onClose,
 }: SubagentInspectorProps) {
   const [providerAgent, setProviderAgent] = useState<ProviderSubagentTranscriptResult["agent"]>();
@@ -215,6 +220,95 @@ export function SubagentInspector({
         onInstructionResolved={handleInstructionResolved}
         scrollable
       />
+      {canSendInput && active && transcriptAgentId !== null ? (
+        <SubagentInputComposer
+          environmentId={environmentId}
+          threadId={threadId}
+          agentId={transcriptAgentId}
+          agentName={displayName}
+        />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * One line to the agent itself, under its transcript. Enter sends, Shift+Enter
+ * breaks a line. The reply lands in the transcript above like any other turn,
+ * so there is nothing else to show here but a failure.
+ */
+function SubagentInputComposer({
+  environmentId,
+  threadId,
+  agentId,
+  agentName,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  agentId: string;
+  agentName: string;
+}) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const trimmed = text.trim();
+
+  const submit = useCallback(async () => {
+    if (trimmed.length === 0 || sending) {
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      await sendSubagentInput({ environmentId, threadId, agentId, text: trimmed });
+      setText("");
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : "Could not send.");
+    } finally {
+      setSending(false);
+    }
+  }, [agentId, environmentId, sending, threadId, trimmed]);
+
+  return (
+    <form
+      className="shrink-0 border-t border-border/65 px-3 py-2"
+      data-subagent-input-composer="true"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="flex items-end gap-2">
+        <textarea
+          aria-label="Message this agent"
+          className="min-h-5 flex-1 resize-none bg-transparent text-[13px] leading-5 text-foreground outline-none placeholder:text-muted-foreground/45 disabled:opacity-60"
+          disabled={sending}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+          placeholder={`Message ${agentName}`}
+          rows={1}
+          value={text}
+        />
+        <Button
+          type="submit"
+          size="sm"
+          variant="ghost"
+          disabled={trimmed.length === 0 || sending}
+          className="shrink-0 text-[12px]"
+        >
+          Send
+        </Button>
+      </div>
+      {error ? (
+        <p className="mt-1 text-[11px] leading-4 text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </form>
   );
 }

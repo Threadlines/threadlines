@@ -113,6 +113,9 @@ import {
   ProviderRealtimeAudioChunk,
   ProviderRealtimeError,
   ProviderRealtimeStartInput,
+  ProviderSubagentInputError,
+  ProviderSubagentInputRequest,
+  ProviderSubagentInputResult,
   ProviderSubagentTranscriptError,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
@@ -321,6 +324,7 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverStartProviderReview: "server.startProviderReview",
   serverReadSubagentTranscript: "server.readSubagentTranscript",
+  serverSendSubagentInput: "server.sendSubagentInput",
   serverListExternalProviderThreads: "server.listExternalProviderThreads",
   serverImportExternalProviderThread: "server.importExternalProviderThread",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
@@ -420,6 +424,12 @@ export const WsServerReadSubagentTranscriptRpc = Rpc.make(WS_METHODS.serverReadS
   payload: ProviderSubagentTranscriptInput,
   success: ProviderSubagentTranscriptResult,
   error: ProviderSubagentTranscriptError,
+});
+
+export const WsServerSendSubagentInputRpc = Rpc.make(WS_METHODS.serverSendSubagentInput, {
+  payload: ProviderSubagentInputRequest,
+  success: ProviderSubagentInputResult,
+  error: ProviderSubagentInputError,
 });
 
 export const WsServerListExternalProviderThreadsRpc = Rpc.make(
@@ -1169,6 +1179,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerStartProviderReviewRpc,
   WsServerReadSubagentTranscriptRpc,
+  WsServerSendSubagentInputRpc,
   WsServerListExternalProviderThreadsRpc,
   WsServerImportExternalProviderThreadRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,

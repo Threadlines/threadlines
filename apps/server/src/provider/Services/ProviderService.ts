@@ -36,6 +36,8 @@ import type {
   RuntimeThreadGoalSnapshot,
   ThreadGoalStatus,
   ThreadId,
+  ProviderSubagentInputRequest,
+  ProviderSubagentInputResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderTurnStartResult,
@@ -201,6 +203,12 @@ export interface ProviderServiceShape {
   readonly readSubagentTranscript: (
     input: ProviderSubagentTranscriptInput,
   ) => Effect.Effect<ProviderSubagentTranscriptResult, ProviderServiceError>;
+
+  /** Send a user message straight to a spawned subagent (see the adapter's
+   *  `sendSubagentInput`). */
+  readonly sendSubagentInput: (
+    input: ProviderSubagentInputRequest,
+  ) => Effect.Effect<ProviderSubagentInputResult, ProviderServiceError>;
 
   /**
    * Where an isolated subagent is working, or null when that is unknown —

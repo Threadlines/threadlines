@@ -56,6 +56,12 @@ export interface AgentsPanelProps {
   onClose?: (() => void) | undefined;
 }
 
+/** Only Codex lets the host start a turn on a spawned agent's own thread;
+ *  Claude agents can only be reached by the model. */
+function providerAcceptsSubagentInput(providerLabel: string | null | undefined): boolean {
+  return providerLabel?.trim().toLowerCase().includes("codex") ?? false;
+}
+
 /** The trunk takes the provider's own hue so the panel reads as that
  *  provider's work; anything else falls back to the hairline colour. */
 function trunkColor(providerLabel: string | null | undefined): string {
@@ -362,6 +368,7 @@ export const AgentsPanel = memo(function AgentsPanel({
       details={deriveSubagentDisplayDetails(selectedSubagent)}
       cwd={threadCwd ?? undefined}
       dismissVariant="back"
+      canSendInput={providerAcceptsSubagentInput(providerLabel)}
       onClose={handleBack}
     />
   ) : null;

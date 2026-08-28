@@ -45,6 +45,7 @@ import {
   ProviderExtensionsError,
   ProviderExternalThreadError,
   ProviderRealtimeError,
+  ProviderSubagentInputError,
   ProviderSubagentTranscriptError,
   ThreadId,
   type TerminalEvent,
@@ -1107,6 +1108,22 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                       error.message.trim().length > 0
                         ? error.message
                         : "Failed to read the subagent transcript.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverSendSubagentInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSendSubagentInput,
+            providerService.sendSubagentInput(input).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderSubagentInputError({
+                    message:
+                      error.message.trim().length > 0
+                        ? error.message
+                        : "Failed to send the message to the agent.",
                   }),
               ),
             ),

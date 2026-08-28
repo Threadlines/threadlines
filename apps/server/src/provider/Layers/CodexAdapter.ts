@@ -3228,6 +3228,76 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       })),
     );
 
+  /** Resolves a stored provider thread the session may act on: one whose
+   *  ancestry reaches this session's root within the supported nesting depth.
+   *  Returns the thread's metadata; anything else is a request error. */
+  const authorizeSubagentThread = Effect.fn("authorizeSubagentThread")(function* (
+    context: CodexAdapterSessionContext,
+    threadId: ThreadId,
+    agentId: string,
+    options: {
+      readonly requestError: (detail: string) => ProviderAdapterRequestError;
+      readonly parentThreadDetail: string;
+    },
+  ) {
+    const { requestError } = options;
+    const rootThreadId = yield* context.runtime.readProviderThreadId.pipe(
+      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)),
+    );
+    if (agentId === rootThreadId) {
+      return yield* requestError(options.parentThreadDetail);
+    }
+
+    const readStoredThreadMetadata = (providerThreadId: string) =>
+      context.runtime
+        .readStoredThreadMetadata(providerThreadId)
+        .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)));
+    const candidate = yield* readStoredThreadMetadata(agentId);
+    const visited = new Set<string>([candidate.id]);
+    let current = candidate;
+
+    for (let depth = 0; depth < CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH; depth += 1) {
+      const parentThreadId = readCodexSubagentParentThreadId(current);
+      if (parentThreadId === rootThreadId) {
+        return candidate;
+      }
+      if (!parentThreadId || visited.has(parentThreadId)) {
+        return yield* requestError(
+          `Codex thread '${agentId}' is not a subagent of this conversation.`,
+        );
+      }
+      visited.add(parentThreadId);
+      current = yield* readStoredThreadMetadata(parentThreadId);
+    }
+
+    return yield* requestError(
+      `Codex thread '${agentId}' exceeded the supported subagent nesting depth.`,
+    );
+  });
+
+  const sendSubagentInput: NonNullable<CodexAdapterShape["sendSubagentInput"]> = Effect.fn(
+    "sendSubagentInput",
+  )(function* (threadId, input) {
+    const requestError = (detail: string) =>
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "sendSubagentInput",
+        detail,
+      });
+    const context = yield* requireSession(threadId);
+    const candidate = yield* authorizeSubagentThread(context, threadId, input.agentId, {
+      requestError,
+      parentThreadDetail: "Send to the parent thread through the composer instead.",
+    });
+    if (candidate.canAcceptDirectInput === false) {
+      return yield* requestError("This agent does not accept direct input right now.");
+    }
+    const response = yield* context.runtime
+      .startStoredThreadTurn(candidate.id, input.text)
+      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "turn/start", cause)));
+    return { turnId: response.turn.id };
+  });
+
   const readSubagentTranscript: NonNullable<CodexAdapterShape["readSubagentTranscript"]> =
     Effect.fn("readSubagentTranscript")(function* (threadId, input) {
       const requestError = (detail: string) =>
@@ -3237,42 +3307,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           detail,
         });
       const context = yield* requireSession(threadId);
-      const rootThreadId = yield* context.runtime.readProviderThreadId.pipe(
-        Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)),
-      );
-      if (input.agentId === rootThreadId) {
-        return yield* requestError("The requested transcript belongs to the parent thread.");
-      }
-
-      const readStoredThreadMetadata = (providerThreadId: string) =>
-        context.runtime
-          .readStoredThreadMetadata(providerThreadId)
-          .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)));
-      const candidate = yield* readStoredThreadMetadata(input.agentId);
-      const visited = new Set<string>([candidate.id]);
-      let current = candidate;
-      let authorized = false;
-
-      for (let depth = 0; depth < CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH; depth += 1) {
-        const parentThreadId = readCodexSubagentParentThreadId(current);
-        if (parentThreadId === rootThreadId) {
-          authorized = true;
-          break;
-        }
-        if (!parentThreadId || visited.has(parentThreadId)) {
-          return yield* requestError(
-            `Codex thread '${input.agentId}' is not a subagent of this conversation.`,
-          );
-        }
-        visited.add(parentThreadId);
-        current = yield* readStoredThreadMetadata(parentThreadId);
-      }
-
-      if (!authorized) {
-        return yield* requestError(
-          `Codex thread '${input.agentId}' exceeded the supported subagent nesting depth.`,
-        );
-      }
+      const candidate = yield* authorizeSubagentThread(context, threadId, input.agentId, {
+        requestError,
+        parentThreadDetail: "The requested transcript belongs to the parent thread.",
+      });
 
       // Legacy threads expose their stored turns through `thread/read`. The
       // cursor API only exists for Codex's explicit paginated history mode;
@@ -3638,6 +3676,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     clearThreadGoal,
     readThread,
     readSubagentTranscript,
+    sendSubagentInput,
     rollbackThread,
     deleteThread,
     respondToRequest,

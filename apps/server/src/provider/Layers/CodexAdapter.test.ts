@@ -346,6 +346,11 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     ): Promise<EffectCodexSchema.V2ThreadItemsListResponse> => Promise.resolve({ data: [] }),
   );
 
+  public readonly startStoredThreadTurnImpl = vi.fn(
+    (_providerThreadId: string, _text: string): Promise<EffectCodexSchema.V2TurnStartResponse> =>
+      Promise.resolve({ turn: { id: "turn-direct-1", items: [], status: "inProgress" } }),
+  );
+
   public readonly rollbackThreadImpl = vi.fn((_numTurns: number): Promise<CodexThreadSnapshot> =>
     Promise.resolve({
       threadId: "provider-thread-1",
@@ -429,6 +434,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   readStoredThreadItems(input: EffectCodexSchema.V2ThreadItemsListParams) {
     return Effect.promise(() => this.readStoredThreadItemsImpl(input));
+  }
+
+  startStoredThreadTurn(providerThreadId: string, text: string) {
+    return Effect.promise(() => this.startStoredThreadTurnImpl(providerThreadId, text));
   }
 
   rollbackThread(numTurns: number) {
@@ -873,6 +882,49 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
       assert.ok(result?._tag === "Failure");
       assert.ok(result.failure instanceof ProviderAdapterRequestError);
       assert.match(result.failure.detail, /not a subagent of this conversation/);
+    }),
+  );
+
+  it.effect("starts a turn on an authorized subagent thread for direct input", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-direct-input");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = transcriptRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+
+      const sendSubagentInput = adapter.sendSubagentInput;
+      assert.ok(sendSubagentInput);
+      const result = yield* sendSubagentInput(threadId, {
+        threadId,
+        agentId: "child-provider-thread",
+        text: "Focus on the router first.",
+      });
+      assert.deepStrictEqual(result, { turnId: "turn-direct-1" });
+      assert.deepStrictEqual(runtime.startStoredThreadTurnImpl.mock.calls, [
+        ["child-provider-thread", "Focus on the router first."],
+      ]);
+
+      // A child the app-server says cannot take input is refused before any turn starts.
+      runtime.readStoredThreadMetadataImpl.mockImplementation((providerThreadId: string) =>
+        Promise.resolve({
+          ...makeStoredThread({ id: providerThreadId, parentThreadId: "provider-thread-1" }),
+          canAcceptDirectInput: false,
+        }),
+      );
+      const refused = yield* sendSubagentInput(threadId, {
+        threadId,
+        agentId: "child-provider-thread",
+        text: "Anyone there?",
+      }).pipe(Effect.result);
+      assert.ok(refused._tag === "Failure");
+      assert.ok(refused.failure instanceof ProviderAdapterRequestError);
+      assert.match(refused.failure.detail, /does not accept direct input/);
+      assert.equal(runtime.startStoredThreadTurnImpl.mock.calls.length, 1);
     }),
   );
 });

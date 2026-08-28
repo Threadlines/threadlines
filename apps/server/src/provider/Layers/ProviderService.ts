@@ -26,6 +26,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStartReviewInput,
+  ProviderSubagentInputRequest,
   ProviderSubagentTranscriptInput,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
@@ -1876,6 +1877,34 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* readTranscript(routed.threadId, input);
   });
 
+  const sendSubagentInput: ProviderServiceShape["sendSubagentInput"] = Effect.fn(
+    "sendSubagentInput",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.sendSubagentInput",
+      schema: ProviderSubagentInputRequest,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.sendSubagentInput",
+      allowRecovery: false,
+    });
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "send-subagent-input",
+      "provider.kind": routed.adapter.provider,
+      "provider.thread_id": input.threadId,
+    });
+    const send = routed.adapter.sendSubagentInput;
+    if (send === undefined) {
+      return yield* toValidationError(
+        "ProviderService.sendSubagentInput",
+        `Provider '${routed.adapter.provider}' does not accept direct input to subagents.`,
+      );
+    }
+    return yield* send(routed.threadId, input);
+  });
+
   const resolveSubagentWorktree: ProviderServiceShape["resolveSubagentWorktree"] = Effect.fn(
     "resolveSubagentWorktree",
   )(function* (input) {
@@ -2019,6 +2048,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getInstanceInfo,
     rollbackConversation,
     readSubagentTranscript,
+    sendSubagentInput,
     resolveSubagentWorktree,
     deleteThread,
     // Each access creates a fresh PubSub subscription so that multiple

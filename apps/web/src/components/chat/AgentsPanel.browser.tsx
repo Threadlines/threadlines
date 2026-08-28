@@ -17,9 +17,11 @@ import { buildRightPanelLauncherStates } from "./rightPanelLauncherState";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
 const transcriptRpcMock = vi.hoisted(() => vi.fn());
+const sendInputRpcMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./subagentTranscriptClient", () => ({
   readSubagentTranscriptPage: transcriptRpcMock,
+  sendSubagentInput: sendInputRpcMock,
 }));
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -220,6 +222,49 @@ describe("AgentsPanel", () => {
           .querySelector("[data-agent-branch='true'] > button, [data-agent-branch='true'] > div")
           ?.getAttribute("title"),
       ).toBe("Sweep the router for panel wiring");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("sends a message straight to a live Codex agent from its transcript", async () => {
+    sendInputRpcMock.mockResolvedValue({ turnId: "turn-direct" });
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      const box = page.getByRole("textbox", { name: "Message this agent" });
+      await expect.element(box).toBeVisible();
+      await box.fill("Focus on the router first.");
+      await userEvent.keyboard("{Enter}");
+
+      await vi.waitFor(() => {
+        expect(sendInputRpcMock).toHaveBeenCalledWith({
+          environmentId: ENVIRONMENT_ID,
+          threadId: THREAD_ID,
+          agentId: "agent-1",
+          text: "Focus on the router first.",
+        });
+      });
+      // Sent: the line clears for the next message; the reply lands in the transcript.
+      await expect.element(box).toHaveValue("");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("offers no direct line to a Claude agent, which only the model can reach", async () => {
+    const mounted = await renderPanel({
+      providerLabel: "claude",
+      subagents: [buildSubagent({ label: "Router sweep" })],
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect.element(page.getByText("Walked the route files.")).toBeVisible();
+      expect(document.querySelector("[data-subagent-input-composer='true']")).toBeNull();
     } finally {
       await mounted.unmount();
     }
