@@ -31,6 +31,34 @@ describe("ComposerPendingUserInputPanel", () => {
     document.body.innerHTML = "";
   });
 
+  it("says when the agent keeps working while a question is open", async () => {
+    const screen = await render(
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[{ ...makePendingUserInput(), isBlocking: false }]}
+        respondingRequestIds={[]}
+        answers={{}}
+        questionIndex={0}
+        onToggleOption={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+    await expect.element(page.getByText("The agent keeps working while you answer.")).toBeVisible();
+
+    // A blocking question (the default) says nothing extra: the turn is paused on it.
+    screen.rerender(
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[makePendingUserInput()]}
+        respondingRequestIds={[]}
+        answers={{}}
+        questionIndex={0}
+        onToggleOption={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+    await expect.element(page.getByText("Split + pinned default")).toBeVisible();
+    expect(document.querySelector("[data-composer-question-nonblocking='true']")).toBeNull();
+  });
+
   it("collapses to a compact summary row and re-expands", async () => {
     const onToggleOption = vi.fn();
     const screen = await render(

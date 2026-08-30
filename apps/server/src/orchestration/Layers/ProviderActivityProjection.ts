@@ -714,6 +714,9 @@ export function projectRuntimeEventToActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
+            ...(event.payload.isBlocking !== undefined
+              ? { isBlocking: event.payload.isBlocking }
+              : {}),
           },
         }),
       ];

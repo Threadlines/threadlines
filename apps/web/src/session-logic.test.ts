@@ -16,6 +16,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  isBlockingUserInput,
   deriveSubagentLiveEntries,
   deriveSubagentProgressState,
   deriveSubagentResultEntries,
@@ -690,6 +691,41 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  it("keeps the provider's blocking flag, and treats a missing one as blocking", () => {
+    const question = {
+      id: "approach",
+      header: "Approach",
+      question: "Which approach?",
+      options: [{ label: "a", description: "Option A" }],
+      multiSelect: false,
+    };
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-passing",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-passing", questions: [question], isBlocking: false },
+      }),
+      makeActivity({
+        id: "user-input-blocking",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-blocking", questions: [question] },
+      }),
+    ];
+
+    const pending = derivePendingUserInputs(activities);
+    expect(pending.map((input) => [input.requestId, input.isBlocking])).toEqual([
+      ["req-passing", false],
+      ["req-blocking", undefined],
+    ]);
+    expect(pending.map(isBlockingUserInput)).toEqual([false, true]);
+  });
+
   it("tracks open structured prompts and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

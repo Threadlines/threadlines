@@ -2772,8 +2772,11 @@ const make = Effect.gen(function* () {
         }
       }
 
+      // A non-blocking question does not pause the agent, so its streaming
+      // text must not be cut into a settled message here.
       const pauseForUserTurnId =
-        event.type === "request.opened" || event.type === "user-input.requested"
+        event.type === "request.opened" ||
+        (event.type === "user-input.requested" && event.payload.isBlocking !== false)
           ? toTurnId(event.turnId)
           : undefined;
       if (pauseForUserTurnId) {
