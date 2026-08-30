@@ -2935,6 +2935,8 @@ function InstalledPluginRow({
 }) {
   const enabled = item.plugin.enabled !== false;
   const detail = installedPluginDetail(item.plugin);
+  const ProviderGlyph = providerIconForDriverLabel(String(item.provider.driver));
+  const providerName = providerTitle(item.provider);
 
   return (
     <div className="group flex min-h-11 min-w-0 items-center gap-2 border-t border-border/40 px-3 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
@@ -2957,6 +2959,16 @@ function InstalledPluginRow({
           ) : null}
         </span>
       </button>
+      {ProviderGlyph ? (
+        <span
+          className="flex shrink-0 items-center text-muted-foreground/60"
+          title={providerName}
+          role="img"
+          aria-label={providerName}
+        >
+          <ProviderGlyph className="size-3.5" />
+        </span>
+      ) : null}
       <Switch
         checked={enabled}
         disabled={isBusy}
@@ -3910,6 +3922,10 @@ function SkillPluginGroup({
   onSelect: (item: ExtensionItem) => void;
 }) {
   const enabled = plugin?.enabled !== false;
+  // Buckets are only built from matching skills, so the first one names the provider.
+  const provider = bucket.matching[0]?.provider ?? null;
+  const ProviderGlyph = provider ? providerIconForDriverLabel(String(provider.driver)) : null;
+  const providerName = provider ? providerTitle(provider) : "";
   const countLabel =
     bucket.matching.length === bucket.total
       ? `${bucket.total} ${bucket.total === 1 ? "skill" : "skills"}`
@@ -3946,6 +3962,16 @@ function SkillPluginGroup({
             </span>
           </span>
         </button>
+        {ProviderGlyph ? (
+          <span
+            className="flex shrink-0 items-center text-muted-foreground/60"
+            title={providerName}
+            role="img"
+            aria-label={providerName}
+          >
+            <ProviderGlyph className="size-3.5" />
+          </span>
+        ) : null}
         {plugin ? (
           <Switch
             checked={enabled}
