@@ -60,10 +60,7 @@ import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.t
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
 
-const DEPRECATED_LEGACY_PROVIDER_DRIVER_KINDS = [
-  ProviderDriverKind.make("cursor"),
-  ProviderDriverKind.make("opencode"),
-] as const;
+const DEPRECATED_LEGACY_PROVIDER_DRIVER_KINDS = [ProviderDriverKind.make("opencode")] as const;
 
 /**
  * Synthesize a `ProviderInstanceConfigMap` from a `ServerSettings` snapshot.

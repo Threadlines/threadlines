@@ -1,10 +1,12 @@
 import { ProviderDriverKind } from "@threadlines/contracts";
-import { ClaudeAI, Icon, OpenAI } from "../Icons";
+import { ClaudeAI, CursorIcon, FxIcon, Icon, OpenAI } from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("codex")]: OpenAI,
   [ProviderDriverKind.make("claudeAgent")]: ClaudeAI,
+  [ProviderDriverKind.make("fx")]: FxIcon,
+  [ProviderDriverKind.make("cursor")]: CursorIcon,
 };
 
 /**

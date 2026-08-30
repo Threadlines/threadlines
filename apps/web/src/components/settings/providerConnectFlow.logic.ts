@@ -17,6 +17,12 @@ export interface ProviderConnectFlowState {
   readonly command: string | null;
   /** Last non-empty output line, shown as a one-line live preview. */
   readonly lastLine: string;
+  /**
+   * First sign-in URL the command printed this run. CLIs that cannot open a
+   * browser themselves (fx inside WSL, headless hosts) print a device-code
+   * URL and wait; the panel opens it for the user instead.
+   */
+  readonly signInUrl: string | null;
 }
 
 export const initialProviderConnectFlowState: ProviderConnectFlowState = {
@@ -25,7 +31,19 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   detail: null,
   command: null,
   lastLine: "",
+  signInUrl: null,
 };
+
+const SIGN_IN_URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/u;
+
+/** The first http(s) URL in a chunk of terminal output, minus trailing punctuation. */
+export function extractSignInUrl(chunk: string): string | null {
+  const match = SIGN_IN_URL_PATTERN.exec(stripTerminalControlSequences(chunk));
+  if (!match) {
+    return null;
+  }
+  return match[0].replace(/[.,;:!?]+$/u, "");
+}
 
 const ANSI_ESCAPE_PATTERN =
   /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B[@-Z\\-_]/gu;
@@ -60,14 +78,18 @@ export function applyProviderAuthEvent(
     case "command":
       return { ...state, command: event.command };
     case "output":
-      return { ...state, lastLine: appendOutputPreview(state.lastLine, event.data) };
+      return {
+        ...state,
+        lastLine: appendOutputPreview(state.lastLine, event.data),
+        signInUrl: state.signInUrl ?? extractSignInUrl(event.data),
+      };
     case "status":
       return {
         ...state,
         status: event.status,
         exitCode: event.exitCode,
         detail: event.detail,
-        ...(event.status === "starting" ? { lastLine: "" } : {}),
+        ...(event.status === "starting" ? { lastLine: "", signInUrl: null } : {}),
       };
   }
 }

@@ -36,6 +36,8 @@ export interface AcpSpawnInput {
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /** Override the default (`true` on Windows so `.cmd` shims resolve). */
+  readonly shell?: boolean;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -47,7 +49,13 @@ export interface AcpSessionRuntimeOptions {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  /**
+   * ACP auth method to invoke after `initialize`. Omit for agents that
+   * authenticate outside the protocol (e.g. fx, which advertises no auth
+   * methods). When the agent advertises an `authMethods` list that does not
+   * contain this id the call is skipped rather than failed.
+   */
+  readonly authMethodId?: string;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -91,7 +99,13 @@ export interface AcpSessionRuntimeShape {
   readonly handleExtRequest: EffectAcpClient.AcpClientShape["handleExtRequest"];
   readonly handleExtNotification: EffectAcpClient.AcpClientShape["handleExtNotification"];
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
-  readonly getEvents: () => Stream.Stream<AcpParsedSessionEvent, never>;
+  readonly getEvents: () => Stream.Stream<AcpSessionRuntimeEvent, never>;
+  /**
+   * Resolves once every event queued so far has been consumed by the
+   * `getEvents` reader (which must acknowledge the barrier). Lets a prompt's
+   * completion be reported strictly after the deltas it produced.
+   */
+  readonly flushEvents: Effect.Effect<void>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
   readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly prompt: (
@@ -115,6 +129,17 @@ export interface AcpSessionRuntimeShape {
     payload: unknown,
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
 }
+
+/** Ordering marker: the reader acknowledges it once everything before it was handled. */
+export interface AcpSessionEventStreamBarrier {
+  readonly _tag: "EventStreamBarrier";
+  readonly acknowledge: Deferred.Deferred<void>;
+}
+
+export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStreamBarrier;
+
+/** Upper bound on waiting for the reader; a dead consumer must not wedge a turn. */
+const EVENT_FLUSH_TIMEOUT = "5 seconds";
 
 interface AcpStartedState extends AcpSessionRuntimeStartResult {}
 
@@ -160,7 +185,7 @@ const makeAcpSessionRuntime = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
-    const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
+    const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
@@ -206,7 +231,9 @@ const makeAcpSessionRuntime = (
           hideWindowsConsole({
             ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
             ...(options.spawn.env ? { env: { ...process.env, ...options.spawn.env } } : {}),
-            shell: process.platform === "win32",
+            // cmd.exe re-splits quoted argv (`bash -lc "fx acp"` → `bash -lc fx acp`),
+            // so wrappers like wsl.exe opt out via `spawn.shell`.
+            shell: options.spawn.shell ?? process.platform === "win32",
           }),
         ),
       )
@@ -235,12 +262,20 @@ const makeAcpSessionRuntime = (
 
     const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
+    // `session/load` replays the conversation as ordinary updates; only
+    // updates produced by a prompt we sent are live content.
+    const promptInFlightRef = yield* Ref.make(false);
+    // A resumed session restarts segment numbering at 0 in this process, so
+    // its items would collide with the ones persisted by the previous run.
+    const itemIdScope = options.resumeSessionId ? `:r${Date.now().toString(36)}` : "";
     yield* acp.handleSessionUpdate((notification) =>
       handleSessionUpdate({
         queue: eventQueue,
         modeStateRef,
         toolCallsRef,
         assistantSegmentRef,
+        promptInFlightRef,
+        itemIdScope,
         params: notification,
       }),
     );
@@ -383,15 +418,17 @@ const makeAcpSessionRuntime = (
         acp.agent.initialize(initializePayload),
       );
 
-      const authenticatePayload = {
-        methodId: options.authMethodId,
-      } satisfies EffectAcpSchema.AuthenticateRequest;
+      if (shouldAuthenticate(options.authMethodId, initializeResult.authMethods)) {
+        const authenticatePayload = {
+          methodId: options.authMethodId,
+        } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+        yield* runLoggedRequest(
+          "authenticate",
+          authenticatePayload,
+          acp.agent.authenticate(authenticatePayload),
+        );
+      }
 
       let sessionId: string;
       let sessionSetupResult:
@@ -501,6 +538,11 @@ const makeAcpSessionRuntime = (
       handleExtNotification: acp.handleExtNotification,
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
+      flushEvents: Effect.gen(function* () {
+        const acknowledge = yield* Deferred.make<void>();
+        yield* Queue.offer(eventQueue, { _tag: "EventStreamBarrier", acknowledge });
+        yield* Deferred.await(acknowledge).pipe(Effect.timeout(EVENT_FLUSH_TIMEOUT), Effect.ignore);
+      }),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
       prompt: (payload) =>
@@ -514,6 +556,7 @@ const makeAcpSessionRuntime = (
               queue: eventQueue,
               assistantSegmentRef,
             }).pipe(
+              Effect.andThen(Ref.set(promptInFlightRef, true)),
               Effect.andThen(
                 runLoggedRequest(
                   "session/prompt",
@@ -521,6 +564,7 @@ const makeAcpSessionRuntime = (
                   acp.agent.prompt(requestPayload),
                 ),
               ),
+              Effect.ensuring(Ref.set(promptInFlightRef, false)),
               Effect.tap(() =>
                 closeActiveAssistantSegment({
                   queue: eventQueue,
@@ -557,6 +601,23 @@ const makeAcpSessionRuntime = (
     } satisfies AcpSessionRuntimeShape;
   });
 
+/**
+ * Legacy agents omit `authMethods` and still expect `authenticate`; agents
+ * that advertise a list are only authenticated with a method they listed.
+ */
+function shouldAuthenticate(
+  authMethodId: string | undefined,
+  advertised: ReadonlyArray<{ readonly id: string }> | null | undefined,
+): authMethodId is string {
+  if (!authMethodId) {
+    return false;
+  }
+  if (advertised === undefined || advertised === null) {
+    return true;
+  }
+  return advertised.some((method) => method.id === authMethodId);
+}
+
 function sessionConfigOptionsFromSetup(
   response:
     | {
@@ -581,17 +642,25 @@ function configOptionCurrentValueMatches(
   return currentValue.trim() === String(value).trim();
 }
 
+const isPromptContentEvent = (event: AcpParsedSessionEvent): boolean =>
+  event._tag === "ContentDelta" || event._tag === "ToolCallUpdated" || event._tag === "PlanUpdated";
+
 const handleSessionUpdate = ({
   queue,
   modeStateRef,
   toolCallsRef,
   assistantSegmentRef,
+  promptInFlightRef,
+  itemIdScope,
   params,
 }: {
-  readonly queue: Queue.Queue<AcpParsedSessionEvent>;
+  readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
+  readonly promptInFlightRef: Ref.Ref<boolean>;
+  /** Suffix keeping item ids unique across resumes (segment numbering restarts per process). */
+  readonly itemIdScope: string;
   readonly params: EffectAcpSchema.SessionNotification;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -601,7 +670,14 @@ const handleSessionUpdate = ({
         current === undefined ? current : updateModeState(current, parsed.modeId!),
       );
     }
+    const promptInFlight = yield* Ref.get(promptInFlightRef);
     for (const event of parsed.events) {
+      if (!promptInFlight && isPromptContentEvent(event)) {
+        // History replay after session/load (or stray output between
+        // turns): the transcript already holds it, so it must not be
+        // appended to the latest message again.
+        continue;
+      }
       if (event._tag === "ToolCallUpdated") {
         yield* closeActiveAssistantSegment({
           queue,
@@ -638,7 +714,7 @@ const handleSessionUpdate = ({
         const itemId = yield* ensureActiveAssistantSegment({
           queue,
           assistantSegmentRef,
-          sessionId: params.sessionId,
+          sessionId: `${params.sessionId}${itemIdScope}`,
         });
         yield* Queue.offer(queue, {
           ...event,
@@ -684,7 +760,7 @@ const ensureActiveAssistantSegment = ({
   assistantSegmentRef,
   sessionId,
 }: {
-  readonly queue: Queue.Queue<AcpParsedSessionEvent>;
+  readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly sessionId: string;
 }) =>
@@ -721,7 +797,7 @@ const closeActiveAssistantSegment = ({
   queue,
   assistantSegmentRef,
 }: {
-  readonly queue: Queue.Queue<AcpParsedSessionEvent>;
+  readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
 }) =>
   Ref.modify(assistantSegmentRef, (current) => {

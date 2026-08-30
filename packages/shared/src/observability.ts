@@ -263,6 +263,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     maxBytes: options.maxBytes,
     maxFiles: options.maxFiles,
     throwOnError: true,
+    keepFileOpen: true,
   });
 
   const runFork = Effect.runForkWith(yield* Effect.context());
@@ -379,7 +380,13 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     if (scheduled) {
       yield* Fiber.interrupt(scheduled).pipe(Effect.ignore);
     }
-    yield* Effect.sync(flushUnsafe);
+    yield* Effect.sync(() => {
+      try {
+        flushUnsafe();
+      } finally {
+        sink.close();
+      }
+    });
   }).pipe(Effect.withTracerEnabled(false));
 
   yield* Effect.addFinalizer(() => close.pipe(Effect.ignore));

@@ -1,6 +1,12 @@
-import { ClaudeSettings, CodexSettings, ProviderDriverKind } from "@threadlines/contracts";
+import {
+  ClaudeSettings,
+  CodexSettings,
+  CursorSettings,
+  FxSettings,
+  ProviderDriverKind,
+} from "@threadlines/contracts";
 import type * as Schema from "effect/Schema";
-import { ClaudeAI, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, CursorIcon, FxIcon, type Icon, OpenAI } from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -39,6 +45,20 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Claude",
     icon: ClaudeAI,
     settingsSchema: ClaudeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("fx"),
+    label: "fx",
+    icon: FxIcon,
+    settingsSchema: FxSettings,
+    badgeLabel: "Experimental",
+  },
+  {
+    value: ProviderDriverKind.make("cursor"),
+    label: "Cursor",
+    icon: CursorIcon,
+    settingsSchema: CursorSettings,
+    badgeLabel: "Early Access",
   },
 ];
 

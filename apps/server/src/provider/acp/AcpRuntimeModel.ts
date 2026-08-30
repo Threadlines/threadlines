@@ -81,15 +81,30 @@ type AcpToolCallUpdate = Extract<
   { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
 
-export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
-  const configOptions = sessionResponse.configOptions;
+/**
+ * The config option that selects the model. Prefers the conventional `model`
+ * id, then falls back to the first `model`-category select — some agents
+ * (fx) file a `provider` picker under the same category ahead of the model.
+ */
+export function findModelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): EffectAcpSchema.SessionConfigOption | undefined {
   if (!configOptions) return undefined;
-  for (const opt of configOptions) {
-    if (opt.category === "model" && opt.id.trim().length > 0) {
-      return opt.id.trim();
-    }
-  }
-  return undefined;
+  const byId = configOptions.find(
+    (option) => option.id.trim().toLowerCase() === "model" && option.type === "select",
+  );
+  if (byId) return byId;
+  return configOptions.find(
+    (option) =>
+      option.category === "model" &&
+      option.type === "select" &&
+      option.id.trim().length > 0 &&
+      option.id.trim().toLowerCase() !== "provider",
+  );
+}
+
+export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
+  return findModelConfigOption(sessionResponse.configOptions)?.id.trim();
 }
 
 export function findSessionConfigOption(

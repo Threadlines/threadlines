@@ -2,6 +2,7 @@ import { assert, it, describe } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as VcsProcess from "./VcsProcess.ts";
@@ -43,7 +44,7 @@ describe("VcsDriverRegistry", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("caches repository detection for repeated resolves in the same cwd and kind", () => {
+  it.effect("caches repository detection across repeated five-second polls", () => {
     const calls: VcsProcess.VcsProcessInput[] = [];
     const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make()).pipe(
       Layer.provide(NodeServices.layer),
@@ -77,14 +78,20 @@ describe("VcsDriverRegistry", () => {
 
     return Effect.gen(function* () {
       const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
-      const first = yield* registry.resolve({ cwd: "/repo", requestedKind: "git" });
-      const second = yield* registry.resolve({ cwd: "/repo", requestedKind: "git" });
+      for (let poll = 0; poll < 12; poll += 1) {
+        const result = yield* registry.resolve({ cwd: "/repo", requestedKind: "git" });
+        assert.equal(result.repository.rootPath, "/repo");
+        if (poll < 11) {
+          yield* TestClock.adjust("5 seconds");
+        }
+      }
 
-      assert.equal(first.repository.rootPath, "/repo");
-      assert.equal(second.repository.rootPath, "/repo");
       assert.deepStrictEqual(
         calls.map((call) => normalizeGitArgs(call.args).join(" ")),
         [
+          "rev-parse --is-inside-work-tree",
+          "rev-parse --show-toplevel",
+          "rev-parse --git-common-dir",
           "rev-parse --is-inside-work-tree",
           "rev-parse --show-toplevel",
           "rev-parse --git-common-dir",

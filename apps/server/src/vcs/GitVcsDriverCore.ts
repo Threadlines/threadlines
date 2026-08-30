@@ -90,6 +90,11 @@ const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GIT_TERMINAL_PROMPT: "0",
   SSH_ASKPASS_REQUIRE: "never",
 } satisfies NodeJS.ProcessEnv);
+const BACKGROUND_GIT_STATUS_ENV = Object.freeze({
+  // Status is observational here; do not refresh the index and wake our own
+  // git-directory watcher just because the source-control panel polled.
+  GIT_OPTIONAL_LOCKS: "0",
+} satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
 const GIT_COMMIT_GRAPH_DEFAULT_LIMIT = 24;
@@ -1905,13 +1910,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     } satisfies GitVcsDriver.GitRemoteStatusDetails;
   });
 
-  const readStatusDetailsLocal = Effect.fn("readStatusDetailsLocal")(function* (cwd: string) {
+  const readStatusDetailsLocal = Effect.fn("readStatusDetailsLocal")(function* (
+    cwd: string,
+    options?: { readonly includeBaseDivergence?: boolean },
+  ) {
+    const includeBaseDivergence = options?.includeBaseDivergence ?? true;
     const statusResult = yield* executeGit(
       "GitVcsDriver.statusDetails.status",
       cwd,
       ["status", "--porcelain=2", "--branch", "--untracked-files=all"],
       {
         allowNonZeroExit: true,
+        env: BACKGROUND_GIT_STATUS_ENV,
       },
     ).pipe(Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)));
 
@@ -2039,7 +2049,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         : null;
 
     const fallbackAheadCount =
-      !upstreamRef && refName
+      includeBaseDivergence && !upstreamRef && refName
         ? yield* computeAheadCountAgainstBase(cwd, refName).pipe(
             Effect.catch(() => Effect.succeed(0)),
           )
@@ -2054,7 +2064,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       refName !== null &&
       (refName === defaultBranch ||
         (defaultBranch === null && (refName === "main" || refName === "master")));
-    if (refName && !isDefaultBranch) {
+    if (includeBaseDivergence && refName && !isDefaultBranch) {
       aheadOfDefaultCount =
         fallbackAheadCount !== null
           ? fallbackAheadCount
@@ -2235,7 +2245,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const statusDetailsLocal: GitVcsDriver.GitVcsDriverShape["statusDetailsLocal"] = Effect.fn(
     "statusDetailsLocal",
   )(function* (cwd) {
-    return yield* readStatusDetailsLocal(cwd);
+    // Local polling publishes working-tree and branch identity only. The
+    // remote-status path owns base/upstream divergence, so avoid recomputing
+    // those discarded values every five seconds.
+    return yield* readStatusDetailsLocal(cwd, { includeBaseDivergence: false });
   });
 
   const statusDetails: GitVcsDriver.GitVcsDriverShape["statusDetails"] = Effect.fn("statusDetails")(

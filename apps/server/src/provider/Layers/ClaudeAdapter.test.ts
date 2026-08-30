@@ -5145,6 +5145,79 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not mint a subagent row when a shell command is moved to the background", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(
+          (event) =>
+            event.type === "task.started" && event.payload.taskId === "task-bg-shell-marker",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // A foreground Bash call that outlives its timeout: the SDK reports the
+      // same local_bash task as started, then backgrounded, then killed.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-bg-shell",
+        tool_use_id: "tool-bash-bg-shell",
+        description: "Probe the agent",
+        task_type: "local_bash",
+        is_backgrounded: false,
+        session_id: "sdk-session-bg-shell",
+        uuid: "bg-shell-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-bg-shell",
+        patch: { is_backgrounded: true },
+        session_id: "sdk-session-bg-shell",
+        uuid: "bg-shell-backgrounded",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-bg-shell",
+        patch: { status: "killed" },
+        session_id: "sdk-session-bg-shell",
+        uuid: "bg-shell-killed",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-bg-shell-marker",
+        description: "Marker task",
+        session_id: "sdk-session-bg-shell",
+        uuid: "bg-shell-marker",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.isUndefined(runtimeEvents.find((event) => event.type === "subagent.metadata.updated"));
+      const completed = runtimeEvents.find(
+        (event) => event.type === "task.completed" && event.payload.taskId === "task-bg-shell",
+      );
+      assert.equal(completed?.type, "task.completed");
+      if (completed?.type === "task.completed") {
+        assert.equal(completed.payload.status, "stopped");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not replay task notifications for non-subagent background tools", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

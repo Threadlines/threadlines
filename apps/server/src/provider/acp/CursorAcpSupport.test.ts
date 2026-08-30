@@ -1,54 +1,388 @@
+import * as NodeOS from "node:os";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { describe, expect, it } from "vite-plus/test";
+import type * as EffectAcpSchema from "effect-acp/schema";
+import type { CursorSettings, ServerProviderModel } from "@threadlines/contracts";
+import { createModelCapabilities } from "@threadlines/shared/model";
 
-import { applyCursorAcpModelSelection, buildCursorAcpSpawnInput } from "./CursorAcpSupport.ts";
+import {
+  buildAcpProviderSnapshot,
+  checkAcpProviderStatus,
+  discoverAcpModelCapabilities,
+  discoverAcpModels,
+  getAcpFallbackModels,
+} from "./AcpProvider.ts";
+import { buildAcpModelsFromConfigOptions } from "./AcpProviderModels.ts";
+import {
+  buildCursorAcpSpawnInput,
+  buildCursorCapabilitiesFromConfigOptions,
+  CURSOR_ACP_DESCRIPTOR,
+  CURSOR_MODEL_OPTION_MAPPING,
+  getCursorParameterizedModelPickerUnsupportedMessage,
+  parseCursorAboutOutput,
+  parseCursorCliConfigChannel,
+  parseCursorVersionDate,
+  resolveCursorAcpBaseModelId,
+  resolveCursorAcpConfigUpdates,
+} from "./CursorAcpSupport.ts";
 
-const parameterizedGpt54ConfigOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [
+const runNode = <A, E>(
+  effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>,
+): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
+
+const resolveMockAgentPath = Effect.fn("resolveMockAgentPath")(function* () {
+  const path = yield* Path.Path;
+  return yield* path.fromFileUrl(new URL("../../../scripts/acp-mock-agent.ts", import.meta.url));
+});
+const isWindows = process.platform === "win32";
+
+function batchQuote(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function commandWrapperPath(
+  path: { readonly join: (path: string, ...paths: ReadonlyArray<string>) => string },
+  dir: string,
+): string {
+  return path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+}
+
+function commandWrapperEnv(extraEnv?: Record<string, string>): string {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) =>
+      isWindows ? `set "${key}=${value}"` : `export ${key}=${JSON.stringify(value)}`,
+    )
+    .join("\n");
+}
+
+function selectDescriptor(
+  id: string,
+  label: string,
+  options: ReadonlyArray<{ id: string; label: string; isDefault?: boolean }>,
+) {
+  return {
+    id,
+    label,
+    type: "select" as const,
+    options: [...options],
+    ...(options.find((option) => option.isDefault)?.id
+      ? { currentValue: options.find((option) => option.isDefault)?.id }
+      : {}),
+  };
+}
+
+function booleanDescriptor(id: string, label: string, currentValue?: boolean) {
+  return {
+    id,
+    label,
+    type: "boolean" as const,
+    ...(typeof currentValue === "boolean" ? { currentValue } : {}),
+  };
+}
+
+const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
+  extraEnv?: Record<string, string>,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const mockAgentPath = yield* resolveMockAgentPath();
+  const dir = yield* fileSystem.makeTempDirectory({
+    directory: NodeOS.tmpdir(),
+    prefix: "cursor-provider-mock-",
+  });
+  const wrapperPath = commandWrapperPath(path, dir);
+  // @effect-diagnostics-next-line preferSchemaOverJson:off
+  const nodeCommand = JSON.stringify(process.execPath);
+  // @effect-diagnostics-next-line preferSchemaOverJson:off
+  const mockAgentPathJson = JSON.stringify(mockAgentPath);
+  const envExports = commandWrapperEnv(extraEnv);
+  const script = isWindows
+    ? `@echo off
+setlocal
+${envExports}
+${batchQuote(process.execPath)} ${batchQuote(mockAgentPath)} %*
+`
+    : `#!/bin/sh
+${envExports}
+exec ${nodeCommand} ${mockAgentPathJson} "$@"
+`;
+  yield* fileSystem.writeFileString(wrapperPath, script);
+  yield* fileSystem.chmod(wrapperPath, 0o755);
+  return wrapperPath;
+});
+
+const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const mockAgentPath = yield* resolveMockAgentPath();
+  const dir = yield* fileSystem.makeTempDirectory({
+    directory: NodeOS.tmpdir(),
+    prefix: "cursor-provider-about-mock-",
+  });
+  const wrapperPath = commandWrapperPath(path, dir);
+  // @effect-diagnostics-next-line preferSchemaOverJson:off
+  const nodeCommand = JSON.stringify(process.execPath);
+  // @effect-diagnostics-next-line preferSchemaOverJson:off
+  const mockAgentPathJson = JSON.stringify(mockAgentPath);
+  const script = isWindows
+    ? `@echo off
+if "%~1"=="about" (
+  echo CLI Version         2026.04.09-f2b0fcd
+  echo User Email          cursor@example.com
+  exit /b 0
+)
+${batchQuote(process.execPath)} ${batchQuote(mockAgentPath)} %*
+`
+    : `#!/bin/sh
+if [ "$1" = "about" ]; then
+  printf 'CLI Version         2026.04.09-f2b0fcd\\n'
+  printf 'User Email          cursor@example.com\\n'
+  exit 0
+fi
+exec ${nodeCommand} ${mockAgentPathJson} "$@"
+`;
+  yield* fileSystem.writeFileString(wrapperPath, script);
+  yield* fileSystem.chmod(wrapperPath, 0o755);
+  return wrapperPath;
+});
+
+const waitForFileContent = Effect.fn("waitForFileContent")(function* (
+  filePath: string,
+  attempts = 40,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const content = yield* fileSystem
+      .readFileString(filePath)
+      .pipe(Effect.catch(() => Effect.void));
+    if (content !== undefined) {
+      if (content.trim().length > 0) {
+        return content;
+      }
+    }
+    yield* Effect.sleep("50 millis");
+  }
+  return yield* Effect.die(`Timed out waiting for file content at ${filePath}`);
+});
+
+const makeProviderStatusEnvFixture = Effect.fn("makeProviderStatusEnvFixture")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const tempDir = yield* fileSystem.makeTempDirectory({
+    directory: NodeOS.tmpdir(),
+    prefix: "cursor-provider-status-env-",
+  });
+  return {
+    requestLogPath: path.join(tempDir, "requests.ndjson"),
+    wrapperPath: yield* makeMockAgentWithAboutWrapper(),
+  };
+});
+
+const makeExitLogFixture = Effect.fn("makeExitLogFixture")(function* (prefix: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const tempDir = yield* fileSystem.makeTempDirectory({
+    directory: NodeOS.tmpdir(),
+    prefix,
+  });
+  const exitLogPath = path.join(tempDir, "exit.log");
+  return {
+    exitLogPath,
+    wrapperPath: yield* makeMockAgentWrapper({
+      T3_ACP_EXIT_LOG_PATH: exitLogPath,
+    }),
+  };
+});
+
+const parameterizedGpt54ConfigOptions = [
   {
-    id: "model",
-    name: "Model",
-    category: "model",
     type: "select",
     currentValue: "gpt-5.4-medium-fast",
-    options: [{ value: "gpt-5.4-medium-fast", name: "GPT-5.4" }],
+    options: [{ name: "GPT-5.4", value: "gpt-5.4-medium-fast" }],
+    category: "model",
+    id: "model",
+    name: "Model",
   },
   {
-    id: "reasoning",
-    name: "Reasoning",
-    category: "thought_level",
     type: "select",
     currentValue: "medium",
     options: [
-      { value: "low", name: "Low" },
-      { value: "medium", name: "Medium" },
-      { value: "high", name: "High" },
-      { value: "extra-high", name: "Extra High" },
+      { name: "None", value: "none" },
+      { name: "Low", value: "low" },
+      { name: "Medium", value: "medium" },
+      { name: "High", value: "high" },
+      { name: "Extra High", value: "extra-high" },
     ],
+    category: "thought_level",
+    id: "reasoning",
+    name: "Reasoning",
   },
   {
-    id: "context",
-    name: "Context",
-    category: "model_config",
     type: "select",
     currentValue: "272k",
     options: [
-      { value: "272k", name: "272K" },
-      { value: "1m", name: "1M" },
+      { name: "272K", value: "272k" },
+      { name: "1M", value: "1m" },
     ],
+    category: "model_config",
+    id: "context",
+    name: "Context",
   },
   {
-    id: "fast",
-    name: "Fast",
-    category: "model_config",
     type: "select",
     currentValue: "false",
     options: [
-      { value: "false", name: "Off" },
-      { value: "true", name: "Fast" },
+      { name: "Off", value: "false" },
+      { name: "Fast", value: "true" },
     ],
+    category: "model_config",
+    id: "fast",
+    name: "Fast",
   },
-];
+] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+const parameterizedClaudeConfigOptions = [
+  {
+    type: "select",
+    currentValue: "claude-4.6-opus-high-thinking",
+    options: [{ name: "Opus 4.6", value: "claude-4.6-opus-high-thinking" }],
+    category: "model",
+    id: "model",
+    name: "Model",
+  },
+  {
+    type: "select",
+    currentValue: "high",
+    options: [
+      { name: "Low", value: "low" },
+      { name: "Medium", value: "medium" },
+      { name: "High", value: "high" },
+    ],
+    category: "thought_level",
+    id: "reasoning",
+    name: "Reasoning",
+  },
+  {
+    type: "boolean",
+    currentValue: true,
+    category: "model_config",
+    id: "thinking",
+    name: "Thinking",
+  },
+] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+const parameterizedClaudeModelOptionConfigOptions = [
+  {
+    type: "select",
+    currentValue: "claude-opus-4-6",
+    options: [{ name: "Opus 4.6", value: "claude-opus-4-6" }],
+    category: "model",
+    id: "model",
+    name: "Model",
+  },
+  {
+    type: "select",
+    currentValue: "high",
+    options: [
+      { name: "Low", value: "low" },
+      { name: "Medium", value: "medium" },
+      { name: "High", value: "high" },
+    ],
+    category: "thought_level",
+    id: "reasoning",
+    name: "Reasoning",
+  },
+  {
+    type: "select",
+    currentValue: "max",
+    options: [
+      { name: "Low", value: "low" },
+      { name: "Medium", value: "medium" },
+      { name: "High", value: "high" },
+      { name: "Max", value: "max" },
+    ],
+    category: "model_option",
+    id: "effort",
+    name: "Effort",
+  },
+  {
+    type: "select",
+    currentValue: "true",
+    options: [
+      { name: "Off", value: "false" },
+      { name: "Fast", value: "true" },
+    ],
+    category: "model_config",
+    id: "fast",
+    name: "Fast",
+  },
+  {
+    type: "select",
+    currentValue: "true",
+    options: [
+      { name: "Off", value: "false" },
+      { name: ":icon-brain:", value: "true" },
+    ],
+    category: "model_config",
+    id: "thinking",
+    name: "Thinking",
+  },
+] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+const sessionNewCursorConfigOptions = [
+  {
+    type: "select",
+    currentValue: "agent",
+    options: [
+      { name: "Agent", value: "agent", description: "Full agent capabilities with tool access" },
+    ],
+    category: "mode",
+    id: "mode",
+    name: "Mode",
+    description: "Controls how the agent executes tasks",
+  },
+  {
+    type: "select",
+    currentValue: "composer-2",
+    options: [
+      { name: "Auto", value: "default" },
+      { name: "Composer 2", value: "composer-2" },
+      { name: "GPT-5.4", value: "gpt-5.4" },
+      { name: "Sonnet 4.6", value: "claude-sonnet-4-6" },
+      { name: "Opus 4.6", value: "claude-opus-4-6" },
+      { name: "Codex 5.3 Spark", value: "gpt-5.3-codex-spark" },
+    ],
+    category: "model",
+    id: "model",
+    name: "Model",
+    description: "Controls which model is used for responses",
+  },
+  {
+    type: "select",
+    currentValue: "true",
+    options: [
+      { name: "Off", value: "false" },
+      { name: "Fast", value: "true" },
+    ],
+    category: "model_config",
+    id: "fast",
+    name: "Fast",
+    description: "Faster speeds.",
+  },
+] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+const baseCursorSettings: CursorSettings = {
+  enabled: true,
+  binaryPath: "agent",
+  apiEndpoint: "",
+  customModels: [],
+};
+
+const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 
 describe("buildCursorAcpSpawnInput", () => {
   it("builds the default Cursor ACP command", () => {
@@ -62,10 +396,7 @@ describe("buildCursorAcpSpawnInput", () => {
   it("includes the configured api endpoint when present", () => {
     expect(
       buildCursorAcpSpawnInput(
-        {
-          binaryPath: "/usr/local/bin/agent",
-          apiEndpoint: "http://localhost:3000",
-        },
+        { binaryPath: "/usr/local/bin/agent", apiEndpoint: "http://localhost:3000" },
         "/tmp/project",
       ),
     ).toEqual({
@@ -76,46 +407,458 @@ describe("buildCursorAcpSpawnInput", () => {
   });
 });
 
-describe("applyCursorAcpModelSelection", () => {
-  it("sets the base model before applying separate config options", async () => {
-    const calls: Array<
-      | { readonly type: "model"; readonly value: string }
-      | { readonly type: "config"; readonly configId: string; readonly value: string | boolean }
-    > = [];
+describe("getAcpFallbackModels", () => {
+  it("does not publish any built-in cursor models before ACP discovery", () => {
+    expect(
+      getAcpFallbackModels(CURSOR_ACP_DESCRIPTOR, {
+        customModels: ["internal/cursor-model"],
+      }).map((model) => model.slug),
+    ).toEqual(["internal/cursor-model"]);
+  });
+});
 
-    const runtime = {
-      getConfigOptions: Effect.succeed(parameterizedGpt54ConfigOptions),
-      setModel: (value: string) =>
-        Effect.sync(() => {
-          calls.push({ type: "model", value });
-        }),
-      setConfigOption: (configId: string, value: string | boolean) =>
-        Effect.sync(() => {
-          calls.push({ type: "config", configId, value });
-        }),
-    };
+describe("buildAcpProviderSnapshot", () => {
+  it("downgrades ready status to warning when ACP model discovery times out", () => {
+    expect(
+      buildAcpProviderSnapshot({
+        descriptor: CURSOR_ACP_DESCRIPTOR,
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        settings: baseCursorSettings,
+        probe: {
+          installed: true,
+          version: "2026.04.09-f2b0fcd",
+          status: "ready",
+          auth: { status: "authenticated", type: "Team", label: "Cursor Team Subscription" },
+        },
+        discoveryWarning: "Cursor ACP model discovery timed out after 15000ms.",
+      }),
+    ).toMatchObject({
+      status: "warning",
+      message: "Cursor ACP model discovery timed out after 15000ms.",
+      models: [],
+    });
+  });
 
-    await Effect.runPromise(
-      applyCursorAcpModelSelection({
-        runtime,
-        model: "gpt-5.4-medium-fast[reasoning=medium,context=272k]",
-        selections: [
-          { id: "reasoning", value: "xhigh" },
-          { id: "contextWindow", value: "1m" },
-          { id: "fastMode", value: true },
+  it("preserves provider error state while appending discovery warnings", () => {
+    expect(
+      buildAcpProviderSnapshot({
+        descriptor: CURSOR_ACP_DESCRIPTOR,
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        settings: {
+          ...baseCursorSettings,
+          customModels: ["claude-sonnet-4-6"],
+        },
+        probe: {
+          installed: true,
+          version: "2026.04.09-f2b0fcd",
+          status: "error",
+          auth: { status: "unauthenticated" },
+          message: "Cursor Agent is not authenticated. Run `agent login` and try again.",
+        },
+        discoveryWarning: "Cursor ACP model discovery failed. Check server logs for details.",
+      }),
+    ).toMatchObject({
+      status: "error",
+      message:
+        "Cursor Agent is not authenticated. Run `agent login` and try again. Cursor ACP model discovery failed. Check server logs for details.",
+      models: [
+        {
+          slug: "claude-sonnet-4-6",
+          isCustom: true,
+        },
+      ],
+    });
+  });
+});
+
+describe("buildCursorCapabilitiesFromConfigOptions", () => {
+  it("derives model capabilities from parameterized Cursor ACP config options", () => {
+    expect(buildCursorCapabilitiesFromConfigOptions(parameterizedGpt54ConfigOptions)).toEqual(
+      createModelCapabilities({
+        optionDescriptors: [
+          selectDescriptor("reasoning", "Reasoning", [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+            { id: "xhigh", label: "Extra High" },
+          ]),
+          selectDescriptor("contextWindow", "Context", [
+            { id: "272k", label: "272K", isDefault: true },
+            { id: "1m", label: "1M" },
+          ]),
+          booleanDescriptor("fastMode", "Fast", false),
         ],
-        mapError: ({ step, configId, cause }) =>
-          step === "set-config-option"
-            ? `failed to set config option ${configId}: ${cause.message}`
-            : `failed to set model: ${cause.message}`,
       }),
     );
+  });
 
-    expect(calls).toEqual([
-      { type: "model", value: "gpt-5.4-medium-fast" },
-      { type: "config", configId: "reasoning", value: "extra-high" },
-      { type: "config", configId: "context", value: "1m" },
-      { type: "config", configId: "fast", value: "true" },
+  it("detects boolean thinking toggles from model_config options", () => {
+    expect(buildCursorCapabilitiesFromConfigOptions(parameterizedClaudeConfigOptions)).toEqual(
+      createModelCapabilities({
+        optionDescriptors: [
+          selectDescriptor("reasoning", "Reasoning", [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High", isDefault: true },
+          ]),
+          booleanDescriptor("thinking", "Thinking", true),
+        ],
+      }),
+    );
+  });
+
+  it("prefers the newer model_option effort control over legacy thought_level", () => {
+    expect(
+      buildCursorCapabilitiesFromConfigOptions(parameterizedClaudeModelOptionConfigOptions),
+    ).toEqual(
+      createModelCapabilities({
+        optionDescriptors: [
+          selectDescriptor("reasoning", "Effort", [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+            { id: "max", label: "Max", isDefault: true },
+          ]),
+          booleanDescriptor("fastMode", "Fast", true),
+          booleanDescriptor("thinking", "Thinking", true),
+        ],
+      }),
+    );
+  });
+});
+
+describe("buildAcpModelsFromConfigOptions (Cursor mapping)", () => {
+  it("publishes ACP model choices immediately from session/new config options", () => {
+    expect(
+      buildAcpModelsFromConfigOptions({
+        configOptions: sessionNewCursorConfigOptions,
+        mapping: CURSOR_MODEL_OPTION_MAPPING,
+        sharedCapabilities: false,
+      }),
+    ).toEqual([
+      {
+        slug: "default",
+        name: "Auto",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+      {
+        slug: "composer-2",
+        name: "Composer 2",
+        isCustom: false,
+        capabilities: createModelCapabilities({
+          optionDescriptors: [booleanDescriptor("fastMode", "Fast", true)],
+        }),
+      },
+      {
+        slug: "gpt-5.4",
+        name: "GPT-5.4",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+      {
+        slug: "claude-sonnet-4-6",
+        name: "Sonnet 4.6",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+      {
+        slug: "claude-opus-4-6",
+        name: "Opus 4.6",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+      {
+        slug: "gpt-5.3-codex-spark",
+        name: "Codex 5.3 Spark",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+    ]);
+  });
+});
+
+describe("checkAcpProviderStatus (Cursor)", () => {
+  it("passes the injected environment to ACP model discovery", async () => {
+    const { requestLogPath, wrapperPath } = await runNode(makeProviderStatusEnvFixture());
+
+    const provider = await Effect.runPromise(
+      checkAcpProviderStatus(
+        CURSOR_ACP_DESCRIPTOR,
+        {
+          enabled: true,
+          binaryPath: wrapperPath,
+          apiEndpoint: "",
+          customModels: [],
+        },
+        {
+          ...process.env,
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        },
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    expect(provider.models.map((model) => model.slug)).toEqual([
+      "default",
+      "composer-2",
+      "gpt-5.4",
+      "claude-opus-4-6",
+    ]);
+    await expect(runNode(waitForFileContent(requestLogPath))).resolves.toContain("initialize");
+  });
+});
+
+describe("discoverAcpModels (Cursor)", () => {
+  it("keeps the ACP probe runtime alive long enough to discover models", async () => {
+    const wrapperPath = await runNode(makeMockAgentWrapper());
+
+    const models = await Effect.runPromise(
+      discoverAcpModels(CURSOR_ACP_DESCRIPTOR, {
+        enabled: true,
+        binaryPath: wrapperPath,
+        apiEndpoint: "",
+        customModels: [],
+      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+    );
+
+    expect(models.map((model) => model.slug)).toEqual([
+      "default",
+      "composer-2",
+      "gpt-5.4",
+      "claude-opus-4-6",
+    ]);
+  });
+
+  it("closes the ACP probe runtime after discovery completes", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const { exitLogPath, wrapperPath } = await runNode(
+      makeExitLogFixture("cursor-provider-exit-log-"),
+    );
+
+    await Effect.runPromise(
+      discoverAcpModels(CURSOR_ACP_DESCRIPTOR, {
+        enabled: true,
+        binaryPath: wrapperPath,
+        apiEndpoint: "",
+        customModels: [],
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    const exitLog = await runNode(waitForFileContent(exitLogPath));
+    expect(exitLog).toContain("SIGTERM");
+  });
+});
+
+describe("discoverAcpModelCapabilities (Cursor)", () => {
+  it("closes all ACP probe runtimes after capability enrichment completes", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const { exitLogPath, wrapperPath } = await runNode(
+      makeExitLogFixture("cursor-capabilities-exit-log-"),
+    );
+    const existingModels: ReadonlyArray<ServerProviderModel> = [
+      { slug: "default", name: "Auto", isCustom: false, capabilities: emptyCapabilities },
+      { slug: "composer-2", name: "Composer 2", isCustom: false, capabilities: emptyCapabilities },
+      { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: emptyCapabilities },
+      {
+        slug: "claude-opus-4-6",
+        name: "Opus 4.6",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+    ];
+
+    const models = await Effect.runPromise(
+      discoverAcpModelCapabilities(
+        CURSOR_ACP_DESCRIPTOR,
+        {
+          enabled: true,
+          binaryPath: wrapperPath,
+          apiEndpoint: "",
+          customModels: [],
+        },
+        existingModels,
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    expect(models.map((model) => model.slug)).toEqual([
+      "default",
+      "composer-2",
+      "gpt-5.4",
+      "claude-opus-4-6",
+    ]);
+
+    const exitLog = await runNode(waitForFileContent(exitLogPath));
+    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(4);
+  });
+});
+
+describe("parseCursorAboutOutput", () => {
+  it("parses json about output and forwards subscription metadata", () => {
+    expect(
+      parseCursorAboutOutput({
+        code: 0,
+        stdout: JSON.stringify({
+          cliVersion: "2026.04.09-f2b0fcd",
+          subscriptionTier: "Team",
+          userEmail: "jmarminge@gmail.com",
+        }),
+        stderr: "",
+      }),
+    ).toEqual({
+      version: "2026.04.09-f2b0fcd",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+        email: "jmarminge@gmail.com",
+        type: "Team",
+        label: "Cursor Team Subscription",
+      },
+    });
+  });
+
+  it("treats json about output with a logged-out email as unauthenticated", () => {
+    expect(
+      parseCursorAboutOutput({
+        code: 0,
+        stdout: JSON.stringify({
+          cliVersion: "2026.04.09-f2b0fcd",
+          subscriptionTier: "Team",
+          userEmail: "Not logged in",
+        }),
+        stderr: "",
+      }),
+    ).toEqual({
+      version: "2026.04.09-f2b0fcd",
+      status: "error",
+      auth: {
+        status: "unauthenticated",
+      },
+      message: "Cursor Agent is not authenticated. Run `agent login` and try again.",
+    });
+  });
+
+  it("treats json about output with a null email as unauthenticated", () => {
+    expect(
+      parseCursorAboutOutput({
+        code: 0,
+        stdout: JSON.stringify({
+          cliVersion: "2026.04.09-f2b0fcd",
+          subscriptionTier: null,
+          userEmail: null,
+        }),
+        stderr: "",
+      }),
+    ).toEqual({
+      version: "2026.04.09-f2b0fcd",
+      status: "error",
+      auth: {
+        status: "unauthenticated",
+      },
+      message: "Cursor Agent is not authenticated. Run `agent login` and try again.",
+    });
+  });
+});
+
+describe("Cursor parameterized model picker preview gating", () => {
+  it("parses Cursor CLI version dates from build versions", () => {
+    expect(parseCursorVersionDate("2026.04.08-c4e73a3")).toBe(20260408);
+    expect(parseCursorVersionDate("2026.04.09")).toBe(20260409);
+    expect(parseCursorVersionDate("not-a-version")).toBeUndefined();
+  });
+
+  it("parses the Cursor CLI channel from cli-config.json", () => {
+    expect(parseCursorCliConfigChannel('{ "channel": "lab" }')).toBe("lab");
+    expect(parseCursorCliConfigChannel('{ "channel": "stable" }')).toBe("stable");
+    expect(parseCursorCliConfigChannel('{ "version": 1 }')).toBeUndefined();
+    expect(parseCursorCliConfigChannel("not-json")).toBeUndefined();
+  });
+
+  it("returns no warning when the preview requirements are met", () => {
+    expect(
+      getCursorParameterizedModelPickerUnsupportedMessage({
+        version: "2026.04.08-c4e73a3",
+        channel: "lab",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("explains when the Cursor Agent version is too old", () => {
+    expect(
+      getCursorParameterizedModelPickerUnsupportedMessage({
+        version: "2026.04.07-c4e73a3",
+        channel: "lab",
+      }),
+    ).toContain("too old");
+  });
+
+  it("explains when the Cursor Agent channel is not lab", () => {
+    expect(
+      getCursorParameterizedModelPickerUnsupportedMessage({
+        version: "2026.04.08-c4e73a3",
+        channel: "stable",
+      }),
+    ).toContain("lab channel");
+  });
+});
+
+describe("resolveCursorAcpBaseModelId", () => {
+  it("drops bracket traits without rewriting raw ACP model ids", () => {
+    expect(resolveCursorAcpBaseModelId("gpt-5.4[reasoning=medium,context=272k]")).toBe("gpt-5.4");
+    expect(resolveCursorAcpBaseModelId("gpt-5.4-medium-fast")).toBe("gpt-5.4-medium-fast");
+    expect(resolveCursorAcpBaseModelId("claude-4.6-opus-high-thinking")).toBe(
+      "claude-4.6-opus-high-thinking",
+    );
+    expect(resolveCursorAcpBaseModelId("composer-2")).toBe("composer-2");
+    expect(resolveCursorAcpBaseModelId("auto")).toBe("auto");
+  });
+});
+
+describe("resolveCursorAcpConfigUpdates", () => {
+  it("maps Cursor model options onto separate ACP config option updates", () => {
+    expect(
+      resolveCursorAcpConfigUpdates(parameterizedGpt54ConfigOptions, [
+        { id: "reasoning", value: "xhigh" },
+        { id: "fastMode", value: true },
+        { id: "contextWindow", value: "1m" },
+      ]),
+    ).toEqual([
+      { configId: "reasoning", value: "extra-high" },
+      { configId: "context", value: "1m" },
+      { configId: "fast", value: "true" },
+    ]);
+  });
+
+  it("maps boolean thinking toggles when the model exposes them separately", () => {
+    expect(
+      resolveCursorAcpConfigUpdates(parameterizedClaudeConfigOptions, [
+        { id: "thinking", value: false },
+      ]),
+    ).toEqual([{ configId: "thinking", value: false }]);
+  });
+
+  it("maps explicit fastMode: false so the adapter can clear a prior fast selection", () => {
+    expect(
+      resolveCursorAcpConfigUpdates(parameterizedGpt54ConfigOptions, [
+        { id: "fastMode", value: false },
+      ]),
+    ).toEqual([{ configId: "fast", value: "false" }]);
+  });
+
+  it("writes Cursor effort changes through the newer model_option config when available", () => {
+    expect(
+      resolveCursorAcpConfigUpdates(parameterizedClaudeModelOptionConfigOptions, [
+        { id: "reasoning", value: "max" },
+        { id: "thinking", value: false },
+      ]),
+    ).toEqual([
+      { configId: "effort", value: "max" },
+      { configId: "thinking", value: "false" },
     ]);
   });
 });

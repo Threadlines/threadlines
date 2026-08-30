@@ -31,6 +31,8 @@ import {
   buildClaudeAuthLoginCommand,
   buildClaudeSetupTokenCommand,
   buildCodexLoginCommand,
+  buildCursorLoginCommand,
+  buildFxLoginCommand,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   deriveClaudeLongLivedOAuthTokenState,
@@ -85,6 +87,8 @@ const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
+const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -1321,6 +1325,16 @@ export function ProviderInstanceCard({
       return buildClaudeAuthLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
         homePath: readProviderConfigString(instance.config, "homePath"),
+      });
+    }
+    if (driverKind === CURSOR_DRIVER_KIND) {
+      return buildCursorLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+      });
+    }
+    if (driverKind === FX_DRIVER_KIND) {
+      return buildFxLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
       });
     }
     return null;

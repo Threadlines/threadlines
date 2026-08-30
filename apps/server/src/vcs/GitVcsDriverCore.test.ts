@@ -717,6 +717,29 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("keeps local polling focused on branch and working-tree state", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["checkout", "-b", "feature/local-status"]);
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "feature.txt"]);
+        yield* git(cwd, ["commit", "-m", "feature commit"]);
+        yield* writeTextFile(cwd, "untracked.txt", "local-only\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetailsLocal(cwd);
+
+        assert.equal(status.branch, "feature/local-status");
+        assert.equal(status.hasWorkingTreeChanges, true);
+        assert.equal(
+          status.workingTree.files.some((file) => file.path === "untracked.txt"),
+          true,
+        );
+        assert.equal(status.aheadCount, 0);
+        assert.equal(status.aheadOfDefaultCount, 0);
+      }),
+    );
+
     it.effect("skips remote tags during background upstream status refreshes", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

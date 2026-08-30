@@ -3,6 +3,8 @@ import type { ProviderDriverKind } from "@threadlines/contracts";
 export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   claudeAgent: "claude auth login",
   codex: "codex login",
+  cursor: "agent login",
+  fx: "fx login",
 } as const;
 
 const AUTH_ERROR_PATTERNS = [

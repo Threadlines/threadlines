@@ -2,12 +2,13 @@
 
 import type { ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
 import type { Terminal } from "@xterm/xterm";
-import { CheckIcon, ChevronDownIcon, CopyIcon, LoaderIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, CopyIcon, ExternalLinkIcon, LoaderIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
+import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { createXtermSurface } from "../terminal/xtermSurface";
@@ -187,8 +188,29 @@ export function ProviderConnectFlow({
     }
   }, [autoShowTerminal, needsTerminal, state.status]);
 
+  // Open the printed sign-in page once per run. Most CLIs open the browser
+  // themselves; the ones that cannot (fx inside WSL) print a device-code URL
+  // and wait, which would otherwise time out silently.
+  const openedSignInUrlRef = useRef<string | null>(null);
+  const openSignInUrl = (url: string) => {
+    openedSignInUrlRef.current = url;
+    void ensureLocalApi()
+      .shell.openExternal(url)
+      .catch(() => {
+        // The link button below stays available as the manual path.
+      });
+  };
+  useEffect(() => {
+    const url = state.signInUrl;
+    if (!url || !isProviderConnectFlowActive(state.status) || openedSignInUrlRef.current === url) {
+      return;
+    }
+    openSignInUrl(url);
+  }, [state.signInUrl, state.status]);
+
   const startFlow = () => {
     setShowTerminal(false);
+    openedSignInUrlRef.current = null;
     start();
   };
 
@@ -262,6 +284,18 @@ export function ProviderConnectFlow({
               )}
             </span>
             <div className="flex shrink-0 items-center gap-1.5">
+              {state.signInUrl && isActive ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 gap-1 px-2 text-xs"
+                  onClick={() => openSignInUrl(state.signInUrl!)}
+                >
+                  <ExternalLinkIcon className="size-3" aria-hidden />
+                  Open sign-in page
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 size="sm"

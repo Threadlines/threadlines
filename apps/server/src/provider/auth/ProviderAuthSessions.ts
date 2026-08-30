@@ -495,6 +495,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           binaryPath: readConfigString(instance.config, "binaryPath"),
           homePath: readConfigString(instance.config, "homePath"),
           shadowHomePath: readConfigString(instance.config, "shadowHomePath"),
+          platform: globalThis.process.platform,
         });
         if (!command) {
           return yield* Effect.fail(

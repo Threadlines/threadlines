@@ -5260,8 +5260,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(status ? { status } : {}),
         });
         // A foreground agent moved to the background (Ctrl+B, or the model
-        // backgrounding it): the roster row should say so from now on.
-        if (patch.is_backgrounded === true && previous?.toolUseId) {
+        // backgrounding it): the roster row should say so from now on. Only
+        // agent tasks have a row — a backgrounded shell command must not mint
+        // a phantom "Subagent" that nothing ever settles.
+        if (
+          patch.is_backgrounded === true &&
+          previous?.toolUseId &&
+          (previous.subagentType !== undefined || isClaudeAgentTaskType(previous.taskType))
+        ) {
           yield* emitSubagentMetadata(context, {
             callId: previous.toolUseId,
             isBackgrounded: true,

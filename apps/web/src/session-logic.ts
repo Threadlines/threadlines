@@ -69,6 +69,13 @@ export const PROVIDER_OPTIONS: Array<{
 }> = [
   { value: ProviderDriverKind.make("codex"), label: "Codex", available: true },
   { value: ProviderDriverKind.make("claudeAgent"), label: "Claude", available: true },
+  {
+    value: ProviderDriverKind.make("fx"),
+    label: "fx",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  { value: ProviderDriverKind.make("cursor"), label: "Cursor", available: true },
 ];
 
 export interface WorkLogImagePreview {

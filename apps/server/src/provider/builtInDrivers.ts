@@ -22,6 +22,8 @@
  */
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
+import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
+import { FxDriver, type FxDriverEnv } from "./Drivers/FxDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
 /**
@@ -29,14 +31,19 @@ import type { AnyProviderDriver } from "./ProviderDriver.ts";
  * driver. The registry layer declares `R = BuiltInDriversEnv`; the runtime
  * layer must provide every service in this union.
  */
-export type BuiltInDriversEnv = ClaudeDriverEnv | CodexDriverEnv;
+export type BuiltInDriversEnv = ClaudeDriverEnv | CodexDriverEnv | CursorDriverEnv | FxDriverEnv;
 
 /**
  * Ordered list of built-in drivers. Order matters only for tie-breaking in
  * UI presentation — the registry itself is keyed by `driverKind`, so
  * iteration order has no functional effect on instance lookup.
+ *
+ * Codex and Claude are native drivers; fx and Cursor are ACP descriptors on
+ * the shared `acp/AcpProviderDriver` core.
  */
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
   CodexDriver,
   ClaudeDriver,
+  FxDriver,
+  CursorDriver,
 ];

@@ -59,6 +59,32 @@ describe("AcpRuntimeModel", () => {
     expect(modelConfigId).toBe("model");
   });
 
+  it("skips a provider picker filed under the model category (fx)", () => {
+    const modelConfigId = extractModelConfigId({
+      sessionId: "session-1",
+      configOptions: [
+        {
+          id: "provider",
+          name: "Provider",
+          category: "model",
+          type: "select",
+          currentValue: "gateway",
+          options: [{ value: "gateway", name: "Vercel AI Gateway" }],
+        },
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "moonshotai/kimi-k3",
+          options: [{ value: "moonshotai/kimi-k3", name: "moonshotai/kimi-k3" }],
+        },
+      ],
+    } satisfies EffectAcpSchema.NewSessionResponse);
+
+    expect(modelConfigId).toBe("model");
+  });
+
   it("projects typed ACP tool call updates into runtime events", () => {
     const created = parseSessionUpdateEvent({
       sessionId: "session-1",

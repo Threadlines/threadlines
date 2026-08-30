@@ -12,7 +12,10 @@ import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 
 const DETECTION_CACHE_CAPACITY = 2_048;
-const DETECTION_CACHE_TTL = Duration.seconds(2);
+// An established repository identity is stable across status polls. Keep
+// misses short so a newly initialized checkout still appears promptly.
+const DETECTION_SUCCESS_CACHE_TTL = Duration.seconds(30);
+const DETECTION_MISS_CACHE_TTL = Duration.seconds(2);
 
 export interface VcsDriverResolveInput {
   readonly cwd: string;
@@ -119,7 +122,12 @@ export const make = Effect.fn("makeVcsDriverRegistry")(function* () {
     (key) => detectResolvedKind(parseDetectionCacheKey(key)),
     {
       capacity: DETECTION_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? DETECTION_CACHE_TTL : Duration.zero),
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit)
+          ? exit.value === null
+            ? DETECTION_MISS_CACHE_TTL
+            : DETECTION_SUCCESS_CACHE_TTL
+          : Duration.zero,
     },
   );
 

@@ -16,7 +16,8 @@
  */
 import type { ServerProvider } from "@threadlines/contracts";
 
-export type ProviderInstallStatus = "idle" | "running" | "failed";
+/** `incomplete`: the command finished cleanly but the CLI still is not visible. */
+export type ProviderInstallStatus = "idle" | "running" | "failed" | "incomplete";
 
 export interface ProviderInstallView {
   /** The command the server will run, for display next to the action. */
@@ -66,9 +67,11 @@ export function deriveProviderInstallView(
     status:
       status === "queued" || status === "running"
         ? "running"
-        : status === "failed" || status === "unchanged"
+        : status === "failed"
           ? "failed"
-          : "idle",
+          : status === "unchanged"
+            ? "incomplete"
+            : "idle",
     message: provider.updateState?.message?.trim() || null,
     lastOutputLine: lastNonEmptyLine(provider.updateState?.output),
   };
@@ -88,6 +91,11 @@ export function providerInstallStatusText(input: {
   if (input.view.status === "failed") {
     const reason = input.view.lastOutputLine ?? input.view.message;
     return reason ? `Install failed. ${reason}` : "Install failed.";
+  }
+  if (input.view.status === "incomplete") {
+    // The installer's own last line ("Happy Coding") is not the story here:
+    // the CLI landed somewhere this server's PATH does not see yet.
+    return `${input.view.message ?? "Install finished, but the CLI is not visible yet."} Restart Threadlines and check again.`;
   }
   return null;
 }

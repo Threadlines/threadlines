@@ -2517,6 +2517,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                     claudeAgent: {
                       enabled: false,
                     },
+                    cursor: {
+                      enabled: false,
+                    },
+                    fx: {
+                      enabled: false,
+                    },
                   },
                 }),
               ),
@@ -2577,6 +2583,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "claudeAgent",
                 "codex",
+                "cursor",
+                "fx",
               ]);
               assert.strictEqual(codexProvider?.enabled, false);
               assert.strictEqual(codexProvider?.status, "disabled");

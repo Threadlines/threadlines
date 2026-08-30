@@ -482,6 +482,8 @@ export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArra
           `${localAppData}\\Programs\\GitHub CLI`,
           `${localAppData}\\Programs\\nodejs`,
           `${localAppData}\\Volta\\bin`,
+          // Cursor Agent CLI installer (`irm https://cursor.com/install?win32=true | iex`).
+          `${localAppData}\\cursor-agent`,
         ]
       : []),
     ...(localAppData ? [`${localAppData}\\pnpm`] : []),

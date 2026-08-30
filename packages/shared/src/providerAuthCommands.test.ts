@@ -158,6 +158,33 @@ describe("Codex login command helpers", () => {
 });
 
 describe("buildProviderAuthCommand", () => {
+  it("runs the ACP providers' own login commands with no environment overrides", () => {
+    expect(
+      buildProviderAuthCommand({ driver: "fx", flow: "login", binaryPath: "", homePath: "" }),
+    ).toEqual({ file: "fx", args: ["login"], env: {}, display: "fx login" });
+    expect(
+      buildProviderAuthCommand({
+        driver: "cursor",
+        flow: "login",
+        binaryPath: "/opt/cursor/agent",
+        homePath: "",
+      }),
+    ).toEqual({
+      file: "/opt/cursor/agent",
+      args: ["login"],
+      env: {},
+      display: "/opt/cursor/agent login",
+    });
+    expect(
+      buildProviderAuthCommand({
+        driver: "fx",
+        flow: "claude-setup-token",
+        binaryPath: "",
+        homePath: "",
+      }),
+    ).toBeNull();
+  });
+
   it("spawns the Codex binary directly with the shadow CODEX_HOME", () => {
     expect(
       buildProviderAuthCommand({

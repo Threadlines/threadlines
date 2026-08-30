@@ -26,12 +26,14 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { type AcpAdapterShape, makeAcpAdapter } from "./AcpAdapter.ts";
+import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
-// Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
-class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()(
+// The mock agent emulates Cursor (`cursor/*` extension methods, parameterized
+// model picker), so the generic adapter is exercised through the Cursor
+// descriptor. Test-local service tag so tests can `yield* CursorAdapter`.
+class CursorAdapter extends Context.Service<CursorAdapter, AcpAdapterShape>()(
   "test/CursorAdapter",
 ) {}
 
@@ -164,7 +166,7 @@ const cursorAdapterTestLayer = it.layer(
     Effect.gen(function* () {
       const cursorConfig = decodeCursorSettings({});
       const resolveSettings = yield* makeResolveCursorSettings;
-      return yield* makeCursorAdapter(cursorConfig, { resolveSettings });
+      return yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, cursorConfig, { resolveSettings });
     }),
   ).pipe(
     Layer.provideMerge(ServerSettingsService.layerTest()),
@@ -471,6 +473,13 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           "mode",
         ]);
 
+        // sendTurn returns once the prompt is dispatched; the turn itself
+        // finishes on the event stream.
+        const turnCompletedFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
         yield* adapter.sendTurn({
           threadId,
           input: "hello mock",
@@ -478,6 +487,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           modelSelection,
           interactionMode: "default",
         });
+        yield* Fiber.join(turnCompletedFiber);
         yield* adapter.stopSession(threadId);
 
         const finalRequests = yield* Effect.promise(() => readJsonLines(requestLogPath));
@@ -647,7 +657,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             Effect.gen(function* () {
               const cursorConfig = decodeCursorSettings({});
               const resolveSettings = yield* makeResolveCursorSettings;
-              return yield* makeCursorAdapter(cursorConfig, { resolveSettings });
+              return yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, cursorConfig, {
+                resolveSettings,
+              });
             }),
           ).pipe(
             Layer.provideMerge(ServerSettingsService.layerTest()),
@@ -1279,7 +1291,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         Effect.gen(function* () {
           const cursorConfig = decodeCursorSettings({});
           const resolveSettings = yield* makeResolveCursorSettings;
-          return yield* makeCursorAdapter(cursorConfig, {
+          return yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, cursorConfig, {
             instanceId: customInstanceId,
             resolveSettings,
           });

@@ -142,6 +142,7 @@ function createBaseServerConfig(): ServerConfig {
           maxSubagentSpawnDepth: "",
         },
         cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },
+        fx: { enabled: true, binaryPath: "", customModels: [] },
         opencode: {
           enabled: true,
           binaryPath: "",

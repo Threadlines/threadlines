@@ -425,6 +425,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const activeTabId = activeTab?.id ?? null;
 
   const activeTabModels = activeTab?.models ?? providerTabs[0]?.models ?? EMPTY_MODEL_PICKER_ITEMS;
+  const compactTabs = tabs.length > 4;
+  const activeTabRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTab?.id]);
 
   // Global search: rank across every eligible instance, then group back
   // into instance sections (in configured order) for display. Ranking
@@ -726,13 +731,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   >
                     {tabs.map((tab) => {
                       const isActive = activeTab?.id === tab.id;
+                      // Past four tabs the strip no longer fits the picker, so
+                      // inactive tabs fall back to their glyph; the label stays
+                      // in the tooltip and accessible name.
+                      const iconOnly = compactTabs && !isActive;
                       return (
                         <button
                           key={tab.id}
                           type="button"
                           role="tab"
                           aria-selected={isActive}
+                          aria-label={iconOnly ? tab.label : undefined}
                           data-model-picker-tab={tab.id}
+                          ref={isActive ? activeTabRef : undefined}
                           title={`${tab.label} · ${tabModelCountLabel(tab.modelCount)}`}
                           className={cn(
                             "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs font-medium transition-colors",
@@ -749,7 +760,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                           <span className="relative flex size-4 shrink-0 items-center justify-center">
                             {renderTabIcon(tab)}
                           </span>
-                          <span className="min-w-0 truncate">{tab.label}</span>
+                          {iconOnly ? null : <span className="min-w-0 truncate">{tab.label}</span>}
                         </button>
                       );
                     })}

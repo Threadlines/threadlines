@@ -45,7 +45,11 @@ export class AcpTransportError extends Schema.TaggedError<AcpTransportError>()(
     detail: Schema.String,
     cause: Schema.Defect(),
   },
-) {}
+) {
+  override get message() {
+    return `ACP transport error: ${this.detail}`;
+  }
+}
 
 export class AcpRequestError extends Schema.TaggedError<AcpRequestError>()("AcpRequestError", {
   code: AcpSchema.ErrorCode,

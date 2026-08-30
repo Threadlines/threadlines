@@ -193,6 +193,64 @@ describe("observability", () => {
       ),
     );
 
+    it.effect("keeps one trace file handle open across flushes", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const openSpy = vi.spyOn(fs, "openSync");
+          const closeSpy = vi.spyOn(fs, "closeSync");
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              openSpy.mockRestore();
+              closeSpy.mockRestore();
+            }),
+          );
+
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes: 4_096,
+            maxFiles: 2,
+            batchWindowMs: 10_000,
+          });
+
+          sink.push(makeRecord("first"));
+          yield* sink.flush;
+          const traceOpenCalls = openSpy.mock.calls.filter(
+            ([target, flags]) => target === tracePath && flags === "a",
+          );
+          const descriptor = openSpy.mock.results.find(
+            (_, index) => openSpy.mock.calls[index]?.[0] === tracePath,
+          )?.value;
+          assert.equal(traceOpenCalls.length, 1);
+          assert.equal(typeof descriptor, "number");
+          assert.equal(
+            closeSpy.mock.calls.some(([target]) => target === descriptor),
+            false,
+          );
+          assert.equal(fs.readFileSync(tracePath, "utf8").includes('"name":"first"'), true);
+
+          sink.push(makeRecord("second"));
+          yield* sink.flush;
+          assert.equal(
+            openSpy.mock.calls.filter(([target, flags]) => target === tracePath && flags === "a")
+              .length,
+            1,
+          );
+          assert.equal(
+            closeSpy.mock.calls.some(([target]) => target === descriptor),
+            false,
+          );
+          assert.equal(fs.readFileSync(tracePath, "utf8").includes('"name":"second"'), true);
+
+          yield* sink.close();
+          assert.equal(closeSpy.mock.calls.filter(([target]) => target === descriptor).length, 1);
+        }),
+      ),
+    );
+
     it.effect("applies local tracer record filters after a span ends", () =>
       Effect.scoped(
         Effect.gen(function* () {

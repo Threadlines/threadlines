@@ -143,6 +143,13 @@ const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
+const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
+
+/**
+ * Offline fx fallback. fx routes through Vercel AI Gateway by default; the
+ * live ACP catalog replaces this as soon as the provider probe succeeds.
+ */
+export const DEFAULT_FX_MODEL = "moonshotai/kimi-k3";
 
 /**
  * Offline Codex fallback used only when the provider has not reported a live
@@ -175,6 +182,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [CLAUDE_DRIVER_KIND]: "claude-sonnet-5",
   [CURSOR_DRIVER_KIND]: "auto",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [FX_DRIVER_KIND]: DEFAULT_FX_MODEL,
 };
 
 /** Per-provider text generation model defaults. */
@@ -185,6 +193,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [FX_DRIVER_KIND]: DEFAULT_FX_MODEL,
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -244,6 +253,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5": "claude-opus-4-5",
   },
   [OPENCODE_DRIVER_KIND]: {},
+  [FX_DRIVER_KIND]: {},
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -253,4 +263,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [CLAUDE_DRIVER_KIND]: "Claude",
   [CURSOR_DRIVER_KIND]: "Cursor",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
+  [FX_DRIVER_KIND]: "fx",
 };
