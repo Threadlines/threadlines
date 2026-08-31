@@ -510,6 +510,8 @@ const GENERIC_ANCHOR_LABELS: ReadonlySet<string> = new Set([
 const LIFECYCLE_ANCHOR_LABELS = {
   preparing: "Preparing turn",
   "waiting-for-model": "Waiting for model",
+  // Dynamic: the entry carries the provider's own wording; this is the fallback.
+  "provider-status": "Waiting for model",
 } as const satisfies Record<NonNullable<WorkLogEntry["providerLifecyclePhase"]>, string>;
 
 /**
@@ -534,7 +536,7 @@ function resolveWorkingAnchorLabel(
     }
     const phase = timelineEntry.entry.providerLifecyclePhase;
     if (phase) {
-      return LIFECYCLE_ANCHOR_LABELS[phase];
+      return timelineEntry.entry.providerLifecycleLabel ?? LIFECYCLE_ANCHOR_LABELS[phase];
     }
   }
   return fallback;

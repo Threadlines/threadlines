@@ -579,6 +579,23 @@ export function projectRuntimeEventToActivities(
         }),
       ];
 
+    case "turn.status.updated":
+      // Lifecycle entry: renders no row of its own — the working anchor shows
+      // the latest one, so retry storms replace instead of stacking.
+      return [
+        baseActivity(event, {
+          id: event.eventId,
+          tone: "thinking",
+          kind: "provider.turn.status",
+          summary: event.payload.statusMessage,
+          payload: {
+            phase: "provider-status",
+            provider: event.provider,
+            statusMessage: event.payload.statusMessage,
+          },
+        }),
+      ];
+
     case "content.delta":
       return projectContentDeltaActivity(event, options?.stream);
 

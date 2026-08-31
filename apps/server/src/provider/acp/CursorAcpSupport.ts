@@ -786,6 +786,7 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
   presentation: {
     displayName: "Cursor",
     badgeLabel: "Early Access",
+    planUpgradeUrl: "https://cursor.com/settings",
     showInteractionModeToggle: true,
   },
   settingsSchema: CursorSettings,

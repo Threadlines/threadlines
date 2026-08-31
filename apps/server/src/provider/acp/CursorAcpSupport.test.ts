@@ -3,7 +3,9 @@ import * as NodeOS from "node:os";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { describe, expect, it } from "vite-plus/test";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type { CursorSettings, ServerProviderModel } from "@threadlines/contracts";
@@ -33,6 +35,14 @@ import {
 const runNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>,
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
+
+/** The Cursor descriptor has no model enrichment; the status check only needs the type. */
+const TestHttpClientLive = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make((request) =>
+    Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({}))),
+  ),
+);
 
 const resolveMockAgentPath = Effect.fn("resolveMockAgentPath")(function* () {
   const path = yield* Path.Path;
@@ -595,7 +605,7 @@ describe("checkAcpProviderStatus (Cursor)", () => {
           ...process.env,
           T3_ACP_REQUEST_LOG_PATH: requestLogPath,
         },
-      ).pipe(Effect.provide(NodeServices.layer)),
+      ).pipe(Effect.provide([NodeServices.layer, TestHttpClientLive])),
     );
 
     expect(provider.models.map((model) => model.slug)).toEqual([

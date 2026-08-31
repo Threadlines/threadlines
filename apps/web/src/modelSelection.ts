@@ -73,6 +73,8 @@ export interface AppModelOption {
   name: string;
   shortName?: string;
   subProvider?: string;
+  metaLabel?: string;
+  promoLabel?: string;
   isCustom: boolean;
   isDefault?: boolean;
 }
@@ -85,6 +87,8 @@ function toAppModelOption(model: ServerProvider["models"][number]): AppModelOpti
   };
   if (model.shortName) option.shortName = model.shortName;
   if (model.subProvider) option.subProvider = model.subProvider;
+  if (model.metaLabel) option.metaLabel = model.metaLabel;
+  if (model.promoLabel) option.promoLabel = model.promoLabel;
   if (model.isDefault !== undefined) option.isDefault = model.isDefault;
   return option;
 }

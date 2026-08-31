@@ -23,6 +23,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { isProviderPlanGateMessage } from "@threadlines/shared/providerPlan";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -128,8 +129,15 @@ interface AcpSessionContext {
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  /** Head of the current turn's assistant text, kept for plan-gate detection. */
+  activeTurnText: string;
+  /** Last provider status this turn (fx rate-limit retries etc.), for failure detail. */
+  lastProviderStatus: string | undefined;
   stopped: boolean;
 }
+
+/** Plan-gate replies are one short sentence; more text than this is content. */
+const PLAN_GATE_SCAN_MAX_CHARS = 500;
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -674,6 +682,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            activeTurnText: "",
+            lastProviderStatus: undefined,
             stopped: false,
           };
 
@@ -683,6 +693,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 switch (event._tag) {
                   case "EventStreamBarrier":
                     yield* Deferred.succeed(event.acknowledge, undefined);
+                    return;
+                  case "SessionStatus":
+                    if (event.message === ctx.lastProviderStatus) {
+                      return;
+                    }
+                    ctx.lastProviderStatus = event.message;
+                    // Narrate provider-side recovery (rate-limit retries) on
+                    // the live turn so it doesn't read as a hang.
+                    if (ctx.activeTurnId) {
+                      yield* offerRuntimeEvent({
+                        type: "turn.status.updated",
+                        ...(yield* makeEventStamp()),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        payload: { statusMessage: event.message },
+                      });
+                    }
                     return;
                   case "ModeChanged":
                     return;
@@ -724,6 +752,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     );
                     return;
                   case "ContentDelta":
+                    if (ctx.activeTurnText.length < PLAN_GATE_SCAN_MAX_CHARS) {
+                      ctx.activeTurnText += event.text;
+                    }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
@@ -857,6 +888,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         });
         ctx.activeTurnId = turnId;
         ctx.lastPlanFingerprint = undefined;
+        ctx.activeTurnText = "";
+        ctx.lastProviderStatus = undefined;
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
 
         yield* offerRuntimeEvent({
@@ -881,16 +914,41 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               updatedAt: yield* nowIso,
               ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
             };
+            // Multi-provider harnesses advertise their whole catalog and
+            // reject a plan-gated model as a one-line "reply" — surface that
+            // as the failure it is so the chat can offer the upgrade page.
+            const turnText = ctx.activeTurnText.trim();
+            const planGateMessage =
+              result.stopReason !== "cancelled" && isProviderPlanGateMessage(turnText)
+                ? turnText
+                : undefined;
+            // A refusal that produced no text would render as a silently
+            // empty turn; say so instead. (`refused` is fx's dialect.)
+            const silentRefusal =
+              (result.stopReason === "refusal" || result.stopReason === "refused") &&
+              turnText.length === 0;
             yield* offerRuntimeEvent({
               type: "turn.completed",
               ...(yield* makeEventStamp()),
               provider: PROVIDER,
               threadId: input.threadId,
               turnId,
-              payload: {
-                state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-                stopReason: result.stopReason ?? null,
-              },
+              payload: planGateMessage
+                ? { state: "failed", stopReason: "plan_gated", errorMessage: planGateMessage }
+                : silentRefusal
+                  ? {
+                      state: "failed",
+                      stopReason: result.stopReason ?? null,
+                      // A rate-limit retry that ran out also surfaces as a
+                      // bare refusal; the provider's own status tells them apart.
+                      errorMessage: ctx.lastProviderStatus
+                        ? `${descriptor.presentation.displayName} returned no output. Provider status: ${ctx.lastProviderStatus}`
+                        : `${descriptor.presentation.displayName} reported the model refused this request and returned no output.`,
+                    }
+                  : {
+                      state: result.stopReason === "cancelled" ? "cancelled" : "completed",
+                      stopReason: result.stopReason ?? null,
+                    },
             });
             return;
           }
@@ -913,7 +971,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             provider: PROVIDER,
             threadId: input.threadId,
             turnId,
-            payload: { state: "failed", stopReason: null, errorMessage: detail },
+            payload: {
+              state: "failed",
+              stopReason: isProviderPlanGateMessage(detail) ? "plan_gated" : null,
+              errorMessage: ctx.lastProviderStatus
+                ? `${detail} Provider status: ${ctx.lastProviderStatus}`
+                : detail,
+            },
           });
         }).pipe(
           Effect.ensuring(

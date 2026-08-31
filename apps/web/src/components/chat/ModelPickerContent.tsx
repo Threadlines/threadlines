@@ -40,6 +40,8 @@ type ModelPickerItem = {
   description?: string;
   shortName?: string;
   subProvider?: string;
+  metaLabel?: string;
+  promoLabel?: string;
   instanceId: ProviderInstanceId;
   driverKind: ProviderDriverKind;
   instanceDisplayName: string;
@@ -113,6 +115,8 @@ function rankModelPickerSearchMatches(
           ...(model.description ? { description: model.description } : {}),
           ...(model.shortName ? { shortName: model.shortName } : {}),
           ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+          ...(model.promoLabel ? { promoLabel: model.promoLabel } : {}),
+          ...(model.metaLabel ? { metaLabel: model.metaLabel } : {}),
           driverKind: model.driverKind,
           providerDisplayName: model.instanceDisplayName,
           isFavorite: favoriteModelKeys.has(providerModelKey(model.instanceId, model.slug)),
@@ -294,6 +298,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           ...(model.description ? { description: model.description } : {}),
           ...(model.shortName ? { shortName: model.shortName } : {}),
           ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+          ...(model.metaLabel ? { metaLabel: model.metaLabel } : {}),
+          ...(model.promoLabel ? { promoLabel: model.promoLabel } : {}),
           ...(model.isDefault === true ? { isDefault: true } : {}),
           instanceId,
           driverKind: entry.driverKind,

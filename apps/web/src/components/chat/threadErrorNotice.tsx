@@ -3,8 +3,10 @@
  *
  * @module threadErrorNotice
  */
-import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
+import { isProviderPlanGateMessage } from "@threadlines/shared/providerPlan";
+import { ExternalLinkIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 
+import { ensureLocalApi } from "../../localApi";
 import type { ProviderAuthReconnectAction } from "../../session-logic";
 import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitResetCredit";
 import { Button } from "../ui/button";
@@ -29,6 +31,7 @@ export function buildThreadErrorNotice({
   usageReset,
   retry,
   providerLabel,
+  planUpgradeUrl,
   signIn,
   onDismiss,
 }: {
@@ -37,12 +40,41 @@ export function buildThreadErrorNotice({
   usageReset?: UsageResetAction | null;
   retry?: TurnRetryAction | null;
   providerLabel?: string;
+  /** The active provider's subscription page, for plan-gate failures. */
+  planUpgradeUrl?: string | null;
   /** Live state of the active instance's sign-in flow. */
   signIn?: ProviderSignInFlowView | undefined;
   onDismiss?: () => void;
 }): ComposerNotice | null {
   if (!error) {
     return null;
+  }
+
+  // The provider refused the selected model for this account's plan; a retry
+  // is guaranteed to fail, so the one useful action is the upgrade page.
+  if (planUpgradeUrl && isProviderPlanGateMessage(error)) {
+    return {
+      id: "thread-error-plan",
+      severity: "warning",
+      lead: `${providerLabel?.trim() || "This provider"} plan limit.`,
+      detail: `${error} Pick another model, or upgrade your ${providerLabel?.trim() || "provider"} plan.`,
+      actions: (
+        <Button
+          size="xs"
+          aria-label={`Open the ${providerLabel?.trim() || "provider"} upgrade page`}
+          onClick={() => {
+            void ensureLocalApi()
+              .shell.openExternal(planUpgradeUrl)
+              .catch(() => {});
+          }}
+        >
+          <ExternalLinkIcon className="size-3" />
+          Upgrade plan
+        </Button>
+      ),
+      dismissLabel: "Dismiss",
+      ...(onDismiss ? { onDismiss } : {}),
+    };
   }
 
   if (authReconnect) {

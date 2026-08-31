@@ -59,6 +59,29 @@ describe("AcpRuntimeModel", () => {
     expect(modelConfigId).toBe("model");
   });
 
+  it("surfaces fx's model recovery status from session_info_update metadata", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          fx: {
+            modelResponseRecovery: {
+              state: "active",
+              cause: "rate_limited",
+              attempt: 2,
+              message: "⚠ Rate limited · retrying (attempt 2/10)",
+            },
+          },
+        },
+      },
+    } as unknown as EffectAcpSchema.SessionNotification);
+
+    expect(parsed.events).toEqual([
+      { _tag: "SessionStatus", message: "⚠ Rate limited · retrying (attempt 2/10)" },
+    ]);
+  });
+
   it("skips a provider picker filed under the model category (fx)", () => {
     const modelConfigId = extractModelConfigId({
       sessionId: "session-1",

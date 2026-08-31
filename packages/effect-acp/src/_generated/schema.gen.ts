@@ -3554,12 +3554,14 @@ export type AgentResponse =
           }
         | {
             readonly _meta?: { readonly [x: string]: unknown } | null;
+            // HAND-PATCHED: dialect stop reasons pass through.
             readonly stopReason:
               | "end_turn"
               | "max_tokens"
               | "max_turn_requests"
               | "refusal"
-              | "cancelled";
+              | "cancelled"
+              | (string & {});
             readonly usage?: Usage | null;
             readonly userMessageId?: string | null;
           }
@@ -4020,13 +4022,8 @@ export const AgentResponse = Schema.Union([
             Schema.Null,
           ]),
         ),
-        stopReason: Schema.Literals([
-          "end_turn",
-          "max_tokens",
-          "max_turn_requests",
-          "refusal",
-          "cancelled",
-        ]).annotate({
+        // HAND-PATCHED: dialect stop reasons pass through (see StopReason below).
+        stopReason: Schema.String.annotate({
           description:
             "Reasons why an agent stops processing a prompt turn.\n\nSee protocol docs: [Stop Reasons](https://agentclientprotocol.com/protocol/prompt-turn#stop-reasons)",
         }),
@@ -7484,7 +7481,14 @@ export const PromptRequest = Schema.Struct({
 
 export type PromptResponse = {
   readonly _meta?: { readonly [x: string]: unknown } | null;
-  readonly stopReason: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
+  // HAND-PATCHED: dialect stop reasons pass through (see StopReason below).
+  readonly stopReason:
+    | "end_turn"
+    | "max_tokens"
+    | "max_turn_requests"
+    | "refusal"
+    | "cancelled"
+    | (string & {});
   readonly usage?: Usage | null;
   readonly userMessageId?: string | null;
 };
@@ -7498,16 +7502,11 @@ export const PromptResponse = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  stopReason: Schema.Literals([
-    "end_turn",
-    "max_tokens",
-    "max_turn_requests",
-    "refusal",
-    "cancelled",
-  ]).annotate({
+  // HAND-PATCHED: dialect stop reasons pass through (see StopReason below).
+  stopReason: Schema.String.annotate({
     description:
       "Reasons why an agent stops processing a prompt turn.\n\nSee protocol docs: [Stop Reasons](https://agentclientprotocol.com/protocol/prompt-turn#stop-reasons)",
-  }),
+  }) as unknown as Schema.Codec<PromptResponse["stopReason"], PromptResponse["stopReason"]>,
   usage: Schema.optionalKey(
     Schema.Union([Usage, Schema.Null]).annotate({
       description:
@@ -9868,17 +9867,22 @@ export const SetSessionModeResponse = Schema.Struct({
   ),
 }).annotate({ description: "Response to `session/set_mode` method." });
 
-export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
-export const StopReason = Schema.Literals([
-  "end_turn",
-  "max_tokens",
-  "max_turn_requests",
-  "refusal",
-  "cancelled",
-]).annotate({
+// HAND-PATCHED after generation: agents ship dialect values beyond the spec
+// enum (fx 0.0.7 says `max_output_tokens` / `max_model_turns` / `refused`),
+// and a closed union fails the whole prompt response over a label. Consumers
+// only branch on the known values, so unknown strings pass through. Keep this
+// patch when regenerating.
+export type StopReason =
+  | "end_turn"
+  | "max_tokens"
+  | "max_turn_requests"
+  | "refusal"
+  | "cancelled"
+  | (string & {});
+export const StopReason: Schema.Codec<StopReason, StopReason> = Schema.String.annotate({
   description:
     "Reasons why an agent stops processing a prompt turn.\n\nSee protocol docs: [Stop Reasons](https://agentclientprotocol.com/protocol/prompt-turn#stop-reasons)",
-});
+}) as unknown as Schema.Codec<StopReason, StopReason>;
 
 export type StringPropertySchema = {
   readonly default?: string | null;

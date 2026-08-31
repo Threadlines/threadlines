@@ -156,7 +156,9 @@ export interface WorkLogEntry {
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
   mcpAuthReconnect?: McpAuthReconnectAction;
-  providerLifecyclePhase?: "preparing" | "waiting-for-model";
+  providerLifecyclePhase?: "preparing" | "waiting-for-model" | "provider-status";
+  /** Dynamic anchor label for `provider-status` entries (the provider's own words). */
+  providerLifecycleLabel?: string;
   /** True while this row is the provider's private (content-free) reasoning.
    *  The chat renders no row for it — the working anchor's status label names
    *  the state instead — and the entry leaves the log if the thinking
@@ -2408,6 +2410,9 @@ function toDerivedWorkLogEntry(
   const providerLifecyclePhase = providerLifecyclePhaseFromActivityKind(activity.kind);
   if (providerLifecyclePhase) {
     entry.providerLifecyclePhase = providerLifecyclePhase;
+    if (providerLifecyclePhase === "provider-status" && activity.summary.trim().length > 0) {
+      entry.providerLifecycleLabel = activity.summary.trim();
+    }
   }
   const executionState = deriveWorkLogExecutionState(activity, entry, payload);
   if (executionState) {
@@ -2661,6 +2666,8 @@ function providerLifecyclePhaseFromActivityKind(
       return "preparing";
     case "provider.turn.started":
       return "waiting-for-model";
+    case "provider.turn.status":
+      return "provider-status";
     default:
       return undefined;
   }

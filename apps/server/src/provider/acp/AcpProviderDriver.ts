@@ -176,6 +176,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           Effect.map(stampIdentity),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.provideService(Path.Path, path),
         );
 

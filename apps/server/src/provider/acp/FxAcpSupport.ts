@@ -39,6 +39,7 @@ import {
 } from "../providerSnapshot.ts";
 import type { AcpProviderDescriptor, AcpProviderProbeOutcome } from "./AcpProviderDescriptor.ts";
 import type { AcpSpawnInput } from "./AcpSessionRuntime.ts";
+import { enrichFxModelsWithGatewayCatalog } from "./FxGatewayModels.ts";
 
 const decodeFxSettings = Schema.decodeSync(FxSettings);
 
@@ -255,6 +256,7 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   presentation: {
     displayName: "fx",
     badgeLabel: "Experimental",
+    planUpgradeUrl: "https://vercel.com/ai-gateway",
     showInteractionModeToggle: false,
   },
   settingsSchema: FxSettings,
@@ -280,5 +282,6 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   notInstalledMessage: fxNotInstalledMessage(),
   probe: probeFx,
   modelDiscoveryTimeoutMs: FX_MODEL_DISCOVERY_TIMEOUT_MS,
+  enrichDiscoveredModels: (models) => enrichFxModelsWithGatewayCatalog(models),
   modelCapabilitiesVaryByModel: false,
 };

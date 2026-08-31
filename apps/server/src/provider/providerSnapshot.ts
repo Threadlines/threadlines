@@ -49,6 +49,8 @@ export interface ProviderProbeResult {
 export interface ServerProviderPresentation {
   readonly displayName: string;
   readonly badgeLabel?: string;
+  /** Where the user manages this provider's subscription, for plan-gate CTAs. */
+  readonly planUpgradeUrl?: string;
   readonly showInteractionModeToggle?: boolean;
   // Runtime modes this driver honors natively; absent means the legacy
   // three-mode set. See `ServerProvider.supportedRuntimeModes`.
@@ -216,6 +218,9 @@ export function buildServerProvider(input: {
   return {
     displayName: input.presentation.displayName,
     ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
+    ...(input.presentation.planUpgradeUrl
+      ? { planUpgradeUrl: input.presentation.planUpgradeUrl }
+      : {}),
     ...(typeof input.presentation.showInteractionModeToggle === "boolean"
       ? { showInteractionModeToggle: input.presentation.showInteractionModeToggle }
       : {}),

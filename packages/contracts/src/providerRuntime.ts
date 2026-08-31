@@ -175,6 +175,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.started",
   "turn.completed",
   "turn.aborted",
+  "turn.status.updated",
   "turn.plan.updated",
   "turn.proposed.delta",
   "turn.proposed.completed",
@@ -234,6 +235,7 @@ const ThreadRealtimeClosedType = Schema.Literal("thread.realtime.closed");
 const TurnStartedType = Schema.Literal("turn.started");
 const TurnCompletedType = Schema.Literal("turn.completed");
 const TurnAbortedType = Schema.Literal("turn.aborted");
+const TurnStatusUpdatedType = Schema.Literal("turn.status.updated");
 const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
@@ -505,6 +507,12 @@ const RuntimePlanStep = Schema.Struct({
   status: RuntimePlanStepStatus,
 });
 export type RuntimePlanStep = typeof RuntimePlanStep.Type;
+
+/** Transient provider-side turn status ("Rate limited · retrying"); each event replaces the last. */
+const TurnStatusUpdatedPayload = Schema.Struct({
+  statusMessage: TrimmedNonEmptyStringSchema,
+});
+export type TurnStatusUpdatedPayload = typeof TurnStatusUpdatedPayload.Type;
 
 const TurnPlanUpdatedPayload = Schema.Struct({
   explanation: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
@@ -988,6 +996,14 @@ const ProviderRuntimeTurnAbortedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTurnAbortedEvent = typeof ProviderRuntimeTurnAbortedEvent.Type;
 
+const ProviderRuntimeTurnStatusUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnStatusUpdatedType,
+  payload: TurnStatusUpdatedPayload,
+});
+export type ProviderRuntimeTurnStatusUpdatedEvent =
+  typeof ProviderRuntimeTurnStatusUpdatedEvent.Type;
+
 const ProviderRuntimeTurnPlanUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TurnPlanUpdatedType,
@@ -1260,6 +1276,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnStartedEvent,
   ProviderRuntimeTurnCompletedEvent,
   ProviderRuntimeTurnAbortedEvent,
+  ProviderRuntimeTurnStatusUpdatedEvent,
   ProviderRuntimeTurnPlanUpdatedEvent,
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,

@@ -376,14 +376,16 @@ async function getDevToolsTargets(port: number): Promise<ReadonlyArray<DevToolsT
   if (!Array.isArray(value)) {
     throw new Error("Electron debug endpoint returned an invalid target list.");
   }
-  return value.filter(isRecord).map((target): DevToolsTarget => ({
-    id: typeof target.id === "string" ? target.id : "",
-    title: typeof target.title === "string" ? target.title : "",
-    type: typeof target.type === "string" ? target.type : "",
-    url: typeof target.url === "string" ? target.url : "",
-    webSocketDebuggerUrl:
-      typeof target.webSocketDebuggerUrl === "string" ? target.webSocketDebuggerUrl : undefined,
-  }));
+  return value.filter(isRecord).map(
+    (target): DevToolsTarget => ({
+      id: typeof target.id === "string" ? target.id : "",
+      title: typeof target.title === "string" ? target.title : "",
+      type: typeof target.type === "string" ? target.type : "",
+      url: typeof target.url === "string" ? target.url : "",
+      webSocketDebuggerUrl:
+        typeof target.webSocketDebuggerUrl === "string" ? target.webSocketDebuggerUrl : undefined,
+    }),
+  );
 }
 
 function resolveMainTarget(targets: ReadonlyArray<DevToolsTarget>): DevToolsTarget {

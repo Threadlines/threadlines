@@ -201,7 +201,7 @@ export function applyTerminalInputData(
   let submittedCommand: string | null = null;
   let didSubmit = false;
 
-  for (let index = 0; index < data.length;) {
+  for (let index = 0; index < data.length; ) {
     if (data.startsWith("\r\n", index)) {
       didSubmit = true;
       submittedCommand = normalizeSubmittedTerminalCommand(nextState.draft) ?? submittedCommand;

@@ -25,6 +25,24 @@ describe("buildModelPickerSearchText", () => {
 });
 
 describe("scoreModelPickerSearch", () => {
+  it("matches catalog chips so typing 'free' filters to free models", () => {
+    const freeModel = {
+      driverKind: "fx",
+      providerDisplayName: "fx",
+      name: "minimax/minimax-m3-free",
+      promoLabel: "Free",
+      metaLabel: "1M ctx",
+    };
+    const paidModel = {
+      driverKind: "fx",
+      providerDisplayName: "fx",
+      name: "openai/gpt-5.2",
+      metaLabel: "391K ctx · $1.75/M in · $14/M out",
+    };
+    expect(scoreModelPickerSearch(freeModel, "free")).not.toBeNull();
+    expect(scoreModelPickerSearch(paidModel, "free")).toBeNull();
+  });
+
   it("matches typo-tolerant multi-token queries", () => {
     expect(
       scoreModelPickerSearch(

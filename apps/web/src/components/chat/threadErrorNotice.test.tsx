@@ -78,6 +78,36 @@ describe("buildThreadErrorNotice", () => {
     expect(markup).not.toContain(">Sign in<");
   });
 
+  it("offers the provider's upgrade page for plan-gated turn failures", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: "Upgrade your plan to continue",
+        providerLabel: "Cursor",
+        planUpgradeUrl: "https://cursor.com/settings",
+        retry: { isRetrying: false, onRetry: () => {} },
+      }),
+    );
+
+    expect(markup).toContain("Cursor plan limit.");
+    expect(markup).toContain("Upgrade your plan to continue");
+    expect(markup).toContain(">Upgrade plan<");
+    expect(markup).toContain('data-composer-notice-severity="warning"');
+    // Retrying a plan-gated model fails by construction; the action is omitted.
+    expect(markup).not.toContain(">Retry<");
+  });
+
+  it("keeps the plain failure notice when the provider has no upgrade page", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: "Upgrade your plan to continue",
+        providerLabel: "Cursor",
+        planUpgradeUrl: null,
+      }),
+    );
+    expect(markup).toContain("Turn failed.");
+    expect(markup).not.toContain(">Upgrade plan<");
+  });
+
   it("renders a Codex usage reset action for usage-limit errors", () => {
     const markup = renderNotice(
       buildThreadErrorNotice({

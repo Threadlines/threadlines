@@ -69,6 +69,11 @@ export type AcpParsedSessionEvent =
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
+    }
+  | {
+      /** Provider-side turn status, e.g. fx's "Rate limited · retrying" recovery. */
+      readonly _tag: "SessionStatus";
+      readonly message: string;
     };
 
 type AcpSessionSetupResponse =
@@ -420,6 +425,17 @@ export function parsePermissionRequest(
   };
 }
 
+function sessionInfoStatusMessage(update: { readonly _meta?: unknown }): string | undefined {
+  const meta = update._meta;
+  if (typeof meta !== "object" || meta === null) return undefined;
+  const fx = (meta as Record<string, unknown>).fx;
+  if (typeof fx !== "object" || fx === null) return undefined;
+  const recovery = (fx as Record<string, unknown>).modelResponseRecovery;
+  if (typeof recovery !== "object" || recovery === null) return undefined;
+  const message = (recovery as Record<string, unknown>).message;
+  return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
+}
+
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
@@ -486,6 +502,16 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           text: upd.content.text,
           rawPayload: params,
         });
+      }
+      break;
+    }
+    case "session_info_update": {
+      // fx reports mid-turn model recovery (rate limits, retries) through
+      // vendor metadata here; without it a retried turn looks like a hang
+      // and an exhausted retry looks like a model refusal.
+      const message = sessionInfoStatusMessage(upd);
+      if (message) {
+        events.push({ _tag: "SessionStatus", message });
       }
       break;
     }

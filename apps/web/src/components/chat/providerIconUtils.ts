@@ -39,6 +39,10 @@ export type ModelEsque = {
   description?: string | undefined;
   shortName?: string | undefined;
   subProvider?: string | undefined;
+  /** Compact catalog metadata, e.g. "256K ctx · $0.25/M in · $2/M out". */
+  metaLabel?: string | undefined;
+  /** Promotional pricing chip from the provider's catalog, e.g. "Free". */
+  promoLabel?: string | undefined;
   isDefault?: boolean | undefined;
 };
 

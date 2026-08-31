@@ -14,10 +14,12 @@ import type {
   ProviderDriverKind,
   ProviderOptionSelection,
   ProviderUserInputAnswers,
+  ServerProviderModel,
   ThreadId,
   TurnId,
   UserInputQuestion,
 } from "@threadlines/contracts";
+import type { HttpClient } from "effect/unstable/http";
 import type * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
@@ -155,6 +157,14 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly modelDiscoveryTimeoutMs?: number;
   readonly modelOptions?: AcpModelOptionMapping;
+  /**
+   * Optional catalog garnish applied after discovery — pricing chips,
+   * context windows. Must never fail; unknown slugs pass through.
+   */
+  readonly enrichDiscoveredModels?: (
+    models: ReadonlyArray<ServerProviderModel>,
+    environment: NodeJS.ProcessEnv,
+  ) => Effect.Effect<ReadonlyArray<ServerProviderModel>, never, HttpClient.HttpClient>;
   /**
    * When true the option set changes with the selected model, so the driver
    * probes each model's capabilities in the background (Cursor). When false

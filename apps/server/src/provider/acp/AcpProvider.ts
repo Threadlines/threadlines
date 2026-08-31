@@ -55,7 +55,11 @@ const ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const ACP_MODEL_CAPABILITY_TIMEOUT = "4 seconds";
 const ACP_MODEL_DISCOVERY_CONCURRENCY = 4;
 
-type ProbeEnv = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path;
+type ProbeEnv =
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path;
 
 function mappingFor<Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
@@ -344,6 +348,9 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
         discoveryWarning = `${displayName} ACP model discovery returned no built-in models.`;
       } else {
         discoveredModels = discoveryExit.value.value;
+      }
+      if (discoveredModels.length > 0 && descriptor.enrichDiscoveredModels) {
+        discoveredModels = yield* descriptor.enrichDiscoveredModels(discoveredModels, environment);
       }
     }
 
