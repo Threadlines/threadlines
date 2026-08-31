@@ -111,6 +111,7 @@ const LazyDiffPanel = (props: { mode: DiffPanelMode }) => {
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const { authGateState } = Route.useRouteContext();
   const threadRef = Route.useParams({
     select: (params) => resolveThreadRouteRef(params),
@@ -295,6 +296,25 @@ function ChatThreadRouteView() {
     hideRightPanel(currentThreadKey);
     navigateToTab(null);
   }, [currentThreadKey, navigateToTab]);
+  const messageSubagentThroughParent = useCallback(
+    (agentName: string) => {
+      if (!threadRef) {
+        return;
+      }
+      const composerDrafts = useComposerDraftStore.getState();
+      const currentPrompt = composerDrafts.getComposerDraft(threadRef)?.prompt ?? "";
+      const relayPrompt = `Please send this message to ${agentName}: `;
+      composerDrafts.setPrompt(
+        threadRef,
+        currentPrompt.trim().length > 0 ? `${currentPrompt}\n\n${relayPrompt}` : relayPrompt,
+      );
+      setComposerFocusRequest((request) => request + 1);
+      if (shouldUseDiffSheet) {
+        hideSidebar();
+      }
+    },
+    [hideSidebar, shouldUseDiffSheet, threadRef],
+  );
   // The resize handle's own reopen. Lands on the tab this thread was left on,
   // or on the launcher when nothing is open — never on a bare panel.
   const showSidebar = useCallback(() => {
@@ -486,6 +506,7 @@ function ChatThreadRouteView() {
             threadCwd={agentsSource?.threadCwd}
             embedded
             onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
+            onMessageThroughParent={messageSubagentThroughParent}
           />
         </div>
       ) : null}
@@ -544,6 +565,7 @@ function ChatThreadRouteView() {
             threadId={threadRef.threadId}
             onDiffPanelOpen={markDiffOpened}
             reserveTitleBarControlInset={!sidebarVisible}
+            composerFocusRequest={composerFocusRequest}
             routeKind="server"
           />
         </SidebarInset>
@@ -566,6 +588,7 @@ function ChatThreadRouteView() {
           environmentId={threadRef.environmentId}
           threadId={threadRef.threadId}
           onDiffPanelOpen={markDiffOpened}
+          composerFocusRequest={composerFocusRequest}
           routeKind="server"
         />
       </SidebarInset>

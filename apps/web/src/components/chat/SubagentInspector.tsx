@@ -39,6 +39,7 @@ interface SubagentInspectorProps {
   /** The provider can take a message straight to this agent (Codex). The
    *  composer only shows while the agent is live. */
   canSendInput?: boolean | undefined;
+  onMessageThroughParent?: ((agentName: string) => void) | undefined;
   onClose: () => void;
 }
 
@@ -72,6 +73,7 @@ export function SubagentInspector({
   cwd,
   dismissVariant = "close",
   canSendInput = false,
+  onMessageThroughParent,
   onClose,
 }: SubagentInspectorProps) {
   const [providerAgent, setProviderAgent] = useState<ProviderSubagentTranscriptResult["agent"]>();
@@ -81,6 +83,11 @@ export function SubagentInspector({
   const displayName = formatSubagentDisplayName(item);
   const active = isActiveSubagentStatus(item.status);
   const transcriptAgentId = item.transcriptAgentId ?? item.agentThreadId;
+  const directInput = !canSendInput
+    ? "unsupported"
+    : providerAgent === undefined
+      ? "checking"
+      : (providerAgent.directInput ?? "unknown");
   const handleAgentResolved = useCallback((agent: ProviderSubagentTranscriptResult["agent"]) => {
     setProviderAgent(agent);
   }, []);
@@ -220,13 +227,49 @@ export function SubagentInspector({
         onInstructionResolved={handleInstructionResolved}
         scrollable
       />
-      {canSendInput && active && transcriptAgentId !== null ? (
-        <SubagentInputComposer
-          environmentId={environmentId}
-          threadId={threadId}
-          agentId={transcriptAgentId}
-          agentName={displayName}
-        />
+      {active && transcriptAgentId !== null ? (
+        directInput === "available" ? (
+          <SubagentInputComposer
+            environmentId={environmentId}
+            threadId={threadId}
+            agentId={transcriptAgentId}
+            agentName={displayName}
+          />
+        ) : directInput === "parentOnly" ? (
+          <div
+            className="shrink-0 border-t border-border/65 px-3 py-2"
+            data-subagent-input-parent-only="true"
+          >
+            <p className="text-[12px] leading-5 text-muted-foreground">
+              This agent only accepts messages from its parent.
+            </p>
+            {onMessageThroughParent ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="mt-1 -ml-2 text-[12px]"
+                onClick={() => onMessageThroughParent(displayName)}
+              >
+                Message through parent
+              </Button>
+            ) : null}
+          </div>
+        ) : directInput === "unknown" ? (
+          <p
+            className="shrink-0 border-t border-border/65 px-3 py-2 text-[12px] leading-5 text-muted-foreground"
+            data-subagent-input-unknown="true"
+          >
+            Direct message availability could not be confirmed.
+          </p>
+        ) : directInput === "checking" ? (
+          <p
+            className="shrink-0 border-t border-border/65 px-3 py-2 text-[12px] leading-5 text-muted-foreground"
+            data-subagent-input-checking="true"
+          >
+            Checking whether this agent accepts direct messages…
+          </p>
+        ) : null
       ) : null}
     </section>
   );

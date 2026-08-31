@@ -53,6 +53,7 @@ export interface AgentsPanelProps {
    *  carries the window chrome, the panel's name and its dismissal. */
   embedded?: boolean;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  onMessageThroughParent?: ((agentName: string) => void) | undefined;
   onClose?: (() => void) | undefined;
 }
 
@@ -308,6 +309,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   threadCwd,
   embedded = false,
   onStopBackgroundRun,
+  onMessageThroughParent,
   onClose,
 }: AgentsPanelProps) {
   const selectedAgentId = useSelectedAgentId();
@@ -361,6 +363,7 @@ export const AgentsPanel = memo(function AgentsPanel({
 
   const inspector = selectedSubagent ? (
     <SubagentInspector
+      key={selectedSubagent.id}
       environmentId={environmentId}
       threadId={threadId}
       item={selectedSubagent}
@@ -369,6 +372,7 @@ export const AgentsPanel = memo(function AgentsPanel({
       cwd={threadCwd ?? undefined}
       dismissVariant="back"
       canSendInput={providerAcceptsSubagentInput(providerLabel)}
+      onMessageThroughParent={onMessageThroughParent}
       onClose={handleBack}
     />
   ) : null;

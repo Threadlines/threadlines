@@ -469,7 +469,7 @@ export function mapCodexSubagentTranscript(
   return {
     entries: page,
     truncated: offset > 0 || offset + page.length < entries.length,
-    agent: { id: thread.id },
+    agent: { id: thread.id, directInput: mapCodexSubagentDirectInput(thread) },
     offset,
     totalEntries: entries.length,
   };
@@ -496,6 +496,14 @@ function readCodexThreadSpawnMetadata(
   };
 }
 
+function mapCodexSubagentDirectInput(thread: CodexStoredThread) {
+  return thread.canAcceptDirectInput === true
+    ? ("available" as const)
+    : thread.canAcceptDirectInput === false
+      ? ("parentOnly" as const)
+      : ("unknown" as const);
+}
+
 function mapCodexSubagentIdentity(thread: CodexStoredThread) {
   const spawn = readCodexThreadSpawnMetadata(thread);
   const agentType = thread.agentRole?.trim() || spawn?.agentRole;
@@ -505,6 +513,7 @@ function mapCodexSubagentIdentity(thread: CodexStoredThread) {
     ...(agentType ? { agentType } : {}),
     ...(description ? { description } : {}),
     ...(spawn ? { spawnDepth: spawn.depth } : {}),
+    directInput: mapCodexSubagentDirectInput(thread),
   };
 }
 
@@ -3275,7 +3284,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     threadId: ThreadId,
     agentId: string,
     options: {
-      readonly requestError: (detail: string) => ProviderAdapterRequestError;
+      readonly requestError: (detail: string, code?: string) => ProviderAdapterRequestError;
       readonly parentThreadDetail: string;
     },
   ) {
@@ -3284,7 +3293,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)),
     );
     if (agentId === rootThreadId) {
-      return yield* requestError(options.parentThreadDetail);
+      return yield* requestError(options.parentThreadDetail, "subagent_input_invalid_target");
     }
 
     const readStoredThreadMetadata = (providerThreadId: string) =>
@@ -3303,6 +3312,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       if (!parentThreadId || visited.has(parentThreadId)) {
         return yield* requestError(
           `Codex thread '${agentId}' is not a subagent of this conversation.`,
+          "subagent_input_invalid_target",
         );
       }
       visited.add(parentThreadId);
@@ -3311,17 +3321,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
     return yield* requestError(
       `Codex thread '${agentId}' exceeded the supported subagent nesting depth.`,
+      "subagent_input_invalid_target",
     );
   });
 
   const sendSubagentInput: NonNullable<CodexAdapterShape["sendSubagentInput"]> = Effect.fn(
     "sendSubagentInput",
   )(function* (threadId, input) {
-    const requestError = (detail: string) =>
+    const requestError = (detail: string, code?: string) =>
       new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "sendSubagentInput",
         detail,
+        ...(code ? { code } : {}),
       });
     const context = yield* requireSession(threadId);
     const candidate = yield* authorizeSubagentThread(context, threadId, input.agentId, {
@@ -3329,7 +3341,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       parentThreadDetail: "Send to the parent thread through the composer instead.",
     });
     if (candidate.canAcceptDirectInput === false) {
-      return yield* requestError("This agent does not accept direct input right now.");
+      return yield* requestError(
+        "This agent only accepts messages from its parent.",
+        "subagent_input_parent_only",
+      );
     }
     const response = yield* context.runtime
       .startStoredThreadTurn(candidate.id, input.text)
@@ -3339,7 +3354,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const readSubagentTranscript: NonNullable<CodexAdapterShape["readSubagentTranscript"]> =
     Effect.fn("readSubagentTranscript")(function* (threadId, input) {
-      const requestError = (detail: string) =>
+      const requestError = (detail: string, _code?: string) =>
         new ProviderAdapterRequestError({
           provider: PROVIDER,
           method: "readSubagentTranscript",

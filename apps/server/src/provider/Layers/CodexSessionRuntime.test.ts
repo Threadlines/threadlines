@@ -829,6 +829,7 @@ describe("openCodexThread", () => {
     );
     assert.deepStrictEqual(calls[0]?.payload, {
       threadId: "stale-thread",
+      excludeTurns: true,
       cwd: "/tmp/project",
       approvalPolicy: "never",
       sandbox: "danger-full-access",
@@ -951,6 +952,7 @@ describe("openCodexThread", () => {
     );
     assert.deepStrictEqual(calls[0]?.payload, {
       threadId: "source-thread",
+      excludeTurns: true,
       lastTurnId: "turn-7",
       cwd: "/tmp/project",
       threadSource: "threadlines",
@@ -1028,6 +1030,7 @@ describe("openCodexThread", () => {
         method: "thread/fork",
         payload: {
           threadId: "source-thread",
+          excludeTurns: true,
           beforeTurnId: "turn-8",
           cwd: "/tmp/project",
           threadSource: "threadlines",
@@ -1083,6 +1086,7 @@ describe("openCodexThread", () => {
     );
     assert.deepStrictEqual(calls[1]?.payload, {
       threadId: "source-thread",
+      excludeTurns: true,
       lastTurnId: "turn-7",
       cwd: "/tmp/project",
       threadSource: "threadlines",

@@ -786,6 +786,7 @@ type ChatViewProps =
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
+      composerFocusRequest?: number;
       routeKind: "server";
       draftId?: never;
     }
@@ -794,6 +795,7 @@ type ChatViewProps =
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
+      composerFocusRequest?: number;
       routeKind: "draft";
       draftId: DraftId;
     };
@@ -1078,6 +1080,7 @@ export default function ChatView(props: ChatViewProps) {
     routeKind,
     onDiffPanelOpen,
     reserveTitleBarControlInset = true,
+    composerFocusRequest = 0,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
@@ -2893,6 +2896,11 @@ export default function ChatView(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+  useEffect(() => {
+    if (composerFocusRequest > 0) {
+      scheduleComposerFocus();
+    }
+  }, [composerFocusRequest, scheduleComposerFocus]);
   const addTerminalContextToDraft = useCallback((selection: TerminalContextSelection) => {
     composerRef.current?.addTerminalContext(selection);
   }, []);

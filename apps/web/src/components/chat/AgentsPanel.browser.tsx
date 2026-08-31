@@ -106,9 +106,11 @@ describe("AgentsPanel", () => {
     // from the tree rather than whatever the last one drilled into.
     resetAgentsPanelSourceForTests();
     transcriptRpcMock.mockReset();
+    sendInputRpcMock.mockReset();
     transcriptRpcMock.mockResolvedValue({
       entries: [{ role: "assistant", text: "Walked the route files.", toolUses: [] }],
       truncated: false,
+      agent: { id: "agent-1", directInput: "available" },
       offset: 0,
       totalEntries: 1,
     });
@@ -250,6 +252,79 @@ describe("AgentsPanel", () => {
       });
       // Sent: the line clears for the next message; the reply lands in the transcript.
       await expect.element(box).toHaveValue("");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("routes a parent-only Codex agent back through the main conversation", async () => {
+    transcriptRpcMock.mockResolvedValue({
+      entries: [{ role: "assistant", text: "Still working.", toolUses: [] }],
+      truncated: false,
+      agent: { id: "agent-1", directInput: "parentOnly" },
+      offset: 0,
+      totalEntries: 1,
+    });
+    const onMessageThroughParent = vi.fn();
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+      onMessageThroughParent,
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect
+        .element(page.getByText("This agent only accepts messages from its parent."))
+        .toBeVisible();
+      expect(document.querySelector("[data-subagent-input-composer='true']")).toBeNull();
+
+      await page.getByRole("button", { name: "Message through parent" }).click();
+      expect(onMessageThroughParent).toHaveBeenCalledWith("Router sweep");
+      expect(sendInputRpcMock).not.toHaveBeenCalled();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps a direct message in place when sending fails", async () => {
+    sendInputRpcMock.mockRejectedValue(new Error("Not sent. This agent is no longer available."));
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      const box = page.getByRole("textbox", { name: "Message this agent" });
+      await box.fill("Check the route again.");
+      await userEvent.keyboard("{Enter}");
+
+      await expect
+        .element(page.getByRole("alert"))
+        .toHaveTextContent("Not sent. This agent is no longer available.");
+      await expect.element(box).toHaveValue("Check the route again.");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps direct input closed when the provider cannot confirm capability", async () => {
+    transcriptRpcMock.mockResolvedValue({
+      entries: [{ role: "assistant", text: "Still working.", toolUses: [] }],
+      truncated: false,
+      agent: { id: "agent-1", directInput: "unknown" },
+      offset: 0,
+      totalEntries: 1,
+    });
+    const mounted = await renderPanel({
+      subagents: [buildSubagent({ label: "Router sweep" })],
+    });
+
+    try {
+      await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
+      await expect
+        .element(page.getByText("Direct message availability could not be confirmed."))
+        .toBeVisible();
+      expect(document.querySelector("[data-subagent-input-composer='true']")).toBeNull();
     } finally {
       await mounted.unmount();
     }

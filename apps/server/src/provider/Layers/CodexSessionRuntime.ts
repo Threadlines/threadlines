@@ -499,6 +499,7 @@ function buildThreadForkParams(input: {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     threadId: input.sourceThreadId,
+    excludeTurns: true,
     threadSource: CODEX_THREAD_SOURCE,
     ...(input.lastTurnId !== undefined ? { lastTurnId: input.lastTurnId } : {}),
     cwd: input.cwd,
@@ -878,6 +879,7 @@ export const openCodexThread = (input: {
     "resume a Codex thread",
     input.client.request("thread/resume", {
       threadId: resumeThreadId,
+      excludeTurns: true,
       ...resumeParams,
     }),
   );

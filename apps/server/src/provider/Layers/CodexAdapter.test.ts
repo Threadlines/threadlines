@@ -204,11 +204,15 @@ function makeStoredThread(input: {
   readonly items?: ReadonlyArray<unknown>;
   readonly startedAt?: number;
   readonly historyMode?: "legacy" | "paginated";
+  readonly canAcceptDirectInput?: boolean | null;
 }): EffectCodexSchema.V2ThreadReadResponse["thread"] {
   return {
     id: input.id,
     parentThreadId: input.parentThreadId,
     historyMode: input.historyMode ?? "legacy",
+    ...(input.canAcceptDirectInput !== undefined
+      ? { canAcceptDirectInput: input.canAcceptDirectInput }
+      : {}),
     source: {
       subAgent: {
         thread_spawn: {
@@ -651,6 +655,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
             id: providerThreadId,
             parentThreadId: "provider-thread-1",
             startedAt: 1_769_947_200,
+            canAcceptDirectInput: false,
             items: [
               {
                 id: "assistant-child-1",
@@ -680,7 +685,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
           },
         ],
         truncated: false,
-        agent: { id: "child-provider-thread" },
+        agent: { id: "child-provider-thread", directInput: "parentOnly" },
         offset: 0,
         totalEntries: 1,
       });
@@ -712,6 +717,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
             id: providerThreadId,
             parentThreadId: "provider-thread-1",
             historyMode: "paginated",
+            canAcceptDirectInput: true,
           }),
         ),
       );
@@ -772,7 +778,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
           },
         ],
         truncated: true,
-        agent: { id: "child-provider-thread", spawnDepth: 1 },
+        agent: { id: "child-provider-thread", spawnDepth: 1, directInput: "available" },
         nextCursor: "page-3",
       });
       assert.equal(runtime.readStoredThreadImpl.mock.calls.length, 0);
@@ -812,6 +818,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
           makeStoredThread({
             id: providerThreadId,
             parentThreadId: "provider-thread-1",
+            canAcceptDirectInput: null,
             items: [
               {
                 id: "child-user-1",
@@ -842,7 +849,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
           },
         ],
         truncated: true,
-        agent: { id: "child-provider-thread" },
+        agent: { id: "child-provider-thread", directInput: "unknown" },
         offset: 1,
         totalEntries: 2,
       });
@@ -923,7 +930,8 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
       }).pipe(Effect.result);
       assert.ok(refused._tag === "Failure");
       assert.ok(refused.failure instanceof ProviderAdapterRequestError);
-      assert.match(refused.failure.detail, /does not accept direct input/);
+      assert.equal(refused.failure.code, "subagent_input_parent_only");
+      assert.match(refused.failure.detail, /only accepts messages from its parent/);
       assert.equal(runtime.startStoredThreadTurnImpl.mock.calls.length, 1);
     }),
   );

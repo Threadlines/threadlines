@@ -1117,15 +1117,34 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.serverSendSubagentInput,
             providerService.sendSubagentInput(input).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderSubagentInputError({
-                    message:
-                      error.message.trim().length > 0
-                        ? error.message
-                        : "Failed to send the message to the agent.",
-                  }),
-              ),
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderAdapterRequestError" &&
+                  error.code === "subagent_input_parent_only"
+                    ? "parentOnly"
+                    : error._tag === "ProviderAdapterRequestError" &&
+                        error.code === "subagent_input_invalid_target"
+                      ? "invalidTarget"
+                      : error._tag === "ProviderValidationError" &&
+                          error.code === "subagent_input_unsupported_provider"
+                        ? "unsupportedProvider"
+                        : error._tag === "ProviderSessionNotFoundError" ||
+                            error._tag === "ProviderAdapterSessionNotFoundError" ||
+                            error._tag === "ProviderAdapterSessionClosedError"
+                          ? "unavailable"
+                          : "unknown";
+                const message =
+                  reason === "parentOnly"
+                    ? "Not sent. This agent only accepts messages from its parent."
+                    : reason === "unsupportedProvider"
+                      ? "Not sent. This provider does not support direct agent messages."
+                      : reason === "invalidTarget"
+                        ? "Not sent. This agent does not belong to the current conversation."
+                        : reason === "unavailable"
+                          ? "Not sent. This agent is no longer available."
+                          : "Not sent. Could not send this message to the agent.";
+                return new ProviderSubagentInputError({ message, reason });
+              }),
             ),
             { "rpc.aggregate": "server" },
           ),

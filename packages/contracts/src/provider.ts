@@ -370,6 +370,16 @@ export const ProviderSubagentTranscriptEntry = Schema.Struct({
 });
 export type ProviderSubagentTranscriptEntry = typeof ProviderSubagentTranscriptEntry.Type;
 
+/** Whether a user can address a spawned agent without asking its parent to
+ * relay the message. `unknown` keeps older provider runtimes fail-closed. */
+export const ProviderSubagentDirectInput = Schema.Literals([
+  "available",
+  "parentOnly",
+  "unknown",
+  "unsupported",
+]);
+export type ProviderSubagentDirectInput = typeof ProviderSubagentDirectInput.Type;
+
 export const ProviderSubagentTranscriptResult = Schema.Struct({
   entries: Schema.Array(ProviderSubagentTranscriptEntry),
   truncated: Schema.Boolean,
@@ -381,6 +391,7 @@ export const ProviderSubagentTranscriptResult = Schema.Struct({
       description: Schema.optional(TrimmedNonEmptyString),
       model: Schema.optional(TrimmedNonEmptyString),
       spawnDepth: Schema.optional(NonNegativeInt),
+      directInput: Schema.optional(ProviderSubagentDirectInput),
     }),
   ),
   /** Zero-based index of the first returned entry. Optional for compatibility
@@ -416,10 +427,20 @@ export const ProviderSubagentInputResult = Schema.Struct({
 });
 export type ProviderSubagentInputResult = typeof ProviderSubagentInputResult.Type;
 
+export const ProviderSubagentInputFailureReason = Schema.Literals([
+  "parentOnly",
+  "unsupportedProvider",
+  "unavailable",
+  "invalidTarget",
+  "unknown",
+]);
+export type ProviderSubagentInputFailureReason = typeof ProviderSubagentInputFailureReason.Type;
+
 export class ProviderSubagentInputError extends Schema.TaggedError<ProviderSubagentInputError>()(
   "ProviderSubagentInputError",
   {
     message: TrimmedNonEmptyString,
+    reason: Schema.optional(ProviderSubagentInputFailureReason),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
