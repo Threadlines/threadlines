@@ -450,6 +450,18 @@ export const DesktopPreviewEvaluateInputSchema = Schema.Struct({
 });
 export type DesktopPreviewEvaluateInput = typeof DesktopPreviewEvaluateInputSchema.Type;
 
+/** A browser gesture forwarded from the desktop process; see
+ *  onPreviewBrowserCommand. */
+export type DesktopPreviewBrowserCommand =
+  | "back"
+  | "forward"
+  | "find"
+  | "address"
+  | "reload"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-reset";
+
 export const DesktopPreviewConsoleEntrySchema = Schema.Struct({
   level: Schema.String,
   text: Schema.String,
@@ -1000,6 +1012,12 @@ export interface DesktopBridge {
   ) => () => void;
   /** Fires for genuine keyboard, pointer, or wheel input inside a guest page. */
   onPreviewUserControl?: (listener: (event: DesktopPreviewUserControl) => void) => () => void;
+  /** Fires for browser gestures the renderer cannot see itself: the mouse's
+   *  back/forward buttons (window-level app commands), and browser shortcuts
+   *  pressed inside a guest page, which keeps its own keystrokes. */
+  onPreviewBrowserCommand?: (
+    listener: (command: DesktopPreviewBrowserCommand) => void,
+  ) => () => void;
   previewClearBrowsingData?: () => Promise<void>;
   previewClearCache?: () => Promise<void>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

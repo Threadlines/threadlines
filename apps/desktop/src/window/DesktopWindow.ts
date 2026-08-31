@@ -607,6 +607,101 @@ const make = Effect.gen(function* () {
       );
     });
 
+    // Guest preview pages have no context menu of their own, which left the
+    // note fields the annotate overlay injects with squiggles but no way to
+    // accept a suggestion. Only the spelling section applies in a guest --
+    // the page under development owns every other right-click, so anything
+    // without a misspelling under the cursor is left alone.
+    window.webContents.on("did-attach-webview", (_event, guest) => {
+      // Browser shortcuts pressed inside a guest page never reach the
+      // renderer: the guest keeps its keystrokes, and the application menu's
+      // reload/zoom accelerators would otherwise act on the whole app. Seen
+      // here first, they are taken from both and forwarded as commands for
+      // the preview panel to act on.
+      guest.on("before-input-event", (event, input) => {
+        if (input.type !== "keyDown" || (!input.control && !input.meta) || input.alt) {
+          return;
+        }
+        const key = input.key.toLowerCase();
+        const command =
+          key === "f"
+            ? "find"
+            : key === "l"
+              ? "address"
+              : key === "r"
+                ? "reload"
+                : key === "=" || key === "+"
+                  ? "zoom-in"
+                  : key === "-"
+                    ? "zoom-out"
+                    : key === "0"
+                      ? "zoom-reset"
+                      : null;
+        if (command === null || window.webContents.isDestroyed()) {
+          return;
+        }
+        event.preventDefault();
+        window.webContents.send(IpcChannels.PREVIEW_BROWSER_COMMAND_CHANNEL, command);
+      });
+
+      guest.on("context-menu", (event, params) => {
+        if (!params.misspelledWord) {
+          return;
+        }
+        event.preventDefault();
+        const requestVersion = ++contextMenuRequestVersion;
+
+        void runPromise(
+          Effect.gen(function* () {
+            const suggestions =
+              params.dictionarySuggestions.length > 0
+                ? params.dictionarySuggestions
+                : yield* electronSpelling.platformSuggestionsFor(params.misspelledWord);
+            if (requestVersion !== contextMenuRequestVersion || guest.isDestroyed()) {
+              return;
+            }
+            const menuTemplate: Electron.MenuItemConstructorOptions[] =
+              suggestions.length === 0
+                ? [{ label: "No suggestions", enabled: false }]
+                : suggestions.slice(0, 5).map((suggestion) => ({
+                    label: suggestion,
+                    click: () => {
+                      if (requestVersion !== contextMenuRequestVersion) {
+                        return;
+                      }
+                      guest.replaceMisspelling(suggestion);
+                      guest.focus();
+                    },
+                  }));
+
+            yield* electronMenu.popupTemplate({
+              window,
+              template: menuTemplate,
+              frame: params.frame,
+              sourceType: params.menuSourceType,
+            });
+          }),
+        );
+      });
+    });
+
+    // The mouse's back and forward buttons arrive as window-level app
+    // commands on Windows, wherever the pointer was -- including over a
+    // guest page, which keeps the raw button events to itself. Only the
+    // renderer knows what "back" means (the preview panel's active tab), so
+    // the command is forwarded rather than acted on.
+    window.on("app-command", (_event, command) => {
+      const direction =
+        command === "browser-backward"
+          ? ("back" as const)
+          : command === "browser-forward"
+            ? ("forward" as const)
+            : null;
+      if (direction !== null && !window.webContents.isDestroyed()) {
+        window.webContents.send(IpcChannels.PREVIEW_BROWSER_COMMAND_CHANNEL, direction);
+      }
+    });
+
     let printScreenShortcutRegistered = false;
     let printScreenShortcutRegistering = false;
     let printScreenShortcutFocused = false;

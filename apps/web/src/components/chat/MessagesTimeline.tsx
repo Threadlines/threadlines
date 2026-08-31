@@ -100,7 +100,10 @@ import {
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
-import { PickedElementContextChip } from "./ComposerPendingPickedElementContexts";
+import {
+  PickedElementContextChip,
+  PickedElementContextGroupChip,
+} from "./ComposerPendingPickedElementContexts";
 import {
   handleTranscriptHighlightNoteFormSubmit,
   handleTranscriptHighlightNoteKeyDown,
@@ -112,7 +115,11 @@ import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
-import type { PickedElementContext, PickedElementContextDraft } from "~/lib/pickedElementContext";
+import {
+  groupPickedElementContexts,
+  type PickedElementContext,
+  type PickedElementContextDraft,
+} from "~/lib/pickedElementContext";
 import {
   formatParsedDrawingDescriptor,
   type ParsedDrawingContextEntry,
@@ -4195,6 +4202,42 @@ const UserMessagePickedElementChip = memo(function UserMessagePickedElementChip(
   return <PickedElementContextChip context={context} chipId={id} onReveal={onReveal} />;
 });
 
+/** The group chip on a sent message: read-only, but every member's way back
+ *  to the page stays clickable. */
+const UserMessagePickedElementGroupChip = memo(function UserMessagePickedElementGroupChip(props: {
+  entries: SentPickedElementEntry[];
+}) {
+  const ctx = use(TimelineRowCtx);
+  const revealPickedElement = ctx.onRevealPickedElement;
+  const threadId = ctx.activeThreadId;
+  const first = props.entries[0];
+  if (first === undefined) {
+    return null;
+  }
+  const onRevealMember =
+    revealPickedElement === undefined || threadId === null
+      ? undefined
+      : (index: number) => {
+          const entry = props.entries[index];
+          if (entry === undefined) {
+            return;
+          }
+          revealPickedElement({
+            ...entry.context,
+            id: entry.id,
+            threadId,
+            createdAt: entry.createdAt,
+          });
+        };
+  return (
+    <PickedElementContextGroupChip
+      contexts={props.entries.map((entry) => entry.context)}
+      chipId={first.id}
+      onRevealMember={onRevealMember}
+    />
+  );
+});
+
 const UserMessageDrawingInlineLabel = memo(function UserMessageDrawingInlineLabel(props: {
   entry: ParsedDrawingContextEntry;
 }) {
@@ -4314,9 +4357,25 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           className={cn("flex flex-wrap gap-1.5", hasVisibleBody && "mt-2")}
           data-testid="sent-context-chips"
         >
-          {props.pickedElements.map((entry) => (
-            <UserMessagePickedElementChip key={entry.id} entry={entry} />
-          ))}
+          {/* Elements that were attached as one annotation come back out of
+              the message sharing a groupId, and show as the one chip they
+              were sent as. */}
+          {groupPickedElementContexts(
+            props.pickedElements.map((entry) => ({ ...entry.context, entry })),
+          ).map((cluster) => {
+            const first = cluster[0];
+            if (first === undefined) {
+              return null;
+            }
+            return cluster.length === 1 ? (
+              <UserMessagePickedElementChip key={first.entry.id} entry={first.entry} />
+            ) : (
+              <UserMessagePickedElementGroupChip
+                key={first.entry.id}
+                entries={cluster.map((member) => member.entry)}
+              />
+            );
+          })}
           {props.drawings.map(({ id, entry }) => (
             <UserMessageDrawingInlineLabel key={id} entry={entry} />
           ))}

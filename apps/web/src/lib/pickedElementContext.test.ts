@@ -129,6 +129,20 @@ describe("appendPickedElementContextsToPrompt", () => {
     expect(prompt.match(/<selected_element>/g)).toHaveLength(1);
   });
 
+  it("keeps a re-pick of the same element that carries a different note", () => {
+    // Annotating a button, then catching it again in a region with another
+    // note, is two statements about one element -- not a miss-click.
+    const prompt = appendPickedElementContextsToPrompt("", [
+      { ...context, note: "make it blue" },
+      { ...context, note: "align these with the heading", groupId: "group-1" },
+      { ...context, selector: "#other", note: "align these with the heading", groupId: "group-1" },
+    ]);
+
+    expect(prompt.match(/<selected_element>/g)).toHaveLength(1);
+    expect(prompt.match(/<selected_elements>/g)).toHaveLength(1);
+    expect(prompt.match(/selector: #cta/g)).toHaveLength(2);
+  });
+
   it("keeps the same selector on a different page as its own context", () => {
     const prompt = appendPickedElementContextsToPrompt("", [
       context,
@@ -184,6 +198,61 @@ describe("extractTrailingPickedElementContexts", () => {
       promptText: prompt,
       contexts: [],
     });
+  });
+});
+
+describe("grouped picks", () => {
+  const firstMember: PickedElementContext = {
+    ...context,
+    groupId: "group-1",
+    note: "make these match",
+  };
+  const secondMember: PickedElementContext = {
+    ...context,
+    groupId: "group-1",
+    note: "make these match",
+    name: "Review Our Accomplishments",
+    text: "Review Our Accomplishments",
+    selector: "#secondary",
+  };
+
+  it("serializes elements attached together as one block with the note said once", () => {
+    const prompt = appendPickedElementContextsToPrompt("align these", [firstMember, secondMember]);
+
+    expect(prompt.match(/<selected_elements>/g)).toHaveLength(1);
+    expect(prompt).not.toContain("<selected_element>\n");
+    expect(prompt.match(/note: make these match/g)).toHaveLength(1);
+    expect(prompt).toContain("selector: #cta");
+    expect(prompt).toContain("selector: #secondary");
+  });
+
+  it("keeps a lone pick as the single block it always was, even with a groupId", () => {
+    const prompt = appendPickedElementContextsToPrompt("", [{ ...context, groupId: "solo" }]);
+
+    expect(prompt).toContain("<selected_element>");
+    expect(prompt).not.toContain("<selected_elements>");
+  });
+
+  it("round-trips a group next to a lone pick, keeping the members together", () => {
+    const lone: PickedElementContext = { ...context, selector: "#top" };
+    const prompt = appendPickedElementContextsToPrompt("question", [
+      firstMember,
+      secondMember,
+      lone,
+    ]);
+
+    const extracted = extractTrailingPickedElementContexts(prompt);
+
+    expect(extracted.promptText).toBe("question");
+    expect(extracted.contexts).toHaveLength(3);
+    const [outFirst, outSecond, outLone] = extracted.contexts;
+    expect(outFirst).toMatchObject({ selector: "#cta", note: "make these match" });
+    expect(outSecond).toMatchObject({ selector: "#secondary", note: "make these match" });
+    // The parsed groupId is fresh, not the serialized one -- it only has to
+    // keep the members together -- and the lone pick stays ungrouped.
+    expect(outFirst?.groupId).toBeTypeOf("string");
+    expect(outFirst?.groupId).toBe(outSecond?.groupId);
+    expect(outLone?.groupId).toBeUndefined();
   });
 });
 

@@ -32,7 +32,7 @@ import {
   RotateCwIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   BROWSER_VIEWPORT_PRESETS,
@@ -51,6 +51,9 @@ import {
   type BrowserTab,
   type BrowserViewport,
 } from "../../browserPanelStore";
+import { BrowserFindBar } from "./BrowserFindBar";
+import { BrowserPageErrorsButton } from "./BrowserPageErrors";
+import { distillPageErrors, type PageErrorItem } from "./pageErrors";
 import { isElectron } from "../../env";
 import { useTheme } from "../../hooks/useTheme";
 import { copyTextToClipboard } from "../../lib/clipboard";
@@ -107,6 +110,8 @@ export interface PreviewWebview extends HTMLElement {
   reloadIgnoringCache: () => void;
   setZoomFactor: (factor: number) => void;
   loadURL: (url: string) => Promise<void>;
+  findInPage: (text: string, options?: { forward?: boolean; findNext?: boolean }) => number;
+  stopFindInPage: (action: "clearSelection" | "keepSelection" | "activateSelection") => void;
 }
 
 interface NavState {
@@ -125,6 +130,7 @@ export function BrowserPanel({
   onPickElement,
   onScreenshot,
   onDrawing,
+  onAttachPageErrors,
   pendingReveal,
   onRevealHandled,
 }: {
@@ -135,12 +141,18 @@ export function BrowserPanel({
   flexGrow: number;
   onClose: () => void;
   /** Hands a picked element to the composer as context for the next message. */
-  onPickElement?: ((element: DesktopPreviewPickedElement) => void) | undefined;
+  /** groupId ties the elements of one multi-element attach together; null on
+   *  a lone pick. */
+  onPickElement?:
+    | ((element: DesktopPreviewPickedElement, groupId: string | null) => void)
+    | undefined;
   /** Attaches a captured screenshot to the message being written. Returns
    *  whether it actually attached, so the panel confirms only what happened. */
   onScreenshot?: ((input: { dataUrl: string; name: string }) => boolean) | undefined;
   /** Attaches a drawing made on the page: one chip carrying its picture. */
   onDrawing?: ((context: DrawingContext) => void) | undefined;
+  /** Attaches the page's reported errors to the message as a text file. */
+  onAttachPageErrors?: ((attachment: { name: string; text: string }) => void) | undefined;
   /** An element to show again, requested from a composer chip. */
   pendingReveal?: PickedElementContextDraft | null | undefined;
   onRevealHandled?: (() => void) | undefined;
@@ -466,7 +478,9 @@ export function BrowserPanel({
             note: drawing.note,
             imageDataUrl: shot.dataUrl,
             url: activeUrl ?? "",
-            elements: drawing.elements.map(pickedElementFromPreview),
+            // An explicit arrow: map would pass the index into the optional
+            // groupId parameter.
+            elements: drawing.elements.map((element) => pickedElementFromPreview(element)),
           });
         }
         await window.desktopBridge?.previewSetAnnotationMode?.({ webContentsId, mode: null });
@@ -475,13 +489,26 @@ export function BrowserPanel({
         return;
       }
       try {
-        const elements = await window.desktopBridge?.previewPickElement?.({
-          webContentsId,
-          colorScheme: guestColorScheme,
-          mode: next,
-        });
-        for (const element of elements ?? []) {
-          onPickElement?.(element);
+        // Annotating is a session, not a shot. Working through a page of
+        // feedback means many notes in a row, so attaching one settles it into
+        // the composer and re-arms the picker for the next. An empty result is
+        // the session ending -- escape with nothing chosen, another tool
+        // taking over, or the page navigating away -- and breaks the loop.
+        for (;;) {
+          const elements = await window.desktopBridge?.previewPickElement?.({
+            webContentsId,
+            colorScheme: guestColorScheme,
+            mode: next,
+          });
+          // Several elements from one resolution are one annotation sharing
+          // one note, and the id is what keeps them together downstream.
+          const groupId = (elements?.length ?? 0) > 1 ? crypto.randomUUID() : null;
+          for (const element of elements ?? []) {
+            onPickElement?.(element, groupId);
+          }
+          if ((elements?.length ?? 0) === 0 || armedToolRef.current !== next) {
+            break;
+          }
         }
       } finally {
         // Only if nothing else took the pointer while this was waiting: arming
@@ -504,6 +531,148 @@ export function BrowserPanel({
     armedToolRef.current = null;
     setArmedTool(null);
   }, [activeTabUrl, activeTabId]);
+
+  // The webview find-in-page is aimed at, fixed at open: the matches live in
+  // one document, and the bar closes rather than silently retargeting when
+  // the page or the tab changes underneath it.
+  const [findTarget, setFindTarget] = useState<PreviewWebview | null>(null);
+  useEffect(() => {
+    setFindTarget(null);
+  }, [activeTabUrl, activeTabId]);
+
+  const openFindBar = useCallback(() => {
+    const webview = webviewFor(activeTabId);
+    if (webview !== null) {
+      setFindTarget(webview);
+    }
+  }, [activeTabId, webviewFor]);
+
+  // Find and address-bar keys while focus is in the app chrome. Capture
+  // phase, because whichever component holds focus (the composer, most of
+  // the time) must not swallow a browser shortcut on its way here. Reload
+  // and zoom stay with the application menu in the chrome; pressed inside
+  // the page they arrive through the command channel below instead.
+  useEffect(() => {
+    if (!isElectron) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "f") {
+        event.preventDefault();
+        openFindBar();
+      } else if (key === "l") {
+        event.preventDefault();
+        addressRef.current?.focus();
+        addressRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [openFindBar]);
+
+  // Browser gestures the renderer cannot see itself, forwarded by the
+  // desktop: the mouse's back/forward buttons (window-level app commands on
+  // Windows), and browser shortcuts pressed inside the guest page, which
+  // keeps its own keystrokes.
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onPreviewBrowserCommand;
+    if (subscribe === undefined) {
+      return;
+    }
+    return subscribe((command) => {
+      if (command === "find") {
+        openFindBar();
+        return;
+      }
+      if (command === "address") {
+        addressRef.current?.focus();
+        addressRef.current?.select();
+        return;
+      }
+      if (command === "zoom-in" || command === "zoom-out" || command === "zoom-reset") {
+        if (activeTab !== null) {
+          setTabZoom(
+            threadRef,
+            activeTab.id,
+            command === "zoom-reset"
+              ? 1
+              : steppedZoom(activeTab.zoomFactor, command === "zoom-in" ? 1 : -1),
+          );
+        }
+        return;
+      }
+      const webview = webviewFor(activeTabId);
+      if (webview === null) {
+        return;
+      }
+      callWhenReady(() => {
+        if (command === "reload") {
+          webview.reload();
+        } else if (command === "back" && webview.canGoBack()) {
+          webview.goBack();
+        } else if (command === "forward" && webview.canGoForward()) {
+          webview.goForward();
+        }
+      });
+    });
+  }, [activeTab, activeTabId, openFindBar, setTabZoom, threadRef, webviewFor]);
+
+  // Errors the page has reported since it last navigated, polled while the
+  // panel is up. The collection lives in the desktop process alongside the
+  // CDP attachment; a light status call every few seconds is what turns it
+  // into a visible badge rather than something only the agent ever reads.
+  const [pageErrors, setPageErrors] = useState<PageErrorItem[]>([]);
+  useEffect(() => {
+    setPageErrors([]);
+    if (!isElectron || activeTabId === "") {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      const webview = webviewFor(activeTabId);
+      const status = window.desktopBridge?.previewStatus;
+      if (webview === null || status === undefined) {
+        return;
+      }
+      try {
+        const next = await status({ webContentsId: webview.getWebContentsId() });
+        if (!cancelled) {
+          setPageErrors(distillPageErrors(next));
+        }
+      } catch {
+        // Mid-navigation or not yet attached; the next poll answers.
+      }
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeTabId, activeTabUrl, webviewFor]);
+
+  // Escape puts an armed tool away even before the pointer has entered the
+  // page: until then, key presses land in the app, not in the guest document
+  // where the overlay listens for them. A consumed escape belongs to whatever
+  // consumed it -- a menu or dialog closing must not also disarm the tool.
+  useEffect(() => {
+    if (armedTool === null) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      event.preventDefault();
+      void armTool(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [armedTool, armTool]);
 
   // A reveal request arrives from the composer, which cannot know which tab is
   // showing the page it came from -- or whether the panel was even open. The
@@ -811,6 +980,7 @@ export function BrowserPanel({
             void armTool(tool, { toggle: false });
           }}
         />
+        <BrowserPageErrorsButton url={activeUrl} items={pageErrors} onAttach={onAttachPageErrors} />
         <NavButton
           label={captureConfirmed ? "Screenshot attached" : "Capture screenshot"}
           onClick={captureScreenshot}
@@ -839,6 +1009,9 @@ export function BrowserPanel({
             <MoreVerticalIcon className="size-3.5" />
           </MenuTrigger>
           <MenuPopup align="end">
+            <MenuItem data-testid="browser-find-in-page" onClick={openFindBar}>
+              Find in page
+            </MenuItem>
             <MenuItem
               onClick={() => {
                 const webview = webviewFor(activeTabId);
@@ -996,6 +1169,9 @@ export function BrowserPanel({
                 }}
               />
             ))}
+            {findTarget === null ? null : (
+              <BrowserFindBar webview={findTarget} onClose={() => setFindTarget(null)} />
+            )}
           </>
         )}
       </div>
@@ -1519,10 +1695,28 @@ function PageToolControl({
   // control has to show what the pointer is actually doing.
   const shown = PAGE_TOOLS.find((entry) => entry.tool === (armed ?? selected)) ?? PAGE_TOOLS[0];
   const isArmed = armed !== null;
+
+  // A mouse press must not leave keyboard focus on the arm button -- its
+  // pointerdown is prevented below, so only tabbing focuses it. The menu
+  // trigger cannot get the same treatment (Base UI owns its pointer
+  // handling), so disarming also sheds any focus left inside the control:
+  // an escape press would promote that ring to visible on a control nobody
+  // is using. The blur lands before paint so the ring never flashes.
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  useLayoutEffect(() => {
+    if (armed !== null) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && rootRef.current?.contains(active)) {
+      active.blur();
+    }
+  }, [armed]);
   const label = isArmed ? (isInkTool(armed) ? "Clear drawing" : "Cancel") : shown.label;
 
   return (
     <span
+      ref={rootRef}
       className={cn(
         "inline-flex shrink-0 items-center rounded-md border",
         isArmed ? "border-transparent bg-accent text-foreground" : "border-border",
@@ -1536,6 +1730,7 @@ function PageToolControl({
               type="button"
               aria-label={label}
               data-testid="browser-page-tool-arm"
+              onPointerDown={(event) => event.preventDefault()}
               onClick={() => onArm(shown.tool)}
               className={cn(
                 "inline-flex size-6 items-center justify-center rounded-l-md hover:bg-accent hover:text-foreground",

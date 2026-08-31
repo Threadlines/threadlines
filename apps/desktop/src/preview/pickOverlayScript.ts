@@ -162,12 +162,20 @@ export function buildPickOverlayScript(
     ".note{position:fixed;display:flex;flex-direction:column;gap:4px;" +
     "padding:8px;border-radius:6px;background:#16181c;pointer-events:auto;" +
     "border:1px solid rgba(255,255,255,0.14);box-shadow:0 4px 16px rgba(0,0,0,0.45)}" +
-    ".input{width:250px;flex:1;padding:5px 7px;border-radius:4px;background:#0f1115;" +
-    "border:1px solid #4c8dff;color:#e8e6e1;outline:none;" +
-    "font:400 12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    ".input{width:250px;flex:1;box-sizing:border-box;padding:5px 7px;border-radius:4px;" +
+    "background:#0f1115;border:1px solid #4c8dff;color:#e8e6e1;outline:none;resize:none;" +
+    "overflow-y:auto;font:400 12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
     ".input::placeholder{color:rgba(232,230,225,0.4)}" +
-    ".hint{white-space:nowrap;color:rgba(232,230,225,0.3);" +
-    "font:400 10px/1.2 ui-sans-serif,system-ui,sans-serif}" +
+    // The stock scrollbar is a chunky OS control with arrow buttons; the note
+    // gets the same quiet thumb the style panel below already uses. The
+    // cursor is stated because the bar otherwise inherits the textarea's
+    // I-beam, which says "type here" over a control you grab.
+    ".input::-webkit-scrollbar{width:8px;cursor:default}" +
+    ".input::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.14);border-radius:4px;" +
+    "cursor:default}" +
+    ".input::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.26)}" +
+    ".input::-webkit-scrollbar-thumb:active{background:rgba(255,255,255,0.34)}" +
+    ".input::-webkit-scrollbar-button{display:none}" +
     ".row{display:flex;align-items:center;gap:6px}" +
     ".toggle{display:flex;align-items:center;justify-content:center;width:24px;" +
     "height:24px;padding:0;border-radius:4px;cursor:pointer;background:none;" +
@@ -182,6 +190,8 @@ export function buildPickOverlayScript(
     "border-top:1px solid rgba(255,255,255,0.1)}" +
     ".panel::-webkit-scrollbar{width:8px}" +
     ".panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.14);border-radius:4px}" +
+    ".panel::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.26)}" +
+    ".panel::-webkit-scrollbar-thumb:active{background:rgba(255,255,255,0.34)}" +
     ".prop{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:3px}" +
     ".prop:hover{background:rgba(255,255,255,0.04)}" +
     ".prop-name{flex:1;color:rgba(232,230,225,0.6);" +
@@ -210,11 +220,22 @@ export function buildPickOverlayScript(
     ".unit{width:14px;color:rgba(232,230,225,0.4);" +
     "font:400 10px ui-sans-serif,system-ui,sans-serif}" +
     ".foot{display:flex;align-items:center;gap:6px;margin-top:6px}" +
-    // The two things you can do, said as buttons. The keys still work and the
-    // hint still says so, but quietly: a line of instructions is not what you
-    // want to read every time you point at something.
-    ".act{padding:4px 9px;border-radius:5px;cursor:pointer;border:1px solid transparent;" +
+    // The two things you can do, said as buttons, each carrying its key
+    // quietly: the shortcut is taught where the action lives, not in a
+    // separate line of instructions.
+    ".act{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:5px;" +
+    "cursor:pointer;border:1px solid transparent;" +
     "font:500 11px/1.2 ui-sans-serif,system-ui,sans-serif}" +
+    // Worn as a small centred chip rather than trailing text, which dangled
+    // off the label's baseline at a different size.
+    ".key{display:inline-flex;align-items:center;justify-content:center;height:14px;" +
+    "padding:0 3px;border-radius:3px;" +
+    "font:600 8px/1 ui-monospace,SFMono-Regular,Menlo,monospace;" +
+    "letter-spacing:0.05em;text-transform:uppercase}" +
+    ".attach .key{background:rgba(11,18,32,0.16)}" +
+    // Caps-only mono sits optically high when its line box is centred; with
+    // border-box height, 2px of top padding nets a 1px drop of the glyphs.
+    ".cancel .key{background:rgba(255,255,255,0.09);box-sizing:border-box;padding-top:2px}" +
     ".attach{background:#4c8dff;color:#0b1220}" +
     ".attach:hover{filter:brightness(1.08)}" +
     ".cancel{margin-left:auto;background:none;color:rgba(232,230,225,0.7);" +
@@ -308,6 +329,18 @@ export function buildPickOverlayScript(
   // document dies mid-note, what was typed attaches rather than vanishing.
   let onPageHide = null;
 
+  // Set while the note field is open. Escape backs out one level: an open
+  // note is discarded and picking resumes; with nothing chosen it ends the
+  // mode. Cancelling a note must not end the session, because the next
+  // annotation is usually the reason the mode is still armed.
+  let discardNote = null;
+
+  // Also set while the note field is open: one rebuilds the card when the
+  // selection changes under it, keeping the text; the other re-places it as
+  // the page scrolls, so the card stays with the elements it is about.
+  let updateNoteSelection = null;
+  let placeNote = null;
+
   // The properties worth trying on the spot. Enough to describe a visual
   // change precisely, not so many that the panel becomes a style editor: the
   // agent makes the real change, this only says what to aim for.
@@ -348,7 +381,21 @@ export function buildPickOverlayScript(
     };
   };
 
-  const showNoteInput = () => {
+  /** Repaints the selection and its tag: one element's name, or a count. */
+  const paintChosen = () => {
+    paintBoxes(chosen);
+    if (chosen.length === 0) return;
+    if (chosen.length === 1) {
+      paint(chosen[0]);
+      return;
+    }
+    tag.hidden = false;
+    tag.innerHTML = "<span class='name'></span>";
+    tag.querySelector(".name").textContent = chosen.length + " elements";
+    placeTag(anchorRect());
+  };
+
+  const showNoteInput = (initialText) => {
     // Style tweaks are a conversation about one element: applied across a
     // selection they would say "make all of these 18px", which is a different
     // request and rarely the one being made.
@@ -366,18 +413,25 @@ export function buildPickOverlayScript(
       "stroke-width='2' stroke-linecap='round'><path d='M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0'/>" +
       "<circle cx='16' cy='6' r='2'/><circle cx='10' cy='12' r='2'/><circle cx='18' cy='18' r='2'/></svg>" +
       "</button>" +
-      "<input class='input' type='text' />" +
+      "<textarea class='input' rows='1'></textarea>" +
       "</div>" +
       "<div class='panel' hidden></div>" +
-      "<div class='foot'><span class='hint'>⏎ · esc</span>" +
+      "<div class='foot'>" +
       "<button type='button' class='reset' hidden>reset</button>" +
-      "<button type='button' class='act cancel'>Cancel</button>" +
-      "<button type='button' class='act attach'>Attach</button></div>";
+      "<button type='button' class='act cancel'>Cancel<span class='key'>esc</span></button>" +
+      // The return glyph as drawn strokes rather than a font character: at
+      // chip size the text glyph renders hairline-thin and ragged.
+      "<button type='button' class='act attach'>Attach<span class='key'>" +
+      "<svg width='9' height='9' viewBox='0 0 24 24' fill='none' stroke='currentColor' " +
+      "stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>" +
+      "<path d='M20 4v7a4 4 0 0 1-4 4H4'/><path d='m9 10-5 5 5 5'/></svg>" +
+      "</span></button></div>";
     root.appendChild(field);
     const input = field.querySelector(".input");
     const panel = field.querySelector(".panel");
     const toggle = field.querySelector(".toggle");
     const resetButton = field.querySelector(".reset");
+    input.value = initialText === undefined ? "" : initialText;
     input.placeholder = placeholder;
     toggle.hidden = !styleable;
 
@@ -406,10 +460,32 @@ export function buildPickOverlayScript(
           : below) + "px";
     };
 
+    // One line tall until the note needs more, stopping at about five lines:
+    // a long thought should stay visible while it is written, but the card
+    // must not swallow the page it is annotating. Past the cap it scrolls.
+    const grow = () => {
+      input.style.height = "auto";
+      // A border-box height includes the two 1px borders that scrollHeight
+      // does not; without them the field is permanently overflowed by 2px
+      // and shows a scrollbar from its first character.
+      input.style.height = Math.min(input.scrollHeight + 2, 96) + "px";
+      place();
+    };
+    input.addEventListener("input", grow);
+    placeNote = place;
+
     const tweaks = new Map();
+    // Filled in by the styleable branch: a discarded note takes its tried-on
+    // styles with it, or the page keeps changes nobody asked it to keep.
+    let revertTweaks = () => {};
 
     if (styleable) {
       const target = chosen[0];
+      revertTweaks = () => {
+        for (const tweak of TWEAKS) {
+          target.style.removeProperty(tweak.key);
+        }
+      };
 
       // A computed colour is whatever the page authored: rgb(), but just as
       // often oklch() or lab(). Neither string parsing nor canvas normalisation
@@ -560,23 +636,62 @@ export function buildPickOverlayScript(
       });
     }
 
-    place();
+    grow();
+
+    // Takes the card down without settling the pick: shared by backing out
+    // of the note and by rebuilding it for a changed selection.
+    const teardownNote = () => {
+      revertTweaks();
+      window.removeEventListener("pagehide", onPageHide);
+      onPageHide = null;
+      discardNote = null;
+      updateNoteSelection = null;
+      placeNote = null;
+      field.remove();
+    };
+
+    // Backing out of this note, not out of annotating: the field and its
+    // tried-on styles go, and the pointer returns to picking. Leaving the
+    // mode is escape with nothing chosen, or the toolbar button.
+    const discard = () => {
+      teardownNote();
+      chosen = [];
+      hide();
+      if (!REGION_MODE) {
+        document.addEventListener("mousemove", onMove, true);
+      }
+    };
+    discardNote = discard;
+
+    // The selection changed under an open note: rebuild the card so its
+    // title and style options describe what is now chosen, keeping the text.
+    // Style tweaks were tried on the old selection, so they go with it.
+    updateNoteSelection = () => {
+      const text = input.value;
+      teardownNote();
+      paintChosen();
+      showNoteInput(text);
+    };
 
     field.querySelector(".attach").addEventListener("click", () => {
       attach(input.value.trim(), [...tweaks.values()]);
     });
-    field.querySelector(".cancel").addEventListener("click", cancel);
+    field.querySelector(".cancel").addEventListener("click", discard);
     input.addEventListener("keydown", (event) => {
       event.stopPropagation();
-      if (event.key === "Enter") {
+      // Enter attaches; shift keeps the newline, as in the composer's editor.
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         attach(input.value.trim(), [...tweaks.values()]);
       } else if (event.key === "Escape") {
         event.preventDefault();
-        cancel();
+        discard();
       }
     });
-    requestAnimationFrame(() => input.focus());
+    requestAnimationFrame(() => {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
   };
 
   const swallow = (event) => {
@@ -596,11 +711,36 @@ export function buildPickOverlayScript(
     // Capture phase and fully swallowed: picking a "Delete" button must not
     // also press it.
     swallow(event);
-    if (REGION_MODE || chosen.length > 0) {
+    // The click that ends a region drag is the drag settling, not an edit to
+    // the selection it just made.
+    if (settlingDrag) {
+      settlingDrag = false;
       return;
     }
     const element = document.elementFromPoint(event.clientX, event.clientY);
     if (!element || element === host) {
+      return;
+    }
+    if (chosen.length > 0) {
+      // An open note means clicking edits the selection: a new element joins
+      // it -- one note can be about several things -- and a click anywhere
+      // inside something already chosen takes that thing back out. Emptying
+      // the selection this way is the same as backing out of the note.
+      const existing = chosen.findIndex(
+        (candidate) => candidate === element || candidate.contains(element),
+      );
+      chosen =
+        existing >= 0
+          ? chosen.filter((candidate, index) => index !== existing)
+          : [...chosen, element];
+      if (chosen.length === 0) {
+        if (discardNote !== null) discardNote();
+      } else if (updateNoteSelection !== null) {
+        updateNoteSelection();
+      }
+      return;
+    }
+    if (REGION_MODE) {
       return;
     }
     chosen = [element];
@@ -620,6 +760,45 @@ export function buildPickOverlayScript(
   let origin = null;
   let bandRect = null;
   let pending = false;
+  // Raised when a drag settles into a selection, so the click event the
+  // browser fires right after the mouseup is not read as editing it.
+  let settlingDrag = false;
+
+  // The rect a candidate is matched by: what it visibly paints. A block is
+  // often far wider than what it shows -- a centred heading owns the whole
+  // row while its ink is the text in the middle -- and matching on the box
+  // makes a rectangle drawn tightly around everything visible come up empty.
+  // An element that paints its own box (background, border, shadow) is
+  // visible to its edges and keeps it; anything else is matched by its
+  // contents' measured extent, clamped to the box, which is the shape the
+  // user can actually see and aim at.
+  const candidateRect = (element, rect, style) => {
+    if (
+      style.backgroundImage !== "none" ||
+      style.boxShadow !== "none" ||
+      (style.backgroundColor !== "transparent" &&
+        style.backgroundColor !== "rgba(0, 0, 0, 0)") ||
+      parseFloat(style.borderTopWidth) > 0 ||
+      parseFloat(style.borderRightWidth) > 0 ||
+      parseFloat(style.borderBottomWidth) > 0 ||
+      parseFloat(style.borderLeftWidth) > 0
+    ) {
+      return rect;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const ink = range.getBoundingClientRect();
+    const left = Math.max(rect.left, ink.left);
+    const top = Math.max(rect.top, ink.top);
+    const right = Math.min(rect.right, ink.right);
+    const bottom = Math.min(rect.bottom, ink.bottom);
+    // Nothing measurable inside -- a replaced element, or an empty one --
+    // keeps its box.
+    if (right - left <= 0 || bottom - top <= 0) {
+      return rect;
+    }
+    return { left, top, right, bottom };
+  };
 
   const collectCandidates = () => {
     const found = [];
@@ -642,7 +821,13 @@ export function buildPickOverlayScript(
       if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") {
         continue;
       }
-      found.push({ element, rect });
+      const matched = candidateRect(element, rect, style);
+      // The sliver rule again, now on what is actually visible: an element
+      // whose ink is a hairline is not something to talk about either.
+      if ((matched.right - matched.left) * (matched.bottom - matched.top) < MIN_AREA) {
+        continue;
+      }
+      found.push({ element, rect: matched });
     }
     return found;
   };
@@ -731,19 +916,29 @@ export function buildPickOverlayScript(
     }
     chosen = matched;
     paintBoxes(matched);
+    settlingDrag = true;
     showNoteInput();
   };
 
   const onKeyDown = (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      cancel();
+      if (discardNote !== null) {
+        discardNote();
+      } else {
+        cancel();
+      }
     }
   };
 
   const onScroll = () => {
     if (chosen.length > 0) {
-      paintBoxes(chosen);
+      // The selection, its tag, and the note card all belong to elements in
+      // the page, so they move with them rather than floating in place.
+      paintChosen();
+      if (placeNote !== null) {
+        placeNote();
+      }
     } else if (current) {
       paint(current);
     }

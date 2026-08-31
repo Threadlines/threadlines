@@ -1421,8 +1421,19 @@ export default function ChatView(props: ChatViewProps) {
    * out of the prompt you are still writing.
    */
   const appendPickedElementToComposer = useCallback(
-    (element: DesktopPreviewPickedElement) => {
-      composerRef.current?.addPickedElementContext(pickedElementFromPreview(element));
+    (element: DesktopPreviewPickedElement, groupId: string | null) => {
+      composerRef.current?.addPickedElementContext(
+        pickedElementFromPreview(element, groupId ?? undefined),
+      );
+    },
+    [composerRef],
+  );
+
+  // The preview's reported errors travel as a small text attachment: a chip
+  // like any other file, rather than a wall of pasted text.
+  const appendPageErrorsToComposer = useCallback(
+    (attachment: { name: string; text: string }) => {
+      composerRef.current?.addTextFileAttachment(attachment);
     },
     [composerRef],
   );
@@ -6956,6 +6967,7 @@ export default function ChatView(props: ChatViewProps) {
               onPickElement={appendPickedElementToComposer}
               onScreenshot={(shot) => composerRef.current?.addScreenshotAttachment(shot) ?? false}
               onDrawing={(drawing) => composerRef.current?.addDrawingContext(drawing)}
+              onAttachPageErrors={appendPageErrorsToComposer}
               pendingReveal={pendingElementReveal}
               onRevealHandled={() => setPendingElementReveal(null)}
             />

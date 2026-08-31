@@ -474,6 +474,9 @@ export interface ChatComposerHandle {
   /** Attach a screenshot captured from the browser preview. Returns whether
    *  it actually attached, so the capture surface can confirm honestly. */
   addScreenshotAttachment: (input: { dataUrl: string; name: string }) => boolean;
+  /** Attach a small generated text file (the page's reported errors, say).
+   *  Returns whether it actually attached. */
+  addTextFileAttachment: (input: { name: string; text: string }) => boolean;
   /** Attach a drawing made on the page: one chip carrying the picture, the
    *  note and whatever the closed strokes went round. */
   addDrawingContext: (context: DrawingContext) => void;
@@ -3000,9 +3003,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       addPickedElementContext: (context: PickedElementContext) => {
         if (!activeThread) return;
         const existing = composerPickedElementContextsRef.current;
-        // Picking the same element twice is one context, not two: the second
-        // pick is usually a miss-click or a re-check, and duplicate chips would
-        // send the same block twice.
+        // A re-pick that says nothing new -- same element, same note, same
+        // grouping -- is a miss-click or a re-check, and one context is
+        // enough. One that carries a new note or joins a new group is a new
+        // statement about the element and gets its own chip.
         const key = pickedElementContextDedupKey(context);
         if (existing.some((entry) => pickedElementContextDedupKey(entry) === key)) {
           return;
@@ -3048,6 +3052,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           return false;
         }
         const attached = addComposerFiles([file]);
+        if (attached) {
+          focusComposer();
+        }
+        return attached;
+      },
+      addTextFileAttachment: ({ name, text }) => {
+        // Through addComposerFiles for the same reason the screenshot goes
+        // there: the size limits, the attachment cap and the dedupe all live
+        // in one place.
+        const attached = addComposerFiles([new File([text], name, { type: "text/plain" })]);
         if (attached) {
           focusComposer();
         }
