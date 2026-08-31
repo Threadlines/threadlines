@@ -8,7 +8,11 @@ import type {
   WorkLogEntry,
 } from "../../session-logic";
 import { cn } from "~/lib/utils";
-import { selectAgentsPanelAgent, useSelectedAgentId } from "../../agentsPanelStore";
+import {
+  selectAgentsPanelAgent,
+  useAgentsPanelWorkEntries,
+  useSelectedAgentId,
+} from "../../agentsPanelStore";
 import type { Icon } from "../Icons";
 import { Button } from "../ui/button";
 import { LiveNode, SectionLabel } from "../ui/threadline";
@@ -61,6 +65,60 @@ export interface AgentsPanelProps {
  *  Claude agents can only be reached by the model. */
 function providerAcceptsSubagentInput(providerLabel: string | null | undefined): boolean {
   return providerLabel?.trim().toLowerCase().includes("codex") ?? false;
+}
+
+function ConnectedSubagentInspector({
+  environmentId,
+  threadId,
+  item,
+  workEntries,
+  providerLabel,
+  threadCwd,
+  onMessageThroughParent,
+  onClose,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  item: SubagentProgressItem;
+  workEntries: ReadonlyArray<WorkLogEntry> | undefined;
+  providerLabel: string | null | undefined;
+  threadCwd: string | null | undefined;
+  onMessageThroughParent: ((agentName: string) => void) | undefined;
+  onClose: () => void;
+}) {
+  const publishedWorkEntries = useAgentsPanelWorkEntries({
+    environmentId,
+    threadId,
+    enabled: workEntries === undefined,
+  });
+  const selectedWorkEntries = useMemo(() => {
+    const agentThreadId = item.agentThreadId;
+    if (!agentThreadId) {
+      return EMPTY_WORK_ENTRIES;
+    }
+    return (workEntries ?? publishedWorkEntries).filter(
+      (entry) =>
+        entry.sourceAgentThreadId === agentThreadId ||
+        // Background tasks the agent started in its own conversation: for
+        // Claude the owner spawn call id is the agent's thread id.
+        entry.ownerAgentToolUseId === agentThreadId,
+    );
+  }, [item.agentThreadId, publishedWorkEntries, workEntries]);
+
+  return (
+    <SubagentInspector
+      environmentId={environmentId}
+      threadId={threadId}
+      item={item}
+      activityEntries={selectedWorkEntries}
+      details={deriveSubagentDisplayDetails(item)}
+      cwd={threadCwd ?? undefined}
+      dismissVariant="back"
+      canSendInput={providerAcceptsSubagentInput(providerLabel)}
+      onMessageThroughParent={onMessageThroughParent}
+      onClose={onClose}
+    />
+  );
 }
 
 /** The trunk takes the provider's own hue so the panel reads as that
@@ -303,7 +361,7 @@ export const AgentsPanel = memo(function AgentsPanel({
   subagents,
   subagentRuns,
   history,
-  workEntries = EMPTY_WORK_ENTRIES,
+  workEntries,
   providerLabel,
   turnInFlight = false,
   threadCwd,
@@ -326,21 +384,6 @@ export const AgentsPanel = memo(function AgentsPanel({
   const providerGlyph = useMemo(() => providerIconForDriverLabel(providerLabel), [providerLabel]);
   const anyRunning = hasRunningAgentActivity({ subagents });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
-  const selectedSubagentThreadId = selectedSubagent?.agentThreadId ?? null;
-  const selectedSubagentWorkEntries = useMemo(
-    () =>
-      selectedSubagentThreadId
-        ? workEntries.filter(
-            (entry) =>
-              entry.sourceAgentThreadId === selectedSubagentThreadId ||
-              // Background tasks the agent started in its own conversation:
-              // for Claude agents the owner spawn call id is the agent's
-              // thread id, so they belong to the same drill-in view.
-              entry.ownerAgentToolUseId === selectedSubagentThreadId,
-          )
-        : [],
-    [selectedSubagentThreadId, workEntries],
-  );
 
   const handleSelect = useCallback((branch: AgentBranch) => {
     if (branch.item.agentThreadId) {
@@ -362,16 +405,14 @@ export const AgentsPanel = memo(function AgentsPanel({
   }, []);
 
   const inspector = selectedSubagent ? (
-    <SubagentInspector
+    <ConnectedSubagentInspector
       key={selectedSubagent.id}
       environmentId={environmentId}
       threadId={threadId}
       item={selectedSubagent}
-      activityEntries={selectedSubagentWorkEntries}
-      details={deriveSubagentDisplayDetails(selectedSubagent)}
-      cwd={threadCwd ?? undefined}
-      dismissVariant="back"
-      canSendInput={providerAcceptsSubagentInput(providerLabel)}
+      workEntries={workEntries}
+      providerLabel={providerLabel}
+      threadCwd={threadCwd}
       onMessageThroughParent={onMessageThroughParent}
       onClose={handleBack}
     />

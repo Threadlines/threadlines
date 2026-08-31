@@ -17,6 +17,7 @@ import {
   derivePendingApprovals,
   derivePendingUserInputs,
   isBlockingUserInput,
+  deriveSubagentActivityState,
   deriveSubagentLiveEntries,
   deriveSubagentProgressState,
   deriveSubagentResultEntries,
@@ -326,6 +327,27 @@ describe("deriveThreadSubagentHistory", () => {
       status: "completed",
     });
     expect(history[0]?.resultBody).toBe("50 .tsx files.");
+  });
+
+  it("derives every active-chat subagent view from the shared activity state", () => {
+    const activities = codexSpawnActivities();
+    const latestTurnId = TurnId.make("turn-1");
+    const state = deriveSubagentActivityState({
+      activities,
+      latestTurnId,
+      latestTurnSettled: false,
+    });
+
+    expect(state).toEqual({
+      progress: deriveSubagentProgressState({
+        activities,
+        latestTurnId,
+        latestTurnSettled: false,
+      }),
+      history: deriveThreadSubagentHistory(activities),
+      resultEntries: deriveSubagentResultEntries(activities),
+      liveEntries: deriveSubagentLiveEntries(activities),
+    });
   });
 
   it("keeps durable child identity and explicit spawn settings after lifecycle rows age out", () => {

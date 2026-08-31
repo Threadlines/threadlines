@@ -80,10 +80,7 @@ import {
   deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
-  deriveSubagentProgressState,
-  deriveSubagentLiveEntries,
-  deriveSubagentResultEntries,
-  deriveThreadSubagentHistory,
+  deriveSubagentActivityState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -139,7 +136,11 @@ import {
   draftRightPanelStateKey,
   useChatHeaderBottomVarRef,
 } from "../rightPanelLayout";
-import { publishAgentsPanelSource, selectAgentsPanelAgent } from "../agentsPanelStore";
+import {
+  publishAgentsPanelActivitySource,
+  publishAgentsPanelSource,
+  selectAgentsPanelAgent,
+} from "../agentsPanelStore";
 import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
@@ -2001,9 +2002,9 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activePlan, taskProgressBadge, taskProgressLabel, taskProgressProposedPlan],
   );
-  const subagentProgress = useMemo(
+  const subagentActivityState = useMemo(
     () =>
-      deriveSubagentProgressState({
+      deriveSubagentActivityState({
         activities: threadActivities,
         subagents: activeThread?.subagents ?? [],
         latestTurnId: activeLatestTurn?.turnId ?? null,
@@ -2011,13 +2012,11 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [activeLatestTurn?.turnId, activeThread?.subagents, latestTurnSettled, threadActivities],
   );
+  const subagentProgress = subagentActivityState.progress;
   // The turn-scoped progress above empties when the turn settles. The panel's
   // history section and the conversation's receipts both need the thread's whole
   // roster, which the same activities answer without the turn filter.
-  const subagentHistory = useMemo(
-    () => deriveThreadSubagentHistory(threadActivities, activeThread?.subagents),
-    [activeThread?.subagents, threadActivities],
-  );
+  const subagentHistory = subagentActivityState.history;
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -2344,15 +2343,15 @@ export default function ChatView(props: ChatViewProps) {
         timelineMessages,
         activeThread?.proposedPlans ?? [],
         workLogEntries,
-        deriveSubagentResultEntries(threadActivities, activeThread?.subagents),
+        subagentActivityState.resultEntries,
         forkContextEntries,
-        deriveSubagentLiveEntries(threadActivities, activeThread?.subagents),
+        subagentActivityState.liveEntries,
       ),
     [
       activeThread?.proposedPlans,
-      activeThread?.subagents,
       forkContextEntries,
-      threadActivities,
+      subagentActivityState.liveEntries,
+      subagentActivityState.resultEntries,
       timelineMessages,
       workLogEntries,
     ],
@@ -3397,7 +3396,6 @@ export default function ChatView(props: ChatViewProps) {
       subagents: subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS,
       subagentRuns: promotedSubagentRuns,
       history: subagentHistory,
-      workEntries: workLogEntries,
       providerLabel: activeProviderDriver,
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
@@ -3415,9 +3413,25 @@ export default function ChatView(props: ChatViewProps) {
     subagentHistory,
     subagentProgress?.items,
     threadDetailHydrated,
-    workLogEntries,
   ]);
-  useEffect(() => () => publishAgentsPanelSource(null), []);
+  useEffect(() => {
+    if (!activeThreadId) {
+      publishAgentsPanelActivitySource(null);
+      return;
+    }
+    publishAgentsPanelActivitySource({
+      environmentId,
+      threadId: activeThreadId,
+      workEntries: workLogEntries,
+    });
+  }, [activeThreadId, environmentId, workLogEntries]);
+  useEffect(
+    () => () => {
+      publishAgentsPanelSource(null);
+      publishAgentsPanelActivitySource(null);
+    },
+    [],
+  );
 
   const confirmPendingTerminalKill = useCallback(() => {
     if (!pendingTerminalKill) return;
