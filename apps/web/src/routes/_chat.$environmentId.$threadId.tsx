@@ -500,7 +500,6 @@ function ChatThreadRouteView() {
             subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
             subagentRuns={agentsSource?.subagentRuns}
             history={agentsSource?.history ?? EMPTY_SUBAGENT_HISTORY}
-            workEntries={agentsSource?.workEntries}
             providerLabel={agentsSource?.providerLabel}
             turnInFlight={agentsSource?.turnInFlight ?? false}
             threadCwd={agentsSource?.threadCwd}

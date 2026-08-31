@@ -855,13 +855,29 @@ export function deriveSubagentProgressState(input: {
 }): SubagentProgressState | null {
   const records = collectSubagentActivityRecords(input.activities, {
     subagents: input.subagents,
-    latestTurnId: input.latestTurnId ?? null,
   });
+  return deriveSubagentProgressStateFromRecords(records, input);
+}
+
+function deriveSubagentProgressStateFromRecords(
+  records: ReadonlyArray<InternalSubagentRecord>,
+  input: {
+    latestTurnId?: TurnId | null | undefined;
+    latestTurnSettled?: boolean | undefined;
+  },
+): SubagentProgressState | null {
+  const latestTurnId = input.latestTurnId ?? null;
+  const scopedRecords = records.filter(
+    (record) =>
+      latestTurnId === null ||
+      record.turnId === latestTurnId ||
+      isActiveSubagentStatus(record.status),
+  );
   // Finished agents remain useful while their parent turn is still running:
   // they explain a shrinking active count and make the completed badge/state
   // reachable. Once the turn settles, successful agents clear with the rest
   // of the transient activity UI while failed and stopped work remains visible.
-  const visibleRecords = records.filter(
+  const visibleRecords = scopedRecords.filter(
     (record) => record.status !== "completed" || input.latestTurnSettled === false,
   );
   const items = visibleRecords.map(toSubagentProgressItem);
@@ -945,7 +961,15 @@ export function deriveThreadSubagentHistory(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   subagents: ReadonlyArray<OrchestrationSubagent> = [],
 ): ThreadSubagentHistoryEntry[] {
-  return collectSubagentActivityRecords(activities, { subagents }).map((record) => ({
+  return deriveThreadSubagentHistoryFromRecords(
+    collectSubagentActivityRecords(activities, { subagents }),
+  );
+}
+
+function deriveThreadSubagentHistoryFromRecords(
+  records: ReadonlyArray<InternalSubagentRecord>,
+): ThreadSubagentHistoryEntry[] {
+  return records.map((record) => ({
     item: toSubagentProgressItem(record),
     resultBody: record.resultBody,
   }));
@@ -955,7 +979,15 @@ export function deriveSubagentResultEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   subagents: ReadonlyArray<OrchestrationSubagent> = [],
 ): SubagentResultEntry[] {
-  return collectSubagentActivityRecords(activities, { subagents })
+  return deriveSubagentResultEntriesFromRecords(
+    collectSubagentActivityRecords(activities, { subagents }),
+  );
+}
+
+function deriveSubagentResultEntriesFromRecords(
+  records: ReadonlyArray<InternalSubagentRecord>,
+): SubagentResultEntry[] {
+  return records
     .filter(
       (
         record,
@@ -993,7 +1025,15 @@ export function deriveSubagentLiveEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   subagents: ReadonlyArray<OrchestrationSubagent> = [],
 ): SubagentLiveEntry[] {
-  return collectSubagentActivityRecords(activities, { subagents })
+  return deriveSubagentLiveEntriesFromRecords(
+    collectSubagentActivityRecords(activities, { subagents }),
+  );
+}
+
+function deriveSubagentLiveEntriesFromRecords(
+  records: ReadonlyArray<InternalSubagentRecord>,
+): SubagentLiveEntry[] {
+  return records
     .filter(
       (
         record,
@@ -1021,6 +1061,33 @@ export function deriveSubagentLiveEntries(
       reasoningEffort: record.reasoningEffort,
     }))
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+export interface SubagentActivityState {
+  readonly progress: SubagentProgressState | null;
+  readonly history: ThreadSubagentHistoryEntry[];
+  readonly resultEntries: SubagentResultEntry[];
+  readonly liveEntries: SubagentLiveEntry[];
+}
+
+/** Derives every subagent view from one ordered activity fold. The active chat
+ *  consumes all four results together, so sorting and scanning the same
+ *  activity history separately only adds work to every streamed update. */
+export function deriveSubagentActivityState(input: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  subagents?: ReadonlyArray<OrchestrationSubagent>;
+  latestTurnId?: TurnId | null | undefined;
+  latestTurnSettled?: boolean | undefined;
+}): SubagentActivityState {
+  const records = collectSubagentActivityRecords(input.activities, {
+    subagents: input.subagents,
+  });
+  return {
+    progress: deriveSubagentProgressStateFromRecords(records, input),
+    history: deriveThreadSubagentHistoryFromRecords(records),
+    resultEntries: deriveSubagentResultEntriesFromRecords(records),
+    liveEntries: deriveSubagentLiveEntriesFromRecords(records),
+  };
 }
 
 function asForkContextPayload(payload: unknown): ThreadForkContextPayload | null {
@@ -1198,13 +1265,11 @@ function collectTurnModelSelections(
 function collectSubagentActivityRecords(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   options: {
-    latestTurnId?: TurnId | null | undefined;
     subagents?: ReadonlyArray<OrchestrationSubagent> | undefined;
   },
 ): InternalSubagentRecord[] {
   const byAgentId = new Map<string, InternalSubagentRecord>();
   const pendingSpawnKeysByCallId = new Map<string, string>();
-  const latestTurnId = options.latestTurnId ?? null;
   const sortedActivities = [...activities].toSorted(compareActivitiesByOrder);
 
   // The server owns an uncapped roster so identity and spawn settings survive
@@ -1490,17 +1555,10 @@ function collectSubagentActivityRecords(
     }
   }
 
-  return [...byAgentId.values()]
-    .filter(
-      (record) =>
-        latestTurnId === null ||
-        record.turnId === latestTurnId ||
-        isActiveSubagentStatus(record.status),
-    )
-    .toSorted((left, right) => {
-      const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
-      return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
-    });
+  return [...byAgentId.values()].toSorted((left, right) => {
+    const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+    return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
+  });
 }
 
 function collectSubagentActivityTelemetry(

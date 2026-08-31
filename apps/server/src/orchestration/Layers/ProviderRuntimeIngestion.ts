@@ -24,6 +24,7 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
@@ -72,6 +73,7 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
 const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(50);
+const SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL = Duration.millis(100);
 const MARKDOWN_FENCE_INDENT_LIMIT = 3;
 type ContentDeltaStreamKind = Extract<
   ProviderRuntimeEvent,
@@ -118,6 +120,15 @@ interface PendingStreamingAssistantMessage {
   readonly createdAt: string;
 }
 
+interface PendingSubagentResultActivity {
+  readonly event: ProviderRuntimeEvent;
+  readonly threadId: ThreadId;
+  readonly parentProviderThreadId?: string | undefined;
+  readonly childProviderThreadId: string;
+  readonly body: string;
+  readonly createdAt: string;
+}
+
 interface EmittedActivityStreamCursor {
   readonly byteCount: number;
   readonly lineCount: number;
@@ -142,6 +153,9 @@ type RuntimeIngestionInput =
     }
   | {
       source: "flush";
+    }
+  | {
+      source: "subagent-result-flush";
     };
 
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
@@ -1189,9 +1203,28 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL,
     lookup: () => Effect.succeed(""),
   });
+  const emittedSubagentResultActivityKeys = yield* Cache.make<string, true>({
+    capacity: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL,
+    lookup: () =>
+      Effect.die(
+        new Error("subagent result activity keys should only be read after they are emitted"),
+      ),
+  });
+  const settledSubagentResultActivityKeys = yield* Cache.make<string, true>({
+    capacity: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL,
+    lookup: () =>
+      Effect.die(new Error("settled subagent result keys should only be read after completion")),
+  });
   const pendingStreamingAssistantMessages = yield* Ref.make(
     new Map<MessageId, PendingStreamingAssistantMessage>(),
   );
+  const pendingSubagentResultActivitiesByKey = yield* Ref.make(
+    new Map<string, PendingSubagentResultActivity>(),
+  );
+  const subagentResultFlushQueued = yield* Ref.make(false);
+  const subagentResultFlushRequests = yield* Queue.unbounded<void>();
   const realtimeAssistantMessageIds = yield* Ref.make(new Map<ThreadId, MessageId>());
   const streamingAssistantTableMessageIds = yield* Ref.make(new Set<MessageId>());
 
@@ -1603,7 +1636,8 @@ const make = Effect.gen(function* () {
 
   const dispatchSubagentResultActivity = (input: {
     event: ProviderRuntimeEvent;
-    thread: Pick<OrchestrationThread, "id" | "session">;
+    threadId: ThreadId;
+    parentProviderThreadId?: string | undefined;
     childProviderThreadId: string;
     body: string;
     status: "inProgress" | "completed";
@@ -1612,7 +1646,7 @@ const make = Effect.gen(function* () {
     const activity = subagentResultActivity({
       event: input.event,
       childProviderThreadId: input.childProviderThreadId,
-      parentProviderThreadId: input.thread.session?.providerThreadId ?? undefined,
+      parentProviderThreadId: input.parentProviderThreadId,
       body: input.body,
       status: input.status,
       createdAt: input.createdAt,
@@ -1627,11 +1661,171 @@ const make = Effect.gen(function* () {
         input.event,
         input.status === "completed" ? "subagent-result-complete" : "subagent-result-update",
       ),
-      threadId: input.thread.id,
+      threadId: input.threadId,
       activity,
       createdAt: activity.createdAt,
     });
   };
+
+  const queuePendingSubagentResultActivity = (key: string, input: PendingSubagentResultActivity) =>
+    Ref.update(pendingSubagentResultActivitiesByKey, (pending) => {
+      const next = new Map(pending);
+      next.set(key, input);
+      return next;
+    });
+
+  const pendingSubagentResultActivities = (
+    matches: (key: string, input: PendingSubagentResultActivity) => boolean = () => true,
+  ) =>
+    Ref.get(pendingSubagentResultActivitiesByKey).pipe(
+      Effect.map((pending) => [...pending].filter(([key, input]) => matches(key, input))),
+    );
+
+  const clearPendingSubagentResultActivity = (key: string) =>
+    Ref.update(pendingSubagentResultActivitiesByKey, (pending) => {
+      if (!pending.has(key)) {
+        return pending;
+      }
+      const next = new Map(pending);
+      next.delete(key);
+      return next;
+    });
+
+  const requestSubagentResultFlushIfNeeded = Effect.gen(function* () {
+    const pending = yield* Ref.get(pendingSubagentResultActivitiesByKey);
+    if (pending.size === 0) {
+      return;
+    }
+    const shouldRequestFlush = yield* Ref.modify(subagentResultFlushQueued, (queued) =>
+      queued ? ([false, true] as const) : ([true, true] as const),
+    );
+    if (shouldRequestFlush) {
+      yield* Queue.offer(subagentResultFlushRequests, undefined);
+    }
+  });
+
+  const flushPendingSubagentResultActivities = (
+    matches?: (key: string, input: PendingSubagentResultActivity) => boolean,
+  ) =>
+    Effect.gen(function* () {
+      const pending = yield* pendingSubagentResultActivities(matches);
+      yield* Effect.forEach(
+        pending,
+        ([key, input]) =>
+          dispatchSubagentResultActivity({
+            ...input,
+            status: "inProgress",
+          }).pipe(Effect.andThen(clearPendingSubagentResultActivity(key))),
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
+
+  const flushTimedSubagentResultActivities = flushPendingSubagentResultActivities().pipe(
+    Effect.ensuring(
+      Ref.set(subagentResultFlushQueued, false).pipe(
+        Effect.andThen(requestSubagentResultFlushIfNeeded),
+      ),
+    ),
+  );
+
+  const queueSubagentResultActivity = (key: string, input: PendingSubagentResultActivity) =>
+    Effect.gen(function* () {
+      if (!hasRenderableAssistantText(input.body)) {
+        return;
+      }
+      const alreadyEmitted = yield* Cache.getOption(emittedSubagentResultActivityKeys, key);
+      if (Option.isNone(alreadyEmitted)) {
+        yield* dispatchSubagentResultActivity({
+          ...input,
+          status: "inProgress",
+        });
+        yield* Cache.set(emittedSubagentResultActivityKeys, key, true);
+        return;
+      }
+      yield* queuePendingSubagentResultActivity(key, input);
+      yield* requestSubagentResultFlushIfNeeded;
+    });
+
+  /** Turn completion seals every known result item against late text deltas,
+   * but retains its buffer so an out-of-order item.completed can still publish
+   * the full terminal body. */
+  const sealSubagentResultState = (prefix: string) =>
+    Effect.gen(function* () {
+      const keys = new Set<string>();
+      yield* Ref.update(pendingSubagentResultActivitiesByKey, (pending) => {
+        const next = new Map(pending);
+        for (const key of next.keys()) {
+          if (key.startsWith(prefix)) {
+            keys.add(key);
+            next.delete(key);
+          }
+        }
+        return next;
+      });
+      for (const key of yield* Cache.keys(bufferedSubagentResultTextByKey)) {
+        if (key.startsWith(prefix)) {
+          keys.add(key);
+        }
+      }
+      for (const key of yield* Cache.keys(emittedSubagentResultActivityKeys)) {
+        if (key.startsWith(prefix)) {
+          keys.add(key);
+        }
+      }
+      yield* Effect.forEach(
+        keys,
+        (key) =>
+          Cache.set(settledSubagentResultActivityKeys, key, true).pipe(
+            Effect.andThen(Cache.invalidate(emittedSubagentResultActivityKeys, key)),
+          ),
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
+
+  const clearSettledSubagentResultState = (prefix: string) =>
+    Effect.gen(function* () {
+      const keys = yield* Cache.keys(settledSubagentResultActivityKeys);
+      yield* Effect.forEach(
+        keys,
+        (key) =>
+          key.startsWith(prefix)
+            ? Cache.invalidate(settledSubagentResultActivityKeys, key)
+            : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
+
+  const clearSubagentResultState = (prefix: string) =>
+    Effect.gen(function* () {
+      yield* Ref.update(pendingSubagentResultActivitiesByKey, (pending) => {
+        const next = new Map(pending);
+        for (const key of next.keys()) {
+          if (key.startsWith(prefix)) {
+            next.delete(key);
+          }
+        }
+        return next;
+      });
+
+      const bufferedKeys = Array.from(yield* Cache.keys(bufferedSubagentResultTextByKey));
+      const emittedKeys = Array.from(yield* Cache.keys(emittedSubagentResultActivityKeys));
+      yield* Effect.forEach(
+        bufferedKeys,
+        (key) =>
+          key.startsWith(prefix)
+            ? Cache.invalidate(bufferedSubagentResultTextByKey, key)
+            : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        emittedKeys,
+        (key) =>
+          key.startsWith(prefix)
+            ? Cache.invalidate(emittedSubagentResultActivityKeys, key)
+            : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
 
   const queuePendingStreamingAssistantMessage = (input: PendingStreamingAssistantMessage) =>
     Ref.update(pendingStreamingAssistantMessages, (pending) => {
@@ -2365,11 +2559,20 @@ const make = Effect.gen(function* () {
       // An agent that does report again re-opens its row through the normal
       // fold, since later lifecycle activities win over this one.
       if (event.type === "session.started" || event.type === "session.exited") {
+        yield* flushPendingSubagentResultActivities(
+          (_key, pending) => pending.threadId === thread.id,
+        );
         yield* settleLiveSubagents({
           commandTag: "subagent-orphan",
           summary: "Subagent no longer tracked by the provider session",
           belongsToLifecycle: () => true,
         });
+        if (event.type === "session.started") {
+          yield* clearSubagentResultState(`${thread.id}:`);
+          yield* clearSettledSubagentResultState(`${thread.id}:`);
+        } else {
+          yield* sealSubagentResultState(`${thread.id}:`);
+        }
       }
 
       if (
@@ -2458,6 +2661,16 @@ const make = Effect.gen(function* () {
         event.type === "turn.aborted" ||
         completedTurnState === "interrupted" ||
         completedTurnState === "cancelled";
+      if (
+        (event.type === "turn.completed" || event.type === "turn.aborted") &&
+        shouldApplyThreadLifecycle &&
+        eventTurnId !== undefined
+      ) {
+        yield* flushPendingSubagentResultActivities(
+          (_key, pending) =>
+            pending.threadId === thread.id && sameId(pending.event.turnId, eventTurnId),
+        );
+      }
       if (turnWasInterrupted && shouldApplyThreadLifecycle && eventTurnId !== undefined) {
         yield* settleLiveSubagents({
           commandTag: "subagent-turn-aborted",
@@ -2705,15 +2918,18 @@ const make = Effect.gen(function* () {
         const childProviderThreadId = childProviderThreadIdForEvent(event, attributionThread);
         if (childProviderThreadId) {
           const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
-          const body = yield* appendBufferedSubagentResultText(bufferKey, assistantDelta);
-          yield* dispatchSubagentResultActivity({
-            event,
-            thread,
-            childProviderThreadId,
-            body,
-            status: "inProgress",
-            createdAt: now,
-          });
+          const settled = yield* Cache.getOption(settledSubagentResultActivityKeys, bufferKey);
+          if (Option.isNone(settled)) {
+            const body = yield* appendBufferedSubagentResultText(bufferKey, assistantDelta);
+            yield* queueSubagentResultActivity(bufferKey, {
+              event,
+              threadId: thread.id,
+              parentProviderThreadId: thread.session?.providerThreadId ?? undefined,
+              childProviderThreadId,
+              body,
+              createdAt: now,
+            });
+          }
         } else {
           const turnId = toTurnId(event.turnId);
           const assistantMessageId =
@@ -2842,6 +3058,8 @@ const make = Effect.gen(function* () {
         const childProviderThreadId = childProviderThreadIdForEvent(event, attributionThread);
         if (childProviderThreadId) {
           const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
+          yield* clearPendingSubagentResultActivity(bufferKey);
+          yield* Cache.invalidate(emittedSubagentResultActivityKeys, bufferKey);
           const bufferedText = yield* takeBufferedSubagentResultText(bufferKey);
           const body =
             bufferedText.length > 0
@@ -2851,7 +3069,8 @@ const make = Effect.gen(function* () {
                 : "";
           yield* dispatchSubagentResultActivity({
             event,
-            thread,
+            threadId: thread.id,
+            parentProviderThreadId: thread.session?.providerThreadId ?? undefined,
             childProviderThreadId,
             body,
             // Codex completes each assistant-message item, including interim
@@ -2862,6 +3081,7 @@ const make = Effect.gen(function* () {
               assistantMessagePhaseFromEvent(event) === "commentary" ? "inProgress" : "completed",
             createdAt: now,
           });
+          yield* Cache.set(settledSubagentResultActivityKeys, bufferKey, true);
         } else {
           const detailedThread = yield* getLoadedThreadDetail();
           const messages = detailedThread?.messages ?? [];
@@ -3009,6 +3229,9 @@ const make = Effect.gen(function* () {
             turnId,
             updatedAt: now,
           });
+          if (shouldApplyThreadLifecycle) {
+            yield* sealSubagentResultState(`${thread.id}:${turnId}:`);
+          }
         }
       }
 
@@ -3209,6 +3432,8 @@ const make = Effect.gen(function* () {
         return processDomainEvent(input.event);
       case "flush":
         return flushPendingStreamingAssistantMessages.pipe(Effect.asVoid);
+      case "subagent-result-flush":
+        return flushTimedSubagentResultActivities;
     }
   };
 
@@ -3220,9 +3445,13 @@ const make = Effect.gen(function* () {
         }
         return Effect.logWarning("provider runtime ingestion failed to process event", {
           source: input.source,
-          ...(input.source === "flush"
-            ? { eventId: "streaming-assistant-flush", eventType: "flush" }
-            : { eventId: input.event.eventId, eventType: input.event.type }),
+          ...(input.source === "runtime" || input.source === "domain"
+            ? { eventId: input.event.eventId, eventType: input.event.type }
+            : {
+                eventId:
+                  input.source === "flush" ? "streaming-assistant-flush" : "subagent-result-flush",
+                eventType: "flush",
+              }),
           cause: Cause.pretty(cause),
         });
       }),
@@ -3259,11 +3488,22 @@ const make = Effect.gen(function* () {
           Effect.forever,
         ),
       );
+      yield* Effect.forkScoped(
+        Queue.take(subagentResultFlushRequests).pipe(
+          Effect.andThen(Effect.sleep(SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL)),
+          Effect.andThen(
+            worker.enqueue({
+              source: "subagent-result-flush",
+            }),
+          ),
+          Effect.forever,
+        ),
+      );
     });
 
   return {
     start,
-    drain: worker.drain,
+    drain: worker.enqueue({ source: "subagent-result-flush" }).pipe(Effect.andThen(worker.drain)),
   } satisfies ProviderRuntimeIngestionShape;
 });
 

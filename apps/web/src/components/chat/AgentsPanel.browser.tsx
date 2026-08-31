@@ -10,7 +10,10 @@ import type {
   ThreadSubagentHistoryEntry,
   WorkLogEntry,
 } from "../../session-logic";
-import { resetAgentsPanelSourceForTests } from "../../agentsPanelStore";
+import {
+  publishAgentsPanelActivitySource,
+  resetAgentsPanelSourceForTests,
+} from "../../agentsPanelStore";
 import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
 import { buildRightPanelLauncherStates } from "./rightPanelLauncherState";
@@ -866,19 +869,42 @@ describe("AgentsPanel", () => {
         toolCallId: "call-2",
       },
     ];
+    publishAgentsPanelActivitySource({
+      environmentId: ENVIRONMENT_ID,
+      threadId: ThreadId.make("another-thread"),
+      workEntries: workEntries.slice(0, 1),
+    });
     const mounted = await renderPanel({
       subagents: [buildSubagent({ label: "Router sweep" })],
-      workEntries,
     });
 
     try {
       await page.getByRole("button", { name: "Open Router sweep transcript" }).click();
       await expect.element(page.getByText("I am checking the route.")).toBeVisible();
+      expect(
+        document.querySelector("[data-subagent-transcript-activity-toggle='true']"),
+      ).toBeNull();
+
+      publishAgentsPanelActivitySource({
+        environmentId: ENVIRONMENT_ID,
+        threadId: THREAD_ID,
+        workEntries: workEntries.slice(0, 1),
+      });
 
       const receipt = await vi.waitUntil(() =>
         document.querySelector<HTMLElement>("[data-subagent-transcript-activity-toggle='true']"),
       );
       expect(receipt.textContent).toContain("Activity");
+      expect(receipt.textContent).toContain("1 action");
+
+      publishAgentsPanelActivitySource({
+        environmentId: ENVIRONMENT_ID,
+        threadId: THREAD_ID,
+        workEntries,
+      });
+      await vi.waitFor(() => {
+        expect(receipt.textContent).toContain("2 actions");
+      });
       expect(receipt.textContent).toContain("2 actions");
       expect(receipt.textContent).toContain("Running command");
       expect(receipt.textContent).toContain("vp run typecheck");
