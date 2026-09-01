@@ -60,6 +60,7 @@ const KNOWN_SAFE_MODELS = new Set([
   "gpt-5-codex",
   "gpt-5.5-codex",
   "claude-fable-5",
+  "claude-fable-5-1",
   "claude-haiku-4-5",
   "claude-opus-4-5",
   "claude-opus-4-6",
