@@ -176,6 +176,84 @@ describe("MessagesTimeline with the real virtual list", () => {
     }
   });
 
+  // LegendList pads its content box for one frame so a scroll adjustment can
+  // overshoot content that has not grown yet, then removes the padding only if
+  // the inline value still equals the string it wrote. Browsers re-serialize
+  // CSS lengths (140.46875px reads back as 140.469px), which left the padding
+  // behind forever on fractional-DPR machines: a blank tail below the last row
+  // that scroll-to-bottom lands above. patches/@legendapp__list records the
+  // stored value instead; this replay pins that with a read-back that never
+  // matches the written string.
+  it("clears the list's temporary end padding when the browser rounds the written value", async () => {
+    const fixture = await loadAffectedThreadFixture();
+    const startedAtMs = Date.parse(fixture.activeTurnStartedAt);
+    const props = buildProps();
+    const renderList = (state: ReturnType<typeof deriveAffectedThreadRenderState>) => (
+      <div style={{ height: 710, width: 900 }}>
+        <MessagesTimeline
+          {...props}
+          activeTurnId={fixture.activeTurnId}
+          activeTurnStartedAt={fixture.activeTurnStartedAt}
+          timelineEntries={state.timelineEntries}
+          turnAgents={state.turnAgents}
+          onOpenAgentsPanel={vi.fn()}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(
+      renderList(deriveAffectedThreadRenderState(fixture, startedAtMs)),
+    );
+    let restorePaddingAccessor: (() => void) | null = null;
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-turn-working-anchor="true"]')).not.toBeNull();
+      });
+      const content = document.querySelector<HTMLElement>(".legend-list-content-container");
+      expect(content).not.toBeNull();
+      const style = content!.style;
+      const paddingWrites: string[] = [];
+      Object.defineProperty(style, "paddingBottom", {
+        configurable: true,
+        get: () => {
+          const value = style.getPropertyValue("padding-bottom");
+          return value === "" ? value : `${Number.parseFloat(value).toFixed(1)}px`;
+        },
+        set: (value: string) => {
+          paddingWrites.push(value);
+          style.setProperty("padding-bottom", value);
+        },
+      });
+      restorePaddingAccessor = () => {
+        delete (style as unknown as Record<string, unknown>)["paddingBottom"];
+      };
+
+      const finalCutoffMs = Date.parse(fixture.cutoff);
+      const replayTicks = Array.from(
+        new Set(
+          fixture.activities
+            .map((activity) => Date.parse(activity.createdAt))
+            .filter((at) => at > startedAtMs && at <= finalCutoffMs)
+            .map((at) => Math.floor(at / 100) * 100),
+        ),
+      ).sort((left, right) => left - right);
+      for (const cutoffMs of replayTicks) {
+        await screen.rerender(renderList(deriveAffectedThreadRenderState(fixture, cutoffMs)));
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+
+      expect(paddingWrites.length, "replay should exercise the temporary padding").toBeGreaterThan(
+        0,
+      );
+      await vi.waitFor(() => {
+        expect(getComputedStyle(content!).paddingBottom).toBe("0px");
+      });
+    } finally {
+      restorePaddingAccessor?.();
+      await screen.unmount();
+    }
+  });
+
   it("removes stale end space when a live working anchor settles", async () => {
     const turnId = "turn-settles" as TurnId;
     const userMessage: ChatMessage = {

@@ -10,11 +10,11 @@ import type {
 import {
   type DesktopUpdateActionKind,
   getDesktopUpdateActionError,
-  getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateActionKindDisabled,
   resolveDesktopUpdateActionKind,
 } from "../components/desktopUpdate.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { confirmDesktopUpdateInstall } from "../lib/desktopUpdateInstallConfirmation";
 import {
   setDesktopUpdateStateQueryData,
   useDesktopUpdateState,
@@ -78,13 +78,15 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
     }
 
     if (kind === "install") {
-      const confirmed = window.confirm(getDesktopUpdateInstallConfirmationMessage(state));
-      if (!confirmed) return;
-      void bridge
-        .installUpdate()
-        .then((result) => {
-          setDesktopUpdateStateQueryData(queryClient, result.state);
-          toastAcceptedActionFailure(result, "Could not install update");
+      // Restart kills whatever the agents are doing, so it always goes
+      // through the in-app confirmation first.
+      void confirmDesktopUpdateInstall(state)
+        .then((confirmed) => {
+          if (!confirmed) return;
+          return bridge.installUpdate().then((result) => {
+            setDesktopUpdateStateQueryData(queryClient, result.state);
+            toastAcceptedActionFailure(result, "Could not install update");
+          });
         })
         .catch((error: unknown) => {
           toastUpdateError(

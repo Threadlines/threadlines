@@ -123,12 +123,7 @@ export class UsageAggregator {
       this.#buckets.set(key, bucket);
     }
 
-    const priced = priceUsage(
-      this.#options.rates,
-      record.model,
-      record.totals,
-      record.reportedCostUsd,
-    );
+    const priced = priceUsage(this.#options.rates, record);
 
     bucket.totals = addTotals(bucket.totals, record.totals);
     bucket.costUsd += priced.costUsd;

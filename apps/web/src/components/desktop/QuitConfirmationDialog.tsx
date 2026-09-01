@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import { describeRunningAgentSessions } from "./agentSessionCopy";
 
 export function QuitConfirmationDialog() {
   const [request, setRequest] = useState<DesktopQuitConfirmationRequest | null>(null);
@@ -28,10 +29,7 @@ export function QuitConfirmationDialog() {
     void window.desktopBridge?.resolveQuitConfirmation?.(confirmed).catch(() => undefined);
   };
 
-  const sessionLabel =
-    request?.runningThreadCount === 1
-      ? "An agent session is still running."
-      : `${request?.runningThreadCount ?? 0} agent sessions are still running.`;
+  const sessionLabel = describeRunningAgentSessions(request?.runningThreadCount ?? 0);
 
   return (
     <AlertDialog

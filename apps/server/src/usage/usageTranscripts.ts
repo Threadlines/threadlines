@@ -14,6 +14,12 @@ export interface UsageRecord {
   readonly model: string;
   readonly sessionId: string;
   readonly totals: UsageTokenTotals;
+  /**
+   * Portion of `totals.cacheCreationTokens` written with the 1-hour cache TTL,
+   * which Anthropic bills above the 5-minute rate. Kept off the wire: buckets
+   * report the flat write total, and only pricing needs the split.
+   */
+  readonly cacheCreation1hTokens: number;
   readonly reportedCostUsd: number | null;
   /**
    * Key for cross-file de-duplication, or `null` when the record is inherently
@@ -120,6 +126,19 @@ export function parseClaudeLine(line: string): UsageRecord | null {
   // when present rather than assuming either way.
   const cost = record["costUSD"];
 
+  const cacheCreationTokens = int(usageRecord["cache_creation_input_tokens"]);
+  // The nested `cache_creation` object splits the write total into 5m and 1h
+  // ephemeral buckets. Claude Code writes most of its cache with the 1h TTL,
+  // which bills at 2x input rather than the 5m TTL's 1.25x, so the split is
+  // carried through to pricing. Clamped: the parts can never exceed the total.
+  const cacheCreation = usageRecord["cache_creation"];
+  const cacheCreation1hTokens = Math.min(
+    cacheCreationTokens,
+    typeof cacheCreation === "object" && cacheCreation !== null
+      ? int((cacheCreation as Record<string, unknown>)["ephemeral_1h_input_tokens"])
+      : 0,
+  );
+
   return {
     provider: "claude",
     timestampMs,
@@ -128,15 +147,12 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     totals: {
       uncachedInputTokens: int(usageRecord["input_tokens"]),
       cachedInputTokens: int(usageRecord["cache_read_input_tokens"]),
-      // The nested `cache_creation` object splits this into 5m and 1h ephemeral
-      // buckets, which bill at different multipliers. The rate table publishes
-      // one cache-write rate, so the split would not change the arithmetic;
-      // the flat total is what we price.
-      cacheCreationTokens: int(usageRecord["cache_creation_input_tokens"]),
+      cacheCreationTokens,
       outputTokens: int(usageRecord["output_tokens"]),
       // Anthropic folds thinking tokens into output and does not break them out.
       reasoningTokens: 0,
     },
+    cacheCreation1hTokens,
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey,
   };
@@ -304,6 +320,8 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     model: state.model,
     sessionId: state.sessionId,
     totals,
+    // Codex has no cache TTL tiers.
+    cacheCreation1hTokens: 0,
     // Codex does not report cost in the rollout.
     reportedCostUsd: null,
     // Events surviving the fork-copy suppression above are unique to this

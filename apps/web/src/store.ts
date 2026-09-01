@@ -2198,6 +2198,16 @@ export function selectSidebarThreadsAcrossEnvironments(state: AppState): Sidebar
   );
 }
 
+/** Sidebar threads whose agent session is running right now, across every environment. */
+export function selectRunningSidebarThreadsAcrossEnvironments(
+  state: AppState,
+): SidebarThreadSummary[] {
+  return selectSidebarThreadsAcrossEnvironments(state).filter(
+    (thread) =>
+      thread.session?.status === "running" || thread.session?.orchestrationStatus === "running",
+  );
+}
+
 export function selectSidebarThreadsForProjectRef(
   state: AppState,
   ref: ScopedProjectRef | null | undefined,

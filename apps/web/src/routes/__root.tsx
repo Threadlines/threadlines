@@ -17,6 +17,7 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
+import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
@@ -52,7 +53,7 @@ import {
   useServerConfigUpdatedSubscription,
   useServerWelcomeSubscription,
 } from "../rpc/serverState";
-import { type AppState, selectSidebarThreadsAcrossEnvironments, useStore } from "../store";
+import { type AppState, selectRunningSidebarThreadsAcrossEnvironments, useStore } from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import {
@@ -151,6 +152,7 @@ function RootRouteView() {
         <DesktopTaskbarStatusSync />
         <SshPasswordPromptDialog />
         <QuitConfirmationDialog />
+        <DesktopUpdateInstallDialog />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
@@ -187,17 +189,12 @@ function taskbarThreadKey(
 }
 
 function selectRunningTaskbarThreads(state: AppState): DesktopTaskbarThreadSummary[] {
-  return selectSidebarThreadsAcrossEnvironments(state)
-    .filter(
-      (thread) =>
-        thread.session?.status === "running" || thread.session?.orchestrationStatus === "running",
-    )
-    .map((thread) => ({
-      threadId: thread.id,
-      environmentId: thread.environmentId,
-      title: thread.title,
-      state: "running" as const,
-    }));
+  return selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => ({
+    threadId: thread.id,
+    environmentId: thread.environmentId,
+    title: thread.title,
+    state: "running" as const,
+  }));
 }
 
 function DesktopTaskbarStatusSync() {

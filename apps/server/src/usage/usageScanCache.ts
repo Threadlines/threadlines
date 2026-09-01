@@ -22,7 +22,7 @@ import type { UsageRecord } from "./usageTranscripts.ts";
  * entries would otherwise keep serving the old interpretation forever, since a
  * file that has not changed is never re-read.
  */
-export const USAGE_SCAN_CACHE_VERSION = 1 as const;
+export const USAGE_SCAN_CACHE_VERSION = 2 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -45,6 +45,7 @@ type SerializedRecord = readonly [
   uncachedInputTokens: number,
   cachedInputTokens: number,
   cacheCreationTokens: number,
+  cacheCreation1hTokens: number,
   outputTokens: number,
   reasoningTokens: number,
   dedupeKey: string | null,
@@ -94,6 +95,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
         record.totals.uncachedInputTokens,
         record.totals.cachedInputTokens,
         record.totals.cacheCreationTokens,
+        record.cacheCreation1hTokens,
         record.totals.outputTokens,
         record.totals.reasoningTokens,
         record.dedupeKey,
@@ -146,7 +148,7 @@ export function decodeScanCache(document: unknown): ScanCache {
     // would never be re-parsed, silently losing the dropped rows' usage.
     let corrupt = false;
     for (const row of entry.r) {
-      if (!isArray(row) || row.length < 10) {
+      if (!isArray(row) || row.length < 11) {
         corrupt = true;
         break;
       }
@@ -157,6 +159,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         uncached,
         cached,
         cacheCreation,
+        cacheCreation1h,
         output,
         reasoning,
         dedupeKey,
@@ -171,6 +174,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         !Number.isFinite(uncached) ||
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
+        !Number.isFinite(cacheCreation1h) ||
         !Number.isFinite(output) ||
         !Number.isFinite(reasoning)
       ) {
@@ -190,6 +194,7 @@ export function decodeScanCache(document: unknown): ScanCache {
           outputTokens: output,
           reasoningTokens: reasoning,
         },
+        cacheCreation1hTokens: cacheCreation1h,
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
         dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
       });
