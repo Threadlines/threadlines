@@ -178,6 +178,13 @@ export interface WsRpcClient {
     readonly authRemediationPlan: RpcUnaryMethod<typeof WS_METHODS.gitAuthRemediationPlan>;
     readonly applyAuthRemediation: RpcUnaryMethod<typeof WS_METHODS.gitApplyAuthRemediation>;
   };
+  /**
+   * Pull requests read from the hosting provider through the server. One call
+   * covers every eligible project in the environment.
+   */
+  readonly pullRequests: {
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.pullRequestsList>;
+  };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
     /**
@@ -553,6 +560,9 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.gitAuthRemediationPlan](input)),
       applyAuthRemediation: (input) =>
         transport.request((client) => client[WS_METHODS.gitApplyAuthRemediation](input)),
+    },
+    pullRequests: {
+      list: (input) => transport.request((client) => client[WS_METHODS.pullRequestsList](input)),
     },
     server: {
       // Pure read, and the only thing standing between "Add computer" and a

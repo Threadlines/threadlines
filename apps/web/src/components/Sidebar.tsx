@@ -121,6 +121,7 @@ import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
+import { SidebarPullRequestsRow } from "./sidebar/SidebarPullRequestsRow";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarUsageMeter } from "./sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
@@ -1549,43 +1550,50 @@ export default function Sidebar() {
                   className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
                 <SidebarContent className="gap-0">
-                  <div className="group/chats-row relative mt-1 mb-4 px-2 py-1">
-                    <button
-                      type="button"
-                      data-testid="sidebar-general-chats"
-                      aria-current={isOnChats ? "page" : undefined}
-                      className={cn(
-                        "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
-                        // The fill answers to the wrapper, not to this button:
-                        // reaching for the new-chat icon leaves the row element,
-                        // and the row should not go dark under your cursor.
-                        isOnChats
-                          ? "bg-sidebar-accent text-foreground"
-                          : "text-foreground/85 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
-                      )}
-                      onClick={handleOpenChats}
-                    >
-                      <MessagesSquareIcon className="size-3.5 shrink-0" />
-                      <span className="min-w-0 truncate">General Chats</span>
-                    </button>
-                    {/* A sibling, not a child: a button inside a button is invalid,
-                      and starting a chat should not first walk you to the page. */}
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <button
-                            type="button"
-                            data-testid="sidebar-new-general-chat"
-                            aria-label="New general chat"
-                            className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
-                            onClick={handleNewGeneralChat}
-                          />
-                        }
+                  {/* General Chats and Pull Requests read as a pair, so the gap
+                      belongs under the pair rather than between the two rows,
+                      and it survives an environment that has no pull requests. */}
+                  <div className="mb-4">
+                    <div className="group/chats-row relative mt-1 px-2 pt-1 pb-0.5">
+                      <button
+                        type="button"
+                        data-testid="sidebar-general-chats"
+                        aria-current={isOnChats ? "page" : undefined}
+                        className={cn(
+                          "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
+                          // The fill answers to the wrapper, not to this button:
+                          // reaching for the new-chat icon leaves the row element,
+                          // and the row should not go dark under your cursor.
+                          isOnChats
+                            ? "bg-sidebar-accent text-foreground"
+                            : "text-foreground/85 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
+                        )}
+                        onClick={handleOpenChats}
                       >
-                        <MessageCirclePlusIcon className="size-3.5" />
-                      </TooltipTrigger>
-                      <TooltipPopup side="bottom">New general chat</TooltipPopup>
-                    </Tooltip>
+                        <MessagesSquareIcon className="size-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">General Chats</span>
+                      </button>
+                      {/* A sibling, not a child: a button inside a button is invalid,
+                      and starting a chat should not first walk you to the page. */}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              type="button"
+                              data-testid="sidebar-new-general-chat"
+                              aria-label="New general chat"
+                              className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
+                              onClick={handleNewGeneralChat}
+                            />
+                          }
+                        >
+                          <MessageCirclePlusIcon className="size-3.5" />
+                        </TooltipTrigger>
+                        <TooltipPopup side="bottom">New general chat</TooltipPopup>
+                      </Tooltip>
+                    </div>
+
+                    <SidebarPullRequestsRow />
                   </div>
 
                   <ProjectScopeMenu

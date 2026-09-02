@@ -69,6 +69,7 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import { AutomaticGitFetchSupervisorLive } from "./vcs/AutomaticGitFetchSupervisor.ts";
 import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScriptRunner.ts";
@@ -246,6 +247,11 @@ const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.l
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
 );
 
+// Reads pull requests straight through `gh`, so it needs the CLI plus the
+// project list; `ProjectionSnapshotQuery` comes from the orchestration layer
+// merged in below it.
+const PullRequestServiceLayerLive = PullRequestService.layer.pipe(Layer.provide(GitHubCli.layer));
+
 const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(VcsProjectConfig.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
@@ -303,7 +309,9 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
-  Layer.provideMerge(SourceControlProviderRegistryLayerLive),
+  Layer.provideMerge(
+    Layer.mergeAll(SourceControlProviderRegistryLayerLive, PullRequestServiceLayerLive),
+  ),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   // Cross-provider handoff: builds a provider-agnostic context seed from the

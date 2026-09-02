@@ -26,6 +26,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GaugeIcon,
+  GitPullRequestIcon,
   HomeIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -85,6 +86,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { waitForProjectInStore } from "../lib/waitForProject";
 import { getLatestThreadForProject } from "../lib/threadSort";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
+import { usePullRequestEnvironments } from "../lib/pullRequestsReactQuery";
 import {
   cn,
   isMacPlatform,
@@ -504,6 +506,7 @@ function OpenCommandPaletteDialog() {
   const primaryEnvironmentLabel = readPrimaryEnvironmentDescriptor()?.label ?? null;
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const pullRequestEnvironments = usePullRequestEnvironments();
 
   const addProjectEnvironmentOptions = useMemo(() => {
     const options: AddProjectEnvironmentOption[] = [];
@@ -1594,6 +1597,21 @@ function OpenCommandPaletteDialog() {
       icon: <HomeIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/" });
+      },
+    });
+  }
+
+  // Registered only where the sidebar row is: an action that lands on
+  // "unsupported" is worse than one the palette never offers.
+  if (pullRequestEnvironments.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:pull-requests",
+      searchTerms: ["pull requests", "prs", "pr", "reviews", "github"],
+      title: "Open pull requests",
+      icon: <GitPullRequestIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/pull-requests", search: { state: "open" } });
       },
     });
   }

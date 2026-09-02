@@ -107,6 +107,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       authRemediationPlan: rpcClient.git.authRemediationPlan,
       applyAuthRemediation: rpcClient.git.applyAuthRemediation,
     },
+    pullRequests: {
+      list: rpcClient.pullRequests.list,
+    },
     orchestration: {
       dispatchCommand: rpcClient.orchestration.dispatchCommand,
       getTurnDiff: rpcClient.orchestration.getTurnDiff,

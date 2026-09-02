@@ -78,6 +78,7 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
+import { PullRequestService } from "./pullRequest/PullRequestService.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { readCodexInlineVisualization } from "./provider/CodexInlineVisualization.ts";
@@ -248,6 +249,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService;
       const gitAuthRemediation = yield* GitAuthRemediationService;
+      const pullRequests = yield* PullRequestService;
       const vcsProvisioning = yield* VcsProvisioningService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
@@ -1956,6 +1958,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             gitAuthRemediation.apply(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
+        [WS_METHODS.pullRequestsList]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsList, pullRequests.list(input), {
+            "rpc.aggregate": "pullRequests",
+          }),
         [WS_METHODS.vcsListRefs]: (input) =>
           observeRpcEffect(WS_METHODS.vcsListRefs, gitWorkflow.listRefs(input), {
             "rpc.aggregate": "vcs",

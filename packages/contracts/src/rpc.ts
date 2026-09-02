@@ -76,6 +76,11 @@ import {
   VcsStatusResult,
   VcsStatusStreamEvent,
 } from "./git.ts";
+import {
+  PullRequestListInput,
+  PullRequestListResult,
+  PullRequestServiceError,
+} from "./pullRequest.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ChatAttachmentReadError,
@@ -299,6 +304,9 @@ export const WS_METHODS = {
   gitPreparePullRequestThread: "git.preparePullRequestThread",
   gitAuthRemediationPlan: "git.authRemediationPlan",
   gitApplyAuthRemediation: "git.applyAuthRemediation",
+
+  // Pull request methods
+  pullRequestsList: "pullRequests.list",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -911,6 +919,12 @@ export const WsGitApplyAuthRemediationRpc = Rpc.make(WS_METHODS.gitApplyAuthReme
   error: GitManagerServiceError,
 });
 
+export const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
+  payload: PullRequestListInput,
+  success: PullRequestListResult,
+  error: PullRequestServiceError,
+});
+
 export const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
   payload: VcsListRefsInput,
   success: VcsListRefsResult,
@@ -1247,6 +1261,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitPreparePullRequestThreadRpc,
   WsGitAuthRemediationPlanRpc,
   WsGitApplyAuthRemediationRpc,
+  WsPullRequestsListRpc,
   WsVcsListRefsRpc,
   WsVcsCommitGraphRpc,
   WsVcsCommitDetailsRpc,

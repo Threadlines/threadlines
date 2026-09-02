@@ -53,6 +53,7 @@ import type {
   VcsStatusLocalResult,
   VcsStatusResult,
 } from "./git.ts";
+import type { PullRequestListInput, PullRequestListResult } from "./pullRequest.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type { UsageSummary, UsageSummaryInput } from "./usage.ts";
 import type {
@@ -1357,6 +1358,9 @@ export interface EnvironmentApi {
     applyAuthRemediation: (
       input: GitApplyAuthRemediationInput,
     ) => Promise<GitApplyAuthRemediationResult>;
+  };
+  pullRequests: {
+    list: (input: PullRequestListInput) => Promise<PullRequestListResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
