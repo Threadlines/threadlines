@@ -94,6 +94,11 @@ describe("parseDiffRouteSearch", () => {
     });
   });
 
+  it("round-trips the pull request tab, open and closed", () => {
+    expect(parseDiffRouteSearch({ pullRequest: "1" })).toEqual({ pullRequest: "1" });
+    expect(parseDiffRouteSearch({ pullRequest: "0" })).toEqual({ pullRequest: "0" });
+  });
+
   it("lets the diff panel win when source control is also present", () => {
     expect(
       parseDiffRouteSearch({
@@ -156,9 +161,9 @@ describe("stripDiffSearchParams", () => {
 });
 
 describe("closeRightPanelSearchParams", () => {
-  // Both tabs are recorded closed: dismissing the rail means the rail is
-  // closed, not that the other tab takes the slot.
-  it("clears retained right-panel params and marks both rail tabs closed", () => {
+  // Every list tab is recorded closed: dismissing the rail means the rail is
+  // closed, not that another tab takes the slot.
+  it("clears retained right-panel params and marks every rail tab closed", () => {
     expect(
       closeRightPanelSearchParams({
         diff: "1",
@@ -173,6 +178,7 @@ describe("closeRightPanelSearchParams", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: "0",
+      pullRequest: "0",
       agents: "0",
       diffTurnId: undefined,
       diffFilePath: undefined,
@@ -192,6 +198,23 @@ describe("preserveRightPanelSearchParamsForDraftNavigation", () => {
       diff: undefined,
       diffMode: undefined,
       sourceControl: "1",
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+    });
+  });
+
+  it("carries an explicit pull request tab", () => {
+    expect(
+      preserveRightPanelSearchParamsForDraftNavigation({
+        pullRequest: "1",
+        keep: "yes",
+      }),
+    ).toEqual({
+      keep: "yes",
+      diff: undefined,
+      diffMode: undefined,
+      sourceControl: undefined,
+      pullRequest: "1",
       diffTurnId: undefined,
       diffFilePath: undefined,
     });
