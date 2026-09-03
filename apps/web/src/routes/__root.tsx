@@ -53,6 +53,7 @@ import {
   useServerConfigUpdatedSubscription,
   useServerWelcomeSubscription,
 } from "../rpc/serverState";
+import { isWaitingOnBackgroundTasks } from "../session-logic";
 import { type AppState, selectRunningSidebarThreadsAcrossEnvironments, useStore } from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
@@ -193,7 +194,9 @@ function selectRunningTaskbarThreads(state: AppState): DesktopTaskbarThreadSumma
     threadId: thread.id,
     environmentId: thread.environmentId,
     title: thread.title,
-    state: "running" as const,
+    state: isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)
+      ? ("waiting" as const)
+      : ("running" as const),
   }));
 }
 

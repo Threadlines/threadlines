@@ -466,6 +466,23 @@ export function isLatestTurnSettled(
   return true;
 }
 
+type SessionBackgroundState = SessionLifecycleState &
+  Partial<Pick<ThreadSession, "pendingBackgroundTaskCount">>;
+
+/**
+ * The turn has settled but provider tasks (background subagents, deferred
+ * shell commands) are still running and will start the thread back up on
+ * their own. The thread is waiting, not finished, so it counts as live work
+ * everywhere the app counts it: sidebar pill, taskbar badge, quit and update
+ * warnings.
+ */
+export function isWaitingOnBackgroundTasks(
+  latestTurn: LatestTurnTiming | null,
+  session: SessionBackgroundState | null,
+): boolean {
+  return (session?.pendingBackgroundTaskCount ?? 0) > 0 && isLatestTurnSettled(latestTurn, session);
+}
+
 export function deriveActiveModelFallbackState(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurn: OrchestrationLatestTurn | null | undefined,
