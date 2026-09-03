@@ -24,6 +24,7 @@ import {
   normalizeActor,
   normalizeCheckStatus,
   normalizeGitHubPullRequestListRow,
+  normalizeMergeability,
   type GitHubPullRequestListRow,
 } from "./gitHubPullRequestList.ts";
 
@@ -36,7 +37,6 @@ export const GITHUB_PULL_REQUEST_DETAIL_FIELDS = [
   GITHUB_PULL_REQUEST_LIST_CHECKS_FIELD,
   "body",
   "changedFiles",
-  "mergeable",
   "closedAt",
   "reviews",
   "autoMergeRequest",
@@ -133,7 +133,6 @@ const GitHubPullRequestDetailRowSchema = Schema.Struct({
   ...GitHubPullRequestListRowSchema.fields,
   body: Schema.optional(Schema.NullOr(Schema.String)),
   changedFiles: Schema.optional(Schema.NullOr(NonNegativeInt)),
-  mergeable: Schema.optional(Schema.NullOr(Schema.String)),
   closedAt: Schema.optional(Schema.NullOr(Schema.String)),
   reviews: Schema.optional(Schema.NullOr(Schema.Array(GitHubReviewSchema))),
   /** An object while auto-merge is armed, null once it is not, absent on an older CLI. */
@@ -157,17 +156,6 @@ const STANDALONE_REVIEW_STATES = new Set<PullRequestReviewState>([
   "changes-requested",
   "dismissed",
 ]);
-
-function normalizeMergeability(value: string | null | undefined): PullRequestMergeability {
-  switch (value?.trim().toUpperCase()) {
-    case "MERGEABLE":
-      return "mergeable";
-    case "CONFLICTING":
-      return "conflicting";
-    default:
-      return "unknown";
-  }
-}
 
 function normalizeReviewState(value: string | null | undefined): PullRequestReviewState | null {
   switch (value?.trim().toUpperCase()) {
@@ -201,8 +189,9 @@ function normalizeReviewers(input: {
   for (const login of input.reviewRequestedLogins) {
     const key = login.toLowerCase();
     if (key !== excluded) {
-      // A GitHub user is addressed by their login; team requests never reach here.
-      requested.set(key, { id: login, kind: "user", login, state: "pending" });
+      // A GitHub user is addressed by their login; team requests never reach
+      // here. `gh pr view --json` names no picture, so the provider fills it.
+      requested.set(key, { id: login, kind: "user", login, state: "pending", avatarUrl: null });
     }
   }
 
@@ -221,7 +210,13 @@ function normalizeReviewers(input: {
     if (state === "commented" && previous !== undefined && previous.state !== "commented") {
       continue;
     }
-    reviewed.set(key, { id: login, kind: "user", login, state });
+    reviewed.set(key, {
+      id: login,
+      kind: "user",
+      login,
+      state,
+      avatarUrl: normalizeActor(review.author)?.avatarUrl ?? null,
+    });
   }
 
   return [...requested.values(), ...reviewed.values()];
@@ -393,7 +388,9 @@ export function decodeGitHubPullRequestDetailJson(
     ...base,
     body: row.body ?? "",
     changedFiles: row.changedFiles ?? 0,
-    mergeability: normalizeMergeability(row.mergeable),
+    // A host that has not finished its check says nothing, which the detail
+    // renders as "unknown" rather than leaving the field out.
+    mergeability: normalizeMergeability(row.mergeable) ?? "unknown",
     mergedAt: nonEmptyText(row.mergedAt),
     closedAt: nonEmptyText(row.closedAt),
     reviewers: normalizeReviewers({

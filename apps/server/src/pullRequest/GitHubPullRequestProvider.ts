@@ -7,11 +7,13 @@ import type * as Schema from "effect/Schema";
 import type {
   PullRequestAction,
   PullRequestActivity,
+  PullRequestActor,
   PullRequestBaseComparison,
   PullRequestCapabilities,
   PullRequestComment,
   PullRequestListState,
   PullRequestMergeMethod,
+  PullRequestReviewer,
   PullRequestUpdateMethod,
 } from "@threadlines/contracts";
 import { formatSchemaError } from "@threadlines/shared/schemaJson";
@@ -21,6 +23,12 @@ import {
   findAuthenticatedGitHubAccount,
   parseGitHubAuthStatus,
 } from "../sourceControl/gitHubAuthStatus.ts";
+import {
+  AVATAR_NODES_GRAPHQL_QUERY,
+  decodeGitHubAvatarNodesJson,
+  derivedGitHubAvatarUrl,
+  gitHubHostFromUrl,
+} from "./gitHubAvatar.ts";
 import {
   decodeGitHubPullRequestActivityJson,
   decodeGitHubPullRequestDetailJson,
@@ -43,6 +51,7 @@ import {
   encodeGraphQlRequestJson,
   gitHubAuthoredSearchQuery,
   gitHubReactionContent,
+  type GitHubGraphQlVariable,
   PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY,
   PULL_REQUEST_NODE_ID_GRAPHQL_QUERY,
   REACTION_SUBJECT_SCOPE_GRAPHQL_QUERY,
@@ -241,7 +250,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
     readonly operation: string;
     readonly cwd: string;
     readonly query: string;
-    readonly variables: Readonly<Record<string, string | number | boolean | null>>;
+    readonly variables: Readonly<Record<string, GitHubGraphQlVariable>>;
   }) =>
     run({
       operation: input.operation,
@@ -254,7 +263,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
     readonly operation: string;
     readonly cwd: string;
     readonly query: string;
-    readonly variables: Readonly<Record<string, string | number | boolean | null>>;
+    readonly variables: Readonly<Record<string, GitHubGraphQlVariable>>;
     readonly decode: (raw: string) => Result.Result<A, Cause.Cause<Schema.SchemaError>>;
   }) =>
     graphql(input).pipe(
@@ -265,6 +274,83 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
           : Effect.fail(decodeError(input.operation, "GraphQL", decoded.failure));
       }),
     );
+
+  /**
+   * The pictures for a set of rows, in as few requests as possible. A plain
+   * login's picture is at a known URL on the host the row is on, so most rows
+   * cost nothing; the accounts left over (an app account such as
+   * `dependabot[bot]`) are looked up together in one request by the node id
+   * `gh pr list --json author` already reports.
+   *
+   * A lookup that fails costs the pictures, not the listing: the client draws
+   * initials wherever a picture is missing.
+   */
+  const withAuthorAvatars = <
+    A extends {
+      readonly url: string;
+      readonly author: PullRequestActor | null;
+      readonly authorId: string | null;
+    },
+  >(input: {
+    readonly operation: string;
+    readonly cwd: string;
+    readonly rows: ReadonlyArray<A>;
+  }): Effect.Effect<ReadonlyArray<A>, PullRequestProviderError> => {
+    const derived = (row: A) =>
+      row.author === null
+        ? null
+        : (row.author.avatarUrl ??
+          derivedGitHubAvatarUrl({
+            host: gitHubHostFromUrl(row.url),
+            login: row.author.login,
+            isBot: row.author.isBot,
+          }));
+
+    const ids = new Set(
+      input.rows.flatMap((row) =>
+        row.author !== null && row.authorId !== null && derived(row) === null ? [row.authorId] : [],
+      ),
+    );
+
+    const lookup =
+      ids.size === 0
+        ? Effect.succeed<ReadonlyMap<string, string>>(new Map())
+        : graphqlRead({
+            operation: input.operation,
+            cwd: input.cwd,
+            query: AVATAR_NODES_GRAPHQL_QUERY,
+            variables: { ids: [...ids] },
+            decode: decodeGitHubAvatarNodesJson,
+          }).pipe(Effect.catch(() => Effect.succeed<ReadonlyMap<string, string>>(new Map())));
+
+    return lookup.pipe(
+      Effect.map((byLogin) =>
+        input.rows.map((row) => {
+          const author = row.author;
+          if (author === null) {
+            return row;
+          }
+          const avatarUrl = derived(row) ?? byLogin.get(author.login.toLowerCase()) ?? null;
+          return avatarUrl === author.avatarUrl
+            ? row
+            : { ...row, author: { ...author, avatarUrl } };
+        }),
+      ),
+    );
+  };
+
+  /**
+   * A reviewer's picture, derived from their login. GitHub reports no picture
+   * with a review request, and a team is not an account the host serves one
+   * for, so a team keeps none.
+   */
+  const withReviewerAvatar = (host: string | null) => (reviewer: PullRequestReviewer) =>
+    reviewer.avatarUrl !== null || reviewer.kind !== "user"
+      ? reviewer
+      : {
+          ...reviewer,
+          avatarUrl: derivedGitHubAvatarUrl({ host, login: reviewer.login, isBot: false }),
+        };
 
   /**
    * `gh` takes a body by path. In argv it would show up in process listings and
@@ -398,6 +484,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
             ? Effect.succeed(decoded.success)
             : Effect.fail(decodeError("list", "PR list", decoded.failure));
         }),
+        Effect.flatMap((rows) => withAuthorAvatars({ operation: "list", cwd: input.cwd, rows })),
       ),
 
     listAuthoredChangeRequests: (input) =>
@@ -431,6 +518,17 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
             ? Effect.succeed(decoded.success)
             : Effect.fail(decodeError("detail", "pull request", decoded.failure));
         }),
+        Effect.flatMap((row) =>
+          withAuthorAvatars({ operation: "detail", cwd: input.cwd, rows: [row] }).pipe(
+            Effect.map((rows) => rows[0] ?? row),
+            Effect.map((withAvatar) => ({
+              ...withAvatar,
+              reviewers: withAvatar.reviewers.map(
+                withReviewerAvatar(gitHubHostFromUrl(withAvatar.url)),
+              ),
+            })),
+          ),
+        ),
         Effect.flatMap((row) =>
           graphqlRead({
             operation: "detail",
@@ -498,6 +596,8 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
                   ...comment,
                   reactions: annotation.reactions,
                   viewerIsAuthor: annotation.viewerIsAuthor,
+                  // The GraphQL read is the only one that names a picture.
+                  author: annotation.author ?? comment.author,
                 };
           }),
           commits: activity.commits,

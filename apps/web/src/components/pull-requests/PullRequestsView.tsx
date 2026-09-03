@@ -13,8 +13,9 @@ import {
   GitBranchPlusIcon,
   MessagesSquareIcon,
   RefreshCwIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
@@ -22,6 +23,7 @@ import { openExternalUrl } from "../../lib/externalLinks";
 import {
   PULL_REQUEST_PAGE_REFETCH_INTERVAL_MS,
   refreshPullRequestList,
+  useLoadedPullRequestEntries,
   usePullRequestLists,
   type PullRequestEnvironmentFailure,
 } from "../../lib/pullRequestsReactQuery";
@@ -44,20 +46,44 @@ import { PageTabButton, pageTabId } from "../ui/page-tabs";
 import { Skeleton } from "../ui/skeleton";
 import { TooltipWrapper } from "../ui/tooltip";
 import { LazyPullRequestDetailPanel } from "./LazyPullRequestDetailPanel";
-import { PullRequestFilterChipsRow, PullRequestFiltersButton } from "./PullRequestFilters";
-import { pullRequestHostName } from "./pullRequestPresentation";
+import type { PullRequestCheckoutRequest } from "./PullRequestDetailPanel";
 import {
+  PullRequestFilterChipsRow,
+  PullRequestFiltersButton,
+  PullRequestSortMenu,
+} from "./PullRequestFilters";
+import { PullRequestTabStrip, pullRequestTabButtonId } from "./PullRequestTabStrip";
+import {
+  pullRequestTabId,
+  usePullRequestTabsStore,
+  type PullRequestTab,
+  type PullRequestTabStatus,
+  type PullRequestTabTarget,
+} from "./pullRequestTabsStore";
+import {
+  PullRequestActorAvatar,
+  PullRequestChecksGlyph,
+  PullRequestLabelPill,
+  PullRequestReviewGlyph,
+  pullRequestChecksTone,
+  pullRequestHostName,
+  pullRequestReviewTone,
+} from "./pullRequestPresentation";
+import {
+  formatPullRequestSelection,
   groupPullRequests,
   hasPullRequestProject,
   linkThreadsToPullRequests,
   matchesPullRequestQuery,
+  matchesPullRequestSelection,
   narrowPullRequests,
   projectRepository,
   pullRequestBadgeTone,
+  pullRequestConflictLabel,
   pullRequestEntryKey,
   pullRequestFilterChips,
+  pullRequestProjectFacets,
   requiresHostSignIn,
-  resolveNeedsYouReason,
   resolvePullRequestListSpan,
   resolveSignInHost,
   type PullRequestEntry,
@@ -139,7 +165,12 @@ interface PullRequestThreadDialogTarget {
   readonly url: string;
   /** The hand-off the new draft opens with, when the checkout came from one. */
   readonly initialPrompt: string | null;
+  /** The way in the header asked for, so the dialog opens on that button. */
+  readonly mode: "local" | "worktree" | null;
 }
+
+/** The detail beside the list, which the tab strip above it names. */
+const DETAIL_PANEL_ID = "pull-requests-detail";
 
 /**
  * The pull requests destination: every project in the workspace on a host we can read, in one
@@ -173,6 +204,12 @@ export function PullRequestsView({
   const [query, setQuery] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [dialogTarget, setDialogTarget] = useState<PullRequestThreadDialogTarget | null>(null);
+  // The pull requests open at once. The route's `pr` says which of them is on
+  // screen; the store only holds the set and the order they were opened in.
+  const tabs = usePullRequestTabsStore((store) => store.tabs);
+  const openTab = usePullRequestTabsStore((store) => store.open);
+  const closeTab = usePullRequestTabsStore((store) => store.close);
+  const markTabStatus = usePullRequestTabsStore((store) => store.markStatus);
 
   const snapshot = usePullRequestLists({
     state,
@@ -190,8 +227,25 @@ export function PullRequestsView({
     [filters, query, snapshot.entries],
   );
   const groups = useMemo(
-    () => groupPullRequests({ entries: visibleEntries, viewer: snapshot.viewer, state, sort }),
-    [snapshot.viewer, sort, state, visibleEntries],
+    () =>
+      groupPullRequests({
+        entries: visibleEntries,
+        viewer: snapshot.viewer,
+        state,
+        sort,
+        involvement: filters.involvement,
+      }),
+    [filters.involvement, snapshot.viewer, sort, state, visibleEntries],
+  );
+  // The chosen project is a key in the URL; only the rows know what it is called.
+  const projectLabel = useMemo(
+    () =>
+      filters.project === ""
+        ? undefined
+        : pullRequestProjectFacets(snapshot.entries).find(
+            (project) => project.key === filters.project,
+          )?.label,
+    [filters.project, snapshot.entries],
   );
   // Over every row, not just the visible ones: the selected pull request keeps
   // naming its thread while a search hides the row it came from.
@@ -227,7 +281,7 @@ export function PullRequestsView({
   );
 
   const handleReviewInThread = useCallback(
-    (entry: PullRequestEntry, initialPrompt?: string) => {
+    (entry: PullRequestEntry, request?: PullRequestCheckoutRequest) => {
       const project = projects.find(
         (candidate) =>
           candidate.environmentId === entry.environmentId && candidate.id === entry.projectId,
@@ -239,7 +293,8 @@ export function PullRequestsView({
         threadId: newThreadId(),
         cwd: project?.cwd ?? null,
         url: entry.url,
-        initialPrompt: initialPrompt ?? null,
+        initialPrompt: request?.initialPrompt ?? null,
+        mode: request?.mode ?? null,
       });
     },
     [projects],
@@ -247,31 +302,50 @@ export function PullRequestsView({
 
   // Which pull request the URL is on, and which row a press of the user's own
   // put it on. Only the second moves the cursor: a link opened straight onto a
-  // selection, or a step back through history, should leave focus alone. The
-  // pressed row also remembers its repository, which the URL does not carry.
-  const selectionKey = selection
-    ? `${selection.environmentId}:${selection.projectId}:${selection.number}`
-    : null;
-  const [pressedRow, setPressedRow] = useState<{
-    readonly key: string;
-    readonly repository: string;
-  } | null>(null);
-  const userSelectedKey = pressedRow?.key ?? null;
+  // selection, a step back through history, or a move along the tab strip
+  // should leave focus where it is.
+  const selectionKey = selection ? formatPullRequestSelection(selection) : null;
+  const [pressedKey, setPressedKey] = useState<string | null>(null);
   const rowToRefocus = useRef<HTMLElement | null>(null);
 
-  const handleSelect = useCallback(
-    (entry: PullRequestEntry) => {
-      setPressedRow({
-        key: `${entry.environmentId}:${entry.projectId}:${entry.number}`,
-        repository: entry.repository,
-      });
+  // One pull request shown. The repository rides along in the selection itself,
+  // because the panel addresses a pull request by repository as well as by
+  // number and two repositories can hold the same one.
+  const showPullRequest = useCallback(
+    (target: PullRequestTabTarget) => {
       onSelectionChange({
-        environmentId: entry.environmentId,
-        projectId: entry.projectId,
-        number: entry.number,
+        environmentId: target.environmentId,
+        projectId: target.projectId,
+        repository: target.repository,
+        number: target.number,
       });
     },
     [onSelectionChange],
+  );
+  // A tab moves the detail and nothing else: the arrow keys walk the strip, and
+  // handing the cursor to the new title would end that walk on its first step.
+  const handleSelectTab = useCallback(
+    (tab: PullRequestTab) => {
+      setPressedKey(null);
+      showPullRequest(tab);
+    },
+    [showPullRequest],
+  );
+  // A row press replaces the list with the detail, so the cursor follows it.
+  const handleSelect = useCallback(
+    (entry: PullRequestEntry) => {
+      openTab({
+        environmentId: entry.environmentId,
+        projectId: entry.projectId,
+        repository: entry.repository,
+        number: entry.number,
+        state: entry.state,
+        isDraft: entry.isDraft,
+      });
+      setPressedKey(formatPullRequestSelection(entry));
+      showPullRequest(entry);
+    },
+    [openTab, showPullRequest],
   );
   const closeSelection = useCallback(() => {
     // Read while the row still wears the mark, since the mark goes with the
@@ -280,7 +354,7 @@ export function PullRequestsView({
     rowToRefocus.current = document.querySelector<HTMLElement>(
       '[data-testid="pull-requests-row"][aria-current="true"]',
     );
-    setPressedRow(null);
+    setPressedKey(null);
     onSelectionChange(null);
   }, [onSelectionChange]);
 
@@ -298,20 +372,15 @@ export function PullRequestsView({
   const selectedEntry = useMemo(
     () =>
       selection
-        ? (snapshot.entries.find(
-            (entry) =>
-              entry.environmentId === selection.environmentId &&
-              entry.projectId === selection.projectId &&
-              entry.number === selection.number,
-          ) ?? null)
+        ? (snapshot.entries.find((entry) => matchesPullRequestSelection(selection, entry)) ?? null)
         : null,
     [selection, snapshot.entries],
   );
-  // The panel addresses a pull request by repository as well as number, and the
-  // URL carries only the project. A selection the listing no longer carries
-  // falls back to the repository the row was pressed on, and only then to the
-  // project's own remote: a project reads more than one repository now, so
-  // guessing would open whatever else wears that number.
+  // The panel addresses a pull request by repository as well as number. The URL
+  // carries it, but a link written before it did carries only the project, and
+  // then the listing's own row answers for it, and only after that the
+  // project's remote: a project reads more than one repository now, so guessing
+  // would open whatever else wears that number.
   const selectedReference = useMemo(() => {
     if (!selection) return null;
     const project = projects.find(
@@ -319,13 +388,13 @@ export function PullRequestsView({
         candidate.environmentId === selection.environmentId && candidate.id === selection.projectId,
     );
     const repository =
+      selection.repository ??
       selectedEntry?.repository ??
-      (pressedRow?.key === selectionKey ? pressedRow.repository : null) ??
       (project ? projectRepository(project) : null);
     return repository
       ? { projectId: selection.projectId, repository, number: selection.number }
       : null;
-  }, [pressedRow, projects, selectedEntry, selection, selectionKey]);
+  }, [projects, selectedEntry, selection]);
   const selectedThread = selectedEntry
     ? (threadsByEntryKey.get(pullRequestEntryKey(selectedEntry))?.[0] ?? null)
     : null;
@@ -333,6 +402,65 @@ export function PullRequestsView({
   // branch to check out and no thread for the panel to offer or hand off to.
   const checkoutableEntry =
     selectedEntry && selectedEntry.origin !== "authored" ? selectedEntry : null;
+
+  // The route is the source of truth for what is shown, so a pull request it
+  // names that the strip does not carry joins it: a link opened straight onto
+  // one, a step back through history, or the row press that just happened.
+  useEffect(() => {
+    if (!selection || !selectedReference) return;
+    openTab({
+      environmentId: selection.environmentId,
+      projectId: selection.projectId,
+      repository: selectedReference.repository,
+      number: selection.number,
+    });
+  }, [openTab, selectedReference, selection]);
+
+  // Each tab wears the state of the row it stands for, read from every listing
+  // the page has loaded rather than only the one on screen: a merged pull
+  // request is not in the open list, and drawing it open would be a lie. A row
+  // no loaded listing carries keeps the state it was last seen with.
+  const loadedEntries = useLoadedPullRequestEntries();
+  const tabStatuses = useMemo(() => {
+    const byId = new Map<string, PullRequestTabStatus>();
+    for (const entry of [...loadedEntries, ...snapshot.entries]) {
+      byId.set(pullRequestTabId(entry), { state: entry.state, isDraft: entry.isDraft });
+    }
+    return byId;
+  }, [loadedEntries, snapshot.entries]);
+  useEffect(() => {
+    markTabStatus(tabStatuses);
+  }, [markTabStatus, tabStatuses]);
+  const tabViews = useMemo<readonly PullRequestTab[]>(
+    () => tabs.map((tab) => ({ ...tab, ...tabStatuses.get(tab.id) })),
+    [tabStatuses, tabs],
+  );
+  const activeTabId =
+    selection && selectedReference
+      ? pullRequestTabId({
+          environmentId: selection.environmentId,
+          projectId: selection.projectId,
+          repository: selectedReference.repository,
+          number: selection.number,
+        })
+      : null;
+  const handleCloseTab = useCallback(
+    (tab: PullRequestTab) => {
+      const wasShowing = tab.id === activeTabId;
+      const next = closeTab(tab.id);
+      // Closing a tab the detail was not showing changes only the strip. The
+      // strip and the detail otherwise move together: whatever is active after
+      // the close is what the route goes to, and an empty strip gives the list
+      // its full width back.
+      if (!wasShowing) return;
+      if (next) {
+        handleSelectTab(next);
+        return;
+      }
+      closeSelection();
+    },
+    [activeTabId, closeSelection, closeTab, handleSelectTab],
+  );
 
   // Escape steps back to the list, but only when nothing else owns the key: a
   // dialog on top of the page is closing itself first.
@@ -422,12 +550,7 @@ export function PullRequestsView({
               linkedThread={threadsByEntryKey.get(pullRequestEntryKey(entry))?.[0] ?? null}
               showRepository={span.multipleRepositories}
               showEnvironment={span.multipleEnvironments}
-              selected={
-                selection !== null &&
-                selection.environmentId === entry.environmentId &&
-                selection.projectId === entry.projectId &&
-                selection.number === entry.number
-              }
+              selected={selection !== null && matchesPullRequestSelection(selection, entry)}
               onSelect={handleSelect}
               onOpenThread={handleOpenThread}
               onReviewInThread={handleReviewInThread}
@@ -457,7 +580,10 @@ export function PullRequestsView({
         >
           <div
             className={cn(
-              "mx-auto flex min-h-full w-full flex-col py-8",
+              // A container, so the rows can drop their least useful facts by
+              // the width they actually have: a phone, or the column beside
+              // an open pull request, not the window.
+              "@container mx-auto flex min-h-full w-full flex-col py-8",
               selectedReference ? "px-4" : "max-w-3xl px-6",
             )}
           >
@@ -469,9 +595,8 @@ export function PullRequestsView({
             {/* Nothing to filter, search or refresh when no server can answer at all. */}
             {snapshot.environments.length > 0 ? (
               <>
-                {/* The same strip the settings pages use: text on a hairline, the
-                  active tab underlined, the refresh control in the strip's
-                  trailing slot. */}
+                {/* The same strip the settings pages use: text on a hairline,
+                  the active tab underlined. */}
                 <div className="mt-6 flex items-end justify-between gap-3 border-b border-border">
                   <div
                     role="tablist"
@@ -488,10 +613,29 @@ export function PullRequestsView({
                       />
                     ))}
                   </div>
+                </div>
+                {/* Search, then the two menus that stand for everything else the
+                    list can be told, then the way to read it all again. */}
+                <div className="mt-4 flex items-center gap-2">
+                  <Input
+                    className="min-w-0 flex-1"
+                    size="sm"
+                    type="search"
+                    // The field is narrow on a phone, so the placeholder says
+                    // what it is rather than everything it reads; the label
+                    // spells the rest out for anyone who cannot see it.
+                    aria-label="Search pull requests by title, number, author, branch or label"
+                    placeholder="Search pull requests"
+                    spellCheck={false}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                  <PullRequestSortMenu sort={sort} onSortChange={onSortChange} />
+                  <PullRequestFiltersButton filters={filters} onFiltersChange={onFiltersChange} />
                   <Button
-                    className="mb-1"
                     variant="ghost"
                     size="icon-sm"
+                    className="shrink-0"
                     tooltip="Refresh"
                     aria-label="Refresh"
                     data-testid="pull-requests-refresh"
@@ -506,26 +650,11 @@ export function PullRequestsView({
                     />
                   </Button>
                 </div>
-                <div className="mt-4 flex items-center gap-2">
-                  <Input
-                    className="min-w-0 flex-1"
-                    size="sm"
-                    type="search"
-                    aria-label="Search pull requests"
-                    placeholder="Search title, #number, author, branch, label"
-                    spellCheck={false}
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                  />
-                  <PullRequestFiltersButton
-                    filters={filters}
-                    sort={sort}
-                    viewer={snapshot.viewer}
-                    onFiltersChange={onFiltersChange}
-                    onSortChange={onSortChange}
-                  />
-                </div>
-                <PullRequestFilterChipsRow filters={filters} onFiltersChange={onFiltersChange} />
+                <PullRequestFilterChipsRow
+                  filters={filters}
+                  {...(projectLabel === undefined ? {} : { projectLabel })}
+                  onFiltersChange={onFiltersChange}
+                />
               </>
             ) : null}
 
@@ -550,22 +679,42 @@ export function PullRequestsView({
         </div>
 
         {selectedReference && selection ? (
-          <div className="min-h-0 min-w-0 flex-1" data-testid="pull-requests-detail-column">
-            <LazyPullRequestDetailPanel
-              key={`${selection.environmentId}:${selection.projectId}:${selection.number}`}
-              environmentId={selection.environmentId}
-              reference={selectedReference}
-              context="page"
-              linkedThread={selectedThread}
-              autoFocusTitle={userSelectedKey !== null && userSelectedKey === selectionKey}
-              onClose={closeSelection}
-              {...(checkoutableEntry
-                ? {
-                    onReviewInThread: (initialPrompt?: string) =>
-                      handleReviewInThread(checkoutableEntry, initialPrompt),
-                  }
-                : {})}
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            data-testid="pull-requests-detail-column"
+          >
+            {/* Several pull requests stay open at once, and the strip is where
+                the rest of them wait. It sits above the header, so on a phone
+                the back arrow still steps out to the list with the strip kept. */}
+            <PullRequestTabStrip
+              tabs={tabViews}
+              activeId={activeTabId}
+              panelId={DETAIL_PANEL_ID}
+              onSelect={handleSelectTab}
+              onClose={handleCloseTab}
             />
+            <div
+              id={DETAIL_PANEL_ID}
+              role="tabpanel"
+              className="min-h-0 min-w-0 flex-1"
+              {...(activeTabId ? { "aria-labelledby": pullRequestTabButtonId(activeTabId) } : {})}
+            >
+              <LazyPullRequestDetailPanel
+                key={activeTabId ?? selectionKey}
+                environmentId={selection.environmentId}
+                reference={selectedReference}
+                context="page"
+                linkedThread={selectedThread}
+                autoFocusTitle={pressedKey !== null && pressedKey === selectionKey}
+                onClose={closeSelection}
+                {...(checkoutableEntry
+                  ? {
+                      onReviewInThread: (request?: PullRequestCheckoutRequest) =>
+                        handleReviewInThread(checkoutableEntry, request),
+                    }
+                  : {})}
+              />
+            </div>
           </div>
         ) : null}
       </div>
@@ -578,6 +727,7 @@ export function PullRequestsView({
           threadId={dialogTarget.threadId}
           cwd={dialogTarget.cwd}
           initialReference={dialogTarget.url}
+          {...(dialogTarget.mode ? { defaultMode: dialogTarget.mode } : {})}
           onOpenChange={(open) => {
             if (!open) {
               setDialogTarget(null);
@@ -741,6 +891,11 @@ function PullRequestsNotice({
   );
 }
 
+/** A sentence's worth of words joined into the middle of a longer one. */
+function lowerFirst(value: string): string {
+  return value.charAt(0).toLowerCase() + value.slice(1);
+}
+
 function PullRequestRow({
   entry,
   linkedThread,
@@ -765,7 +920,22 @@ function PullRequestRow({
     className: glyphClassName,
     label: glyphLabel,
   } = pullRequestBadgeTone(entry.state, entry.isDraft);
-  const reason = resolveNeedsYouReason(entry);
+  // A branch that no longer merges is the one thing about an open row worth
+  // more than its state, so it takes the glyph's place.
+  const conflictLabel = pullRequestConflictLabel(entry);
+  // Everything the row states in a glyph belongs in the name of the button that
+  // opens it, since a glyph in a sibling is not part of that name: the state
+  // word, then the conflict, then how the checks went.
+  const checksLabel = pullRequestChecksTone(entry.checksState)?.label ?? null;
+  const rowLabel = `${[
+    `${glyphLabel} pull request #${entry.number}`,
+    ...(conflictLabel ? [lowerFirst(conflictLabel)] : []),
+    ...(checksLabel ? [lowerFirst(checksLabel)] : []),
+  ].join(", ")}: ${entry.title}`;
+  const reviewTone = pullRequestReviewTone({
+    decision: entry.reviewDecision,
+    reviewRequested: entry.viewerReviewRequested,
+  });
   const openOnHostLabel = `Open on ${pullRequestHostName(entry.provider)}`;
   // Nothing here is checked out, so there is no thread to open and no branch to
   // check out into one; the repository is the only thing that places the row.
@@ -775,38 +945,102 @@ function PullRequestRow({
   const hiddenLabelCount = entry.labels.length - visibleLabels.length;
   // A fixed, ordered set of optional slots, so the absent ones simply drop out
   // and the separators still land between what is left. A slot either keeps
-  // its width whole or truncates; the wrapper follows the same rule, or a
-  // whole-width slot overflows its shrunken wrapper and paints over the next
-  // slot's separator.
+  // its width whole or gives it up, and the one that gives it up truncates its
+  // own text; a whole-width slot in a shrinking wrapper would otherwise paint
+  // over the next slot's separator.
   const meta: readonly {
     key: string;
     fit: "whole" | "truncate";
     className?: string;
-    text: string;
+    /** Dropped, separator and all, when the list is narrower than `lg` (32rem): a
+     *  phone, or the column beside an open pull request. */
+    hideOnPhone?: boolean;
+    content: ReactNode;
   }[] = [
-    { key: "number", fit: "whole", className: "font-mono", text: `#${entry.number}` },
+    { key: "number", fit: "whole", className: "font-mono", content: `#${entry.number}` },
     ...(namesRepository
-      ? [{ key: "repository", fit: "truncate" as const, text: entry.repository }]
-      : []),
-    ...(entry.author
-      ? [{ key: "author", fit: "truncate" as const, text: entry.author.login }]
-      : []),
-    ...(showEnvironment
-      ? [{ key: "environment", fit: "truncate" as const, text: entry.environmentLabel }]
-      : []),
-    ...(reason
       ? [
           {
-            key: "reason",
-            fit: "whole" as const,
-            className:
-              reason === "Approved"
-                ? "text-emerald-600 dark:text-emerald-300/90"
-                : "text-amber-600/90 dark:text-amber-400/80",
-            text: reason,
+            key: "repository",
+            fit: "truncate" as const,
+            // A phone-width row has room for the number, the author and the
+            // glyph; the repository only stays where it is the row's one
+            // anchor (a pull request from outside the workspace).
+            hideOnPhone: !isAuthoredElsewhere,
+            content: <span className="truncate">{entry.repository}</span>,
           },
         ]
       : []),
+    ...(entry.author
+      ? [
+          {
+            key: "author",
+            fit: "truncate" as const,
+            content: (
+              <>
+                <PullRequestActorAvatar actor={entry.author} />
+                <span className="truncate">{entry.author.login}</span>
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(showEnvironment
+      ? [
+          {
+            key: "environment",
+            fit: "truncate" as const,
+            content: <span className="truncate">{entry.environmentLabel}</span>,
+          },
+        ]
+      : []),
+    ...(visibleLabels.length > 0
+      ? [
+          {
+            key: "labels",
+            fit: "truncate" as const,
+            // Pills truncated to a letter each say nothing; below md they go.
+            hideOnPhone: true,
+            content: (
+              <>
+                {visibleLabels.map((label) => (
+                  <PullRequestLabelPill key={label.name} name={label.name} color={label.color} />
+                ))}
+                {hiddenLabelCount > 0 ? (
+                  <span className="shrink-0">+{hiddenLabelCount}</span>
+                ) : null}
+              </>
+            ),
+          },
+        ]
+      : []),
+    // Where the reviews stand and how the checks went, as two glyphs at the end
+    // of the line: the same pair on every row, in every group, so the eye finds
+    // them in the same place rather than reading a coloured word out of the
+    // meta. Both carry their words for anyone who cannot see the colour.
+    ...(reviewTone === null
+      ? []
+      : [
+          {
+            key: "review",
+            fit: "whole" as const,
+            content: (
+              <PullRequestReviewGlyph
+                decision={entry.reviewDecision}
+                reviewRequested={entry.viewerReviewRequested}
+              />
+            ),
+          },
+        ]),
+    ...(entry.checksState === undefined
+      ? []
+      : [
+          {
+            key: "checks",
+            fit: "whole" as const,
+            content: <PullRequestChecksGlyph state={entry.checksState} />,
+          },
+        ]),
   ];
 
   return (
@@ -828,15 +1062,26 @@ function PullRequestRow({
         className="absolute inset-0 z-0 w-full cursor-pointer rounded-md focus-ring"
         data-testid="pull-requests-row"
         aria-current={selected ? "true" : undefined}
-        aria-label={`${glyphLabel} pull request #${entry.number}: ${entry.title}`}
+        aria-label={rowLabel}
         onClick={() => onSelect(entry)}
       />
       <div className="pointer-events-none relative grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 px-2 py-2.5 select-none">
         {/* The glyph is the only place the row states open/draft/merged/closed,
-            so the word rides along for anyone who cannot see the colour. */}
-        <span className={cn("mt-0.5 shrink-0", glyphClassName)}>
-          <GlyphIcon aria-hidden className="size-4" />
-        </span>
+            so the word rides along in the row's own label for anyone who
+            cannot see the colour. A conflict has no word of its own there, so
+            it carries one itself. */}
+        {conflictLabel ? (
+          <TooltipWrapper tooltip={conflictLabel}>
+            <span className="pointer-events-auto mt-0.5 shrink-0 text-destructive">
+              <TriangleAlertIcon aria-hidden className="size-4" />
+              <span className="sr-only">{conflictLabel}</span>
+            </span>
+          </TooltipWrapper>
+        ) : (
+          <span className={cn("mt-0.5 shrink-0", glyphClassName)}>
+            <GlyphIcon aria-hidden className="size-4" />
+          </span>
+        )}
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="flex w-full min-w-0 items-baseline gap-3">
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
@@ -854,25 +1099,15 @@ function PullRequestRow({
                   className={cn(
                     "flex items-center gap-1.5",
                     item.fit === "whole" ? "shrink-0" : "min-w-0",
+                    item.hideOnPhone && "@max-lg:hidden",
                   )}
                 >
                   {index > 0 ? <span className={META_SEPARATOR_CLASS}>·</span> : null}
-                  <span className={cn(item.fit === "truncate" && "truncate", item.className)}>
-                    {item.text}
+                  <span className={cn("flex min-w-0 items-center gap-1.5", item.className)}>
+                    {item.content}
                   </span>
                 </span>
               ))}
-              {visibleLabels.map((label) => (
-                <span key={label.name} className="flex min-w-0 shrink items-center gap-1">
-                  <span
-                    aria-hidden
-                    className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
-                    style={label.color ? { backgroundColor: `#${label.color}` } : undefined}
-                  />
-                  <span className="max-w-32 truncate">{label.name}</span>
-                </span>
-              ))}
-              {hiddenLabelCount > 0 ? <span className="shrink-0">+{hiddenLabelCount}</span> : null}
             </span>
             {linkedThread ? (
               <button

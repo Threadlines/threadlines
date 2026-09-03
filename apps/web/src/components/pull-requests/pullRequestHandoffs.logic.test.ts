@@ -36,7 +36,7 @@ const CONTEXT = [
 function threadComment(id: string, body: string): PullRequestReviewThread["comments"][number] {
   return {
     id,
-    author: { login: "grace", isBot: false },
+    author: { login: "grace", isBot: false, avatarUrl: null },
     body,
     createdAt: "2026-09-01T11:00:00.000Z",
     url: null,
@@ -62,7 +62,7 @@ function comment(overrides: Partial<PullRequestComment> = {}): PullRequestCommen
   return {
     id: "review-1",
     kind: "review",
-    author: { login: "grace", isBot: false },
+    author: { login: "grace", isBot: false, avatarUrl: null },
     body: "Please split this up.",
     createdAt: "2026-09-01T11:00:00.000Z",
     url: null,

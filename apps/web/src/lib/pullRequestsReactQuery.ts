@@ -376,6 +376,49 @@ export function pullRequestListQueryOptions(input: {
   });
 }
 
+/** Every listing a state can be read under, which is every tab the page has. */
+const PULL_REQUEST_LIST_STATES = [
+  "open",
+  "merged",
+  "closed",
+] as const satisfies readonly PullRequestListState[];
+
+/**
+ * Every row the page has already read, whatever tab it was read under. The
+ * Filters menu builds its author, label and project choices from these, so a
+ * login the user has seen stays offerable after they switch tabs. Nothing is
+ * fetched here: a state nobody has opened simply contributes no rows.
+ */
+export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
+  const environments = usePullRequestEnvironments();
+
+  return useQueries({
+    queries: environments.flatMap((environment) =>
+      PULL_REQUEST_LIST_STATES.map((state) => ({
+        ...pullRequestListQueryOptions({ environmentId: environment.environmentId, state }),
+        enabled: false,
+      })),
+    ),
+    combine: (results) =>
+      results.flatMap((result, index) => {
+        const environment = environments[Math.floor(index / PULL_REQUEST_LIST_STATES.length)];
+        const state = PULL_REQUEST_LIST_STATES[index % PULL_REQUEST_LIST_STATES.length];
+        return environment && state && !result.isPlaceholderData
+          ? mergePullRequestListResults({
+              state,
+              results: [
+                {
+                  environmentId: environment.environmentId,
+                  environmentLabel: environment.label,
+                  data: result.data,
+                },
+              ],
+            }).entries
+          : [];
+      }),
+  });
+}
+
 /**
  * The refresh button. Writes through the same key the page and the sidebar
  * read, so one round trip updates both and the server drops its own cache

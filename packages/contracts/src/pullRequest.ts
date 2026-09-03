@@ -26,9 +26,14 @@ export type PullRequestReviewDecision = typeof PullRequestReviewDecision.Type;
 export const PullRequestChecksState = Schema.Literals(["pending", "success", "failure"]);
 export type PullRequestChecksState = typeof PullRequestChecksState.Type;
 
+export const PullRequestMergeability = Schema.Literals(["mergeable", "conflicting", "unknown"]);
+export type PullRequestMergeability = typeof PullRequestMergeability.Type;
+
 export const PullRequestActor = Schema.Struct({
   login: TrimmedNonEmptyString,
   isBot: Schema.Boolean,
+  /** The host's picture for this account; null where it names none. */
+  avatarUrl: Schema.NullOr(Schema.String),
 });
 export type PullRequestActor = typeof PullRequestActor.Type;
 
@@ -76,10 +81,18 @@ export const PullRequestListEntry = Schema.Struct({
   updatedAt: IsoDateTime,
   viewerIsAuthor: Schema.Boolean,
   viewerReviewRequested: Schema.Boolean,
+  /**
+   * Push access on this row's repository: whether the viewer could merge it or
+   * update its branch at all. Absent where the host did not say, and a page
+   * reading it then keeps whatever it does for a host that never says.
+   */
+  viewerCanWrite: Schema.optionalKey(Schema.Boolean),
   /** Absent when the host reports no decision. */
   reviewDecision: Schema.optionalKey(PullRequestReviewDecision),
   /** Absent when there are no checks, or when checks were not requested. */
   checksState: Schema.optionalKey(PullRequestChecksState),
+  /** Absent where the host does not say whether the branch still merges. */
+  mergeability: Schema.optionalKey(PullRequestMergeability),
   labels: Schema.Array(PullRequestLabel),
   origin: PullRequestListEntryOrigin,
 });
@@ -150,9 +163,6 @@ export const PullRequestRef = Schema.Struct({
 });
 export type PullRequestRef = typeof PullRequestRef.Type;
 
-export const PullRequestMergeability = Schema.Literals(["mergeable", "conflicting", "unknown"]);
-export type PullRequestMergeability = typeof PullRequestMergeability.Type;
-
 export const PullRequestCheckStatus = Schema.Literals(["pending", "success", "failure", "skipped"]);
 export type PullRequestCheckStatus = typeof PullRequestCheckStatus.Type;
 
@@ -193,6 +203,8 @@ export const PullRequestReviewer = Schema.Struct({
   kind: PullRequestReviewerKind,
   login: TrimmedNonEmptyString,
   state: PullRequestReviewerState,
+  /** The host's picture for this reviewer; null where it names none. */
+  avatarUrl: Schema.NullOr(Schema.String),
 });
 export type PullRequestReviewer = typeof PullRequestReviewer.Type;
 
@@ -574,6 +586,8 @@ export const PullRequestReviewerCandidate = Schema.Struct({
   kind: PullRequestReviewerKind,
   login: TrimmedNonEmptyString,
   name: Schema.NullOr(Schema.String),
+  /** The host's picture for this candidate; null where it names none. */
+  avatarUrl: Schema.NullOr(Schema.String),
   requested: Schema.Boolean,
 });
 export type PullRequestReviewerCandidate = typeof PullRequestReviewerCandidate.Type;
