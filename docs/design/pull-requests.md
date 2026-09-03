@@ -1099,8 +1099,8 @@ text-muted-foreground`, dot `size-2 rounded-full` coloured from the label's hex 
 - Check glyph, `size-3.5`, in place of the words "Checks failing": passing `CircleCheckIcon`
   emerald, failing `CircleXIcon` destructive, running `CircleDotIcon` amber, none = nothing. It is a
   tooltip trigger ("All checks passed" / "Some checks failed" / "Checks running") with sr-only
-  text. Review words stay only for review states: "Approved", "Changes requested",
-  "Review required" (amber for the two that need work, emerald for Approved).
+  text. The review state is a glyph too (`PullRequestReviewGlyph`: user-check emerald for Approved,
+  user-x amber for Changes requested, a muted user for Review required), just before the checks glyph.
 - Conflict glyph: when a row is open, not draft, and `mergeability === "conflicting"`, the PR glyph
   at the left becomes `TriangleAlertIcon` in destructive with label "Conflicts with <base>".
   Draft wins over conflict; merged and closed are unchanged.
