@@ -83,6 +83,11 @@ export interface ProviderChangeRequest {
   readonly labels: ReadonlyArray<PullRequestLabel>;
   /** Absent from a host that does not summarise its reviews. */
   readonly reviewDecision?: PullRequestReviewDecision;
+  /**
+   * Absent from a host a listing cannot ask about it without a request per row.
+   * `unknown` is the host saying it has not finished checking.
+   */
+  readonly mergeability?: PullRequestMergeability;
   /** Absent where there are no checks, or where the listing did not ask for them. */
   readonly checksState?: PullRequestChecksState;
 }

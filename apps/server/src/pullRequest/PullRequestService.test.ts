@@ -80,6 +80,7 @@ const pullRequestRow = (input: {
   readonly number: number;
   readonly author: string;
   readonly reviewRequests?: ReadonlyArray<Record<string, unknown>>;
+  readonly mergeable?: string;
 }) => ({
   number: input.number,
   title: `Pull request ${input.number}`,
@@ -94,6 +95,7 @@ const pullRequestRow = (input: {
   deletions: 0,
   createdAt: "2026-08-30T10:00:00Z",
   updatedAt: "2026-08-31T10:00:00Z",
+  mergeable: input.mergeable ?? "UNKNOWN",
   reviewDecision: "",
   reviewRequests: input.reviewRequests ?? [],
   labels: [],
@@ -537,6 +539,43 @@ describe("PullRequestService.list", () => {
           [3, false, false],
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("carries the author's picture and a conflict onto the row", () =>
+    Effect.gen(function* () {
+      withProjects([
+        project({
+          id: "project-app",
+          title: "Example App",
+          provider: "github",
+          repository: "octocat/example-app",
+        }),
+      ]);
+      listAnswers({
+        list: () =>
+          Effect.succeed(
+            processOutput(
+              JSON.stringify([
+                pullRequestRow({ number: 1, author: "hubot", mergeable: "CONFLICTING" }),
+                // The host has not finished checking, which is not an answer.
+                pullRequestRow({ number: 2, author: "hubot" }),
+              ]),
+            ),
+          ),
+      });
+
+      const service = yield* PullRequestService.PullRequestService;
+      const result = yield* service.list({ state: "open" });
+
+      assert.deepStrictEqual(
+        result.entries.map((entry) => [entry.number, entry.mergeability]),
+        [
+          [1, "conflicting"],
+          [2, undefined],
+        ],
+      );
+      assert.equal(result.entries[0]?.author?.avatarUrl, "https://github.com/hubot.png?size=80");
     }).pipe(Effect.provide(layer)),
   );
 

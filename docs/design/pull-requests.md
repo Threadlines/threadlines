@@ -1092,9 +1092,9 @@ Facts about t3code's implementation are in the sol fact sheet
   with `bg-muted`, initials fallback (uppercase first letter, `text-[8px]`) when the URL is null
   or fails to load (`onError`, like `MarkdownImage`). `PullRequestActorLabel` = avatar + login.
 - Row meta becomes: `#number · repository (when shown) · [avatar] login · [pill][pill] +N · [check
-  glyph]`. Up to two label pills, then `+N`. Pill: `inline-flex max-w-40 items-center gap-1
-  rounded-full border border-border/70 bg-muted/40 pl-1 pr-1.5 text-[10px] leading-3.5
-  text-muted-foreground`, dot `size-2 rounded-full` coloured from the label's hex when valid
+glyph]`. Up to two label pills, then `+N`. Pill: `inline-flex max-w-40 items-center gap-1
+rounded-full border border-border/70 bg-muted/40 pl-1 pr-1.5 text-[10px] leading-3.5
+text-muted-foreground`, dot `size-2 rounded-full` coloured from the label's hex when valid
   (`pullRequestLabelColor`), else `bg-muted-foreground`. Replaces today's dot-and-name text.
 - Check glyph, `size-3.5`, in place of the words "Checks failing": passing `CircleCheckIcon`
   emerald, failing `CircleXIcon` destructive, running `CircleDotIcon` amber, none = nothing. It is a
@@ -1111,7 +1111,7 @@ Facts about t3code's implementation are in the sol fact sheet
   required or no reviews, then checks running, then changes requested, then checks failing, then
   conflicting, then drafts last; ties by `updatedAt` desc. Newest/Oldest use `createdAt`;
   Largest/Smallest use `additions + deletions`. URL `sort` values: `readiness | updated | newest |
-  oldest | largest | smallest` (today's `created` and `size` map to `newest` and `largest`).
+oldest | largest | smallest` (today's `created` and `size` map to `newest` and `largest`).
 - Filters menu, one submenu per line with the current value right-aligned in muted text:
   Involvement (All, Needs you, Yours, Others), separator, Author (searchable: an input at the top
   of the submenu, then "Anyone" and the logins seen in the loaded rows of every state that has
@@ -1132,7 +1132,7 @@ Facts about t3code's implementation are in the sol fact sheet
   session): `tabs: PullRequestTab[]` (`{ id, environmentId, projectId, repository, number }`,
   id = `env:project:repo:number`), `activeId`. `open(tab)` upserts and activates; `close(id)`
   removes and activates the tab now at that index, else the last, else null. Row click = `open`
-  + route `pr=`. The route's `pr` param stays the source of truth for what is shown; the store
+  and a route change to `pr=`. The route's `pr` param stays the source of truth for what is shown; the store
   holds the set. On load with a `pr` param and no tabs, that one becomes the only tab.
 - The detail column gets a tab strip at its top (page context only), in the visual language of
   the thread right panel's strip (`chat/RightPanelTabStrip.tsx`: read it and reuse its classes;
@@ -1159,12 +1159,12 @@ Facts about t3code's implementation are in the sol fact sheet
   5. Tab strip Summary | Code | Timeline as today; right side on Summary: check glyph + summary
      text from `detail.checks` ("All checks passed", "13 of 16 passing", "3 of 16 failing",
      "9 of 11 running", "No checks reported"), a button that scrolls the Summary to Checks.
-  The old separate lines (labels row, base freshness line, conflict line, "Review in a thread")
-  fold into the above: labels move to the Summary meta rows, "Review in a thread" moves into the
-  Check out menu as the page's way to start a thread (keep the hand-off wiring), base freshness
-  into row 4 and the Update branch action.
+     The old separate lines (labels row, base freshness line, conflict line, "Review in a thread")
+     fold into the above: labels move to the Summary meta rows, "Review in a thread" moves into the
+     Check out menu as the page's way to start a thread (keep the hand-off wiring), base freshness
+     into row 4 and the Update branch action.
 - Summary tab opens with meta rows (`grid min-h-8 grid-cols-[6rem_minmax(0,1fr)] items-center
-  gap-2 py-1.5 text-xs`, icon + label at left): Reviewers (avatars + logins with state dot, the
+gap-2 py-1.5 text-xs`, icon + label at left): Reviewers (avatars + logins with state dot, the
   request button at the end), Labels (pills, `text-xs` size, all of them; row hidden with none),
   Comments ("2 comments", scrolls to the conversation). Then a collapsible Description section
   (heading `text-sm font-medium` with a chevron, open by default, remembered in the session),

@@ -1265,7 +1265,10 @@ export function buildPullRequestTimeline(
       id: commit.oid,
       at: commit.committedDate,
       kind: "commit",
-      actor: commit.authorLogin === null ? null : { login: commit.authorLogin, isBot: false },
+      actor:
+        commit.authorLogin === null
+          ? null
+          : { login: commit.authorLogin, isBot: false, avatarUrl: null },
       body: commit.messageHeadline.trim().length > 0 ? commit.messageHeadline : null,
       markdown: false,
       url: `${detail.url}/commits/${commit.oid}`,

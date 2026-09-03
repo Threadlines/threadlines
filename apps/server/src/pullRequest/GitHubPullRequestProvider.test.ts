@@ -189,6 +189,98 @@ describe("GitHubPullRequestProvider.setReviewerRequest", () => {
   );
 });
 
+describe("GitHubPullRequestProvider.listChangeRequests", () => {
+  const listRow = (input: {
+    readonly number: number;
+    readonly author: Record<string, unknown>;
+  }) => ({
+    number: input.number,
+    title: `Pull request ${input.number}`,
+    url: `https://github.example.com/octocat/example-app/pull/${input.number}`,
+    author: input.author,
+    headRefName: `feature/${input.number}`,
+    baseRefName: "main",
+    state: "OPEN",
+    mergedAt: null,
+    isDraft: false,
+    additions: 1,
+    deletions: 0,
+    createdAt: "2026-08-30T10:00:00Z",
+    updatedAt: "2026-08-31T10:00:00Z",
+    reviewDecision: "",
+    reviewRequests: [],
+    labels: [],
+  });
+
+  it.effect("derives a plain login's picture and looks up the rest in one request", () =>
+    Effect.gen(function* () {
+      mockExecute.mockImplementation((input) =>
+        Effect.succeed(
+          processOutput(
+            input.args[0] === "api"
+              ? JSON.stringify({
+                  data: {
+                    nodes: [{ login: "dependabot[bot]", avatarUrl: "https://avatars.example/bot" }],
+                  },
+                })
+              : JSON.stringify([
+                  listRow({ number: 1, author: { login: "octocat", is_bot: false, id: "U_1" } }),
+                  listRow({
+                    number: 2,
+                    author: { login: "dependabot[bot]", is_bot: true, id: "BOT_1" },
+                  }),
+                ]),
+          ),
+        ),
+      );
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      const rows = yield* provider.listChangeRequests({
+        ...repository,
+        state: "open",
+        limit: 30,
+      });
+
+      assert.deepStrictEqual(
+        rows.map((row) => [row.number, row.author?.avatarUrl]),
+        [
+          // Derived from the login on the row's own host, so Enterprise works.
+          [1, "https://github.example.com/octocat.png?size=80"],
+          [2, "https://avatars.example/bot"],
+        ],
+      );
+      // One listing, then one lookup naming only the account it had to ask about.
+      const lookup = calls()[1];
+      assert.deepStrictEqual(lookup?.args, ["api", "graphql", "--input", "-"]);
+      assert.deepStrictEqual(
+        (JSON.parse(lookup?.stdin ?? "{}") as { variables: Record<string, unknown> }).variables,
+        { ids: ["BOT_1"] },
+      );
+      expect(calls()).toHaveLength(2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("asks the host nothing extra when every login speaks for itself", () =>
+    Effect.gen(function* () {
+      mockExecute.mockReturnValue(
+        Effect.succeed(
+          processOutput(
+            JSON.stringify([
+              listRow({ number: 1, author: { login: "octocat", is_bot: false, id: "U_1" } }),
+            ]),
+          ),
+        ),
+      );
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      const rows = yield* provider.listChangeRequests({ ...repository, state: "open", limit: 30 });
+
+      assert.equal(rows[0]?.author?.avatarUrl, "https://github.example.com/octocat.png?size=80");
+      expect(calls()).toHaveLength(1);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
 describe("GitHubPullRequestProvider.listAuthoredChangeRequests", () => {
   it.effect("searches the whole host for the viewer's own work, on stdin", () =>
     Effect.gen(function* () {

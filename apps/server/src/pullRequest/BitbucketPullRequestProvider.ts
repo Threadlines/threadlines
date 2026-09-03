@@ -326,6 +326,7 @@ export const make = Effect.fn("makeBitbucketPullRequestProvider")(function* () {
                 row.reviews.find(
                   (review) => review.author?.login.toLowerCase() === reviewer.login.toLowerCase(),
                 )?.reviewState ?? "pending",
+              avatarUrl: reviewer.avatarUrl,
             })),
             checks: checks.items,
             // Bitbucket compares no branch with its base.

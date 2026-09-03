@@ -100,7 +100,7 @@ function entry(overrides: Partial<PullRequestEntry> = {}): PullRequestEntry {
     number: 1,
     title: "Add the pull requests page",
     url: "https://github.com/threadlines/threadlines/pull/1",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     headBranch: "feature/pull-requests",
     baseBranch: "main",
     state: "open",
@@ -424,7 +424,7 @@ describe("matchesPullRequestQuery", () => {
   const row = entry({
     number: 412,
     title: "Add the pull requests page",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     headBranch: "feature/pull-requests",
     repository: "threadlines/threadlines",
     labels: [{ name: "needs-design", color: "d73a4a" }],
@@ -458,14 +458,14 @@ describe("narrowPullRequests", () => {
   const rows = [
     entry({
       number: 1,
-      author: { login: "ada", isBot: false },
+      author: { login: "ada", isBot: false, avatarUrl: null },
       labels: [{ name: "bug", color: null }],
       reviewDecision: "approved",
       checksState: "success",
     }),
     entry({
       number: 2,
-      author: { login: "Grace", isBot: false },
+      author: { login: "Grace", isBot: false, avatarUrl: null },
       labels: [
         { name: "bug", color: null },
         { name: "wip", color: null },
@@ -731,7 +731,7 @@ describe("resolvePullRequestReviewPosition", () => {
 
 const TIMELINE_DETAIL = {
   createdAt: "2026-09-01T09:00:00.000Z",
-  author: { login: "ada", isBot: false },
+  author: { login: "ada", isBot: false, avatarUrl: null },
   mergedAt: null,
   closedAt: null,
   url: "https://github.com/threadlines/threadlines/pull/42",
@@ -745,7 +745,7 @@ function timelineComment(
   return {
     id,
     kind: "issue-comment",
-    author: { login: "grace", isBot: false },
+    author: { login: "grace", isBot: false, avatarUrl: null },
     body: `body ${id}`,
     createdAt,
     url: null,
@@ -805,7 +805,7 @@ describe("buildPullRequestTimeline", () => {
           comments: [
             {
               id: "line-1",
-              author: { login: "grace", isBot: false },
+              author: { login: "grace", isBot: false, avatarUrl: null },
               body: "Name this something else.",
               createdAt: "2026-09-01T10:20:00.000Z",
               url: "https://github.com/threadlines/threadlines/pull/42#discussion_r1",
@@ -814,7 +814,7 @@ describe("buildPullRequestTimeline", () => {
             },
             {
               id: "line-2",
-              author: { login: "ada", isBot: false },
+              author: { login: "ada", isBot: false, avatarUrl: null },
               body: "Done.",
               createdAt: "2026-09-01T10:30:00.000Z",
               url: null,

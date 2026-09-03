@@ -45,7 +45,7 @@ describe("decodeGitHubPullRequestConversationJson", () => {
                         nodes: [
                           {
                             id: "PRRC_1",
-                            author: { login: "hubot" },
+                            author: { login: "hubot", avatarUrl: "https://avatars.example/u/2" },
                             body: "This reads twice.",
                             createdAt: "2026-08-30T10:00:00Z",
                             url: "https://github.com/octocat/example-app/pull/12#discussion_r1",
@@ -90,6 +90,7 @@ describe("decodeGitHubPullRequestConversationJson", () => {
                     {
                       id: "IC_1",
                       viewerDidAuthor: true,
+                      author: { login: "octocat", avatarUrl: "https://avatars.example/u/1" },
                       reactionGroups: [reactionGroup("EYES", 3)],
                     },
                   ],
@@ -121,14 +122,23 @@ describe("decodeGitHubPullRequestConversationJson", () => {
     assert.deepStrictEqual(conversation.reviewThreads[0]?.comments[0]?.reactions, [
       { content: "thumbs-up", count: 1, viewerReacted: true },
     ]);
+    assert.deepStrictEqual(conversation.reviewThreads[0]?.comments[0]?.author, {
+      login: "hubot",
+      isBot: false,
+      avatarUrl: "https://avatars.example/u/2",
+    });
     assert.equal(conversation.reviewThreads[1]?.comments[0]?.viewerIsAuthor, true);
+    // The JSON read names no picture, so the conversation carries the author
+    // GraphQL answered with alongside the reactions.
     assert.deepStrictEqual(conversation.annotationsByCommentId.get("IC_1"), {
       reactions: [{ content: "eyes", count: 3, viewerReacted: false }],
       viewerIsAuthor: true,
+      author: { login: "octocat", isBot: false, avatarUrl: "https://avatars.example/u/1" },
     });
     assert.deepStrictEqual(conversation.annotationsByCommentId.get("PRR_1"), {
       reactions: [],
       viewerIsAuthor: false,
+      author: null,
     });
   });
 });
@@ -255,8 +265,9 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
     baseRefName: "main",
     additions: 8,
     deletions: 2,
+    mergeable: "CONFLICTING",
     reviewDecision: "CHANGES_REQUESTED",
-    author: { login: "octocat" },
+    author: { login: "octocat", avatarUrl: "https://avatars.example/u/1" },
     repository: { nameWithOwner: "openai/codex" },
     labels: { nodes: [{ name: "bug", color: "d73a4a" }] },
     reviewRequests: { nodes: [{ requestedReviewer: { login: "hubot" } }] },
@@ -277,7 +288,9 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
         number: 12,
         title: "Teach the runner to wait",
         url: "https://github.com/openai/codex/pull/12",
-        author: { login: "octocat", isBot: false },
+        // The search selects the picture, so no row needs looking up.
+        author: { login: "octocat", isBot: false, avatarUrl: "https://avatars.example/u/1" },
+        authorId: null,
         headBranch: "fix/waiting",
         baseBranch: "main",
         state: "open",
@@ -289,6 +302,7 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
         reviewRequestedLogins: ["hubot"],
         reviewDecision: "changes-requested",
         checksState: "failure",
+        mergeability: "conflicting",
         labels: [{ name: "bug", color: "d73a4a" }],
         repository: "openai/codex",
       },

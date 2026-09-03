@@ -6,8 +6,10 @@ import {
   NonNegativeInt,
   PositiveInt,
   TrimmedNonEmptyString,
+  type PullRequestActor,
   type PullRequestCheckStatus,
   type PullRequestChecksState,
+  type PullRequestMergeability,
   type PullRequestReviewDecision,
   type PullRequestState,
 } from "@threadlines/contracts";
@@ -33,6 +35,7 @@ export const GITHUB_PULL_REQUEST_LIST_FIELDS = [
   "createdAt",
   "updatedAt",
   "mergedAt",
+  "mergeable",
   "reviewDecision",
   "reviewRequests",
   "labels",
@@ -45,7 +48,13 @@ export interface GitHubPullRequestListRow {
   readonly number: number;
   readonly title: string;
   readonly url: string;
-  readonly author: { readonly login: string; readonly isBot: boolean } | null;
+  /** `avatarUrl` is null until the provider resolves it; `gh` reports none. */
+  readonly author: PullRequestActor | null;
+  /**
+   * The author's node id, which is how an account whose picture cannot be
+   * derived from its login is looked up. Null where the host named none.
+   */
+  readonly authorId: string | null;
   readonly headBranch: string;
   readonly baseBranch: string;
   readonly state: PullRequestState;
@@ -58,6 +67,8 @@ export interface GitHubPullRequestListRow {
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   readonly reviewDecision?: PullRequestReviewDecision;
   readonly checksState?: PullRequestChecksState;
+  /** Absent where the host said nothing about whether the branch still merges. */
+  readonly mergeability?: PullRequestMergeability;
   readonly labels: ReadonlyArray<{ readonly name: string; readonly color: string | null }>;
 }
 
@@ -65,6 +76,10 @@ export const GitHubAuthorSchema = Schema.Struct({
   login: Schema.String,
   is_bot: Schema.optional(Schema.NullOr(Schema.Boolean)),
   isBot: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  /** The node id `gh` reports beside a login, and GraphQL looks an account up by. */
+  id: Schema.optional(Schema.NullOr(Schema.String)),
+  /** GraphQL selects it; `gh pr list --json author` never carries one. */
+  avatarUrl: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const GitHubLabelSchema = Schema.Struct({
@@ -107,6 +122,7 @@ export const GitHubPullRequestListRowSchema = Schema.Struct({
   deletions: Schema.optional(Schema.NullOr(NonNegativeInt)),
   createdAt: TrimmedNonEmptyString,
   updatedAt: TrimmedNonEmptyString,
+  mergeable: Schema.optional(Schema.NullOr(Schema.String)),
   reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
   reviewRequests: Schema.optional(Schema.NullOr(Schema.Array(GitHubReviewRequestSchema))),
   labels: Schema.optional(Schema.NullOr(Schema.Array(GitHubLabelSchema))),
@@ -130,12 +146,45 @@ export function nonEmptyText(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-/** The `PullRequestActor` behind a `gh` author object, or null when unnamed. */
+/**
+ * The `PullRequestActor` behind a `gh` author object, or null when unnamed.
+ * `avatarUrl` is whatever the payload carried: GraphQL selects one, while
+ * `gh pr view --json` reports none and leaves the picture to be resolved.
+ */
 export function normalizeActor(
   raw: Schema.Schema.Type<typeof GitHubAuthorSchema> | null | undefined,
-): { readonly login: string; readonly isBot: boolean } | null {
+): PullRequestActor | null {
   const login = nonEmptyText(raw?.login);
-  return login === null ? null : { login, isBot: raw?.is_bot === true || raw?.isBot === true };
+  return login === null
+    ? null
+    : {
+        login,
+        isBot: raw?.is_bot === true || raw?.isBot === true,
+        avatarUrl: nonEmptyText(raw?.avatarUrl),
+      };
+}
+
+/** The node id beside a `gh` author, which is what an avatar lookup addresses. */
+export function actorNodeId(
+  raw: Schema.Schema.Type<typeof GitHubAuthorSchema> | null | undefined,
+): string | null {
+  return nonEmptyText(raw?.id);
+}
+
+/** How GitHub says a branch stands against its base, in the contract's words. */
+export function normalizeMergeability(
+  value: string | null | undefined,
+): PullRequestMergeability | undefined {
+  switch (value?.trim().toUpperCase()) {
+    case "MERGEABLE":
+      return "mergeable";
+    case "CONFLICTING":
+      return "conflicting";
+    case "UNKNOWN":
+      return "unknown";
+    default:
+      return undefined;
+  }
 }
 
 function normalizeState(raw: {
@@ -222,12 +271,14 @@ export function normalizeGitHubPullRequestListRow(
 ): GitHubPullRequestListRow {
   const reviewDecision = normalizeReviewDecision(raw.reviewDecision);
   const checksState = normalizeChecksState(raw.statusCheckRollup);
+  const mergeability = normalizeMergeability(raw.mergeable);
 
   return {
     number: raw.number,
     title: raw.title,
     url: raw.url,
     author: normalizeActor(raw.author),
+    authorId: actorNodeId(raw.author),
     headBranch: raw.headRefName,
     baseBranch: raw.baseRefName,
     state: normalizeState(raw),
@@ -246,6 +297,7 @@ export function normalizeGitHubPullRequestListRow(
     }),
     ...(reviewDecision === undefined ? {} : { reviewDecision }),
     ...(checksState === undefined ? {} : { checksState }),
+    ...(mergeability === undefined ? {} : { mergeability }),
     labels: (raw.labels ?? []).flatMap((label) => {
       const name = nonEmptyText(label.name);
       return name === null ? [] : [{ name, color: nonEmptyText(label.color) }];

@@ -387,6 +387,11 @@ function toEntry(input: {
     viewerReviewRequested: row.reviewRequestedLogins.some(matchesViewer),
     ...(row.reviewDecision === undefined ? {} : { reviewDecision: row.reviewDecision }),
     ...(row.checksState === undefined ? {} : { checksState: row.checksState }),
+    // A host that has not finished checking says "unknown", which the row
+    // carries as nothing at all rather than as an answer.
+    ...(row.mergeability === undefined || row.mergeability === "unknown"
+      ? {}
+      : { mergeability: row.mergeability }),
     labels: row.labels,
     origin: input.origin,
   };

@@ -65,7 +65,14 @@ describe("decodeBitbucketPullRequestPageJson", () => {
         JSON.stringify({
           values: [
             pullRequest({
-              reviewers: [{ uuid: "{abc}", nickname: "hubot" }, { nickname: "nouuid" }],
+              reviewers: [
+                {
+                  uuid: "{abc}",
+                  nickname: "hubot",
+                  links: { avatar: { href: "https://avatars.example/hubot" } },
+                },
+                { nickname: "nouuid" },
+              ],
               participants: [
                 {
                   user: { nickname: "hubot" },
@@ -80,7 +87,9 @@ describe("decodeBitbucketPullRequestPageJson", () => {
       ),
     );
 
-    assert.deepStrictEqual(page.items[0]?.reviewers, [{ id: "{abc}", login: "hubot" }]);
+    assert.deepStrictEqual(page.items[0]?.reviewers, [
+      { id: "{abc}", login: "hubot", avatarUrl: "https://avatars.example/hubot" },
+    ]);
     assert.deepStrictEqual(
       page.items[0]?.reviews.map((review) => [review.author?.login, review.reviewState]),
       [["hubot", "changes-requested"]],

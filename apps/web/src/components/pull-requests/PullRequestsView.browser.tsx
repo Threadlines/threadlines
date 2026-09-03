@@ -76,7 +76,7 @@ function makeEntry(overrides: Partial<PullRequestListEntry> = {}): PullRequestLi
     number: 1,
     title: "Add the pull requests page",
     url: "https://github.com/threadlines/threadlines/pull/1",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     headBranch: "feature/pull-requests",
     baseBranch: "main",
     state: "open",
@@ -122,7 +122,7 @@ function makeDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDeta
     title: "Add the pull requests page",
     body: "",
     url: "https://github.com/threadlines/threadlines/pull/1",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     state: "open",
     isDraft: false,
     mergeability: "mergeable",
@@ -399,7 +399,11 @@ describe("PullRequestsView", () => {
       viewer: "ada",
       entries: [
         makeEntry({ number: 1, title: "Mine", viewerIsAuthor: true }),
-        makeEntry({ number: 2, title: "Someone else's", author: { login: "grace", isBot: false } }),
+        makeEntry({
+          number: 2,
+          title: "Someone else's",
+          author: { login: "grace", isBot: false, avatarUrl: null },
+        }),
       ],
       errors: [],
     });

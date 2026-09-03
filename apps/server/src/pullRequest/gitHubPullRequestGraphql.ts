@@ -3,6 +3,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import type {
+  PullRequestActor,
   PullRequestListState,
   PullRequestReaction,
   PullRequestReactionContent,
@@ -56,7 +57,7 @@ export const PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY = `query($owner: String!, $
           comments(first: ${GRAPHQL_PAGE_SIZE}) {
             nodes {
               id
-              author { login }
+              author { login avatarUrl }
               body
               createdAt
               url
@@ -67,10 +68,10 @@ export const PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY = `query($owner: String!, $
         }
       }
       comments(first: ${GRAPHQL_PAGE_SIZE}) {
-        nodes { id viewerDidAuthor ${REACTION_GROUPS_FIELDS} }
+        nodes { id viewerDidAuthor author { login avatarUrl } ${REACTION_GROUPS_FIELDS} }
       }
       reviews(first: ${GRAPHQL_PAGE_SIZE}) {
-        nodes { id viewerDidAuthor ${REACTION_GROUPS_FIELDS} }
+        nodes { id viewerDidAuthor author { login avatarUrl } ${REACTION_GROUPS_FIELDS} }
       }
     }
   }
@@ -123,8 +124,9 @@ export const AUTHORED_PULL_REQUESTS_GRAPHQL_QUERY = `query($q: String!, $first: 
         baseRefName
         additions
         deletions
+        mergeable
         reviewDecision
-        author { login }
+        author { login avatarUrl }
         repository { nameWithOwner }
         labels(first: ${AUTHORED_CONNECTION_PAGE_SIZE}) { nodes { name color } }
         reviewRequests(first: ${AUTHORED_CONNECTION_PAGE_SIZE}) {
@@ -158,16 +160,16 @@ export function gitHubAuthoredSearchQuery(input: {
 export const REVIEWER_CANDIDATES_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     assignableUsers(first: ${GRAPHQL_PAGE_SIZE}) {
-      nodes { login name }
+      nodes { login name avatarUrl }
     }
     pullRequest(number: $number) {
       author { login }
       reviewRequests(first: ${GRAPHQL_PAGE_SIZE}) {
         nodes {
           requestedReviewer {
-            ... on User { login name }
-            ... on Team { slug name }
-            ... on Bot { login }
+            ... on User { login name avatarUrl }
+            ... on Team { slug name avatarUrl }
+            ... on Bot { login avatarUrl }
           }
         }
       }
@@ -238,11 +240,20 @@ export const UPDATE_REVIEW_COMMENT_GRAPHQL_MUTATION = `mutation($commentId: ID!,
   }
 }`;
 
+/** A list of ids is a variable too: one read asks about a batch of accounts. */
+export type GitHubGraphQlVariable = string | number | boolean | null | ReadonlyArray<string>;
+
 const GraphQlRequestSchema = Schema.Struct({
   query: Schema.String,
   variables: Schema.Record(
     Schema.String,
-    Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null]),
+    Schema.Union([
+      Schema.String,
+      Schema.Number,
+      Schema.Boolean,
+      Schema.Null,
+      Schema.Array(Schema.String),
+    ]),
   ),
 });
 
@@ -255,7 +266,7 @@ const encodeGraphQlRequest = Schema.encodeSync(Schema.fromJsonString(GraphQlRequ
  */
 export function encodeGraphQlRequestJson(input: {
   readonly query: string;
-  readonly variables: Readonly<Record<string, string | number | boolean | null>>;
+  readonly variables: Readonly<Record<string, GitHubGraphQlVariable>>;
 }): string {
   return encodeGraphQlRequest({ query: input.query, variables: { ...input.variables } });
 }
@@ -336,6 +347,7 @@ const RawThreadCommentSchema = Schema.Struct({
 const RawAnnotatedNodeSchema = Schema.Struct({
   id: Schema.optional(Schema.NullOr(Schema.String)),
   viewerDidAuthor: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  author: Schema.optional(Schema.NullOr(GitHubAuthorSchema)),
   reactionGroups: RawReactionGroupsSchema,
 });
 
@@ -386,6 +398,8 @@ const RawConversationSchema = Schema.Struct({
 export interface GitHubCommentAnnotation {
   readonly reactions: ReadonlyArray<PullRequestReaction>;
   readonly viewerIsAuthor: boolean;
+  /** The author with their picture, which `gh pr view --json` never carries. */
+  readonly author: PullRequestActor | null;
 }
 
 /** Everything one activity read learns from GraphQL, keyed the way it is used. */
@@ -459,6 +473,7 @@ export function decodeGitHubPullRequestConversationJson(
     annotationsByCommentId.set(id, {
       reactions: toReactions(node.reactionGroups),
       viewerIsAuthor: node.viewerDidAuthor === true,
+      author: normalizeActor(node.author),
     });
   }
 
@@ -523,6 +538,7 @@ const RawAuthoredNodeSchema = Schema.Struct({
   baseRefName: Schema.optional(Schema.NullOr(Schema.String)),
   additions: Schema.optional(Schema.NullOr(Schema.Number)),
   deletions: Schema.optional(Schema.NullOr(Schema.Number)),
+  mergeable: Schema.optional(Schema.NullOr(Schema.String)),
   reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
   author: Schema.optional(Schema.NullOr(GitHubAuthorSchema)),
   repository: Schema.optional(
@@ -624,6 +640,7 @@ function toGitHubListRowShape(node: RawAuthoredNode): unknown {
     deletions: node.deletions,
     createdAt: node.createdAt,
     updatedAt: node.updatedAt,
+    mergeable: node.mergeable,
     reviewDecision: node.reviewDecision,
     reviewRequests: (node.reviewRequests?.nodes ?? []).map((request) => ({
       login: request?.requestedReviewer?.login ?? null,
@@ -720,6 +737,7 @@ const RawRequestedReviewerSchema = Schema.Struct({
   login: Schema.optional(Schema.NullOr(Schema.String)),
   slug: Schema.optional(Schema.NullOr(Schema.String)),
   name: Schema.optional(Schema.NullOr(Schema.String)),
+  avatarUrl: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const RawReviewerCandidatesSchema = Schema.Struct({
@@ -787,6 +805,7 @@ export function decodeGitHubReviewerCandidatesJson(
       kind,
       login: id,
       name: nonEmptyText(node.requestedReviewer?.name),
+      avatarUrl: nonEmptyText(node.requestedReviewer?.avatarUrl),
       requested: true,
     });
   }
@@ -805,6 +824,7 @@ export function decodeGitHubReviewerCandidatesJson(
       kind: "user",
       login,
       name: nonEmptyText(node?.name),
+      avatarUrl: nonEmptyText(node?.avatarUrl),
       requested: false,
     });
   }

@@ -79,8 +79,8 @@ describe("decodeGitHubPullRequestDetailJson", () => {
     });
 
     assert.deepStrictEqual(detail.reviewers, [
-      { id: "hubot", kind: "user", login: "hubot", state: "pending" },
-      { id: "monalisa", kind: "user", login: "monalisa", state: "approved" },
+      { id: "hubot", kind: "user", login: "hubot", state: "pending", avatarUrl: null },
+      { id: "monalisa", kind: "user", login: "monalisa", state: "approved", avatarUrl: null },
     ]);
   });
 

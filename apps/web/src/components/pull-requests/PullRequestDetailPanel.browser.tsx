@@ -89,7 +89,7 @@ const DETAIL: PullRequestDetail = {
   title: "Read a pull request in the app",
   body: "Adds the detail surface.",
   url: "https://github.com/threadlines/threadlines/pull/42",
-  author: { login: "ada", isBot: false },
+  author: { login: "ada", isBot: false, avatarUrl: null },
   state: "open",
   isDraft: false,
   mergeability: "mergeable",
@@ -103,7 +103,7 @@ const DETAIL: PullRequestDetail = {
   mergedAt: null,
   closedAt: null,
   viewerIsAuthor: true,
-  reviewers: [{ id: "grace", kind: "user", login: "grace", state: "pending" }],
+  reviewers: [{ id: "grace", kind: "user", login: "grace", state: "pending", avatarUrl: null }],
   labels: [],
   checks: [
     { name: "build", status: "success", description: "Passed in 2m", url: null },
@@ -132,7 +132,7 @@ const THREAD: PullRequestReviewThread = {
   comments: [
     {
       id: "thread-comment-1",
-      author: { login: "grace", isBot: false },
+      author: { login: "grace", isBot: false, avatarUrl: null },
       body: "Name this something else.",
       createdAt: "2026-09-01T11:30:00.000Z",
       url: null,
@@ -146,7 +146,7 @@ function makeComment(id: string, createdAt: string, body = `body ${id}`): PullRe
   return {
     id,
     kind: "issue-comment",
-    author: { login: "grace", isBot: false },
+    author: { login: "grace", isBot: false, avatarUrl: null },
     body,
     createdAt,
     url: null,
@@ -199,7 +199,14 @@ async function renderPanel(
       updateComment: vi.fn(async () => undefined),
       reviewerCandidates: vi.fn(async () => ({
         candidates: [
-          { id: "grace", kind: "user" as const, login: "grace", name: "Grace H", requested: false },
+          {
+            id: "grace",
+            kind: "user" as const,
+            login: "grace",
+            name: "Grace H",
+            avatarUrl: null,
+            requested: false,
+          },
         ],
       })),
       requestReviewers,
