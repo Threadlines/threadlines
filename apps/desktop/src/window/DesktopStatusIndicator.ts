@@ -1,4 +1,8 @@
-import type { DesktopMenuActionPayload, DesktopTaskbarStatusInput } from "@threadlines/contracts";
+import type {
+  DesktopMenuActionPayload,
+  DesktopTaskbarStatusInput,
+  DesktopTaskbarThreadSummary,
+} from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -126,6 +130,17 @@ function resolveStatusMenuSublabel(input: DesktopTaskbarStatusInput): string {
 
 function createDefaultStatus(): DesktopTaskbarStatusInput {
   return { status: "idle", description: "No active agent sessions" };
+}
+
+function describeThreadMenuState(state: DesktopTaskbarThreadSummary["state"]): string {
+  switch (state) {
+    case "running":
+      return "running";
+    case "waiting":
+      return "waiting on background tasks";
+    case "completed":
+      return "completed";
+  }
 }
 
 function truncateThreadMenuLabel(title: string): string {
@@ -324,7 +339,7 @@ const make = Effect.gen(function* () {
       .map((thread) => ({
         label: truncateThreadMenuLabel(thread.title),
         icon: thread.state === "completed" ? images.menuCompleted : images.menuRunning,
-        toolTip: `${thread.title.trim()} — ${thread.state === "completed" ? "completed" : "running"}`,
+        toolTip: `${thread.title.trim()} — ${describeThreadMenuState(thread.state)}`,
         click: () =>
           runTrayEffect(
             "open-thread",

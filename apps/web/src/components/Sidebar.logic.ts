@@ -8,7 +8,7 @@ import {
   type ThreadSortInput,
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
-import { isLatestTurnSettled } from "../session-logic";
+import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -358,8 +358,7 @@ export function resolveThreadStatusPill(input: {
 
   // Settled turn with provider tasks still running: the provider will start
   // the thread back up on its own when they finish.
-  const pendingBackgroundTaskCount = thread.session?.pendingBackgroundTaskCount ?? 0;
-  if (pendingBackgroundTaskCount > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
+  if (isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)) {
     return {
       label: "Background",
       colorClass: "text-cyan-600 dark:text-cyan-300/90",

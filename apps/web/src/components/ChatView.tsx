@@ -87,6 +87,7 @@ import {
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  isWaitingOnBackgroundTasks,
   formatElapsed,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
@@ -1396,8 +1397,10 @@ export default function ChatView(props: ChatViewProps) {
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   // Same rule as the sidebar's "Background" pill: settled, but a provider
   // task will start the thread back up on its own.
-  const isWaitingOnBackgroundTasks =
-    latestTurnSettled && (activeThread?.session?.pendingBackgroundTaskCount ?? 0) > 0;
+  const waitingOnBackgroundTasks = isWaitingOnBackgroundTasks(
+    activeLatestTurn,
+    activeThread?.session ?? null,
+  );
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -6691,7 +6694,7 @@ export default function ChatView(props: ChatViewProps) {
               key={activeThread.id}
               emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
               isWorking={isWorking}
-              isWaitingOnBackgroundTasks={isWaitingOnBackgroundTasks}
+              isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}
