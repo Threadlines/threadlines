@@ -14,6 +14,7 @@ import { TooltipWrapper } from "../ui/tooltip";
 import type {
   PullRequestActor,
   PullRequestChecksState,
+  PullRequestReviewDecision,
   PullRequestReviewerState,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
@@ -25,6 +26,9 @@ import {
   CircleDotIcon,
   CircleXIcon,
   MinusIcon,
+  UserRoundCheckIcon,
+  UserRoundIcon,
+  UserRoundXIcon,
   XIcon,
 } from "lucide-react";
 
@@ -207,6 +211,83 @@ export function PullRequestChecksGlyph({
   readonly className?: string;
 }) {
   const presentation = pullRequestChecksTone(state);
+  if (presentation === null) {
+    return null;
+  }
+  return (
+    <TooltipWrapper tooltip={presentation.label}>
+      <span
+        className={cn(
+          "pointer-events-auto inline-flex shrink-0 items-center",
+          presentation.className,
+          className,
+        )}
+      >
+        <presentation.Icon aria-hidden className="size-3.5" />
+        <span className="sr-only">{presentation.label}</span>
+      </span>
+    </TooltipWrapper>
+  );
+}
+
+/**
+ * Where the reviewers stand, as a glyph: the same three words the Review filter
+ * uses, in the tones the checks glyph beside it already spends.
+ */
+const REVIEW_STATE_PRESENTATION = {
+  approved: {
+    label: "Approved",
+    Icon: UserRoundCheckIcon,
+    className: "text-emerald-600 dark:text-emerald-300/90",
+  },
+  "changes-requested": {
+    label: "Changes requested",
+    Icon: UserRoundXIcon,
+    className: "text-amber-600/90 dark:text-amber-400/80",
+  },
+  // Nobody has answered yet, which is a fact about the row rather than news:
+  // muted, the way the meta line around it is.
+  "review-required": {
+    label: "Review required",
+    Icon: UserRoundIcon,
+    className: "text-muted-foreground/70",
+  },
+} as const satisfies Record<
+  PullRequestReviewDecision,
+  { label: string; Icon: typeof UserRoundIcon; className: string }
+>;
+
+/**
+ * How a row's reviews read, or null when there is nothing to say. A review the
+ * host is waiting on from the viewer is review required whatever else it
+ * reports, since that is the part the viewer can act on.
+ */
+export function pullRequestReviewTone(input: {
+  readonly decision: PullRequestReviewDecision | undefined;
+  readonly reviewRequested: boolean | undefined;
+}): (typeof REVIEW_STATE_PRESENTATION)[PullRequestReviewDecision] | null {
+  if (input.reviewRequested === true) {
+    return REVIEW_STATE_PRESENTATION["review-required"];
+  }
+  return input.decision === undefined ? null : REVIEW_STATE_PRESENTATION[input.decision];
+}
+
+/**
+ * Where a list row would otherwise spend its meta line on a coloured word. The
+ * word stays for anyone who cannot see the colour, and is a tooltip away for
+ * everyone else, exactly as {@link PullRequestChecksGlyph} does beside it.
+ */
+export function PullRequestReviewGlyph({
+  decision,
+  reviewRequested,
+  className,
+}: {
+  readonly decision: PullRequestReviewDecision | undefined;
+  /** Whether the host is waiting on the viewer's own review of this row. */
+  readonly reviewRequested?: boolean;
+  readonly className?: string;
+}) {
+  const presentation = pullRequestReviewTone({ decision, reviewRequested });
   if (presentation === null) {
     return null;
   }

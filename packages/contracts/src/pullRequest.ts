@@ -81,6 +81,12 @@ export const PullRequestListEntry = Schema.Struct({
   updatedAt: IsoDateTime,
   viewerIsAuthor: Schema.Boolean,
   viewerReviewRequested: Schema.Boolean,
+  /**
+   * Push access on this row's repository: whether the viewer could merge it or
+   * update its branch at all. Absent where the host did not say, and a page
+   * reading it then keeps whatever it does for a host that never says.
+   */
+  viewerCanWrite: Schema.optionalKey(Schema.Boolean),
   /** Absent when the host reports no decision. */
   reviewDecision: Schema.optionalKey(PullRequestReviewDecision),
   /** Absent when there are no checks, or when checks were not requested. */

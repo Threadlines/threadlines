@@ -337,6 +337,34 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
     assert.equal(checksState(null), undefined);
   });
 
+  it("reads the viewer's rights on the repository the row is on", () => {
+    const viewerCanWrite = (permission: string | null) =>
+      decoded(
+        decodeGitHubAuthoredPullRequestsJson(
+          JSON.stringify({
+            data: {
+              search: {
+                nodes: [
+                  node({
+                    repository: { nameWithOwner: "openai/codex", viewerPermission: permission },
+                  }),
+                ],
+              },
+            },
+          }),
+        ),
+        "authored search",
+      )[0]?.viewerCanWrite;
+
+    assert.equal(viewerCanWrite("ADMIN"), true);
+    assert.equal(viewerCanWrite("MAINTAIN"), true);
+    assert.equal(viewerCanWrite("WRITE"), true);
+    assert.equal(viewerCanWrite("TRIAGE"), false);
+    assert.equal(viewerCanWrite("READ"), false);
+    // A search that names no permission is not an answer either way.
+    assert.equal(viewerCanWrite(null), undefined);
+  });
+
   it("drops a search hit that is not a pull request", () => {
     const rows = decoded(
       decodeGitHubAuthoredPullRequestsJson(

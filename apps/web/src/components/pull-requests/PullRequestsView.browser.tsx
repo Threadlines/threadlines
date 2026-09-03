@@ -526,7 +526,7 @@ describe("PullRequestsView", () => {
     await rendered.cleanup();
   });
 
-  it("draws the conflict, the checks and an author the host gave no picture for", async () => {
+  it("draws the conflict, the reviews, the checks and an author the host gave no picture for", async () => {
     const rendered = await renderPage({
       viewer: "ada",
       entries: [
@@ -535,6 +535,7 @@ describe("PullRequestsView", () => {
           title: "Bump the runner",
           author: { login: "dependabot[bot]", isBot: true, avatarUrl: null },
           mergeability: "conflicting",
+          reviewDecision: "approved",
           checksState: "failure",
           labels: [{ name: "dependencies", color: "0366d6" }],
         }),
@@ -545,8 +546,9 @@ describe("PullRequestsView", () => {
     await expect.element(page.getByText("Bump the runner")).toBeVisible();
     // The triangle stands in for the open glyph, and says so in words.
     expect(page.getByText("Conflicts with main").elements()).toHaveLength(1);
-    // The checks are a glyph, and it carries the words the row no longer spends
-    // its meta line on.
+    // The reviews and the checks are both glyphs, and each carries the words
+    // the row no longer spends its meta line on.
+    expect(page.getByText("Approved").elements()).toHaveLength(1);
     expect(page.getByText("Some checks failed").elements()).toHaveLength(1);
     // No picture to load, so the avatar is the login's first letter.
     expect(document.querySelectorAll("#pull-requests-list img")).toHaveLength(0);

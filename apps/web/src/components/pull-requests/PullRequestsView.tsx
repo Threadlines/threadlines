@@ -64,8 +64,10 @@ import {
   PullRequestActorAvatar,
   PullRequestChecksGlyph,
   PullRequestLabelPill,
+  PullRequestReviewGlyph,
   pullRequestChecksTone,
   pullRequestHostName,
+  pullRequestReviewTone,
 } from "./pullRequestPresentation";
 import {
   formatPullRequestSelection,
@@ -82,7 +84,6 @@ import {
   pullRequestFilterChips,
   pullRequestProjectFacets,
   requiresHostSignIn,
-  resolveNeedsYouReason,
   resolvePullRequestListSpan,
   resolveSignInHost,
   type PullRequestEntry,
@@ -931,7 +932,10 @@ function PullRequestRow({
     ...(conflictLabel ? [lowerFirst(conflictLabel)] : []),
     ...(checksLabel ? [lowerFirst(checksLabel)] : []),
   ].join(", ")}: ${entry.title}`;
-  const reason = resolveNeedsYouReason(entry);
+  const reviewTone = pullRequestReviewTone({
+    decision: entry.reviewDecision,
+    reviewRequested: entry.viewerReviewRequested,
+  });
   const openOnHostLabel = `Open on ${pullRequestHostName(entry.provider)}`;
   // Nothing here is checked out, so there is no thread to open and no branch to
   // check out into one; the repository is the only thing that places the row.
@@ -990,21 +994,6 @@ function PullRequestRow({
           },
         ]
       : []),
-    // The checks say for themselves that they failed, in a glyph at the end of
-    // the line; the rest of the reasons are review words with no glyph.
-    ...(reason && reason !== "Checks failing"
-      ? [
-          {
-            key: "reason",
-            fit: "whole" as const,
-            className:
-              reason === "Approved"
-                ? "text-emerald-600 dark:text-emerald-300/90"
-                : "text-amber-600/90 dark:text-amber-400/80",
-            content: reason,
-          },
-        ]
-      : []),
     ...(visibleLabels.length > 0
       ? [
           {
@@ -1025,6 +1014,24 @@ function PullRequestRow({
           },
         ]
       : []),
+    // Where the reviews stand and how the checks went, as two glyphs at the end
+    // of the line: the same pair on every row, in every group, so the eye finds
+    // them in the same place rather than reading a coloured word out of the
+    // meta. Both carry their words for anyone who cannot see the colour.
+    ...(reviewTone === null
+      ? []
+      : [
+          {
+            key: "review",
+            fit: "whole" as const,
+            content: (
+              <PullRequestReviewGlyph
+                decision={entry.reviewDecision}
+                reviewRequested={entry.viewerReviewRequested}
+              />
+            ),
+          },
+        ]),
     ...(entry.checksState === undefined
       ? []
       : [

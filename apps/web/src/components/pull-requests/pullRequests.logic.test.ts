@@ -192,6 +192,25 @@ describe("resolveNeedsYouReason", () => {
     );
   });
 
+  it("leaves the author's own row alone where they cannot push", () => {
+    // A contribution to someone else's repository: the approval is news, not
+    // something the author can act on, so it is not put in front of them.
+    expect(
+      resolveNeedsYouReason(
+        entry({ viewerIsAuthor: true, viewerCanWrite: false, reviewDecision: "approved" }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveNeedsYouReason(
+        entry({ viewerIsAuthor: true, viewerCanWrite: false, checksState: "failure" }),
+      ),
+    ).toBeNull();
+    // Reviewing takes no rights over the repository at all.
+    expect(
+      resolveNeedsYouReason(entry({ viewerCanWrite: false, viewerReviewRequested: true })),
+    ).toBe("Review required");
+  });
+
   it("says nothing about a merged or closed row", () => {
     expect(
       resolveNeedsYouReason(entry({ state: "merged", viewerReviewRequested: true })),
@@ -266,6 +285,25 @@ describe("groupPullRequests", () => {
     });
     expect(groups).toHaveLength(1);
     expect(groups[0]?.label).toBeNull();
+  });
+
+  it("files work on a repository the viewer cannot push to under Yours", () => {
+    const upstream = entry({
+      number: 1,
+      viewerIsAuthor: true,
+      viewerCanWrite: false,
+      reviewDecision: "approved",
+    });
+    const asked = entry({ number: 2, viewerCanWrite: false, viewerReviewRequested: true });
+
+    const groups = groupPullRequests({ entries: [upstream, asked], viewer: "ada", state: "open" });
+
+    expect(groups.map((group) => [group.label, group.entries.map((row) => row.number)])).toEqual([
+      ["Needs you", [2]],
+      ["Yours", [1]],
+    ]);
+    // The sidebar count reads the same rows the page groups.
+    expect(countNeedsYou([upstream, asked])).toBe(1);
   });
 
   it("counts only the rows that need the viewer", () => {

@@ -623,6 +623,13 @@ function findThreadListEntry(
 /**
  * Why this row is waiting on the user, or null when it is only news. First
  * match wins so a row states one thing rather than a list of conditions.
+ *
+ * Reviewing needs nothing but an account, so a review request always counts.
+ * The author-side reasons are all things the user answers by merging or
+ * landing the work, so they count only where the user may push: a contribution
+ * to someone else's repository is news however it is going, and belongs under
+ * Yours rather than in front of them. A host that does not say whether they may
+ * push is taken at its word and left as it was.
  */
 export function resolveNeedsYouReason(entry: PullRequestEntry): PullRequestNeedsYouReason | null {
   if (entry.state !== "open") {
@@ -631,7 +638,7 @@ export function resolveNeedsYouReason(entry: PullRequestEntry): PullRequestNeeds
   if (entry.viewerReviewRequested) {
     return "Review required";
   }
-  if (!entry.viewerIsAuthor) {
+  if (!entry.viewerIsAuthor || entry.viewerCanWrite === false) {
     return null;
   }
   if (entry.reviewDecision === "changes-requested") {
