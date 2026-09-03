@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 
 import { resolveChangeRequestPresentationForKind } from "../../sourceControlPresentation";
+import { pullRequestLabelColor } from "./pullRequests.logic";
 
 export const SECTION_LABEL_CLASS =
   "mb-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none";
@@ -123,6 +124,40 @@ export function PullRequestActorLabel({
   );
 }
 
+/**
+ * One label as the host paints it: a hairline pill with the label's own colour
+ * in the dot and nowhere else, so a row of them stays as quiet as the rest of
+ * the meta line. The pills are the page's one exception to the flat rule, and
+ * they earn it by naming what a colour alone cannot.
+ */
+export function PullRequestLabelPill({
+  name,
+  color,
+  className,
+}: {
+  readonly name: string;
+  readonly color: string | null;
+  /** The Summary's rows carry them at the surrounding `text-xs`. */
+  readonly className?: string;
+}) {
+  const dot = pullRequestLabelColor(color);
+  return (
+    <span
+      className={cn(
+        "inline-flex max-w-40 min-w-0 items-center gap-1 rounded-full border border-border/70 bg-muted/40 py-0 pl-1 pr-1.5 text-[10px] leading-3.5 text-muted-foreground",
+        className,
+      )}
+    >
+      <span
+        aria-hidden
+        className="size-2 shrink-0 rounded-full bg-muted-foreground"
+        {...(dot ? { style: { backgroundColor: dot } } : {})}
+      />
+      <span className="truncate">{name}</span>
+    </span>
+  );
+}
+
 /** The check rollup as a glyph: a colour and a word, no room for a sentence. */
 const CHECKS_STATE_PRESENTATION = {
   success: {
@@ -148,6 +183,18 @@ const CHECKS_STATE_PRESENTATION = {
 >;
 
 /**
+ * The glyph and words for a check rollup, for a surface that draws them itself
+ * rather than taking {@link PullRequestChecksGlyph} whole (the detail header,
+ * whose glyph sits inside a button of its own and must not carry a second
+ * tooltip). Null where the host reported no checks at all.
+ */
+export function pullRequestChecksTone(
+  state: PullRequestChecksState | "none" | undefined,
+): (typeof CHECKS_STATE_PRESENTATION)[PullRequestChecksState] | null {
+  return state === undefined || state === "none" ? null : CHECKS_STATE_PRESENTATION[state];
+}
+
+/**
  * Where a list row would otherwise spend its meta line on the words "Checks
  * failing". The word itself stays for anyone who cannot see the colour, and
  * for everyone else it is a tooltip away.
@@ -159,10 +206,10 @@ export function PullRequestChecksGlyph({
   readonly state: PullRequestChecksState | undefined;
   readonly className?: string;
 }) {
-  if (state === undefined) {
+  const presentation = pullRequestChecksTone(state);
+  if (presentation === null) {
     return null;
   }
-  const presentation = CHECKS_STATE_PRESENTATION[state];
   return (
     <TooltipWrapper tooltip={presentation.label}>
       <span
@@ -307,19 +354,30 @@ export function CloseDetailButton({
 export function PullRequestDetailSkeleton({ onClose }: { readonly onClose?: () => void }) {
   return (
     <div className="flex h-full min-h-0 flex-col" role="status" aria-label="Loading pull request">
-      <div className="shrink-0 px-4 pt-3 pb-2.5">
+      <div className="shrink-0 px-4 pt-2 pb-3">
+        {/* Row 1: the repository line, with the way out where the header keeps it. */}
         <div className="flex min-h-7 min-w-0 items-center gap-2">
-          {onClose ? <BackToListButton onClick={onClose} /> : null}
           <Skeleton className="size-4 shrink-0 rounded-full" />
-          <Skeleton className="h-3 w-7 shrink-0 rounded-full" />
-          <Skeleton className="h-3.5 w-full max-w-72 rounded-full" />
-          {onClose ? <CloseDetailButton className="ml-auto" onClick={onClose} /> : null}
+          <Skeleton className="h-3 w-40 shrink-0 rounded-full" />
+          <span className="ml-auto flex shrink-0 items-center">
+            {onClose ? <BackToListButton onClick={onClose} /> : null}
+            {onClose ? <CloseDetailButton onClick={onClose} /> : null}
+          </span>
         </div>
+        {/* Row 2: the title. */}
+        <Skeleton className="mt-1 h-4 w-full max-w-96 rounded-full" />
+        {/* Row 3: the author and when it last moved. */}
         <div className="mt-2 flex items-center gap-1.5">
-          <Skeleton className="h-2.5 w-24 rounded-full" />
-          <Skeleton className="h-2.5 w-3 rounded-full" />
+          <Skeleton className="size-4 shrink-0 rounded-full" />
           <Skeleton className="h-2.5 w-16 rounded-full" />
           <Skeleton className="h-2.5 w-20 rounded-full" />
+        </div>
+        {/* Row 4: base ← head, with the file count at the far end. */}
+        <div className="mt-3 flex items-center gap-1.5">
+          <Skeleton className="h-2.5 w-14 rounded-full" />
+          <Skeleton className="h-2.5 w-3 rounded-full" />
+          <Skeleton className="h-2.5 w-32 rounded-full" />
+          <Skeleton className="ml-auto h-2.5 w-20 rounded-full" />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-5 border-b border-border px-4 pt-1 pb-3">

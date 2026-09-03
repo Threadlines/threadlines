@@ -1185,6 +1185,27 @@ export function formatPullRequestChecksSummary(summary: PullRequestChecksSummary
   return parts.length === 0 ? "No checks reported." : parts.join(", ");
 }
 
+/**
+ * The check rollup in one phrase, for the header's tab strip: what is wrong if
+ * anything is, and otherwise how far along the run is. Failures outrank running
+ * the way the glyph beside it does, and skipped checks count towards the total
+ * without ever being the thing the phrase is about.
+ */
+export function formatPullRequestChecksHeadline(summary: PullRequestChecksSummary): string {
+  if (summary.total === 0) {
+    return "No checks reported";
+  }
+  if (summary.failing > 0) {
+    return `${summary.failing} of ${summary.total} failing`;
+  }
+  if (summary.pending > 0) {
+    return `${summary.pending} of ${summary.total} running`;
+  }
+  return summary.passing === summary.total
+    ? "All checks passed"
+    : `${summary.passing} of ${summary.total} passing`;
+}
+
 /** How each merge method reads in a menu item and in the confirm dialog. */
 export const PULL_REQUEST_MERGE_METHOD_LABELS: Readonly<Record<PullRequestMergeMethod, string>> = {
   merge: "Create a merge commit",
@@ -1642,6 +1663,22 @@ export function formatPullRequestBaseFreshness(
     return `Behind ${detail.baseBranch}`;
   }
   return `Behind ${detail.baseBranch} by ${detail.behindBy} ${detail.behindBy === 1 ? "commit" : "commits"}`;
+}
+
+/**
+ * The same fact as {@link formatPullRequestBaseFreshness}, short enough for the
+ * branch line to carry it after the head branch. The line already names the
+ * base, so this says only how far behind it the branch is.
+ */
+export function formatPullRequestBehindLabel(
+  detail: Pick<PullRequestDetail, "baseComparison" | "behindBy">,
+): string | null {
+  if (detail.baseComparison !== "behind") {
+    return null;
+  }
+  return detail.behindBy === null || detail.behindBy <= 0
+    ? "behind"
+    : `behind by ${detail.behindBy}`;
 }
 
 /** How each way of bringing a branch up to date reads in the update menu. */

@@ -18,6 +18,7 @@ import {
   buildReviewCommentHandoff,
   countNeedsYou,
   formatPullRequestBaseFreshness,
+  formatPullRequestChecksHeadline,
   formatPullRequestChecksSummary,
   groupPullRequests,
   groupTimelineRows,
@@ -718,6 +719,34 @@ describe("summarizePullRequestChecks", () => {
 
     expect(summary.state).toBe("none");
     expect(formatPullRequestChecksSummary(summary)).toBe("No checks reported.");
+  });
+
+  it("reads the rollup as one phrase for the header", () => {
+    const headline = (statuses: readonly ("pending" | "success" | "failure" | "skipped")[]) =>
+      formatPullRequestChecksHeadline(
+        summarizePullRequestChecks(
+          statuses.map((status, index) => check(`check-${index}`, status)),
+        ),
+      );
+    const times = <Value>(count: number, value: Value) =>
+      Array.from({ length: count }, () => value);
+
+    expect(headline([])).toBe("No checks reported");
+    expect(headline(times(16, "success" as const))).toBe("All checks passed");
+    // Skipped checks count towards the total but are never what it is about.
+    expect(headline([...times(13, "success" as const), ...times(3, "skipped" as const)])).toBe(
+      "13 of 16 passing",
+    );
+    expect(
+      headline([
+        ...times(3, "failure" as const),
+        ...times(4, "pending" as const),
+        ...times(9, "success" as const),
+      ]),
+    ).toBe("3 of 16 failing");
+    expect(headline([...times(9, "pending" as const), ...times(2, "success" as const)])).toBe(
+      "9 of 11 running",
+    );
   });
 });
 

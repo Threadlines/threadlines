@@ -34,6 +34,7 @@ import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc
 import { useStore } from "../../store";
 import { SidebarProvider } from "../ui/sidebar";
 import { PullRequestsView } from "./PullRequestsView";
+import { resetPullRequestTabsForTests } from "./pullRequestTabsStore";
 import {
   DEFAULT_PULL_REQUEST_SORT,
   EMPTY_PULL_REQUEST_FILTERS,
@@ -308,6 +309,9 @@ describe("PullRequestsView", () => {
   beforeEach(() => {
     resetAppAtomRegistryForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
+    // The strip is a session, not a render: one test's open tabs would
+    // otherwise still be open in the next one.
+    resetPullRequestTabsForTests();
     seedProject();
   });
 
@@ -372,6 +376,36 @@ describe("PullRequestsView", () => {
     await userEvent.click(page.getByRole("button", { name: "Close pull request details" }));
     expect(page.getByTestId("pull-requests-detail-column").elements()).toHaveLength(0);
     await expect.element(page.getByTestId("pull-requests-row")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("keeps both open pull requests as tabs and closes back onto the other", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({ number: 1, title: "First" }),
+        makeEntry({ number: 2, title: "Second" }),
+      ],
+      errors: [],
+    });
+
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #1: First" }));
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #2: Second" }));
+
+    const strip = page.getByTestId("pull-request-tab-strip");
+    await expect.element(strip.getByRole("tab", { name: /#1/ })).toBeVisible();
+    await expect.element(strip.getByRole("tab", { name: /#2/ })).toBeVisible();
+
+    // Closing the one on screen falls back to what is left rather than back to
+    // the bare list.
+    await userEvent.click(page.getByRole("button", { name: "Close pull request #2" }));
+
+    await vi.waitFor(() => {
+      expect(strip.getByRole("tab", { name: /#2/ }).elements()).toHaveLength(0);
+    });
+    await expect.element(strip.getByRole("tab", { name: /#1/ })).toBeVisible();
+    await expect.element(page.getByTestId("pull-requests-detail-column")).toBeVisible();
 
     await rendered.cleanup();
   });

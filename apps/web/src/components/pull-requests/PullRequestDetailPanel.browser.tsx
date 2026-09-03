@@ -310,7 +310,9 @@ describe("PullRequestDetailPanel", () => {
     const box = page.getByTestId("pull-request-comment-input");
     await expect.element(box).toBeVisible();
     await userEvent.fill(box, "Shipping this.");
-    await userEvent.click(page.getByRole("button", { name: "Comment" }));
+    // Exactly "Comment": the Summary now also carries a "1 comment" button
+    // that jumps to the conversation, and a substring match takes both.
+    await userEvent.click(page.getByRole("button", { name: "Comment", exact: true }));
 
     await vi.waitFor(() => {
       expect(rendered.comment).toHaveBeenCalledWith({ ...REFERENCE, body: "Shipping this." });
@@ -535,7 +537,15 @@ describe("PullRequestDetailPanel", () => {
         behindBy: 3,
       },
     });
-    await expect.element(page.getByText("Behind main by 3 commits")).toBeVisible();
+    // The branch line carries how far behind it is; the full sentence is its
+    // tooltip. Update branch takes the primary slot while it is behind, and the
+    // merge it displaces moves into the menu rather than disappearing.
+    await expect.element(page.getByTestId("pull-request-behind")).toHaveTextContent("behind by 3");
+    expect(page.getByTestId("pull-request-merge").elements()).toHaveLength(0);
+    await userEvent.click(page.getByRole("button", { name: "More pull request actions" }));
+    await expect.element(page.getByTestId("pull-request-merge-menu-item")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+
     await userEvent.click(page.getByTestId("pull-request-update-branch"));
     await userEvent.click(page.getByRole("menuitem", { name: "Rebase onto main" }));
 
@@ -602,6 +612,40 @@ describe("PullRequestDetailPanel", () => {
     expect(page.getByRole("button", { name: "Reopen" }).elements()).toHaveLength(0);
 
     await closed.cleanup();
+  });
+
+  it("copies the command that takes this branch on another machine", async () => {
+    const writeText = vi.fn(async () => undefined);
+    const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const rendered = await renderPanel();
+
+    try {
+      await userEvent.click(page.getByTestId("pull-request-checkout-command"));
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith("gh pr checkout 42");
+      });
+    } finally {
+      if (previous) {
+        Object.defineProperty(navigator, "clipboard", previous);
+      }
+      await rendered.cleanup();
+    }
+  });
+
+  it("folds the description away and back", async () => {
+    const rendered = await renderPanel();
+
+    await expect.element(page.getByText("Adds the detail surface.")).toBeVisible();
+    await userEvent.click(page.getByTestId("pull-request-description-toggle"));
+    await vi.waitFor(() => {
+      expect(page.getByText("Adds the detail surface.").elements()).toHaveLength(0);
+    });
+
+    await userEvent.click(page.getByTestId("pull-request-description-toggle"));
+    await expect.element(page.getByText("Adds the detail surface.")).toBeVisible();
+
+    await rendered.cleanup();
   });
 
   it("passes the delete-branch choice to the merge", async () => {
