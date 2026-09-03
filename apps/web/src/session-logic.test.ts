@@ -2685,6 +2685,81 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("carries the file path when a viewed image has no inline bytes", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "codex-view-image",
+        kind: "tool.completed",
+        summary: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\shot.png",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          data: {
+            item: {
+              id: "iv_789",
+              path: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\shot.png",
+              type: "imageView",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry).toMatchObject({
+      itemType: "image_view",
+      images: [
+        {
+          id: "iv_789",
+          name: "shot.png",
+          path: "C:\\Users\\wilfr\\AppData\\Local\\Temp\\shot.png",
+        },
+      ],
+    });
+    expect(entry?.images?.[0]?.previewUrl).toBeUndefined();
+  });
+
+  it("previews the image blocks a screenshot tool returned inline", () => {
+    const screenshotBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "mcp-screenshot",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "browser_screenshot",
+          data: {
+            toolName: "browser_screenshot",
+            input: {},
+            result: {
+              type: "tool_result",
+              tool_use_id: "toolu_shot",
+              content: [
+                { type: "text", text: "Captured the page." },
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: screenshotBase64 },
+                },
+              ],
+            },
+            item: { id: "toolu_shot" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.images).toEqual([
+      {
+        id: "toolu_shot",
+        name: "toolu_shot.png",
+        previewUrl: `data:image/png;base64,${screenshotBase64}`,
+      },
+    ]);
+  });
+
   it("extracts changed file paths for file-change tool activities", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

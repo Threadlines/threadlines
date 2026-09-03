@@ -50,6 +50,7 @@ import {
   type ExtensionMcpOAuthActionIntent,
 } from "./mcpAuthStatus";
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
+import { isImageFilePath } from "./lib/imageFilePaths";
 
 import type {
   ChatMessage,
@@ -76,7 +77,13 @@ export const PROVIDER_OPTIONS: Array<{
 export interface WorkLogImagePreview {
   id: string;
   name: string;
-  previewUrl: string;
+  /** Directly renderable source (a data, http, or blob url), when the provider
+   *  gave us the bytes. */
+  previewUrl?: string;
+  /** Where the image lives on the agent's machine, when the provider only named
+   *  it. The renderer loads it over the `projects.readFile` RPC; carrying the
+   *  path instead of the bytes keeps screenshots out of the stored event log. */
+  path?: string;
 }
 
 export interface ProviderAuthReconnectAction {
@@ -3790,6 +3797,52 @@ function extractToolTitle(payload: Record<string, unknown> | null): string | nul
   return semanticToolPresentation(payload)?.title ?? asTrimmedString(payload?.title);
 }
 
+/** The path a tool row names its image by, wherever the provider put it. */
+function imagePathFromPayload(payload: Record<string, unknown> | null): unknown {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const input = asRecord(data?.input ?? item?.input);
+  return (
+    item?.savedPath ??
+    item?.saved_path ??
+    item?.path ??
+    data?.savedPath ??
+    data?.path ??
+    input?.file_path ??
+    input?.filePath ??
+    input?.path
+  );
+}
+
+/**
+ * Image bytes a tool result carried inline, as `{mimeType, base64}` blocks.
+ *
+ * The Claude driver stores the raw `tool_result` block on the activity, so a
+ * screenshot tool's `{type: "image", source: {type: "base64", ...}}` content
+ * blocks are already here; reading them is what makes an MCP screenshot row a
+ * picture without the event log holding a second copy.
+ */
+function imageBlocksFromPayload(
+  payload: Record<string, unknown> | null,
+): Array<{ mimeType: string; base64: string }> {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const content = asRecord(data?.result ?? item?.result)?.content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.flatMap((entry) => {
+    const block = asRecord(entry);
+    const source = asRecord(block?.source);
+    if (block?.type !== "image" || source?.type !== "base64") {
+      return [];
+    }
+    const mimeType = asTrimmedString(source.media_type);
+    const base64 = asTrimmedString(source.data);
+    return mimeType && base64 ? [{ mimeType, base64 }] : [];
+  });
+}
+
 function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
   if (!isImagePreviewPayload(payload)) {
     return [];
@@ -3803,30 +3856,60 @@ function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogI
     asTrimmedString(data?.id) ??
     "generated-image";
   const result = asTrimmedString(item?.result ?? data?.result ?? payload?.result);
-  const path = item?.savedPath ?? item?.saved_path ?? item?.path ?? data?.savedPath ?? data?.path;
+  const path = imagePathFromPayload(payload);
+
+  const imageBlocks = imageBlocksFromPayload(payload);
+  if (imageBlocks.length > 0) {
+    return imageBlocks.map((block, index) => ({
+      id: index === 0 ? imageId : `${imageId}:${index}`,
+      name: generatedImageName({ id: imageId, mimeType: block.mimeType, path }),
+      previewUrl: `data:${block.mimeType};base64,${block.base64}`,
+    }));
+  }
+
   const source = result
     ? imageSourceFromValue(result, { allowBase64: true })
     : imageSourceFromValue(asTrimmedString(path) ?? "", { allowBase64: false });
 
-  if (!source) {
-    return [];
+  if (source) {
+    return [
+      {
+        id: imageId,
+        name: generatedImageName({
+          id: imageId,
+          mimeType: source.mimeType,
+          path,
+        }),
+        previewUrl: source.previewUrl,
+      },
+    ];
   }
 
-  return [
-    {
-      id: imageId,
-      name: generatedImageName({
+  // A local path is not a source the browser can load, but it is a source the
+  // renderer can fetch over the workspace RPC. Carrying the path here is what
+  // turns "Viewed image" and Claude's `Read` of a screenshot into a picture.
+  const localPath = asTrimmedString(path);
+  if (localPath && isImageFilePath(localPath)) {
+    return [
+      {
         id: imageId,
-        mimeType: source.mimeType,
-        path,
-      }),
-      previewUrl: source.previewUrl,
-    },
-  ];
+        name: generatedImageName({ id: imageId, mimeType: undefined, path }),
+        path: localPath,
+      },
+    ];
+  }
+
+  return [];
 }
 
 function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean {
   if (extractWorkLogItemType(payload) === "image_view") {
+    return true;
+  }
+  // A payload carrying image bytes needs no guessing from its name: a
+  // screenshot tool can be called anything (`browser_screenshot`,
+  // `take_screenshot`) and none of those words is "image".
+  if (imageBlocksFromPayload(payload).length > 0) {
     return true;
   }
 
@@ -3836,9 +3919,7 @@ function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean
   const namespace = asTrimmedString(item?.namespace ?? data?.namespace)?.toLowerCase();
   const tool = asTrimmedString(item?.tool ?? data?.tool)?.toLowerCase();
   const itemType = asTrimmedString(item?.type ?? data?.type)?.toLowerCase();
-  const path = asTrimmedString(
-    item?.savedPath ?? item?.saved_path ?? item?.path ?? data?.savedPath ?? data?.path,
-  )?.toLowerCase();
+  const path = asTrimmedString(imagePathFromPayload(payload))?.toLowerCase();
 
   return [title, namespace, tool, itemType, path].some(
     (value) =>
