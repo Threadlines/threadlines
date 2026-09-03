@@ -1179,6 +1179,18 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+/** When the model mis-closes the subject parameter of a task tool call
+ *  (`</subject>` instead of `</parameter>`), Claude Code's lenient tool-call
+ *  parser folds the following parameters into the subject string, so the whole
+ *  description lands in the plan step. Cut a stray closing tag that is followed
+ *  by another parameter or by the end of the string. */
+const LEAKED_PARAMETER_TAIL_PATTERN = /<\/[\w-]+>\s*(?:<parameter\b[\s\S]*)?$/;
+
+function taskSubject(value: unknown): string | undefined {
+  const subject = nonEmptyString(value);
+  return subject ? nonEmptyString(subject.replace(LEAKED_PARAMETER_TAIL_PATTERN, "")) : undefined;
+}
+
 type PlanTrackerTask = {
   readonly subject: string;
   readonly status: "pending" | "inProgress" | "completed";
@@ -1237,7 +1249,7 @@ function applyPlanTrackerToolInput(
 ): boolean {
   if (kind === "create") {
     const key = `${PROVISIONAL_PLAN_TASK_KEY_PREFIX}${toolUseId}`;
-    const subject = nonEmptyString(input.subject) ?? "Task";
+    const subject = taskSubject(input.subject) ?? "Task";
     const existing = planTracker.get(key);
     if (existing?.subject === subject) {
       return false;
@@ -1256,7 +1268,7 @@ function applyPlanTrackerToolInput(
     return planTracker.delete(taskId);
   }
   const status = planTrackerStatus(input.status);
-  const subject = nonEmptyString(input.subject);
+  const subject = taskSubject(input.subject);
   const existing = planTracker.get(taskId);
   if (!existing) {
     // Updates can reference tasks created before this process attached
@@ -1302,7 +1314,7 @@ function applyPlanTrackerToolResult(
         return false;
       }
       planTracker.set(taskId, {
-        subject: nonEmptyString(match?.[2]) ?? `Task #${taskId}`,
+        subject: taskSubject(match?.[2]) ?? `Task #${taskId}`,
         status: "pending",
       });
       return true;
@@ -1330,7 +1342,7 @@ function applyPlanTrackerToolResult(
     parsed.push([
       match[1] as string,
       {
-        subject: nonEmptyString(match[3]) ?? `Task #${match[1]}`,
+        subject: taskSubject(match[3]) ?? `Task #${match[1]}`,
         status: planTrackerStatus(match[2]) ?? "pending",
       },
     ]);
@@ -1550,7 +1562,7 @@ function summarizeToolRequest(
       break;
     }
     case "taskcreate": {
-      const subject = text(input.subject);
+      const subject = taskSubject(input.subject);
       if (subject) {
         return `Add task: ${subject.slice(0, 200)}`;
       }
@@ -1569,7 +1581,7 @@ function summarizeToolRequest(
         if (status === "inProgress") {
           return `Task #${taskId} started`;
         }
-        const subject = text(input.subject);
+        const subject = taskSubject(input.subject);
         if (subject) {
           return `Task #${taskId}: ${subject.slice(0, 200)}`;
         }
