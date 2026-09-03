@@ -2568,8 +2568,10 @@ describe("ClaudeAdapterLive", () => {
           index: 1,
           delta: {
             type: "input_json_delta",
+            // The model sometimes mis-closes the subject tag and the harness
+            // folds the next parameters into it; the plan step must stay clean.
             partial_json:
-              '{"subject":"Investigate flaky login test","description":"Find the race in the login spec"}',
+              '{"subject":"Investigate flaky login test</subject>\\n<parameter name=\\"description\\">Find the race in the login spec</parameter>\\n<parameter name=\\"activeForm\\">Investigating","description":"Find the race in the login spec"}',
           },
         },
       } as unknown as SDKMessage);
