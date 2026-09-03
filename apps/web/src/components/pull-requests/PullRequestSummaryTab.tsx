@@ -54,6 +54,7 @@ import {
   SECTION_LABEL_CLASS,
   TEXT_BUTTON_CLASS,
   TextChoice,
+  scrollPullRequestSummaryTo,
 } from "./pullRequestPresentation";
 import { formatPullRequestChecksSummary, summarizePullRequestChecks } from "./pullRequests.logic";
 
@@ -86,7 +87,7 @@ export function PullRequestSummaryTab({
   const comments = activity?.comments ?? null;
   const conversation = useRef<HTMLElement | null>(null);
   const scrollToConversation = useCallback(() => {
-    conversation.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    scrollPullRequestSummaryTo(conversation.current);
   }, []);
 
   return (

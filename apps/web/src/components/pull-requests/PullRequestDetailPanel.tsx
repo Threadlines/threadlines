@@ -89,6 +89,7 @@ import {
   TEXT_BUTTON_CLASS,
   pullRequestChecksTone,
   pullRequestHostName,
+  scrollPullRequestSummaryTo,
   changeRequestWord,
 } from "./pullRequestPresentation";
 import {
@@ -346,9 +347,9 @@ export function PullRequestDetailPanel({
     [detail.data?.checks],
   );
   const scrollToChecks = useCallback(() => {
-    panelRoot.current
-      ?.querySelector<HTMLElement>("[data-pull-request-checks]")
-      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    scrollPullRequestSummaryTo(
+      panelRoot.current?.querySelector<HTMLElement>("[data-pull-request-checks]") ?? null,
+    );
   }, []);
 
   // Below the two-column width the detail stands in for the list, so even a

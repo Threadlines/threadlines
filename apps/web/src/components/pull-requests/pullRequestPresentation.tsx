@@ -307,6 +307,22 @@ export function PullRequestReviewGlyph({
   );
 }
 
+/**
+ * Scrolls the Summary tab so `target` sits at its top. Only the Summary's own
+ * scroll box moves: `scrollIntoView` would also scroll every scrolling
+ * ancestor, which on the page shoved the whole shell up and left a blank band
+ * under it that nothing could scroll back from.
+ */
+export function scrollPullRequestSummaryTo(target: HTMLElement | null): void {
+  const scroller = target?.closest<HTMLElement>("[data-pull-request-summary-scroll]");
+  if (!target || !scroller) {
+    return;
+  }
+  const top =
+    scroller.scrollTop + target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  scroller.scrollTo({ top, behavior: "smooth" });
+}
+
 /** The dot that separates two facts on a meta line. */
 export function MetaSeparator() {
   return (
