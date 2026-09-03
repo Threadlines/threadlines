@@ -17,6 +17,7 @@ const handlerFor = (
     webContentsId,
     navigate,
     viewport: () => ({ width: 800, height: 600 }),
+    setViewport: () => {},
     onAgentPoint: () => {},
     tabs: () => [],
     selectTab: () => {},
@@ -73,6 +74,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: () => {},
         tabs: () => [],
         selectTab: () => {},
@@ -130,6 +132,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: (point) => points.push(point),
         tabs: () => [],
         selectTab: () => {},
@@ -156,6 +159,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: (point) => points.push(point),
         tabs: () => [],
         selectTab: () => {},
@@ -183,6 +187,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: () => {},
         onAgentActivity: (activity) => seen.push(activity),
         tabs: () => [],
@@ -197,6 +202,47 @@ describe("createPreviewAutomationHandler", () => {
     expect(seen[0]?.detail).toBe("120, 60 \u2192 300, 60");
   });
 
+  it("records an agent resize on the tab and answers with the size it asked for", async () => {
+    // Told to the guest alone, the page rendered at the new width inside a
+    // frame that still filled the panel, so it came out cropped -- and the
+    // answer reported the panel's size, so the agent read its resize as having
+    // done nothing and asked again.
+    const applied: unknown[] = [];
+    const seen: AgentActivity[] = [];
+    let fixed: { width: number | null; height: number | null } = { width: null, height: null };
+    const handle = createPreviewAutomationHandler(
+      {
+        previewSetViewport: (input: unknown) => {
+          applied.push(input);
+          return Promise.resolve();
+        },
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () =>
+          fixed.width !== null && fixed.height !== null
+            ? { width: fixed.width, height: fixed.height }
+            : { width: 800, height: 600 },
+        setViewport: (viewport) => {
+          fixed = viewport;
+        },
+        onAgentPoint: () => {},
+        onAgentActivity: (activity) => seen.push(activity),
+        tabs: () => [],
+        selectTab: () => {},
+      }),
+    );
+
+    const response = await handle(request("resize", { width: 1280, height: 800 }));
+
+    expect(applied).toEqual([{ webContentsId: 42, width: 1280, height: 800 }]);
+    expect(fixed).toEqual({ width: 1280, height: 800 });
+    expect(response.result).toMatchObject({ width: 1280, height: 800 });
+    expect(seen.at(-1)?.detail).toBe("1280\u00d7800");
+  });
+
   it("reports every tab, marking the user's and its own", async () => {
     // The agent pins itself to a tab. Without a way to see the others it
     // reports on the one it is pinned to and states that nothing else is open,
@@ -209,6 +255,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: () => {},
         onAgentActivity: () => {},
         selectTab: () => {},
@@ -270,6 +317,7 @@ describe("createPreviewAutomationHandler", () => {
       webContentsId: 42,
       navigate: () => Promise.resolve(),
       viewport: () => ({ width: 800, height: 600 }),
+      setViewport: () => {},
       onAgentPoint: () => {},
       onAgentActivity: () => {},
       selectTab: () => {},
@@ -322,6 +370,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: () => {},
         tabs: () => [],
         selectTab: () => {},
@@ -349,6 +398,7 @@ describe("createPreviewAutomationHandler", () => {
         webContentsId: 42,
         navigate: () => Promise.resolve(),
         viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
         onAgentPoint: () => {},
         tabs: () => [],
         selectTab: () => {},

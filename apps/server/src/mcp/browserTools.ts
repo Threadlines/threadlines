@@ -230,7 +230,7 @@ export const BrowserEvaluateTool = changesThePage(
 export const BrowserResizeTool = changesThePage(
   Tool.make("browser_resize", {
     description:
-      "Resize the page the user is looking at, to check a layout at a given width. Pass null for both to let it fill the panel and reflow with it. Returns the page state at the new size.",
+      "Set the page's CSS viewport, to check a layout at a given width. The panel scales the page down to fit beside the chat, so a desktop width stays whole on screen rather than cropped, and the user's window does not change. Pass null for both to let the page fill the panel and reflow with it. Returns the page state at the new size.",
     parameters: PreviewAutomationResizeInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
