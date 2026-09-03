@@ -4669,6 +4669,216 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("runs a task again when the SDK restarts it after a synthesized stop", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "resume the agent",
+        attachments: [],
+      });
+
+      // A fresh process learns of the previous session's background agent only
+      // from the SDK's "no completion record" notice: no spawn, no tool_use_id.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-restarted-agent",
+        status: "stopped",
+        summary:
+          'No completion record was found for background agent "Build step 4a" from the previous session.',
+        session_id: "sdk-session-restarted-agent",
+        uuid: "restarted-agent-lost-notification",
+      } as unknown as SDKMessage);
+
+      // The model sends the agent a message. The SDK runs the same task again
+      // under the resuming call and restates the spawn's flags there.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-restarted-agent",
+        tool_use_id: "tool-restart-resume-call",
+        description: "Build step 4a",
+        subagent_type: "general-purpose",
+        task_type: "local_agent",
+        spawn_depth: 1,
+        is_backgrounded: true,
+        session_id: "sdk-session-restarted-agent",
+        uuid: "restarted-agent-task-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-restarted-agent",
+        tool_use_id: "tool-restart-resume-call",
+        description: "Reading logic test conventions",
+        session_id: "sdk-session-restarted-agent",
+        uuid: "restarted-agent-task-progress",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-restarted-agent",
+        tool_use_id: "tool-restart-resume-call",
+        status: "completed",
+        summary: "Step 4a done.",
+        session_id: "sdk-session-restarted-agent",
+        uuid: "restarted-agent-second-notification",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-restarted-agent",
+        uuid: "result-restarted-agent",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+      // The new run reports as a run of its own: start, progress, completion.
+      const starts = runtimeEvents.filter(
+        (event) => event.type === "task.started" && event.payload.taskId === "task-restarted-agent",
+      );
+      assert.equal(starts.length, 1);
+      if (starts[0]?.type === "task.started") {
+        assert.equal(starts[0].payload.toolUseId, "tool-restart-resume-call");
+      }
+      const progress = runtimeEvents.filter(
+        (event) =>
+          event.type === "task.progress" && event.payload.taskId === "task-restarted-agent",
+      );
+      assert.equal(progress.length, 1);
+      const completions = runtimeEvents.filter(
+        (event) =>
+          event.type === "task.completed" && event.payload.taskId === "task-restarted-agent",
+      );
+      assert.equal(completions.length, 2);
+      if (completions[0]?.type === "task.completed") {
+        assert.equal(completions[0].payload.status, "stopped");
+      }
+      if (completions[1]?.type === "task.completed") {
+        assert.equal(completions[1].payload.status, "completed");
+        assert.equal(completions[1].payload.summary, "Step 4a done.");
+      }
+
+      // The restated flags describe a spawn this process never saw. A row
+      // keyed by the resuming call would be an agent that does not exist.
+      const flagUpdates = runtimeEvents.filter(
+        (event) => event.type === "subagent.metadata.updated",
+      );
+      assert.equal(flagUpdates.length, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("marks only agents as backgrounded when a task moves to the background", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run the suite and delegate",
+        attachments: [],
+      });
+
+      // A long shell command the harness moved to the background.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-background-command",
+        tool_use_id: "tool-background-command",
+        description: "Run the server suite",
+        task_type: "local_bash",
+        session_id: "sdk-session-backgrounded",
+        uuid: "background-command-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-background-command",
+        patch: { is_backgrounded: true },
+        session_id: "sdk-session-backgrounded",
+        uuid: "background-command-backgrounded",
+      } as unknown as SDKMessage);
+
+      // A foreground agent the user moved to the background.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-backgrounded-agent",
+        tool_use_id: "tool-backgrounded-agent",
+        description: "Review the diff",
+        subagent_type: "claude",
+        task_type: "local_agent",
+        session_id: "sdk-session-backgrounded",
+        uuid: "backgrounded-agent-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-backgrounded-agent",
+        patch: { is_backgrounded: true },
+        session_id: "sdk-session-backgrounded",
+        uuid: "backgrounded-agent-backgrounded",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-backgrounded",
+        uuid: "result-backgrounded",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const flagUpdates = runtimeEvents.filter(
+        (event) => event.type === "subagent.metadata.updated",
+      );
+      assert.equal(flagUpdates.length, 1);
+      if (flagUpdates[0]?.type === "subagent.metadata.updated") {
+        assert.equal(flagUpdates[0].payload.callId, "tool-backgrounded-agent");
+        assert.equal(flagUpdates[0].payload.isBackgrounded, true);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards authoritative background task snapshots without inferring edges", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
