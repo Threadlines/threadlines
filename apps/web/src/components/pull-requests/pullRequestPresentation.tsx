@@ -55,9 +55,13 @@ export const REVIEW_STATE_WORDS: Readonly<Record<PullRequestReviewerState, strin
 export const CHECK_TONES = {
   success: { Icon: CheckIcon, className: "text-success" },
   failure: { Icon: XIcon, className: "text-destructive" },
-  // A still glyph rather than a spinner: a long check run would repaint for
-  // minutes, and the row already says it is pending.
-  pending: { Icon: CircleDashedIcon, className: "text-muted-foreground/70" },
+  // A slow fade rather than a spinner: a long check run would spin for
+  // minutes, and an opacity fade is composited without a repaint. Off when
+  // the system asks for less motion.
+  pending: {
+    Icon: CircleDashedIcon,
+    className: "animate-pulse text-muted-foreground/70 motion-reduce:animate-none",
+  },
   skipped: { Icon: MinusIcon, className: "text-muted-foreground/50" },
 } as const;
 
@@ -174,12 +178,12 @@ const CHECKS_STATE_PRESENTATION = {
     Icon: CircleXIcon,
     className: "text-destructive",
   },
-  // A still glyph rather than a spinner: a check run takes minutes, and a
-  // repainting list row is not worth the frames.
+  // A slow fade rather than a spinner: a check run takes minutes, and an
+  // opacity fade is composited without a repaint. Off under reduced motion.
   pending: {
     label: "Checks running",
     Icon: CircleDotIcon,
-    className: "text-amber-600/90 dark:text-amber-400/80",
+    className: "animate-pulse text-amber-600/90 motion-reduce:animate-none dark:text-amber-400/80",
   },
 } as const satisfies Record<
   PullRequestChecksState,
