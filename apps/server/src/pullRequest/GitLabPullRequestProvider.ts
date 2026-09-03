@@ -375,13 +375,21 @@ export const make = Effect.fn("makeGitLabPullRequestProvider")(function* () {
             kind: "user",
             login: reviewer.login,
             state: approved.has(reviewer.login.toLowerCase()) ? "approved" : "pending",
+            avatarUrl: reviewer.avatarUrl,
           }));
           // Somebody may approve without having been asked, which GitLab
           // reports on the approvals endpoint alone.
           const listed = new Set(reviewers.map((reviewer) => reviewer.login.toLowerCase()));
           for (const login of approvals) {
             if (!listed.has(login.toLowerCase())) {
-              reviewers.push({ id: login, kind: "user", login, state: "approved" });
+              // The approvals endpoint names no picture with the account.
+              reviewers.push({
+                id: login,
+                kind: "user",
+                login,
+                state: "approved",
+                avatarUrl: null,
+              });
             }
           }
           return {

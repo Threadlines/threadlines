@@ -8,7 +8,11 @@ import * as Path from "effect/Path";
 
 import type { ProjectReadFileResult, ProjectWriteFileResult } from "@threadlines/contracts";
 
-import { IMAGE_MIME_TYPE_BY_EXTENSION, SAFE_IMAGE_FILE_EXTENSIONS } from "../../imageMime.ts";
+import {
+  detectRasterImageMimeType,
+  IMAGE_MIME_TYPE_BY_EXTENSION,
+  SAFE_IMAGE_FILE_EXTENSIONS,
+} from "../../imageMime.ts";
 import {
   WorkspaceFileSystem,
   WorkspaceFileSystemError,
@@ -127,12 +131,70 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
       }),
     );
 
-  const readFile: WorkspaceFileSystemShape["readFile"] = Effect.fn("WorkspaceFileSystem.readFile")(
-    function* (input) {
-      const target = yield* workspacePaths.resolveRelativePathWithinRoot({
+  /**
+   * Serves a target that resolved outside the workspace root, but only when its
+   * bytes really are a raster image.
+   *
+   * Agents save screenshots wherever the OS puts temp files, so a chat
+   * reference to one is ordinary and refusing it is exactly what leaves the
+   * picture blank. A client authenticated to this server already drives an
+   * agent with shell access on this machine, so handing it verified image bytes
+   * grants no capability it lacked. Everything else -- text, SVG (text too, so
+   * a renamed script sniffs as nothing), a `.png` that is not one, a missing
+   * path -- stays refused exactly as before.
+   */
+  const readImageOutsideRoot = Effect.fn("WorkspaceFileSystem.readImageOutsideRoot")(function* (
+    input: { readonly cwd: string; readonly relativePath: string },
+    absolutePath: string,
+  ) {
+    const rejectOutsideRoot = () =>
+      new WorkspacePathOutsideRootError({
         workspaceRoot: input.cwd,
         relativePath: input.relativePath,
       });
+
+    const targetStat = yield* fileSystem
+      .stat(absolutePath)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    if (
+      targetStat === null ||
+      targetStat.type !== "File" ||
+      Number(targetStat.size) > WORKSPACE_IMAGE_READ_MAX_BYTES
+    ) {
+      return yield* rejectOutsideRoot();
+    }
+
+    const bytes = yield* fileSystem
+      .readFile(absolutePath)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    const mimeType = bytes === null ? null : detectRasterImageMimeType(bytes);
+    if (bytes === null || mimeType === null) {
+      return yield* rejectOutsideRoot();
+    }
+
+    return {
+      kind: "image",
+      relativePath: input.relativePath,
+      mimeType,
+      base64: Buffer.from(bytes).toString("base64"),
+      size: bytes.length,
+    } satisfies ProjectReadFileResult;
+  });
+
+  const readFile: WorkspaceFileSystemShape["readFile"] = Effect.fn("WorkspaceFileSystem.readFile")(
+    function* (input) {
+      const target = yield* workspacePaths
+        .resolveRelativePathWithinRoot({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+        })
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (target === null) {
+        return yield* readImageOutsideRoot(
+          input,
+          path.resolve(input.cwd, input.relativePath.trim()),
+        );
+      }
 
       // Lexical checks above cannot see symlinks; compare real paths so reads
       // never follow a link out of the workspace root.
@@ -161,10 +223,7 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
         realRelativePath.startsWith(`..${path.sep}`) ||
         path.isAbsolute(realRelativePath)
       ) {
-        return yield* new WorkspacePathOutsideRootError({
-          workspaceRoot: input.cwd,
-          relativePath: input.relativePath,
-        });
+        return yield* readImageOutsideRoot(input, targetRealPath);
       }
 
       // Same NotFound handling as above: the file can vanish between the

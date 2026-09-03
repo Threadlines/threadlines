@@ -83,6 +83,11 @@ export interface ProviderChangeRequest {
   readonly labels: ReadonlyArray<PullRequestLabel>;
   /** Absent from a host that does not summarise its reviews. */
   readonly reviewDecision?: PullRequestReviewDecision;
+  /**
+   * Absent from a host a listing cannot ask about it without a request per row.
+   * `unknown` is the host saying it has not finished checking.
+   */
+  readonly mergeability?: PullRequestMergeability;
   /** Absent where there are no checks, or where the listing did not ask for them. */
   readonly checksState?: PullRequestChecksState;
 }
@@ -94,6 +99,13 @@ export interface ProviderChangeRequest {
 export interface ProviderAuthoredChangeRequest extends ProviderChangeRequest {
   /** Host-native repository identity, the same spelling a listing takes. */
   readonly repository: string;
+  /**
+   * Whether the viewer may push to that repository, where the search says so.
+   * A workspace row learns the same thing from {@link ProviderRepositoryAccess};
+   * a search covers repositories nobody here has checked out, so it has to
+   * carry the answer itself. Absent where the host named no permission.
+   */
+  readonly viewerCanWrite?: boolean;
 }
 
 export interface ProviderChangeRequestDetail extends ProviderChangeRequest {

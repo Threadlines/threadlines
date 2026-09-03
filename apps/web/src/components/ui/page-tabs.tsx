@@ -62,8 +62,12 @@ export function PageTabButton({
   );
 }
 
-/** Arrow keys walk the enclosing tablist and select the tab they land on. */
-function moveBetweenTabs(event: KeyboardEvent<HTMLButtonElement>) {
+/**
+ * Arrow keys walk the enclosing tablist and select the tab they land on.
+ * Exported for strips that draw their own tabs (the pull requests page's, which
+ * carries a close control per tab) but want the same keyboard behaviour.
+ */
+export function moveBetweenTabs(event: KeyboardEvent<HTMLButtonElement>) {
   const tablist = event.currentTarget.closest('[role="tablist"]');
   if (!tablist) return;
   const tabs = [...tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]')];

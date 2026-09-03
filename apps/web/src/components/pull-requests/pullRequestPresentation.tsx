@@ -5,13 +5,34 @@
  */
 import { getChangeRequestTerminologyForKind } from "@threadlines/shared/sourceControl";
 
+import { useState } from "react";
+
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
-import type { PullRequestReviewerState, SourceControlProviderKind } from "@threadlines/contracts";
-import { ArrowLeftIcon, CheckIcon, CircleDashedIcon, MinusIcon, XIcon } from "lucide-react";
+import { TooltipWrapper } from "../ui/tooltip";
+import type {
+  PullRequestActor,
+  PullRequestChecksState,
+  PullRequestReviewDecision,
+  PullRequestReviewerState,
+  SourceControlProviderKind,
+} from "@threadlines/contracts";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  CircleCheckIcon,
+  CircleDotIcon,
+  CircleXIcon,
+  MinusIcon,
+  UserRoundCheckIcon,
+  UserRoundIcon,
+  UserRoundXIcon,
+  XIcon,
+} from "lucide-react";
 
 import { resolveChangeRequestPresentationForKind } from "../../sourceControlPresentation";
+import { pullRequestLabelColor } from "./pullRequests.logic";
 
 export const SECTION_LABEL_CLASS =
   "mb-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none";
@@ -33,9 +54,13 @@ export const REVIEW_STATE_WORDS: Readonly<Record<PullRequestReviewerState, strin
 export const CHECK_TONES = {
   success: { Icon: CheckIcon, className: "text-success" },
   failure: { Icon: XIcon, className: "text-destructive" },
-  // A still glyph rather than a spinner: a long check run would repaint for
-  // minutes, and the row already says it is pending.
-  pending: { Icon: CircleDashedIcon, className: "text-muted-foreground/70" },
+  // A slow fade rather than a spinner: a long check run would spin for
+  // minutes, and an opacity fade is composited without a repaint. Off when
+  // the system asks for less motion.
+  pending: {
+    Icon: CircleDotIcon,
+    className: "animate-pulse text-amber-600/90 motion-reduce:animate-none dark:text-amber-400/80",
+  },
   skipped: { Icon: MinusIcon, className: "text-muted-foreground/50" },
 } as const;
 
@@ -47,6 +72,258 @@ export function pullRequestHostName(provider: SourceControlProviderKind): string
   return provider === "unknown"
     ? "the host"
     : resolveChangeRequestPresentationForKind(provider).providerName;
+}
+
+/**
+ * A person as the host draws them: their picture, or the first letter of their
+ * login while there is none. A picture that never arrives falls back to the
+ * same letter rather than leaving a broken image in the row.
+ */
+export function PullRequestActorAvatar({
+  actor,
+  className,
+}: {
+  readonly actor: PullRequestActor | null;
+  readonly className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const login = actor?.login ?? "ghost";
+  const avatarUrl = actor?.avatarUrl ?? null;
+
+  if (avatarUrl === null || failed) {
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[8px] font-medium text-muted-foreground",
+          className,
+        )}
+      >
+        {login.slice(0, 1).toUpperCase()}
+      </span>
+    );
+  }
+  return (
+    <img
+      aria-hidden
+      alt=""
+      src={avatarUrl}
+      loading="lazy"
+      className={cn("size-4 shrink-0 rounded-full bg-muted object-cover", className)}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+/** The avatar and the login together, as a row or a header names an author. */
+export function PullRequestActorLabel({
+  actor,
+  className,
+}: {
+  readonly actor: PullRequestActor | null;
+  readonly className?: string;
+}) {
+  return (
+    <span className={cn("flex min-w-0 items-center gap-1.5", className)}>
+      <PullRequestActorAvatar actor={actor} />
+      <span className="truncate">{actor?.login ?? "ghost"}</span>
+    </span>
+  );
+}
+
+/**
+ * One label as the host paints it: a hairline pill with the label's own colour
+ * in the dot and nowhere else, so a row of them stays as quiet as the rest of
+ * the meta line. The pills are the page's one exception to the flat rule, and
+ * they earn it by naming what a colour alone cannot.
+ */
+export function PullRequestLabelPill({
+  name,
+  color,
+  className,
+}: {
+  readonly name: string;
+  readonly color: string | null;
+  /** The Summary's rows carry them at the surrounding `text-xs`. */
+  readonly className?: string;
+}) {
+  const dot = pullRequestLabelColor(color);
+  return (
+    <span
+      className={cn(
+        "inline-flex max-w-40 min-w-0 items-center gap-1 rounded-full border border-border/70 bg-muted/40 py-0 pl-1 pr-1.5 text-[10px] leading-3.5 text-muted-foreground",
+        className,
+      )}
+    >
+      <span
+        aria-hidden
+        className="size-2 shrink-0 rounded-full bg-muted-foreground"
+        {...(dot ? { style: { backgroundColor: dot } } : {})}
+      />
+      <span className="truncate">{name}</span>
+    </span>
+  );
+}
+
+/** The check rollup as a glyph: a colour and a word, no room for a sentence. */
+const CHECKS_STATE_PRESENTATION = {
+  success: {
+    label: "All checks passed",
+    Icon: CircleCheckIcon,
+    className: "text-emerald-600 dark:text-emerald-300/90",
+  },
+  failure: {
+    label: "Some checks failed",
+    Icon: CircleXIcon,
+    className: "text-destructive",
+  },
+  // A slow fade rather than a spinner: a check run takes minutes, and an
+  // opacity fade is composited without a repaint. Off under reduced motion.
+  pending: {
+    label: "Checks running",
+    Icon: CircleDotIcon,
+    className: "animate-pulse text-amber-600/90 motion-reduce:animate-none dark:text-amber-400/80",
+  },
+} as const satisfies Record<
+  PullRequestChecksState,
+  { label: string; Icon: typeof CircleCheckIcon; className: string }
+>;
+
+/**
+ * The glyph and words for a check rollup, for a surface that draws them itself
+ * rather than taking {@link PullRequestChecksGlyph} whole (the detail header,
+ * whose glyph sits inside a button of its own and must not carry a second
+ * tooltip). Null where the host reported no checks at all.
+ */
+export function pullRequestChecksTone(
+  state: PullRequestChecksState | "none" | undefined,
+): (typeof CHECKS_STATE_PRESENTATION)[PullRequestChecksState] | null {
+  return state === undefined || state === "none" ? null : CHECKS_STATE_PRESENTATION[state];
+}
+
+/**
+ * Where a list row would otherwise spend its meta line on the words "Checks
+ * failing". The word itself stays for anyone who cannot see the colour, and
+ * for everyone else it is a tooltip away.
+ */
+export function PullRequestChecksGlyph({
+  state,
+  className,
+}: {
+  readonly state: PullRequestChecksState | undefined;
+  readonly className?: string;
+}) {
+  const presentation = pullRequestChecksTone(state);
+  if (presentation === null) {
+    return null;
+  }
+  return (
+    <TooltipWrapper tooltip={presentation.label}>
+      <span
+        className={cn(
+          "pointer-events-auto inline-flex shrink-0 items-center",
+          presentation.className,
+          className,
+        )}
+      >
+        <presentation.Icon aria-hidden className="size-3.5" />
+        <span className="sr-only">{presentation.label}</span>
+      </span>
+    </TooltipWrapper>
+  );
+}
+
+/**
+ * Where the reviewers stand, as a glyph: the same three words the Review filter
+ * uses, in the tones the checks glyph beside it already spends.
+ */
+const REVIEW_STATE_PRESENTATION = {
+  approved: {
+    label: "Approved",
+    Icon: UserRoundCheckIcon,
+    className: "text-emerald-600 dark:text-emerald-300/90",
+  },
+  "changes-requested": {
+    label: "Changes requested",
+    Icon: UserRoundXIcon,
+    className: "text-amber-600/90 dark:text-amber-400/80",
+  },
+  // Nobody has answered yet, which is a fact about the row rather than news:
+  // muted, the way the meta line around it is.
+  "review-required": {
+    label: "Review required",
+    Icon: UserRoundIcon,
+    className: "text-muted-foreground/70",
+  },
+} as const satisfies Record<
+  PullRequestReviewDecision,
+  { label: string; Icon: typeof UserRoundIcon; className: string }
+>;
+
+/**
+ * How a row's reviews read, or null when there is nothing to say. A review the
+ * host is waiting on from the viewer is review required whatever else it
+ * reports, since that is the part the viewer can act on.
+ */
+export function pullRequestReviewTone(input: {
+  readonly decision: PullRequestReviewDecision | undefined;
+  readonly reviewRequested: boolean | undefined;
+}): (typeof REVIEW_STATE_PRESENTATION)[PullRequestReviewDecision] | null {
+  if (input.reviewRequested === true) {
+    return REVIEW_STATE_PRESENTATION["review-required"];
+  }
+  return input.decision === undefined ? null : REVIEW_STATE_PRESENTATION[input.decision];
+}
+
+/**
+ * Where a list row would otherwise spend its meta line on a coloured word. The
+ * word stays for anyone who cannot see the colour, and is a tooltip away for
+ * everyone else, exactly as {@link PullRequestChecksGlyph} does beside it.
+ */
+export function PullRequestReviewGlyph({
+  decision,
+  reviewRequested,
+  className,
+}: {
+  readonly decision: PullRequestReviewDecision | undefined;
+  /** Whether the host is waiting on the viewer's own review of this row. */
+  readonly reviewRequested?: boolean;
+  readonly className?: string;
+}) {
+  const presentation = pullRequestReviewTone({ decision, reviewRequested });
+  if (presentation === null) {
+    return null;
+  }
+  return (
+    <TooltipWrapper tooltip={presentation.label}>
+      <span
+        className={cn(
+          "pointer-events-auto inline-flex shrink-0 items-center",
+          presentation.className,
+          className,
+        )}
+      >
+        <presentation.Icon aria-hidden className="size-3.5" />
+        <span className="sr-only">{presentation.label}</span>
+      </span>
+    </TooltipWrapper>
+  );
+}
+
+/**
+ * Scrolls the Summary tab so `target` sits at its top. Only the Summary's own
+ * scroll box moves: `scrollIntoView` would also scroll every scrolling
+ * ancestor, which on the page shoved the whole shell up and left a blank band
+ * under it that nothing could scroll back from.
+ */
+export function scrollPullRequestSummaryTo(target: HTMLElement | null): void {
+  const scroller = target?.closest<HTMLElement>("[data-pull-request-summary-scroll]");
+  if (!target || !scroller) {
+    return;
+  }
+  const top =
+    scroller.scrollTop + target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  scroller.scrollTo({ top, behavior: "smooth" });
 }
 
 /** The dot that separates two facts on a meta line. */
@@ -177,19 +454,30 @@ export function CloseDetailButton({
 export function PullRequestDetailSkeleton({ onClose }: { readonly onClose?: () => void }) {
   return (
     <div className="flex h-full min-h-0 flex-col" role="status" aria-label="Loading pull request">
-      <div className="shrink-0 px-4 pt-3 pb-2.5">
+      <div className="shrink-0 px-4 pt-2 pb-3">
+        {/* Row 1: the repository line, with the way out where the header keeps it. */}
         <div className="flex min-h-7 min-w-0 items-center gap-2">
-          {onClose ? <BackToListButton onClick={onClose} /> : null}
           <Skeleton className="size-4 shrink-0 rounded-full" />
-          <Skeleton className="h-3 w-7 shrink-0 rounded-full" />
-          <Skeleton className="h-3.5 w-full max-w-72 rounded-full" />
-          {onClose ? <CloseDetailButton className="ml-auto" onClick={onClose} /> : null}
+          <Skeleton className="h-3 w-40 shrink-0 rounded-full" />
+          <span className="ml-auto flex shrink-0 items-center">
+            {onClose ? <BackToListButton onClick={onClose} /> : null}
+            {onClose ? <CloseDetailButton onClick={onClose} /> : null}
+          </span>
         </div>
+        {/* Row 2: the title. */}
+        <Skeleton className="mt-1 h-4 w-full max-w-96 rounded-full" />
+        {/* Row 3: the author and when it last moved. */}
         <div className="mt-2 flex items-center gap-1.5">
-          <Skeleton className="h-2.5 w-24 rounded-full" />
-          <Skeleton className="h-2.5 w-3 rounded-full" />
+          <Skeleton className="size-4 shrink-0 rounded-full" />
           <Skeleton className="h-2.5 w-16 rounded-full" />
           <Skeleton className="h-2.5 w-20 rounded-full" />
+        </div>
+        {/* Row 4: base ← head, with the file count at the far end. */}
+        <div className="mt-3 flex items-center gap-1.5">
+          <Skeleton className="h-2.5 w-14 rounded-full" />
+          <Skeleton className="h-2.5 w-3 rounded-full" />
+          <Skeleton className="h-2.5 w-32 rounded-full" />
+          <Skeleton className="ml-auto h-2.5 w-20 rounded-full" />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-5 border-b border-border px-4 pt-1 pb-3">
