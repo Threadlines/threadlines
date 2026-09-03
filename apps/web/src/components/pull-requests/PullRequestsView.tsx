@@ -580,7 +580,10 @@ export function PullRequestsView({
         >
           <div
             className={cn(
-              "mx-auto flex min-h-full w-full flex-col py-8",
+              // A container, so the rows can drop their least useful facts by
+              // the width they actually have: a phone, or the column beside
+              // an open pull request, not the window.
+              "@container mx-auto flex min-h-full w-full flex-col py-8",
               selectedReference ? "px-4" : "max-w-3xl px-6",
             )}
           >
@@ -924,7 +927,8 @@ function PullRequestRow({
     key: string;
     fit: "whole" | "truncate";
     className?: string;
-    /** Dropped below md, separator and all, where the line has no room for it. */
+    /** Dropped, separator and all, when the list is narrower than `lg` (32rem): a
+     *  phone, or the column beside an open pull request. */
     hideOnPhone?: boolean;
     content: ReactNode;
   }[] = [
@@ -1067,7 +1071,7 @@ function PullRequestRow({
                   className={cn(
                     "flex items-center gap-1.5",
                     item.fit === "whole" ? "shrink-0" : "min-w-0",
-                    item.hideOnPhone && "max-md:hidden",
+                    item.hideOnPhone && "@max-lg:hidden",
                   )}
                 >
                   {index > 0 ? <span className={META_SEPARATOR_CLASS}>·</span> : null}
