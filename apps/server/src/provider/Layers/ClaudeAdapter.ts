@@ -73,6 +73,7 @@ import {
   isLinkedWorktreeCheckout,
   missingWorkingDirectoryDetail,
 } from "../../vcs/CheckoutPresence.ts";
+import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -6504,6 +6505,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             type: "http",
             url: mcpEndpointUrl(serverConfig.port),
             headers: { Authorization: `Bearer ${browserCredential}` },
+            // In the prompt rather than deferred behind tool search. Deferred,
+            // the model sees eighteen tool names and none of the sentences in
+            // browserTools.ts, and reaches for whichever browser has a blurb in
+            // context instead. About 3k tokens, all in the cached prefix. The
+            // SDK waits for the server before the first turn; it is this
+            // process, so the wait is nothing.
+            alwaysLoad: true,
           },
         },
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -6511,7 +6519,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          ...(runsInManagedWorktree ? { append: MANAGED_WORKTREE_INSTRUCTION } : {}),
+          append: [
+            CLAUDE_PREVIEW_PANEL_INSTRUCTIONS,
+            ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
+          ].join("\n\n"),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // SDK 0.3.233 dropped the todo/task tools from the default tool

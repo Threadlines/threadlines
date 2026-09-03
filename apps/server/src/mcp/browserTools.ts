@@ -64,7 +64,7 @@ export const BrowserSnapshotTool = readsOnly(
 export const BrowserScreenshotTool = readsOnly(
   Tool.make("browser_screenshot", {
     description:
-      "See what the page in the Threadlines preview panel currently looks like. Use this for anything visual -- layout, spacing, colour, whether something is actually on screen -- and use browser_snapshot instead when you need to act on an element or read an error.",
+      "See what the page in the Threadlines browser panel currently looks like. Use this for anything visual -- layout, spacing, colour, whether something is actually on screen -- and use browser_snapshot instead when you need to act on an element or read an error.",
     parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationScreenshotSchema,
     failure: PreviewAutomationErrorSchema,
@@ -75,7 +75,7 @@ export const BrowserScreenshotTool = readsOnly(
 export const BrowserStatusTool = readsOnly(
   Tool.make("browser_status", {
     description:
-      "Where the Threadlines preview panel is right now: its URL, title, size, and whether it is still loading. Cheap; use it to confirm a navigation landed rather than taking a whole snapshot.",
+      "Where the Threadlines browser panel is right now: its URL, title, size, and whether it is still loading. Cheap; use it to confirm a navigation landed rather than taking a whole snapshot.",
     parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
@@ -86,7 +86,7 @@ export const BrowserStatusTool = readsOnly(
 export const BrowserTabsTool = readsOnly(
   Tool.make("browser_tabs", {
     description:
-      "Every page open in the Threadlines preview panel, including each stable tab id, with the user's visible tab and your pinned tab marked. Use a tab id on any browser tool to act there without changing what the user sees.",
+      "Every page open in the Threadlines browser panel, including each stable tab id, with the user's visible tab and your pinned tab marked. Use a tab id on any browser tool to act there without changing what the user sees.",
     success: PreviewAutomationTabsSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
@@ -129,7 +129,7 @@ export const BrowserSelectTabTool = changesThePage(
 export const BrowserNavigateTool = changesThePage(
   Tool.make("browser_navigate", {
     description:
-      "Go to a URL in the Threadlines preview panel the user is watching. This replaces what they are looking at, so navigate when you need to be somewhere else, not to reset state you can reach by clicking. Local and private addresses always work, but a site outside the project's approved list needs the user's approval: if this is refused for that reason, wait for them to allow it in the browser panel and then navigate again.",
+      "Go to a URL in the Threadlines browser panel the user is watching. This replaces what they are looking at, so navigate when you need to be somewhere else, not to reset state you can reach by clicking. Local and private addresses always work, but a site outside the project's approved list needs the user's approval: if this is refused for that reason, wait for them to allow it in the browser panel and then navigate again.",
     parameters: PreviewAutomationNavigateInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
