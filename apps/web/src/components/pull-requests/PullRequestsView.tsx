@@ -13,8 +13,9 @@ import {
   GitBranchPlusIcon,
   MessagesSquareIcon,
   RefreshCwIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
@@ -44,8 +45,16 @@ import { PageTabButton, pageTabId } from "../ui/page-tabs";
 import { Skeleton } from "../ui/skeleton";
 import { TooltipWrapper } from "../ui/tooltip";
 import { LazyPullRequestDetailPanel } from "./LazyPullRequestDetailPanel";
-import { PullRequestFilterChipsRow, PullRequestFiltersButton } from "./PullRequestFilters";
-import { pullRequestHostName } from "./pullRequestPresentation";
+import {
+  PullRequestFilterChipsRow,
+  PullRequestFiltersButton,
+  PullRequestSortMenu,
+} from "./PullRequestFilters";
+import {
+  PullRequestActorAvatar,
+  PullRequestChecksGlyph,
+  pullRequestHostName,
+} from "./pullRequestPresentation";
 import {
   groupPullRequests,
   hasPullRequestProject,
@@ -54,8 +63,11 @@ import {
   narrowPullRequests,
   projectRepository,
   pullRequestBadgeTone,
+  pullRequestConflictLabel,
   pullRequestEntryKey,
   pullRequestFilterChips,
+  pullRequestLabelColor,
+  pullRequestProjectFacets,
   requiresHostSignIn,
   resolveNeedsYouReason,
   resolvePullRequestListSpan,
@@ -190,8 +202,25 @@ export function PullRequestsView({
     [filters, query, snapshot.entries],
   );
   const groups = useMemo(
-    () => groupPullRequests({ entries: visibleEntries, viewer: snapshot.viewer, state, sort }),
-    [snapshot.viewer, sort, state, visibleEntries],
+    () =>
+      groupPullRequests({
+        entries: visibleEntries,
+        viewer: snapshot.viewer,
+        state,
+        sort,
+        involvement: filters.involvement,
+      }),
+    [filters.involvement, snapshot.viewer, sort, state, visibleEntries],
+  );
+  // The chosen project is a key in the URL; only the rows know what it is called.
+  const projectLabel = useMemo(
+    () =>
+      filters.project === ""
+        ? undefined
+        : pullRequestProjectFacets(snapshot.entries).find(
+            (project) => project.key === filters.project,
+          )?.label,
+    [filters.project, snapshot.entries],
   );
   // Over every row, not just the visible ones: the selected pull request keeps
   // naming its thread while a search hides the row it came from.
@@ -469,9 +498,8 @@ export function PullRequestsView({
             {/* Nothing to filter, search or refresh when no server can answer at all. */}
             {snapshot.environments.length > 0 ? (
               <>
-                {/* The same strip the settings pages use: text on a hairline, the
-                  active tab underlined, the refresh control in the strip's
-                  trailing slot. */}
+                {/* The same strip the settings pages use: text on a hairline,
+                  the active tab underlined. */}
                 <div className="mt-6 flex items-end justify-between gap-3 border-b border-border">
                   <div
                     role="tablist"
@@ -488,10 +516,26 @@ export function PullRequestsView({
                       />
                     ))}
                   </div>
+                </div>
+                {/* Search, then the two menus that stand for everything else the
+                    list can be told, then the way to read it all again. */}
+                <div className="mt-4 flex items-center gap-2">
+                  <Input
+                    className="min-w-0 flex-1"
+                    size="sm"
+                    type="search"
+                    aria-label="Search pull requests"
+                    placeholder="Search title, #number, author, branch, label"
+                    spellCheck={false}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                  <PullRequestSortMenu sort={sort} onSortChange={onSortChange} />
+                  <PullRequestFiltersButton filters={filters} onFiltersChange={onFiltersChange} />
                   <Button
-                    className="mb-1"
                     variant="ghost"
                     size="icon-sm"
+                    className="shrink-0"
                     tooltip="Refresh"
                     aria-label="Refresh"
                     data-testid="pull-requests-refresh"
@@ -506,26 +550,11 @@ export function PullRequestsView({
                     />
                   </Button>
                 </div>
-                <div className="mt-4 flex items-center gap-2">
-                  <Input
-                    className="min-w-0 flex-1"
-                    size="sm"
-                    type="search"
-                    aria-label="Search pull requests"
-                    placeholder="Search title, #number, author, branch, label"
-                    spellCheck={false}
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                  />
-                  <PullRequestFiltersButton
-                    filters={filters}
-                    sort={sort}
-                    viewer={snapshot.viewer}
-                    onFiltersChange={onFiltersChange}
-                    onSortChange={onSortChange}
-                  />
-                </div>
-                <PullRequestFilterChipsRow filters={filters} onFiltersChange={onFiltersChange} />
+                <PullRequestFilterChipsRow
+                  filters={filters}
+                  {...(projectLabel === undefined ? {} : { projectLabel })}
+                  onFiltersChange={onFiltersChange}
+                />
               </>
             ) : null}
 
@@ -741,6 +770,32 @@ function PullRequestsNotice({
   );
 }
 
+/**
+ * One label as the host paints it: a hairline pill with the label's own colour
+ * in the dot and nowhere else, so a row of them stays as quiet as the rest of
+ * the meta line. The pills are the page's one exception to the flat rule, and
+ * they earn it by naming what a colour alone cannot.
+ */
+function PullRequestLabelPill({
+  name,
+  color,
+}: {
+  readonly name: string;
+  readonly color: string | null;
+}) {
+  const dot = pullRequestLabelColor(color);
+  return (
+    <span className="inline-flex max-w-40 min-w-0 items-center gap-1 rounded-full border border-border/70 bg-muted/40 py-0 pl-1 pr-1.5 text-[10px] leading-3.5 text-muted-foreground">
+      <span
+        aria-hidden
+        className="size-2 shrink-0 rounded-full bg-muted-foreground"
+        {...(dot ? { style: { backgroundColor: dot } } : {})}
+      />
+      <span className="truncate">{name}</span>
+    </span>
+  );
+}
+
 function PullRequestRow({
   entry,
   linkedThread,
@@ -765,6 +820,9 @@ function PullRequestRow({
     className: glyphClassName,
     label: glyphLabel,
   } = pullRequestBadgeTone(entry.state, entry.isDraft);
+  // A branch that no longer merges is the one thing about an open row worth
+  // more than its state, so it takes the glyph's place.
+  const conflictLabel = pullRequestConflictLabel(entry);
   const reason = resolveNeedsYouReason(entry);
   const openOnHostLabel = `Open on ${pullRequestHostName(entry.provider)}`;
   // Nothing here is checked out, so there is no thread to open and no branch to
@@ -775,26 +833,57 @@ function PullRequestRow({
   const hiddenLabelCount = entry.labels.length - visibleLabels.length;
   // A fixed, ordered set of optional slots, so the absent ones simply drop out
   // and the separators still land between what is left. A slot either keeps
-  // its width whole or truncates; the wrapper follows the same rule, or a
-  // whole-width slot overflows its shrunken wrapper and paints over the next
-  // slot's separator.
+  // its width whole or gives it up, and the one that gives it up truncates its
+  // own text; a whole-width slot in a shrinking wrapper would otherwise paint
+  // over the next slot's separator.
   const meta: readonly {
     key: string;
     fit: "whole" | "truncate";
     className?: string;
-    text: string;
+    /** Dropped below md, separator and all, where the line has no room for it. */
+    hideOnPhone?: boolean;
+    content: ReactNode;
   }[] = [
-    { key: "number", fit: "whole", className: "font-mono", text: `#${entry.number}` },
+    { key: "number", fit: "whole", className: "font-mono", content: `#${entry.number}` },
     ...(namesRepository
-      ? [{ key: "repository", fit: "truncate" as const, text: entry.repository }]
+      ? [
+          {
+            key: "repository",
+            fit: "truncate" as const,
+            // A phone-width row has room for the number, the author and the
+            // glyph; the repository only stays where it is the row's one
+            // anchor (a pull request from outside the workspace).
+            hideOnPhone: !isAuthoredElsewhere,
+            content: <span className="truncate">{entry.repository}</span>,
+          },
+        ]
       : []),
     ...(entry.author
-      ? [{ key: "author", fit: "truncate" as const, text: entry.author.login }]
+      ? [
+          {
+            key: "author",
+            fit: "truncate" as const,
+            content: (
+              <>
+                <PullRequestActorAvatar actor={entry.author} />
+                <span className="truncate">{entry.author.login}</span>
+              </>
+            ),
+          },
+        ]
       : []),
     ...(showEnvironment
-      ? [{ key: "environment", fit: "truncate" as const, text: entry.environmentLabel }]
+      ? [
+          {
+            key: "environment",
+            fit: "truncate" as const,
+            content: <span className="truncate">{entry.environmentLabel}</span>,
+          },
+        ]
       : []),
-    ...(reason
+    // The checks say for themselves that they failed, in a glyph at the end of
+    // the line; the rest of the reasons are review words with no glyph.
+    ...(reason && reason !== "Checks failing"
       ? [
           {
             key: "reason",
@@ -803,10 +892,39 @@ function PullRequestRow({
               reason === "Approved"
                 ? "text-emerald-600 dark:text-emerald-300/90"
                 : "text-amber-600/90 dark:text-amber-400/80",
-            text: reason,
+            content: reason,
           },
         ]
       : []),
+    ...(visibleLabels.length > 0
+      ? [
+          {
+            key: "labels",
+            fit: "truncate" as const,
+            // Pills truncated to a letter each say nothing; below md they go.
+            hideOnPhone: true,
+            content: (
+              <>
+                {visibleLabels.map((label) => (
+                  <PullRequestLabelPill key={label.name} name={label.name} color={label.color} />
+                ))}
+                {hiddenLabelCount > 0 ? (
+                  <span className="shrink-0">+{hiddenLabelCount}</span>
+                ) : null}
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(entry.checksState === undefined
+      ? []
+      : [
+          {
+            key: "checks",
+            fit: "whole" as const,
+            content: <PullRequestChecksGlyph state={entry.checksState} />,
+          },
+        ]),
   ];
 
   return (
@@ -833,10 +951,21 @@ function PullRequestRow({
       />
       <div className="pointer-events-none relative grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2.5 px-2 py-2.5 select-none">
         {/* The glyph is the only place the row states open/draft/merged/closed,
-            so the word rides along for anyone who cannot see the colour. */}
-        <span className={cn("mt-0.5 shrink-0", glyphClassName)}>
-          <GlyphIcon aria-hidden className="size-4" />
-        </span>
+            so the word rides along in the row's own label for anyone who
+            cannot see the colour. A conflict has no word of its own there, so
+            it carries one itself. */}
+        {conflictLabel ? (
+          <TooltipWrapper tooltip={conflictLabel}>
+            <span className="pointer-events-auto mt-0.5 shrink-0 text-destructive">
+              <TriangleAlertIcon aria-hidden className="size-4" />
+              <span className="sr-only">{conflictLabel}</span>
+            </span>
+          </TooltipWrapper>
+        ) : (
+          <span className={cn("mt-0.5 shrink-0", glyphClassName)}>
+            <GlyphIcon aria-hidden className="size-4" />
+          </span>
+        )}
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="flex w-full min-w-0 items-baseline gap-3">
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
@@ -854,25 +983,15 @@ function PullRequestRow({
                   className={cn(
                     "flex items-center gap-1.5",
                     item.fit === "whole" ? "shrink-0" : "min-w-0",
+                    item.hideOnPhone && "max-md:hidden",
                   )}
                 >
                   {index > 0 ? <span className={META_SEPARATOR_CLASS}>·</span> : null}
-                  <span className={cn(item.fit === "truncate" && "truncate", item.className)}>
-                    {item.text}
+                  <span className={cn("flex min-w-0 items-center gap-1.5", item.className)}>
+                    {item.content}
                   </span>
                 </span>
               ))}
-              {visibleLabels.map((label) => (
-                <span key={label.name} className="flex min-w-0 shrink items-center gap-1">
-                  <span
-                    aria-hidden
-                    className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
-                    style={label.color ? { backgroundColor: `#${label.color}` } : undefined}
-                  />
-                  <span className="max-w-32 truncate">{label.name}</span>
-                </span>
-              ))}
-              {hiddenLabelCount > 0 ? <span className="shrink-0">+{hiddenLabelCount}</span> : null}
             </span>
             {linkedThread ? (
               <button

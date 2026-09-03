@@ -37,6 +37,7 @@ import { PullRequestsView } from "./PullRequestsView";
 import {
   DEFAULT_PULL_REQUEST_SORT,
   EMPTY_PULL_REQUEST_FILTERS,
+  pullRequestFiltersToSearch,
   type PullRequestFilters,
   type PullRequestSelection,
   type PullRequestSort,
@@ -239,6 +240,9 @@ function createTestRouter(children: ReactNode) {
   });
 }
 
+/** The params the route would have navigated with, as the page last wrote them. */
+let lastSearch: Record<string, unknown> = {};
+
 /** Stands in for the route, which owns the selection, the filters and the sort. */
 function SelectablePullRequestsView() {
   const [selection, setSelection] = useState<PullRequestSelection | null>(null);
@@ -252,8 +256,14 @@ function SelectablePullRequestsView() {
       sort={sort}
       onStateChange={() => undefined}
       onSelectionChange={setSelection}
-      onFiltersChange={setFilters}
-      onSortChange={setSort}
+      onFiltersChange={(next) => {
+        lastSearch = pullRequestFiltersToSearch(next, sort);
+        setFilters(next);
+      }}
+      onSortChange={(next) => {
+        lastSearch = pullRequestFiltersToSearch(filters, next);
+        setSort(next);
+      }}
     />
   );
 }
@@ -394,7 +404,7 @@ describe("PullRequestsView", () => {
     }
   });
 
-  it("narrows the list from the filters and gives the rows back from the chip", async () => {
+  it("narrows the list from the filters menu and gives the rows back from the chip", async () => {
     const rendered = await renderPage({
       viewer: "ada",
       entries: [
@@ -410,16 +420,59 @@ describe("PullRequestsView", () => {
 
     await expect.element(page.getByText("Someone else's")).toBeVisible();
     await userEvent.click(page.getByTestId("pull-requests-filters"));
-    await userEvent.click(page.getByRole("button", { name: "Use ada" }));
-    await userEvent.keyboard("{Escape}");
+    // The authors are the ones the loaded rows carry, so ada is a line to pick
+    // rather than a login to spell.
+    await userEvent.click(page.getByRole("menuitem", { name: /^Author/ }));
+    // The field keeps its own typing: a menu would otherwise read the letters
+    // as a jump to the item that starts with them.
+    await userEvent.fill(page.getByRole("textbox", { name: "Search authors" }), "ad");
+    await vi.waitFor(() => {
+      expect(page.getByRole("menuitem", { name: "grace", exact: true }).elements()).toHaveLength(0);
+    });
+    await userEvent.click(page.getByRole("menuitem", { name: "ada", exact: true }));
 
     await expect.element(page.getByText("Author: ada")).toBeVisible();
+    // What the route would put in the URL, which is how a link keeps the filter.
+    expect(lastSearch).toEqual({ author: "ada" });
     await vi.waitFor(() => {
       expect(page.getByTestId("pull-requests-row").elements()).toHaveLength(1);
     });
 
     await userEvent.click(page.getByRole("button", { name: "Remove filter Author: ada" }));
     await expect.element(page.getByText("Someone else's")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("draws the conflict, the checks and an author the host gave no picture for", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({
+          number: 7,
+          title: "Bump the runner",
+          author: { login: "dependabot[bot]", isBot: true, avatarUrl: null },
+          mergeability: "conflicting",
+          checksState: "failure",
+          labels: [{ name: "dependencies", color: "0366d6" }],
+        }),
+      ],
+      errors: [],
+    });
+
+    await expect.element(page.getByText("Bump the runner")).toBeVisible();
+    // The triangle stands in for the open glyph, and says so in words.
+    expect(page.getByText("Conflicts with main").elements()).toHaveLength(1);
+    // The checks are a glyph, and it carries the words the row no longer spends
+    // its meta line on.
+    expect(page.getByText("Some checks failed").elements()).toHaveLength(1);
+    // No picture to load, so the avatar is the login's first letter.
+    expect(document.querySelectorAll("#pull-requests-list img")).toHaveLength(0);
+    expect(
+      [...document.querySelectorAll("#pull-requests-list span")].filter(
+        (element) => element.textContent === "D",
+      ),
+    ).toHaveLength(1);
 
     await rendered.cleanup();
   });

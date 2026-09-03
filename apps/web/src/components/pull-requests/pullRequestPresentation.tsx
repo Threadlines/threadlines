@@ -5,11 +5,28 @@
  */
 import { getChangeRequestTerminologyForKind } from "@threadlines/shared/sourceControl";
 
+import { useState } from "react";
+
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
-import type { PullRequestReviewerState, SourceControlProviderKind } from "@threadlines/contracts";
-import { ArrowLeftIcon, CheckIcon, CircleDashedIcon, MinusIcon, XIcon } from "lucide-react";
+import { TooltipWrapper } from "../ui/tooltip";
+import type {
+  PullRequestActor,
+  PullRequestChecksState,
+  PullRequestReviewerState,
+  SourceControlProviderKind,
+} from "@threadlines/contracts";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  CircleCheckIcon,
+  CircleDashedIcon,
+  CircleDotIcon,
+  CircleXIcon,
+  MinusIcon,
+  XIcon,
+} from "lucide-react";
 
 import { resolveChangeRequestPresentationForKind } from "../../sourceControlPresentation";
 
@@ -47,6 +64,119 @@ export function pullRequestHostName(provider: SourceControlProviderKind): string
   return provider === "unknown"
     ? "the host"
     : resolveChangeRequestPresentationForKind(provider).providerName;
+}
+
+/**
+ * A person as the host draws them: their picture, or the first letter of their
+ * login while there is none. A picture that never arrives falls back to the
+ * same letter rather than leaving a broken image in the row.
+ */
+export function PullRequestActorAvatar({
+  actor,
+  className,
+}: {
+  readonly actor: PullRequestActor | null;
+  readonly className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const login = actor?.login ?? "ghost";
+  const avatarUrl = actor?.avatarUrl ?? null;
+
+  if (avatarUrl === null || failed) {
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[8px] font-medium text-muted-foreground",
+          className,
+        )}
+      >
+        {login.slice(0, 1).toUpperCase()}
+      </span>
+    );
+  }
+  return (
+    <img
+      aria-hidden
+      alt=""
+      src={avatarUrl}
+      loading="lazy"
+      className={cn("size-4 shrink-0 rounded-full bg-muted object-cover", className)}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+/** The avatar and the login together, as a row or a header names an author. */
+export function PullRequestActorLabel({
+  actor,
+  className,
+}: {
+  readonly actor: PullRequestActor | null;
+  readonly className?: string;
+}) {
+  return (
+    <span className={cn("flex min-w-0 items-center gap-1.5", className)}>
+      <PullRequestActorAvatar actor={actor} />
+      <span className="truncate">{actor?.login ?? "ghost"}</span>
+    </span>
+  );
+}
+
+/** The check rollup as a glyph: a colour and a word, no room for a sentence. */
+const CHECKS_STATE_PRESENTATION = {
+  success: {
+    label: "All checks passed",
+    Icon: CircleCheckIcon,
+    className: "text-emerald-600 dark:text-emerald-300/90",
+  },
+  failure: {
+    label: "Some checks failed",
+    Icon: CircleXIcon,
+    className: "text-destructive",
+  },
+  // A still glyph rather than a spinner: a check run takes minutes, and a
+  // repainting list row is not worth the frames.
+  pending: {
+    label: "Checks running",
+    Icon: CircleDotIcon,
+    className: "text-amber-600/90 dark:text-amber-400/80",
+  },
+} as const satisfies Record<
+  PullRequestChecksState,
+  { label: string; Icon: typeof CircleCheckIcon; className: string }
+>;
+
+/**
+ * Where a list row would otherwise spend its meta line on the words "Checks
+ * failing". The word itself stays for anyone who cannot see the colour, and
+ * for everyone else it is a tooltip away.
+ */
+export function PullRequestChecksGlyph({
+  state,
+  className,
+}: {
+  readonly state: PullRequestChecksState | undefined;
+  readonly className?: string;
+}) {
+  if (state === undefined) {
+    return null;
+  }
+  const presentation = CHECKS_STATE_PRESENTATION[state];
+  return (
+    <TooltipWrapper tooltip={presentation.label}>
+      <span
+        className={cn(
+          "pointer-events-auto inline-flex shrink-0 items-center",
+          presentation.className,
+          className,
+        )}
+      >
+        <presentation.Icon aria-hidden className="size-3.5" />
+        <span className="sr-only">{presentation.label}</span>
+      </span>
+    </TooltipWrapper>
+  );
 }
 
 /** The dot that separates two facts on a meta line. */
