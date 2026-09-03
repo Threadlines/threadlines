@@ -2700,8 +2700,10 @@ export default function ChatView(props: ChatViewProps) {
   const splitChatFraction = useBrowserPanelStore((store) => store.splitChatFraction);
   const setSplitChatFraction = useBrowserPanelStore((store) => store.setSplitChatFraction);
   const browserExpanded = useBrowserPanelStore((store) => store.expanded);
+  // The preview is a Chromium webview, which only the desktop app can host: a
+  // web build has no browser to toggle, so it gets no button and no panel.
   // General chats have no project and therefore no dev server to look at.
-  const browserAvailable = !isGeneralChatThread;
+  const browserAvailable = isElectron && !isGeneralChatThread;
   const browserOpen = browserAvailable && browserPanelState.open;
 
   const handleToggleBrowser = useCallback(() => {
@@ -6970,7 +6972,10 @@ export default function ChatView(props: ChatViewProps) {
         {/* The agent's end of the browser is mounted with the thread, not with
             the panel: a closed panel is a closed panel, not the absence of a
             browser, and a request for the browser opens it. */}
-        {browserAvailable && routeThreadRef !== null ? (
+        {!isGeneralChatThread && routeThreadRef !== null ? (
+          // Mounted on the web build too: the host reads the desktop bridge at
+          // effect time and refuses to connect without one, so it costs nothing
+          // there and keeps working if the preload attaches late.
           // The project is passed alongside the thread because a local draft
           // thread has no shell to look it up from, and browser approvals are
           // recorded per project.
