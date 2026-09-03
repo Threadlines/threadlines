@@ -69,6 +69,8 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import { AutomaticGitFetchSupervisorLive } from "./vcs/AutomaticGitFetchSupervisor.ts";
 import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
+import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScriptRunner.ts";
@@ -246,6 +248,23 @@ const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.l
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
 );
 
+// One provider per host, each owning its own tool. Bitbucket reads over HTTP
+// and needs the git driver its client resolves remotes with.
+// `ProjectionSnapshotQuery` comes from the orchestration layer merged in below
+// the service.
+const PullRequestProviderRegistryLayerLive = PullRequestProviderRegistry.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(AzureDevOpsCli.layer, BitbucketApi.layer, GitHubCli.layer, GitLabCli.layer).pipe(
+      Layer.provide(GitVcsDriver.layer),
+      Layer.provide(VcsDriverRegistryLayerLive),
+    ),
+  ),
+);
+
+const PullRequestServiceLayerLive = PullRequestService.layer.pipe(
+  Layer.provide(PullRequestProviderRegistryLayerLive),
+);
+
 const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(VcsProjectConfig.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
@@ -303,7 +322,9 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
-  Layer.provideMerge(SourceControlProviderRegistryLayerLive),
+  Layer.provideMerge(
+    Layer.mergeAll(SourceControlProviderRegistryLayerLive, PullRequestServiceLayerLive),
+  ),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   // Cross-provider handoff: builds a provider-agnostic context seed from the
