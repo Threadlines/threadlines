@@ -369,6 +369,79 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
 
+    it.effect("serves an image outside the workspace root when its bytes are one", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outside = yield* makeTempDir;
+        const cwd = yield* makeTempDir;
+        const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+        yield* fileSystem.writeFile(path.join(outside, "shot.png"), bytes).pipe(Effect.orDie);
+        const relativePath = path
+          .relative(cwd, path.join(outside, "shot.png"))
+          .replaceAll("\\", "/");
+
+        const result = yield* workspaceFileSystem.readFile({ cwd, relativePath });
+
+        expect(result).toEqual({
+          kind: "image",
+          relativePath,
+          mimeType: "image/png",
+          base64: Buffer.from(bytes).toString("base64"),
+          size: bytes.length,
+        });
+      }),
+    );
+
+    it.effect("still rejects text files outside the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outside = yield* makeTempDir;
+        const cwd = yield* makeTempDir;
+        yield* fileSystem
+          .writeFileString(path.join(outside, "secret.txt"), "secret")
+          .pipe(Effect.orDie);
+
+        const error = yield* workspaceFileSystem
+          .readFile({
+            cwd,
+            relativePath: path
+              .relative(cwd, path.join(outside, "secret.txt"))
+              .replaceAll("\\", "/"),
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+      }),
+    );
+
+    it.effect("rejects an outside-root .png whose bytes are not an image", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outside = yield* makeTempDir;
+        const cwd = yield* makeTempDir;
+        yield* fileSystem
+          .writeFileString(path.join(outside, "not-really.png"), "#!/bin/sh\nrm -rf /\n")
+          .pipe(Effect.orDie);
+
+        const error = yield* workspaceFileSystem
+          .readFile({
+            cwd,
+            relativePath: path
+              .relative(cwd, path.join(outside, "not-really.png"))
+              .replaceAll("\\", "/"),
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+      }),
+    );
+
     it.effect("rejects symlinks that escape the workspace root", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;
