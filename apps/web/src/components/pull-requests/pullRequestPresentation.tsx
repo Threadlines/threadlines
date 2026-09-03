@@ -22,7 +22,6 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   CircleCheckIcon,
-  CircleDashedIcon,
   CircleDotIcon,
   CircleXIcon,
   MinusIcon,
@@ -59,8 +58,8 @@ export const CHECK_TONES = {
   // minutes, and an opacity fade is composited without a repaint. Off when
   // the system asks for less motion.
   pending: {
-    Icon: CircleDashedIcon,
-    className: "animate-pulse text-muted-foreground/70 motion-reduce:animate-none",
+    Icon: CircleDotIcon,
+    className: "animate-pulse text-amber-600/90 motion-reduce:animate-none dark:text-amber-400/80",
   },
   skipped: { Icon: MinusIcon, className: "text-muted-foreground/50" },
 } as const;
