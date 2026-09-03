@@ -176,6 +176,8 @@ async function renderPanel(
   options: {
     readonly detail?: Partial<PullRequestDetail>;
     readonly activity?: Partial<PullRequestActivity>;
+    /** Makes the conversation read fail, which the meta rows answer for. */
+    readonly activityFails?: boolean;
     readonly composerTarget?: ScopedThreadRef;
   } = {},
 ) {
@@ -187,7 +189,12 @@ async function renderPanel(
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
     pullRequests: {
       detail: vi.fn(async () => ({ ...DETAIL, ...options.detail })),
-      activity: vi.fn(async () => ({ ...ACTIVITY, ...options.activity })),
+      activity: vi.fn(async () => {
+        if (options.activityFails) {
+          throw new Error("the host said no");
+        }
+        return { ...ACTIVITY, ...options.activity };
+      }),
       diff: vi.fn(async () => ({ patch: PATCH, truncated: false })),
       comment,
       runAction,
@@ -625,12 +632,29 @@ describe("PullRequestDetailPanel", () => {
       await vi.waitFor(() => {
         expect(writeText).toHaveBeenCalledWith("gh pr checkout 42");
       });
+      // "Copied" is the only sign it worked, so the button's name says it too
+      // rather than staying "Copy" for anyone who cannot see the word.
+      await expect
+        .element(page.getByRole("button", { name: "Copied gh pr checkout 42" }))
+        .toBeVisible();
     } finally {
       if (previous) {
         Object.defineProperty(navigator, "clipboard", previous);
       }
       await rendered.cleanup();
     }
+  });
+
+  it("says why the comment count is missing rather than offering a button with none", async () => {
+    const rendered = await renderPanel({ activityFails: true });
+
+    await expect
+      .element(page.getByTestId("pull-request-comment-count"))
+      .toHaveTextContent("Comments unavailable");
+    // Nothing to scroll to, so nothing to press.
+    expect(page.getByRole("button", { name: "Comments unavailable" }).elements()).toHaveLength(0);
+
+    await rendered.cleanup();
   });
 
   it("folds the description away and back", async () => {

@@ -4,7 +4,7 @@
  * never costs a read, and it all lives in the URL, so a link keeps it.
  */
 import { ArrowUpDownIcon, ChevronDownIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useLoadedPullRequestEntries } from "../../lib/pullRequestsReactQuery";
 import { cn } from "../../lib/utils";
@@ -224,27 +224,19 @@ function PullRequestFiltersMenuContent({
       <MenuSeparator />
 
       <FilterSubmenu label="Project" value={projectValueLabel(projects, filters.project)}>
-        <MenuItem
-          className={cn(
-            MENU_PICK_ITEM_CLASS_NAME,
-            filters.project === "" && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-          )}
-          onClick={() => onFiltersChange({ ...filters, project: "" })}
+        {/* One project at a time, so the menu says as much: a reader hears
+            which one is current instead of a fill they cannot see. */}
+        <MenuRadioGroup
+          value={filters.project}
+          onValueChange={(project) => onFiltersChange({ ...filters, project: String(project) })}
         >
-          All projects
-        </MenuItem>
-        {projects.map((project) => (
-          <MenuItem
-            key={project.key}
-            className={cn(
-              MENU_PICK_ITEM_CLASS_NAME,
-              filters.project === project.key && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-            )}
-            onClick={() => onFiltersChange({ ...filters, project: project.key })}
-          >
-            <span className="min-w-0 truncate">{project.label}</span>
-          </MenuItem>
-        ))}
+          <MenuRadioItem value="">All projects</MenuRadioItem>
+          {projects.map((project) => (
+            <MenuRadioItem key={project.key} value={project.key}>
+              <span className="min-w-0 truncate">{project.label}</span>
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
       </FilterSubmenu>
     </>
   );
@@ -321,30 +313,26 @@ function AuthorSubmenu({
   return (
     <FilterSubmenu label="Author" value={value.trim() === "" ? "Anyone" : value.trim()}>
       <FilterSearchInput label="Search authors" value={search} onChange={setSearch} />
-      <MenuItem
-        className={cn(
-          MENU_PICK_ITEM_CLASS_NAME,
-          selected === "" && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-        )}
-        onClick={() => onChange("")}
+      {/* Logins are compared folded, so the radio's values are folded too and
+          the login the row spells is what the filter is written with. */}
+      <MenuRadioGroup
+        value={selected}
+        onValueChange={(next) =>
+          onChange(
+            matching.find((author) => author.login.toLowerCase() === next)?.login ?? String(next),
+          )
+        }
       >
-        Anyone
-      </MenuItem>
-      {matching.map((author) => (
-        <MenuItem
-          key={author.login}
-          className={cn(
-            MENU_PICK_ITEM_CLASS_NAME,
-            author.login.toLowerCase() === selected && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-          )}
-          onClick={() => onChange(author.login)}
-        >
-          <PullRequestActorAvatar
-            actor={{ login: author.login, isBot: false, avatarUrl: author.avatarUrl }}
-          />
-          <span className="min-w-0 truncate">{author.login}</span>
-        </MenuItem>
-      ))}
+        <MenuRadioItem value="">Anyone</MenuRadioItem>
+        {matching.map((author) => (
+          <MenuRadioItem key={author.login} value={author.login.toLowerCase()}>
+            <PullRequestActorAvatar
+              actor={{ login: author.login, isBot: false, avatarUrl: author.avatarUrl }}
+            />
+            <span className="min-w-0 truncate">{author.login}</span>
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
     </FilterSubmenu>
   );
 }
@@ -410,9 +398,19 @@ function FilterSearchInput({
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
+  const input = useRef<HTMLInputElement | null>(null);
+  // The submenu mounts this when it opens and moves focus into itself as it
+  // does, so the field takes the cursor on the frame after that move: typing
+  // is what the field is for, and the list below it is one arrow key away.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => input.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
   return (
     <div className="p-1">
       <Input
+        ref={input}
         size="sm"
         value={value}
         aria-label={label}
@@ -421,10 +419,11 @@ function FilterSearchInput({
         autoComplete="off"
         onChange={(event) => onChange(event.target.value)}
         // A menu treats letters as a jump to the item that starts with them,
-        // which would take the field's own typing away from it. Everything
-        // that steers the menu — arrows, Escape, Enter, Tab — still goes up.
+        // and the caret keys as a walk along its own rows, both of which would
+        // take the field's typing away from it. Up and Down still walk the
+        // list, and Escape, Enter and Tab still steer the menu.
         onKeyDown={(event) => {
-          if (event.key.length === 1) {
+          if (event.key.length === 1 || CARET_KEYS.has(event.key)) {
             event.stopPropagation();
           }
         }}
@@ -432,6 +431,9 @@ function FilterSearchInput({
     </div>
   );
 }
+
+/** What a caret does inside a field, rather than what it does to a menu. */
+const CARET_KEYS = new Set(["ArrowLeft", "ArrowRight", "Home", "End"]);
 
 /** What the Project line reads as, the key standing in until the rows name it. */
 function projectValueLabel(

@@ -128,14 +128,26 @@ export function PullRequestSummaryTab({
           icon={<MessagesSquareIcon aria-hidden className="size-3.5" />}
           label="Comments"
         >
-          <button
-            type="button"
-            className={cn(TEXT_BUTTON_CLASS, "min-w-0 text-left")}
-            data-testid="pull-request-comment-count"
-            onClick={scrollToConversation}
-          >
-            {comments === null ? "—" : pluralize(comments.length, "comment")}
-          </button>
+          {/* Nothing to scroll to until the conversation is read, so until then
+              the row says where it is up to rather than offering a button that
+              does nothing. */}
+          {comments === null ? (
+            <span
+              className="min-w-0 text-muted-foreground/55"
+              data-testid="pull-request-comment-count"
+            >
+              {activityError ? "Comments unavailable" : "Loading comments"}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className={cn(TEXT_BUTTON_CLASS, "min-w-0 text-left")}
+              data-testid="pull-request-comment-count"
+              onClick={scrollToConversation}
+            >
+              {pluralize(comments.length, "comment")}
+            </button>
+          )}
         </PullRequestMetaRow>
       </section>
 

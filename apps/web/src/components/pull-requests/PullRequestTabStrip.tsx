@@ -8,8 +8,8 @@
  *
  * There is no `+`: the list beside the column is how a pull request is opened.
  */
-import type { PullRequestState } from "@threadlines/contracts";
 import { XIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import { cn } from "../../lib/utils";
 import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
@@ -17,12 +17,6 @@ import { moveBetweenTabs } from "../ui/page-tabs";
 import { TooltipWrapper } from "../ui/tooltip";
 import { pullRequestBadgeTone } from "./pullRequests.logic";
 import type { PullRequestTab } from "./pullRequestTabsStore";
-
-/** A tab, plus what the list knows about the pull request it stands for. */
-export interface PullRequestTabView extends PullRequestTab {
-  readonly state: PullRequestState;
-  readonly isDraft: boolean;
-}
 
 /** Hover on the tab, or keyboard focus anywhere in it, including the ✕ itself. */
 const REVEAL_ON_TAB_HOVER_OR_FOCUS =
@@ -39,13 +33,37 @@ export function PullRequestTabStrip({
   onSelect,
   onClose,
 }: {
-  readonly tabs: readonly PullRequestTabView[];
+  readonly tabs: readonly PullRequestTab[];
   readonly activeId: string | null;
   /** The detail below, so each tab can name what it controls. */
   readonly panelId: string;
-  readonly onSelect: (tab: PullRequestTabView) => void;
-  readonly onClose: (tab: PullRequestTabView) => void;
+  readonly onSelect: (tab: PullRequestTab) => void;
+  readonly onClose: (tab: PullRequestTab) => void;
 }) {
+  const list = useRef<HTMLDivElement | null>(null);
+  // Set by a close the keyboard ran, so the cursor lands on whichever tab took
+  // the closed one's place rather than on the body.
+  const focusActiveTab = useRef(false);
+
+  // A tab opened while the strip is already full can sit past its right edge,
+  // and the active tab is the one the detail below is showing.
+  useEffect(() => {
+    const active = activeId
+      ? list.current?.querySelector<HTMLElement>(
+          `[data-pull-request-tab="${activeId}"] [role="tab"]`,
+        )
+      : null;
+    active?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    // Held until a tab is actually there to take it: the strip drops the closed
+    // tab before the route says which one stands in its place.
+    if (focusActiveTab.current && active) {
+      focusActiveTab.current = false;
+      active.focus();
+    }
+    // Only the active tab matters here, and every way the strip gains or loses
+    // one ends with a different tab active.
+  }, [activeId]);
+
   if (tabs.length === 0) {
     return null;
   }
@@ -63,6 +81,7 @@ export function PullRequestTabStrip({
           className={cn("min-w-0 flex-1 self-stretch", MINI_HORIZONTAL_SCROLLBAR_CLASS)}
         >
           <div
+            ref={list}
             role="tablist"
             aria-label="Open pull requests"
             className="flex h-full w-max items-stretch gap-px"
@@ -74,7 +93,10 @@ export function PullRequestTabStrip({
                 active={tab.id === activeId}
                 panelId={panelId}
                 onSelect={() => onSelect(tab)}
-                onClose={() => onClose(tab)}
+                onClose={(fromKeyboard) => {
+                  focusActiveTab.current = fromKeyboard;
+                  onClose(tab);
+                }}
               />
             ))}
           </div>
@@ -91,11 +113,12 @@ function PullRequestTabStripItem({
   onSelect,
   onClose,
 }: {
-  readonly tab: PullRequestTabView;
+  readonly tab: PullRequestTab;
   readonly active: boolean;
   readonly panelId: string;
   readonly onSelect: () => void;
-  readonly onClose: () => void;
+  /** True when the keyboard ran the close, which then has to hand focus on. */
+  readonly onClose: (fromKeyboard: boolean) => void;
 }) {
   const tone = pullRequestBadgeTone(tab.state, tab.isDraft);
   return (
@@ -120,7 +143,7 @@ function PullRequestTabStripItem({
         onAuxClick={(event) => {
           if (event.button !== 1) return;
           event.preventDefault();
-          onClose();
+          onClose(false);
         }}
         onMouseDown={(event) => {
           // Suppress the middle-click autoscroll cursor; the close itself
@@ -142,24 +165,37 @@ function PullRequestTabStripItem({
           <span className={cn("flex size-3 shrink-0 items-center justify-center", tone.className)}>
             <tone.Icon aria-hidden className="size-3" />
           </span>
-          <span className="font-mono whitespace-nowrap tabular-nums">#{tab.number}</span>
-          <span className="sr-only">{tone.label}</span>
+          {/* The strip has room for the number alone, but two repositories can
+              hold the same one, so the name a reader hears carries both. */}
+          <span aria-hidden className="font-mono whitespace-nowrap tabular-nums">
+            #{tab.number}
+          </span>
+          <span className="sr-only">{`${tab.repository} #${tab.number} ${tone.label}`}</span>
         </button>
         {/* Overlaid on the tab's right edge rather than given a column of its
             own: reserving width for a control that is invisible most of the
             time is exactly what a strip of tabs cannot spare. */}
         <button
           type="button"
-          aria-label={`Close pull request #${tab.number}`}
+          aria-label={`Close ${tab.repository} #${tab.number}`}
           data-testid="pull-request-tab-close"
+          // Only the active tab is in the tab order, as the tabs themselves
+          // are: a strip of six would otherwise cost twelve stops, most of
+          // them on a ✕ nobody can see.
+          tabIndex={active ? 0 : -1}
           className={cn(
-            "absolute top-1/2 right-1 inline-flex size-4 -translate-y-1/2 cursor-pointer items-center justify-center rounded transition-[opacity,background-color,color] hover:bg-foreground/10 hover:text-foreground focus-ring",
+            // A 16px ✕ is not a thumb-sized target, so a coarse pointer gets a
+            // reach around it rather than a bigger glyph, which would sit over
+            // the number the tab is named by.
+            "absolute top-1/2 right-1 inline-flex size-4 -translate-y-1/2 cursor-pointer items-center justify-center rounded transition-[opacity,background-color,color] hover:bg-foreground/10 hover:text-foreground focus-ring pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']",
             active
               ? "bg-background"
               : cn("bg-muted/50 can-hover:opacity-0", REVEAL_ON_TAB_HOVER_OR_FOCUS),
             "focus-visible:opacity-100",
           )}
-          onClick={onClose}
+          // `detail` is 0 for a click the keyboard ran, which is the one that
+          // leaves nothing focused behind it.
+          onClick={(event) => onClose(event.detail === 0)}
         >
           <XIcon aria-hidden className="size-3" />
         </button>

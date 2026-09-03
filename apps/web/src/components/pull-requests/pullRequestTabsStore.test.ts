@@ -57,6 +57,19 @@ describe("pullRequestTabsStore", () => {
     expect(store().activeId).toBeNull();
   });
 
+  it("keeps the last state a listing showed once the row leaves it", () => {
+    const tab = store().open(target(1));
+    expect(tab.state).toBe("open");
+
+    store().markStatus(new Map([[tab.id, { state: "merged", isDraft: false }]]));
+    expect(store().tabs[0]?.state).toBe("merged");
+
+    // No listing on screen carries the row any more, so the glyph it was last
+    // seen with stands rather than falling back to open.
+    store().markStatus(new Map());
+    expect(store().tabs[0]?.state).toBe("merged");
+  });
+
   it("leaves the active tab alone when a background one is closed", () => {
     const first = store().open(target(1));
     store().open(target(2));

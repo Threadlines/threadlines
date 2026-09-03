@@ -398,14 +398,58 @@ describe("PullRequestsView", () => {
     await expect.element(strip.getByRole("tab", { name: /#2/ })).toBeVisible();
 
     // Closing the one on screen falls back to what is left rather than back to
-    // the bare list.
-    await userEvent.click(page.getByRole("button", { name: "Close pull request #2" }));
+    // the bare list. Both the tab and its ✕ are named by repository as well as
+    // number, since two repositories can hold the same one.
+    await userEvent.click(page.getByRole("button", { name: "Close threadlines/threadlines #2" }));
 
     await vi.waitFor(() => {
       expect(strip.getByRole("tab", { name: /#2/ }).elements()).toHaveLength(0);
     });
     await expect.element(strip.getByRole("tab", { name: /#1/ })).toBeVisible();
     await expect.element(page.getByTestId("pull-requests-detail-column")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("walks the tab strip with the arrow keys and hands focus on after a close", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({ number: 1, title: "First" }),
+        makeEntry({ number: 2, title: "Second" }),
+      ],
+      errors: [],
+    });
+
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #1: First" }));
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #2: Second" }));
+
+    const strip = page.getByTestId("pull-request-tab-strip");
+    const second = strip.getByRole("tab", { name: /#2/ });
+    await userEvent.click(second);
+    // The arrows only move the detail; handing the cursor to the new title
+    // would end the walk on its first step.
+    await userEvent.keyboard("{ArrowLeft}");
+    // The title is what used to take the cursor, so the check waits until it is
+    // on screen before asking where the cursor is.
+    await expect
+      .element(page.getByRole("heading", { name: "Add the pull requests page" }))
+      .toBeVisible();
+    const walked = document.activeElement;
+    expect(walked?.getAttribute("role")).toBe("tab");
+    expect(walked?.textContent).toContain("#1");
+    expect(walked?.getAttribute("aria-selected")).toBe("true");
+
+    // A ✕ pressed from the keyboard takes its own element away, so the tab that
+    // steps into its place takes the cursor.
+    const close = page.getByRole("button", { name: "Close threadlines/threadlines #1" });
+    close.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => {
+      const focused = document.activeElement;
+      expect(focused?.getAttribute("role")).toBe("tab");
+      expect(focused?.textContent).toContain("#2");
+    });
 
     await rendered.cleanup();
   });
@@ -460,10 +504,14 @@ describe("PullRequestsView", () => {
     // The field keeps its own typing: a menu would otherwise read the letters
     // as a jump to the item that starts with them.
     await userEvent.fill(page.getByRole("textbox", { name: "Search authors" }), "ad");
+    // One author at a time, so the choices are radios and a reader hears which
+    // one is current.
     await vi.waitFor(() => {
-      expect(page.getByRole("menuitem", { name: "grace", exact: true }).elements()).toHaveLength(0);
+      expect(
+        page.getByRole("menuitemradio", { name: "grace", exact: true }).elements(),
+      ).toHaveLength(0);
     });
-    await userEvent.click(page.getByRole("menuitem", { name: "ada", exact: true }));
+    await userEvent.click(page.getByRole("menuitemradio", { name: "ada", exact: true }));
 
     await expect.element(page.getByText("Author: ada")).toBeVisible();
     // What the route would put in the URL, which is how a link keeps the filter.

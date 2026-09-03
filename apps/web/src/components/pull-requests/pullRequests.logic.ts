@@ -51,7 +51,7 @@ export type PullRequestProjectFailure = PullRequestListProjectError & {
 
 /** The reasons a row is put in front of the user, in priority order. */
 export type PullRequestNeedsYouReason =
-  | "Review requested"
+  | "Review required"
   | "Changes requested"
   | "Checks failing"
   | "Approved";
@@ -69,6 +69,12 @@ export interface PullRequestGroup {
 export interface PullRequestSelection {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
+  /**
+   * The repository the number belongs to: one project reads more than one
+   * remote, and #214 is a different pull request on each. Null only for a link
+   * written before the param carried it.
+   */
+  readonly repository: string | null;
   readonly number: number;
 }
 
@@ -118,7 +124,10 @@ export const DEFAULT_PULL_REQUEST_SORT: PullRequestSort = "updated";
 
 export interface PullRequestsSearch {
   readonly state: PullRequestListState;
-  /** `<environmentId>:<projectId>:<number>`, absent when the list is alone. */
+  /**
+   * `<environmentId>:<projectId>:<number>:<repository>`, absent when the list
+   * is alone; see {@link formatPullRequestSelection}.
+   */
   readonly pr?: string;
   readonly author?: string;
   readonly labels?: string;
@@ -221,28 +230,48 @@ export function pullRequestFiltersToSearch(
   };
 }
 
+/** A whole positive number and nothing else, which is what a segment must be. */
+const DIGITS = /^\d+$/;
+
+/**
+ * `environment:project:number:repository`, the repository last and
+ * percent-encoded so the `/` and `:` in a name cannot be read as separators.
+ * A link written before the param carried a repository ends in its number
+ * instead, which is how {@link parsePullRequestSelection} tells the two apart.
+ */
 export function formatPullRequestSelection(selection: PullRequestSelection): string {
-  return `${selection.environmentId}:${selection.projectId}:${selection.number}`;
+  const base = `${selection.environmentId}:${selection.projectId}:${selection.number}`;
+  return selection.repository === null
+    ? base
+    : `${base}:${encodeURIComponent(selection.repository)}`;
 }
 
 /**
  * Read from the right, so an environment id carrying a colon of its own still
- * parses. A value that does not resolve to a positive number is dropped rather
- * than rendered as a broken selection.
+ * parses, and the three-part form old links carry is still read (with no
+ * repository, which the page then falls back to the project's remote for). A
+ * value that does not resolve to a positive number is dropped rather than
+ * rendered as a broken selection.
  */
 export function parsePullRequestSelection(value: string): PullRequestSelection | null {
-  const lastSeparator = value.lastIndexOf(":");
-  if (lastSeparator <= 0) {
+  const parts = value.split(":");
+  const last = parts[parts.length - 1] ?? "";
+  // The last segment is the number in the old form and the repository in the
+  // new one, and only one of the two is ever all digits.
+  const carriesRepository = !DIGITS.test(last);
+  const repository = carriesRepository ? decodeRepositorySegment(last) : null;
+  if (carriesRepository && repository === null) {
     return null;
   }
-  const projectSeparator = value.lastIndexOf(":", lastSeparator - 1);
-  if (projectSeparator <= 0) {
+  const numberIndex = parts.length - (carriesRepository ? 2 : 1);
+  if (numberIndex < 2) {
     return null;
   }
-  const environmentId = value.slice(0, projectSeparator);
-  const projectId = value.slice(projectSeparator + 1, lastSeparator);
-  const number = Number(value.slice(lastSeparator + 1));
-  if (environmentId.length === 0 || projectId.length === 0) {
+  const numberPart = parts[numberIndex] ?? "";
+  const projectId = parts[numberIndex - 1] ?? "";
+  const environmentId = parts.slice(0, numberIndex - 1).join(":");
+  const number = Number(numberPart);
+  if (environmentId.length === 0 || projectId.length === 0 || !DIGITS.test(numberPart)) {
     return null;
   }
   if (!Number.isSafeInteger(number) || number <= 0) {
@@ -251,8 +280,45 @@ export function parsePullRequestSelection(value: string): PullRequestSelection |
   return {
     environmentId: EnvironmentId.make(environmentId),
     projectId: ProjectId.make(projectId),
+    repository,
     number,
   };
+}
+
+/** The repository the param spells, or null when it spells nothing readable. */
+function decodeRepositorySegment(value: string): string | null {
+  if (value.length === 0) {
+    return null;
+  }
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.length === 0 ? null : decoded;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a row is the one the route names. A link written before the param
+ * carried a repository names none, and then the project and the number are all
+ * there is to go on.
+ */
+export function matchesPullRequestSelection(
+  selection: PullRequestSelection,
+  entry: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId;
+    readonly repository: string;
+    readonly number: number;
+  },
+): boolean {
+  return (
+    selection.environmentId === entry.environmentId &&
+    selection.projectId === entry.projectId &&
+    selection.number === entry.number &&
+    (selection.repository === null ||
+      repositoryKey(selection.repository) === repositoryKey(entry.repository))
+  );
 }
 
 /**
@@ -563,7 +629,7 @@ export function resolveNeedsYouReason(entry: PullRequestEntry): PullRequestNeeds
     return null;
   }
   if (entry.viewerReviewRequested) {
-    return "Review requested";
+    return "Review required";
   }
   if (!entry.viewerIsAuthor) {
     return null;
@@ -705,7 +771,13 @@ export function narrowPullRequests(
         return false;
       }
     }
-    if (project.length > 0 && pullRequestProjectKey(entry) !== project) return false;
+    // An authored row belongs to no project here, so naming one hides it.
+    if (
+      project.length > 0 &&
+      (entry.origin === "authored" || pullRequestProjectKey(entry) !== project)
+    ) {
+      return false;
+    }
     if (filters.draft === "only" && !entry.isDraft) return false;
     if (filters.draft === "hide" && entry.isDraft) return false;
     if (filters.review === "none" && entry.reviewDecision !== undefined) return false;
@@ -994,12 +1066,20 @@ export function pullRequestProjectKey(entry: {
   return `${entry.environmentId}:${entry.projectId}`;
 }
 
-/** The projects the loaded rows came from, alphabetically. */
+/**
+ * The projects the loaded rows came from, alphabetically. A pull request the
+ * user authored somewhere outside the workspace is left out: the project on it
+ * is only the checkout whose host answered the search, so filing it under that
+ * project would put strangers' repositories inside it.
+ */
 export function pullRequestProjectFacets(
   entries: readonly PullRequestEntry[],
 ): readonly PullRequestProjectFacet[] {
   const byKey = new Map<string, { key: string; label: string; count: number }>();
   for (const entry of entries) {
+    if (entry.origin === "authored") {
+      continue;
+    }
     const key = pullRequestProjectKey(entry);
     const seen = byKey.get(key);
     if (seen) {

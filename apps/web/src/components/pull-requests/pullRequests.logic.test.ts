@@ -18,16 +18,20 @@ import {
   buildReviewCommentHandoff,
   countNeedsYou,
   formatPullRequestBaseFreshness,
+  formatPullRequestSelection,
   formatPullRequestChecksHeadline,
   formatPullRequestChecksSummary,
   groupPullRequests,
   groupTimelineRows,
   linkThreadsToPullRequests,
   matchesPullRequestQuery,
+  matchesPullRequestSelection,
   narrowPullRequests,
+  parsePullRequestSelection,
   parsePullRequestsSearch,
   pullRequestEntryKey,
   pullRequestFilterChips,
+  pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
@@ -162,7 +166,7 @@ describe("resolveNeedsYouReason", () => {
           checksState: "failure",
         }),
       ),
-    ).toBe("Review requested");
+    ).toBe("Review required");
   });
 
   it("reports changes before failing checks for the author's own row", () => {
@@ -535,6 +539,28 @@ describe("narrowPullRequests", () => {
     expect(involved({ project: `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}` })).toEqual([3]);
   });
 
+  it("leaves a row authored outside the workspace out of every project", () => {
+    const authored = entry({
+      number: 4,
+      origin: "authored",
+      repository: "someone/else",
+      projectId: OTHER_PROJECT_ID,
+    });
+    const mixed = [entry({ number: 3, projectId: OTHER_PROJECT_ID }), authored];
+
+    // The project on an authored row is only the checkout whose host answered
+    // the search, so it neither offers that project nor hides behind it.
+    expect(pullRequestProjectFacets(mixed).map((facet) => facet.key)).toEqual([
+      `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}`,
+    ]);
+    expect(
+      narrowPullRequests(mixed, {
+        ...EMPTY_PULL_REQUEST_FILTERS,
+        project: `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}`,
+      }).map((row) => row.number),
+    ).toEqual([3]);
+  });
+
   it("narrows on everything at once", () => {
     expect(numbersFor({ author: "ada", labels: "bug", checks: "passing" })).toEqual([1]);
     expect(numbersFor({ author: "ada", labels: "bug", checks: "failing" })).toEqual([]);
@@ -667,6 +693,61 @@ describe("the filter chips and the route's params", () => {
     expect(parsePullRequestsSearch({ sort: "created" }).sort).toBe("newest");
     expect(parsePullRequestsSearch({ sort: "size" }).sort).toBe("largest");
     expect(parsePullRequestsSearch({ sort: "nonsense" }).sort).toBeUndefined();
+  });
+});
+
+describe("the pull request a link names", () => {
+  it("carries the repository through a round trip, separators and all", () => {
+    const selection = {
+      // Both the environment id and the repository hold the separator the
+      // param is spelled with, which is what the encoding is there for.
+      environmentId: EnvironmentId.make("environment:remote"),
+      projectId: PROJECT_ID,
+      repository: "group/sub:group/threadlines",
+      number: 214,
+    };
+
+    const written = formatPullRequestSelection(selection);
+    expect(written).toBe(`environment:remote:${PROJECT_ID}:214:group%2Fsub%3Agroup%2Fthreadlines`);
+    expect(parsePullRequestSelection(written)).toEqual(selection);
+  });
+
+  it("still reads a link written before the param carried a repository", () => {
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}:7`)).toEqual({
+      environmentId: ENVIRONMENT_ID,
+      projectId: PROJECT_ID,
+      repository: null,
+      number: 7,
+    });
+    // With no repository the row is matched on what the link does carry.
+    expect(
+      matchesPullRequestSelection(
+        { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID, repository: null, number: 7 },
+        entry({ number: 7 }),
+      ),
+    ).toBe(true);
+  });
+
+  it("tells two pull requests with one number apart by their repository", () => {
+    const selection = {
+      environmentId: ENVIRONMENT_ID,
+      projectId: PROJECT_ID,
+      repository: "Threadlines/Threadlines",
+      number: 7,
+    };
+
+    // Repository names are case-insensitive on every host here.
+    expect(matchesPullRequestSelection(selection, entry({ number: 7 }))).toBe(true);
+    expect(
+      matchesPullRequestSelection(selection, entry({ number: 7, repository: "someone/else" })),
+    ).toBe(false);
+  });
+
+  it("drops a value that names no pull request", () => {
+    expect(parsePullRequestSelection("")).toBeNull();
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}`)).toBeNull();
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}:0`)).toBeNull();
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}:none:repo`)).toBeNull();
   });
 });
 

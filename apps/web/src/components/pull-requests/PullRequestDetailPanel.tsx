@@ -677,8 +677,10 @@ function PullRequestDetailHeader({
         <PullRequestCheckoutCommand provider={detail.provider} number={detail.number} />
       </div>
 
-      {/* Row 4: the branches this joins, and how much it changes. */}
-      <div className="mt-3 flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground/70">
+      {/* Row 4: the branches this joins, and how much it changes. Below `md`
+          the counts drop to a line of their own: the branch names are what the
+          row is for, and sharing the line leaves them a letter each. */}
+      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted-foreground/70">
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <BranchCopyButton branch={detail.baseBranch} />
           {conflictLabel ? (
@@ -714,7 +716,7 @@ function PullRequestDetailHeader({
             </TooltipWrapper>
           ) : null}
         </span>
-        <span className="flex shrink-0 items-center gap-2">
+        <span className="flex shrink-0 items-center gap-2 max-md:w-full">
           <span className="flex items-center gap-1">
             <FileDiffIcon aria-hidden className="size-3.5" />
             {pluralize(detail.changedFiles, "file")}
@@ -871,7 +873,9 @@ function PullRequestCheckoutCommand({
       <button
         type="button"
         className={cn(TEXT_BUTTON_CLASS, "shrink-0 font-mono text-xs")}
-        aria-label={`Copy ${command}`}
+        // The word on the button is the only sign the copy worked, so the name
+        // says it too rather than staying "Copy" while the button reads Copied.
+        aria-label={isCopied ? `Copied ${command}` : `Copy ${command}`}
         data-testid="pull-request-checkout-command"
         onClick={() => copyToClipboard(command, undefined)}
       >
@@ -972,10 +976,11 @@ function PullRequestTitle({
       tabIndex={-1}
       className="group/title flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-ring"
     >
-      {/* A phone's column is narrow enough that one truncated line says almost
-          nothing, so there it wraps to two before it gives up. */}
+      {/* A phone's column, and a tablet's, are narrow enough that one truncated
+          line says almost nothing, so there it wraps to two before it gives
+          up. */}
       <span
-        className="min-w-0 text-base font-semibold leading-snug max-md:line-clamp-2 md:truncate"
+        className="min-w-0 text-base font-semibold leading-snug max-lg:line-clamp-2 lg:truncate"
         title={detail.title}
       >
         {detail.title}
@@ -1450,7 +1455,7 @@ function BranchCopyButton({ branch }: { readonly branch: string }) {
     <button
       type="button"
       className="min-w-0 max-w-[14rem] shrink cursor-pointer truncate rounded-sm text-left transition-colors hover:text-foreground focus-ring"
-      aria-label={`Copy ${branch}`}
+      aria-label={isCopied ? `Copied ${branch}` : `Copy ${branch}`}
       onClick={() => copyToClipboard(branch, undefined)}
     >
       {isCopied ? "Copied" : branch}
