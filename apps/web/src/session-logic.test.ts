@@ -4241,6 +4241,210 @@ describe("subagent.metadata promoted-run lifecycle", () => {
   });
 });
 
+describe("subagent task stream across a provider restart", () => {
+  it("does not show a background command as an agent when the harness moves it to the background", () => {
+    const activities = [
+      makeActivity({
+        id: "bash-started",
+        kind: "task.started",
+        tone: "info",
+        turnId: "turn-1",
+        createdAt: "2026-09-02T15:16:43.720Z",
+        payload: {
+          taskId: "bidsyv2wg",
+          taskType: "local_bash",
+          toolUseId: "toolu_bash",
+          detail: "List the failing server test files",
+        },
+      }),
+      // The long-running command hit its foreground limit; the SDK restates it
+      // as backgrounded under the command's own tool call.
+      makeActivity({
+        id: "bash-backgrounded",
+        kind: "subagent.metadata",
+        tone: "info",
+        turnId: "turn-1",
+        createdAt: "2026-09-02T15:26:40.735Z",
+        payload: { callId: "toolu_bash", isBackgrounded: true },
+      }),
+      makeActivity({
+        id: "bash-completed",
+        kind: "task.completed",
+        tone: "info",
+        createdAt: "2026-09-02T15:32:25.755Z",
+        payload: { taskId: "bidsyv2wg", toolUseId: "toolu_bash", status: "completed" },
+      }),
+    ];
+
+    expect(deriveThreadSubagentHistory(activities)).toEqual([]);
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-2"),
+        latestTurnSettled: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps one row for an agent the model resumes after a provider restart", () => {
+    // The roster as the server holds it once the resume has landed: the
+    // spawn owns the row, the task id is the transcript link.
+    const durable: OrchestrationSubagent = {
+      id: "toolu_spawn",
+      agentThreadId: "toolu_spawn",
+      parentAgentThreadId: null,
+      spawnCallId: "toolu_spawn",
+      transcriptAgentId: "a53e9dad4acb0ffce",
+      turnId: TurnId.make("turn-resume"),
+      agentPath: null,
+      parentAgentPath: null,
+      treeDepth: 0,
+      isBackgrounded: true,
+      nickname: null,
+      role: "general-purpose",
+      objective: "Build step 4a server",
+      status: "running",
+      requestedModel: "opus",
+      resolvedModel: "claude-opus-5",
+      reasoningEffort: null,
+      modelProvenance: "explicit",
+      reasoningEffortProvenance: null,
+      resultBody: null,
+      resultCreatedAt: null,
+      createdAt: "2026-09-02T05:05:13.409Z",
+      updatedAt: "2026-09-02T19:58:31.950Z",
+    };
+    const activities = [
+      // The reaper replaced the provider process: the roster sweep closed the row.
+      makeActivity({
+        id: "sweep",
+        kind: "subagent.metadata",
+        tone: "info",
+        turnId: "turn-before",
+        createdAt: "2026-09-02T15:39:31.835Z",
+        payload: { agentThreadId: "toolu_spawn", callId: "toolu_spawn", status: "interrupted" },
+      }),
+      // The fresh process knows the lost agent by its task id alone.
+      makeActivity({
+        id: "lost",
+        kind: "task.completed",
+        tone: "info",
+        createdAt: "2026-09-02T19:57:13.220Z",
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          status: "stopped",
+          detail: "No completion record was found for background agent",
+        },
+      }),
+      // SendMessage resumed it: the same task, reported under the resuming
+      // call, which also restates the spawn flags.
+      makeActivity({
+        id: "resume-flags",
+        kind: "subagent.metadata",
+        tone: "info",
+        turnId: "turn-resume",
+        createdAt: "2026-09-02T19:58:31.948Z",
+        payload: { callId: "toolu_send_message", treeDepth: 1, isBackgrounded: true },
+      }),
+      makeActivity({
+        id: "resume-start",
+        kind: "task.started",
+        tone: "info",
+        turnId: "turn-resume",
+        createdAt: "2026-09-02T19:58:31.950Z",
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          toolUseId: "toolu_send_message",
+          taskType: "local_agent",
+          subagentType: "general-purpose",
+          detail: "Build step 4a server",
+        },
+      }),
+      makeActivity({
+        id: "resume-progress",
+        kind: "task.progress",
+        tone: "info",
+        createdAt: "2026-09-02T20:01:00.000Z",
+        payload: {
+          taskId: "a53e9dad4acb0ffce",
+          toolUseId: "toolu_send_message",
+          subagentType: "general-purpose",
+          detail: "Reading logic test conventions",
+          usage: { total_tokens: 231_000, tool_uses: 40 },
+        },
+      }),
+    ];
+
+    const state = deriveSubagentProgressState({
+      activities,
+      subagents: [durable],
+      latestTurnId: TurnId.make("turn-resume"),
+      latestTurnSettled: true,
+    });
+    expect(state?.items).toHaveLength(1);
+    expect(state?.items[0]).toMatchObject({
+      agentThreadId: "toolu_spawn",
+      status: "running",
+      turnId: "turn-resume",
+      model: "claude-opus-5",
+      telemetry: expect.objectContaining({
+        step: "Reading logic test conventions",
+        totalTokens: 231_000,
+      }),
+    });
+    expect(deriveThreadSubagentHistory(activities, [durable])).toHaveLength(1);
+
+    // The run ends. The adapter holds no spawn for the agent, so it files the
+    // final report as a completion of the resuming call, task id attached.
+    const finished = deriveThreadSubagentHistory(
+      [
+        ...activities,
+        makeActivity({
+          id: "resume-done",
+          kind: "task.completed",
+          tone: "info",
+          createdAt: "2026-09-02T20:10:00.000Z",
+          payload: {
+            taskId: "a53e9dad4acb0ffce",
+            toolUseId: "toolu_send_message",
+            status: "completed",
+          },
+        }),
+        makeActivity({
+          id: "resume-report",
+          kind: "tool.completed",
+          createdAt: "2026-09-02T20:10:00.500Z",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            toolCallId: "toolu_send_message",
+            status: "completed",
+            title: "Subagent task",
+            detail: 'Agent "Build step 4a server" finished',
+            data: {
+              toolName: "Agent",
+              input: {},
+              result: {
+                type: "tool_result",
+                tool_use_id: "toolu_send_message",
+                content: [{ type: "text", text: "## Report\n\nStep 4a done." }],
+              },
+              taskNotification: { taskId: "a53e9dad4acb0ffce", status: "completed" },
+            },
+          },
+        }),
+      ],
+      [durable],
+    );
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.item).toMatchObject({
+      agentThreadId: "toolu_spawn",
+      status: "completed",
+      objective: "Build step 4a server",
+    });
+    expect(finished[0]?.resultBody).toBe("## Report\n\nStep 4a done.");
+  });
+});
+
 describe("deriveSubagentProgressState", () => {
   it("tracks spawned agents through pending, running, and completed states", () => {
     const activities: OrchestrationThreadActivity[] = [

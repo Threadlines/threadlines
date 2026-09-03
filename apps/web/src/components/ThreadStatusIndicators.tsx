@@ -1,7 +1,7 @@
 import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { VcsStatusResult } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
-import { CloudIcon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
+import { CloudIcon, TerminalIcon } from "lucide-react";
 import { useMemo } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import {
@@ -15,6 +15,12 @@ import { type AppState, selectProjectByRef, useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
+import {
+  pullRequestBadgeTone,
+  pullRequestFromGitStatus,
+  type PullRequestBadgeTone,
+  type ThreadPullRequest,
+} from "./pull-requests/pullRequests.logic";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import type { SidebarThreadSummary } from "../types";
 import { LiveNode } from "./ui/threadline";
@@ -25,6 +31,9 @@ export interface PrStatusIndicator {
   colorClass: string;
   tooltip: string;
   url: string;
+  number: number;
+  /** State glyph from the shared table: merge, closed, draft or open. */
+  Icon: PullRequestBadgeTone["Icon"];
 }
 
 export interface TerminalStatusIndicator {
@@ -33,55 +42,26 @@ export interface TerminalStatusIndicator {
   pulse: boolean;
 }
 
-export type ThreadPr = VcsStatusResult["pr"];
-
+/**
+ * The badge for a thread's pull request: glyph and colour from the shared
+ * state table, wording from the host's own terminology.
+ */
 export function prStatusIndicator(
-  pr: ThreadPr,
+  pr: ThreadPullRequest | null,
   provider: VcsStatusResult["sourceControlProvider"] | null | undefined,
 ): PrStatusIndicator | null {
   if (!pr) return null;
   const presentation = resolveChangeRequestPresentation(provider);
-
-  if (pr.state === "open") {
-    return {
-      label: `${presentation.shortName} open`,
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      tooltip: `#${pr.number} ${presentation.shortName} open: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  if (pr.state === "closed") {
-    return {
-      label: `${presentation.shortName} closed`,
-      colorClass: "text-zinc-500 dark:text-zinc-400/80",
-      tooltip: `#${pr.number} ${presentation.shortName} closed: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  if (pr.state === "merged") {
-    return {
-      label: `${presentation.shortName} merged`,
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      tooltip: `#${pr.number} ${presentation.shortName} merged: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  return null;
-}
-
-export function ChangeRequestStatusIcon({ className }: { className?: string }) {
-  return <GitPullRequestIcon className={className} />;
-}
-
-export function resolveThreadPr(
-  threadBranch: string | null,
-  gitStatus: VcsStatusResult | null,
-): ThreadPr | null {
-  if (threadBranch === null || gitStatus === null || gitStatus.refName !== threadBranch) {
-    return null;
-  }
-
-  return gitStatus.pr ?? null;
+  const tone = pullRequestBadgeTone(pr.state, pr.isDraft);
+  const word = pr.isDraft ? "draft" : pr.state;
+  return {
+    label: `${presentation.shortName} ${word}`,
+    colorClass: tone.className,
+    tooltip: `#${pr.number} ${presentation.shortName} ${word}: ${pr.title}`,
+    url: pr.url,
+    number: pr.number,
+    Icon: tone.Icon,
+  };
 }
 
 export function terminalStatusFromRunningIds(
@@ -196,7 +176,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
     environmentId: thread.environmentId,
     cwd: thread.branch != null ? gitCwd : null,
   });
-  const pr = resolveThreadPr(thread.branch, gitStatus.data);
+  const pr = pullRequestFromGitStatus(thread.branch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const threadStatus = resolveThreadStatusPill({
     thread: {
@@ -221,7 +201,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
               />
             }
           >
-            <ChangeRequestStatusIcon className="size-3" />
+            <prStatus.Icon className="size-3" />
           </TooltipTrigger>
           <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
         </Tooltip>

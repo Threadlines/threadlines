@@ -242,6 +242,12 @@ interface SourceControlPanelProps {
     | ((branch: string | null, worktreePath: string | null) => void)
     | undefined;
   readonly onOpenDiff?: (filePath?: string) => void;
+  /**
+   * Opens the containing panel's Pull request surface. When set, the branch's
+   * existing pull request is read in the app rather than on the host; the
+   * header's external link is still there for anyone who wants the host.
+   */
+  readonly onOpenPullRequest?: () => void;
   /** Warm the diff chunk + working tree diff query before a likely diff open. */
   readonly onPrefetchDiff?: () => void;
   /**
@@ -2386,6 +2392,7 @@ export function SourceControlPanel({
   activeThreadRef,
   onActiveBranchChange,
   onOpenDiff,
+  onOpenPullRequest,
   onPrefetchDiff,
   onClose,
   embedded = false,
@@ -3763,13 +3770,17 @@ export function SourceControlPanel({
     [onOpenDiff, openChangedFileDiff, openChangedFileInEditor],
   );
 
-  const openExistingPr = useCallback(() => {
+  const openPrOnHost = useCallback(() => {
     const api = readLocalApi();
     if (!api || !openPullRequest) {
       return;
     }
     void api.shell.openExternal(openPullRequest.url).catch(() => undefined);
   }, [openPullRequest]);
+  // Reading the pull request in the app beats leaving for the host, so the
+  // action prefers the panel that can show it and falls back to the browser
+  // where there is none (a standalone panel, or a surface with no tab strip).
+  const openExistingPr = onOpenPullRequest ?? openPrOnHost;
 
   const copyCommitValue = useCallback(
     (value: string, title: string, options?: CopyCommitValueOptions) => {
@@ -5187,18 +5198,38 @@ export function SourceControlPanel({
                 disabledReason={pullDisabledReason}
                 onClick={runPull}
               />
-              <ActionButton
-                label={openPullRequest ? `Open ${changeRequestLabel}` : `New ${changeRequestLabel}`}
-                icon={
-                  openPullRequest ? (
+              {/* Opening it in the app is the action; the host is still one
+                  click away, because a review often finishes over there. */}
+              <div className="flex min-w-0 items-center gap-1">
+                <div className="min-w-0 flex-1">
+                  <ActionButton
+                    label={
+                      openPullRequest ? `Open ${changeRequestLabel}` : `New ${changeRequestLabel}`
+                    }
+                    icon={
+                      openPullRequest && !onOpenPullRequest ? (
+                        <ExternalLinkIcon className="size-3" />
+                      ) : (
+                        <GitPullRequestIcon className="size-3" />
+                      )
+                    }
+                    disabledReason={changeRequestDisabledReason}
+                    onClick={openPullRequest ? openExistingPr : () => void runAction("create_pr")}
+                  />
+                </div>
+                {openPullRequest && onOpenPullRequest ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-xs"
+                    tooltip="Open on GitHub"
+                    aria-label="Open on GitHub"
+                    onClick={openPrOnHost}
+                  >
                     <ExternalLinkIcon className="size-3" />
-                  ) : (
-                    <GitPullRequestIcon className="size-3" />
-                  )
-                }
-                disabledReason={changeRequestDisabledReason}
-                onClick={openPullRequest ? openExistingPr : () => void runAction("create_pr")}
-              />
+                  </Button>
+                ) : null}
+              </div>
             </div>
             {canPublishRepository ? (
               <Button

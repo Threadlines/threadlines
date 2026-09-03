@@ -266,6 +266,7 @@ function createMockEnvironmentApi(input: {
     sourceControl: {} as EnvironmentApi["sourceControl"],
     vcs: {} as EnvironmentApi["vcs"],
     git: {} as EnvironmentApi["git"],
+    pullRequests: {} as EnvironmentApi["pullRequests"],
     realtime: {} as EnvironmentApi["realtime"],
     orchestration: {
       dispatchCommand: input.dispatchCommand,
