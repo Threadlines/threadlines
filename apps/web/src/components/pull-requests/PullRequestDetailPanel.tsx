@@ -1407,9 +1407,9 @@ function usePullRequestActions({
               : `The ${changeRequestWord(detail.provider)} stays on the host, and you can reopen it later.`}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {/* Between the header and the footer, which each carry their own
+            padding, so the row has to bring its own to line up with them. */}
         {confirming.action === "merge" ? (
-          {/* Between the header and the footer, which each carry their own
-              padding, so the row has to bring its own to line up with them. */}
           <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-sm text-foreground/85">
             <Checkbox
               checked={deleteBranch}
