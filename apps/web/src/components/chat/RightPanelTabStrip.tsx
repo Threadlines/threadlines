@@ -17,7 +17,7 @@
  * tab you were just on is worse than losing its name, which a tooltip gives
  * back. Scrolling is still there underneath, for when even the icons overflow.
  */
-import { BotIcon, FileDiffIcon, PlusIcon, XIcon } from "lucide-react";
+import { BotIcon, FileDiffIcon, GitPullRequestIcon, PlusIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -37,6 +37,7 @@ import {
 export const RIGHT_PANEL_TAB_ICONS: Readonly<Record<RightPanelTab, Icon>> = {
   sourceControl: SourceControlIcon,
   diff: FileDiffIcon,
+  pullRequest: GitPullRequestIcon,
   agents: BotIcon,
 };
 

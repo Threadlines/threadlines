@@ -16,7 +16,7 @@ import {
 } from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
-import { DesktopPageTitlebar } from "./DesktopPageTitlebar";
+import { PageTitlebar } from "./PageTitlebar";
 import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
 import { PROVIDER_OPTIONS } from "../session-logic";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
@@ -126,7 +126,7 @@ export function ChatsDestinationView() {
   return (
     <ThreadHoverCardProvider side="bottom">
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
-        <DesktopPageTitlebar label="General chats" />
+        <PageTitlebar label="General chats" />
         {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
             (like Settings); the reading column centers inside it. */}
         <div className="min-h-0 flex-1 overflow-y-auto">

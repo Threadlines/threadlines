@@ -4038,8 +4038,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     message: SDKMessage,
   ) {
     const previous = context.tasks.get(task.taskId);
+    // A settled task that starts again under a different call is the same
+    // task running again: the model revived a background agent with
+    // `SendMessage`, and the SDK reports the new run under the resuming call.
+    // A process that only ever saw the agent's "no completion record" notice
+    // after a restart has nothing else to go on, so the start edge itself
+    // re-opens the run; the completion that follows pairs with this start.
+    // The SDK also replays a finished task's start under its original call
+    // alongside legacy result fallbacks; that is a duplicate, not a run.
     if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
-      return false;
+      if (task.toolUseId === undefined || task.toolUseId === previous?.toolUseId) {
+        return false;
+      }
+      context.startedTaskIds.delete(task.taskId);
     }
     context.tasks.set(task.taskId, {
       ...previous,
@@ -5160,6 +5171,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ? Math.max(0, message.spawn_depth)
             : undefined;
         const ambient = message.ambient === true;
+        const firstSighting = !context.tasks.has(message.task_id);
         yield* emitTaskStartedOnce(
           context,
           {
@@ -5176,8 +5188,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           message,
         );
         // The SDK states an agent's nesting depth only here; the spawn call
-        // is what the roster row is keyed by until the agent id is known.
-        if (spawnDepth !== undefined && toolUseId) {
+        // is what the roster row is keyed by until the agent id is known. A
+        // task starting again (a resumed agent) restates the flags under the
+        // call that resumed it, which owns no row.
+        if (firstSighting && spawnDepth !== undefined && toolUseId) {
           yield* emitSubagentMetadata(context, {
             callId: toolUseId,
             treeDepth: spawnDepth,
@@ -5260,8 +5274,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(status ? { status } : {}),
         });
         // A foreground agent moved to the background (Ctrl+B, or the model
-        // backgrounding it): the roster row should say so from now on.
-        if (patch.is_backgrounded === true && previous?.toolUseId) {
+        // backgrounding it): the roster row should say so from now on. A
+        // shell command the harness moved to the background reports the same
+        // flag and has no row to update.
+        if (
+          patch.is_backgrounded === true &&
+          previous?.toolUseId &&
+          (isClaudeAgentTaskType(previous.taskType) ||
+            previous.subagentType !== undefined ||
+            context.codexExecRuns.has(message.task_id))
+        ) {
           yield* emitSubagentMetadata(context, {
             callId: previous.toolUseId,
             isBackgrounded: true,

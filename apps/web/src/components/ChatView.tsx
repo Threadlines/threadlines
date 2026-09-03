@@ -1350,10 +1350,15 @@ export default function ChatView(props: ChatViewProps) {
   // The sidebar's tab strip is owned by the route that renders it; the header
   // reads the same store so its panel button and activity chip agree with what
   // is on screen. The button reflects the sidebar as a whole — it stays pressed
-  // on any tab, and on the launcher.
+  // on any tab, and on the launcher — and its counts stand in for whichever
+  // tabs the strip is showing without.
   const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
   const rightPanelEngaged = rightPanelTabs.visible;
   const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
+  const railTabs = useMemo(
+    () => (rightPanelTabs.visible ? rightPanelTabs.openTabs : []),
+    [rightPanelTabs.visible, rightPanelTabs.openTabs],
+  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -6604,6 +6609,7 @@ export default function ChatView(props: ChatViewProps) {
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           railToggleShortcutLabel={sourceControlPanelShortcutLabel}
           railOpen={rightPanelEngaged}
+          railTabs={railTabs}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}

@@ -2511,6 +2511,7 @@ const make = Effect.gen(function* () {
       const settleLiveSubagents = Effect.fn("settleLiveSubagents")(function* (options: {
         readonly commandTag: string;
         readonly summary: string;
+        readonly status: "completed" | "interrupted";
         readonly belongsToLifecycle: (
           subagent: NonNullable<OrchestrationThread["subagents"]>[number],
         ) => boolean;
@@ -2537,7 +2538,7 @@ const make = Effect.gen(function* () {
               payload: {
                 ...(subagent.agentThreadId ? { agentThreadId: subagent.agentThreadId } : {}),
                 ...(subagent.spawnCallId ? { callId: subagent.spawnCallId } : {}),
-                status: "interrupted",
+                status: options.status,
               },
               turnId: subagent.turnId,
               createdAt: event.createdAt,
@@ -2565,6 +2566,7 @@ const make = Effect.gen(function* () {
         yield* settleLiveSubagents({
           commandTag: "subagent-orphan",
           summary: "Subagent no longer tracked by the provider session",
+          status: "interrupted",
           belongsToLifecycle: () => true,
         });
         if (event.type === "session.started") {
@@ -2670,13 +2672,29 @@ const make = Effect.gen(function* () {
           (_key, pending) =>
             pending.threadId === thread.id && sameId(pending.event.turnId, eventTurnId),
         );
-      }
-      if (turnWasInterrupted && shouldApplyThreadLifecycle && eventTurnId !== undefined) {
-        yield* settleLiveSubagents({
-          commandTag: "subagent-turn-aborted",
-          summary: "Subagent interrupted with its parent turn",
-          belongsToLifecycle: (subagent) => sameId(subagent.turnId, eventTurnId),
-        });
+        // An interrupted turn takes every agent of the turn down with it. A
+        // turn that ended on its own can only have outlived a foreground
+        // agent by losing its stop event, because a foreground spawn blocks
+        // the turn until it returns. Background agents (spawned in the
+        // background, or moved there mid-run) legitimately keep working after
+        // the turn that spawned them, and Codex never says which is which, so
+        // only agents the provider marked foreground are settled here.
+        yield* settleLiveSubagents(
+          turnWasInterrupted
+            ? {
+                commandTag: "subagent-turn-aborted",
+                summary: "Subagent interrupted with its parent turn",
+                status: "interrupted",
+                belongsToLifecycle: (subagent) => sameId(subagent.turnId, eventTurnId),
+              }
+            : {
+                commandTag: "subagent-turn-settled",
+                summary: "Subagent settled with its parent turn",
+                status: completedTurnState === "completed" ? "completed" : "interrupted",
+                belongsToLifecycle: (subagent) =>
+                  subagent.isBackgrounded === false && sameId(subagent.turnId, eventTurnId),
+              },
+        );
       }
 
       if (
