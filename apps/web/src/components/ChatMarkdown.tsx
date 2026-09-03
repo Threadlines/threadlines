@@ -510,7 +510,7 @@ function MarkdownImage({ node: _node, src, alt, ...props }: MarkdownRendererProp
   const fileLinkMeta =
     source && !searchHighlightQuery?.trim() ? resolveMarkdownFileLinkMeta(source, cwd) : null;
   if (!fileLinkMeta || !isImageFilePath(fileLinkMeta.filePath)) {
-    return <img {...props} src={source} alt={alt ?? ""} />;
+    return <RemoteMarkdownImage {...props} src={source} alt={alt} />;
   }
   const name = alt && alt.length > 0 ? alt : fileLinkMeta.basename;
   return (
@@ -765,11 +765,12 @@ function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<
 }
 
 /**
- * An image the text points at. A host bot links images that later go missing,
- * and a broken-image glyph says nothing; the alt text at least says what was
- * meant to be there.
+ * An image with an http(s) or data source, the case {@link MarkdownImage} does
+ * not turn into a local thumbnail. A host bot links images that later go
+ * missing, and a broken-image glyph says nothing; the alt text at least says
+ * what was meant to be there.
  */
-function MarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
+function RemoteMarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
   const [failed, setFailed] = useState(false);
   if (failed || !src) {
     return alt ? <span className="text-muted-foreground/70">{alt}</span> : null;
@@ -789,7 +790,6 @@ const MARKDOWN_COMPONENTS: Components = {
   a: MarkdownAnchor,
   img: MarkdownImage,
   code: MarkdownCode,
-  img: MarkdownImage,
   pre: MarkdownPre,
 };
 
