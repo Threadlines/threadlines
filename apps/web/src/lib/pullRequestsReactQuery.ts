@@ -1,6 +1,20 @@
-import type { EnvironmentId, PullRequestListState } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  PullRequestAction,
+  PullRequestCommentUpdateKind,
+  PullRequestListState,
+  PullRequestMergeMethod,
+  PullRequestReactionContent,
+  PullRequestRef,
+  PullRequestReviewCommentDraft,
+  PullRequestReviewVerdict,
+  PullRequestReviewerKind,
+  PullRequestUpdateMethod,
+} from "@threadlines/contracts";
 import {
   keepPreviousData,
+  mutationOptions,
   queryOptions,
   useQueries,
   type QueryClient,
@@ -29,11 +43,313 @@ export const PULL_REQUEST_PAGE_REFETCH_INTERVAL_MS = 60_000;
 /** The sidebar count only has to be roughly right. */
 export const PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS = 300_000;
 
+/**
+ * Merged and closed listings only tell the sidebar which threads have
+ * finished, and a branch does not un-merge, so they poll far more slowly than
+ * the open one.
+ */
+export const PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS = 600_000;
+
+/** The header and the conversation move at the same pace as the server's caches. */
+const PULL_REQUEST_READ_STALE_TIME_MS = 15_000;
+
+/** A patch is the same until someone pushes, and it is the costliest read. */
+const PULL_REQUEST_DIFF_STALE_TIME_MS = 60_000;
+const PULL_REQUEST_DIFF_GC_TIME_MS = 300_000;
+
 export const pullRequestQueryKeys = {
   all: ["pull-requests"] as const,
   list: (environmentId: EnvironmentId, state: PullRequestListState) =>
     ["pull-requests", "list", environmentId, state] as const,
+  detail: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
+    ["pull-requests", "detail", environmentId, projectId, number] as const,
+  activity: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
+    ["pull-requests", "activity", environmentId, projectId, number] as const,
+  diff: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
+    ["pull-requests", "diff", environmentId, projectId, number] as const,
+  reviewerCandidates: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
+    ["pull-requests", "reviewer-candidates", environmentId, projectId, number] as const,
 };
+
+/** Everything the detail surface reads, addressed the same way on every key. */
+export interface PullRequestReadInput {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  /** Drops the server's cached read as well as this one. Refresh only. */
+  readonly force?: boolean;
+}
+
+function readPayload(input: PullRequestReadInput) {
+  return { ...input.reference, ...(input.force ? { force: true as const } : {}) };
+}
+
+/**
+ * The detail reads never poll: a pull request is a document the user reads,
+ * and the panel's own Refresh is the one thing that re-runs `gh`.
+ */
+/** While a check is still running the header keeps itself current at this pace. */
+export const PULL_REQUEST_CHECKS_POLL_INTERVAL_MS = 20_000;
+
+export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.detail(
+      input.environmentId,
+      input.reference.projectId,
+      input.reference.number,
+    ),
+    queryFn: () =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.detail(readPayload(input)),
+    staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
+    // A run in progress is the one moment the reader is watching the checks,
+    // so the header polls until every check has settled, then goes quiet.
+    refetchInterval: (query) =>
+      query.state.data?.checks.some((check) => check.status === "pending")
+        ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS
+        : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function pullRequestActivityQueryOptions(input: PullRequestReadInput) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.activity(
+      input.environmentId,
+      input.reference.projectId,
+      input.reference.number,
+    ),
+    queryFn: () =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.activity(readPayload(input)),
+    staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function pullRequestDiffQueryOptions(input: PullRequestReadInput) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.diff(
+      input.environmentId,
+      input.reference.projectId,
+      input.reference.number,
+    ),
+    queryFn: () => ensureEnvironmentApi(input.environmentId).pullRequests.diff(readPayload(input)),
+    staleTime: PULL_REQUEST_DIFF_STALE_TIME_MS,
+    gcTime: PULL_REQUEST_DIFF_GC_TIME_MS,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Re-reads one pull request past both caches, the panel's Refresh control.
+ * Writes through the keys the panel already renders from, so the header and
+ * the conversation update together rather than blinking through a loading state.
+ */
+export async function refreshPullRequest(
+  queryClient: QueryClient,
+  input: { readonly environmentId: EnvironmentId; readonly reference: PullRequestRef },
+): Promise<void> {
+  const forced = { ...input, force: true } as const;
+  const diffOptions = pullRequestDiffQueryOptions(forced);
+  await Promise.allSettled([
+    queryClient.fetchQuery({ ...pullRequestDetailQueryOptions(forced), staleTime: 0 }),
+    queryClient.fetchQuery({ ...pullRequestActivityQueryOptions(forced), staleTime: 0 }),
+    // `gh pr diff` is the expensive read and the Code tab may never have been
+    // opened, so the patch is only re-read when there is already one to replace.
+    queryClient.getQueryData(diffOptions.queryKey) === undefined
+      ? Promise.resolve()
+      : queryClient.fetchQuery({ ...diffOptions, staleTime: 0 }),
+  ]);
+}
+
+/** What every pull request write is addressed with. */
+export interface PullRequestWriteInput {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly queryClient: QueryClient;
+}
+
+/**
+ * The key and the invalidation every pull request write shares. Every read key
+ * is filed under `all`, so one invalidation covers this pull request's detail
+ * and conversation as well as the listings behind them; a merge moves the row
+ * out of the open listing too, and this covers that without naming it.
+ */
+function pullRequestWriteBase(input: PullRequestWriteInput, name: string) {
+  return {
+    mutationKey: [
+      "pull-requests",
+      name,
+      input.environmentId,
+      input.reference.projectId,
+      input.reference.number,
+    ] as const,
+    onSuccess: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: pullRequestQueryKeys.all });
+    },
+  };
+}
+
+/**
+ * Posting a comment. The server drops its own caches for this pull request and
+ * every listing, so the client follows: the conversation gains the comment and
+ * the list's "updated" column stops lying.
+ */
+export function pullRequestCommentMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "comment"),
+    mutationFn: (body: string) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.comment({
+        ...input.reference,
+        body,
+      }),
+  });
+}
+
+/** Merging, closing, reopening, the draft switches, update branch and auto-merge. */
+export function pullRequestActionMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "action"),
+    mutationFn: (variables: {
+      readonly action: PullRequestAction;
+      readonly mergeMethod?: PullRequestMergeMethod;
+      readonly updateMethod?: PullRequestUpdateMethod;
+      readonly deleteBranch?: boolean;
+    }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.runAction({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/**
+ * A whole review in one send: the verdict, its summary, and every line comment
+ * that was held back while it was written. The Summary tab's verdict toggle
+ * sends the same shape with no comments.
+ */
+export function pullRequestReviewMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "review"),
+    mutationFn: (variables: {
+      readonly verdict: PullRequestReviewVerdict;
+      readonly body: string;
+      readonly comments?: readonly PullRequestReviewCommentDraft[];
+    }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.submitReview({
+        ...input.reference,
+        verdict: variables.verdict,
+        body: variables.body,
+        comments: variables.comments ?? [],
+      }),
+  });
+}
+
+/** Replying inside a conversation on a diff line. */
+export function pullRequestThreadReplyMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "thread-reply"),
+    mutationFn: (variables: { readonly threadId: string; readonly body: string }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.replyToThread({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/** Marking a conversation resolved, and taking that back. */
+export function pullRequestThreadResolutionMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "thread-resolution"),
+    mutationFn: (variables: { readonly threadId: string; readonly resolved: boolean }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.setThreadResolution({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/** Adding or taking back one reaction. An absent subject is the description. */
+export function pullRequestReactionMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "reaction"),
+    mutationFn: (variables: {
+      readonly subjectId?: string;
+      readonly content: PullRequestReactionContent;
+      readonly reacted: boolean;
+    }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.setReaction({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/** Rewriting the pull request's own title or description. */
+export function pullRequestUpdateMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "update"),
+    mutationFn: (variables: { readonly title?: string; readonly body?: string }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.update({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/** Rewriting one remark the viewer wrote, in the conversation or on a line. */
+export function pullRequestCommentUpdateMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "comment-update"),
+    mutationFn: (variables: {
+      readonly commentId: string;
+      readonly kind: PullRequestCommentUpdateKind;
+      readonly body: string;
+    }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.updateComment({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/** Asking someone for a review, and taking the ask back. */
+export function pullRequestReviewerRequestMutationOptions(input: PullRequestWriteInput) {
+  return mutationOptions({
+    ...pullRequestWriteBase(input, "reviewer-request"),
+    mutationFn: (variables: {
+      readonly reviewers: readonly {
+        readonly id: string;
+        readonly kind: PullRequestReviewerKind;
+      }[];
+      readonly requested: boolean;
+    }) =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.requestReviewers({
+        ...input.reference,
+        ...variables,
+      }),
+  });
+}
+
+/**
+ * Everyone the viewer may ask for a review. On a large repository this is a
+ * list of everyone with access, so it is only read once the picker opens.
+ */
+export function pullRequestReviewerCandidatesQueryOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+}) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.reviewerCandidates(
+      input.environmentId,
+      input.reference.projectId,
+      input.reference.number,
+    ),
+    queryFn: () =>
+      ensureEnvironmentApi(input.environmentId).pullRequests.reviewerCandidates(input.reference),
+    staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
+  });
+}
 
 /** An environment whose server can answer a pull request listing. */
 export interface PullRequestEnvironment {
@@ -50,7 +366,11 @@ export function pullRequestListQueryOptions(input: {
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.list({ state: input.state }),
     staleTime: PULL_REQUEST_STALE_TIME_MS,
-    refetchOnWindowFocus: true,
+    // Coming back to the window is a good moment to re-read what is still in
+    // flight. Merged and closed are history: the sidebar keeps them only to
+    // file threads away, so paying for a `gh` run per project on every focus
+    // would buy nothing.
+    refetchOnWindowFocus: input.state === "open",
     // A refresh keeps the rows on screen: the list updates, it does not blink.
     placeholderData: keepPreviousData,
   });

@@ -1,6 +1,12 @@
 "use client";
 
-import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import {
+  scopedProjectKey,
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@threadlines/client-runtime";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import {
   DEFAULT_NEW_THREAD_RUNTIME_MODE,
   type EnvironmentId,
@@ -86,7 +92,14 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { waitForProjectInStore } from "../lib/waitForProject";
 import { getLatestThreadForProject } from "../lib/threadSort";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
-import { usePullRequestEnvironments } from "../lib/pullRequestsReactQuery";
+import {
+  PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  usePullRequestEnvironments,
+  usePullRequestLists,
+} from "../lib/pullRequestsReactQuery";
+import { useGitStatus } from "../lib/gitStatusState";
+import { resolveThreadPullRequest } from "./pull-requests/pullRequests.logic";
+import { focusRightPanelTab, rightPanelTabSearchParams } from "../rightPanelTabs";
 import {
   cn,
   isMacPlatform,
@@ -507,6 +520,41 @@ function OpenCommandPaletteDialog() {
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const pullRequestEnvironments = usePullRequestEnvironments();
+  // The active thread's pull request, so the palette can offer its tab. Both
+  // reads are the sidebar's: the same refcounted git status and the same open
+  // listing key, and neither runs on a thread with no branch to match.
+  const activeThreadProject = activeThread
+    ? (projects.find(
+        (project) =>
+          project.environmentId === activeThread.environmentId &&
+          project.id === activeThread.projectId,
+      ) ?? null)
+    : null;
+  const activeThreadHasBranch = (activeThread?.branch ?? null) !== null;
+  const activeThreadGitStatus = useGitStatus({
+    environmentId: activeThreadHasBranch ? (activeThread?.environmentId ?? null) : null,
+    cwd:
+      activeThreadHasBranch && activeThread && activeThreadProject
+        ? resolveThreadWorkingCwd({
+            projectCwd: activeThreadProject.cwd,
+            worktreePath: activeThread.worktreePath,
+            effectiveCwd: activeThread.effectiveCwd,
+          })
+        : null,
+  });
+  const activeThreadOpenPullRequests = usePullRequestLists({
+    state: "open",
+    refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+    enabled: activeThreadHasBranch,
+  });
+  const activeThreadPullRequest = activeThread
+    ? resolveThreadPullRequest({
+        thread: activeThread,
+        gitStatus: activeThreadGitStatus.data,
+        openEntries: activeThreadOpenPullRequests.entries,
+        projects,
+      })
+    : null;
 
   const addProjectEnvironmentOptions = useMemo(() => {
     const options: AddProjectEnvironmentOption[] = [];
@@ -1612,6 +1660,27 @@ function OpenCommandPaletteDialog() {
       icon: <GitPullRequestIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/pull-requests", search: { state: "open" } });
+      },
+    });
+  }
+
+  // Only where there is one to open: an action that lands on "this branch has
+  // no pull request" is a dead end the palette should not offer.
+  if (activeThreadPullRequest && activeThread) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:thread-pull-request",
+      searchTerms: ["pull request", "pr", "review", "github", `#${activeThreadPullRequest.number}`],
+      title: `Open pull request #${activeThreadPullRequest.number}`,
+      icon: <GitPullRequestIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        focusRightPanelTab(scopedThreadKey(threadRef), "pullRequest");
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+          search: (previous) => rightPanelTabSearchParams(previous, "pullRequest"),
+        });
       },
     });
   }

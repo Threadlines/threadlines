@@ -99,6 +99,34 @@ describe("buildRightPanelLauncherStates", () => {
     expect(states.diff).toEqual({ description: "No changes to review.", empty: true });
   });
 
+  it("names the branch's pull request, and dims the row when it has none", () => {
+    const named = buildRightPanelLauncherStates({
+      workingTreeFileCount: 0,
+      diffHasExplicitTarget: false,
+      pullRequest: { number: 123, state: "open", isDraft: true },
+      ...EMPTY_THREAD,
+    });
+    expect(named.pullRequest).toEqual({ description: "#123 · Draft", empty: false });
+
+    const merged = buildRightPanelLauncherStates({
+      workingTreeFileCount: 0,
+      diffHasExplicitTarget: false,
+      pullRequest: { number: 123, state: "merged", isDraft: false },
+      ...EMPTY_THREAD,
+    });
+    expect(merged.pullRequest).toEqual({ description: "#123 · Merged", empty: false });
+
+    const none = buildRightPanelLauncherStates({
+      workingTreeFileCount: 0,
+      diffHasExplicitTarget: false,
+      ...EMPTY_THREAD,
+    });
+    expect(none.pullRequest).toEqual({
+      description: "No pull request on this branch yet.",
+      empty: true,
+    });
+  });
+
   it("says the folder is missing instead of describing a tree that is not there", () => {
     const states = buildRightPanelLauncherStates({
       workingTreeFileCount: null,

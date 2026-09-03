@@ -22,9 +22,11 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import type { Components } from "react-markdown";
+import type { Components, Options as ReactMarkdownOptions } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { MessageCopyButton } from "./chat/MessageCopyButton";
@@ -102,9 +104,25 @@ interface ChatMarkdownProps {
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
+  /**
+   * Render the raw HTML GitHub allows in a pull request body or comment
+   * (tables with markup in cells, images, details). Chat stays markdown-only,
+   * where an agent's stray tag is safer shown than interpreted.
+   */
+  html?: "github" | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+
+/**
+ * GitHub's own allowlist, which is what the host already applied to the text
+ * before it reached us. Anything outside it is unwrapped to its children, so a
+ * `<relative-time>` still reads as its date and a `<picture>` as its image.
+ */
+const GITHUB_HTML_REHYPE_PLUGINS: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
+  rehypeRaw,
+  [rehypeSanitize, defaultSchema],
+];
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
@@ -626,6 +644,19 @@ function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<
 }
 
 /**
+ * An image the text points at. A host bot links images that later go missing,
+ * and a broken-image glyph says nothing; the alt text at least says what was
+ * meant to be there.
+ */
+function MarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !src) {
+    return alt ? <span className="text-muted-foreground/70">{alt}</span> : null;
+  }
+  return <img alt={alt ?? ""} src={src} loading="lazy" onError={() => setFailed(true)} {...rest} />;
+}
+
+/**
  * The renderer map handed to react-markdown, built once. react-markdown uses
  * these functions as element types, so rebuilding the map would remount every
  * element in the document; the data they need comes from
@@ -635,6 +666,7 @@ const MARKDOWN_COMPONENTS: Components = {
   p: MarkdownParagraph,
   li: MarkdownListItem,
   a: MarkdownAnchor,
+  img: MarkdownImage,
   code: MarkdownCode,
   pre: MarkdownPre,
 };
@@ -1260,6 +1292,7 @@ function ChatMarkdownDocument({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Null unless both halves of the identity are here: a transcript rendered
@@ -1366,6 +1399,7 @@ function ChatMarkdownDocument({
     <MarkdownDocumentContext value={documentContext}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={html === "github" ? GITHUB_HTML_REHYPE_PLUGINS : undefined}
         components={MARKDOWN_COMPONENTS}
         urlTransform={markdownUrlTransform}
       >
@@ -1390,6 +1424,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush. A settled block's
@@ -1408,6 +1443,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
       isStreaming={isStreaming}
       skills={skills}
       searchHighlightQuery={searchHighlightQuery}
+      html={html}
     />
   );
 });
@@ -1420,13 +1456,16 @@ function ChatMarkdownBody({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   // Blocks are the unit of rendering whether or not the message is streaming:
   // a streaming message re-parses only its growing tail, and when it stops
   // streaming nothing changes but the tail's `isStreaming` prop. Index keys are
   // the correct identity here: streaming only appends blocks, and keying by
   // content would remount the tail on every delta.
-  const blocks = splitMarkdownBlocks(text);
+  // Raw HTML can span what the splitter takes for several blocks (a
+  // `<details>` around paragraphs), so an HTML-bearing document parses whole.
+  const blocks = html === "github" ? [text] : splitMarkdownBlocks(text);
   const tailIndex = blocks.length - 1;
   /* oxlint-disable react/no-array-index-key -- streaming only appends blocks; index is the stable identity */
   return (
@@ -1441,6 +1480,7 @@ function ChatMarkdownBody({
           isStreaming={isStreaming && index === tailIndex}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
+          html={html}
         />
       ))}
     </>
@@ -1456,6 +1496,7 @@ function ChatMarkdown({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Boots the highlighting worker and its theme while the page is idle, so the
@@ -1469,7 +1510,14 @@ function ChatMarkdown({
     : [{ type: "markdown" as const, key: "markdown:0", text }];
 
   return (
-    <div className="chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80">
+    <div
+      className={cn(
+        "chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80",
+        // Host HTML brings wide tables and images sized for a wider page; give
+        // them a scroll of their own rather than letting them widen the panel.
+        html === "github" && "chat-markdown-html",
+      )}
+    >
       {segments.map((segment, index) => {
         if (segment.type === "visualization") {
           return environmentId && threadId ? (
@@ -1492,6 +1540,7 @@ function ChatMarkdown({
             isStreaming={isStreaming && index === segments.length - 1}
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}
+            html={html}
           />
         );
       })}

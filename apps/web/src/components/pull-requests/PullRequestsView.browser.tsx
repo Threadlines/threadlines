@@ -5,6 +5,7 @@ import {
   ProjectId,
   type EnvironmentApi,
   type ExecutionEnvironmentDescriptor,
+  type PullRequestDetail,
   type PullRequestListEntry,
   type PullRequestListResult,
 } from "@threadlines/contracts";
@@ -16,7 +17,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -31,7 +32,15 @@ import {
 } from "../../environments/runtime";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { useStore } from "../../store";
+import { SidebarProvider } from "../ui/sidebar";
 import { PullRequestsView } from "./PullRequestsView";
+import {
+  DEFAULT_PULL_REQUEST_SORT,
+  EMPTY_PULL_REQUEST_FILTERS,
+  type PullRequestFilters,
+  type PullRequestSelection,
+  type PullRequestSort,
+} from "./pullRequests.logic";
 
 // The dialog watches the checkout's git status, which is a live subscription
 // this page never drives. A frozen "not a repo" snapshot keeps it inert.
@@ -79,6 +88,65 @@ function makeEntry(overrides: Partial<PullRequestListEntry> = {}): PullRequestLi
     viewerIsAuthor: false,
     viewerReviewRequested: false,
     labels: [],
+    origin: "workspace",
+    ...overrides,
+  };
+}
+
+/** What the GitHub provider reports it can do, as the detail carries it. */
+const GITHUB_CAPABILITIES: PullRequestDetail["capabilities"] = {
+  diff: true,
+  comment: true,
+  actions: ["merge", "close", "reopen", "ready", "draft"],
+  mergeMethods: ["squash"],
+  updateMethods: ["merge", "rebase"],
+  reactions: true,
+  review: {
+    inlineComment: true,
+    reply: true,
+    resolve: true,
+    verdicts: ["comment", "approve", "request-changes"],
+  },
+  reviewers: { request: true, listCandidates: true },
+  edit: { pullRequest: true, comment: true },
+};
+
+function makeDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDetail {
+  return {
+    provider: "github",
+    projectId: PROJECT_ID,
+    projectTitle: "Threadlines",
+    workspaceRoot: CWD,
+    repository: "threadlines/threadlines",
+    number: 1,
+    title: "Add the pull requests page",
+    body: "",
+    url: "https://github.com/threadlines/threadlines/pull/1",
+    author: { login: "ada", isBot: false },
+    state: "open",
+    isDraft: false,
+    mergeability: "mergeable",
+    additions: 12,
+    deletions: 3,
+    changedFiles: 2,
+    headBranch: "feature/pull-requests",
+    baseBranch: "main",
+    createdAt: "2026-09-01T10:00:00.000Z",
+    updatedAt: "2026-09-01T12:00:00.000Z",
+    mergedAt: null,
+    closedAt: null,
+    viewerIsAuthor: false,
+    reviewers: [],
+    labels: [],
+    checks: [],
+    viewer: { canWrite: false, canReview: false, canManage: false },
+    mergeMethods: ["squash"],
+    capabilities: GITHUB_CAPABILITIES,
+    baseComparison: "up-to-date",
+    behindBy: 0,
+    autoMergeEnabled: false,
+    isStacked: false,
+    defaultBranch: "main",
     ...overrides,
   };
 }
@@ -87,6 +155,15 @@ function makeEnvironmentApi(result: PullRequestListResult): EnvironmentApi {
   return {
     pullRequests: {
       list: vi.fn(async () => result),
+      detail: vi.fn(async () => makeDetail()),
+      activity: vi.fn(async () => ({
+        comments: [],
+        commits: [],
+        reviewThreads: [],
+        reactions: [],
+      })),
+      diff: vi.fn(async () => ({ patch: "", truncated: false })),
+      comment: vi.fn(async () => ({ url: null })),
     },
     git: {
       resolvePullRequest: vi.fn(async () => ({
@@ -117,6 +194,20 @@ function seedProject(): void {
             kind: "workspace",
             name: "Threadlines",
             cwd: CWD,
+            // The remote is what names the host, which the sign-in page reads
+            // to say which tool to sign in with.
+            repositoryIdentity: {
+              canonicalKey: "github.com/threadlines/threadlines",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "https://github.com/threadlines/threadlines.git",
+              },
+              displayName: "threadlines/threadlines",
+              provider: "github",
+              owner: "threadlines",
+              name: "threadlines",
+            },
           },
         },
         threadIds: [],
@@ -148,6 +239,25 @@ function createTestRouter(children: ReactNode) {
   });
 }
 
+/** Stands in for the route, which owns the selection, the filters and the sort. */
+function SelectablePullRequestsView() {
+  const [selection, setSelection] = useState<PullRequestSelection | null>(null);
+  const [filters, setFilters] = useState<PullRequestFilters>(EMPTY_PULL_REQUEST_FILTERS);
+  const [sort, setSort] = useState<PullRequestSort>(DEFAULT_PULL_REQUEST_SORT);
+  return (
+    <PullRequestsView
+      state="open"
+      selection={selection}
+      filters={filters}
+      sort={sort}
+      onStateChange={() => undefined}
+      onSelectionChange={setSelection}
+      onFiltersChange={setFilters}
+      onSortChange={setSort}
+    />
+  );
+}
+
 async function renderPage(result: PullRequestListResult) {
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi(result));
   useSavedEnvironmentRuntimeStore.getState().patch(ENVIRONMENT_ID, {
@@ -166,9 +276,11 @@ async function renderPage(result: PullRequestListResult) {
 
   const router = createTestRouter(
     <AppAtomRegistryProvider>
-      <QueryClientProvider client={queryClient}>
-        <PullRequestsView state="open" onStateChange={() => undefined} />
-      </QueryClientProvider>
+      <SidebarProvider>
+        <QueryClientProvider client={queryClient}>
+          <SelectablePullRequestsView />
+        </QueryClientProvider>
+      </SidebarProvider>
     </AppAtomRegistryProvider>,
   );
   const screen = await render(<RouterProvider router={router} />, { container: host });
@@ -233,6 +345,103 @@ describe("PullRequestsView", () => {
     await expect
       .element(page.getByRole("button", { name: "Open Source Control settings" }))
       .toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("opens a row into the detail column and closes back to the list", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [makeEntry()],
+      errors: [],
+    });
+
+    await userEvent.click(page.getByTestId("pull-requests-row"));
+    await expect.element(page.getByTestId("pull-requests-detail-column")).toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: "Close pull request details" }));
+    expect(page.getByTestId("pull-requests-detail-column").elements()).toHaveLength(0);
+    await expect.element(page.getByTestId("pull-requests-row")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("steps back to the list from the detail on a phone", async () => {
+    await page.viewport(390, 800);
+    try {
+      const rendered = await renderPage({
+        viewer: "ada",
+        entries: [makeEntry()],
+        errors: [],
+      });
+
+      await userEvent.click(page.getByTestId("pull-requests-row"));
+      await expect.element(page.getByTestId("pull-requests-detail-column")).toBeVisible();
+      // The detail stands in for the list here, so the way out is a step back
+      // rather than the close that sits beside a visible list.
+      await expect.element(page.getByTestId("pull-requests-row")).not.toBeVisible();
+      expect(
+        page.getByRole("button", { name: "Close pull request details" }).elements(),
+      ).toHaveLength(0);
+
+      await userEvent.click(page.getByRole("button", { name: "Back to pull requests" }));
+      await expect.element(page.getByTestId("pull-requests-row")).toBeVisible();
+      expect(page.getByTestId("pull-requests-detail-column").elements()).toHaveLength(0);
+
+      await rendered.cleanup();
+    } finally {
+      await page.viewport(1_600, 1_300);
+    }
+  });
+
+  it("narrows the list from the filters and gives the rows back from the chip", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({ number: 1, title: "Mine", viewerIsAuthor: true }),
+        makeEntry({ number: 2, title: "Someone else's", author: { login: "grace", isBot: false } }),
+      ],
+      errors: [],
+    });
+
+    await expect.element(page.getByText("Someone else's")).toBeVisible();
+    await userEvent.click(page.getByTestId("pull-requests-filters"));
+    await userEvent.click(page.getByRole("button", { name: "Use ada" }));
+    await userEvent.keyboard("{Escape}");
+
+    await expect.element(page.getByText("Author: ada")).toBeVisible();
+    await vi.waitFor(() => {
+      expect(page.getByTestId("pull-requests-row").elements()).toHaveLength(1);
+    });
+
+    await userEvent.click(page.getByRole("button", { name: "Remove filter Author: ada" }));
+    await expect.element(page.getByText("Someone else's")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("names the repository of a pull request from outside the workspace", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({
+          number: 9,
+          title: "Teach the runner to wait",
+          origin: "authored",
+          repository: "openai/codex",
+          projectTitle: "openai/codex",
+          url: "https://github.com/openai/codex/pull/9",
+          viewerIsAuthor: true,
+        }),
+      ],
+      errors: [],
+    });
+
+    // The list spans one repository, so only the row's own origin earns it a name.
+    await expect.element(page.getByText("openai/codex")).toBeVisible();
+    // Nothing here is checked out on that branch, so there is nothing to open.
+    expect(page.getByRole("button", { name: "Review in a thread" }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Open on GitHub" }).elements()).toHaveLength(1);
 
     await rendered.cleanup();
   });

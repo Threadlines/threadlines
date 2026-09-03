@@ -1,0 +1,1213 @@
+import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
+import type {
+  EnvironmentId,
+  PullRequestAction,
+  PullRequestCheck,
+  PullRequestComment,
+  PullRequestDetail,
+  PullRequestMergeMethod,
+  PullRequestRef,
+  PullRequestReviewThread,
+  PullRequestUpdateMethod,
+  ScopedThreadRef,
+} from "@threadlines/contracts";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import * as Schema from "effect/Schema";
+import {
+  ArrowDownUpIcon,
+  ChevronDownIcon,
+  LayersIcon,
+  MessagesSquareIcon,
+  MoreHorizontalIcon,
+  PencilIcon,
+  RefreshCwIcon,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+
+import { useComposerDraftStore } from "../../composerDraftStore";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { openExternalUrl } from "../../lib/externalLinks";
+import {
+  pullRequestActionMutationOptions,
+  pullRequestActivityQueryOptions,
+  pullRequestDetailQueryOptions,
+  pullRequestDiffQueryOptions,
+  pullRequestUpdateMutationOptions,
+  refreshPullRequest,
+} from "../../lib/pullRequestsReactQuery";
+import { cn, pluralize } from "../../lib/utils";
+import { buildThreadRouteParams } from "../../threadRoutes";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
+import type { SidebarThreadSummary } from "../../types";
+import { DiffStatLabel } from "../chat/DiffStatLabel";
+import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
+import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
+import { Empty, EmptyDescription, EmptyHeader } from "../ui/empty";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { PageTabButton, pageTabId } from "../ui/page-tabs";
+import { Textarea } from "../ui/textarea";
+import { TooltipWrapper } from "../ui/tooltip";
+import { PullRequestCodeTab } from "./PullRequestCodeTab";
+import { PullRequestSummaryTab } from "./PullRequestSummaryTab";
+import { PullRequestTimelineTab, type PullRequestTimelineOrder } from "./PullRequestTimelineTab";
+import {
+  buildAskQuestionHandoff,
+  buildExplainPullRequestHandoff,
+  buildFixAllFindingsHandoff,
+  buildFixFindingHandoff,
+  buildResolveConflictsHandoff,
+  collectPullRequestFindings,
+  failingCheckFinding,
+  reviewCommentFinding,
+  reviewThreadFinding,
+} from "./pullRequestHandoffs.logic";
+import {
+  BackToListButton,
+  CloseDetailButton,
+  META_SEPARATOR_CLASS,
+  MetaSeparator,
+  PullRequestDetailSkeleton,
+  TEXT_BUTTON_CLASS,
+  pullRequestHostName,
+  changeRequestWord,
+} from "./pullRequestPresentation";
+import {
+  PULL_REQUEST_MERGE_METHOD_LABELS,
+  appendHandoffToDraft,
+  buildReviewCommentHandoff,
+  formatPullRequestBaseFreshness,
+  pullRequestBadgeTone,
+  pullRequestUpdateMethodLabel,
+  resolveDefaultMergeMethod,
+  resolvePullRequestMergeBlock,
+} from "./pullRequests.logic";
+
+/** The header actions are the main controls on a phone, so they grow to a touch size below md. */
+const PHONE_ACTION_CLASS = "max-md:h-8 max-md:px-3";
+
+/**
+ * The last hand-off written into each composer, so the next one can take its
+ * place rather than stack under it. Module level because a panel that is
+ * unmounted and reopened is still writing into the same draft.
+ */
+const lastHandoffByComposer = new Map<string, string>();
+
+/**
+ * Writes a hand-off into a composer, under whatever the user was typing and
+ * over whatever the last hand-off left there.
+ */
+function writeHandoffToComposer(target: ScopedThreadRef, handoff: string): void {
+  const key = scopedThreadKey(target);
+  const drafts = useComposerDraftStore.getState();
+  const existing = drafts.getComposerDraft(target)?.prompt ?? "";
+  drafts.setPrompt(target, appendHandoffToDraft(existing, handoff, lastHandoffByComposer.get(key)));
+  lastHandoffByComposer.set(key, handoff);
+}
+
+/** Where the panel is standing, which decides only what chrome it carries. */
+export type PullRequestDetailContext = "page" | "thread";
+
+export interface PullRequestDetailPanelProps {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly context: PullRequestDetailContext;
+  /** The thread working this pull request, on the page. Null beside a thread,
+   *  where the thread is the surrounding chrome. */
+  readonly linkedThread?: SidebarThreadSummary | null;
+  /** The composer a hand-off writes into beside a thread. The page finds its
+   *  own from {@link linkedThread}. */
+  readonly composerTarget?: ScopedThreadRef;
+  /** Moves the cursor onto the title once it is read, for a surface that opened
+   *  this panel from a press of the user's own. */
+  readonly autoFocusTitle?: boolean;
+  readonly onClose?: () => void;
+  /** Opens the checkout dialog, carrying the prompt the new draft should open
+   *  with. Absent where the surface cannot start a thread. */
+  readonly onReviewInThread?: (initialPrompt?: string) => void;
+  /** Called after a hand-off lands beside a thread, so the route can put the
+   *  cursor in the composer the user is about to send from. */
+  readonly onComposerHandoff?: () => void;
+}
+
+type DetailTab = "summary" | "code" | "timeline";
+
+/** The word on each tab, which is also what names its panel. */
+const DETAIL_TAB_LABELS: Readonly<Record<DetailTab, string>> = {
+  summary: "Summary",
+  code: "Code",
+  timeline: "Timeline",
+};
+
+/**
+ * The hand-offs that belong to the pull request as a whole. Each one writes a
+ * prompt into a composer; the two that only make sense sometimes are null the
+ * rest of the time.
+ */
+interface PullRequestHandoffActions {
+  readonly fixAll: (() => void) | null;
+  readonly explain: () => void;
+  readonly ask: () => void;
+  readonly resolveConflicts: (() => void) | null;
+}
+
+/**
+ * One pull request, read and reviewed: a header, a Summary tab of description,
+ * checks, reviewers and conversation, a Code tab of the patch with the review
+ * written against it, and a Timeline of everything that happened.
+ *
+ * The same component serves the pull requests page and a thread's Pull request
+ * tab. Only the chrome differs — the page can close it and offer a checkout,
+ * the thread's tab strip already owns both — so `context` decides nothing
+ * about the reads.
+ */
+export function PullRequestDetailPanel({
+  environmentId,
+  reference,
+  context,
+  linkedThread = null,
+  composerTarget,
+  autoFocusTitle = false,
+  onClose,
+  onReviewInThread,
+  onComposerHandoff,
+}: PullRequestDetailPanelProps) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState<DetailTab>("summary");
+  // The patch is the costly read, so it is only asked for once the user has
+  // actually gone to the Code tab; after that it stays mounted with the rest.
+  const [codeOpened, setCodeOpened] = useState(false);
+  const [timelineOpened, setTimelineOpened] = useState(false);
+  const [timelineOrder, setTimelineOrder] = useState<PullRequestTimelineOrder>("newest");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const detail = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  const activity = useQuery(pullRequestActivityQueryOptions({ environmentId, reference }));
+  const diff = useQuery({
+    ...pullRequestDiffQueryOptions({ environmentId, reference }),
+    // A host with no patch to give has no Code tab to open, and asking it for
+    // one would only fail.
+    enabled: codeOpened && detail.data?.capabilities.diff === true,
+  });
+
+  const handleRefresh = useCallback(() => {
+    setIsRefreshing(true);
+    void refreshPullRequest(queryClient, { environmentId, reference }).finally(() => {
+      setIsRefreshing(false);
+    });
+  }, [environmentId, queryClient, reference]);
+
+  const openThread = useCallback(() => {
+    if (!linkedThread) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(linkedThread.environmentId, linkedThread.id)),
+    });
+  }, [linkedThread, navigate]);
+
+  // The composer a hand-off writes into. Beside a thread that is the thread
+  // itself; on the page it is whichever thread is working the branch, if any.
+  const handoffTarget = useMemo<ScopedThreadRef | null>(() => {
+    if (context === "thread") {
+      return composerTarget ?? null;
+    }
+    return linkedThread ? scopeThreadRef(linkedThread.environmentId, linkedThread.id) : null;
+  }, [composerTarget, context, linkedThread]);
+
+  /**
+   * Where a hand-off lands: the composer beside this panel, the thread already
+   * working the branch (which the page then opens), or a new draft off the
+   * checkout dialog when no thread has this branch yet.
+   */
+  const runHandoff = useCallback(
+    (handoff: string) => {
+      if (handoffTarget) {
+        writeHandoffToComposer(handoffTarget, handoff);
+        if (context === "thread") {
+          onComposerHandoff?.();
+          return;
+        }
+        openThread();
+        return;
+      }
+      onReviewInThread?.(handoff);
+    },
+    [context, handoffTarget, onComposerHandoff, onReviewInThread, openThread],
+  );
+  const canHandoff = handoffTarget !== null || onReviewInThread !== undefined;
+
+  const sendCommentToThread = useCallback(
+    (comment: PullRequestComment) => {
+      const data = detail.data;
+      // A review's remark is a finding an agent can act on; a plain comment is
+      // only a remark, so it goes over as the quoted words it is.
+      runHandoff(
+        comment.kind === "review" && data
+          ? buildFixFindingHandoff(data, reviewCommentFinding(comment))
+          : buildReviewCommentHandoff({
+              number: reference.number,
+              author: comment.author?.login ?? null,
+              body: comment.body,
+            }),
+      );
+    },
+    [detail.data, reference.number, runHandoff],
+  );
+
+  const fixThread = useCallback(
+    (thread: PullRequestReviewThread) => {
+      const data = detail.data;
+      if (!data) return;
+      runHandoff(buildFixFindingHandoff(data, reviewThreadFinding(thread)));
+    },
+    [detail.data, runHandoff],
+  );
+
+  const fixCheck = useCallback(
+    (check: PullRequestCheck) => {
+      const data = detail.data;
+      if (!data) return;
+      runHandoff(buildFixFindingHandoff(data, failingCheckFinding(check)));
+    },
+    [detail.data, runHandoff],
+  );
+
+  const findings = useMemo(
+    () => collectPullRequestFindings(activity.data ?? null, detail.data?.checks ?? []),
+    [activity.data, detail.data?.checks],
+  );
+
+  // The hand-offs the whole pull request offers, as opposed to the ones a
+  // single finding does. Null where there is nowhere to write them.
+  const handoffs = useMemo<PullRequestHandoffActions | null>(() => {
+    const data = detail.data;
+    if (!canHandoff || !data) {
+      return null;
+    }
+    return {
+      fixAll:
+        findings.length === 0 ? null : () => runHandoff(buildFixAllFindingsHandoff(data, findings)),
+      explain: () => runHandoff(buildExplainPullRequestHandoff(data)),
+      ask: () => runHandoff(buildAskQuestionHandoff(data)),
+      resolveConflicts:
+        data.mergeability === "conflicting"
+          ? () => runHandoff(buildResolveConflictsHandoff(data))
+          : null,
+    };
+  }, [canHandoff, detail.data, findings, runHandoff]);
+
+  const panelId = `pull-request-${reference.projectId}-${reference.number}`;
+
+  // Below the two-column width the detail stands in for the list, so even a
+  // panel with nothing to show yet has to carry the way back.
+  const closeControl =
+    context === "page" && onClose ? (
+      <div className="flex shrink-0 items-center px-2 pt-2">
+        <BackToListButton onClick={onClose} />
+        <CloseDetailButton className="ml-auto" onClick={onClose} />
+      </div>
+    ) : null;
+
+  if (detail.isPending) {
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-testid="pull-request-detail">
+        <PullRequestDetailSkeleton {...(context === "page" && onClose ? { onClose } : {})} />
+      </div>
+    );
+  }
+
+  if (detail.isError || !detail.data) {
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-testid="pull-request-detail">
+        {closeControl}
+        <Empty>
+          <EmptyHeader>
+            <EmptyDescription>
+              {detail.error instanceof Error && detail.error.message.trim().length > 0
+                ? detail.error.message
+                : "This pull request could not be read."}
+            </EmptyDescription>
+          </EmptyHeader>
+          <Button variant="outline" size="sm" onClick={() => void detail.refetch()}>
+            Retry
+          </Button>
+        </Empty>
+      </div>
+    );
+  }
+
+  const data = detail.data;
+  const retryActivity = () => void activity.refetch();
+  // A host that cannot produce a patch has no Code tab at all, so a selection
+  // left on it from another pull request falls back to the Summary.
+  const showCode = data.capabilities.diff;
+  const activeTab: DetailTab = !showCode && tab === "code" ? "summary" : tab;
+
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="pull-request-detail">
+      <PullRequestDetailHeader
+        environmentId={environmentId}
+        reference={reference}
+        detail={data}
+        context={context}
+        linkedThread={linkedThread}
+        autoFocusTitle={autoFocusTitle}
+        isRefreshing={isRefreshing || detail.isFetching}
+        onRefresh={handleRefresh}
+        {...(onClose ? { onClose } : {})}
+        {...(onReviewInThread ? { onReviewInThread: () => onReviewInThread() } : {})}
+        onOpenThread={openThread}
+        handoffs={handoffs}
+      />
+
+      {/* The order toggle shares the row but not the tablist: it is not a tab,
+          and inside one it would answer to the arrow keys as though it were. */}
+      <div className="flex shrink-0 items-center border-b border-border px-4">
+        <div role="tablist" aria-label="Pull request" className="flex items-center gap-5">
+          <PageTabButton
+            label={DETAIL_TAB_LABELS.summary}
+            active={activeTab === "summary"}
+            panelId={panelId}
+            onClick={() => setTab("summary")}
+          />
+          {showCode ? (
+            <PageTabButton
+              label={DETAIL_TAB_LABELS.code}
+              count={data.changedFiles}
+              active={activeTab === "code"}
+              panelId={panelId}
+              onClick={() => {
+                setCodeOpened(true);
+                setTab("code");
+              }}
+            />
+          ) : null}
+          <PageTabButton
+            label={DETAIL_TAB_LABELS.timeline}
+            active={activeTab === "timeline"}
+            panelId={panelId}
+            onClick={() => {
+              setTimelineOpened(true);
+              setTab("timeline");
+            }}
+          />
+        </div>
+        {activeTab === "timeline" ? (
+          <button
+            type="button"
+            className={cn(TEXT_BUTTON_CLASS, "ml-auto inline-flex items-center gap-1 pb-2 text-xs")}
+            aria-label={timelineOrder === "newest" ? "Show oldest first" : "Show newest first"}
+            data-testid="pull-request-timeline-order"
+            onClick={() => setTimelineOrder(timelineOrder === "newest" ? "oldest" : "newest")}
+          >
+            <ArrowDownUpIcon aria-hidden className="size-3" />
+            {timelineOrder === "newest" ? "Newest first" : "Oldest first"}
+          </button>
+        ) : null}
+      </div>
+
+      <DiffViewerWarmup enabled={showCode}>
+        <div
+          id={panelId}
+          role="tabpanel"
+          aria-labelledby={pageTabId(panelId, DETAIL_TAB_LABELS[activeTab])}
+          className="min-h-0 min-w-0 flex-1"
+        >
+          <div className={cn("h-full min-h-0", activeTab === "summary" ? "block" : "hidden")}>
+            <PullRequestSummaryTab
+              environmentId={environmentId}
+              reference={reference}
+              detail={data}
+              activity={activity.data ?? null}
+              activityPending={activity.isPending}
+              activityError={activity.isError}
+              onRetryActivity={retryActivity}
+              {...(canHandoff ? { onSendToThread: sendCommentToThread, onFixCheck: fixCheck } : {})}
+            />
+          </div>
+          {codeOpened && showCode ? (
+            <div className={cn("h-full min-h-0", activeTab === "code" ? "block" : "hidden")}>
+              <PullRequestCodeTab
+                environmentId={environmentId}
+                reference={reference}
+                detail={data}
+                patch={diff.data?.patch ?? null}
+                truncated={diff.data?.truncated ?? false}
+                isPending={diff.isPending}
+                isError={diff.isError}
+                onRetry={() => void diff.refetch()}
+                threads={activity.data?.reviewThreads ?? null}
+                activityError={activity.isError}
+                onRetryActivity={retryActivity}
+                {...(canHandoff ? { onFixThread: fixThread } : {})}
+              />
+            </div>
+          ) : null}
+          {timelineOpened ? (
+            <div className={cn("h-full min-h-0", activeTab === "timeline" ? "block" : "hidden")}>
+              <PullRequestTimelineTab
+                environmentId={environmentId}
+                reference={reference}
+                detail={data}
+                activity={activity.data ?? null}
+                order={timelineOrder}
+                isPending={activity.isPending}
+                isError={activity.isError}
+                onRetry={retryActivity}
+              />
+            </div>
+          ) : null}
+        </div>
+      </DiffViewerWarmup>
+    </div>
+  );
+}
+
+/**
+ * Starts the diff viewer's worker pool the moment a pull request with a patch
+ * opens, rather than when its Code tab is pressed. The pool begins fetching
+ * its worker and syntax files as soon as it mounts, so by the time the tab is
+ * opened they are usually already here; the patch itself stays lazy.
+ */
+function DiffViewerWarmup({
+  enabled,
+  children,
+}: {
+  readonly enabled: boolean;
+  readonly children: ReactNode;
+}) {
+  return enabled ? <DiffWorkerPoolProvider>{children}</DiffWorkerPoolProvider> : children;
+}
+
+function PullRequestDetailHeader({
+  environmentId,
+  reference,
+  detail,
+  context,
+  linkedThread,
+  autoFocusTitle,
+  isRefreshing,
+  onRefresh,
+  onClose,
+  onReviewInThread,
+  onOpenThread,
+  handoffs,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly detail: PullRequestDetail;
+  readonly context: PullRequestDetailContext;
+  readonly linkedThread: SidebarThreadSummary | null;
+  readonly autoFocusTitle: boolean;
+  readonly isRefreshing: boolean;
+  readonly onRefresh: () => void;
+  readonly onClose?: () => void;
+  readonly onReviewInThread?: () => void;
+  readonly onOpenThread: () => void;
+  readonly handoffs: PullRequestHandoffActions | null;
+}) {
+  const tone = pullRequestBadgeTone(detail.state, detail.isDraft);
+  const meta: readonly { key: string; node: React.ReactNode }[] = [
+    ...(detail.author ? [{ key: "author", node: <span>{detail.author.login}</span> }] : []),
+    { key: "updated", node: <span>updated {formatRelativeTimeLabel(detail.updatedAt)}</span> },
+    { key: "files", node: <span>{pluralize(detail.changedFiles, "file")}</span> },
+    ...(detail.additions > 0 || detail.deletions > 0
+      ? [
+          {
+            key: "stat",
+            node: <DiffStatLabel additions={detail.additions} deletions={detail.deletions} />,
+          },
+        ]
+      : []),
+    ...(detail.autoMergeEnabled === true
+      ? [{ key: "auto-merge", node: <span>Auto-merge on</span> }]
+      : []),
+    // Open is the resting state and the glyph already says it; the other three
+    // are news, so they get a word.
+    ...(detail.state === "open" && !detail.isDraft
+      ? []
+      : [{ key: "state", node: <span className={tone.className}>{tone.label}</span> }]),
+  ];
+  // Three labels is as many as the meta line can carry and still read as facts
+  // about the branch rather than a wall of tags.
+  const visibleLabels = detail.labels.slice(0, 3);
+  const hiddenLabels = detail.labels.slice(3);
+
+  return (
+    <div className="shrink-0 px-4 pt-3 pb-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        {context === "page" && onClose ? <BackToListButton onClick={onClose} /> : null}
+        <span className={cn("shrink-0", tone.className)}>
+          <tone.Icon aria-hidden className="size-4" />
+          <span className="sr-only">{tone.label}</span>
+        </span>
+        <button
+          type="button"
+          className="shrink-0 cursor-pointer rounded-sm font-mono text-xs text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
+          aria-label={`Open ${changeRequestWord(detail.provider)} #${detail.number} on ${pullRequestHostName(detail.provider)}`}
+          onClick={() => openExternalUrl(detail.url)}
+        >
+          #{detail.number}
+        </button>
+        <PullRequestTitle
+          environmentId={environmentId}
+          reference={reference}
+          detail={detail}
+          autoFocus={autoFocusTitle}
+        />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          tooltip="Refresh"
+          aria-label="Refresh"
+          data-testid="pull-request-detail-refresh"
+          onClick={onRefresh}
+        >
+          <RefreshCwIcon
+            className={cn("size-3.5", isRefreshing && "animate-spin motion-reduce:animate-none")}
+          />
+        </Button>
+        {/* Beside a thread the tab strip owns the dismissal; a second ✕ next
+            to it would be two controls for one action. */}
+        {context === "page" && onClose ? <CloseDetailButton onClick={onClose} /> : null}
+      </div>
+
+      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground/60">
+        <BranchCopyButton branch={detail.headBranch} />
+        <span aria-hidden className={META_SEPARATOR_CLASS}>
+          →
+        </span>
+        <span className="flex min-w-0 items-center gap-1">
+          <BranchCopyButton branch={detail.baseBranch} />
+          {/* A base that is not the default branch means this sits on other
+              work, which changes how its diff should be read. */}
+          {detail.isStacked ? (
+            <TooltipWrapper tooltip={`Stacked on ${detail.baseBranch}`}>
+              <span className="shrink-0 text-muted-foreground/45">
+                <LayersIcon aria-hidden className="size-3" />
+                <span className="sr-only">Stacked on {detail.baseBranch}</span>
+              </span>
+            </TooltipWrapper>
+          ) : null}
+        </span>
+        {meta.map((item) => (
+          <span key={item.key} className="flex min-w-0 items-center gap-1.5">
+            <MetaSeparator />
+            {item.node}
+          </span>
+        ))}
+        {visibleLabels.map((label) => (
+          <span key={label.name} className="flex min-w-0 items-center gap-1">
+            <MetaSeparator />
+            <span
+              aria-hidden
+              className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
+              style={label.color ? { backgroundColor: `#${label.color}` } : undefined}
+            />
+            <span className="max-w-40 truncate" title={label.name}>
+              {label.name}
+            </span>
+          </span>
+        ))}
+        {/* A long label list would push the facts off the line, so the rest is
+            a count that names them on hover. */}
+        {hiddenLabels.length > 0 ? (
+          <span className="flex shrink-0 items-center gap-1.5">
+            <MetaSeparator />
+            <TooltipWrapper tooltip={hiddenLabels.map((label) => label.name).join(", ")}>
+              <span>+{hiddenLabels.length}</span>
+            </TooltipWrapper>
+          </span>
+        ) : null}
+      </div>
+
+      {/* A branch the host cannot merge is work for the checkout, not for the
+          host's own buttons, so the way out is offered where the problem is
+          stated rather than only as a reason the Merge button is off. */}
+      {detail.mergeability === "conflicting" && handoffs?.resolveConflicts ? (
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground/60">
+          <span className="min-w-0 truncate">Conflicts with {detail.baseBranch}</span>
+          <button
+            type="button"
+            className={TEXT_BUTTON_CLASS}
+            data-testid="pull-request-resolve-conflicts"
+            onClick={handoffs.resolveConflicts}
+          >
+            Resolve conflicts
+          </button>
+        </div>
+      ) : null}
+
+      {context === "page" ? (
+        <div className="mt-1.5 text-xs text-muted-foreground/60">
+          {linkedThread ? (
+            <button
+              type="button"
+              className={cn(TEXT_BUTTON_CLASS, "inline-flex min-w-0 max-w-full items-center gap-1")}
+              onClick={onOpenThread}
+            >
+              <MessagesSquareIcon aria-hidden className="size-3 shrink-0" />
+              <span className="truncate">Thread: {linkedThread.title}</span>
+            </button>
+          ) : onReviewInThread ? (
+            <button type="button" className={TEXT_BUTTON_CLASS} onClick={onReviewInThread}>
+              Review in a thread
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <PullRequestHeaderActions
+        environmentId={environmentId}
+        reference={reference}
+        detail={detail}
+        handoffs={handoffs}
+      />
+    </div>
+  );
+}
+
+/** The title, rewritten in place by whoever the host lets rewrite it. */
+function PullRequestTitle({
+  environmentId,
+  reference,
+  detail,
+  autoFocus,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly detail: PullRequestDetail;
+  /** Takes the cursor once the title is on screen; see `autoFocusTitle`. */
+  readonly autoFocus: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(detail.title);
+  const heading = useRef<HTMLHeadingElement | null>(null);
+  const update = useMutation(
+    pullRequestUpdateMutationOptions({ environmentId, reference, queryClient }),
+  );
+  const canEdit = detail.capabilities.edit.pullRequest && detail.viewer.canManage;
+
+  // The panel replaces the list on a press, so the cursor follows it here
+  // rather than staying on a row that is no longer under it.
+  useEffect(() => {
+    if (autoFocus) heading.current?.focus();
+  }, [autoFocus]);
+
+  const save = () => {
+    const title = draft.trim();
+    if (title.length === 0 || title === detail.title) {
+      setEditing(false);
+      return;
+    }
+    update.mutate({ title }, { onSuccess: () => setEditing(false) });
+  };
+
+  if (editing) {
+    return (
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <Textarea
+            autoFocus
+            size="sm"
+            rows={1}
+            className="[&_[data-slot=textarea]]:min-h-7 [&_[data-slot=textarea]]:resize-none"
+            value={draft}
+            aria-label="Pull request title"
+            data-testid="pull-request-title-input"
+            disabled={update.isPending}
+            onChange={(event) => setDraft(event.target.value.replace(/\n/gu, ""))}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setEditing(false);
+                return;
+              }
+              // A title is one line, so Enter is the send gesture rather than a
+              // newline, and Ctrl or Cmd with it lands here too.
+              if (event.key === "Enter") {
+                event.preventDefault();
+                save();
+              }
+            }}
+          />
+          <Button variant="ghost" size="xs" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+          <Button size="xs" disabled={update.isPending} onClick={save}>
+            Save
+          </Button>
+        </span>
+        {/* The box keeps the words on a refusal, so the reason belongs under
+            them rather than in place of the whole editor. */}
+        {update.isError ? (
+          <span role="alert" className="break-words text-xs text-destructive">
+            {update.error instanceof Error && update.error.message.trim().length > 0
+              ? update.error.message
+              : "That title could not be saved."}
+          </span>
+        ) : null}
+      </span>
+    );
+  }
+
+  return (
+    <h2
+      ref={heading}
+      tabIndex={-1}
+      className="group/title flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-ring"
+    >
+      {/* A phone's column is narrow enough that one truncated line says almost
+          nothing, so there it wraps to two before it gives up. */}
+      <span
+        className="min-w-0 text-sm font-medium text-foreground/90 max-md:line-clamp-2 md:truncate"
+        title={detail.title}
+      >
+        {detail.title}
+      </span>
+      {canEdit ? (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="shrink-0 opacity-0 transition-opacity group-hover/title:opacity-100 group-focus-within/title:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+          tooltip="Edit title"
+          aria-label="Edit title"
+          data-testid="pull-request-edit-title"
+          onClick={() => {
+            setDraft(detail.title);
+            setEditing(true);
+          }}
+        >
+          <PencilIcon />
+        </Button>
+      ) : null}
+    </h2>
+  );
+}
+
+/** The label a running action wears while the host works on it. */
+const RUNNING_ACTION_WORDS: Readonly<Record<PullRequestAction, string>> = {
+  merge: "Merging…",
+  close: "Closing…",
+  reopen: "Reopening…",
+  "update-branch": "Updating…",
+  ready: "Marking as ready…",
+  draft: "Converting to draft…",
+  "enable-auto-merge": "Enabling auto-merge…",
+  "disable-auto-merge": "Disabling auto-merge…",
+};
+
+/**
+ * The writes that run out of the More menu. The menu is closed by the time the
+ * host answers, so their word goes on a line of its own rather than on a button
+ * nobody can see.
+ */
+const MENU_ACTIONS: ReadonlySet<PullRequestAction> = new Set([
+  "ready",
+  "draft",
+  "enable-auto-merge",
+  "disable-auto-merge",
+]);
+
+type PullRequestConfirmation =
+  | { readonly action: "merge"; readonly mergeMethod: PullRequestMergeMethod }
+  | { readonly action: "close" };
+
+/** Remembered per computer: whoever deletes merged branches always does. */
+const DELETE_BRANCH_STORAGE_PREFIX = "threadlines:pull-requests:delete-branch:v1";
+
+/**
+ * What the viewer may do to this pull request, under the meta line.
+ *
+ * A write is offered only where the host says it takes that action and the
+ * viewer's own permission covers it, so this hides what it knows cannot work
+ * and never refuses on its own. The two irreversible ones ask first, by name
+ * and by method; the rest simply run. The hand-offs are not writes to the host
+ * at all, so a reader with no rights over this pull request still gets them.
+ */
+function PullRequestHeaderActions({
+  environmentId,
+  reference,
+  detail,
+  handoffs,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly detail: PullRequestDetail;
+  readonly handoffs: PullRequestHandoffActions | null;
+}) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation(
+    pullRequestActionMutationOptions({ environmentId, reference, queryClient }),
+  );
+  const [confirming, setConfirming] = useState<PullRequestConfirmation | null>(null);
+  const [deleteBranch, setDeleteBranch] = useLocalStorage(
+    `${DELETE_BRANCH_STORAGE_PREFIX}:${environmentId}`,
+    false,
+    Schema.Boolean,
+  );
+
+  const isRunning = mutation.isPending;
+  const runningAction = isRunning ? (mutation.variables?.action ?? null) : null;
+  const run = useCallback(
+    (
+      action: PullRequestAction,
+      extra?: {
+        readonly mergeMethod?: PullRequestMergeMethod;
+        readonly updateMethod?: PullRequestUpdateMethod;
+        readonly deleteBranch?: boolean;
+      },
+    ) => {
+      mutation.mutate({ action, ...extra });
+    },
+    [mutation],
+  );
+
+  // Landing a branch on someone else's repository needs push access; the state
+  // of your own pull request is yours to change wherever you opened it.
+  const canWrite = detail.viewer.canWrite;
+  const canManage = detail.viewer.canManage;
+  const isOpen = detail.state === "open";
+  const isReopenable = detail.state === "closed" && detail.mergedAt === null;
+
+  // Every write is offered only where the viewer may make it and the host takes
+  // it at all: a Bitbucket that merges and closes but knows nothing of drafts
+  // or auto-merge must not be asked about either.
+  const allows = (action: PullRequestAction) => detail.capabilities.actions.includes(action);
+  const showMerge = canWrite && isOpen && allows("merge");
+  const showClose = canManage && isOpen && allows("close");
+  const showReopen = canManage && isReopenable && allows("reopen");
+  const showDraftToggle = canManage && isOpen && allows(detail.isDraft ? "ready" : "draft");
+  const showDisableAutoMerge =
+    canWrite && isOpen && detail.autoMergeEnabled === true && allows("disable-auto-merge");
+  const showEnableAutoMerge =
+    canWrite && isOpen && detail.autoMergeEnabled !== true && allows("enable-auto-merge");
+  const hasMenuWrites = showDraftToggle || showDisableAutoMerge || showEnableAutoMerge;
+  // The two menu halves: the hand-offs, and the writes that are not buttons.
+  const hasMenu = handoffs !== null || hasMenuWrites;
+
+  const freshness = formatPullRequestBaseFreshness(detail);
+  const canUpdateBranch = canWrite && isOpen && allows("update-branch");
+  const showFreshness = freshness !== null && canUpdateBranch;
+  if (!showMerge && !showClose && !showReopen && !hasMenu && !showFreshness) {
+    return null;
+  }
+
+  const updateMethods = detail.capabilities.updateMethods;
+  const mergeBlock = resolvePullRequestMergeBlock(detail);
+  const mergeDisabled = isRunning || mergeBlock !== null;
+  const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods);
+  const menuRunningWord =
+    runningAction !== null && MENU_ACTIONS.has(runningAction)
+      ? RUNNING_ACTION_WORDS[runningAction]
+      : null;
+  // A hairline between the two halves would be a colour this app does not
+  // have, so the split is a one pixel gap of the surface behind it instead.
+  const mergeControl = (
+    <span className="flex items-center gap-px">
+      <Button
+        size="xs"
+        className={cn(PHONE_ACTION_CLASS, detail.mergeMethods.length > 1 && "rounded-e-none")}
+        disabled={mergeDisabled}
+        data-testid="pull-request-merge"
+        onClick={() => setConfirming({ action: "merge", mergeMethod: defaultMergeMethod })}
+      >
+        {runningAction === "merge" ? RUNNING_ACTION_WORDS.merge : "Merge"}
+      </Button>
+      {detail.mergeMethods.length > 1 ? (
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="xs"
+                className={cn(PHONE_ACTION_CLASS, "rounded-s-none px-1 max-md:px-2")}
+                aria-label="Choose a merge method"
+                disabled={mergeDisabled}
+              />
+            }
+          >
+            <ChevronDownIcon />
+          </MenuTrigger>
+          <MenuPopup align="end" className="w-56">
+            {detail.mergeMethods.map((method) => (
+              <MenuItem
+                key={method}
+                onClick={() => setConfirming({ action: "merge", mergeMethod: method })}
+              >
+                {PULL_REQUEST_MERGE_METHOD_LABELS[method]}
+              </MenuItem>
+            ))}
+          </MenuPopup>
+        </Menu>
+      ) : null}
+    </span>
+  );
+
+  return (
+    <div className="mt-2">
+      {/* Being behind the base is the reason a merge is refused or a check is
+          stale, so it is said here rather than left for the host to explain. */}
+      {showFreshness ? (
+        <div className="mb-1.5 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground/60">
+          <span className="min-w-0 truncate">{freshness}</span>
+          {updateMethods.length > 1 ? (
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="text-muted-foreground/70"
+                    disabled={isRunning}
+                    data-testid="pull-request-update-branch"
+                  />
+                }
+              >
+                {runningAction === "update-branch"
+                  ? RUNNING_ACTION_WORDS["update-branch"]
+                  : "Update branch"}
+                <ChevronDownIcon />
+              </MenuTrigger>
+              <MenuPopup align="start" className="w-56">
+                {updateMethods.map((method) => (
+                  <MenuItem
+                    key={method}
+                    onClick={() => run("update-branch", { updateMethod: method })}
+                  >
+                    {pullRequestUpdateMethodLabel(method, detail.baseBranch)}
+                  </MenuItem>
+                ))}
+              </MenuPopup>
+            </Menu>
+          ) : (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="text-muted-foreground/70"
+              disabled={isRunning}
+              data-testid="pull-request-update-branch"
+              onClick={() =>
+                run(
+                  "update-branch",
+                  updateMethods[0] ? { updateMethod: updateMethods[0] } : undefined,
+                )
+              }
+            >
+              {runningAction === "update-branch"
+                ? RUNNING_ACTION_WORDS["update-branch"]
+                : "Update branch"}
+            </Button>
+          )}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {showMerge ? (
+          // A blocked merge stays on screen and says what is in the way: the
+          // fix is on the host, and a vanished button explains nothing.
+          mergeBlock === null ? (
+            mergeControl
+          ) : (
+            <TooltipWrapper tooltip={mergeBlock}>
+              <span className="inline-flex">{mergeControl}</span>
+            </TooltipWrapper>
+          )
+        ) : null}
+        {showClose ? (
+          <Button
+            variant="outline"
+            size="xs"
+            className={PHONE_ACTION_CLASS}
+            disabled={isRunning}
+            onClick={() => setConfirming({ action: "close" })}
+          >
+            {runningAction === "close" ? RUNNING_ACTION_WORDS.close : "Close"}
+          </Button>
+        ) : null}
+        {showReopen ? (
+          <Button
+            variant="outline"
+            size="xs"
+            className={PHONE_ACTION_CLASS}
+            disabled={isRunning}
+            onClick={() => run("reopen")}
+          >
+            {runningAction === "reopen" ? RUNNING_ACTION_WORDS.reopen : "Reopen"}
+          </Button>
+        ) : null}
+        {/* Nothing to offer means no control at all, rather than a menu that
+            opens on an empty popup. */}
+        {hasMenu ? (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="max-md:size-8"
+                  aria-label={`More ${changeRequestWord(detail.provider)} actions`}
+                  disabled={isRunning}
+                />
+              }
+            >
+              <MoreHorizontalIcon />
+            </MenuTrigger>
+            <MenuPopup align="end" className="w-60">
+              {handoffs ? (
+                <>
+                  {handoffs.fixAll ? (
+                    <MenuItem data-testid="pull-request-fix-all" onClick={handoffs.fixAll}>
+                      Fix all findings
+                    </MenuItem>
+                  ) : null}
+                  <MenuItem data-testid="pull-request-explain" onClick={handoffs.explain}>
+                    Explain this {changeRequestWord(detail.provider)}
+                  </MenuItem>
+                  <MenuItem data-testid="pull-request-ask" onClick={handoffs.ask}>
+                    Ask a question
+                  </MenuItem>
+                </>
+              ) : null}
+              {handoffs && hasMenuWrites ? <MenuSeparator /> : null}
+              {showDraftToggle ? (
+                detail.isDraft ? (
+                  <MenuItem onClick={() => run("ready")}>Mark as ready</MenuItem>
+                ) : (
+                  <MenuItem onClick={() => run("draft")}>Convert to draft</MenuItem>
+                )
+              ) : null}
+              {showDisableAutoMerge ? (
+                <MenuItem
+                  data-testid="pull-request-disable-auto-merge"
+                  onClick={() => run("disable-auto-merge")}
+                >
+                  Disable auto-merge
+                </MenuItem>
+              ) : null}
+              {showEnableAutoMerge ? (
+                <MenuItem
+                  data-testid="pull-request-enable-auto-merge"
+                  onClick={() => run("enable-auto-merge", { mergeMethod: defaultMergeMethod })}
+                >
+                  Enable auto-merge (
+                  {PULL_REQUEST_MERGE_METHOD_LABELS[defaultMergeMethod].toLowerCase()})
+                </MenuItem>
+              ) : null}
+            </MenuPopup>
+          </Menu>
+        ) : null}
+      </div>
+      {/* The menu is gone by the time the host answers, so its running action
+          says so here instead of on the item that started it. */}
+      <p
+        aria-live="polite"
+        className={cn(
+          "text-right text-xs text-muted-foreground/60",
+          menuRunningWord !== null && "mt-1",
+        )}
+        data-testid="pull-request-menu-action-status"
+      >
+        {menuRunningWord}
+      </p>
+      {/* A disabled button cannot be focused, so the reason it is disabled is
+          written out as well as tucked in its tooltip. */}
+      {showMerge && mergeBlock !== null ? (
+        <p className="mt-1 text-right text-xs text-muted-foreground/60">{mergeBlock}</p>
+      ) : null}
+      {mutation.isError ? (
+        <p className="mt-1.5 break-words text-right text-xs text-destructive">
+          {mutation.error instanceof Error && mutation.error.message.trim().length > 0
+            ? mutation.error.message
+            : "The host refused that action."}
+        </p>
+      ) : null}
+
+      {confirming ? (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setConfirming(null);
+          }}
+        >
+          <AlertDialogPopup className="max-w-md">
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {confirming.action === "merge"
+                  ? `Merge #${detail.number} into ${detail.baseBranch}?`
+                  : `Close #${detail.number} without merging?`}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {confirming.action === "merge"
+                  ? `${PULL_REQUEST_MERGE_METHOD_LABELS[confirming.mergeMethod]}.`
+                  : `The ${changeRequestWord(detail.provider)} stays on the host, and you can reopen it later.`}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {confirming.action === "merge" ? (
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground/85">
+                <Checkbox
+                  checked={deleteBranch}
+                  data-testid="pull-request-delete-branch"
+                  onCheckedChange={(checked) => setDeleteBranch(checked === true)}
+                />
+                Delete branch after merge
+              </label>
+            ) : null}
+            <AlertDialogFooter>
+              {/* Cancel takes the focus: neither a merge nor a close can be
+                  taken back, so a stray Enter must not run one. */}
+              <AlertDialogClose
+                render={<Button data-alert-dialog-primary-action="true" variant="outline" />}
+              >
+                Cancel
+              </AlertDialogClose>
+              <Button
+                variant={confirming.action === "close" ? "destructive" : "default"}
+                onClick={() => {
+                  setConfirming(null);
+                  if (confirming.action === "merge") {
+                    run("merge", {
+                      mergeMethod: confirming.mergeMethod,
+                      ...(deleteBranch ? { deleteBranch: true } : {}),
+                    });
+                  } else {
+                    run("close");
+                  }
+                }}
+              >
+                {confirming.action === "merge" ? "Merge" : "Close"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      ) : null}
+    </div>
+  );
+}
+
+/** A branch name that copies itself, the way branch chips do elsewhere. */
+function BranchCopyButton({ branch }: { readonly branch: string }) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard({ timeout: 1200 });
+  return (
+    <button
+      type="button"
+      className="min-w-0 max-w-[14rem] shrink cursor-pointer truncate rounded-sm text-left transition-colors hover:text-foreground focus-ring"
+      aria-label={`Copy ${branch}`}
+      onClick={() => copyToClipboard(branch, undefined)}
+    >
+      {isCopied ? "Copied" : branch}
+    </button>
+  );
+}
