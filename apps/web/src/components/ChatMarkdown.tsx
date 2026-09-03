@@ -22,9 +22,11 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import type { Components } from "react-markdown";
+import type { Components, Options as ReactMarkdownOptions } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { MessageCopyButton } from "./chat/MessageCopyButton";
@@ -70,6 +72,8 @@ import {
   useMarkdownFileLinkKinds,
 } from "../hooks/useMarkdownFileLinkKinds";
 import { cn } from "../lib/utils";
+import { isImageFilePath } from "../lib/imageFilePaths";
+import { LocalImageThumbnail } from "./chat/LocalImageThumbnail";
 import { parseCodexInlineVisualizations } from "../lib/codexInlineVisualization";
 import { CodexInlineVisualization } from "./chat/CodexInlineVisualization";
 
@@ -102,9 +106,25 @@ interface ChatMarkdownProps {
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
+  /**
+   * Render the raw HTML GitHub allows in a pull request body or comment
+   * (tables with markup in cells, images, details). Chat stays markdown-only,
+   * where an agent's stray tag is safer shown than interpreted.
+   */
+  html?: "github" | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+
+/**
+ * GitHub's own allowlist, which is what the host already applied to the text
+ * before it reached us. Anything outside it is unwrapped to its children, so a
+ * `<relative-time>` still reads as its date and a `<picture>` as its image.
+ */
+const GITHUB_HTML_REHYPE_PLUGINS: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
+  rehypeRaw,
+  [rehypeSanitize, defaultSchema],
+];
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
@@ -182,6 +202,8 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
 /** Everything a markdown renderer needs from the document around it. */
 interface MarkdownDocumentContextValue {
   readonly cwd: string | undefined;
+  /** Environment whose `projects.readFile` RPC backs inline image previews. */
+  readonly environmentId: EnvironmentId | undefined;
   readonly threadRef: ScopedThreadRef | null;
   readonly resolvedTheme: "light" | "dark";
   readonly themeName: DiffThemeName;
@@ -206,6 +228,7 @@ interface MarkdownDocumentContextValue {
  */
 const MarkdownDocumentContext = createContext<MarkdownDocumentContextValue>({
   cwd: undefined,
+  environmentId: undefined,
   threadRef: null,
   resolvedTheme: "dark",
   themeName: resolveDiffThemeName("dark"),
@@ -445,11 +468,108 @@ function MarkdownListItem({ node: _node, children, ...props }: MarkdownRendererP
   return <li {...props}>{renderSkillInlineMarkdownChildren(children, inlineContext)}</li>;
 }
 
+/**
+ * A referenced image, shown as a picture with its file chip underneath.
+ *
+ * The chip is the constant: it is what an image reference has always looked
+ * like, it still opens the file viewer, and it is all that is left while the
+ * bytes are in flight or when the file is gone. The picture is the addition.
+ */
+function MarkdownImageFigure({
+  filePath,
+  name,
+  children,
+}: {
+  filePath: string;
+  name: string;
+  children: ReactNode;
+}) {
+  const { cwd, environmentId } = useContext(MarkdownDocumentContext);
+  return (
+    <span className="my-1 flex w-fit max-w-full flex-col items-start gap-1">
+      <LocalImageThumbnail
+        environmentId={environmentId}
+        cwd={cwd}
+        filePath={filePath}
+        name={name}
+      />
+      {children}
+    </span>
+  );
+}
+
+/**
+ * `![alt](path)` where the destination is a file on the agent's machine.
+ * A plain `<img>` would ask the browser to load a `file://` url it will always
+ * refuse; http(s) and data sources still render as ordinary images.
+ */
+function MarkdownImage({ node: _node, src, alt, ...props }: MarkdownRendererProps<"img">) {
+  const { cwd, resolvedTheme, searchHighlightQuery, fileLinkKindByPath } =
+    useContext(MarkdownDocumentContext);
+  const source = typeof src === "string" ? src : undefined;
+  const fileLinkMeta =
+    source && !searchHighlightQuery?.trim() ? resolveMarkdownFileLinkMeta(source, cwd) : null;
+  if (!fileLinkMeta || !isImageFilePath(fileLinkMeta.filePath)) {
+    return <RemoteMarkdownImage {...props} src={source} alt={alt} />;
+  }
+  const name = alt && alt.length > 0 ? alt : fileLinkMeta.basename;
+  return (
+    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={name}>
+      <MarkdownFileLink
+        href={fileLinkMeta.href}
+        targetPath={fileLinkMeta.targetPath}
+        displayPath={fileLinkMeta.displayPath}
+        filePath={fileLinkMeta.filePath}
+        kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
+        isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
+        label={name}
+        theme={resolvedTheme}
+      />
+    </MarkdownImageFigure>
+  );
+}
+
+/**
+ * An image path written bare in prose (`C:\Users\me\AppData\Local\Temp\ui.png`).
+ * Only reached for settled, unhighlighted text; see {@link findBareImagePaths}.
+ */
+function MarkdownBareImagePath({ rawPath }: { rawPath: string }) {
+  const { cwd, resolvedTheme, fileLinkKindByPath, fileLinkParentSuffixByPath } =
+    useContext(MarkdownDocumentContext);
+  const fileLinkMeta = resolveMarkdownFileLinkMeta(rawPath, cwd);
+  if (!fileLinkMeta) {
+    return <>{rawPath}</>;
+  }
+  return (
+    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={fileLinkMeta.basename}>
+      <MarkdownFileLink
+        href={fileLinkMeta.href}
+        targetPath={fileLinkMeta.targetPath}
+        displayPath={fileLinkMeta.displayPath}
+        filePath={fileLinkMeta.filePath}
+        kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
+        isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
+        label={buildFileLinkLabel(
+          fileLinkMeta,
+          fileLinkParentSuffixByPath.get(fileLinkMeta.filePath),
+        )}
+        theme={resolvedTheme}
+      />
+    </MarkdownImageFigure>
+  );
+}
+
+/** Module-level so the inline pass never changes component identity. */
+const renderBareImagePath: NonNullable<InlineMarkdownContext["renderBareImagePath"]> = (input) => (
+  <MarkdownBareImagePath key={input.key} rawPath={input.path} />
+);
+
 function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRendererProps<"a">) {
   const {
     cwd,
     threadRef,
     resolvedTheme,
+    searchHighlightQuery,
     markdownFileLinkMetaByHref,
     fileLinkKindByPath,
     fileLinkParentSuffixByPath,
@@ -479,7 +599,7 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
     );
   }
 
-  return (
+  const chip = (
     <MarkdownFileLink
       href={fileLinkMeta.href}
       targetPath={fileLinkMeta.targetPath}
@@ -495,6 +615,14 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
       theme={resolvedTheme}
       className={props.className}
     />
+  );
+  if (!isImageFilePath(fileLinkMeta.filePath) || searchHighlightQuery?.trim()) {
+    return chip;
+  }
+  return (
+    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={fileLinkMeta.basename}>
+      {chip}
+    </MarkdownImageFigure>
   );
 }
 
@@ -549,7 +677,7 @@ function MarkdownCode({
     ? inlineCodeFileLinkMetaBySpan.get(inlineFileReference)
     : undefined;
   if (inlineFileReference && inlineFileLinkMeta) {
-    return (
+    const chip = (
       <MarkdownFileLink
         href={inlineFileLinkMeta.href}
         targetPath={inlineFileLinkMeta.targetPath}
@@ -565,6 +693,17 @@ function MarkdownCode({
         theme={resolvedTheme}
         chatReference={inlineFileReference}
       />
+    );
+    if (!isImageFilePath(inlineFileLinkMeta.filePath)) {
+      return chip;
+    }
+    return (
+      <MarkdownImageFigure
+        filePath={inlineFileLinkMeta.filePath}
+        name={inlineFileLinkMeta.basename}
+      >
+        {chip}
+      </MarkdownImageFigure>
     );
   }
   if (className || !text || !parseChatFileReference(text)) {
@@ -626,6 +765,20 @@ function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<
 }
 
 /**
+ * An image with an http(s) or data source, the case {@link MarkdownImage} does
+ * not turn into a local thumbnail. A host bot links images that later go
+ * missing, and a broken-image glyph says nothing; the alt text at least says
+ * what was meant to be there.
+ */
+function RemoteMarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !src) {
+    return alt ? <span className="text-muted-foreground/70">{alt}</span> : null;
+  }
+  return <img alt={alt ?? ""} src={src} loading="lazy" onError={() => setFailed(true)} {...rest} />;
+}
+
+/**
  * The renderer map handed to react-markdown, built once. react-markdown uses
  * these functions as element types, so rebuilding the map would remount every
  * element in the document; the data they need comes from
@@ -635,6 +788,7 @@ const MARKDOWN_COMPONENTS: Components = {
   p: MarkdownParagraph,
   li: MarkdownListItem,
   a: MarkdownAnchor,
+  img: MarkdownImage,
   code: MarkdownCode,
   pre: MarkdownPre,
 };
@@ -1260,6 +1414,7 @@ function ChatMarkdownDocument({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Null unless both halves of the identity are here: a transcript rendered
@@ -1326,9 +1481,17 @@ function ChatMarkdownDocument({
     },
     [cwd],
   );
+  // A streaming tail is re-parsed on every delta, so a path halfway through
+  // being typed would fetch a file that does not exist yet; bare paths only
+  // become pictures once the block has settled.
   const inlineContext = useMemo<InlineMarkdownContext>(
-    () => ({ skills, searchHighlightQuery, threadRef }),
-    [searchHighlightQuery, skills, threadRef],
+    () => ({
+      skills,
+      searchHighlightQuery,
+      threadRef,
+      ...(isStreaming || searchHighlightQuery?.trim() ? {} : { renderBareImagePath }),
+    }),
+    [isStreaming, searchHighlightQuery, skills, threadRef],
   );
   // Rebuilt whenever the document's data changes, which on a streaming tail is
   // every delta. That is fine and is the point: the renderers re-render, they
@@ -1336,6 +1499,7 @@ function ChatMarkdownDocument({
   const documentContext = useMemo<MarkdownDocumentContextValue>(
     () => ({
       cwd,
+      environmentId,
       threadRef,
       resolvedTheme,
       themeName: diffThemeName,
@@ -1349,6 +1513,7 @@ function ChatMarkdownDocument({
     }),
     [
       cwd,
+      environmentId,
       diffThemeName,
       fileLinkKindByPath,
       fileLinkParentSuffixByPath,
@@ -1366,6 +1531,7 @@ function ChatMarkdownDocument({
     <MarkdownDocumentContext value={documentContext}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={html === "github" ? GITHUB_HTML_REHYPE_PLUGINS : undefined}
         components={MARKDOWN_COMPONENTS}
         urlTransform={markdownUrlTransform}
       >
@@ -1390,6 +1556,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush. A settled block's
@@ -1408,6 +1575,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
       isStreaming={isStreaming}
       skills={skills}
       searchHighlightQuery={searchHighlightQuery}
+      html={html}
     />
   );
 });
@@ -1420,13 +1588,16 @@ function ChatMarkdownBody({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   // Blocks are the unit of rendering whether or not the message is streaming:
   // a streaming message re-parses only its growing tail, and when it stops
   // streaming nothing changes but the tail's `isStreaming` prop. Index keys are
   // the correct identity here: streaming only appends blocks, and keying by
   // content would remount the tail on every delta.
-  const blocks = splitMarkdownBlocks(text);
+  // Raw HTML can span what the splitter takes for several blocks (a
+  // `<details>` around paragraphs), so an HTML-bearing document parses whole.
+  const blocks = html === "github" ? [text] : splitMarkdownBlocks(text);
   const tailIndex = blocks.length - 1;
   /* oxlint-disable react/no-array-index-key -- streaming only appends blocks; index is the stable identity */
   return (
@@ -1441,6 +1612,7 @@ function ChatMarkdownBody({
           isStreaming={isStreaming && index === tailIndex}
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
+          html={html}
         />
       ))}
     </>
@@ -1456,6 +1628,7 @@ function ChatMarkdown({
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
+  html,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Boots the highlighting worker and its theme while the page is idle, so the
@@ -1469,7 +1642,14 @@ function ChatMarkdown({
     : [{ type: "markdown" as const, key: "markdown:0", text }];
 
   return (
-    <div className="chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80">
+    <div
+      className={cn(
+        "chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80",
+        // Host HTML brings wide tables and images sized for a wider page; give
+        // them a scroll of their own rather than letting them widen the panel.
+        html === "github" && "chat-markdown-html",
+      )}
+    >
       {segments.map((segment, index) => {
         if (segment.type === "visualization") {
           return environmentId && threadId ? (
@@ -1492,6 +1672,7 @@ function ChatMarkdown({
             isStreaming={isStreaming && index === segments.length - 1}
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}
+            html={html}
           />
         );
       })}

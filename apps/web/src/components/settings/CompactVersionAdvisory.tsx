@@ -10,7 +10,7 @@ import {
 import { useState } from "react";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { readLocalApi } from "../../localApi";
+import { openExternalUrl } from "../../lib/externalLinks";
 import { cn } from "../../lib/utils";
 import { updateSourceControlTool } from "../../lib/sourceControlDiscoveryState";
 import { Button } from "../ui/button";
@@ -23,18 +23,6 @@ interface CompactVersionAdvisoryProps {
   readonly advisory: SourceControlToolVersionAdvisory;
   readonly environmentId: EnvironmentId | null | undefined;
   readonly label: string;
-}
-
-function openExternalUrl(url: string): void {
-  const api = readLocalApi();
-  if (!api) {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
-  }
-
-  void api.shell.openExternal(url).catch(() => {
-    window.open(url, "_blank", "noopener,noreferrer");
-  });
 }
 
 function advisoryTitle(advisory: SourceControlToolVersionAdvisory): string {

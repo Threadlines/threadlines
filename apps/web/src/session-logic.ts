@@ -35,6 +35,8 @@ import {
 } from "@threadlines/shared/providerAuth";
 import {
   claudeSubagentActivityItem,
+  claudeSubagentNotificationTaskId,
+  isClaudeAgentTaskPayload,
   isClaudeSubagentToolName,
   isSpawnAgentTool,
   normalizeStatusToken,
@@ -48,6 +50,7 @@ import {
   type ExtensionMcpOAuthActionIntent,
 } from "./mcpAuthStatus";
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
+import { isImageFilePath } from "./lib/imageFilePaths";
 
 import type {
   ChatMessage,
@@ -74,7 +77,13 @@ export const PROVIDER_OPTIONS: Array<{
 export interface WorkLogImagePreview {
   id: string;
   name: string;
-  previewUrl: string;
+  /** Directly renderable source (a data, http, or blob url), when the provider
+   *  gave us the bytes. */
+  previewUrl?: string;
+  /** Where the image lives on the agent's machine, when the provider only named
+   *  it. The renderer loads it over the `projects.readFile` RPC; carrying the
+   *  path instead of the bytes keeps screenshots out of the stored event log. */
+  path?: string;
 }
 
 export interface ProviderAuthReconnectAction {
@@ -1335,7 +1344,18 @@ function collectSubagentActivityRecords(
   const activityTelemetryByAgentId = collectSubagentActivityTelemetry(sortedActivities);
   const turnModelSelections = collectTurnModelSelections(sortedActivities);
   const taskIdByToolUseId = new Map<string, string>();
+  // The task id is what names an agent across every edge of its task stream:
+  // a synthesized completion carries no toolUseId (the SDK reporting a
+  // background agent lost to a session restart), and a resumed agent reports
+  // its later runs under the call that revived it rather than under its spawn.
+  // The roster's transcript link seeds the map so the link survives activity
+  // compaction; the first start edge in the window fills in the rest.
   const toolUseIdByTaskId = new Map<string, string>();
+  for (const subagent of options.subagents ?? []) {
+    if (subagent.transcriptAgentId !== null && !toolUseIdByTaskId.has(subagent.transcriptAgentId)) {
+      toolUseIdByTaskId.set(subagent.transcriptAgentId, subagent.agentThreadId ?? subagent.id);
+    }
+  }
   for (const activity of sortedActivities) {
     if (
       activity.kind !== "task.started" &&
@@ -1346,11 +1366,8 @@ function collectSubagentActivityRecords(
     }
     const payload = asRecord(activity.payload);
     const taskId = asTrimmedString(payload?.taskId);
-    // Synthesized completions carry no toolUseId (e.g. the SDK reporting a
-    // background agent lost to a session restart); recover the link through
-    // the taskId the start edge established so the agent still settles.
     const toolUseId =
-      asTrimmedString(payload?.toolUseId) ?? (taskId ? toolUseIdByTaskId.get(taskId) : undefined);
+      (taskId ? toolUseIdByTaskId.get(taskId) : undefined) ?? asTrimmedString(payload?.toolUseId);
     if (!toolUseId) {
       continue;
     }
@@ -1386,6 +1403,18 @@ function collectSubagentActivityRecords(
     // updates already-known records, so it bypasses turn scoping.
     if (activity.kind === "task.completed") {
       applySubagentTaskCompletion(byAgentId, activity, payload, toolUseIdByTaskId);
+      continue;
+    }
+
+    // An agent task's start and progress edges: a settled record whose task
+    // reports work again is the same agent running again, and the task stream
+    // is where a roster-seeded record picks up its counters and current step.
+    if (activity.kind === "task.started" || activity.kind === "task.progress") {
+      applySubagentTaskRun(byAgentId, activity, payload, {
+        toolUseIdByTaskId,
+        telemetryByToolUseId,
+        activityTelemetryByAgentId,
+      });
       continue;
     }
 
@@ -1433,6 +1462,27 @@ function collectSubagentActivityRecords(
     const agentIds = uniqueStrings([...receiverThreadIds, ...agentStates.keys()]);
     const resolvedAgentIds =
       agentIds.length > 0 ? agentIds : isSpawnAgentTool(tool) ? [`pending:${toolCallId}`] : [];
+    const itemStatus = asTrimmedString(item.status) ?? asTrimmedString(payload?.status);
+
+    // A replayed final report is filed under the call the adapter knows the
+    // agent by. After a provider restart that is the call that resumed the
+    // agent, which owns no record; the task id it carries still names the
+    // agent. Mirrors the server roster.
+    const receiptOwner = findSubagentReceiptOwner(
+      byAgentId,
+      data,
+      resolvedAgentIds,
+      toolUseIdByTaskId,
+    );
+    if (receiptOwner) {
+      applySubagentReceipt(byAgentId, receiptOwner, activity, {
+        tool,
+        itemStatus,
+        state: agentStates.get(toolCallId) ?? null,
+      });
+      continue;
+    }
+
     const pendingKey = pendingSpawnKeysByCallId.get(toolCallId);
     const firstConcreteAgentId = resolvedAgentIds.find(
       (agentId) => !agentId.startsWith("pending:"),
@@ -1463,7 +1513,6 @@ function collectSubagentActivityRecords(
       const state = agentStates.get(agentId) ?? null;
       const stateStatus = state?.status ?? null;
       const stateMessage = state?.message ?? null;
-      const itemStatus = asTrimmedString(item.status) ?? asTrimmedString(payload?.status);
       const status = normalizeSubagentProgressStatus({
         tool,
         itemStatus,
@@ -1710,13 +1759,7 @@ function applySubagentTaskCompletion(
   payload: Record<string, unknown>,
   toolUseIdByTaskId: ReadonlyMap<string, string>,
 ): void {
-  // Synthesized completions carry no toolUseId (e.g. the SDK reporting a
-  // background agent lost to a session restart); fall back to the taskId
-  // link so the agent settles instead of showing "Running" forever.
-  const taskId = asTrimmedString(payload.taskId);
-  const toolUseId =
-    asTrimmedString(payload.toolUseId) ?? (taskId ? toolUseIdByTaskId.get(taskId) : undefined);
-  const record = toolUseId ? byAgentId.get(toolUseId) : undefined;
+  const record = findSubagentRecordForTask(byAgentId, payload, toolUseIdByTaskId)?.record;
   if (!record) {
     return;
   }
@@ -1733,6 +1776,140 @@ function applySubagentTaskCompletion(
     telemetry: record.telemetry
       ? { ...record.telemetry, step: null, lastToolName: null }
       : record.telemetry,
+    updatedAt: activity.createdAt,
+  });
+}
+
+/** The record an agent task's edge belongs to, with the tool use id its
+ *  counters are kept under. The task id wins over the reported call: a
+ *  synthesized completion carries no toolUseId, and a resumed run reports
+ *  under the call that revived it, while the spawn owns the row. Update-only
+ *  by construction: a task naming no known record yields none. */
+function findSubagentRecordForTask(
+  byAgentId: ReadonlyMap<string, InternalSubagentRecord>,
+  payload: Record<string, unknown>,
+  toolUseIdByTaskId: ReadonlyMap<string, string>,
+): { readonly record: InternalSubagentRecord; readonly toolUseId: string } | undefined {
+  const taskId = asTrimmedString(payload.taskId);
+  const toolUseId =
+    (taskId ? toolUseIdByTaskId.get(taskId) : undefined) ?? asTrimmedString(payload.toolUseId);
+  if (!toolUseId) {
+    return undefined;
+  }
+  const ownerKey = byAgentId.has(toolUseId)
+    ? toolUseId
+    : findSubagentKeyBySpawnCallId(byAgentId, toolUseId);
+  const record = ownerKey ? byAgentId.get(ownerKey) : undefined;
+  return record ? { record, toolUseId } : undefined;
+}
+
+/** Folds an agent task's start or progress edge into its record. Mirrors the
+ *  server roster: a settled record whose task reports work again is the same
+ *  agent running again (Claude's `SendMessage` revives a background agent
+ *  under its original task id, inside the turn that sent the message), not a
+ *  second row. The task stream is also where a record seeded from the roster
+ *  picks up its counters and current step once its spawn item has aged out of
+ *  the activity window. Background commands share these activity kinds and
+ *  are skipped. */
+function applySubagentTaskRun(
+  byAgentId: Map<string, InternalSubagentRecord>,
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown>,
+  links: {
+    readonly toolUseIdByTaskId: ReadonlyMap<string, string>;
+    readonly telemetryByToolUseId: ReadonlyMap<string, SubagentTelemetry>;
+    readonly activityTelemetryByAgentId: ReadonlyMap<string, SubagentTelemetry>;
+  },
+): void {
+  if (!isClaudeAgentTaskPayload(payload)) {
+    return;
+  }
+  const match = findSubagentRecordForTask(byAgentId, payload, links.toolUseIdByTaskId);
+  if (!match) {
+    return;
+  }
+  const { record, toolUseId } = match;
+  const reopened = !isActiveSubagentStatus(record.status);
+  const status: SubagentProgressStatus = reopened ? "running" : record.status;
+  byAgentId.set(record.id, {
+    ...record,
+    status,
+    statusLabel: subagentProgressStatusLabel(status),
+    turnId: reopened ? (activity.turnId ?? record.turnId) : record.turnId,
+    telemetry:
+      combineSubagentTelemetry(
+        links.telemetryByToolUseId.get(toolUseId),
+        links.activityTelemetryByAgentId.get(record.id),
+      ) ?? record.telemetry,
+    updatedAt: reopened ? activity.createdAt : record.updatedAt,
+  });
+}
+
+/** The record a replayed task-notification result belongs to when the item it
+ *  completes owns none. Null when the item owns a record (the normal fold
+ *  applies) or when nothing names the agent (the item then stands for itself,
+ *  so the agent's only output is kept). */
+function findSubagentReceiptOwner(
+  byAgentId: ReadonlyMap<string, InternalSubagentRecord>,
+  data: Record<string, unknown> | null,
+  itemAgentIds: ReadonlyArray<string>,
+  toolUseIdByTaskId: ReadonlyMap<string, string>,
+): InternalSubagentRecord | null {
+  const taskId = claudeSubagentNotificationTaskId(data);
+  if (!taskId) {
+    return null;
+  }
+  const itemOwnsRecord = itemAgentIds.some(
+    (agentId) =>
+      byAgentId.has(agentId) || findSubagentKeyBySpawnCallId(byAgentId, agentId) !== null,
+  );
+  if (itemOwnsRecord) {
+    return null;
+  }
+  const ownerToolUseId = toolUseIdByTaskId.get(taskId);
+  if (ownerToolUseId === undefined) {
+    return null;
+  }
+  const ownerKey = byAgentId.has(ownerToolUseId)
+    ? ownerToolUseId
+    : findSubagentKeyBySpawnCallId(byAgentId, ownerToolUseId);
+  return (ownerKey ? byAgentId.get(ownerKey) : undefined) ?? null;
+}
+
+/** Lands a replayed final report on the record that owns the agent. Only the
+ *  lifecycle changes: the synthesized item knows nothing else about the agent,
+ *  and its detail is the notification summary, not the objective. */
+function applySubagentReceipt(
+  byAgentId: Map<string, InternalSubagentRecord>,
+  record: InternalSubagentRecord,
+  activity: OrchestrationThreadActivity,
+  input: {
+    readonly tool: string | null;
+    readonly itemStatus: string | null;
+    readonly state: CollabAgentStateSnapshot | null;
+  },
+): void {
+  const stateStatus = input.state?.status ?? null;
+  const stateMessage = input.state?.message ?? null;
+  const status = normalizeSubagentProgressStatus({
+    tool: input.tool,
+    itemStatus: input.itemStatus,
+    stateStatus,
+  });
+  const terminalResult = isTerminalSubagentResult({
+    itemStatus: input.itemStatus,
+    stateStatus,
+    stateMessage,
+  });
+  byAgentId.set(record.id, {
+    ...record,
+    status,
+    statusLabel: subagentProgressStatusLabel(status),
+    liveBody: terminalResult ? null : record.liveBody,
+    liveBodyUpdatedAt: terminalResult ? null : record.liveBodyUpdatedAt,
+    resultActivityId: terminalResult ? activity.id : record.resultActivityId,
+    resultBody: terminalResult ? stateMessage : record.resultBody,
+    resultCreatedAt: terminalResult ? activity.createdAt : record.resultCreatedAt,
     updatedAt: activity.createdAt,
   });
 }
@@ -1777,13 +1954,11 @@ function applySubagentMetadataActivity(
       }
       pendingSpawnKeysByCallId.delete(callId);
     }
-  } else if (!agentThreadId && callId && key.startsWith("pending:")) {
-    pendingSpawnKeysByCallId.set(callId, key);
   }
 
   const previous = byAgentId.get(key);
   const rawStatus = asTrimmedString(payload.status);
-  const status: SubagentProgressStatus =
+  const explicitStatus: SubagentProgressStatus | null =
     rawStatus === "starting" ||
     rawStatus === "running" ||
     rawStatus === "waiting" ||
@@ -1791,7 +1966,19 @@ function applySubagentMetadataActivity(
     rawStatus === "failed" ||
     rawStatus === "interrupted"
       ? rawStatus
-      : (previous?.status ?? "running");
+      : null;
+  // A patch that states no lifecycle status (a background flag, a nesting
+  // depth) describes an agent some other activity introduced. When none did —
+  // a shell command moved to the background, a resume call for a spawn this
+  // window never saw — there is no agent to describe. The server roster
+  // creates no row for such a patch either.
+  if (!previous && explicitStatus === null) {
+    return;
+  }
+  if (!agentThreadId && callId && key.startsWith("pending:")) {
+    pendingSpawnKeysByCallId.set(callId, key);
+  }
+  const status: SubagentProgressStatus = explicitStatus ?? previous?.status ?? "running";
   const role =
     asTrimmedString(payload.agentRole) ??
     asTrimmedString(payload.role) ??
@@ -3627,6 +3814,52 @@ function extractToolTitle(payload: Record<string, unknown> | null): string | nul
   return semanticToolPresentation(payload)?.title ?? asTrimmedString(payload?.title);
 }
 
+/** The path a tool row names its image by, wherever the provider put it. */
+function imagePathFromPayload(payload: Record<string, unknown> | null): unknown {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const input = asRecord(data?.input ?? item?.input);
+  return (
+    item?.savedPath ??
+    item?.saved_path ??
+    item?.path ??
+    data?.savedPath ??
+    data?.path ??
+    input?.file_path ??
+    input?.filePath ??
+    input?.path
+  );
+}
+
+/**
+ * Image bytes a tool result carried inline, as `{mimeType, base64}` blocks.
+ *
+ * The Claude driver stores the raw `tool_result` block on the activity, so a
+ * screenshot tool's `{type: "image", source: {type: "base64", ...}}` content
+ * blocks are already here; reading them is what makes an MCP screenshot row a
+ * picture without the event log holding a second copy.
+ */
+function imageBlocksFromPayload(
+  payload: Record<string, unknown> | null,
+): Array<{ mimeType: string; base64: string }> {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const content = asRecord(data?.result ?? item?.result)?.content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.flatMap((entry) => {
+    const block = asRecord(entry);
+    const source = asRecord(block?.source);
+    if (block?.type !== "image" || source?.type !== "base64") {
+      return [];
+    }
+    const mimeType = asTrimmedString(source.media_type);
+    const base64 = asTrimmedString(source.data);
+    return mimeType && base64 ? [{ mimeType, base64 }] : [];
+  });
+}
+
 function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
   if (!isImagePreviewPayload(payload)) {
     return [];
@@ -3640,30 +3873,60 @@ function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogI
     asTrimmedString(data?.id) ??
     "generated-image";
   const result = asTrimmedString(item?.result ?? data?.result ?? payload?.result);
-  const path = item?.savedPath ?? item?.saved_path ?? item?.path ?? data?.savedPath ?? data?.path;
+  const path = imagePathFromPayload(payload);
+
+  const imageBlocks = imageBlocksFromPayload(payload);
+  if (imageBlocks.length > 0) {
+    return imageBlocks.map((block, index) => ({
+      id: index === 0 ? imageId : `${imageId}:${index}`,
+      name: generatedImageName({ id: imageId, mimeType: block.mimeType, path }),
+      previewUrl: `data:${block.mimeType};base64,${block.base64}`,
+    }));
+  }
+
   const source = result
     ? imageSourceFromValue(result, { allowBase64: true })
     : imageSourceFromValue(asTrimmedString(path) ?? "", { allowBase64: false });
 
-  if (!source) {
-    return [];
+  if (source) {
+    return [
+      {
+        id: imageId,
+        name: generatedImageName({
+          id: imageId,
+          mimeType: source.mimeType,
+          path,
+        }),
+        previewUrl: source.previewUrl,
+      },
+    ];
   }
 
-  return [
-    {
-      id: imageId,
-      name: generatedImageName({
+  // A local path is not a source the browser can load, but it is a source the
+  // renderer can fetch over the workspace RPC. Carrying the path here is what
+  // turns "Viewed image" and Claude's `Read` of a screenshot into a picture.
+  const localPath = asTrimmedString(path);
+  if (localPath && isImageFilePath(localPath)) {
+    return [
+      {
         id: imageId,
-        mimeType: source.mimeType,
-        path,
-      }),
-      previewUrl: source.previewUrl,
-    },
-  ];
+        name: generatedImageName({ id: imageId, mimeType: undefined, path }),
+        path: localPath,
+      },
+    ];
+  }
+
+  return [];
 }
 
 function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean {
   if (extractWorkLogItemType(payload) === "image_view") {
+    return true;
+  }
+  // A payload carrying image bytes needs no guessing from its name: a
+  // screenshot tool can be called anything (`browser_screenshot`,
+  // `take_screenshot`) and none of those words is "image".
+  if (imageBlocksFromPayload(payload).length > 0) {
     return true;
   }
 
@@ -3673,9 +3936,7 @@ function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean
   const namespace = asTrimmedString(item?.namespace ?? data?.namespace)?.toLowerCase();
   const tool = asTrimmedString(item?.tool ?? data?.tool)?.toLowerCase();
   const itemType = asTrimmedString(item?.type ?? data?.type)?.toLowerCase();
-  const path = asTrimmedString(
-    item?.savedPath ?? item?.saved_path ?? item?.path ?? data?.savedPath ?? data?.path,
-  )?.toLowerCase();
+  const path = asTrimmedString(imagePathFromPayload(payload))?.toLowerCase();
 
   return [title, namespace, tool, itemType, path].some(
     (value) =>
