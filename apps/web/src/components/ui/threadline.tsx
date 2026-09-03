@@ -152,6 +152,49 @@ function SpineRow({
   );
 }
 
+type SpineNodeKind = "done" | "running" | "warning" | "error" | "group" | "pending";
+
+const TONE_SPINE_DOT_CLASS_NAME = {
+  warning: "size-[6px] rounded-full bg-warning",
+  error: "size-[6px] rounded-full bg-destructive",
+} as const satisfies Record<"warning" | "error", string>;
+
+/** The glyph that sits on a spine for one row. The accent halo is reserved for
+ *  the surface's single live node; a still-running step gets a small accent
+ *  tick, settled steps are quiet solid dots, warnings/errors are compact tone
+ *  dots, a collapsed group of steps is a hollow ring (same family, reads as
+ *  "openable"), and a step not yet started is a fainter hollow ring. */
+function SpineNode({ kind }: { kind: SpineNodeKind }) {
+  if (kind === "running") {
+    return (
+      <span
+        aria-hidden="true"
+        className="size-[5px] animate-status-pulse rounded-full bg-primary-graph/80"
+      />
+    );
+  }
+  if (kind === "warning" || kind === "error") {
+    return <span aria-hidden="true" className={TONE_SPINE_DOT_CLASS_NAME[kind]} />;
+  }
+  if (kind === "group" || kind === "pending") {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-[7px] rounded-full border bg-background",
+          kind === "group" ? "border-muted-foreground/45" : "border-muted-foreground/30",
+        )}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="relative z-10 size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
+    />
+  );
+}
+
 /**
  * Accent fade for the connectors approaching a live terminus: the spine warms
  * toward accent as it nears the row where work is happening now, and settles
@@ -198,4 +241,13 @@ function CurrentMarker({ className, ...props }: React.ComponentPropsWithoutRef<"
   );
 }
 
-export { CurrentMarker, LiveNode, SectionLabel, SectionTick, SpineRow, spineAccentRowStyle };
+export {
+  CurrentMarker,
+  LiveNode,
+  SectionLabel,
+  SectionTick,
+  SpineNode,
+  SpineRow,
+  spineAccentRowStyle,
+  type SpineNodeKind,
+};
