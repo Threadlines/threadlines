@@ -34,9 +34,11 @@ import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc
 import { useStore } from "../../store";
 import { SidebarProvider } from "../ui/sidebar";
 import { PullRequestsView } from "./PullRequestsView";
+import { resetPullRequestTabsForTests } from "./pullRequestTabsStore";
 import {
   DEFAULT_PULL_REQUEST_SORT,
   EMPTY_PULL_REQUEST_FILTERS,
+  pullRequestFiltersToSearch,
   type PullRequestFilters,
   type PullRequestSelection,
   type PullRequestSort,
@@ -76,7 +78,7 @@ function makeEntry(overrides: Partial<PullRequestListEntry> = {}): PullRequestLi
     number: 1,
     title: "Add the pull requests page",
     url: "https://github.com/threadlines/threadlines/pull/1",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     headBranch: "feature/pull-requests",
     baseBranch: "main",
     state: "open",
@@ -122,7 +124,7 @@ function makeDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDeta
     title: "Add the pull requests page",
     body: "",
     url: "https://github.com/threadlines/threadlines/pull/1",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     state: "open",
     isDraft: false,
     mergeability: "mergeable",
@@ -239,6 +241,9 @@ function createTestRouter(children: ReactNode) {
   });
 }
 
+/** The params the route would have navigated with, as the page last wrote them. */
+let lastSearch: Record<string, unknown> = {};
+
 /** Stands in for the route, which owns the selection, the filters and the sort. */
 function SelectablePullRequestsView() {
   const [selection, setSelection] = useState<PullRequestSelection | null>(null);
@@ -252,8 +257,14 @@ function SelectablePullRequestsView() {
       sort={sort}
       onStateChange={() => undefined}
       onSelectionChange={setSelection}
-      onFiltersChange={setFilters}
-      onSortChange={setSort}
+      onFiltersChange={(next) => {
+        lastSearch = pullRequestFiltersToSearch(next, sort);
+        setFilters(next);
+      }}
+      onSortChange={(next) => {
+        lastSearch = pullRequestFiltersToSearch(filters, next);
+        setSort(next);
+      }}
     />
   );
 }
@@ -298,6 +309,9 @@ describe("PullRequestsView", () => {
   beforeEach(() => {
     resetAppAtomRegistryForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
+    // The strip is a session, not a render: one test's open tabs would
+    // otherwise still be open in the next one.
+    resetPullRequestTabsForTests();
     seedProject();
   });
 
@@ -366,6 +380,80 @@ describe("PullRequestsView", () => {
     await rendered.cleanup();
   });
 
+  it("keeps both open pull requests as tabs and closes back onto the other", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({ number: 1, title: "First" }),
+        makeEntry({ number: 2, title: "Second" }),
+      ],
+      errors: [],
+    });
+
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #1: First" }));
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #2: Second" }));
+
+    const strip = page.getByTestId("pull-request-tab-strip");
+    await expect.element(strip.getByRole("tab", { name: /#1/ })).toBeVisible();
+    await expect.element(strip.getByRole("tab", { name: /#2/ })).toBeVisible();
+
+    // Closing the one on screen falls back to what is left rather than back to
+    // the bare list. Both the tab and its ✕ are named by repository as well as
+    // number, since two repositories can hold the same one.
+    await userEvent.click(page.getByRole("button", { name: "Close threadlines/threadlines #2" }));
+
+    await vi.waitFor(() => {
+      expect(strip.getByRole("tab", { name: /#2/ }).elements()).toHaveLength(0);
+    });
+    await expect.element(strip.getByRole("tab", { name: /#1/ })).toBeVisible();
+    await expect.element(page.getByTestId("pull-requests-detail-column")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("walks the tab strip with the arrow keys and hands focus on after a close", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({ number: 1, title: "First" }),
+        makeEntry({ number: 2, title: "Second" }),
+      ],
+      errors: [],
+    });
+
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #1: First" }));
+    await userEvent.click(page.getByRole("button", { name: "Open pull request #2: Second" }));
+
+    const strip = page.getByTestId("pull-request-tab-strip");
+    const second = strip.getByRole("tab", { name: /#2/ });
+    await userEvent.click(second);
+    // The arrows only move the detail; handing the cursor to the new title
+    // would end the walk on its first step.
+    await userEvent.keyboard("{ArrowLeft}");
+    // The title is what used to take the cursor, so the check waits until it is
+    // on screen before asking where the cursor is.
+    await expect
+      .element(page.getByRole("heading", { name: "Add the pull requests page" }))
+      .toBeVisible();
+    const walked = document.activeElement;
+    expect(walked?.getAttribute("role")).toBe("tab");
+    expect(walked?.textContent).toContain("#1");
+    expect(walked?.getAttribute("aria-selected")).toBe("true");
+
+    // A ✕ pressed from the keyboard takes its own element away, so the tab that
+    // steps into its place takes the cursor.
+    const close = page.getByRole("button", { name: "Close threadlines/threadlines #1" });
+    close.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => {
+      const focused = document.activeElement;
+      expect(focused?.getAttribute("role")).toBe("tab");
+      expect(focused?.textContent).toContain("#2");
+    });
+
+    await rendered.cleanup();
+  });
+
   it("steps back to the list from the detail on a phone", async () => {
     await page.viewport(390, 800);
     try {
@@ -394,28 +482,81 @@ describe("PullRequestsView", () => {
     }
   });
 
-  it("narrows the list from the filters and gives the rows back from the chip", async () => {
+  it("narrows the list from the filters menu and gives the rows back from the chip", async () => {
     const rendered = await renderPage({
       viewer: "ada",
       entries: [
         makeEntry({ number: 1, title: "Mine", viewerIsAuthor: true }),
-        makeEntry({ number: 2, title: "Someone else's", author: { login: "grace", isBot: false } }),
+        makeEntry({
+          number: 2,
+          title: "Someone else's",
+          author: { login: "grace", isBot: false, avatarUrl: null },
+        }),
       ],
       errors: [],
     });
 
     await expect.element(page.getByText("Someone else's")).toBeVisible();
     await userEvent.click(page.getByTestId("pull-requests-filters"));
-    await userEvent.click(page.getByRole("button", { name: "Use ada" }));
-    await userEvent.keyboard("{Escape}");
+    // The authors are the ones the loaded rows carry, so ada is a line to pick
+    // rather than a login to spell.
+    await userEvent.click(page.getByRole("menuitem", { name: /^Author/ }));
+    // The field keeps its own typing: a menu would otherwise read the letters
+    // as a jump to the item that starts with them.
+    await userEvent.fill(page.getByRole("textbox", { name: "Search authors" }), "ad");
+    // One author at a time, so the choices are radios and a reader hears which
+    // one is current.
+    await vi.waitFor(() => {
+      expect(
+        page.getByRole("menuitemradio", { name: "grace", exact: true }).elements(),
+      ).toHaveLength(0);
+    });
+    await userEvent.click(page.getByRole("menuitemradio", { name: "ada", exact: true }));
 
     await expect.element(page.getByText("Author: ada")).toBeVisible();
+    // What the route would put in the URL, which is how a link keeps the filter.
+    expect(lastSearch).toEqual({ author: "ada" });
     await vi.waitFor(() => {
       expect(page.getByTestId("pull-requests-row").elements()).toHaveLength(1);
     });
 
     await userEvent.click(page.getByRole("button", { name: "Remove filter Author: ada" }));
     await expect.element(page.getByText("Someone else's")).toBeVisible();
+
+    await rendered.cleanup();
+  });
+
+  it("draws the conflict, the reviews, the checks and an author the host gave no picture for", async () => {
+    const rendered = await renderPage({
+      viewer: "ada",
+      entries: [
+        makeEntry({
+          number: 7,
+          title: "Bump the runner",
+          author: { login: "dependabot[bot]", isBot: true, avatarUrl: null },
+          mergeability: "conflicting",
+          reviewDecision: "approved",
+          checksState: "failure",
+          labels: [{ name: "dependencies", color: "0366d6" }],
+        }),
+      ],
+      errors: [],
+    });
+
+    await expect.element(page.getByText("Bump the runner")).toBeVisible();
+    // The triangle stands in for the open glyph, and says so in words.
+    expect(page.getByText("Conflicts with main").elements()).toHaveLength(1);
+    // The reviews and the checks are both glyphs, and each carries the words
+    // the row no longer spends its meta line on.
+    expect(page.getByText("Approved").elements()).toHaveLength(1);
+    expect(page.getByText("Some checks failed").elements()).toHaveLength(1);
+    // No picture to load, so the avatar is the login's first letter.
+    expect(document.querySelectorAll("#pull-requests-list img")).toHaveLength(0);
+    expect(
+      [...document.querySelectorAll("#pull-requests-list span")].filter(
+        (element) => element.textContent === "D",
+      ),
+    ).toHaveLength(1);
 
     await rendered.cleanup();
   });

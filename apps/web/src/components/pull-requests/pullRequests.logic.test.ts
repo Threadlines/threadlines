@@ -18,17 +18,23 @@ import {
   buildReviewCommentHandoff,
   countNeedsYou,
   formatPullRequestBaseFreshness,
+  formatPullRequestSelection,
+  formatPullRequestChecksHeadline,
   formatPullRequestChecksSummary,
   groupPullRequests,
   groupTimelineRows,
   linkThreadsToPullRequests,
   matchesPullRequestQuery,
+  matchesPullRequestSelection,
   narrowPullRequests,
+  parsePullRequestSelection,
   parsePullRequestsSearch,
   pullRequestEntryKey,
   pullRequestFilterChips,
+  pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
   pullRequestFiltersToSearch,
+  pullRequestLabelColor,
   resolveNeedsYouReason,
   resolvePullRequestMergeBlock,
   resolvePullRequestReviewPosition,
@@ -100,7 +106,7 @@ function entry(overrides: Partial<PullRequestEntry> = {}): PullRequestEntry {
     number: 1,
     title: "Add the pull requests page",
     url: "https://github.com/threadlines/threadlines/pull/1",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     headBranch: "feature/pull-requests",
     baseBranch: "main",
     state: "open",
@@ -160,7 +166,7 @@ describe("resolveNeedsYouReason", () => {
           checksState: "failure",
         }),
       ),
-    ).toBe("Review requested");
+    ).toBe("Review required");
   });
 
   it("reports changes before failing checks for the author's own row", () => {
@@ -184,6 +190,25 @@ describe("resolveNeedsYouReason", () => {
     expect(resolveNeedsYouReason(entry({ viewerIsAuthor: true, reviewDecision: "approved" }))).toBe(
       "Approved",
     );
+  });
+
+  it("leaves the author's own row alone where they cannot push", () => {
+    // A contribution to someone else's repository: the approval is news, not
+    // something the author can act on, so it is not put in front of them.
+    expect(
+      resolveNeedsYouReason(
+        entry({ viewerIsAuthor: true, viewerCanWrite: false, reviewDecision: "approved" }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveNeedsYouReason(
+        entry({ viewerIsAuthor: true, viewerCanWrite: false, checksState: "failure" }),
+      ),
+    ).toBeNull();
+    // Reviewing takes no rights over the repository at all.
+    expect(
+      resolveNeedsYouReason(entry({ viewerCanWrite: false, viewerReviewRequested: true })),
+    ).toBe("Review required");
   });
 
   it("says nothing about a merged or closed row", () => {
@@ -249,6 +274,36 @@ describe("groupPullRequests", () => {
     });
     expect(merged).toHaveLength(1);
     expect(merged[0]?.label).toBeNull();
+  });
+
+  it("drops the headings once the list is narrowed to one involvement", () => {
+    const groups = groupPullRequests({
+      entries: [entry({ number: 1, viewerIsAuthor: true })],
+      viewer: "ada",
+      state: "open",
+      involvement: "yours",
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBeNull();
+  });
+
+  it("files work on a repository the viewer cannot push to under Yours", () => {
+    const upstream = entry({
+      number: 1,
+      viewerIsAuthor: true,
+      viewerCanWrite: false,
+      reviewDecision: "approved",
+    });
+    const asked = entry({ number: 2, viewerCanWrite: false, viewerReviewRequested: true });
+
+    const groups = groupPullRequests({ entries: [upstream, asked], viewer: "ada", state: "open" });
+
+    expect(groups.map((group) => [group.label, group.entries.map((row) => row.number)])).toEqual([
+      ["Needs you", [2]],
+      ["Yours", [1]],
+    ]);
+    // The sidebar count reads the same rows the page groups.
+    expect(countNeedsYou([upstream, asked])).toBe(1);
   });
 
   it("counts only the rows that need the viewer", () => {
@@ -424,7 +479,7 @@ describe("matchesPullRequestQuery", () => {
   const row = entry({
     number: 412,
     title: "Add the pull requests page",
-    author: { login: "ada", isBot: false },
+    author: { login: "ada", isBot: false, avatarUrl: null },
     headBranch: "feature/pull-requests",
     repository: "threadlines/threadlines",
     labels: [{ name: "needs-design", color: "d73a4a" }],
@@ -458,14 +513,14 @@ describe("narrowPullRequests", () => {
   const rows = [
     entry({
       number: 1,
-      author: { login: "ada", isBot: false },
+      author: { login: "ada", isBot: false, avatarUrl: null },
       labels: [{ name: "bug", color: null }],
       reviewDecision: "approved",
       checksState: "success",
     }),
     entry({
       number: 2,
-      author: { login: "Grace", isBot: false },
+      author: { login: "Grace", isBot: false, avatarUrl: null },
       labels: [
         { name: "bug", color: null },
         { name: "wip", color: null },
@@ -473,7 +528,7 @@ describe("narrowPullRequests", () => {
       isDraft: true,
       checksState: "failure",
     }),
-    entry({ number: 3, author: null, labels: [] }),
+    entry({ number: 3, author: null, labels: [], checksState: "pending" }),
   ];
   const numbersFor = (filters: Partial<PullRequestFilters>) =>
     narrowPullRequests(rows, { ...EMPTY_PULL_REQUEST_FILTERS, ...filters }).map(
@@ -488,18 +543,60 @@ describe("narrowPullRequests", () => {
     expect(numbersFor({ author: " grace " })).toEqual([2]);
   });
 
-  it("requires every included label and refuses any excluded one", () => {
+  it("requires every included label", () => {
     expect(numbersFor({ labels: "bug" })).toEqual([1, 2]);
     expect(numbersFor({ labels: "bug, wip" })).toEqual([2]);
-    expect(numbersFor({ labels: "bug", excludeLabels: "wip" })).toEqual([1]);
   });
 
   it("splits the drafts, the verdicts and the checks", () => {
     expect(numbersFor({ draft: "only" })).toEqual([2]);
     expect(numbersFor({ draft: "hide" })).toEqual([1, 3]);
     expect(numbersFor({ review: "approved" })).toEqual([1]);
+    // A row nobody has reviewed carries no verdict at all, which is a state of
+    // its own rather than one of the host's words.
+    expect(numbersFor({ review: "none" })).toEqual([2, 3]);
     expect(numbersFor({ checks: "failing" })).toEqual([2]);
     expect(numbersFor({ checks: "passing" })).toEqual([1]);
+    expect(numbersFor({ checks: "running" })).toEqual([3]);
+  });
+
+  it("keeps one involvement, and one project", () => {
+    const grouped = [
+      entry({ number: 1, viewerReviewRequested: true }),
+      entry({ number: 2, viewerIsAuthor: true }),
+      entry({ number: 3, projectId: OTHER_PROJECT_ID }),
+    ];
+    const involved = (filters: Partial<PullRequestFilters>) =>
+      narrowPullRequests(grouped, { ...EMPTY_PULL_REQUEST_FILTERS, ...filters }).map(
+        (row) => row.number,
+      );
+
+    expect(involved({ involvement: "needs-you" })).toEqual([1]);
+    expect(involved({ involvement: "yours" })).toEqual([2]);
+    expect(involved({ involvement: "others" })).toEqual([3]);
+    expect(involved({ project: `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}` })).toEqual([3]);
+  });
+
+  it("leaves a row authored outside the workspace out of every project", () => {
+    const authored = entry({
+      number: 4,
+      origin: "authored",
+      repository: "someone/else",
+      projectId: OTHER_PROJECT_ID,
+    });
+    const mixed = [entry({ number: 3, projectId: OTHER_PROJECT_ID }), authored];
+
+    // The project on an authored row is only the checkout whose host answered
+    // the search, so it neither offers that project nor hides behind it.
+    expect(pullRequestProjectFacets(mixed).map((facet) => facet.key)).toEqual([
+      `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}`,
+    ]);
+    expect(
+      narrowPullRequests(mixed, {
+        ...EMPTY_PULL_REQUEST_FILTERS,
+        project: `${ENVIRONMENT_ID}:${OTHER_PROJECT_ID}`,
+      }).map((row) => row.number),
+    ).toEqual([3]);
   });
 
   it("narrows on everything at once", () => {
@@ -537,12 +634,35 @@ describe("sortPullRequests", () => {
 
   it("orders by the last update, the opening, or the size of the change", () => {
     expect(numbersFor("updated")).toEqual([1, 3, 2]);
-    expect(numbersFor("created")).toEqual([2, 3, 1]);
-    expect(numbersFor("size")).toEqual([2, 3, 1]);
+    expect(numbersFor("newest")).toEqual([2, 3, 1]);
+    expect(numbersFor("oldest")).toEqual([1, 3, 2]);
+    expect(numbersFor("largest")).toEqual([2, 3, 1]);
+    expect(numbersFor("smallest")).toEqual([1, 3, 2]);
+  });
+
+  it("puts the rows closest to merging first, drafts last", () => {
+    const ready = [
+      entry({ number: 1, reviewDecision: "approved", checksState: "success" }),
+      entry({ number: 2, reviewDecision: "review-required" }),
+      entry({ number: 3, checksState: "pending" }),
+      entry({ number: 4, reviewDecision: "changes-requested" }),
+      entry({ number: 5, checksState: "failure" }),
+      entry({ number: 6, mergeability: "conflicting" }),
+      entry({ number: 7, isDraft: true, reviewDecision: "approved", checksState: "success" }),
+    ];
+
+    expect(sortPullRequests(ready.toReversed(), "readiness").map((row) => row.number)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
   });
 
   it("carries the sort into the groups", () => {
-    const groups = groupPullRequests({ entries: rows, viewer: null, state: "open", sort: "size" });
+    const groups = groupPullRequests({
+      entries: rows,
+      viewer: null,
+      state: "open",
+      sort: "largest",
+    });
     expect(groups[0]?.entries.map((row) => row.number)).toEqual([2, 3, 1]);
   });
 });
@@ -551,54 +671,131 @@ describe("the filter chips and the route's params", () => {
   it("names each narrowing and gives back the filters without it", () => {
     const filters: PullRequestFilters = {
       ...EMPTY_PULL_REQUEST_FILTERS,
+      involvement: "needs-you",
       author: "ada",
       labels: "bug, wip",
-      excludeLabels: "stale",
+      project: `${ENVIRONMENT_ID}:${PROJECT_ID}`,
       checks: "failing",
     };
-    const chips = pullRequestFilterChips(filters);
+    const chips = pullRequestFilterChips(filters, "Threadlines");
 
     expect(chips.map((chip) => chip.label)).toEqual([
+      "Needs you",
       "Author: ada",
       "Label: bug",
       "Label: wip",
-      "Not label: stale",
+      "Project: Threadlines",
       "Checks failing",
     ]);
     // Removing one label leaves the other, and the rest of the filters stand.
-    expect(chips[1]?.next).toEqual({ ...filters, labels: "wip" });
-    expect(chips[4]?.next.checks).toBe("any");
+    expect(chips[2]?.next).toEqual({ ...filters, labels: "wip" });
+    expect(chips[4]?.next.project).toBe("");
+    expect(chips[5]?.next.checks).toBe("any");
   });
 
   it("reads the filters off a link and writes only what is not resting", () => {
     const search = parsePullRequestsSearch({
       state: "closed",
+      involvement: "yours",
       author: " ada ",
       labels: "bug",
       draft: "hide",
       review: "nonsense",
-      checks: "failing",
-      sort: "size",
+      checks: "running",
+      sort: "smallest",
     });
 
     expect(search).toEqual({
       state: "closed",
+      involvement: "yours",
       author: "ada",
       labels: "bug",
       draft: "hide",
-      checks: "failing",
-      sort: "size",
+      checks: "running",
+      sort: "smallest",
     });
-    expect(pullRequestFiltersToSearch(pullRequestFiltersFromSearch(search), "size")).toEqual({
+    expect(pullRequestFiltersToSearch(pullRequestFiltersFromSearch(search), "smallest")).toEqual({
+      involvement: "yours",
       author: "ada",
       labels: "bug",
       draft: "hide",
-      checks: "failing",
-      sort: "size",
+      checks: "running",
+      sort: "smallest",
     });
     expect(
       pullRequestFiltersToSearch(EMPTY_PULL_REQUEST_FILTERS, DEFAULT_PULL_REQUEST_SORT),
     ).toEqual({});
+  });
+
+  it("reads the sorts this page used to spell differently", () => {
+    expect(parsePullRequestsSearch({ sort: "created" }).sort).toBe("newest");
+    expect(parsePullRequestsSearch({ sort: "size" }).sort).toBe("largest");
+    expect(parsePullRequestsSearch({ sort: "nonsense" }).sort).toBeUndefined();
+  });
+});
+
+describe("the pull request a link names", () => {
+  it("carries the repository through a round trip, separators and all", () => {
+    const selection = {
+      // Both the environment id and the repository hold the separator the
+      // param is spelled with, which is what the encoding is there for.
+      environmentId: EnvironmentId.make("environment:remote"),
+      projectId: PROJECT_ID,
+      repository: "group/sub:group/threadlines",
+      number: 214,
+    };
+
+    const written = formatPullRequestSelection(selection);
+    expect(written).toBe(`environment:remote:${PROJECT_ID}:214:group%2Fsub%3Agroup%2Fthreadlines`);
+    expect(parsePullRequestSelection(written)).toEqual(selection);
+  });
+
+  it("still reads a link written before the param carried a repository", () => {
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}:7`)).toEqual({
+      environmentId: ENVIRONMENT_ID,
+      projectId: PROJECT_ID,
+      repository: null,
+      number: 7,
+    });
+    // With no repository the row is matched on what the link does carry.
+    expect(
+      matchesPullRequestSelection(
+        { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID, repository: null, number: 7 },
+        entry({ number: 7 }),
+      ),
+    ).toBe(true);
+  });
+
+  it("tells two pull requests with one number apart by their repository", () => {
+    const selection = {
+      environmentId: ENVIRONMENT_ID,
+      projectId: PROJECT_ID,
+      repository: "Threadlines/Threadlines",
+      number: 7,
+    };
+
+    // Repository names are case-insensitive on every host here.
+    expect(matchesPullRequestSelection(selection, entry({ number: 7 }))).toBe(true);
+    expect(
+      matchesPullRequestSelection(selection, entry({ number: 7, repository: "someone/else" })),
+    ).toBe(false);
+  });
+
+  it("drops a value that names no pull request", () => {
+    expect(parsePullRequestSelection("")).toBeNull();
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}`)).toBeNull();
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}:0`)).toBeNull();
+    expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}:none:repo`)).toBeNull();
+  });
+});
+
+describe("pullRequestLabelColor", () => {
+  it("takes a hex triplet with or without its hash and refuses anything else", () => {
+    expect(pullRequestLabelColor("d73a4a")).toBe("#d73a4a");
+    expect(pullRequestLabelColor("#D73A4A")).toBe("#D73A4A");
+    expect(pullRequestLabelColor("red")).toBeNull();
+    expect(pullRequestLabelColor("#abc")).toBeNull();
+    expect(pullRequestLabelColor(null)).toBeNull();
   });
 });
 
@@ -641,6 +838,34 @@ describe("summarizePullRequestChecks", () => {
 
     expect(summary.state).toBe("none");
     expect(formatPullRequestChecksSummary(summary)).toBe("No checks reported.");
+  });
+
+  it("reads the rollup as one phrase for the header", () => {
+    const headline = (statuses: readonly ("pending" | "success" | "failure" | "skipped")[]) =>
+      formatPullRequestChecksHeadline(
+        summarizePullRequestChecks(
+          statuses.map((status, index) => check(`check-${index}`, status)),
+        ),
+      );
+    const times = <Value>(count: number, value: Value) =>
+      Array.from({ length: count }, () => value);
+
+    expect(headline([])).toBe("No checks reported");
+    expect(headline(times(16, "success" as const))).toBe("All checks passed");
+    // Skipped checks count towards the total but are never what it is about.
+    expect(headline([...times(13, "success" as const), ...times(3, "skipped" as const)])).toBe(
+      "13 of 16 passing",
+    );
+    expect(
+      headline([
+        ...times(3, "failure" as const),
+        ...times(4, "pending" as const),
+        ...times(9, "success" as const),
+      ]),
+    ).toBe("3 of 16 failing");
+    expect(headline([...times(9, "pending" as const), ...times(2, "success" as const)])).toBe(
+      "9 of 11 running",
+    );
   });
 });
 
@@ -731,7 +956,7 @@ describe("resolvePullRequestReviewPosition", () => {
 
 const TIMELINE_DETAIL = {
   createdAt: "2026-09-01T09:00:00.000Z",
-  author: { login: "ada", isBot: false },
+  author: { login: "ada", isBot: false, avatarUrl: null },
   mergedAt: null,
   closedAt: null,
   url: "https://github.com/threadlines/threadlines/pull/42",
@@ -745,7 +970,7 @@ function timelineComment(
   return {
     id,
     kind: "issue-comment",
-    author: { login: "grace", isBot: false },
+    author: { login: "grace", isBot: false, avatarUrl: null },
     body: `body ${id}`,
     createdAt,
     url: null,
@@ -805,7 +1030,7 @@ describe("buildPullRequestTimeline", () => {
           comments: [
             {
               id: "line-1",
-              author: { login: "grace", isBot: false },
+              author: { login: "grace", isBot: false, avatarUrl: null },
               body: "Name this something else.",
               createdAt: "2026-09-01T10:20:00.000Z",
               url: "https://github.com/threadlines/threadlines/pull/42#discussion_r1",
@@ -814,7 +1039,7 @@ describe("buildPullRequestTimeline", () => {
             },
             {
               id: "line-2",
-              author: { login: "ada", isBot: false },
+              author: { login: "ada", isBot: false, avatarUrl: null },
               body: "Done.",
               createdAt: "2026-09-01T10:30:00.000Z",
               url: null,

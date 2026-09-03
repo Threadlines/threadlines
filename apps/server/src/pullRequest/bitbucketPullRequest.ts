@@ -39,6 +39,16 @@ const BitbucketUserSchema = Schema.Struct({
   /** Absent on an app account, which is why `display_name` stands in for it. */
   nickname: Schema.optional(Schema.NullOr(Schema.String)),
   display_name: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Bitbucket hangs the account's picture off its links, like everything else. */
+  links: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        avatar: Schema.optional(
+          Schema.NullOr(Schema.Struct({ href: Schema.optional(Schema.NullOr(Schema.String)) })),
+        ),
+      }),
+    ),
+  ),
 });
 
 /**
@@ -188,7 +198,11 @@ export interface BitbucketPullRequestRow {
   readonly body: string;
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   /** The reviewers as Bitbucket addresses them, which is what a write takes. */
-  readonly reviewers: ReadonlyArray<{ readonly id: string; readonly login: string }>;
+  readonly reviewers: ReadonlyArray<{
+    readonly id: string;
+    readonly login: string;
+    readonly avatarUrl: string | null;
+  }>;
   /** Approvals and change requests, which Bitbucket keeps on its participants. */
   readonly reviews: ReadonlyArray<PullRequestComment>;
 }
@@ -222,7 +236,9 @@ function toActor(
 ): PullRequestActor | null {
   const login = trimmed(raw?.nickname) ?? trimmed(raw?.display_name);
   // Bitbucket names no bot flag on the accounts it hands back.
-  return login === null ? null : { login, isBot: false };
+  return login === null
+    ? null
+    : { login, isBot: false, avatarUrl: trimmed(raw?.links?.avatar?.href) };
 }
 
 function toState(raw: Schema.Schema.Type<typeof BitbucketPullRequestSchema>): PullRequestState {
@@ -303,7 +319,9 @@ function toRow(
   const reviewers = (raw.reviewers ?? []).flatMap((reviewer) => {
     const actor = toActor(reviewer);
     const id = trimmed(reviewer.uuid);
-    return actor === null || id === null ? [] : [{ id, login: actor.login }];
+    return actor === null || id === null
+      ? []
+      : [{ id, login: actor.login, avatarUrl: actor.avatarUrl }];
   });
   return {
     number: raw.id,
@@ -674,6 +692,7 @@ export function decodeBitbucketWorkspaceMembersJson(
       kind: "user",
       login: actor.login,
       name: trimmed(decoded.value.user?.display_name),
+      avatarUrl: actor.avatarUrl,
       requested: false,
     });
   }

@@ -1053,3 +1053,125 @@ Server: the authored search is deduplicated against workspace rows; a failed sea
 entry, not the list; `canManage` for an author without push. Web: an authored row shows its
 repository and no thread affordances; the merge button is absent and Close present for an author
 without write access.
+
+# Step 6: the polish pass (avatars, pills, glyphs, tabs, header, menus)
+
+Will compared the page with t3code's (screenshots 2026-09-03) and wants the same level of finish:
+GitHub avatars, label pills with a colour dot, a check glyph instead of words, a conflict triangle,
+several pull requests open at once as tabs, a cleaner header, and Filters and Sort as menus. The
+pills are a deliberate exception to the "no pills" rule in AGENTS.md, asked for by Will; keep them
+small and quiet (hairline border, `bg-muted/40`, 10px type) so the page still reads flat.
+
+Facts about t3code's implementation are in the sol fact sheet
+(`%LOCALAPPDATA%\Temp\threadlines-pr-review\sol-t3-facts.out`); the decisions below are ours.
+
+## 6a Contracts and server
+
+- `PullRequestActor` gains `avatarUrl: NullOr(String)`. Everything that carries an actor (list
+  rows, detail author, comments, review threads, timeline events) carries it. `PullRequestReviewer`
+  gains `avatarUrl: NullOr(String)` too.
+- `PullRequestListEntry` gains `createdAt: String` (ISO) and `mergeability?: PullRequestMergeability`
+  (omitted where the host does not say). Needed for the Newest/Oldest sort and the conflict glyph.
+- GitHub avatars, without a request per row: for a plain login (`/^[a-z0-9][a-z0-9-]{0,38}$/i`)
+  derive `https://<host>/<login>.png?size=80` (host = the remote's host, so Enterprise works). Logins
+  that fail that test (`dependabot[bot]`) are resolved in one batched GraphQL call per list read,
+  `nodes(ids: [...]) { ... on User { login avatarUrl } ... on Bot { login avatarUrl } }`, using the
+  `id` field `gh pr list --json author` already returns; keep the map alive with the list cache
+  entry. The authored search, detail, activity, and reviewer candidates add `avatarUrl` to their
+  GraphQL selections directly. `gh pr list` gains `createdAt` and `mergeable` in its field list;
+  the authored search selects `createdAt` and `mergeable`.
+- GitLab: `author.avatar_url` from glab JSON. Bitbucket: `author.links.avatar.href`. Azure DevOps:
+  `createdBy.imageUrl` only if it is a plain URL that needs no auth header; otherwise null. Null
+  is fine: the web draws initials.
+- Tests: decoders keep `avatarUrl` and `createdAt`; a bot login gets its URL from the batch and a
+  plain login gets the derived URL without a GraphQL call; `mergeability` rides on list rows.
+
+## 6b Web: the list
+
+- `PullRequestActorAvatar` in `pullRequestPresentation.tsx`: 16px round `<img loading="lazy">`
+  with `bg-muted`, initials fallback (uppercase first letter, `text-[8px]`) when the URL is null
+  or fails to load (`onError`, like `MarkdownImage`). `PullRequestActorLabel` = avatar + login.
+- Row meta becomes: `#number · repository (when shown) · [avatar] login · [pill][pill] +N · [check
+glyph]`. Up to two label pills, then `+N`. Pill: `inline-flex max-w-40 items-center gap-1
+rounded-full border border-border/70 bg-muted/40 pl-1 pr-1.5 text-[10px] leading-3.5
+text-muted-foreground`, dot `size-2 rounded-full` coloured from the label's hex when valid
+  (`pullRequestLabelColor`), else `bg-muted-foreground`. Replaces today's dot-and-name text.
+- Check glyph, `size-3.5`, in place of the words "Checks failing": passing `CircleCheckIcon`
+  emerald, failing `CircleXIcon` destructive, running `CircleDotIcon` amber, none = nothing. It is a
+  tooltip trigger ("All checks passed" / "Some checks failed" / "Checks running") with sr-only
+  text. The review state is a glyph too (`PullRequestReviewGlyph`: user-check emerald for Approved,
+  user-x amber for Changes requested, a muted user for Review required), just before the checks glyph.
+- Conflict glyph: when a row is open, not draft, and `mergeability === "conflicting"`, the PR glyph
+  at the left becomes `TriangleAlertIcon` in destructive with label "Conflicts with <base>".
+  Draft wins over conflict; merged and closed are unchanged.
+- Toolbar: `[search] [Sort ▾] [Filters ▾ n] [refresh]`. Both menus are `Menu` from `ui/menu.tsx`
+  (Base UI, `MenuSub` for submenus), `align="end"`, `w-56`.
+- Sort menu (radio): Merge readiness, Recently updated (default), Newest, Oldest, Largest,
+  Smallest. Merge readiness ranks open rows: approved with passing checks first, then review
+  required or no reviews, then checks running, then changes requested, then checks failing, then
+  conflicting, then drafts last; ties by `updatedAt` desc. Newest/Oldest use `createdAt`;
+  Largest/Smallest use `additions + deletions`. URL `sort` values: `readiness | updated | newest |
+oldest | largest | smallest` (today's `created` and `size` map to `newest` and `largest`).
+- Filters menu, one submenu per line with the current value right-aligned in muted text:
+  Involvement (All, Needs you, Yours, Others), separator, Author (searchable: an input at the top
+  of the submenu, then "Anyone" and the logins seen in the loaded rows of every state that has
+  been read, avatar + login, selected one first, max ten shown), Labels (searchable checklist of
+  the labels seen in loaded rows, with colour dots; "Any" clears), Draft (Any, Only drafts, No
+  drafts), Review (Any, Approved, Changes requested, Review required, No reviews), Checks (Any,
+  Passing, Failing, Running), separator, Project (All projects, then each project with pull
+  requests). State stays on the Open/Merged/Closed tab strip; it is not in the menu.
+- Filters state stays in the URL (`involvement`, `author`, `labels`, `draft`, `review`, `checks`,
+  `project`). Drop `excludeLabels` from the UI and the URL. The active-filter chips row under the
+  toolbar stays as it is, gaining Involvement and Project chips.
+- An Involvement narrowing hides the group headings (one group is left).
+- `TextChoice` stays for the comment box verdict; the old Filters popover and `FilterText` go.
+
+## 6c Web: tabs and the header
+
+- Open pull requests are tabs. `pullRequestTabsStore.ts` (zustand, not persisted; tabs are for the
+  session): `tabs: PullRequestTab[]` (`{ id, environmentId, projectId, repository, number }`,
+  id = `env:project:repo:number`), `activeId`. `open(tab)` upserts and activates; `close(id)`
+  removes and activates the tab now at that index, else the last, else null. Row click = `open`
+  and a route change to `pr=`. The route's `pr` param stays the source of truth for what is shown; the store
+  holds the set. On load with a `pr` param and no tabs, that one becomes the only tab.
+- The detail column gets a tab strip at its top (page context only), in the visual language of
+  the thread right panel's strip (`chat/RightPanelTabStrip.tsx`: read it and reuse its classes;
+  do not fork its logic unless it cannot take generic tabs): each tab = state glyph + `#number`,
+  `role="tab"` with arrow-key roving, close `×` visible on the active tab and on hover, middle
+  click closes. No `+` button: the list beside the column is the way to add. Closing the last tab
+  clears the selection (the list takes the full width again). On phones the strip shows above the
+  back arrow row and the back arrow still returns to the list with the tabs kept.
+- Header, both contexts, `px-4`:
+  1. Row 1 (`h-7`): left `repository #number ↗` in mono `text-xs text-muted-foreground`, the
+     number a link to the host; right: `[Check out ▾]` (page context only; menu: "In a worktree",
+     "In this repository", each with a one-line description, wired to the existing checkout
+     dialog paths with `mode` preset), then the primary action for the state (`Merge ▾`, or
+     `Resolve conflicts` when conflicting, or `Update branch ▾` when behind and clean), `Close` /
+     `Reopen`, `⋯`, the refresh button, then the back arrow / close as today. Below `md` the
+     cluster wraps to a second row, as it does now.
+  2. Title `text-base font-semibold leading-snug`, editable as today.
+  3. `mt-2 text-xs text-muted-foreground`: `[avatar] login` (font-medium) `·` `updated 3h ago`;
+     right-aligned: `gh pr checkout 208` in mono as a copy button (tooltip "Copy").
+  4. `mt-3 font-mono text-xs`: `base ← head` (`ArrowLeftIcon` aria "receives changes from"),
+     the conflict triangle after `base` when conflicting (tooltip "Conflicts with base"), the
+     stacked marker as today, "behind by N" in muted after the head when behind; right: `N files`
+     with `FileDiffIcon` and `+adds −dels`.
+  5. Tab strip Summary | Code | Timeline as today; right side on Summary: check glyph + summary
+     text from `detail.checks` ("All checks passed", "13 of 16 passing", "3 of 16 failing",
+     "9 of 11 running", "No checks reported"), a button that scrolls the Summary to Checks.
+     The old separate lines (labels row, base freshness line, conflict line, "Review in a thread")
+     fold into the above: labels move to the Summary meta rows, "Review in a thread" moves into the
+     Check out menu as the page's way to start a thread (keep the hand-off wiring), base freshness
+     into row 4 and the Update branch action.
+- Summary tab opens with meta rows (`grid min-h-8 grid-cols-[6rem_minmax(0,1fr)] items-center
+gap-2 py-1.5 text-xs`, icon + label at left): Reviewers (avatars + logins with state dot, the
+  request button at the end), Labels (pills, `text-xs` size, all of them; row hidden with none),
+  Comments ("2 comments", scrolls to the conversation). Then a collapsible Description section
+  (heading `text-sm font-medium` with a chevron, open by default, remembered in the session),
+  then Checks and the conversation as today.
+- Update `PullRequestDetailSkeleton` to the new header shape (row 1 bar, title, author line,
+  branch line, tab strip).
+- Tests: tabs store (open twice is one tab; close active picks the right neighbour, then the
+  last, then none); merge readiness order; the check summary text; the filters menu narrows the
+  list and writes the URL; a row with `mergeability: "conflicting"` draws the triangle; a bot
+  author with a null avatar draws initials.

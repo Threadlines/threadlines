@@ -73,6 +73,12 @@ const PULL_REQUEST_CACHE_CAPACITY = 32;
 /** Repository settings and access change far more rarely than a pull request. */
 const REPOSITORY_CACHE_TTL = Duration.minutes(10);
 const REPOSITORY_CACHE_CAPACITY = 16;
+/**
+ * The hosts whose list rows say whether the viewer may push. Every host can be
+ * asked, but only GitHub's answer is one the page has been built against, and a
+ * row from a host we do not ask says nothing rather than guessing.
+ */
+const WRITE_ACCESS_HOSTS: ReadonlySet<SourceControlProviderKind> = new Set(["github"]);
 
 /** The one thing a caller can get wrong that is not the host's fault. */
 const FOREIGN_PULL_REQUEST_DETAIL = "Pull request is not in this workspace.";
@@ -362,6 +368,8 @@ function toEntry(input: {
    * repository it is on where a workspace row says which project it is in.
    */
   readonly repository?: string;
+  /** Push access on the row's repository; omitted where the host did not say. */
+  readonly viewerCanWrite?: boolean;
 }): PullRequestListEntry {
   const { project, row } = input;
   const matchesViewer = viewerMatcher(input.viewer);
@@ -385,11 +393,30 @@ function toEntry(input: {
     updatedAt: row.updatedAt,
     viewerIsAuthor: row.author !== null && matchesViewer(row.author.login),
     viewerReviewRequested: row.reviewRequestedLogins.some(matchesViewer),
+    ...(input.viewerCanWrite === undefined ? {} : { viewerCanWrite: input.viewerCanWrite }),
     ...(row.reviewDecision === undefined ? {} : { reviewDecision: row.reviewDecision }),
     ...(row.checksState === undefined ? {} : { checksState: row.checksState }),
+    // A host that has not finished checking says "unknown", which the row
+    // carries as nothing at all rather than as an answer.
+    ...(row.mergeability === undefined || row.mergeability === "unknown"
+      ? {}
+      : { mergeability: row.mergeability }),
     labels: row.labels,
     origin: input.origin,
   };
+}
+
+/**
+ * A workspace row with the viewer's push access on it, where the access read
+ * answered for its repository. A row whose repository is missing from the map
+ * is left exactly as it was: the field is the host having said, not a default.
+ */
+function withWriteAccess(
+  entry: PullRequestListEntry,
+  writeAccess: ReadonlyMap<string, boolean>,
+): PullRequestListEntry {
+  const canWrite = writeAccess.get(repositoryScopeKey(entry.provider, entry.repository));
+  return canWrite === undefined ? entry : { ...entry, viewerCanWrite: canWrite };
 }
 
 function toDetail(input: {
@@ -602,6 +629,9 @@ export const make = Effect.fn("makePullRequestService")(function* () {
                         viewer,
                         origin: "authored",
                         repository: row.repository,
+                        ...(row.viewerCanWrite === undefined
+                          ? {}
+                          : { viewerCanWrite: row.viewerCanWrite }),
                       }),
                     ]
                   : [],
@@ -626,62 +656,6 @@ export const make = Effect.fn("makePullRequestService")(function* () {
         }),
       );
     });
-
-  const loadList = Effect.fn("PullRequestService.load")(function* (key: PullRequestListCacheKey) {
-    const projects = dedupeProjectsByRemote(yield* readProjects(key.projectId));
-    const first = projects[0];
-    if (first === undefined) {
-      return { viewer: null, entries: [], errors: [] } satisfies PullRequestListResult;
-    }
-
-    // The viewer is read per project, because each host signs in on its own and
-    // a workspace can hold projects on several. The cache is keyed by host and
-    // checkout, so projects that share one share the read.
-    const viewer = yield* readViewer(first);
-    const results = yield* Effect.forEach(
-      projects,
-      (project) =>
-        readViewer(project).pipe(
-          Effect.flatMap((projectViewer) =>
-            readProject({ project, state: key.state, viewer: projectViewer }),
-          ),
-        ),
-      { concurrency: PROJECT_CONCURRENCY },
-    );
-
-    const entries = results.flatMap((result) => result.entries);
-    const errors = results.flatMap((result) => (result.error === null ? [] : [result.error]));
-    if (!key.includeAuthored) {
-      return { viewer, entries, errors } satisfies PullRequestListResult;
-    }
-
-    const covered = new Set(
-      projects.map((project) => repositoryScopeKey(project.provider, project.repository)),
-    );
-    const seen = new Set(
-      entries.map((entry) => listRowKey(entry.provider, entry.repository, entry.number)),
-    );
-    const authored = yield* Effect.forEach(
-      firstProjectPerProvider(projects),
-      (anchor) => readAuthored({ anchor, state: key.state, covered, seen }),
-      { concurrency: PROJECT_CONCURRENCY },
-    );
-
-    return {
-      viewer,
-      entries: [...entries, ...authored.flatMap((result) => result.entries)],
-      errors: [
-        ...errors,
-        ...authored.flatMap((result) => (result.error === null ? [] : [result.error])),
-      ],
-    } satisfies PullRequestListResult;
-  });
-
-  const listCache = yield* Cache.make({
-    capacity: LIST_CACHE_CAPACITY,
-    timeToLive: LIST_CACHE_TTL,
-    lookup: (key: string) => loadList(parseListCacheKey(key)),
-  });
 
   /**
    * Where a per-pull-request call runs: the project has to be one this build can
@@ -745,6 +719,101 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       repositoryCache,
       repositoryCacheKey({ projectId: target.project.projectId, repository: target.repository }),
     );
+
+  /**
+   * Whether the viewer may push to each workspace repository, keyed by
+   * {@link repositoryScopeKey}. It is the same cached read the detail makes, so
+   * a page that has opened a pull request pays nothing for it here.
+   *
+   * A repository the read fails on is left out rather than guessed at, and the
+   * listing itself never fails over one: the rows still stand, saying nothing
+   * about the viewer's rights, which is what a host that cannot say leaves too.
+   */
+  const readWorkspaceWriteAccess = (projects: ReadonlyArray<PullRequestProject>) =>
+    Effect.forEach(
+      projects.filter((project) => WRITE_ACCESS_HOSTS.has(project.provider)),
+      (project) =>
+        Cache.get(
+          repositoryCache,
+          repositoryCacheKey({
+            projectId: project.projectId,
+            repository: project.repository,
+          }),
+        ).pipe(
+          Effect.map((access): ReadonlyArray<readonly [string, boolean]> => [
+            [repositoryScopeKey(project.provider, project.repository), access.canWrite],
+          ]),
+          Effect.catch(() => Effect.succeed<ReadonlyArray<readonly [string, boolean]>>([])),
+        ),
+      { concurrency: PROJECT_CONCURRENCY },
+    ).pipe(Effect.map((reads) => new Map(reads.flat())));
+
+  const loadList = Effect.fn("PullRequestService.load")(function* (key: PullRequestListCacheKey) {
+    const projects = dedupeProjectsByRemote(yield* readProjects(key.projectId));
+    const first = projects[0];
+    if (first === undefined) {
+      return { viewer: null, entries: [], errors: [] } satisfies PullRequestListResult;
+    }
+
+    // The viewer is read per project, because each host signs in on its own and
+    // a workspace can hold projects on several. The cache is keyed by host and
+    // checkout, so projects that share one share the read.
+    const viewer = yield* readViewer(first);
+    // The rows and what the viewer may do with them are asked for at once: the
+    // access read is per repository, not per row, and waiting for the rows
+    // first would only make the listing slower.
+    const [results, writeAccess] = yield* Effect.all(
+      [
+        Effect.forEach(
+          projects,
+          (project) =>
+            readViewer(project).pipe(
+              Effect.flatMap((projectViewer) =>
+                readProject({ project, state: key.state, viewer: projectViewer }),
+              ),
+            ),
+          { concurrency: PROJECT_CONCURRENCY },
+        ),
+        readWorkspaceWriteAccess(projects),
+      ],
+      { concurrency: 2 },
+    );
+
+    const entries = results.flatMap((result) =>
+      result.entries.map((entry) => withWriteAccess(entry, writeAccess)),
+    );
+    const errors = results.flatMap((result) => (result.error === null ? [] : [result.error]));
+    if (!key.includeAuthored) {
+      return { viewer, entries, errors } satisfies PullRequestListResult;
+    }
+
+    const covered = new Set(
+      projects.map((project) => repositoryScopeKey(project.provider, project.repository)),
+    );
+    const seen = new Set(
+      entries.map((entry) => listRowKey(entry.provider, entry.repository, entry.number)),
+    );
+    const authored = yield* Effect.forEach(
+      firstProjectPerProvider(projects),
+      (anchor) => readAuthored({ anchor, state: key.state, covered, seen }),
+      { concurrency: PROJECT_CONCURRENCY },
+    );
+
+    return {
+      viewer,
+      entries: [...entries, ...authored.flatMap((result) => result.entries)],
+      errors: [
+        ...errors,
+        ...authored.flatMap((result) => (result.error === null ? [] : [result.error])),
+      ],
+    } satisfies PullRequestListResult;
+  });
+
+  const listCache = yield* Cache.make({
+    capacity: LIST_CACHE_CAPACITY,
+    timeToLive: LIST_CACHE_TTL,
+    lookup: (key: string) => loadList(parseListCacheKey(key)),
+  });
 
   const loadDetail = Effect.fn("PullRequestService.loadDetail")(function* (
     key: PullRequestCacheKey,
