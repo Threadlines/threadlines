@@ -21,7 +21,7 @@ export type RenderablePatch =
 
 const ANSI_ESCAPE = String.fromCharCode(0x1b);
 const ANSI_CONTROL_SEQUENCE_PATTERN = new RegExp(
-  `${ANSI_ESCAPE}(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])`,
+  `${ANSI_ESCAPE}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
   "gu",
 );
 
