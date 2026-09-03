@@ -76,6 +76,31 @@ import {
   VcsStatusResult,
   VcsStatusStreamEvent,
 } from "./git.ts";
+import {
+  PullRequestActionInput,
+  PullRequestActionResult,
+  PullRequestActivity,
+  PullRequestActivityInput,
+  PullRequestCommentInput,
+  PullRequestCommentResult,
+  PullRequestCommentUpdateInput,
+  PullRequestDetail,
+  PullRequestDetailInput,
+  PullRequestDiffInput,
+  PullRequestDiffResult,
+  PullRequestListInput,
+  PullRequestListResult,
+  PullRequestReactionInput,
+  PullRequestRef,
+  PullRequestReviewerCandidateList,
+  PullRequestReviewerRequestInput,
+  PullRequestReviewInput,
+  PullRequestReviewResult,
+  PullRequestServiceError,
+  PullRequestThreadReplyInput,
+  PullRequestThreadResolutionInput,
+  PullRequestUpdateInput,
+} from "./pullRequest.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ChatAttachmentReadError,
@@ -299,6 +324,22 @@ export const WS_METHODS = {
   gitPreparePullRequestThread: "git.preparePullRequestThread",
   gitAuthRemediationPlan: "git.authRemediationPlan",
   gitApplyAuthRemediation: "git.applyAuthRemediation",
+
+  // Pull request methods
+  pullRequestsList: "pullRequests.list",
+  pullRequestsDetail: "pullRequests.detail",
+  pullRequestsActivity: "pullRequests.activity",
+  pullRequestsDiff: "pullRequests.diff",
+  pullRequestsComment: "pullRequests.comment",
+  pullRequestsRunAction: "pullRequests.runAction",
+  pullRequestsSubmitReview: "pullRequests.submitReview",
+  pullRequestsReplyToThread: "pullRequests.replyToThread",
+  pullRequestsSetThreadResolution: "pullRequests.setThreadResolution",
+  pullRequestsSetReaction: "pullRequests.setReaction",
+  pullRequestsUpdate: "pullRequests.update",
+  pullRequestsUpdateComment: "pullRequests.updateComment",
+  pullRequestsReviewerCandidates: "pullRequests.reviewerCandidates",
+  pullRequestsRequestReviewers: "pullRequests.requestReviewers",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -911,6 +952,96 @@ export const WsGitApplyAuthRemediationRpc = Rpc.make(WS_METHODS.gitApplyAuthReme
   error: GitManagerServiceError,
 });
 
+export const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
+  payload: PullRequestListInput,
+  success: PullRequestListResult,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
+  payload: PullRequestDetailInput,
+  success: PullRequestDetail,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsActivityRpc = Rpc.make(WS_METHODS.pullRequestsActivity, {
+  payload: PullRequestActivityInput,
+  success: PullRequestActivity,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsDiffRpc = Rpc.make(WS_METHODS.pullRequestsDiff, {
+  payload: PullRequestDiffInput,
+  success: PullRequestDiffResult,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsCommentRpc = Rpc.make(WS_METHODS.pullRequestsComment, {
+  payload: PullRequestCommentInput,
+  success: PullRequestCommentResult,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsRunActionRpc = Rpc.make(WS_METHODS.pullRequestsRunAction, {
+  payload: PullRequestActionInput,
+  success: PullRequestActionResult,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsSubmitReviewRpc = Rpc.make(WS_METHODS.pullRequestsSubmitReview, {
+  payload: PullRequestReviewInput,
+  success: PullRequestReviewResult,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsReplyToThreadRpc = Rpc.make(WS_METHODS.pullRequestsReplyToThread, {
+  payload: PullRequestThreadReplyInput,
+  success: Schema.Void,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsSetThreadResolutionRpc = Rpc.make(
+  WS_METHODS.pullRequestsSetThreadResolution,
+  {
+    payload: PullRequestThreadResolutionInput,
+    success: Schema.Void,
+    error: PullRequestServiceError,
+  },
+);
+
+export const WsPullRequestsSetReactionRpc = Rpc.make(WS_METHODS.pullRequestsSetReaction, {
+  payload: PullRequestReactionInput,
+  success: Schema.Void,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsUpdateRpc = Rpc.make(WS_METHODS.pullRequestsUpdate, {
+  payload: PullRequestUpdateInput,
+  success: Schema.Void,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsUpdateCommentRpc = Rpc.make(WS_METHODS.pullRequestsUpdateComment, {
+  payload: PullRequestCommentUpdateInput,
+  success: Schema.Void,
+  error: PullRequestServiceError,
+});
+
+export const WsPullRequestsReviewerCandidatesRpc = Rpc.make(
+  WS_METHODS.pullRequestsReviewerCandidates,
+  {
+    payload: PullRequestRef,
+    success: PullRequestReviewerCandidateList,
+    error: PullRequestServiceError,
+  },
+);
+
+export const WsPullRequestsRequestReviewersRpc = Rpc.make(WS_METHODS.pullRequestsRequestReviewers, {
+  payload: PullRequestReviewerRequestInput,
+  success: Schema.Void,
+  error: PullRequestServiceError,
+});
+
 export const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
   payload: VcsListRefsInput,
   success: VcsListRefsResult,
@@ -1247,6 +1378,20 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitPreparePullRequestThreadRpc,
   WsGitAuthRemediationPlanRpc,
   WsGitApplyAuthRemediationRpc,
+  WsPullRequestsListRpc,
+  WsPullRequestsDetailRpc,
+  WsPullRequestsActivityRpc,
+  WsPullRequestsDiffRpc,
+  WsPullRequestsCommentRpc,
+  WsPullRequestsRunActionRpc,
+  WsPullRequestsSubmitReviewRpc,
+  WsPullRequestsReplyToThreadRpc,
+  WsPullRequestsSetThreadResolutionRpc,
+  WsPullRequestsSetReactionRpc,
+  WsPullRequestsUpdateRpc,
+  WsPullRequestsUpdateCommentRpc,
+  WsPullRequestsReviewerCandidatesRpc,
+  WsPullRequestsRequestReviewersRpc,
   WsVcsListRefsRpc,
   WsVcsCommitGraphRpc,
   WsVcsCommitDetailsRpc,
