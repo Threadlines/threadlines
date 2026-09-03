@@ -6,6 +6,7 @@ import {
   NonNegativeInt,
   PositiveInt,
   TrimmedNonEmptyString,
+  type PullRequestCheckStatus,
   type PullRequestChecksState,
   type PullRequestReviewDecision,
   type PullRequestState,
@@ -60,7 +61,7 @@ export interface GitHubPullRequestListRow {
   readonly labels: ReadonlyArray<{ readonly name: string; readonly color: string | null }>;
 }
 
-const GitHubAuthorSchema = Schema.Struct({
+export const GitHubAuthorSchema = Schema.Struct({
   login: Schema.String,
   is_bot: Schema.optional(Schema.NullOr(Schema.Boolean)),
   isBot: Schema.optional(Schema.NullOr(Schema.Boolean)),
@@ -76,13 +77,23 @@ const GitHubReviewRequestSchema = Schema.Struct({
   login: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
-const GitHubStatusCheckSchema = Schema.Struct({
+/**
+ * One `statusCheckRollup` entry. `gh` reports check runs (`name`, `status`,
+ * `conclusion`, `detailsUrl`) and legacy commit statuses (`context`, `state`,
+ * `targetUrl`) side by side in the same array.
+ */
+export const GitHubStatusCheckSchema = Schema.Struct({
+  name: Schema.optional(Schema.NullOr(Schema.String)),
+  context: Schema.optional(Schema.NullOr(Schema.String)),
   status: Schema.optional(Schema.NullOr(Schema.String)),
   conclusion: Schema.optional(Schema.NullOr(Schema.String)),
   state: Schema.optional(Schema.NullOr(Schema.String)),
+  description: Schema.optional(Schema.NullOr(Schema.String)),
+  detailsUrl: Schema.optional(Schema.NullOr(Schema.String)),
+  targetUrl: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
-const GitHubPullRequestListRowSchema = Schema.Struct({
+export const GitHubPullRequestListRowSchema = Schema.Struct({
   number: PositiveInt,
   title: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
@@ -111,10 +122,20 @@ const FAILING_CHECK_CONCLUSIONS = new Set([
   "STARTUP_FAILURE",
 ]);
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
+const NOT_RUN_CHECK_CONCLUSIONS = new Set(["SKIPPED", "NEUTRAL"]);
 
-function nonEmpty(value: string | null | undefined): string | null {
+/** Trims a host string and reports "the host left this out" as null. */
+export function nonEmptyText(value: string | null | undefined): string | null {
   const trimmed = value?.trim() ?? "";
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** The `PullRequestActor` behind a `gh` author object, or null when unnamed. */
+export function normalizeActor(
+  raw: Schema.Schema.Type<typeof GitHubAuthorSchema> | null | undefined,
+): { readonly login: string; readonly isBot: boolean } | null {
+  const login = nonEmptyText(raw?.login);
+  return login === null ? null : { login, isBot: raw?.is_bot === true || raw?.isBot === true };
 }
 
 function normalizeState(raw: {
@@ -122,7 +143,7 @@ function normalizeState(raw: {
   readonly mergedAt?: string | null | undefined;
 }): PullRequestState {
   const state = raw.state?.trim().toUpperCase();
-  if (nonEmpty(raw.mergedAt) !== null || state === "MERGED") {
+  if (nonEmptyText(raw.mergedAt) !== null || state === "MERGED") {
     return "merged";
   }
   return state === "CLOSED" ? "closed" : "open";
@@ -144,9 +165,36 @@ function normalizeReviewDecision(
 }
 
 /**
+ * One check's own verdict. Check runs report `status` plus `conclusion`, legacy
+ * commit statuses only a `state`, so a run with no status is judged by whether
+ * its conclusion is a terminal one.
+ */
+export function normalizeCheckStatus(
+  check: Schema.Schema.Type<typeof GitHubStatusCheckSchema>,
+): PullRequestCheckStatus {
+  const conclusion = (
+    nonEmptyText(check.conclusion) ??
+    nonEmptyText(check.state) ??
+    ""
+  ).toUpperCase();
+  if (FAILING_CHECK_CONCLUSIONS.has(conclusion)) {
+    return "failure";
+  }
+
+  const status = (nonEmptyText(check.status) ?? "").toUpperCase();
+  const completed =
+    status.length > 0 ? status === "COMPLETED" : PASSING_CHECK_CONCLUSIONS.has(conclusion);
+  if (!completed) {
+    return "pending";
+  }
+
+  return NOT_RUN_CHECK_CONCLUSIONS.has(conclusion) ? "skipped" : "success";
+}
+
+/**
  * Collapses `gh`'s per-check rollup into the one word the row renders. A check
  * that has not completed outranks the passing checks around it, and any hard
- * failure outranks everything.
+ * failure outranks everything; a skipped check is nobody's problem.
  */
 function normalizeChecksState(
   checks: ReadonlyArray<Schema.Schema.Type<typeof GitHubStatusCheckSchema>> | null | undefined,
@@ -157,15 +205,11 @@ function normalizeChecksState(
 
   let pending = false;
   for (const check of checks) {
-    const conclusion = (nonEmpty(check.conclusion) ?? nonEmpty(check.state) ?? "").toUpperCase();
-    if (FAILING_CHECK_CONCLUSIONS.has(conclusion)) {
+    const status = normalizeCheckStatus(check);
+    if (status === "failure") {
       return "failure";
     }
-
-    const status = (nonEmpty(check.status) ?? "").toUpperCase();
-    const completed =
-      status.length > 0 ? status === "COMPLETED" : PASSING_CHECK_CONCLUSIONS.has(conclusion);
-    if (!completed) {
+    if (status === "pending") {
       pending = true;
     }
   }
@@ -173,10 +217,9 @@ function normalizeChecksState(
   return pending ? "pending" : "success";
 }
 
-function normalizeRow(
+export function normalizeGitHubPullRequestListRow(
   raw: Schema.Schema.Type<typeof GitHubPullRequestListRowSchema>,
 ): GitHubPullRequestListRow {
-  const authorLogin = nonEmpty(raw.author?.login);
   const reviewDecision = normalizeReviewDecision(raw.reviewDecision);
   const checksState = normalizeChecksState(raw.statusCheckRollup);
 
@@ -184,10 +227,7 @@ function normalizeRow(
     number: raw.number,
     title: raw.title,
     url: raw.url,
-    author:
-      authorLogin === null
-        ? null
-        : { login: authorLogin, isBot: raw.author?.is_bot === true || raw.author?.isBot === true },
+    author: normalizeActor(raw.author),
     headBranch: raw.headRefName,
     baseBranch: raw.baseRefName,
     state: normalizeState(raw),
@@ -197,18 +237,18 @@ function normalizeRow(
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     reviewRequestedLogins: (raw.reviewRequests ?? []).flatMap((request) => {
-      const typename = nonEmpty(request.__typename);
+      const typename = nonEmptyText(request.__typename);
       if (typename !== null && typename !== "User") {
         return [];
       }
-      const login = nonEmpty(request.login);
+      const login = nonEmptyText(request.login);
       return login === null ? [] : [login];
     }),
     ...(reviewDecision === undefined ? {} : { reviewDecision }),
     ...(checksState === undefined ? {} : { checksState }),
     labels: (raw.labels ?? []).flatMap((label) => {
-      const name = nonEmpty(label.name);
-      return name === null ? [] : [{ name, color: nonEmpty(label.color) }];
+      const name = nonEmptyText(label.name);
+      return name === null ? [] : [{ name, color: nonEmptyText(label.color) }];
     }),
   };
 }
@@ -217,6 +257,17 @@ const decodePayload = decodeJsonResult(Schema.Array(Schema.Unknown));
 const decodeRow = Schema.decodeUnknownExit(GitHubPullRequestListRowSchema);
 
 export const formatGitHubPullRequestListDecodeError = formatSchemaError;
+
+/**
+ * One row in the shape `gh pr list --json` reports, or null when it is not in a
+ * shape we can use. The authored search reads through here too: its GraphQL
+ * nodes are reshaped into this and then decoded, so both listings normalise a
+ * state, a review decision and a check rollup exactly the same way.
+ */
+export function decodeGitHubPullRequestListRow(entry: unknown): GitHubPullRequestListRow | null {
+  const decoded = decodeRow(entry);
+  return Exit.isFailure(decoded) ? null : normalizeGitHubPullRequestListRow(decoded.value);
+}
 
 /**
  * Decodes `gh pr list --json` output. A row `gh` reports in a shape we cannot
@@ -233,11 +284,10 @@ export function decodeGitHubPullRequestListJson(
 
   const rows: GitHubPullRequestListRow[] = [];
   for (const entry of payload.success) {
-    const decoded = decodeRow(entry);
-    if (Exit.isFailure(decoded)) {
-      continue;
+    const row = decodeGitHubPullRequestListRow(entry);
+    if (row !== null) {
+      rows.push(row);
     }
-    rows.push(normalizeRow(decoded.value));
   }
   return Result.succeed(rows);
 }
