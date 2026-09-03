@@ -121,6 +121,16 @@ import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
+import { SidebarPullRequestsRow } from "./sidebar/SidebarPullRequestsRow";
+import {
+  PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
+  usePullRequestLists,
+} from "../lib/pullRequestsReactQuery";
+import {
+  resolveThreadPullRequest,
+  type ThreadPullRequest,
+} from "./pull-requests/pullRequests.logic";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarUsageMeter } from "./sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
@@ -420,6 +430,23 @@ export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  // One listing for the whole sidebar: the Pull Requests row's count and every
+  // thread row's badge read the same answer, so a poll costs one request.
+  const openPullRequests = usePullRequestLists({
+    state: "open",
+    refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  });
+  // What has landed. A merged or closed pull request files its thread under
+  // Wrapped, and it is the only thing that knows: the open listing simply
+  // stops carrying the row. A branch does not un-merge, so these poll slowly.
+  const mergedPullRequests = usePullRequestLists({
+    state: "merged",
+    refetchIntervalMs: PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
+  });
+  const closedPullRequests = usePullRequestLists({
+    state: "closed",
+    refetchIntervalMs: PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
+  });
   const seenThreadOverlays = useUiStateStore((store) => store.seenThreadOverlays);
   const threadSeedVisitedAtById = useUiStateStore((store) => store.threadSeedVisitedAtById);
   const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
@@ -590,6 +617,37 @@ export default function Sidebar() {
   // projects for the second before its projects appear.
   const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
 
+  // What the listings know about each inbox thread, built once for the whole
+  // sidebar: the row badges read it, and so does the rule that files a thread
+  // whose branch has landed. Rows still consult their own git status for the
+  // branch they are standing on; this is the answer for the ones that moved.
+  const settledPullRequestEntries = useMemo(
+    () => [...mergedPullRequests.entries, ...closedPullRequests.entries],
+    [closedPullRequests.entries, mergedPullRequests.entries],
+  );
+  const pullRequestByThreadKey = useMemo(() => {
+    const byThreadKey = new Map<string, ThreadPullRequest>();
+    if (openPullRequests.entries.length === 0 && settledPullRequestEntries.length === 0) {
+      return byThreadKey;
+    }
+    for (const thread of inboxThreads) {
+      const pullRequest = resolveThreadPullRequest({
+        thread,
+        gitStatus: null,
+        openEntries: openPullRequests.entries,
+        settledEntries: settledPullRequestEntries,
+        projects,
+      });
+      if (pullRequest) {
+        byThreadKey.set(
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          pullRequest,
+        );
+      }
+    }
+    return byThreadKey;
+  }, [inboxThreads, openPullRequests.entries, projects, settledPullRequestEntries]);
+
   const entries = useMemo<InboxEntry[]>(
     () =>
       inboxThreads.map((thread) => {
@@ -610,9 +668,11 @@ export default function Sidebar() {
           doneThreadOverlays[threadKey],
           thread.doneOverride,
         );
+        const pullRequestState = pullRequestByThreadKey.get(threadKey)?.state;
         const isDone = isThreadDone({ ...thread, lastVisitedAt }, override, {
           now: nowIso,
           autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
+          pullRequestSettled: pullRequestState === "merged" || pullRequestState === "closed",
         });
         return {
           thread,
@@ -634,6 +694,7 @@ export default function Sidebar() {
       doneThreadOverlays,
       inboxThreads,
       nowIso,
+      pullRequestByThreadKey,
       resolveThreadProjectKey,
       seenThreadOverlays,
       sidebarProjectByKey,
@@ -938,26 +999,47 @@ export default function Sidebar() {
     ],
   );
 
-  const openPrLink = useCallback((event: React.MouseEvent<HTMLElement>, prUrl: string) => {
-    event.preventDefault();
-    event.stopPropagation();
+  /**
+   * The pull request badge. A plain click opens the thread's Pull request tab,
+   * which is where the app can actually show it; a modifier or the middle
+   * button is the browser's "open it somewhere else" gesture, and the host is
+   * that somewhere else.
+   */
+  const openPrLink = useCallback(
+    (event: React.MouseEvent<HTMLElement>, prUrl: string, threadRef: ScopedThreadRef) => {
+      event.preventDefault();
+      event.stopPropagation();
 
-    const api = readLocalApi();
-    if (!api) {
-      toastManager.add({ type: "error", title: "Link opening is unavailable." });
-      return;
-    }
+      if (!(event.metaKey || event.ctrlKey || event.button === 1)) {
+        if (isMobile) {
+          setOpenMobile(false);
+        }
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+          search: { pullRequest: "1" },
+        });
+        return;
+      }
 
-    void api.shell.openExternal(prUrl).catch((error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open pull request link",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    });
-  }, []);
+      const api = readLocalApi();
+      if (!api) {
+        toastManager.add({ type: "error", title: "Link opening is unavailable." });
+        return;
+      }
+
+      void api.shell.openExternal(prUrl).catch((error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open pull request link",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      });
+    },
+    [isMobile, navigate, setOpenMobile],
+  );
 
   const attemptArchiveThread = useCallback(
     async (threadRef: ScopedThreadRef) => {
@@ -1549,43 +1631,50 @@ export default function Sidebar() {
                   className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
                 <SidebarContent className="gap-0">
-                  <div className="group/chats-row relative mt-1 mb-4 px-2 py-1">
-                    <button
-                      type="button"
-                      data-testid="sidebar-general-chats"
-                      aria-current={isOnChats ? "page" : undefined}
-                      className={cn(
-                        "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
-                        // The fill answers to the wrapper, not to this button:
-                        // reaching for the new-chat icon leaves the row element,
-                        // and the row should not go dark under your cursor.
-                        isOnChats
-                          ? "bg-sidebar-accent text-foreground"
-                          : "text-foreground/85 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
-                      )}
-                      onClick={handleOpenChats}
-                    >
-                      <MessagesSquareIcon className="size-3.5 shrink-0" />
-                      <span className="min-w-0 truncate">General Chats</span>
-                    </button>
-                    {/* A sibling, not a child: a button inside a button is invalid,
-                      and starting a chat should not first walk you to the page. */}
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <button
-                            type="button"
-                            data-testid="sidebar-new-general-chat"
-                            aria-label="New general chat"
-                            className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
-                            onClick={handleNewGeneralChat}
-                          />
-                        }
+                  {/* General Chats and Pull Requests read as a pair, so the gap
+                      belongs under the pair rather than between the two rows,
+                      and it survives an environment that has no pull requests. */}
+                  <div className="mb-4">
+                    <div className="group/chats-row relative mt-1 px-2 pt-1 pb-0.5">
+                      <button
+                        type="button"
+                        data-testid="sidebar-general-chats"
+                        aria-current={isOnChats ? "page" : undefined}
+                        className={cn(
+                          "flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-xs transition-colors select-none focus-ring",
+                          // The fill answers to the wrapper, not to this button:
+                          // reaching for the new-chat icon leaves the row element,
+                          // and the row should not go dark under your cursor.
+                          isOnChats
+                            ? "bg-sidebar-accent text-foreground"
+                            : "text-foreground/85 group-hover/chats-row:bg-sidebar-accent/60 group-hover/chats-row:text-foreground",
+                        )}
+                        onClick={handleOpenChats}
                       >
-                        <MessageCirclePlusIcon className="size-3.5" />
-                      </TooltipTrigger>
-                      <TooltipPopup side="bottom">New general chat</TooltipPopup>
-                    </Tooltip>
+                        <MessagesSquareIcon className="size-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">General Chats</span>
+                      </button>
+                      {/* A sibling, not a child: a button inside a button is invalid,
+                      and starting a chat should not first walk you to the page. */}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              type="button"
+                              data-testid="sidebar-new-general-chat"
+                              aria-label="New general chat"
+                              className="absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/chats-row:opacity-100 group-focus-within/chats-row:opacity-100 pointer-coarse:opacity-100"
+                              onClick={handleNewGeneralChat}
+                            />
+                          }
+                        >
+                          <MessageCirclePlusIcon className="size-3.5" />
+                        </TooltipTrigger>
+                        <TooltipPopup side="bottom">New general chat</TooltipPopup>
+                      </Tooltip>
+                    </div>
+
+                    <SidebarPullRequestsRow snapshot={openPullRequests} />
                   </div>
 
                   <ProjectScopeMenu
@@ -1657,6 +1746,7 @@ export default function Sidebar() {
                           commitRename={commitRename}
                           cancelRename={cancelRename}
                           markThreadDone={markThreadDone}
+                          listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
                           openPrLink={openPrLink}
                         />
                       ))}
@@ -1745,6 +1835,8 @@ export default function Sidebar() {
                             handleThreadContextMenu={handleThreadContextMenu}
                             reopenThread={reopenThread}
                             attemptArchiveThread={attemptArchiveThread}
+                            listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
+                            openPrLink={openPrLink}
                           />
                         ))}
                       </ul>

@@ -7,6 +7,7 @@ export {
   formatCreateChangeRequestPhrase,
   getChangeRequestTerminology,
   resolveChangeRequestPresentation,
+  resolveChangeRequestPresentationForKind,
   type ChangeRequestPresentation,
   type ChangeRequestTerminology,
 } from "@threadlines/shared/sourceControl";
