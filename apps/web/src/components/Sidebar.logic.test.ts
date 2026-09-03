@@ -1182,6 +1182,31 @@ describe("inbox done lifecycle", () => {
     ).toBe(true);
   });
 
+  it("files a thread at once when its pull request lands, pin and timer aside", () => {
+    // A merged branch is finished work: it does not wait out the idle timer,
+    // and a pin does not hold it in the live list.
+    const pinnedAndFresh = {
+      ...base,
+      pinnedAt: "2026-07-27T12:00:00.000Z",
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+    };
+    expect(
+      isThreadDone(pinnedAndFresh, null, {
+        now: NOW,
+        autoDoneAfterDays: 2,
+        pullRequestSettled: true,
+      }),
+    ).toBe(true);
+    // A thread that is still moving was never eligible in the first place.
+    expect(
+      isThreadDone({ ...pinnedAndFresh, session: { status: "running" } as never }, null, {
+        now: NOW,
+        autoDoneAfterDays: 2,
+        pullRequestSettled: true,
+      }),
+    ).toBe(false);
+  });
+
   it("never files a completion the user has not seen", () => {
     // Filing unread work is the sidebar reading your mail for you. The row
     // should offer Wrap up only after the completed thread has been inspected.
