@@ -52,7 +52,15 @@ export interface GitLabCliShape {
   readonly execute: (input: {
     readonly cwd: string;
     readonly args: ReadonlyArray<string>;
+    /**
+     * Written to the process's stdin and closed. Every request body and
+     * reader-written note travels this way: argv shows up in process listings
+     * and is echoed back inside process-runner failures.
+     */
+    readonly stdin?: string;
     readonly timeoutMs?: number;
+    /** Raises the process runner's default output ceiling; patches need it. */
+    readonly maxOutputBytes?: number;
   }) => Effect.Effect<VcsProcess.VcsProcessOutput, GitLabCliError>;
 
   readonly listMergeRequests: (input: {
@@ -281,6 +289,8 @@ export const make = Effect.fn("makeGitLabCli")(function* () {
         command: "glab",
         args: input.args,
         cwd: input.cwd,
+        ...(input.stdin === undefined ? {} : { stdin: input.stdin }),
+        ...(input.maxOutputBytes === undefined ? {} : { maxOutputBytes: input.maxOutputBytes }),
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       })
       .pipe(Effect.mapError((error) => normalizeGitLabCliError("execute", error)));

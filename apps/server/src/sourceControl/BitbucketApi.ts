@@ -129,7 +129,24 @@ export interface BitbucketRepositoryLocator {
   readonly repoSlug: string;
 }
 
+/** One raw Bitbucket response: the body as text, and the status it came with. */
+export interface BitbucketApiResponse {
+  readonly status: number;
+  readonly body: string;
+}
+
 export interface BitbucketApiShape {
+  /**
+   * One authenticated call, answered as text rather than decoded. `path` is
+   * either a path below the configured API base, or a whole URL Bitbucket
+   * handed back as the next page of a listing. A JSON body travels as text so
+   * it stays whatever the caller encoded.
+   */
+  readonly request: (input: {
+    readonly method: "GET" | "POST" | "PUT" | "DELETE";
+    readonly path: string;
+    readonly body?: string;
+  }) => Effect.Effect<BitbucketApiResponse, BitbucketApiError>;
   readonly probeAuth: Effect.Effect<SourceControlProviderAuth, never>;
   readonly listPullRequests: (input: {
     readonly cwd: string;
@@ -603,6 +620,38 @@ export const make = Effect.fn("makeBitbucketApi")(function* () {
   });
 
   return BitbucketApi.of({
+    request: (input) =>
+      httpClient
+        .execute(
+          withAuth(
+            HttpClientRequest.make(input.method)(
+              input.path.startsWith("http") ? input.path : apiUrl(input.path),
+            ).pipe(HttpClientRequest.acceptJson, (request) =>
+              input.body === undefined
+                ? request
+                : HttpClientRequest.bodyText(request, input.body, "application/json"),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError((cause) => requestError("request", cause)),
+          Effect.flatMap((response) =>
+            response.status >= 200 && response.status < 300
+              ? response.text.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new BitbucketApiError({
+                        operation: "request",
+                        status: response.status,
+                        detail: "Bitbucket returned a response body that could not be read.",
+                        cause,
+                      }),
+                  ),
+                  Effect.map((body) => ({ status: response.status, body })),
+                )
+              : responseError("request", response),
+          ),
+        ),
     probeAuth: executeJson(
       "probeAuth",
       HttpClientRequest.get(apiUrl("/user")),

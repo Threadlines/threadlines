@@ -1615,6 +1615,71 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("interrupted");
   });
 
+  it("settles a foreground subagent when its turn completes and leaves a background one running", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-foreground-settle");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-foreground-settle"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId,
+    });
+    // A foreground agent blocks its turn until it returns, so once the turn
+    // has ended on its own the agent's stop event can only be missing. A
+    // background agent legitimately keeps working after the turn that
+    // spawned it.
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-foreground-running"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId,
+      payload: { callId: "call-foreground", status: "running", isBackgrounded: false },
+    });
+    harness.emit({
+      type: "subagent.metadata.updated",
+      eventId: asEventId("evt-subagent-background-running"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId,
+      payload: { callId: "call-background", status: "running", isBackgrounded: true },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        (thread.subagents ?? []).filter((subagent) => subagent.status === "running").length === 2,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-foreground-settle"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      (entry.subagents ?? []).some(
+        (subagent) => subagent.spawnCallId === "call-foreground" && subagent.status === "completed",
+      ),
+    );
+    const foreground = thread.subagents?.find(
+      (subagent) => subagent.spawnCallId === "call-foreground",
+    );
+    expect(foreground?.status).toBe("completed");
+    expect(foreground?.updatedAt).toBe("2026-01-01T00:00:03.000Z");
+    expect(
+      thread.subagents?.find((subagent) => subagent.spawnCallId === "call-background")?.status,
+    ).toBe("running");
+  });
+
   it("applies provider session.state.changed transitions directly", async () => {
     const harness = await createHarness();
     const waitingAt = "2026-01-01T00:00:00.000Z";

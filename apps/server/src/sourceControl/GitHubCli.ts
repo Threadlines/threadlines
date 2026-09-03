@@ -50,7 +50,15 @@ export interface GitHubCliShape {
   readonly execute: (input: {
     readonly cwd: string;
     readonly args: ReadonlyArray<string>;
+    /**
+     * Written to the process's stdin and closed. Every GraphQL document, review
+     * payload, and reader-written body travels this way: argv shows up in
+     * process listings and is echoed back inside process-runner failures.
+     */
+    readonly stdin?: string;
     readonly timeoutMs?: number;
+    /** Raises the process runner's default output ceiling; patches need it. */
+    readonly maxOutputBytes?: number;
   }) => Effect.Effect<VcsProcess.VcsProcessOutput, GitHubCliError>;
 
   readonly listOpenPullRequests: (input: {
@@ -266,6 +274,8 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
         cwd: input.cwd,
         env: THREADLINES_GITHUB_CLI_ENV,
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...(input.stdin === undefined ? {} : { stdin: input.stdin }),
+        ...(input.maxOutputBytes === undefined ? {} : { maxOutputBytes: input.maxOutputBytes }),
       })
       .pipe(Effect.mapError((error) => normalizeGitHubCliError("execute", error)));
 
