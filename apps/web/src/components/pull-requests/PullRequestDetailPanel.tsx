@@ -1408,7 +1408,9 @@ function usePullRequestActions({
           </AlertDialogDescription>
         </AlertDialogHeader>
         {confirming.action === "merge" ? (
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground/85">
+          {/* Between the header and the footer, which each carry their own
+              padding, so the row has to bring its own to line up with them. */}
+          <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-sm text-foreground/85">
             <Checkbox
               checked={deleteBranch}
               data-testid="pull-request-delete-branch"
