@@ -37,6 +37,7 @@ import {
   pullRequestFiltersFromSearch,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
+  resolveDefaultMergeMethod,
   resolveNeedsYouReason,
   resolvePullRequestMergeBlock,
   resolvePullRequestReviewPosition,
@@ -1219,5 +1220,17 @@ describe("applyPendingPullRequestReactions", () => {
         ]),
       ),
     ).toEqual([{ content: "thumbs-up", count: 3, viewerReacted: true }]);
+  });
+});
+
+describe("resolveDefaultMergeMethod", () => {
+  it("runs the method last used on the repository while it is still allowed", () => {
+    expect(resolveDefaultMergeMethod(["merge", "squash", "rebase"], "squash")).toBe("squash");
+  });
+
+  it("falls back to the repository's first method when nothing is remembered or it is off", () => {
+    expect(resolveDefaultMergeMethod(["squash", "rebase"], "merge")).toBe("squash");
+    expect(resolveDefaultMergeMethod(["squash", "rebase"])).toBe("squash");
+    expect(resolveDefaultMergeMethod([], "squash")).toBe("merge");
   });
 });

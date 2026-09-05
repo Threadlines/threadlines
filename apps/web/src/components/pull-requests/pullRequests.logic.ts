@@ -1328,15 +1328,28 @@ export const PULL_REQUEST_MERGE_METHOD_LABELS: Readonly<Record<PullRequestMergeM
   rebase: "Rebase and merge",
 };
 
+/** The one word the Merge button itself wears for each method. */
+export const PULL_REQUEST_MERGE_METHOD_WORDS: Readonly<Record<PullRequestMergeMethod, string>> = {
+  merge: "Merge",
+  squash: "Squash",
+  rebase: "Rebase",
+};
+
 /**
- * The method the Merge button runs without being asked. The repository lists
- * what it allows in its own order and the first one is its default; a host
- * that reports nothing still gets a plain merge offered, and refuses it itself
- * if it really is off.
+ * The method the Merge button runs without being asked: the one last used on
+ * this repository while the repository still allows it, the way the host's own
+ * site remembers a choice. Before any choice, the repository lists what it
+ * allows in its own order and the first one is its default; a host that reports
+ * nothing still gets a plain merge offered, and refuses it itself if it really
+ * is off.
  */
 export function resolveDefaultMergeMethod(
   mergeMethods: readonly PullRequestMergeMethod[],
+  remembered: PullRequestMergeMethod | null = null,
 ): PullRequestMergeMethod {
+  if (remembered !== null && mergeMethods.includes(remembered)) {
+    return remembered;
+  }
   return mergeMethods[0] ?? "merge";
 }
 
