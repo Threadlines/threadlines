@@ -37,8 +37,8 @@ import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import { useUiStateStore } from "../../uiStateStore";
 import {
-  collectSourceControlToolUpdateWarnings,
-  sourceControlToolUpdateWarningSetKey,
+  collectSourceControlToolUpdateNotices,
+  sourceControlToolUpdateNoticeSetKey,
 } from "../SourceControlToolUpdateLaunchNotification.logic";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
@@ -2581,7 +2581,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
             checkedAt: "2026-08-14T00:00:00.000Z",
             message:
               "This GitHub CLI version can briefly open terminal windows during background telemetry on Windows and is below the recommended security-fix release.",
-            notificationKey: "github-cli:security:2.97.0",
+            notificationKey: "github-cli:2.98.0",
             actions: [
               {
                 label: "Update now",
@@ -2650,13 +2650,13 @@ describe("SourceControlSettingsPanel discovery states", () => {
     await page.getByRole("button", { name: "Update now" }).click();
     expect(updateSourceControlTool).toHaveBeenCalledWith({ target: "github-cli" });
 
-    const warnings = collectSourceControlToolUpdateWarnings({
+    const warnings = collectSourceControlToolUpdateNotices({
       discovery: discoveryResult,
       environmentKey: "environment:test-host",
     });
     expect(warnings).toHaveLength(1);
-    expect(sourceControlToolUpdateWarningSetKey(warnings)).toBe(
-      "environment:test-host:github-cli:security:2.97.0",
+    expect(sourceControlToolUpdateNoticeSetKey(warnings)).toBe(
+      "environment:test-host:github-cli:2.98.0",
     );
   });
 
@@ -2757,7 +2757,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
             checkedAt: "2026-08-14T00:00:00.000Z",
             message:
               "This Git for Windows version is below the recommended security-fix release. The official updater may close open Git Bash windows during installation.",
-            notificationKey: "git-for-windows:security:2.55.0.windows.4",
+            notificationKey: "git-for-windows:2.56.0.windows.1",
             actions: [
               {
                 label: "Update now",
