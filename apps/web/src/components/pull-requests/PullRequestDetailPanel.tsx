@@ -1413,7 +1413,12 @@ function usePullRequestActions({
       {/* A disabled button cannot be focused, so the reason it is disabled is
           written out as well as tucked in its tooltip. */}
       {primary === "merge" && mergeBlock !== null ? (
-        <p className="mt-1 text-right text-xs text-muted-foreground/60">{mergeBlock}</p>
+        <p
+          className="mt-1 text-right text-xs text-muted-foreground/60"
+          data-testid="pull-request-merge-block"
+        >
+          {mergeBlock}
+        </p>
       ) : null}
       {mutation.isError ? (
         <p className="mt-1.5 break-words text-right text-xs text-destructive">

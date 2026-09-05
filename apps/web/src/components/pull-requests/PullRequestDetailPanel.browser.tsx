@@ -570,6 +570,28 @@ describe("PullRequestDetailPanel", () => {
     await behind.cleanup();
   });
 
+  it("keeps Merge on screen but off while the host's rules refuse it, and says why", async () => {
+    const rendered = await renderPanel({
+      detail: {
+        viewer: { canWrite: true, canReview: false, canManage: true },
+        mergeGate: "blocked",
+        checks: [
+          { name: "build", status: "success", description: null, url: null },
+          { name: "lint", status: "pending", description: null, url: null },
+          { name: "test", status: "pending", description: null, url: null },
+        ],
+        checksState: "pending",
+      },
+    });
+
+    await expect.element(page.getByTestId("pull-request-merge")).toBeDisabled();
+    await expect
+      .element(page.getByTestId("pull-request-merge-block"))
+      .toHaveTextContent("Waiting on 2 checks");
+
+    await rendered.cleanup();
+  });
+
   it("asks someone for a review from the reviewers row", async () => {
     const rendered = await renderPanel({
       detail: { viewer: { canWrite: true, canReview: false, canManage: true } },
