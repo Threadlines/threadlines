@@ -1,5 +1,13 @@
 import type { ProviderInstanceEnvironment } from "@threadlines/contracts";
 
+/** Refresh inherited PATH in the environment already held by a driver's runtimes. */
+export function refreshProviderInstanceEnvironment(
+  environment: ProviderInstanceEnvironment | undefined,
+  target: NodeJS.ProcessEnv,
+): void {
+  Object.assign(target, mergeProviderInstanceEnvironment(environment));
+}
+
 export function mergeProviderInstanceEnvironment(
   environment: ProviderInstanceEnvironment | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,

@@ -1774,7 +1774,7 @@ describe("CheckpointReactor", () => {
     ).toBe(false);
   });
 
-  it("executes provider revert and emits thread.reverted for claude sessions", async () => {
+  it("rewinds Claude to the removed user message after a clock rollback", async () => {
     const harness = await createHarness({
       providerName: ProviderDriverKind.make("claudeAgent"),
       projectWorkspaceRoot: path.join(os.tmpdir(), "t3-isolated-project-root-claude"),
@@ -1814,7 +1814,7 @@ describe("CheckpointReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:01.000Z",
+        createdAt: "2026-01-01T00:00:10.000Z",
       }),
     );
     await Effect.runPromise(

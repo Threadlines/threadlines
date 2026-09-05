@@ -22,6 +22,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThreadActivity = Schema.Struct({
   activityId: EventId,
+  eventSequence: Schema.optional(NonNegativeInt),
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
   tone: OrchestrationThreadActivityTone,

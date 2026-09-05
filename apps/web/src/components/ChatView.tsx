@@ -292,6 +292,7 @@ import {
   resolveRemoteBehindCount,
   resolveWorkingTreeDiffStat,
   type RevertConfirmView,
+  resolveThreadBranchToRecord,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
@@ -2037,7 +2038,7 @@ export default function ChatView(props: ChatViewProps) {
     markLocalDispatchAccepted,
     resetLocalDispatch,
     localDispatchStartedAt,
-    isPreparingWorktree,
+    isPreparingWorktree: isPreparingWorktreeDispatch,
     isSendBusy,
   } = useLocalDispatchState({
     activeThread,
@@ -2047,6 +2048,9 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput: pendingUserInputs.find(isBlockingUserInput)?.requestId ?? null,
     threadError: activeThread?.error,
   });
+  // Raised for the whole bootstrap request; dropped as soon as the thread
+  // reports its worktree so the label never outlives the work it describes.
+  const isPreparingWorktree = isPreparingWorktreeDispatch && !activeThread?.worktreePath;
   const isWorking =
     phase === "running" ||
     phase === "connecting" ||
@@ -2339,7 +2343,15 @@ export default function ChatView(props: ChatViewProps) {
     if (pendingMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
-    return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
+    // Pending rows have no server event yet. Keep their submission order at
+    // the end until the server replaces them with acknowledged messages.
+    return [
+      ...serverMessagesWithPreviewHandoff,
+      ...pendingMessages.map((message, index) => ({
+        ...message,
+        eventSequence: Number.MAX_SAFE_INTEGER - pendingMessages.length + index,
+      })),
+    ];
   }, [
     serverMessages,
     queuedSteeringMessageIds,
@@ -2442,6 +2454,33 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+  // A thread that owns its worktree follows the branch that worktree is on: a
+  // checkout switched from the shell or by the agent must not leave the record,
+  // and with it the pull request badge, on the branch the thread began with.
+  const branchToRecord = resolveThreadBranchToRecord({
+    thread: isServerThread ? serverThread : undefined,
+    cwd: gitCwd,
+    checkoutRef: gitStatusQuery.data?.refName ?? null,
+  });
+  const recordedBranchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (branchToRecord === null || !serverThread) return;
+    const key = `${routeThreadKey}:${branchToRecord}`;
+    if (recordedBranchKeyRef.current === key) return;
+    recordedBranchKeyRef.current = key;
+    const api = readEnvironmentApi(environmentId);
+    if (!api) return;
+    api.orchestration
+      .dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: serverThread.id,
+        branch: branchToRecord,
+      })
+      .catch((error: unknown) => {
+        console.warn("[chat] failed to record the worktree branch", error);
+      });
+  }, [branchToRecord, environmentId, routeThreadKey, serverThread]);
   // Watched separately from the thread's own checkout: when that checkout is
   // gone, the project root's status is what tells us whether there is still a
   // repository to fall back to. Same key as every other subscriber of this
@@ -4231,9 +4270,15 @@ export default function ChatView(props: ChatViewProps) {
     activeThread.worktreePath === null &&
     !envLocked,
   );
-  const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
-    ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
-    : derivedEnvMode;
+  // The server records the thread a beat before it cuts the worktree, so the
+  // merged thread briefly carries the project root and its branch. Hold the
+  // requested mode until the worktree path lands instead of flashing "Current
+  // checkout" at the user who just picked "New worktree".
+  const envMode: DraftThreadEnvMode = isPreparingWorktree
+    ? "worktree"
+    : canOverrideServerThreadEnvMode
+      ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
+      : derivedEnvMode;
   const activeThreadBranch =
     canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
       ? pendingServerThreadBranch
@@ -4915,7 +4960,9 @@ export default function ChatView(props: ChatViewProps) {
                 : {}),
             }
           : undefined;
-      beginLocalDispatch({ preparingWorktree: false });
+      // The worktree is cut inside this request; the flag stays up until the
+      // thread reports its worktree path.
+      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
       await api.orchestration.dispatchCommand({
         type: "thread.turn.start",
         commandId: newCommandId(),
@@ -6417,9 +6464,15 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       if (isLocalDraftThread) {
+        // Leaving an existing worktree for a new one also drops its branch as
+        // the base: that branch is the previous thread's work (often a
+        // throwaway `threadlines/...` name), not what "new worktree" means.
+        // The branch selector refills the base from the default branch.
         setDraftThreadContext(composerDraftTarget, {
           envMode: mode,
-          ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+          ...(mode === "worktree" && draftThread?.worktreePath
+            ? { worktreePath: null, branch: null }
+            : {}),
         });
       }
       scheduleComposerFocus();
@@ -6920,7 +6973,9 @@ export default function ChatView(props: ChatViewProps) {
                 threadId={activeThread.id}
                 {...(routeKind === "draft" && draftId ? { draftId } : {})}
                 onEnvModeChange={onEnvModeChange}
-                {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
+                {...(canOverrideServerThreadEnvMode || isPreparingWorktree
+                  ? { effectiveEnvModeOverride: envMode }
+                  : {})}
                 {...(canOverrideServerThreadEnvMode
                   ? {
                       activeThreadBranchOverride: activeThreadBranch,

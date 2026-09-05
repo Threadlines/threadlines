@@ -63,6 +63,7 @@ export type ChatAttachment = ChatImageAttachment | ChatFileAttachment;
 
 export interface ChatMessage {
   id: MessageId;
+  eventSequence?: number | undefined;
   role: "user" | "assistant" | "system";
   text: string;
   attachments?: ChatAttachment[];
@@ -75,6 +76,7 @@ export interface ChatMessage {
 
 export interface ProposedPlan {
   id: OrchestrationProposedPlanId;
+  eventSequence?: number | undefined;
   turnId: TurnId | null;
   planMarkdown: string;
   implementedAt: string | null;

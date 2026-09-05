@@ -1,3 +1,4 @@
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   CheckpointRef,
   CommandId,
@@ -2793,3 +2794,231 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 });
+
+it.effect("keeps first transcript event order after clock rollback, updates, and restart", () =>
+  Effect.gen(function* () {
+    const { dbPath } = yield* ServerConfig;
+    const persistence = makeSqlitePersistenceLive(dbPath);
+    const makeLayer = () =>
+      Layer.mergeAll(
+        OrchestrationProjectionPipelineLive,
+        OrchestrationProjectionSnapshotQueryLive,
+      ).pipe(
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provideMerge(persistence),
+      );
+    const threadId = ThreadId.make("thread-clock");
+    const projectId = ProjectId.make("project-clock");
+    const before = "2026-09-05T15:00:00.000Z";
+    const after = "2026-09-05T14:00:00.000Z";
+    const envelope = (id: string, occurredAt: string) => ({
+      eventId: EventId.make(id),
+      aggregateKind: "thread" as const,
+      aggregateId: threadId,
+      occurredAt,
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+    });
+    yield* Effect.gen(function* () {
+      const store = yield* OrchestrationEventStore;
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      yield* store.append({
+        ...envelope("clock-project", before),
+        type: "project.created",
+        aggregateKind: "project",
+        aggregateId: projectId,
+        payload: {
+          projectId,
+          title: "Clock",
+          workspaceRoot: "/tmp/clock",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: before,
+          updatedAt: before,
+        },
+      });
+      yield* store.append({
+        ...envelope("clock-thread", before),
+        type: "thread.created",
+        payload: {
+          threadId,
+          projectId,
+          title: "Clock",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: before,
+          updatedAt: before,
+        },
+      });
+      yield* store.append({
+        ...envelope("clock-user", before),
+        type: "thread.message-sent",
+        payload: {
+          threadId,
+          messageId: MessageId.make("user-clock"),
+          role: "user",
+          text: "hello",
+          turnId: null,
+          streaming: false,
+          createdAt: before,
+          updatedAt: before,
+        },
+      });
+      yield* store.append({
+        ...envelope("clock-tool", after),
+        type: "thread.activity-appended",
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("tool-clock"),
+            tone: "tool",
+            kind: "tool.started",
+            summary: "tool",
+            payload: {
+              itemType: "collab_agent_tool_call",
+              data: {
+                subagentLiveText: "Reading files",
+                item: {
+                  id: "spawn-clock",
+                  tool: "spawnAgent",
+                  status: "inProgress",
+                  agentThreadId: "agent-clock",
+                },
+              },
+            },
+            turnId: null,
+            sequence: 900,
+            createdAt: after,
+          },
+        },
+      });
+      yield* store.append({
+        ...envelope("clock-assistant", after),
+        type: "thread.message-sent",
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-clock"),
+          role: "assistant",
+          text: "reply",
+          turnId: null,
+          streaming: true,
+          createdAt: after,
+          updatedAt: after,
+        },
+      });
+      const proposedPlan = {
+        id: "plan-clock",
+        turnId: null,
+        planMarkdown: "plan",
+        implementedAt: null,
+        implementationThreadId: null,
+        dismissedAt: null,
+        createdAt: after,
+        updatedAt: after,
+      };
+      yield* store.append({
+        ...envelope("clock-plan", after),
+        type: "thread.proposed-plan-upserted",
+        payload: { threadId, proposedPlan },
+      });
+      yield* store.append({
+        ...envelope("clock-tool-update", after),
+        type: "thread.activity-appended",
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("tool-clock"),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "done",
+            payload: {
+              itemType: "collab_agent_tool_call",
+              data: {
+                item: {
+                  id: "spawn-clock",
+                  tool: "spawnAgent",
+                  status: "completed",
+                  agentThreadId: "agent-clock",
+                  agentsStates: { "agent-clock": { status: "completed", message: "Done" } },
+                },
+              },
+            },
+            turnId: null,
+            sequence: 901,
+            createdAt: after,
+          },
+        },
+      });
+      yield* store.append({
+        ...envelope("clock-assistant-update", after),
+        type: "thread.message-sent",
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-clock"),
+          role: "assistant",
+          text: "reply complete",
+          turnId: null,
+          streaming: false,
+          createdAt: after,
+          updatedAt: after,
+        },
+      });
+      yield* store.append({
+        ...envelope("clock-plan-update", after),
+        type: "thread.proposed-plan-upserted",
+        payload: { threadId, proposedPlan: { ...proposedPlan, planMarkdown: "plan updated" } },
+      });
+      yield* pipeline.bootstrap;
+    }).pipe(Effect.provide(makeLayer()));
+    yield* Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* pipeline.bootstrap;
+      const fullSnapshot = yield* query.getSnapshot();
+      assert.deepStrictEqual(
+        fullSnapshot.threads
+          .find((thread) => thread.id === threadId)
+          ?.subagents?.map((agent) => [
+            agent.id,
+            agent.resultEventSequence,
+            agent.liveEventSequence,
+          ]),
+        [["agent-clock", 7, 4]],
+      );
+      assert.deepStrictEqual(
+        fullSnapshot.threads
+          .find((thread) => thread.id === threadId)
+          ?.activities.map((activity) => [activity.id, activity.eventSequence, activity.sequence]),
+        [[EventId.make("tool-clock"), 4, 901]],
+      );
+      for (const snapshot of [fullSnapshot, yield* query.getCommandReadModel()]) {
+        const thread = snapshot.threads.find((entry) => entry.id === threadId);
+        assert.ok(thread);
+        assert.deepStrictEqual(
+          thread.messages.map((message) => [message.id, message.eventSequence, message.createdAt]),
+          [
+            ["user-clock", 3, before],
+            ["assistant-clock", 5, after],
+          ],
+        );
+        assert.strictEqual(thread.messages[1]?.text, "reply complete");
+        assert.deepStrictEqual(
+          thread.proposedPlans.map((plan) => [plan.id, plan.eventSequence, plan.planMarkdown]),
+          [["plan-clock", 6, "plan updated"]],
+        );
+      }
+    }).pipe(Effect.provide(makeLayer()));
+  }).pipe(
+    Effect.provide(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-clock-restart-" }),
+        NodeServices.layer,
+      ),
+    ),
+  ),
+);

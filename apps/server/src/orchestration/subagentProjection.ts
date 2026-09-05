@@ -109,6 +109,8 @@ interface SubagentPatch {
   readonly reasoningEffortProvenance?: OrchestrationSubagentSettingProvenance | null;
   readonly resultBody?: string | null;
   readonly resultCreatedAt?: string | null;
+  readonly resultEventSequence?: number | undefined;
+  readonly liveEventSequence?: number | undefined;
   /** Task id of the notification a replayed agent result was built from. */
   readonly notificationTaskId?: string | null;
 }
@@ -156,7 +158,8 @@ function metadataPatch(activity: OrchestrationThreadActivity): SubagentPatch | n
     modelProvenance: modelSource === "explicit" || modelSource === "inherited" ? modelSource : null,
     reasoningEffortProvenance: effortSource,
     resultBody: typeof payload.resultBody === "string" ? payload.resultBody : null,
-    resultCreatedAt: text(payload.resultCreatedAt),
+    resultCreatedAt:
+      text(payload.resultCreatedAt) ?? (text(payload.resultBody) ? activity.createdAt : null),
   };
 }
 
@@ -177,6 +180,9 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
         })
       : null);
   if (!item) return [];
+  // Older adapters fabricated "running" for this notification, including
+  // messages to finished agents. Ignore it when replaying those saved rows too.
+  if (item.type === "subAgentActivity" && item.kind === "interacted") return [];
   if (isRootAgentPath(text(item.agentPath))) return [];
   const tool = text(item.tool);
   const nativeAgentId = text(item.agentThreadId);
@@ -230,6 +236,9 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
       reasoningEffortProvenance: reasoningEffort ? "explicit" : null,
       resultBody: text(state?.message),
       resultCreatedAt: text(state?.message) ? activity.createdAt : null,
+      ...(text(data?.subagentLiveText) && activity.eventSequence !== undefined
+        ? { liveEventSequence: activity.eventSequence }
+        : {}),
       notificationTaskId,
     };
   });
@@ -249,6 +258,14 @@ function mergeSubagent(
   patch: SubagentPatch,
   activity: OrchestrationThreadActivity,
 ): OrchestrationSubagent {
+  const resultIsNew =
+    patch.resultBody !== null &&
+    patch.resultBody !== undefined &&
+    (activity.kind !== "subagent.metadata" || patch.resultBody !== current?.resultBody);
+  const resultEventSequence =
+    patch.resultEventSequence ??
+    (resultIsNew ? activity.eventSequence : current?.resultEventSequence);
+  const liveEventSequence = patch.liveEventSequence ?? current?.liveEventSequence;
   return {
     id: patch.agentThreadId ?? current?.agentThreadId ?? patch.id,
     agentThreadId: mergeValue(patch.agentThreadId, current?.agentThreadId ?? null),
@@ -276,7 +293,12 @@ function mergeSubagent(
       current?.reasoningEffortProvenance ?? null,
     ),
     resultBody: mergeValue(patch.resultBody, current?.resultBody ?? null),
-    resultCreatedAt: mergeValue(patch.resultCreatedAt, current?.resultCreatedAt ?? null),
+    resultCreatedAt:
+      activity.kind === "subagent.metadata" && !resultIsNew
+        ? (current?.resultCreatedAt ?? null)
+        : mergeValue(patch.resultCreatedAt, current?.resultCreatedAt ?? null),
+    ...(resultEventSequence !== undefined ? { resultEventSequence } : {}),
+    ...(liveEventSequence !== undefined ? { liveEventSequence } : {}),
     createdAt: current?.createdAt ?? activity.createdAt,
     updatedAt: activity.createdAt,
   };
@@ -496,5 +518,11 @@ function duplicatePatchFrom(duplicate: OrchestrationSubagent): SubagentPatch {
     reasoningEffortProvenance: duplicate.reasoningEffortProvenance,
     resultBody: duplicate.resultBody,
     resultCreatedAt: duplicate.resultCreatedAt,
+    ...(duplicate.resultEventSequence !== undefined
+      ? { resultEventSequence: duplicate.resultEventSequence }
+      : {}),
+    ...(duplicate.liveEventSequence !== undefined
+      ? { liveEventSequence: duplicate.liveEventSequence }
+      : {}),
   };
 }

@@ -91,11 +91,14 @@ const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
+    eventSequence: Schema.NullOr(NonNegativeInt),
     attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
     skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
   }),
 );
-const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
+const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
+  Struct.assign({ eventSequence: Schema.NullOr(NonNegativeInt) }),
+);
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
@@ -106,6 +109,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
     sequence: Schema.NullOr(NonNegativeInt),
+    eventSequence: Schema.NullOr(NonNegativeInt),
   }),
 );
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
@@ -311,6 +315,7 @@ function mapThreadMessageRow(
 ): OrchestrationMessage {
   return {
     id: row.messageId,
+    ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
     role: row.role,
     text: row.text,
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
@@ -327,6 +332,7 @@ function mapThreadActivityRow(
 ): OrchestrationThreadActivity {
   return {
     id: row.activityId,
+    ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
     tone: row.tone,
     kind: row.kind,
     summary: row.summary,
@@ -404,6 +410,7 @@ function mapProposedPlanRow(
 ): OrchestrationProposedPlan {
   return {
     id: row.planId,
+    ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
     turnId: row.turnId,
     planMarkdown: row.planMarkdown,
     implementedAt: row.implementedAt,
@@ -620,6 +627,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           message_id AS "messageId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
@@ -630,7 +638,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
-        ORDER BY thread_id ASC, created_at ASC, message_id ASC
+        ORDER BY thread_id ASC, event_sequence ASC, created_at ASC, message_id ASC
       `,
   });
 
@@ -649,6 +657,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ROW_NUMBER() OVER (
               PARTITION BY message.thread_id
               ORDER BY
+                message.event_sequence DESC,
                 message.created_at DESC,
                 message.message_id DESC
             ) AS message_rank
@@ -656,6 +665,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         )
         SELECT
           message_id AS "messageId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
@@ -667,7 +677,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM ranked_messages
         WHERE message_rank <= ${MAX_THREAD_MESSAGES}
-        ORDER BY thread_id ASC, created_at ASC, message_id ASC
+        ORDER BY thread_id ASC, event_sequence ASC, created_at ASC, message_id ASC
       `,
   });
 
@@ -678,6 +688,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           plan_id AS "planId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           plan_markdown AS "planMarkdown",
@@ -687,7 +698,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_proposed_plans
-        ORDER BY thread_id ASC, created_at ASC, plan_id ASC
+        ORDER BY thread_id ASC, event_sequence ASC, created_at ASC, plan_id ASC
       `,
   });
 
@@ -702,6 +713,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ROW_NUMBER() OVER (
               PARTITION BY activity.thread_id
               ORDER BY
+                activity.event_sequence DESC,
                 activity.sequence DESC,
                 activity.created_at DESC,
                 activity.activity_id DESC
@@ -710,6 +722,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         )
         SELECT
           activity_id AS "activityId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           tone,
@@ -726,6 +739,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           )
         ORDER BY
           thread_id ASC,
+          event_sequence ASC,
           sequence ASC,
           created_at ASC,
           activity_id ASC
@@ -770,6 +784,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         reasoning_effort AS "reasoningEffort", model_provenance AS "modelProvenance",
         reasoning_effort_provenance AS "reasoningEffortProvenance",
         result_body AS "resultBody", result_created_at AS "resultCreatedAt",
+        result_event_sequence AS "resultEventSequence", live_event_sequence AS "liveEventSequence",
         created_at AS "createdAt", updated_at AS "updatedAt"
       FROM projection_thread_subagents
       ORDER BY thread_id ASC, created_at ASC, subagent_id ASC
@@ -1201,6 +1216,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           message_id AS "messageId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           role,
@@ -1212,7 +1228,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
-        ORDER BY created_at ASC, message_id ASC
+        ORDER BY event_sequence ASC, created_at ASC, message_id ASC
       `,
   });
 
@@ -1223,6 +1239,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           plan_id AS "planId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           plan_markdown AS "planMarkdown",
@@ -1233,7 +1250,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_thread_proposed_plans
         WHERE thread_id = ${threadId}
-        ORDER BY created_at ASC, plan_id ASC
+        ORDER BY event_sequence ASC, created_at ASC, plan_id ASC
       `,
   });
 
@@ -1247,6 +1264,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
           ORDER BY
+            event_sequence DESC,
             sequence DESC,
             created_at DESC,
             activity_id DESC
@@ -1263,6 +1281,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         )
         SELECT
           activity_id AS "activityId",
+          event_sequence AS "eventSequence",
           thread_id AS "threadId",
           turn_id AS "turnId",
           tone,
@@ -1273,6 +1292,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at AS "createdAt"
         FROM retained_candidates
         ORDER BY
+          event_sequence ASC,
           sequence ASC,
           created_at ASC,
           activity_id ASC
@@ -1331,6 +1351,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           reasoning_effort_provenance AS "reasoningEffortProvenance",
           result_body AS "resultBody",
           result_created_at AS "resultCreatedAt",
+          result_event_sequence AS "resultEventSequence",
+          live_event_sequence AS "liveEventSequence",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_subagents
@@ -1611,6 +1633,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 const threadProposedPlans = proposedPlansByThread.get(row.threadId) ?? [];
                 threadProposedPlans.push({
                   id: row.planId,
+                  ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
                   turnId: row.turnId,
                   planMarkdown: row.planMarkdown,
                   implementedAt: row.implementedAt,

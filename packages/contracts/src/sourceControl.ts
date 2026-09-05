@@ -162,6 +162,28 @@ export type SourceControlToolUpdateTarget = typeof SourceControlToolUpdateTarget
 export const SourceControlToolUpdateOperation = Schema.Literals(["install", "update"]);
 export type SourceControlToolUpdateOperation = typeof SourceControlToolUpdateOperation.Type;
 
+export const SourceControlToolMaintenanceState = Schema.Struct({
+  target: SourceControlToolUpdateTarget,
+  operation: SourceControlToolUpdateOperation,
+  status: Schema.Literals(["queued", "running", "checking", "succeeded", "failed", "started"]),
+  message: Schema.String,
+});
+export type SourceControlToolMaintenanceState = typeof SourceControlToolMaintenanceState.Type;
+
+export const GitHubAuthState = Schema.Struct({
+  status: Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]),
+  verificationUrl: Schema.NullOr(Schema.String),
+  userCode: Schema.NullOr(Schema.String),
+  message: Schema.NullOr(Schema.String),
+});
+export type GitHubAuthState = typeof GitHubAuthState.Type;
+
+export const SourceControlSetupState = Schema.Struct({
+  tools: Schema.Array(SourceControlToolMaintenanceState),
+  githubAuth: GitHubAuthState,
+});
+export type SourceControlSetupState = typeof SourceControlSetupState.Type;
+
 export const SourceControlToolVersionAdvisoryAction = Schema.Union([
   Schema.Struct({
     label: TrimmedNonEmptyString,

@@ -431,6 +431,7 @@ const make = Effect.gen(function* () {
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed"
+      | "provider.session.restart-interrupted"
       | "provider.goal.failed";
     readonly summary: string;
     readonly detail: string;
@@ -2624,7 +2625,61 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // Provider processes do not outlive the server, so a session still recorded
+  // as starting or running when the server comes up belongs to the previous
+  // process and no command can reach it. Settle each one as interrupted, with
+  // a note in the thread, instead of leaving the thread on "Preparing turn"
+  // until the user gives up and deletes it.
+  const restartInterruptedStatuses: ReadonlySet<OrchestrationSession["status"]> = new Set([
+    "starting",
+    "running",
+  ]);
+  const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
+    function* () {
+      const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+      for (const thread of snapshot.threads) {
+        const session = thread.session;
+        if (!session || !restartInterruptedStatuses.has(session.status)) {
+          continue;
+        }
+        const createdAt = yield* nowIso;
+        yield* setThreadSession({
+          threadId: thread.id,
+          session: {
+            ...session,
+            status: "interrupted",
+            activeTurnId: null,
+            pendingBackgroundTaskCount: 0,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        });
+        yield* appendProviderFailureActivity({
+          threadId: thread.id,
+          kind: "provider.session.restart-interrupted",
+          summary: "Turn interrupted by a server restart",
+          detail:
+            "Threadlines restarted while this turn was in progress, so its agent session is gone. Send a message to continue.",
+          turnId: session.activeTurnId,
+          createdAt,
+        });
+      }
+    },
+  );
+
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    yield* settleSessionsFromPreviousProcess().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "provider command reactor failed to settle sessions left by the previous process",
+          {
+            cause: Cause.pretty(cause),
+          },
+        ),
+      ),
+    );
+
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         event.type === "thread.runtime-mode-set" ||

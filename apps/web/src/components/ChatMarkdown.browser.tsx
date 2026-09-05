@@ -51,6 +51,7 @@ vi.mock("../localApi", () => ({
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import { ThreadPullRequestLinkContext } from "./chat/ThreadPullRequestLinkContext";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
@@ -64,6 +65,12 @@ const CHAT_MARKDOWN_THREAD_REF = scopeThreadRef(
   CHAT_MARKDOWN_ENVIRONMENT_ID,
   CHAT_MARKDOWN_THREAD_ID,
 );
+// The pull request the thread route would hand a transcript, with its opener
+// mocked so a click can be observed.
+const THREAD_PULL_REQUEST_LINK = {
+  url: "https://github.com/Threadlines/threadlines/pull/223",
+  open: vi.fn(),
+};
 
 // The inline image loader reads files through react-query, so those renders
 // need the provider the app root supplies.
@@ -536,6 +543,54 @@ describe("ChatMarkdown", () => {
         .toBeInTheDocument();
       expect(document.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(0);
     } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens the thread's own pull request in its tab and leaves deeper links alone", async () => {
+    const { url: pullRequestUrl, open } = THREAD_PULL_REQUEST_LINK;
+    open.mockClear();
+    const screen = await render(
+      <ThreadPullRequestLinkContext.Provider value={THREAD_PULL_REQUEST_LINK}>
+        <ChatMarkdown
+          text={`Opened [the PR](${pullRequestUrl}); see [its files](${pullRequestUrl}/files).`}
+          cwd="/repo/project"
+          environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+          threadId={CHAT_MARKDOWN_THREAD_ID}
+        />
+      </ThreadPullRequestLinkContext.Provider>,
+    );
+
+    // A click the link leaves alone bubbles past React's root to the window,
+    // still unclaimed; catching it there keeps the test page from actually
+    // leaving. A click the link claims is stopped before it gets here.
+    let leftAlone = false;
+    const observeClick = (event: Event) => {
+      leftAlone = !event.defaultPrevented;
+      event.preventDefault();
+    };
+    window.addEventListener("click", observeClick);
+
+    try {
+      const click = (name: string) => {
+        const anchor = Array.from(document.querySelectorAll("a")).find(
+          (candidate) => candidate.textContent === name,
+        );
+        if (!anchor) {
+          throw new Error(`No link named ${name}`);
+        }
+        leftAlone = false;
+        return anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      };
+
+      expect(click("the PR")).toBe(false);
+      expect(open).toHaveBeenCalledTimes(1);
+
+      click("its files");
+      expect(leftAlone).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("click", observeClick);
       await screen.unmount();
     }
   });

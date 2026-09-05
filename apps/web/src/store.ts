@@ -1,3 +1,4 @@
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
   EnvironmentId,
   MessageId,
@@ -218,6 +219,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     text: message.text,
     turnId: message.turnId,
     createdAt: message.createdAt,
+    ...(message.eventSequence !== undefined ? { eventSequence: message.eventSequence } : {}),
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -234,6 +236,9 @@ function mapProposedPlan(proposedPlan: OrchestrationProposedPlan): ProposedPlan 
     implementationThreadId: proposedPlan.implementationThreadId,
     dismissedAt: proposedPlan.dismissedAt,
     createdAt: proposedPlan.createdAt,
+    ...(proposedPlan.eventSequence !== undefined
+      ? { eventSequence: proposedPlan.eventSequence }
+      : {}),
     updatedAt: proposedPlan.updatedAt,
   };
 }
@@ -424,10 +429,7 @@ function toSidebarThreadSummary(
   const latestDetailUserMessageAt =
     thread.messages
       .filter((message) => message.role === "user")
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .at(-1)?.createdAt ?? null;
   const latestUserMessageAt = latestIso(
     previous?.latestUserMessageAt ?? null,
@@ -1073,6 +1075,9 @@ function compareActivities(
   left: Thread["activities"][number],
   right: Thread["activities"][number],
 ): number {
+  if (left.eventSequence !== undefined || right.eventSequence !== undefined) {
+    return compareTranscriptOrder(left, right);
+  }
   if (left.sequence !== undefined && right.sequence !== undefined) {
     if (left.sequence !== right.sequence) {
       return left.sequence - right.sequence;
@@ -1131,8 +1136,11 @@ function upsertThreadActivity(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activity: OrchestrationThreadActivity,
 ): OrchestrationThreadActivity[] {
-  const nextActivity = { ...activity };
   const existingIndex = activities.findIndex((entry) => entry.id === activity.id);
+  const nextActivity = {
+    ...activity,
+    ...(existingIndex !== -1 ? { eventSequence: activities[existingIndex]?.eventSequence } : {}),
+  };
   if (
     existingIndex === -1 &&
     (activities.length === 0 ||
@@ -1236,10 +1244,7 @@ function retainThreadMessagesAfterRevert(
             message.turnId === null ||
             retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .slice(0, missingUserCount);
     for (const message of fallbackUserMessages) {
       retainedMessageIds.add(message.id);
@@ -1260,10 +1265,7 @@ function retainThreadMessagesAfterRevert(
             message.turnId === null ||
             retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .slice(0, missingAssistantCount);
     for (const message of fallbackAssistantMessages) {
       retainedMessageIds.add(message.id);
@@ -1733,6 +1735,7 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const message = mapMessage(thread.environmentId, {
           id: event.payload.messageId,
+          eventSequence: event.sequence,
           role: event.payload.role,
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
@@ -1779,6 +1782,7 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const message = mapMessage(thread.environmentId, {
           id: event.payload.messageId,
+          eventSequence: event.sequence,
           role: event.payload.role,
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
@@ -1905,15 +1909,18 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.proposed-plan-upserted":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const proposedPlan = mapProposedPlan(event.payload.proposedPlan);
+        const existingPlan = thread.proposedPlans.find(
+          (entry) => entry.id === event.payload.proposedPlan.id,
+        );
+        const proposedPlan = mapProposedPlan({
+          ...event.payload.proposedPlan,
+          eventSequence: existingPlan ? existingPlan.eventSequence : event.sequence,
+        });
         const proposedPlans = [
           ...thread.proposedPlans.filter((entry) => entry.id !== proposedPlan.id),
           proposedPlan,
         ]
-          .toSorted(
-            (left, right) =>
-              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-          )
+          .toSorted(compareTranscriptOrder)
           .slice(-MAX_THREAD_PROPOSED_PLANS);
         return {
           ...thread,
@@ -2048,7 +2055,10 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         return {
           ...thread,
-          activities: upsertThreadActivity(thread.activities, event.payload.activity),
+          activities: upsertThreadActivity(thread.activities, {
+            ...event.payload.activity,
+            eventSequence: event.sequence,
+          }),
           updatedAt: event.occurredAt,
         };
       });

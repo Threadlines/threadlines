@@ -1,3 +1,4 @@
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@threadlines/contracts";
 import {
   OrchestrationCheckpointSummary,
@@ -113,10 +114,7 @@ function retainThreadMessagesAfterRevert(
           !retainedMessageIds.has(message.id) &&
           (message.turnId === null || retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .slice(0, missingUserCount);
     for (const message of fallbackUserMessages) {
       retainedMessageIds.add(message.id);
@@ -135,10 +133,7 @@ function retainThreadMessagesAfterRevert(
           !retainedMessageIds.has(message.id) &&
           (message.turnId === null || retainedTurnIds.has(message.turnId)),
       )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
+      .toSorted(compareTranscriptOrder)
       .slice(0, missingAssistantCount);
     for (const message of fallbackAssistantMessages) {
       retainedMessageIds.add(message.id);
@@ -179,6 +174,9 @@ function compareThreadActivities(
   left: OrchestrationThread["activities"][number],
   right: OrchestrationThread["activities"][number],
 ): number {
+  if (left.eventSequence !== undefined || right.eventSequence !== undefined) {
+    return compareTranscriptOrder(left, right);
+  }
   if (left.sequence !== undefined && right.sequence !== undefined) {
     if (left.sequence !== right.sequence) {
       return left.sequence - right.sequence;
@@ -466,6 +464,7 @@ export function projectEvent(
           OrchestrationMessage,
           {
             id: payload.messageId,
+            eventSequence: event.sequence,
             role: payload.role,
             text: payload.text,
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
@@ -544,6 +543,7 @@ export function projectEvent(
           OrchestrationMessage,
           {
             id: payload.messageId,
+            eventSequence: event.sequence,
             role: payload.role,
             text: payload.text,
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
@@ -559,7 +559,9 @@ export function projectEvent(
 
         const existingMessage = thread.messages.find((entry) => entry.id === message.id);
         const messages = existingMessage
-          ? thread.messages.map((entry) => (entry.id === message.id ? message : entry))
+          ? thread.messages.map((entry) =>
+              entry.id === message.id ? { ...message, eventSequence: entry.eventSequence } : entry,
+            )
           : [...thread.messages, message];
 
         return {
@@ -700,14 +702,17 @@ export function projectEvent(
           return nextBase;
         }
 
+        const existingPlan = thread.proposedPlans.find(
+          (entry) => entry.id === payload.proposedPlan.id,
+        );
         const proposedPlans = [
           ...thread.proposedPlans.filter((entry) => entry.id !== payload.proposedPlan.id),
-          payload.proposedPlan,
+          {
+            ...payload.proposedPlan,
+            eventSequence: existingPlan ? existingPlan.eventSequence : event.sequence,
+          },
         ]
-          .toSorted(
-            (left, right) =>
-              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-          )
+          .toSorted(compareTranscriptOrder)
           .slice(-MAX_THREAD_PROPOSED_PLANS);
 
         return {
@@ -922,14 +927,23 @@ export function projectEvent(
             return nextBase;
           }
 
+          const existingActivity = thread.activities.find(
+            (entry) => entry.id === payload.activity.id,
+          );
           const activities = retainRecentActivitiesAndOpenRequests(
             [
               ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-              payload.activity,
+              {
+                ...payload.activity,
+                eventSequence: existingActivity ? existingActivity.eventSequence : event.sequence,
+              },
             ].toSorted(compareThreadActivities),
             MAX_THREAD_ACTIVITIES,
           );
-          const subagents = projectSubagentActivity(thread.subagents ?? [], payload.activity);
+          const subagents = projectSubagentActivity(thread.subagents ?? [], {
+            ...payload.activity,
+            eventSequence: event.sequence,
+          });
 
           return {
             ...nextBase,

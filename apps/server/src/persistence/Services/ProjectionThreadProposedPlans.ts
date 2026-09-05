@@ -1,5 +1,6 @@
 import {
   IsoDateTime,
+  NonNegativeInt,
   OrchestrationProposedPlanId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -13,6 +14,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThreadProposedPlan = Schema.Struct({
   planId: OrchestrationProposedPlanId,
+  eventSequence: Schema.optional(NonNegativeInt),
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
   planMarkdown: TrimmedNonEmptyString,

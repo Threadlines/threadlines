@@ -1206,7 +1206,7 @@ describe("inbox done lifecycle", () => {
       isThreadDone(pinnedAndFresh, null, {
         now: NOW,
         autoDoneAfterDays: 2,
-        pullRequestSettled: true,
+        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
       }),
     ).toBe(true);
     // A thread that is still moving was never eligible in the first place.
@@ -1214,9 +1214,38 @@ describe("inbox done lifecycle", () => {
       isThreadDone({ ...pinnedAndFresh, session: { status: "running" } as never }, null, {
         now: NOW,
         autoDoneAfterDays: 2,
-        pullRequestSettled: true,
+        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
       }),
     ).toBe(false);
+  });
+
+  it("files a landing once: a later message or a later keep-active brings the thread back", () => {
+    // The merge is the thread's last word only while nothing has happened
+    // since. A message sent after it is new work; so is an explicit "keep
+    // active" given after it, even once later agent activity has aged that
+    // override out of the override rule.
+    const landedAt = "2026-07-28T11:30:00.000Z";
+    const options = { now: NOW, autoDoneAfterDays: 2, pullRequestSettledAt: landedAt };
+    const spokeAfter = { ...base, latestUserMessageAt: "2026-07-28T11:45:00.000Z" };
+    expect(isThreadDone(spokeAfter, null, options)).toBe(false);
+
+    const quietSince = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+      latestTurn: {
+        requestedAt: "2026-07-28T11:00:00.000Z",
+        completedAt: "2026-07-28T11:50:00.000Z",
+      } as never,
+      lastVisitedAt: "2026-07-28T11:55:00.000Z",
+    };
+    expect(isThreadDone(quietSince, null, options)).toBe(true);
+    expect(
+      isThreadDone(quietSince, { state: "active", at: "2026-07-28T11:40:00.000Z" }, options),
+    ).toBe(false);
+    // A keep-active from before the landing is not a word on the landing.
+    expect(
+      isThreadDone(quietSince, { state: "active", at: "2026-07-28T11:20:00.000Z" }, options),
+    ).toBe(true);
   });
 
   it("never files a completion the user has not seen", () => {

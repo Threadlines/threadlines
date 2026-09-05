@@ -41,6 +41,7 @@ function makeActivity(overrides: {
   payload?: Record<string, unknown>;
   turnId?: string;
   sequence?: number;
+  eventSequence?: number;
 }): OrchestrationThreadActivity {
   const payload = overrides.payload ?? {};
   return {
@@ -52,6 +53,7 @@ function makeActivity(overrides: {
     payload,
     turnId: overrides.turnId ? TurnId.make(overrides.turnId) : null,
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
+    ...(overrides.eventSequence !== undefined ? { eventSequence: overrides.eventSequence } : {}),
   };
 }
 
@@ -372,6 +374,7 @@ describe("deriveThreadSubagentHistory", () => {
       reasoningEffortProvenance: "explicit",
       resultBody: "Found the capped projection.",
       resultCreatedAt: "2026-08-13T20:41:00.000Z",
+      resultEventSequence: 20,
       createdAt: "2026-08-13T20:35:56.000Z",
       updatedAt: "2026-08-13T20:41:00.000Z",
     };
@@ -391,6 +394,59 @@ describe("deriveThreadSubagentHistory", () => {
         resultBody: "Found the capped projection.",
       },
     ]);
+
+    const retainedResultActivity = makeActivity({
+      id: "reused-result-activity",
+      kind: "subagent.result",
+      turnId: "turn-1",
+      eventSequence: 4,
+      createdAt: durable.resultCreatedAt!,
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            receiverThreadIds: [durable.agentThreadId],
+            agentsStates: {
+              "codex-child-1": { status: "completed", message: durable.resultBody },
+            },
+          },
+        },
+      },
+    });
+    for (const activities of [[], [retainedResultActivity]]) {
+      const timeline = deriveTimelineEntries(
+        [
+          {
+            id: MessageId.make("before-result"),
+            role: "user",
+            text: "Find the issue.",
+            createdAt: "2026-08-13T20:45:00.000Z",
+            eventSequence: 10,
+            streaming: false,
+          },
+          {
+            id: MessageId.make("after-result"),
+            role: "assistant",
+            text: "The fix is ready.",
+            createdAt: "2026-08-13T20:35:00.000Z",
+            eventSequence: 30,
+            streaming: false,
+          },
+        ],
+        [],
+        [],
+        deriveSubagentResultEntries(activities, [durable]),
+      );
+      expect(timeline.map((entry) => entry.id)).toEqual([
+        "before-result",
+        "subagent-result:turn-1:codex-child-1",
+        "after-result",
+      ]);
+    }
   });
 
   it("keeps a model stated on the spawn over the turn's dispatched selection", () => {
@@ -522,6 +578,40 @@ describe("deriveThreadSubagentHistory", () => {
       reasoningEffort: "high",
     });
   });
+});
+
+it("keeps pending approvals and questions in request order after a clock rollback", () => {
+  for (const { kind, derive } of [
+    { kind: "approval.requested", derive: derivePendingApprovals },
+    { kind: "user-input.requested", derive: derivePendingUserInputs },
+  ]) {
+    const payload = {
+      requestKind: "command",
+      questions: [
+        {
+          id: "approach",
+          header: "Approach",
+          question: "Which approach?",
+          options: [{ label: "a", description: "Option A" }],
+        },
+      ],
+    };
+    const activities = [
+      makeActivity({
+        kind,
+        eventSequence: 10,
+        createdAt: "2026-02-23T00:00:10.000Z",
+        payload: { ...payload, requestId: "first" },
+      }),
+      makeActivity({
+        kind,
+        eventSequence: 20,
+        createdAt: "2026-02-23T00:00:01.000Z",
+        payload: { ...payload, requestId: "second" },
+      }),
+    ];
+    expect(derive(activities).map((request) => request.requestId)).toEqual(["first", "second"]);
+  }
 });
 
 describe("derivePendingApprovals", () => {
@@ -1044,6 +1134,22 @@ describe("deriveActivePlanState", () => {
 });
 
 describe("findLatestProposedPlan", () => {
+  it("selects the later plan when its timestamp moves backward", () => {
+    const plans = [10, 11].map((eventSequence) => ({
+      id: `plan-${eventSequence}`,
+      eventSequence,
+      turnId: TurnId.make("turn-1"),
+      planMarkdown: `Plan ${eventSequence}`,
+      implementedAt: null,
+      implementationThreadId: null,
+      dismissedAt: null,
+      createdAt: "2026-02-23T00:00:00.000Z",
+      updatedAt: eventSequence === 10 ? "2026-02-23T00:10:00.000Z" : "2026-02-23T00:05:00.000Z",
+    }));
+    expect(findLatestProposedPlan(plans, "turn-1")?.id).toBe("plan-11");
+    expect(findLatestProposedPlan(plans, null)?.id).toBe("plan-11");
+  });
+
   it("prefers the latest proposed plan for the active turn", () => {
     expect(
       findLatestProposedPlan(
@@ -3591,6 +3697,7 @@ describe("deriveWorkLogEntries", () => {
       }),
       makeActivity({
         id: "legacy-read-complete",
+        eventSequence: 20,
         createdAt: "2026-02-23T00:00:02.000Z",
         kind: "tool.completed",
         summary: "Read File",
@@ -3606,6 +3713,7 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       id: "legacy-read-update",
+      eventSequence: undefined,
       toolTitle: "Read File",
       itemType: "dynamic_tool_call",
     });
@@ -3766,6 +3874,86 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  it("keeps messages, plans, and collapsed tools in event order when the clock moves backward", () => {
+    const before = "2026-02-23T00:10:00.000Z";
+    const after = "2026-02-23T00:05:00.000Z";
+    const work = deriveWorkLogEntries([
+      makeActivity({
+        id: "tool-start",
+        eventSequence: 11,
+        sequence: 9,
+        createdAt: before,
+        kind: "tool.started",
+        payload: {
+          itemType: "command_execution",
+          data: { toolCallId: "command-1", kind: "execute" },
+        },
+      }),
+      makeActivity({
+        id: "tool-end",
+        eventSequence: 14,
+        sequence: 1,
+        createdAt: after,
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          data: { toolCallId: "command-1", kind: "execute" },
+        },
+      }),
+    ]);
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("first"),
+          role: "user",
+          text: "Start",
+          createdAt: before,
+          streaming: false,
+          eventSequence: 10,
+        },
+        {
+          id: MessageId.make("reply"),
+          role: "assistant",
+          text: "Done",
+          createdAt: after,
+          streaming: false,
+          eventSequence: 13,
+        },
+        {
+          id: MessageId.make("follow-up"),
+          role: "user",
+          text: "Continue",
+          createdAt: after,
+          streaming: false,
+          eventSequence: 15,
+        },
+      ],
+      [
+        {
+          id: "plan",
+          turnId: null,
+          planMarkdown: "Plan",
+          implementedAt: null,
+          implementationThreadId: null,
+          dismissedAt: null,
+          createdAt: after,
+          updatedAt: after,
+          eventSequence: 12,
+        },
+      ],
+      work,
+    );
+
+    expect(work).toHaveLength(1);
+    expect(work[0]).toMatchObject({
+      id: "tool-start",
+      eventSequence: 11,
+      executionState: "completed",
+    });
+    expect(entries.map((entry) => entry.eventSequence)).toEqual([10, 11, 12, 13, 15]);
+    expect(entries.map((entry) => entry.createdAt)).toEqual([before, before, after, after, after]);
+  });
+
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(
       [
@@ -5281,6 +5469,91 @@ describe("deriveSubagentProgressState", () => {
         latestTurnSettled: false,
       }),
     ).toBeNull();
+  });
+
+  it("keeps a finished Codex agent idle after a message until its child turn starts", () => {
+    const activities = [
+      makeActivity({
+        id: "child-result",
+        createdAt: "2026-09-05T06:38:52.000Z",
+        kind: "subagent.result",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "subagent-response:agent-child",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-child"],
+              agentsStates: {
+                "agent-child": { status: "completed", message: "Review complete." },
+              },
+            },
+          },
+        },
+      }),
+      // Saved activities from older servers claim that any interaction starts
+      // work, including a send_message delivered after the child's final reply.
+      makeActivity({
+        id: "child-message",
+        createdAt: "2026-09-05T06:40:10.000Z",
+        kind: "tool.completed",
+        turnId: "turn-2",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "message-call",
+              type: "subAgentActivity",
+              kind: "interacted",
+              agentThreadId: "agent-child",
+              agentPath: "/root/review",
+              tool: "sendInput",
+              status: "inProgress",
+              receiverThreadIds: ["agent-child"],
+              agentsStates: { "agent-child": { status: "running" } },
+            },
+          },
+        },
+      }),
+    ];
+    const settled = deriveSubagentActivityState({
+      activities,
+      latestTurnId: TurnId.make("turn-2"),
+      latestTurnSettled: true,
+    });
+
+    expect(settled.progress).toBeNull();
+    expect(settled.history).toMatchObject([
+      { item: { status: "completed", turnId: "turn-1" }, resultBody: "Review complete." },
+    ]);
+    expect(settled.resultEntries).toMatchObject([{ body: "Review complete." }]);
+    expect(settled.liveEntries).toEqual([]);
+
+    const resumed = deriveSubagentActivityState({
+      activities: [
+        ...activities,
+        makeActivity({
+          id: "child-turn-started",
+          createdAt: "2026-09-05T06:41:00.000Z",
+          kind: "subagent.metadata",
+          turnId: "turn-2",
+          payload: { agentThreadId: "agent-child", status: "running" },
+        }),
+      ],
+      latestTurnId: TurnId.make("turn-2"),
+      latestTurnSettled: true,
+    });
+
+    expect(resumed.progress).toMatchObject({
+      activeCount: 1,
+      items: [{ agentThreadId: "agent-child", status: "running" }],
+    });
+    expect(resumed.history).toHaveLength(1);
   });
 
   it("does not expose root conversation interactions as running subagents", () => {

@@ -214,6 +214,8 @@ import type {
   SourceControlRepositoryLookupInput,
   SourceControlToolUpdateInput,
   SourceControlToolUpdateResult,
+  SourceControlSetupState,
+  GitHubAuthState,
 } from "./sourceControl.ts";
 
 export interface ContextMenuItem<T extends string = string> {
@@ -1125,6 +1127,9 @@ export interface LocalApi {
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>;
+    getSourceControlSetup: () => Promise<SourceControlSetupState>;
+    startGitHubAuth: () => Promise<GitHubAuthState>;
+    cancelGitHubAuth: () => Promise<void>;
     updateSourceControlTool: (
       input: SourceControlToolUpdateInput,
     ) => Promise<SourceControlToolUpdateResult>;

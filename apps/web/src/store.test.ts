@@ -14,6 +14,7 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
+import { deriveTimelineEntries } from "./session-logic";
 
 import {
   applyOrchestrationEvent,
@@ -529,6 +530,44 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("preserves message order through clock rollback and streaming updates", () => {
+    const thread = makeThread();
+    const before = "2026-02-27T00:10:00.000Z";
+    const after = "2026-02-27T00:05:00.000Z";
+    let state = makeState(thread);
+    const messages = [
+      { id: "first", role: "user", text: "Start", createdAt: before, streaming: false },
+      { id: "reply", role: "assistant", text: "Working", createdAt: before, streaming: true },
+      { id: "follow-up", role: "user", text: "Continue", createdAt: after, streaming: false },
+      { id: "reply", role: "assistant", text: "Done", createdAt: after, streaming: false },
+    ] as const;
+    for (const [index, message] of messages.entries()) {
+      state = applyOrchestrationEvent(
+        state,
+        makeEvent(
+          "thread.message-sent",
+          {
+            threadId: thread.id,
+            messageId: MessageId.make(message.id),
+            role: message.role,
+            text: message.text,
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+            streaming: message.streaming,
+            turnId: null,
+          },
+          { sequence: index + 10 },
+        ),
+        localEnvironmentId,
+      );
+    }
+    const result = threadsOf(state)[0]!;
+    const timeline = deriveTimelineEntries(result.messages, [], []);
+    expect(timeline.map((entry) => entry.eventSequence)).toEqual([10, 11, 12]);
+    expect(result.messages.map((message) => message.id)).toEqual(["first", "reply", "follow-up"]);
+    expect(result.messages[1]).toMatchObject({ text: "Done", streaming: false, createdAt: before });
+  });
+
   it("projects realtime voice state into thread detail and shell state", () => {
     const state = makeState(makeThread());
 

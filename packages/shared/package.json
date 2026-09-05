@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./transcriptOrder": {
+      "types": "./src/transcriptOrder.ts",
+      "import": "./src/transcriptOrder.ts"
+    },
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"

@@ -5,11 +5,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
-it.layer(NodeSqliteClient.layerMemory())("050_ProjectionThreadsBlockingUserInput", (it) => {
+it.layer(NodeSqliteClient.layerMemory())("051_ProjectionThreadsBlockingUserInput", (it) => {
   it.effect("backfills mixed open questions without reviving resolved or stale requests", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 49 });
+      yield* runMigrations({ toMigrationInclusive: 50 });
       yield* sql`
         INSERT INTO projection_threads (
           thread_id, project_id, title, model_selection_json, runtime_mode,
@@ -50,7 +50,7 @@ it.layer(NodeSqliteClient.layerMemory())("050_ProjectionThreadsBlockingUserInput
         `;
       }
 
-      yield* runMigrations({ toMigrationInclusive: 50 });
+      yield* runMigrations({ toMigrationInclusive: 51 });
       const rows = yield* sql`
         SELECT pending_user_input_count, blocking_user_input_count
         FROM projection_threads WHERE thread_id = 'thread-1'

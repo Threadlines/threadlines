@@ -41,6 +41,19 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
   const environment: NodeJS.ProcessEnv = { ...baseEnv };
+  // Adapters retain this environment across turns. Read the driver's refreshed
+  // PATH at spawn time so a newly installed CLI works without rebuilding it.
+  if (process.platform === "win32") {
+    for (const key of Object.keys(environment)) {
+      if (key.toUpperCase() === "PATH") delete environment[key];
+    }
+  }
+  Object.defineProperty(environment, "PATH", {
+    enumerable: true,
+    configurable: true,
+    get: () =>
+      process.platform === "win32" ? (baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path) : baseEnv.PATH,
+  });
   // The CLI re-runs a turn it considers interrupted when the session is
   // resumed. The orchestration core already records that turn as
   // interrupted, and a silent re-run would land its output (and repeat its

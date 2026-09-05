@@ -35,10 +35,12 @@ export const GITHUB_PULL_REQUEST_LIST_FIELDS = [
   "createdAt",
   "updatedAt",
   "mergedAt",
+  "closedAt",
   "mergeable",
   "reviewDecision",
   "reviewRequests",
   "labels",
+  "autoMergeRequest",
 ] as const;
 
 export const GITHUB_PULL_REQUEST_LIST_CHECKS_FIELD = "statusCheckRollup";
@@ -63,12 +65,16 @@ export interface GitHubPullRequestListRow {
   readonly deletions: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** When the row merged or closed; null while open, or where the host did not say. */
+  readonly settledAt: string | null;
   /** User logins with a pending review request; team requests are dropped. */
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   readonly reviewDecision?: PullRequestReviewDecision;
   readonly checksState?: PullRequestChecksState;
   /** Absent where the host said nothing about whether the branch still merges. */
   readonly mergeability?: PullRequestMergeability;
+  /** Absent on a CLI too old to report an auto-merge instruction at all. */
+  readonly autoMergeEnabled?: boolean;
   readonly labels: ReadonlyArray<{ readonly name: string; readonly color: string | null }>;
 }
 
@@ -117,6 +123,7 @@ export const GitHubPullRequestListRowSchema = Schema.Struct({
   baseRefName: TrimmedNonEmptyString,
   state: Schema.optional(Schema.NullOr(Schema.String)),
   mergedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  closedAt: Schema.optional(Schema.NullOr(Schema.String)),
   isDraft: Schema.optional(Schema.NullOr(Schema.Boolean)),
   additions: Schema.optional(Schema.NullOr(NonNegativeInt)),
   deletions: Schema.optional(Schema.NullOr(NonNegativeInt)),
@@ -127,6 +134,8 @@ export const GitHubPullRequestListRowSchema = Schema.Struct({
   reviewRequests: Schema.optional(Schema.NullOr(Schema.Array(GitHubReviewRequestSchema))),
   labels: Schema.optional(Schema.NullOr(Schema.Array(GitHubLabelSchema))),
   statusCheckRollup: Schema.optional(Schema.NullOr(Schema.Array(GitHubStatusCheckSchema))),
+  /** An object while auto-merge is armed, null once it is not, absent on an older CLI. */
+  autoMergeRequest: Schema.optional(Schema.NullOr(Schema.Struct({}))),
 });
 
 const FAILING_CHECK_CONCLUSIONS = new Set([
@@ -196,6 +205,18 @@ function normalizeState(raw: {
     return "merged";
   }
   return state === "CLOSED" ? "closed" : "open";
+}
+
+/** The moment a settled row landed: the merge for a merged one, the close otherwise. */
+function normalizeSettledAt(raw: {
+  readonly state?: string | null | undefined;
+  readonly mergedAt?: string | null | undefined;
+  readonly closedAt?: string | null | undefined;
+}): string | null {
+  if (normalizeState(raw) === "open") {
+    return null;
+  }
+  return nonEmptyText(raw.mergedAt) ?? nonEmptyText(raw.closedAt);
 }
 
 function normalizeReviewDecision(
@@ -287,6 +308,7 @@ export function normalizeGitHubPullRequestListRow(
     deletions: raw.deletions ?? 0,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
+    settledAt: normalizeSettledAt(raw),
     reviewRequestedLogins: (raw.reviewRequests ?? []).flatMap((request) => {
       const typename = nonEmptyText(request.__typename);
       if (typename !== null && typename !== "User") {
@@ -298,6 +320,11 @@ export function normalizeGitHubPullRequestListRow(
     ...(reviewDecision === undefined ? {} : { reviewDecision }),
     ...(checksState === undefined ? {} : { checksState }),
     ...(mergeability === undefined ? {} : { mergeability }),
+    // A CLI too old for the field leaves it absent, which is "the host did not
+    // say" rather than "auto-merge is off".
+    ...(raw.autoMergeRequest === undefined
+      ? {}
+      : { autoMergeEnabled: raw.autoMergeRequest !== null }),
     labels: (raw.labels ?? []).flatMap((label) => {
       const name = nonEmptyText(label.name);
       return name === null ? [] : [{ name, color: nonEmptyText(label.color) }];

@@ -697,8 +697,12 @@ export function isThreadDone(
   options: {
     readonly now: string;
     readonly autoDoneAfterDays?: number | null;
-    /** The thread's pull request has merged or closed. */
-    readonly pullRequestSettled?: boolean;
+    /**
+     * When the thread's pull request merged or closed. The landing files the
+     * thread once: a message sent after it, or a "keep active" given after it,
+     * is the user's word that the thread is still in use.
+     */
+    readonly pullRequestSettledAt?: string | null;
   },
 ): boolean {
   if (!canMarkThreadDone(thread, options)) return false;
@@ -710,12 +714,38 @@ export function isThreadDone(
   if (override != null && !overrideIsStale) {
     return override.state === "done";
   }
-  if (options.pullRequestSettled === true && !hasUnseenCompletion(thread)) return true;
+  if (
+    isFiledByPullRequest(thread, override, options.pullRequestSettledAt) &&
+    !hasUnseenCompletion(thread)
+  ) {
+    return true;
+  }
   if (options.autoDoneAfterDays == null) return false;
   if (thread.pinnedAt !== null) return false;
   if (hasUnseenCompletion(thread)) return false;
   if (lastActivityAt === null) return false;
   return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;
+}
+
+/**
+ * Whether a landed pull request is the last word on the thread. The user's own
+ * later moves outrank it: a message sent after the landing, or an explicit
+ * "keep active" given after it, even one that later activity has made stale
+ * for the override rule above.
+ */
+function isFiledByPullRequest(
+  thread: DoneSortInput,
+  override: ThreadDoneOverride | null | undefined,
+  settledAt: string | null | undefined,
+): boolean {
+  if (settledAt == null) return false;
+  const settledMs = Date.parse(settledAt);
+  if (Number.isNaN(settledMs)) return false;
+  if (override?.state === "active" && Date.parse(override.at) >= settledMs) return false;
+  const userSpokeAt = thread.latestUserMessageAt ?? thread.latestTurn?.requestedAt ?? null;
+  if (userSpokeAt === null) return true;
+  const userSpokeMs = Date.parse(userSpokeAt);
+  return Number.isNaN(userSpokeMs) || userSpokeMs <= settledMs;
 }
 
 /**

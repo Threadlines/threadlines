@@ -409,6 +409,7 @@ export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
+  eventSequence: Schema.optional(NonNegativeInt),
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
@@ -506,6 +507,7 @@ export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Typ
 
 export const OrchestrationProposedPlan = Schema.Struct({
   id: OrchestrationProposedPlanId,
+  eventSequence: Schema.optional(NonNegativeInt),
   turnId: Schema.NullOr(TurnId),
   planMarkdown: TrimmedNonEmptyString,
   implementedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -648,6 +650,7 @@ export type OrchestrationThreadActivityTone = typeof OrchestrationThreadActivity
 
 export const OrchestrationThreadActivity = Schema.Struct({
   id: EventId,
+  eventSequence: Schema.optional(NonNegativeInt),
   tone: OrchestrationThreadActivityTone,
   kind: TrimmedNonEmptyString,
   summary: TrimmedNonEmptyString,
@@ -703,6 +706,8 @@ export const OrchestrationSubagent = Schema.Struct({
   reasoningEffortProvenance: Schema.NullOr(OrchestrationSubagentSettingProvenance),
   resultBody: Schema.NullOr(Schema.String),
   resultCreatedAt: Schema.NullOr(IsoDateTime),
+  resultEventSequence: Schema.optional(NonNegativeInt),
+  liveEventSequence: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

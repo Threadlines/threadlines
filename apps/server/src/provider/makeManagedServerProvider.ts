@@ -218,7 +218,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   );
 
   return {
-    maintenanceCapabilities: input.maintenanceCapabilities,
+    get maintenanceCapabilities() {
+      return input.maintenanceCapabilities;
+    },
     // Reads the cached snapshot without probing or queueing behind the
     // refresh semaphore — startup paths must never wait on a slow probe.
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),

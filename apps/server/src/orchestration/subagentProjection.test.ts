@@ -559,6 +559,69 @@ describe("projectSubagentActivity", () => {
     expect(orphan[1]?.resultBody).toBe("Lost agent output.");
   });
 
+  it("keeps a completed Codex agent settled after a message and reopens on a real child turn", () => {
+    const completed = projectSubagentActivity(
+      [],
+      activity({
+        id: "child-result",
+        kind: "subagent.result",
+        turnId: TURN_ID,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              tool: "wait",
+              receiverThreadIds: ["child"],
+              agentsStates: { child: { status: "completed", message: "Review complete." } },
+            },
+          },
+        },
+      }),
+    );
+    const messaged = projectSubagentActivity(
+      completed,
+      activity({
+        id: "child-message",
+        kind: "tool.completed",
+        turnId: RESUME_TURN_ID,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              kind: "interacted",
+              agentThreadId: "child",
+              tool: "sendInput",
+              status: "inProgress",
+              agentsStates: { child: { status: "running" } },
+            },
+          },
+        },
+      }),
+    );
+    expect(messaged).toEqual(completed);
+    const resumed = projectSubagentActivity(
+      messaged,
+      activity({
+        id: "child-turn-started",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { agentThreadId: "child", status: "running" },
+      }),
+    );
+    expect(resumed).toMatchObject([{ status: "running", turnId: RESUME_TURN_ID }]);
+    const settled = projectSubagentActivity(
+      resumed,
+      activity({
+        id: "child-turn-completed",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { agentThreadId: "child", status: "completed" },
+      }),
+    );
+    expect(settled).toMatchObject([{ status: "completed", resultBody: "Review complete." }]);
+  });
+
   it("still folds Codex-shaped collab items", () => {
     const roster = projectSubagentActivity(
       [],
@@ -585,5 +648,49 @@ describe("projectSubagentActivity", () => {
     expect(roster).toHaveLength(1);
     expect(roster[0]?.agentThreadId).toBe("agent-codex-1");
     expect(roster[0]?.spawnCallId).toBe("call-1");
+  });
+});
+
+it("keeps result and live event positions through metadata updates", () => {
+  let roster = projectSubagentActivity([], {
+    ...activity({
+      id: "live-order",
+      kind: "tool.updated",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        data: {
+          subagentLiveText: "Reading files",
+          item: {
+            id: "spawn-order",
+            tool: "spawnAgent",
+            status: "inProgress",
+            agentThreadId: "agent-order",
+          },
+        },
+      },
+    }),
+    eventSequence: 10,
+  });
+  for (const [eventSequence, payload] of [
+    [20, { agentThreadId: "agent-order", status: "completed", resultBody: "Done" }],
+    [30, { agentThreadId: "agent-order", resultBody: "Done", role: "Reviewer" }],
+    [40, { agentThreadId: "agent-order", isBackgrounded: true }],
+  ] as const) {
+    roster = projectSubagentActivity(roster, {
+      ...activity({
+        id: `metadata-${eventSequence}`,
+        kind: "subagent.metadata",
+        payload,
+        createdAt: "2026-08-14T23:00:00.000Z",
+      }),
+      eventSequence,
+    });
+  }
+  expect(roster[0]).toMatchObject({
+    resultBody: "Done",
+    resultEventSequence: 20,
+    liveEventSequence: 10,
+    role: "Reviewer",
+    isBackgrounded: true,
   });
 });

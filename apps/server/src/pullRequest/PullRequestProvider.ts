@@ -17,6 +17,7 @@ import {
   type PullRequestLabel,
   type PullRequestListState,
   type PullRequestMergeability,
+  type PullRequestMergeGate,
   type PullRequestMergeMethod,
   type PullRequestReactionContent,
   type PullRequestReviewCommentDraft,
@@ -78,6 +79,8 @@ export interface ProviderChangeRequest {
   readonly deletions: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** When the row merged or closed; absent or null while open, or where the host did not say. */
+  readonly settledAt?: string | null;
   /** Accounts with a review outstanding; team requests are dropped by each host. */
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   readonly labels: ReadonlyArray<PullRequestLabel>;
@@ -90,6 +93,8 @@ export interface ProviderChangeRequest {
   readonly mergeability?: PullRequestMergeability;
   /** Absent where there are no checks, or where the listing did not ask for them. */
   readonly checksState?: PullRequestChecksState;
+  /** Whether the host is armed to merge it on its own; absent where the host does not say. */
+  readonly autoMergeEnabled?: boolean;
 }
 
 /**
@@ -116,11 +121,11 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestReviewer>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
+  /** Absent where the host does not say whether its rules would take a merge. */
+  readonly mergeGate?: PullRequestMergeGate;
   readonly baseComparison: PullRequestBaseComparison;
   /** Null where the host could not compare the branch with its base. */
   readonly behindBy: number | null;
-  /** Null where the host does not say whether it is armed to merge on its own. */
-  readonly autoMergeEnabled: boolean | null;
 }
 
 /**
@@ -132,6 +137,11 @@ export interface ProviderRepositoryAccess {
   readonly mergeMethods: ReadonlyArray<PullRequestMergeMethod>;
   /** What a pull request has to target not to be stacked on other work. */
   readonly defaultBranch: string | null;
+  /**
+   * Whether the repository lets a pull request be armed to merge on its own.
+   * Absent where the host has no such switch, or did not say.
+   */
+  readonly autoMergeAllowed?: boolean;
 }
 
 /**
