@@ -20,7 +20,7 @@ import {
   type ProviderExternalThreadTranscriptMessage,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
-  type SubagentMetadataUpdatedPayload,
+  SubagentMetadataUpdatedPayload,
   type ProviderRequestKind,
   type ProviderRealtimeAudioChunk,
   type ProviderSubagentTranscriptEntry,
@@ -768,19 +768,17 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
 }
 
 function canonicalSubAgentActivityItem(item: CodexSubAgentActivityItem): Record<string, unknown> {
+  // A message to an idle agent also emits "interacted". Only the child's
+  // turn lifecycle can tell us whether that interaction started more work.
+  if (item.kind === "interacted") return item;
   // "completed" (Codex 0.150+) and "interrupted" both end the agent; only the
   // first is a clean finish.
-  const running = item.kind === "started" || item.kind === "interacted";
+  const running = item.kind === "started";
   return {
     ...item,
     // Keep the native fields above while exposing the stable collab-agent
     // fields consumed by projections shared across providers.
-    tool:
-      item.kind === "started"
-        ? "spawnAgent"
-        : item.kind === "interacted"
-          ? "sendInput"
-          : "closeAgent",
+    tool: item.kind === "started" ? "spawnAgent" : "closeAgent",
     status: running ? "inProgress" : "completed",
     receiverThreadIds: [item.agentThreadId],
     agentsStates: {
@@ -1626,6 +1624,19 @@ export function mapToRuntimeEvents(
         },
       },
     ];
+  }
+
+  if (event.method === "subagent/status/changed") {
+    const metadata = readPayload(SubagentMetadataUpdatedPayload, event.payload);
+    return metadata
+      ? [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            type: "subagent.metadata.updated",
+            payload: metadata,
+          },
+        ]
+      : [];
   }
 
   if (event.method === "thread/settings/updated") {
