@@ -87,6 +87,14 @@ const LIST_REFS_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_FETCH_NO_WRITE_FETCH_HEAD = "--no-write-fetch-head";
 /** Upper bound on the pre-worktree fetch; past it the local branch is used as-is. */
 const WORKTREE_BASE_FETCH_TIMEOUT = Duration.seconds(15);
+/**
+ * How long removeWorktree keeps trying to delete a folder git already
+ * unregistered but could not delete because a process still sat in it.
+ * Terminal shells exit within a second or two of thread cleanup; five seconds
+ * leaves headroom without hanging the caller.
+ */
+const LEFTOVER_WORKTREE_REMOVE_ATTEMPTS = 20;
+const LEFTOVER_WORKTREE_REMOVE_DELAY = Duration.millis(250);
 const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
   GIT_TERMINAL_PROMPT: "0",
@@ -4593,10 +4601,44 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       args.push("--force");
     }
     args.push(input.path);
+
+    // git unregisters the worktree before it deletes the files, so a folder
+    // that something still holds open comes back as "failed to delete ...
+    // Permission denied" with the registration already gone. Thread deletion
+    // hits exactly that on Windows: the worktree's terminal shell is killed a
+    // beat after removal starts, and until it exits its working directory
+    // pins the folder. Finish the deletion ourselves once the holder lets go,
+    // but only when git really did unregister the worktree.
+    const finishInterruptedRemoval = (cause: GitCommandError) =>
+      Effect.gen(function* () {
+        if (yield* isWorktreeRegistered(input.cwd, input.path)) {
+          return yield* Effect.fail(cause);
+        }
+        for (let attempt = 0; attempt < LEFTOVER_WORKTREE_REMOVE_ATTEMPTS; attempt += 1) {
+          if (attempt > 0) {
+            yield* Effect.sleep(LEFTOVER_WORKTREE_REMOVE_DELAY);
+          }
+          yield* fileSystem
+            .remove(input.path, { recursive: true, force: true })
+            .pipe(Effect.catch(() => Effect.void));
+          const stillThere = yield* fileSystem
+            .exists(input.path)
+            .pipe(Effect.catch(() => Effect.succeed(false)));
+          if (!stillThere) {
+            return;
+          }
+        }
+        return yield* Effect.fail(cause);
+      });
+
     yield* executeGit("GitVcsDriver.removeWorktree", input.cwd, args, {
       timeoutMs: 15_000,
       fallbackErrorMessage: "git worktree remove failed",
     }).pipe(
+      Effect.catchIf(
+        (error) => /failed to delete/iu.test(error.detail ?? ""),
+        finishInterruptedRemoval,
+      ),
       Effect.mapError((error) =>
         createGitCommandError(
           "GitVcsDriver.removeWorktree",
@@ -4607,6 +4649,33 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ),
       ),
     );
+  });
+
+  /** Whether `git worktree list` still knows the checkout at `worktreePath`. */
+  const isWorktreeRegistered = Effect.fn("isWorktreeRegistered")(function* (
+    cwd: string,
+    worktreePath: string,
+  ) {
+    const normalize = (value: string) => {
+      const forwardSlashes = value.replace(/\\/g, "/").replace(/\/+$/, "");
+      return globalThis.process.platform === "win32"
+        ? forwardSlashes.toLowerCase()
+        : forwardSlashes;
+    };
+    const result = yield* executeGit(
+      "GitVcsDriver.isWorktreeRegistered",
+      cwd,
+      ["worktree", "list", "--porcelain"],
+      { timeoutMs: 5_000, allowNonZeroExit: true },
+    ).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (result === null || result.exitCode !== 0) {
+      return true;
+    }
+    const target = normalize(worktreePath);
+    return result.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .some((line) => normalize(line.slice("worktree ".length)) === target);
   });
 
   const renameBranch: GitVcsDriver.GitVcsDriverShape["renameBranch"] = Effect.fn("renameBranch")(

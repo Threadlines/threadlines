@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { setTimeout as sleepRealTime } from "node:timers/promises";
 
@@ -2036,4 +2037,39 @@ it.live("waits for another process to release the index lock", () =>
     assert.equal(result.exitCode, 0);
     assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "locked.txt");
   }).pipe(Effect.provide(TestLayer)),
+);
+
+// Thread deletion kills the worktree's terminals and removes the worktree at
+// the same time. On Windows a shell whose working directory is the worktree
+// pins the folder, so git unregisters the worktree but cannot delete it.
+// Removal has to outlast the holder instead of failing. Real clock, because
+// the retry delays between attempts must actually elapse.
+it.live("removes a worktree that a process briefly holds as its working directory", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    const { initialBranch } = yield* initRepoWithCommit(cwd);
+    const pathService = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "held");
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    yield* driver.createWorktree({
+      cwd,
+      path: worktreePath,
+      refName: initialBranch,
+      newRefName: "feature/held",
+    });
+
+    // A process that sits in the worktree for a moment, then exits on its own.
+    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], {
+      cwd: worktreePath,
+      stdio: "ignore",
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(() => holder.kill()));
+    yield* Effect.promise(() => sleepRealTime(200));
+
+    yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
+    assert.equal(yield* fileSystem.exists(worktreePath), false);
+    const worktrees = yield* driver.listWorktrees({ cwd });
+    assert.isUndefined(worktrees.find((worktree) => worktree.branch === "feature/held"));
+  }).pipe(Effect.scoped, Effect.provide(TestLayer)),
 );
