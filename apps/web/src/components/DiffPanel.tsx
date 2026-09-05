@@ -6,7 +6,6 @@ import { type ContextMenuItem, TurnId } from "@threadlines/contracts";
 import type { DiffRenderMode } from "@threadlines/contracts/settings";
 import {
   ChevronDownIcon,
-  ChevronRightIcon,
   ChevronUpIcon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
@@ -62,6 +61,11 @@ import {
   sumDiffFileStats,
 } from "./DiffPanel.logic";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
+import {
+  FileDiffHeader,
+  getFileDiffStatusBadge,
+  resolveFileDiffPath,
+} from "./diffs/fileDiffPresentation";
 import { DiffStatLabel } from "./chat/DiffStatLabel";
 import { SourceControlIcon } from "./Icons";
 import {
@@ -90,45 +94,6 @@ import { ToggleGroup, Toggle } from "./ui/toggle-group";
 import { TooltipWrapper } from "./ui/tooltip";
 
 type DiffThemeType = "light" | "dark";
-
-function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
-  const raw = fileDiff.name ?? fileDiff.prevName ?? "";
-  if (raw.startsWith("a/") || raw.startsWith("b/")) {
-    return raw.slice(2);
-  }
-  return raw;
-}
-
-/** Rename source path, only when it differs from the displayed path. */
-function resolveFileDiffPrevPath(fileDiff: FileDiffMetadata): string | null {
-  const raw = fileDiff.prevName;
-  if (!raw) return null;
-  const stripped = raw.startsWith("a/") || raw.startsWith("b/") ? raw.slice(2) : raw;
-  return stripped === resolveFileDiffPath(fileDiff) ? null : stripped;
-}
-
-/** Matches workingTreeFileStatusClassName in SourceControlPanel: green added,
- * red deleted, amber modified, so the tree and the diff cards speak one
- * color language. */
-function getFileDiffStatusBadge(fileDiff: FileDiffMetadata): {
-  readonly label: string;
-  readonly className: string;
-} {
-  switch (fileDiff.type) {
-    case "new":
-      return { label: "A", className: "border-success/25 bg-success/8 text-success-foreground" };
-    case "deleted":
-      return {
-        label: "D",
-        className: "border-destructive/25 bg-destructive/8 text-destructive-foreground",
-      };
-    case "rename-pure":
-    case "rename-changed":
-      return { label: "R", className: "border-warning/25 bg-warning/8 text-warning-foreground" };
-    default:
-      return { label: "M", className: "border-warning/25 bg-warning/8 text-warning-foreground" };
-  }
-}
 
 /**
  * The panel unmounts whenever the rail swaps back to source control, so the
@@ -1686,75 +1651,15 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                         <FileDiff
                           fileDiff={showPreview ? previewFileDiff : fileDiff}
                           style={DIFF_PANEL_HOST_STYLE}
-                          renderCustomHeader={() => {
-                            const badge = getFileDiffStatusBadge(fileDiff);
-                            const fileStat = fileStatByKey.get(fileKey);
-                            const pathSegments = filePath.split("/");
-                            const fileName = pathSegments.at(-1) ?? filePath;
-                            const fileDirectory = pathSegments.slice(0, -1).join("/");
-                            const prevPath = resolveFileDiffPrevPath(fileDiff);
-                            const prevFileName = prevPath
-                              ? (prevPath.split("/").at(-1) ?? prevPath)
-                              : null;
-                            return (
-                              <div className="flex h-9 min-w-0 items-center gap-1.5 pl-1.5 pr-2">
-                                <TooltipWrapper
-                                  tooltip={collapsed ? "Expand diff" : "Collapse diff"}
-                                >
-                                  <button
-                                    type="button"
-                                    className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
-                                    aria-label={
-                                      collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`
-                                    }
-                                    aria-expanded={!collapsed}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      toggleDiffFileCollapsed(fileKey);
-                                    }}
-                                  >
-                                    {collapsed ? (
-                                      <ChevronRightIcon className="size-4" />
-                                    ) : (
-                                      <ChevronDownIcon className="size-4" />
-                                    )}
-                                  </button>
-                                </TooltipWrapper>
-                                <span
-                                  className={cn(
-                                    "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
-                                    badge.className,
-                                  )}
-                                >
-                                  {badge.label}
-                                </span>
-                                <span
-                                  data-title=""
-                                  title={prevPath ? `${prevPath} → ${filePath}` : filePath}
-                                  className="group/diff-title flex min-w-0 flex-1 cursor-pointer items-baseline font-mono text-[11px] leading-none text-foreground/90"
-                                >
-                                  {prevFileName && prevFileName !== fileName ? (
-                                    <span className="mr-1.5 min-w-0 shrink-[99] truncate text-muted-foreground/55">
-                                      {prevFileName} →
-                                    </span>
-                                  ) : null}
-                                  {fileDirectory ? (
-                                    <span className="min-w-0 shrink-[99] truncate text-muted-foreground/55 transition-colors group-hover/diff-title:text-muted-foreground/80">
-                                      {fileDirectory}/
-                                    </span>
-                                  ) : null}
-                                  <span className="min-w-0 max-w-full shrink-0 truncate [direction:rtl] underline-offset-2 transition-colors group-hover/diff-title:text-foreground group-hover/diff-title:underline group-hover/diff-title:decoration-foreground/35">
-                                    <bdi>{fileName}</bdi>
-                                  </span>
-                                </span>
-                                {fileStat ? (
-                                  <span className="shrink-0 pl-1 font-mono text-[10px] leading-none">
-                                    <DiffStatLabel
-                                      additions={fileStat.additions}
-                                      deletions={fileStat.deletions}
-                                    />
-                                  </span>
-                                ) : null}
+                          renderCustomHeader={() => (
+                            <FileDiffHeader
+                              fileDiff={fileDiff}
+                              filePath={filePath}
+                              collapsed={collapsed}
+                              onToggleCollapsed={() => toggleDiffFileCollapsed(fileKey)}
+                              stat={fileStatByKey.get(fileKey) ?? null}
+                              interactiveTitle
+                              trailing={
                                 <TooltipWrapper tooltip="Open in editor">
                                   <button
                                     type="button"
@@ -1768,9 +1673,9 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                                     <SquareArrowOutUpRightIcon className="size-3" />
                                   </button>
                                 </TooltipWrapper>
-                              </div>
-                            );
-                          }}
+                              }
+                            />
+                          )}
                           options={{
                             collapsed,
                             diffStyle: effectiveDiffRenderMode === "split" ? "split" : "unified",

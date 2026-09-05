@@ -2,6 +2,8 @@ import "../index.css";
 
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { EnvironmentId, type EnvironmentApi, ThreadId } from "@threadlines/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement, ReactNode } from "react";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -62,6 +64,26 @@ const CHAT_MARKDOWN_THREAD_REF = scopeThreadRef(
   CHAT_MARKDOWN_ENVIRONMENT_ID,
   CHAT_MARKDOWN_THREAD_ID,
 );
+
+// The inline image loader reads files through react-query, so those renders
+// need the provider the app root supplies.
+function renderWithQueryClient(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return render(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
+
+function installReadFileEnvironment(readFile: EnvironmentApi["projects"]["readFile"]) {
+  __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
+    filesystem: { browse: filesystemBrowseMock },
+    projects: { readFile },
+  } as unknown as EnvironmentApi);
+}
 
 function installFilesystemBrowseEnvironment() {
   __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
@@ -632,6 +654,71 @@ describe("ChatMarkdown", () => {
         expect(pre?.style.backgroundColor).not.toBe("");
         expect(pre?.textContent).toContain("function identity(value) {}");
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows a picture for an image path an agent wrote in prose", async () => {
+    const pixelBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const readFile = vi.fn(async (_input: { cwd: string; relativePath: string }) => ({
+      kind: "image" as const,
+      relativePath: "../Temp/shot.png",
+      mimeType: "image/png",
+      base64: pixelBase64,
+      size: 70,
+    }));
+    installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
+
+    const screen = await renderWithQueryClient(
+      <ChatMarkdown
+        text="Saved the screenshot to /tmp/Temp/shot.png for review."
+        cwd="/tmp/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      const thumbnail = page.getByRole("img", { name: "shot.png" });
+      await expect.element(thumbnail).toBeInTheDocument();
+      await expect
+        .element(thumbnail)
+        .toHaveAttribute("src", `data:image/png;base64,${pixelBase64}`);
+      // The chip stays under the picture and still opens the file.
+      await expect.element(page.getByRole("link", { name: "shot.png" })).toBeInTheDocument();
+      expect(readFile.mock.calls[0]?.[0]).toEqual({
+        cwd: "/tmp/project",
+        relativePath: "../Temp/shot.png",
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows only the chip when a referenced image is gone", async () => {
+    const readFile = vi.fn(async () => ({
+      kind: "missing" as const,
+      relativePath: "shots/gone.png",
+    }));
+    installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
+
+    const screen = await renderWithQueryClient(
+      <ChatMarkdown
+        text="![before](shots/gone.png)"
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByRole("link", { name: "before" })).toBeInTheDocument();
+      await vi.waitFor(() => {
+        expect(readFile).toHaveBeenCalled();
+      });
+      // Only the chip's file-type glyph; no thumbnail and no error box.
+      expect(document.querySelector('img[alt="before"]')).toBeNull();
+      expect(document.querySelector('button[aria-label="Preview before"]')).toBeNull();
     } finally {
       await screen.unmount();
     }

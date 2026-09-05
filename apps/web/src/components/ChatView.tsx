@@ -87,6 +87,7 @@ import {
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  isWaitingOnBackgroundTasks,
   formatElapsed,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
@@ -227,7 +228,10 @@ import {
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
 import type { ThreadBackgroundRunItem } from "./chat/threadActivity";
-import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import {
+  type ExpandedImagePreview,
+  setActiveExpandedImageOpener,
+} from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -1350,10 +1354,15 @@ export default function ChatView(props: ChatViewProps) {
   // The sidebar's tab strip is owned by the route that renders it; the header
   // reads the same store so its panel button and activity chip agree with what
   // is on screen. The button reflects the sidebar as a whole — it stays pressed
-  // on any tab, and on the launcher.
+  // on any tab, and on the launcher — and its counts stand in for whichever
+  // tabs the strip is showing without.
   const rightPanelTabs = useRightPanelTabs(rightPanelStateKey);
   const rightPanelEngaged = rightPanelTabs.visible;
   const agentsPanelOpen = rightPanelTabs.activeTab === "agents";
+  const railTabs = useMemo(
+    () => (rightPanelTabs.visible ? rightPanelTabs.openTabs : []),
+    [rightPanelTabs.visible, rightPanelTabs.openTabs],
+  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1396,8 +1405,10 @@ export default function ChatView(props: ChatViewProps) {
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   // Same rule as the sidebar's "Background" pill: settled, but a provider
   // task will start the thread back up on its own.
-  const isWaitingOnBackgroundTasks =
-    latestTurnSettled && (activeThread?.session?.pendingBackgroundTaskCount ?? 0) > 0;
+  const waitingOnBackgroundTasks = isWaitingOnBackgroundTasks(
+    activeLatestTurn,
+    activeThread?.session ?? null,
+  );
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
     : null;
@@ -6447,6 +6458,12 @@ export default function ChatView(props: ChatViewProps) {
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
+  // Inline pictures in chat markdown are rendered far below here and open the
+  // same dialog; registering the opener beats drilling it through every layer.
+  useEffect(() => {
+    setActiveExpandedImageOpener(onExpandTimelineImage);
+    return () => setActiveExpandedImageOpener(null);
+  }, [onExpandTimelineImage]);
   /** A "view diff" link in the conversation opens or retargets the one Diff
    *  tab, leaving the rest of the strip alone. */
   const onOpenTurnDiff = useCallback(
@@ -6604,6 +6621,7 @@ export default function ChatView(props: ChatViewProps) {
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           railToggleShortcutLabel={sourceControlPanelShortcutLabel}
           railOpen={rightPanelEngaged}
+          railTabs={railTabs}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           browserAvailable={browserAvailable}
           browserOpen={browserOpen}
@@ -6691,7 +6709,7 @@ export default function ChatView(props: ChatViewProps) {
               key={activeThread.id}
               emptyState={firstRunSetupEmptyState ?? draftTimelineEmptyState}
               isWorking={isWorking}
-              isWaitingOnBackgroundTasks={isWaitingOnBackgroundTasks}
+              isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}

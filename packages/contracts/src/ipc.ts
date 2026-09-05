@@ -53,6 +53,30 @@ import type {
   VcsStatusLocalResult,
   VcsStatusResult,
 } from "./git.ts";
+import type {
+  PullRequestActionInput,
+  PullRequestActionResult,
+  PullRequestActivity,
+  PullRequestActivityInput,
+  PullRequestCommentInput,
+  PullRequestCommentResult,
+  PullRequestCommentUpdateInput,
+  PullRequestDetail,
+  PullRequestDetailInput,
+  PullRequestDiffInput,
+  PullRequestDiffResult,
+  PullRequestListInput,
+  PullRequestListResult,
+  PullRequestReactionInput,
+  PullRequestRef,
+  PullRequestReviewerCandidateList,
+  PullRequestReviewerRequestInput,
+  PullRequestReviewInput,
+  PullRequestReviewResult,
+  PullRequestThreadReplyInput,
+  PullRequestThreadResolutionInput,
+  PullRequestUpdateInput,
+} from "./pullRequest.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type { UsageSummary, UsageSummaryInput } from "./usage.ts";
 import type {
@@ -343,9 +367,10 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
   state: DesktopUpdateStateSchema,
 });
 
-export type DesktopTaskbarThreadState = "running" | "completed";
+/** "waiting": the turn settled but background provider tasks keep the thread live. */
+export type DesktopTaskbarThreadState = "running" | "waiting" | "completed";
 
-export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "completed"]);
+export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "waiting", "completed"]);
 
 /** A thread surfaced in the desktop status item menu (click-to-open). */
 export interface DesktopTaskbarThreadSummary {
@@ -1357,6 +1382,22 @@ export interface EnvironmentApi {
     applyAuthRemediation: (
       input: GitApplyAuthRemediationInput,
     ) => Promise<GitApplyAuthRemediationResult>;
+  };
+  pullRequests: {
+    list: (input: PullRequestListInput) => Promise<PullRequestListResult>;
+    detail: (input: PullRequestDetailInput) => Promise<PullRequestDetail>;
+    activity: (input: PullRequestActivityInput) => Promise<PullRequestActivity>;
+    diff: (input: PullRequestDiffInput) => Promise<PullRequestDiffResult>;
+    comment: (input: PullRequestCommentInput) => Promise<PullRequestCommentResult>;
+    runAction: (input: PullRequestActionInput) => Promise<PullRequestActionResult>;
+    submitReview: (input: PullRequestReviewInput) => Promise<PullRequestReviewResult>;
+    replyToThread: (input: PullRequestThreadReplyInput) => Promise<void>;
+    setThreadResolution: (input: PullRequestThreadResolutionInput) => Promise<void>;
+    setReaction: (input: PullRequestReactionInput) => Promise<void>;
+    update: (input: PullRequestUpdateInput) => Promise<void>;
+    updateComment: (input: PullRequestCommentUpdateInput) => Promise<void>;
+    reviewerCandidates: (input: PullRequestRef) => Promise<PullRequestReviewerCandidateList>;
+    requestReviewers: (input: PullRequestReviewerRequestInput) => Promise<void>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

@@ -28,12 +28,14 @@ import {
   selectThreadCheckout,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  selectRunningSidebarThreadsAcrossEnvironments,
   type AppState,
   type EnvironmentState,
 } from "./store";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_COMPOSER_RUNTIME_MODE,
+  type SidebarThreadSummary,
   type Thread,
   type ThreadSession,
 } from "./types";
@@ -1548,5 +1550,74 @@ describe("incremental orchestration updates", () => {
       state: "running",
     });
     expect(threadsOf(next)[0]?.latestTurn?.sourceProposedPlan).toBeUndefined();
+  });
+});
+
+describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
+  function makeSidebarSummary(
+    overrides: Partial<SidebarThreadSummary> & Pick<SidebarThreadSummary, "id">,
+  ): SidebarThreadSummary {
+    return {
+      environmentId: localEnvironmentId,
+      projectId: ProjectId.make("project-1"),
+      title: "Thread",
+      interactionMode: DEFAULT_INTERACTION_MODE,
+      session: null,
+      createdAt: "2026-02-13T00:00:00.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      doneOverride: null,
+      lastSeenAt: null,
+      latestTurn: null,
+      branch: null,
+      worktreePath: null,
+      effectiveCwd: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      cumulativeDiffStat: null,
+      ...overrides,
+    };
+  }
+
+  it("keeps a settled thread live while background provider tasks are still running", () => {
+    const settledSession: ThreadSession = {
+      provider: ProviderDriverKind.make("claude"),
+      status: "ready",
+      orchestrationStatus: "ready",
+      checkoutCwd: "/tmp/project",
+      createdAt: "2026-02-13T00:00:00.000Z",
+      updatedAt: "2026-02-13T00:05:00.000Z",
+    };
+    const settledTurn = {
+      turnId: TurnId.make("turn-1"),
+      state: "completed" as const,
+      assistantMessageId: null,
+      requestedAt: "2026-02-13T00:00:00.000Z",
+      startedAt: "2026-02-13T00:00:00.000Z",
+      completedAt: "2026-02-13T00:05:00.000Z",
+    };
+    const waiting = makeSidebarSummary({
+      id: ThreadId.make("thread-waiting"),
+      session: { ...settledSession, pendingBackgroundTaskCount: 2 },
+      latestTurn: settledTurn,
+    });
+    const finished = makeSidebarSummary({
+      id: ThreadId.make("thread-finished"),
+      session: { ...settledSession, pendingBackgroundTaskCount: 0 },
+      latestTurn: settledTurn,
+    });
+    const state = makeEmptyState({
+      threadIds: [waiting.id, finished.id],
+      sidebarThreadSummaryById: {
+        [waiting.id]: waiting,
+        [finished.id]: finished,
+      },
+    });
+
+    expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
+      [waiting.id],
+    );
   });
 });
