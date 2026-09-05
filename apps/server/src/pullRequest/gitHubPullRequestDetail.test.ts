@@ -200,9 +200,15 @@ describe("decodeGitHubRepositoryJson", () => {
         allow_merge_commit: false,
         allow_squash_merge: true,
         allow_rebase_merge: true,
+        allow_auto_merge: false,
         default_branch: "main",
       }),
-      { canWrite: true, mergeMethods: ["squash", "rebase"], defaultBranch: "main" },
+      {
+        canWrite: true,
+        mergeMethods: ["squash", "rebase"],
+        defaultBranch: "main",
+        autoMergeAllowed: false,
+      },
     );
   });
 

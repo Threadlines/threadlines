@@ -214,6 +214,7 @@ const repositoryJson = (input?: {
   readonly merge?: boolean;
   readonly squash?: boolean;
   readonly rebase?: boolean;
+  readonly autoMerge?: boolean;
 }) =>
   JSON.stringify({
     name: "example-app",
@@ -221,6 +222,7 @@ const repositoryJson = (input?: {
     allow_merge_commit: input?.merge ?? true,
     allow_squash_merge: input?.squash ?? true,
     allow_rebase_merge: input?.rebase ?? true,
+    allow_auto_merge: input?.autoMerge ?? true,
   });
 
 const detailJson = (input?: { readonly author?: string; readonly isDraft?: boolean }) =>
@@ -846,7 +848,7 @@ describe("PullRequestService pull request reads", () => {
       onlyGitHubProject();
       let author = "hubot";
       hostAnswers({
-        repository: repositoryJson({ push: false, merge: false }),
+        repository: repositoryJson({ push: false, merge: false, autoMerge: false }),
         detail: () => detailJson({ author }),
       });
 
@@ -859,6 +861,10 @@ describe("PullRequestService pull request reads", () => {
         canManage: false,
       });
       assert.deepStrictEqual(theirs.mergeMethods, ["squash", "rebase"]);
+      // A repository with auto-merge switched off is never offered the switch;
+      // everything else the host can do stays.
+      assert.equal(theirs.capabilities.actions.includes("enable-auto-merge"), false);
+      assert.equal(theirs.capabilities.actions.includes("merge"), true);
 
       author = "OctoCat";
       const mine = yield* service.detail({ ...reference, force: true });

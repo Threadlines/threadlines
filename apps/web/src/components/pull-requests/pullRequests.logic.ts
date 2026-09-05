@@ -1063,6 +1063,19 @@ export function pullRequestConflictLabel(entry: PullRequestEntry): string | null
     : null;
 }
 
+/**
+ * The word for a row the host will merge on its own, or null where it will
+ * not. Only an open row can still be armed: the host drops the instruction the
+ * moment the pull request settles, and a draft cannot be armed at all.
+ */
+export function pullRequestAutoMergeLabel(
+  entry: Pick<PullRequestEntry, "state" | "isDraft" | "autoMergeEnabled">,
+): string | null {
+  return entry.state === "open" && !entry.isDraft && entry.autoMergeEnabled === true
+    ? "Auto-merge"
+    : null;
+}
+
 /** One author the loaded rows have seen, and how many of them they wrote. */
 export interface PullRequestAuthorFacet {
   readonly login: string;
