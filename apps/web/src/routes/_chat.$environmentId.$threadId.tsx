@@ -18,6 +18,7 @@ import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../comp
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
+import { ThreadPullRequestLinkContext } from "../components/chat/ThreadPullRequestLinkContext";
 import { ChatRightPanel } from "../components/ChatRightPanel";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
@@ -474,6 +475,15 @@ function ChatThreadRouteView() {
     },
     [activateDiffTab, currentThreadKey, diffTarget, navigateToTab],
   );
+  // What a transcript link to this pull request opens. Only offered once the
+  // tab can actually show it, so a link never lands on the tab's fallback.
+  const threadPullRequestLink = useMemo(
+    () =>
+      threadPullRequest && threadPullRequestReference
+        ? { url: threadPullRequest.url, open: () => selectTab("pullRequest") }
+        : null,
+    [selectTab, threadPullRequest, threadPullRequestReference],
+  );
   const closeTab = useCallback(
     (tab: RightPanelTab) => {
       const nextTab = closeRightPanelTab(currentThreadKey, tab);
@@ -644,14 +654,16 @@ function ChatThreadRouteView() {
     return (
       <>
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
-          <ChatView
-            environmentId={threadRef.environmentId}
-            threadId={threadRef.threadId}
-            onDiffPanelOpen={markDiffOpened}
-            reserveTitleBarControlInset={!sidebarVisible}
-            composerFocusRequest={composerFocusRequest}
-            routeKind="server"
-          />
+          <ThreadPullRequestLinkContext.Provider value={threadPullRequestLink}>
+            <ChatView
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              onDiffPanelOpen={markDiffOpened}
+              reserveTitleBarControlInset={!sidebarVisible}
+              composerFocusRequest={composerFocusRequest}
+              routeKind="server"
+            />
+          </ThreadPullRequestLinkContext.Provider>
         </SidebarInset>
         <ChatRightPanelInlineSidebar
           open={sidebarVisible}
@@ -668,13 +680,15 @@ function ChatThreadRouteView() {
   return (
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
-        <ChatView
-          environmentId={threadRef.environmentId}
-          threadId={threadRef.threadId}
-          onDiffPanelOpen={markDiffOpened}
-          composerFocusRequest={composerFocusRequest}
-          routeKind="server"
-        />
+        <ThreadPullRequestLinkContext.Provider value={threadPullRequestLink}>
+          <ChatView
+            environmentId={threadRef.environmentId}
+            threadId={threadRef.threadId}
+            onDiffPanelOpen={markDiffOpened}
+            composerFocusRequest={composerFocusRequest}
+            routeKind="server"
+          />
+        </ThreadPullRequestLinkContext.Provider>
       </SidebarInset>
       <RightPanelSheet
         open={sidebarVisible}
