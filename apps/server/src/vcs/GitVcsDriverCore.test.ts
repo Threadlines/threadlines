@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { setTimeout as sleepRealTime } from "node:timers/promises";
 
@@ -898,9 +899,75 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(created.worktree.refName, "feature/worktree");
         assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/worktree");
 
-        yield* driver.removeWorktree({ cwd, path: worktreePath });
+        // Installed dependencies nest deeper than the Windows MAX_PATH limit;
+        // removal must still take the whole folder with it.
         const fileSystem = yield* FileSystem.FileSystem;
+        const deepPath = pathService.join(
+          worktreePath,
+          "node_modules",
+          ...Array.from({ length: 12 }, () => "a".repeat(40)),
+        );
+        yield* fileSystem.makeDirectory(deepPath, { recursive: true });
+        yield* fileSystem.writeFileString(pathService.join(deepPath, "index.js"), "");
+
+        yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
         assert.equal(yield* fileSystem.exists(worktreePath), false);
+      }),
+    );
+
+    // "From main" means the latest main. When the upstream has moved on, the
+    // new branch starts there; when the local branch has its own commits, the
+    // user's local state wins. Either way the new branch tracks nothing.
+    it.effect("starts a new worktree from the upstream when the local base is behind", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const pathService = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+
+        // Someone else lands a commit on the base branch.
+        const peer = yield* makeTmpDir("git-vcs-driver-peer-");
+        yield* git(peer, ["clone", "--branch", initialBranch, remote, "."]);
+        yield* git(peer, ["config", "user.email", "test@test.com"]);
+        yield* git(peer, ["config", "user.name", "Test"]);
+        yield* writeTextFile(peer, "upstream.txt", "upstream\n");
+        yield* git(peer, ["add", "."]);
+        yield* git(peer, ["commit", "-m", "upstream commit"]);
+        yield* git(peer, ["push", "origin", initialBranch]);
+
+        const behind = yield* driver.resolveFreshWorktreeBase({ cwd, branch: initialBranch });
+        assert.deepStrictEqual(behind, { refName: `origin/${initialBranch}`, isRemote: true });
+
+        const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "fresh");
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: behind.refName,
+          newRefName: "threadlines/0123abcd",
+        });
+        assert.equal(
+          yield* fileSystem.exists(pathService.join(worktreePath, "upstream.txt")),
+          true,
+        );
+        const upstreamOfNewBranch = yield* git(worktreePath, [
+          "rev-parse",
+          "--abbrev-ref",
+          "--symbolic-full-name",
+          "@{upstream}",
+        ]).pipe(Effect.orElseSucceed(() => "none"));
+        assert.equal(upstreamOfNewBranch, "none");
+
+        // A local commit on the base makes it diverge: the local branch wins.
+        yield* writeTextFile(cwd, "local.txt", "local\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "local commit"]);
+        const diverged = yield* driver.resolveFreshWorktreeBase({ cwd, branch: initialBranch });
+        assert.deepStrictEqual(diverged, { refName: initialBranch, isRemote: false });
       }),
     );
 
@@ -1970,4 +2037,39 @@ it.live("waits for another process to release the index lock", () =>
     assert.equal(result.exitCode, 0);
     assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "locked.txt");
   }).pipe(Effect.provide(TestLayer)),
+);
+
+// Thread deletion kills the worktree's terminals and removes the worktree at
+// the same time. On Windows a shell whose working directory is the worktree
+// pins the folder, so git unregisters the worktree but cannot delete it.
+// Removal has to outlast the holder instead of failing. Real clock, because
+// the retry delays between attempts must actually elapse.
+it.live("removes a worktree that a process briefly holds as its working directory", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    const { initialBranch } = yield* initRepoWithCommit(cwd);
+    const pathService = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "held");
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    yield* driver.createWorktree({
+      cwd,
+      path: worktreePath,
+      refName: initialBranch,
+      newRefName: "feature/held",
+    });
+
+    // A process that sits in the worktree for a moment, then exits on its own.
+    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], {
+      cwd: worktreePath,
+      stdio: "ignore",
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(() => holder.kill()));
+    yield* Effect.promise(() => sleepRealTime(200));
+
+    yield* driver.removeWorktree({ cwd, path: worktreePath, force: true });
+    assert.equal(yield* fileSystem.exists(worktreePath), false);
+    const worktrees = yield* driver.listWorktrees({ cwd });
+    assert.isUndefined(worktrees.find((worktree) => worktree.branch === "feature/held"));
+  }).pipe(Effect.scoped, Effect.provide(TestLayer)),
 );

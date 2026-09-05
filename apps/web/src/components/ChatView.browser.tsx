@@ -5032,7 +5032,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("shows the send state once bootstrap dispatch is in flight", async () => {
+  // The server cuts the worktree inside the bootstrap request, so that is the
+  // window in which the user should read "Preparing worktree", not "Sending".
+  it("shows the worktree preparation state while the bootstrap dispatch is in flight", async () => {
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
     });
@@ -5093,8 +5095,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(
             wsRequests.some((request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand),
           ).toBe(true);
-          expect(document.querySelector('button[aria-label="Sending"]')).toBeTruthy();
-          expect(document.querySelector('button[aria-label="Preparing worktree"]')).toBeNull();
+          expect(document.querySelector('button[aria-label="Preparing worktree"]')).toBeTruthy();
+          expect(document.querySelector('button[aria-label="Sending"]')).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );

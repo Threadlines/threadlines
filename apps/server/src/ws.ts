@@ -655,9 +655,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }
 
             if (bootstrap?.prepareWorktree) {
+              // "From main" means the latest main: start from the upstream
+              // when the local branch has fallen behind it.
+              const base = yield* gitWorkflow.resolveFreshWorktreeBase({
+                cwd: bootstrap.prepareWorktree.projectCwd,
+                branch: bootstrap.prepareWorktree.baseBranch,
+              });
               const worktree = yield* gitWorkflow.createWorktree({
                 cwd: bootstrap.prepareWorktree.projectCwd,
-                refName: bootstrap.prepareWorktree.baseBranch,
+                refName: base.refName,
                 newRefName: bootstrap.prepareWorktree.branch,
                 path: null,
               });

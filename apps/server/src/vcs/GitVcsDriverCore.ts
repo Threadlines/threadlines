@@ -85,6 +85,16 @@ const LIST_REFS_SNAPSHOT_CACHE_TTL = Duration.minutes(2);
 const LIST_REFS_REFRESH_COALESCE_TTL = Duration.seconds(5);
 const LIST_REFS_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_FETCH_NO_WRITE_FETCH_HEAD = "--no-write-fetch-head";
+/** Upper bound on the pre-worktree fetch; past it the local branch is used as-is. */
+const WORKTREE_BASE_FETCH_TIMEOUT = Duration.seconds(15);
+/**
+ * How long removeWorktree keeps trying to delete a folder git already
+ * unregistered but could not delete because a process still sat in it.
+ * Terminal shells exit within a second or two of thread cleanup; five seconds
+ * leaves headroom without hanging the caller.
+ */
+const LEFTOVER_WORKTREE_REMOVE_ATTEMPTS = 20;
+const LEFTOVER_WORKTREE_REMOVE_DELAY = Duration.millis(250);
 const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
   GIT_TERMINAL_PROMPT: "0",
@@ -4344,8 +4354,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const sanitizedBranch = targetBranch.replace(/\//g, "-");
     const repoName = path.basename(input.cwd);
     const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+    // `--no-track`: a thread's branch may start from a remote-tracking ref
+    // (see resolveFreshWorktreeBase) and must not inherit it as upstream, or a
+    // later push would target the base branch itself.
     const args = input.newRefName
-      ? ["worktree", "add", "-b", input.newRefName, worktreePath, input.refName]
+      ? ["worktree", "add", "--no-track", "-b", input.newRefName, worktreePath, input.refName]
       : ["worktree", "add", "--no-guess", worktreePath, input.refName];
 
     yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
@@ -4429,6 +4442,80 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
   });
 
+  const resolveFreshWorktreeBase: GitVcsDriver.GitVcsDriverShape["resolveFreshWorktreeBase"] =
+    Effect.fn("resolveFreshWorktreeBase")(function* (input) {
+      const local = { refName: input.branch, isRemote: false } as const;
+      const upstreamRef = (yield* runGitStdout(
+        "GitVcsDriver.resolveFreshWorktreeBase.upstream",
+        input.cwd,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${input.branch}@{upstream}`],
+        true,
+      )).trim();
+      if (upstreamRef.length === 0 || upstreamRef.includes("@{upstream}")) {
+        return local;
+      }
+      const remoteNames = yield* runGitStdout(
+        "GitVcsDriver.resolveFreshWorktreeBase.remotes",
+        input.cwd,
+        ["remote"],
+      ).pipe(
+        Effect.map(parseRemoteNames),
+        Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])),
+      );
+      const remoteName = remoteNames.find((name) => upstreamRef.startsWith(`${name}/`));
+      if (!remoteName) {
+        return local;
+      }
+      const remoteBranch = upstreamRef.slice(remoteName.length + 1);
+
+      // Best effort: an offline machine or a slow remote must not hold up the
+      // thread, and a failed fetch simply leaves the tracking ref as it was.
+      yield* withGitMutationPermitForCwd(
+        input.cwd,
+        executeGit(
+          "GitVcsDriver.resolveFreshWorktreeBase.fetch",
+          input.cwd,
+          [
+            "fetch",
+            GIT_FETCH_NO_WRITE_FETCH_HEAD,
+            "--quiet",
+            "--no-tags",
+            remoteName,
+            remoteBranchFetchRefspec(remoteName, remoteBranch),
+          ],
+          {
+            env: BACKGROUND_GIT_FETCH_ENV,
+            timeoutMs: Duration.toMillis(WORKTREE_BASE_FETCH_TIMEOUT),
+          },
+        ),
+      ).pipe(Effect.ignore);
+
+      const [localSha, upstreamSha] = yield* Effect.all([
+        runGitStdout(
+          "GitVcsDriver.resolveFreshWorktreeBase.localSha",
+          input.cwd,
+          ["rev-parse", "--verify", "--quiet", `refs/heads/${input.branch}`],
+          true,
+        ),
+        runGitStdout(
+          "GitVcsDriver.resolveFreshWorktreeBase.upstreamSha",
+          input.cwd,
+          ["rev-parse", "--verify", "--quiet", `refs/remotes/${upstreamRef}`],
+          true,
+        ),
+      ]);
+      if (upstreamSha.trim().length === 0 || localSha.trim() === upstreamSha.trim()) {
+        return local;
+      }
+      const localIsBehind = yield* executeGit(
+        "GitVcsDriver.resolveFreshWorktreeBase.isAncestor",
+        input.cwd,
+        ["merge-base", "--is-ancestor", input.branch, upstreamRef],
+        { allowNonZeroExit: true },
+      ).pipe(Effect.map((result) => result.exitCode === 0));
+      return localIsBehind ? { refName: upstreamRef, isRemote: true } : local;
+    });
+
   const fetchPullRequestBranch: GitVcsDriver.GitVcsDriverShape["fetchPullRequestBranch"] =
     Effect.fn("fetchPullRequestBranch")(function* (input) {
       const remoteName = yield* resolvePrimaryRemoteName(input.cwd);
@@ -4504,15 +4591,54 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const removeWorktree: GitVcsDriver.GitVcsDriverShape["removeWorktree"] = Effect.fn(
     "removeWorktree",
   )(function* (input) {
-    const args = ["worktree", "remove"];
+    // A worktree that has had its dependencies installed holds paths longer
+    // than the Windows MAX_PATH limit. Without core.longpaths git deletes what
+    // it can, drops the registration, and exits with "Filename too long",
+    // leaving a dead folder that the app can no longer remove. The flag is a
+    // no-op on other platforms.
+    const args = ["-c", "core.longpaths=true", "worktree", "remove"];
     if (input.force) {
       args.push("--force");
     }
     args.push(input.path);
+
+    // git unregisters the worktree before it deletes the files, so a folder
+    // that something still holds open comes back as "failed to delete ...
+    // Permission denied" with the registration already gone. Thread deletion
+    // hits exactly that on Windows: the worktree's terminal shell is killed a
+    // beat after removal starts, and until it exits its working directory
+    // pins the folder. Finish the deletion ourselves once the holder lets go,
+    // but only when git really did unregister the worktree.
+    const finishInterruptedRemoval = (cause: GitCommandError) =>
+      Effect.gen(function* () {
+        if (yield* isWorktreeRegistered(input.cwd, input.path)) {
+          return yield* Effect.fail(cause);
+        }
+        for (let attempt = 0; attempt < LEFTOVER_WORKTREE_REMOVE_ATTEMPTS; attempt += 1) {
+          if (attempt > 0) {
+            yield* Effect.sleep(LEFTOVER_WORKTREE_REMOVE_DELAY);
+          }
+          yield* fileSystem
+            .remove(input.path, { recursive: true, force: true })
+            .pipe(Effect.catch(() => Effect.void));
+          const stillThere = yield* fileSystem
+            .exists(input.path)
+            .pipe(Effect.catch(() => Effect.succeed(false)));
+          if (!stillThere) {
+            return;
+          }
+        }
+        return yield* Effect.fail(cause);
+      });
+
     yield* executeGit("GitVcsDriver.removeWorktree", input.cwd, args, {
       timeoutMs: 15_000,
       fallbackErrorMessage: "git worktree remove failed",
     }).pipe(
+      Effect.catchIf(
+        (error) => /failed to delete/iu.test(error.detail ?? ""),
+        finishInterruptedRemoval,
+      ),
       Effect.mapError((error) =>
         createGitCommandError(
           "GitVcsDriver.removeWorktree",
@@ -4523,6 +4649,33 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ),
       ),
     );
+  });
+
+  /** Whether `git worktree list` still knows the checkout at `worktreePath`. */
+  const isWorktreeRegistered = Effect.fn("isWorktreeRegistered")(function* (
+    cwd: string,
+    worktreePath: string,
+  ) {
+    const normalize = (value: string) => {
+      const forwardSlashes = value.replace(/\\/g, "/").replace(/\/+$/, "");
+      return globalThis.process.platform === "win32"
+        ? forwardSlashes.toLowerCase()
+        : forwardSlashes;
+    };
+    const result = yield* executeGit(
+      "GitVcsDriver.isWorktreeRegistered",
+      cwd,
+      ["worktree", "list", "--porcelain"],
+      { timeoutMs: 5_000, allowNonZeroExit: true },
+    ).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (result === null || result.exitCode !== 0) {
+      return true;
+    }
+    const target = normalize(worktreePath);
+    return result.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .some((line) => normalize(line.slice("worktree ".length)) === target);
   });
 
   const renameBranch: GitVcsDriver.GitVcsDriverShape["renameBranch"] = Effect.fn("renameBranch")(
@@ -4888,6 +5041,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     stageChanges,
     unstageChanges,
     createWorktree: (input) => withListRefsInvalidation(input.cwd, createWorktree(input)),
+    resolveFreshWorktreeBase,
     fetchPullRequestBranch: (input) =>
       withListRefsInvalidation(input.cwd, fetchPullRequestBranch(input)),
     ensureRemote: (input) => withListRefsInvalidation(input.cwd, ensureRemote(input)),
