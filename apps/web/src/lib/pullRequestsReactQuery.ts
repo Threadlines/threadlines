@@ -399,23 +399,25 @@ export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
         enabled: false,
       })),
     ),
+    // Merged per state across every environment, the same way the page reads
+    // its own tab, so a pull request two computers both list is one row here
+    // too and the Project filter does not offer it twice.
     combine: (results) =>
-      results.flatMap((result, index) => {
-        const environment = environments[Math.floor(index / PULL_REQUEST_LIST_STATES.length)];
-        const state = PULL_REQUEST_LIST_STATES[index % PULL_REQUEST_LIST_STATES.length];
-        return environment && state && !result.isPlaceholderData
-          ? mergePullRequestListResults({
-              state,
-              results: [
-                {
-                  environmentId: environment.environmentId,
-                  environmentLabel: environment.label,
-                  data: result.data,
-                },
-              ],
-            }).entries
-          : [];
-      }),
+      PULL_REQUEST_LIST_STATES.flatMap(
+        (state, stateIndex) =>
+          mergePullRequestListResults({
+            state,
+            results: environments.map((environment, environmentIndex) => {
+              const result =
+                results[environmentIndex * PULL_REQUEST_LIST_STATES.length + stateIndex];
+              return {
+                environmentId: environment.environmentId,
+                environmentLabel: environment.label,
+                data: result && !result.isPlaceholderData ? result.data : undefined,
+              };
+            }),
+          }).entries,
+      ),
   });
 }
 
