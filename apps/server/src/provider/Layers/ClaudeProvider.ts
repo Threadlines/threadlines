@@ -40,6 +40,7 @@ import {
   buildServerProvider,
   DEFAULT_TIMEOUT_MS,
   detailFromResult,
+  extractAuthBoolean,
   isCommandMissingCause,
   parseGenericCliVersion,
   providerModelsFromSettings,
@@ -1226,7 +1227,37 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     ? resolveTokenUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : Effect.succeed(undefined);
 
-  if (!capabilities) {
+  // SDK initialization also succeeds when signed out. Only account credential
+  // fields establish configured auth; a model catalog alone does not.
+  const credentialFields = [
+    capabilities?.email,
+    capabilities?.subscriptionType,
+    capabilities?.tokenSource,
+    environment[CLAUDE_CODE_OAUTH_TOKEN_ENV],
+    environment.ANTHROPIC_AUTH_TOKEN,
+    environment.ANTHROPIC_API_KEY,
+  ];
+  let authenticated: boolean | undefined = credentialFields.some(
+    (value) => typeof value === "string" && value.trim().length > 0 && value.trim() !== "none",
+  )
+    ? true
+    : undefined;
+  if (authenticated === undefined) {
+    const authProbe = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
+      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+      Effect.result,
+    );
+    if (Result.isSuccess(authProbe) && Option.isSome(authProbe.success)) {
+      try {
+        // A signed-out CLI returns exit code 1 with a valid loggedIn:false result.
+        authenticated = extractAuthBoolean(JSON.parse(authProbe.success.value.stdout));
+      } catch {
+        // Older CLIs and failed probes may not return structured auth status.
+      }
+    }
+  }
+
+  if (!capabilities || authenticated !== true) {
     const tokenUsage = yield* tokenUsageEffect;
     const localTokenAccountUsage = tokenUsage
       ? {
@@ -1247,9 +1278,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         installed: true,
         version: parsedVersion,
         status: "warning",
-        auth: { status: "unknown" },
+        auth: { status: authenticated === false ? "unauthenticated" : "unknown" },
         ...(localTokenAccountUsage ? { accountUsage: localTokenAccountUsage } : {}),
-        message: "Could not verify Claude authentication status from initialization result.",
+        message:
+          authenticated === false
+            ? "Claude is not signed in. Run `claude auth login` to sign in."
+            : "Could not verify Claude authentication status from initialization result.",
       },
     });
   }

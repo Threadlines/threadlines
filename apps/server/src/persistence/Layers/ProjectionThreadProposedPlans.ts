@@ -1,3 +1,6 @@
+import { NonNegativeInt } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -12,6 +15,10 @@ import {
   type ProjectionThreadProposedPlanRepositoryShape,
 } from "../Services/ProjectionThreadProposedPlans.ts";
 
+const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
+  Struct.assign({ eventSequence: Schema.NullOr(NonNegativeInt) }),
+);
+
 const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -20,6 +27,7 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
     execute: (row) => sql`
       INSERT INTO projection_thread_proposed_plans (
         plan_id,
+        event_sequence,
         thread_id,
         turn_id,
         plan_markdown,
@@ -31,6 +39,7 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
       )
       VALUES (
         ${row.planId},
+          ${row.eventSequence ?? null},
         ${row.threadId},
         ${row.turnId},
         ${row.planMarkdown},
@@ -55,10 +64,11 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
 
   const listProjectionThreadProposedPlanRows = SqlSchema.findAll({
     Request: ListProjectionThreadProposedPlansInput,
-    Result: ProjectionThreadProposedPlan,
+    Result: ProjectionThreadProposedPlanDbRowSchema,
     execute: ({ threadId }) => sql`
       SELECT
         plan_id AS "planId",
+          event_sequence AS "eventSequence",
         thread_id AS "threadId",
         turn_id AS "turnId",
         plan_markdown AS "planMarkdown",
@@ -69,7 +79,7 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
         updated_at AS "updatedAt"
       FROM projection_thread_proposed_plans
       WHERE thread_id = ${threadId}
-      ORDER BY created_at ASC, plan_id ASC
+      ORDER BY event_sequence ASC, created_at ASC, plan_id ASC
     `,
   });
 
@@ -88,6 +98,12 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
 
   const listByThreadId: ProjectionThreadProposedPlanRepositoryShape["listByThreadId"] = (input) =>
     listProjectionThreadProposedPlanRows(input).pipe(
+      Effect.map((rows) =>
+        rows.map(({ eventSequence, ...row }) => ({
+          ...row,
+          ...(eventSequence !== null ? { eventSequence } : {}),
+        })),
+      ),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadProposedPlanRepository.listByThreadId:query"),
       ),

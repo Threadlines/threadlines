@@ -117,10 +117,8 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
     options?.commandAvailable ?? ((command) => isCommandAvailable(command, { platform }));
   const latestVersionResolver =
     options?.latestVersionResolver ?? (() => Effect.succeed<string | null>(null));
-  const sourceControlToolPackageManager = selectSourceControlToolPackageManager({
-    platform,
-    commandAvailable,
-  });
+  const packageManager = () =>
+    selectSourceControlToolPackageManager({ platform, commandAvailable });
   const homebrewManagedExecutable =
     options?.homebrewManagedExecutable ??
     ((executable: string): boolean => {
@@ -147,8 +145,9 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
     item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem,
   ): boolean => {
     if (platform === "win32" && item.status === "available" && item.kind === "git") return true;
-    if (sourceControlToolPackageManager === "winget") return true;
-    if (sourceControlToolPackageManager !== "homebrew") return false;
+    const manager = packageManager();
+    if (manager === "winget") return true;
+    if (manager !== "homebrew") return false;
     return item.executable !== undefined && homebrewManagedExecutable(item.executable);
   };
 
@@ -211,8 +210,9 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
 
   const withVersionAdvisory = <Item extends VcsDiscoveryItem | SourceControlProviderDiscoveryItem>(
     item: Item,
-  ): Effect.Effect<Item> =>
-    SourceControlToolVersionAdvisory.withSourceControlToolVersionAdvisory({
+  ): Effect.Effect<Item> => {
+    const sourceControlToolPackageManager = packageManager();
+    return SourceControlToolVersionAdvisory.withSourceControlToolVersionAdvisory({
       item,
       platform,
       latestVersionResolver,
@@ -227,27 +227,30 @@ export const make = Effect.fn("makeSourceControlDiscovery")(function* (
         item.executable !== undefined &&
         !commandAvailable(item.executable),
     });
+  };
 
   return SourceControlDiscovery.of({
-    discover: Effect.all({
-      versionControlSystems: Effect.all(
-        VCS_PROBES.map((entry) => probe(entry)) as ReadonlyArray<Effect.Effect<VcsDiscoveryItem>>,
-        { concurrency: "unbounded" },
-      ).pipe(
-        Effect.flatMap((items) =>
-          Effect.forEach(items, withVersionAdvisory, {
-            concurrency: "unbounded",
-          }),
+    discover: Effect.suspend(() =>
+      Effect.all({
+        versionControlSystems: Effect.all(
+          VCS_PROBES.map((entry) => probe(entry)) as ReadonlyArray<Effect.Effect<VcsDiscoveryItem>>,
+          { concurrency: "unbounded" },
+        ).pipe(
+          Effect.flatMap((items) =>
+            Effect.forEach(items, withVersionAdvisory, {
+              concurrency: "unbounded",
+            }),
+          ),
         ),
-      ),
-      sourceControlProviders: sourceControlProviders.discover.pipe(
-        Effect.flatMap((items) =>
-          Effect.forEach(items, withVersionAdvisory, {
-            concurrency: "unbounded",
-          }),
+        sourceControlProviders: sourceControlProviders.discover.pipe(
+          Effect.flatMap((items) =>
+            Effect.forEach(items, withVersionAdvisory, {
+              concurrency: "unbounded",
+            }),
+          ),
         ),
-      ),
-    }),
+      }),
+    ),
   });
 });
 

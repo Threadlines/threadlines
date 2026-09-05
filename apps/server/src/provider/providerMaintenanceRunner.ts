@@ -10,12 +10,14 @@ import {
   type ServerProviderUpdateState,
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { refreshWindowsPath } from "@threadlines/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -479,6 +481,7 @@ function makeUpdateState(input: {
 }
 
 export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
+  const scope = yield* Effect.scope;
   const providerRegistry = yield* ProviderRegistry;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
@@ -723,6 +726,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               );
             }
 
+            yield* Effect.sync(() => refreshWindowsPath());
             const { verifiedProviders } = yield* verifyRefreshedProvider(
               provider,
               capabilities,
@@ -876,7 +880,14 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   });
 
   return ProviderMaintenanceRunner.of({
-    updateProvider,
+    updateProvider: (target) =>
+      Effect.uninterruptibleMask((restore) =>
+        updateProvider(target).pipe(
+          Effect.interruptible,
+          Effect.forkIn(scope),
+          Effect.flatMap((fiber) => restore(Fiber.join(fiber))),
+        ),
+      ),
     resolveUpdateBlockers,
   });
 });

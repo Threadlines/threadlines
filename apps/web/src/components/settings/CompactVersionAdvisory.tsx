@@ -1,4 +1,9 @@
-import type { EnvironmentId, SourceControlToolVersionAdvisory } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  SourceControlToolUpdateTarget,
+  SourceControlToolVersionAdvisory,
+} from "@threadlines/contracts";
+import { isSourceControlToolBusy } from "@threadlines/client-runtime";
 import {
   AlertCircleIcon,
   ArrowUpCircleIcon,
@@ -12,12 +17,35 @@ import { useState } from "react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openExternalUrl } from "../../lib/externalLinks";
 import { cn } from "../../lib/utils";
-import { updateSourceControlTool } from "../../lib/sourceControlDiscoveryState";
+import {
+  updateSourceControlTool,
+  useSourceControlSetup,
+} from "../../lib/sourceControlDiscoveryState";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+
+export function SourceControlToolProgress({
+  target,
+  environmentId,
+}: {
+  readonly target: SourceControlToolUpdateTarget;
+  readonly environmentId?: EnvironmentId | null | undefined;
+}) {
+  const setup = useSourceControlSetup({ environmentId });
+  const job = setup.tools.find((tool) => tool.target === target);
+  return job &&
+    (isSourceControlToolBusy(job.status) || job.status === "failed" || job.status === "started") ? (
+    <span
+      role={job.status === "failed" ? "alert" : "status"}
+      className="max-w-64 text-xs text-muted-foreground"
+    >
+      {job.message}
+    </span>
+  ) : null;
+}
 
 interface CompactVersionAdvisoryProps {
   readonly advisory: SourceControlToolVersionAdvisory;
@@ -42,8 +70,19 @@ export function CompactVersionAdvisory({
   environmentId,
   label,
 }: CompactVersionAdvisoryProps) {
-  const [isUpdating, setIsUpdating] = useState(false);
+  const [requestPending, setIsUpdating] = useState(false);
+  const setup = useSourceControlSetup({ environmentId });
   const updateAction = advisory.actions.find((action) => action.kind === "runUpdate");
+  const job = setup.tools.find((tool) => tool.target === updateAction?.target);
+  const isUpdating = requestPending || (job !== undefined && isSourceControlToolBusy(job.status));
+  const busyLabel =
+    job?.status === "queued"
+      ? "Queued"
+      : job?.status === "checking"
+        ? "Checking"
+        : updateAction?.operation === "install"
+          ? "Installing"
+          : "Updating";
   const copyActionCandidate = advisory.actions.find((action) => action.kind === "copyCommand");
   const copyAction = copyActionCandidate?.kind === "copyCommand" ? copyActionCandidate : undefined;
   const openActionCandidate = advisory.actions.find((action) => action.kind === "openUrl");
@@ -113,18 +152,28 @@ export function CompactVersionAdvisory({
 
   if (advisory.status === "install_available" && updateAction) {
     return (
-      <Button
-        type="button"
-        size="xs"
-        variant="default"
-        className="h-6 px-2 text-[11px]"
-        disabled={isUpdating}
-        onClick={runUpdate}
-        aria-label={`Install ${label}`}
-      >
-        {isUpdating ? <LoaderIcon className="size-3 animate-spin" aria-hidden /> : null}
-        {isUpdating ? "Installing" : "Install"}
-      </Button>
+      <span className="inline-flex max-w-72 flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          size="xs"
+          variant="default"
+          className="h-6 px-2 text-[11px]"
+          disabled={isUpdating}
+          onClick={runUpdate}
+          aria-label={`Install ${label}`}
+        >
+          {isUpdating ? <LoaderIcon className="size-3 animate-spin" aria-hidden /> : null}
+          {isUpdating ? busyLabel : "Install"}
+        </Button>
+        {job && (isUpdating || job.status === "failed" || job.status === "started") ? (
+          <span
+            role={job.status === "failed" ? "alert" : "status"}
+            className="text-[11px] text-muted-foreground"
+          >
+            {job.message}
+          </span>
+        ) : null}
+      </span>
     );
   }
 
@@ -198,8 +247,16 @@ export function CompactVersionAdvisory({
               ) : (
                 <DownloadIcon className="size-3.5" aria-hidden />
               )}
-              {isUpdating ? "Updating" : updateAction.label}
+              {isUpdating ? busyLabel : updateAction.label}
             </Button>
+          ) : null}
+          {job && (isUpdating || job.status === "failed" || job.status === "started") ? (
+            <p
+              role={job.status === "failed" ? "alert" : "status"}
+              className="text-xs text-muted-foreground"
+            >
+              {job.message}
+            </p>
           ) : null}
 
           {copyAction ? (

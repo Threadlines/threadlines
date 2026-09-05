@@ -5,6 +5,8 @@ import {
   createSourceControlDiscoveryManager,
   getSourceControlDiscoveryTargetKey,
   sourceControlDiscoveryStateAtom,
+  createSourceControlSetupManager,
+  sourceControlSetupStateAtom,
 } from "@threadlines/client-runtime";
 import {
   EnvironmentId,
@@ -15,6 +17,7 @@ import {
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { Atom } from "effect/unstable/reactivity";
+import { useEffect } from "react";
 
 import { readPrimaryEnvironmentDescriptor } from "../environments/primary";
 import { readEnvironmentConnection } from "../environments/runtime";
@@ -26,7 +29,7 @@ const SOURCE_CONTROL_DISCOVERY_STALE_TIME_MS = 30_000;
 const SOURCE_CONTROL_DISCOVERY_IDLE_TTL_MS = 5 * 60_000;
 
 interface SourceControlDiscoveryTargetInput {
-  readonly environmentId?: EnvironmentId | null;
+  readonly environmentId?: EnvironmentId | null | undefined;
 }
 
 function readSourceControlServer(
@@ -73,6 +76,50 @@ export const sourceControlDiscoveryManager = createSourceControlDiscoveryManager
     ),
 });
 
+export const sourceControlSetupManager = createSourceControlSetupManager({
+  getRegistry: () => appAtomRegistry,
+  getClient: (key) =>
+    readSourceControlServer(
+      key === SOURCE_CONTROL_DISCOVERY_TARGET.key
+        ? undefined
+        : { environmentId: EnvironmentId.make(key) },
+    ),
+  onSettled: (key) => {
+    void sourceControlDiscoveryManager.refresh({ key }, undefined, { force: true });
+  },
+});
+
+export function useSourceControlSetup(input?: SourceControlDiscoveryTargetInput) {
+  const key = sourceControlDiscoveryTarget(input).key ?? SOURCE_CONTROL_DISCOVERY_TARGET.key;
+  useEffect(() => sourceControlSetupManager.watch(key), [key]);
+  return useAtomValue(sourceControlSetupStateAtom(key));
+}
+
+export async function startGitHubSignIn(input?: SourceControlDiscoveryTargetInput): Promise<void> {
+  const server = readSourceControlServer(input);
+  if (!server) throw new Error("This environment is not connected.");
+  const key = sourceControlDiscoveryTarget(input).key ?? SOURCE_CONTROL_DISCOVERY_TARGET.key;
+  const githubAuth = await server.startGitHubAuth();
+  const current = appAtomRegistry.get(sourceControlSetupStateAtom(key));
+  sourceControlSetupManager.store(key, { ...current, githubAuth });
+  void sourceControlSetupManager.refresh(key);
+}
+
+export async function cancelGitHubSignIn(input?: SourceControlDiscoveryTargetInput): Promise<void> {
+  const server = readSourceControlServer(input);
+  if (!server) throw new Error("This environment is not connected.");
+  await server.cancelGitHubAuth();
+  const key = sourceControlDiscoveryTarget(input).key ?? SOURCE_CONTROL_DISCOVERY_TARGET.key;
+  const current = appAtomRegistry.get(sourceControlSetupStateAtom(key));
+  sourceControlSetupManager.store(key, {
+    ...current,
+    githubAuth: { status: "cancelled", verificationUrl: null, userCode: null, message: null },
+  });
+  await sourceControlSetupManager.refresh(
+    sourceControlDiscoveryTarget(input).key ?? SOURCE_CONTROL_DISCOVERY_TARGET.key,
+  );
+}
+
 const sourceControlDiscoveryAutoRefreshAtom = Atom.family((targetKey: string) =>
   Atom.make(() =>
     Effect.promise(() => sourceControlDiscoveryManager.refresh({ key: targetKey })),
@@ -108,12 +155,24 @@ export async function updateSourceControlTool(
     throw new Error("The selected server environment is not connected.");
   }
 
-  const result = await server.updateSourceControlTool({
-    target: input.target,
-    ...(input.operation ? { operation: input.operation } : {}),
-  });
-  sourceControlDiscoveryManager.storeResult(sourceControlDiscoveryTarget(input), result.discovery);
-  return result;
+  const target = sourceControlDiscoveryTarget(input);
+  sourceControlSetupManager.markToolPending(
+    target.key ?? SOURCE_CONTROL_DISCOVERY_TARGET.key,
+    input,
+  );
+  try {
+    const result = await server.updateSourceControlTool({
+      target: input.target,
+      ...(input.operation ? { operation: input.operation } : {}),
+    });
+    sourceControlDiscoveryManager.storeResult(
+      sourceControlDiscoveryTarget(input),
+      result.discovery,
+    );
+    return result;
+  } finally {
+    void sourceControlSetupManager.refresh(target.key ?? SOURCE_CONTROL_DISCOVERY_TARGET.key);
+  }
 }
 
 export function getSourceControlDiscoverySnapshot(
@@ -124,6 +183,7 @@ export function getSourceControlDiscoverySnapshot(
 
 export function resetSourceControlDiscoveryStateForTests(): void {
   sourceControlDiscoveryManager.reset();
+  sourceControlSetupManager.reset();
 }
 
 export function useSourceControlDiscovery(

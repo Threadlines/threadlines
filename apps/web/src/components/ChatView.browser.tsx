@@ -8,7 +8,7 @@ import {
   type EnvironmentApi,
   type DesktopPreviewUserControl,
   type DesktopPreviewTarget,
-  type MessageId,
+  MessageId,
   type OrchestrationEvent,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
@@ -2131,6 +2131,90 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline estimator parity (full app)", () => {
+  it("keeps an optimistic follow-up after acknowledged history despite an earlier timestamp", async () => {
+    const initial = createSnapshotForTargetUser({
+      targetMessageId: MessageId.make("original"),
+      targetText: "Original request",
+    });
+    const snapshot = {
+      ...initial,
+      threads: initial.threads.map((thread) => ({
+        ...thread,
+        messages: [
+          {
+            ...createUserMessage({
+              id: MessageId.make("original"),
+              text: "Original request",
+              offsetSeconds: 0,
+            }),
+            eventSequence: 10,
+          },
+          {
+            ...createAssistantMessage({
+              id: MessageId.make("answer"),
+              text: "Original answer",
+              offsetSeconds: 1,
+            }),
+            eventSequence: 11,
+          },
+        ],
+      })),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      useOptimisticThreadMessagesStore.getState().addMessage(THREAD_REF, {
+        id: MessageId.make("pending-clock-follow-up"),
+        role: "user",
+        text: "Follow-up while clock is behind",
+        createdAt: new Date(BASE_TIME_MS - 60_000).toISOString(),
+        streaming: false,
+      });
+      await expect
+        .element(page.getByText("Follow-up while clock is behind", { exact: true }))
+        .toBeVisible();
+      const answer = page.getByText("Original answer", { exact: true }).element();
+      const followUp = page.getByText("Follow-up while clock is behind", { exact: true }).element();
+      expect(
+        answer.compareDocumentPosition(followUp) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: 12,
+          eventId: EventId.make("clock-follow-up-accepted"),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: NOW_ISO,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: THREAD_ID,
+            messageId: MessageId.make("pending-clock-follow-up"),
+            role: "user",
+            text: "Acknowledged follow-up",
+            turnId: null,
+            streaming: false,
+            createdAt: new Date(BASE_TIME_MS - 60_000).toISOString(),
+            updatedAt: NOW_ISO,
+          },
+        } satisfies OrchestrationEvent,
+      });
+      await expect.element(page.getByText("Acknowledged follow-up", { exact: true })).toBeVisible();
+      const acknowledged = page.getByText("Acknowledged follow-up", { exact: true }).element();
+      expect(
+        answer.compareDocumentPosition(acknowledged) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      await expect
+        .element(page.getByText("Follow-up while clock is behind", { exact: true }))
+        .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   beforeAll(async () => {
     fixture = buildFixture(
       createSnapshotForTargetUser({

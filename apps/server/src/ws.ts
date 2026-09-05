@@ -132,6 +132,8 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
+import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import { refreshWindowsPath } from "@threadlines/shared/shell";
 import { SourceControlRepositoryService } from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
@@ -273,6 +275,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const sourceControlDiscovery = yield* SourceControlDiscoveryLayer.SourceControlDiscovery;
       const sourceControlToolMaintenance =
         yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+      const githubAuth = yield* GitHubAuth.GitHubAuth;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.automaticGitFetchInterval),
         Effect.catch((cause) =>
@@ -1089,10 +1092,14 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
-            (input.instanceId !== undefined
-              ? providerRegistry.refreshInstance(input.instanceId)
-              : providerRegistry.refresh()
-            ).pipe(Effect.map((providers) => ({ providers }))),
+            Effect.sync(() => refreshWindowsPath()).pipe(
+              Effect.andThen(
+                input.instanceId !== undefined
+                  ? providerRegistry.refreshInstance(input.instanceId)
+                  : providerRegistry.refresh(),
+              ),
+              Effect.map((providers) => ({ providers })),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverStartProviderReview]: (input) =>
@@ -1244,11 +1251,20 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            sourceControlDiscovery.discover,
+            Effect.sync(() => refreshWindowsPath()).pipe(
+              Effect.andThen(sourceControlDiscovery.discover),
+            ),
             {
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetSourceControlSetup]: () =>
+          Effect.all({
+            tools: sourceControlToolMaintenance.getState,
+            githubAuth: githubAuth.getState,
+          }),
+        [WS_METHODS.serverStartGitHubAuth]: () => githubAuth.start,
+        [WS_METHODS.serverCancelGitHubAuth]: () => githubAuth.cancel,
         [WS_METHODS.serverUpdateSourceControlTool]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSourceControlTool,
@@ -1273,10 +1289,42 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 input.target,
               );
 
-              const maintenanceResult = yield* sourceControlToolMaintenance.update({
-                ...input,
-                operation,
-              });
+              const maintenanceResult = yield* sourceControlToolMaintenance.update(
+                {
+                  ...input,
+                  operation,
+                },
+                () =>
+                  sourceControlDiscovery.discover.pipe(
+                    Effect.flatMap((after) =>
+                      SourceControlToolMaintenance.currentSourceControlToolVersion(
+                        after,
+                        input.target,
+                      ) !== null
+                        ? Effect.void
+                        : Effect.fail(
+                            new SourceControlToolUpdateError({
+                              target: input.target,
+                              reason:
+                                "The installer finished, but the tool could not be found. Check the installer, then rescan or retry.",
+                            }),
+                          ),
+                    ),
+                    Effect.andThen(() =>
+                      input.target === "git" && operation === "install"
+                        ? githubAuth.configureGit.pipe(
+                            Effect.mapError(
+                              (error) =>
+                                new SourceControlToolUpdateError({
+                                  target: input.target,
+                                  reason: error.detail,
+                                }),
+                            ),
+                          )
+                        : Effect.void,
+                    ),
+                  ),
+              );
 
               const discovery = yield* sourceControlDiscovery.discover;
               const currentVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
@@ -1287,7 +1335,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 return yield* new SourceControlToolUpdateError({
                   target: input.target,
                   reason:
-                    "The package-manager command finished, but Threadlines could not verify the installed tool version afterward. Rescan after restarting the desktop app.",
+                    "The installer finished, but the tool could not be found. Check the installer, then rescan or retry.",
                 });
               }
 
@@ -2329,8 +2377,11 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
   );
 
 export const websocketRpcRouteLayer = Layer.unwrap(
-  Effect.succeed(
-    HttpRouter.add(
+  Effect.gen(function* () {
+    const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+    const providerMaintenance = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
+    const githubSignIn = yield* GitHubAuth.GitHubAuth;
+    return HttpRouter.add(
       "GET",
       "/ws",
       Effect.gen(function* () {
@@ -2343,11 +2394,20 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             makeWsRpcLayer(session.sessionId).pipe(
-              Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(
-                SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer)),
+                Layer.succeed(
+                  SourceControlToolMaintenance.SourceControlToolMaintenance,
+                  maintenance,
+                ),
               ),
+              Layer.provide(
+                Layer.succeed(
+                  ProviderMaintenanceRunner.ProviderMaintenanceRunner,
+                  providerMaintenance,
+                ),
+              ),
+              Layer.provide(Layer.succeed(GitHubAuth.GitHubAuth, githubSignIn)),
+              Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(
                 SourceControlDiscoveryLayer.layer.pipe(
                   Layer.provide(
@@ -2401,6 +2461,6 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),
-    ),
-  ),
+    );
+  }),
 );

@@ -156,7 +156,7 @@ function buildEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
     .join("; ");
 }
 
-function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
+export function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
   return [
     "$ErrorActionPreference = 'Stop'",
     ...names.flatMap((name) => {
@@ -166,7 +166,9 @@ function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): st
 
       return [
         `Write-Output '${envCaptureStart(name)}'`,
-        `$value = [Environment]::GetEnvironmentVariable('${name}')`,
+        name === "PATH"
+          ? "$value = @([Environment]::GetEnvironmentVariable('PATH'), [Environment]::GetEnvironmentVariable('PATH', 'Machine'), [Environment]::GetEnvironmentVariable('PATH', 'User')) -join ';'; $value = [Environment]::ExpandEnvironmentVariables($value)"
+          : `$value = [Environment]::GetEnvironmentVariable('${name}')`,
         "if ($null -ne $value -and $value.Length -gt 0) { Write-Output $value }",
         `Write-Output '${envCaptureEnd(name)}'`,
       ];
@@ -472,8 +474,16 @@ export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArra
   const userProfile = env.USERPROFILE?.trim();
 
   return [
-    ...(programFiles ? [`${programFiles}\\Git\\cmd`, `${programFiles}\\GitHub CLI`] : []),
-    ...(programFilesX86 ? [`${programFilesX86}\\Git\\cmd`, `${programFilesX86}\\GitHub CLI`] : []),
+    ...(programFiles
+      ? [`${programFiles}\\Git\\cmd`, `${programFiles}\\GitHub CLI`, `${programFiles}\\nodejs`]
+      : []),
+    ...(programFilesX86
+      ? [
+          `${programFilesX86}\\Git\\cmd`,
+          `${programFilesX86}\\GitHub CLI`,
+          `${programFilesX86}\\nodejs`,
+        ]
+      : []),
     ...(appData ? [`${appData}\\npm`] : []),
     ...(localAppData
       ? [
@@ -481,17 +491,44 @@ export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArra
           `${localAppData}\\Programs\\Git\\cmd`,
           `${localAppData}\\Programs\\GitHub CLI`,
           `${localAppData}\\Programs\\nodejs`,
+          `${localAppData}\\Programs\\OpenAI\\Codex\\bin`,
           `${localAppData}\\Volta\\bin`,
         ]
       : []),
     ...(localAppData ? [`${localAppData}\\pnpm`] : []),
-    ...(userProfile ? [`${userProfile}\\.bun\\bin`, `${userProfile}\\scoop\\shims`] : []),
+    ...(userProfile
+      ? [`${userProfile}\\.local\\bin`, `${userProfile}\\.bun\\bin`, `${userProfile}\\scoop\\shims`]
+      : []),
   ];
 }
 
 export interface WindowsEnvironmentResolverOptions {
   readonly readEnvironment?: WindowsShellEnvironmentReader;
   readonly commandAvailable?: typeof isCommandAvailable;
+}
+
+/** Refresh at an explicit rescan or after installation, never on the process spawn path. */
+export function refreshWindowsPath(
+  options: {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly platform?: NodeJS.Platform;
+    readonly readEnvironment?: WindowsShellEnvironmentReader;
+  } = {},
+): void {
+  if ((options.platform ?? process.platform) !== "win32") return;
+  const env = options.env ?? process.env;
+  const persistedPath = readWindowsEnvironmentSafely(
+    options.readEnvironment ?? readEnvironmentFromWindowsShell,
+    ["PATH"],
+    { loadProfile: false },
+  ).PATH;
+  const refreshedPath = mergePathValues(readEnvPath(env), persistedPath, "win32");
+  const mergedPath = mergePathValues(
+    refreshedPath,
+    resolveKnownWindowsCliDirs(env).join(WINDOWS_PATH_DELIMITER),
+    "win32",
+  );
+  if (mergedPath) env.PATH = mergedPath;
 }
 
 function readWindowsEnvironmentSafely(

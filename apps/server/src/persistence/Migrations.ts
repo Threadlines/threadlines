@@ -62,6 +62,7 @@ import Migration0046 from "./Migrations/046_ProjectionTurnsCheckpointCompletedAt
 import Migration0047 from "./Migrations/047_ProjectionThreadSubagents.ts";
 import Migration0048 from "./Migrations/048_BackfillThreadSubagents.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadSubagentsBackgrounded.ts";
+import Migration0050 from "./Migrations/050_ProjectionTranscriptEventSequence.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -123,6 +124,7 @@ export const migrationEntries = [
   [47, "ProjectionThreadSubagents", Migration0047],
   [48, "BackfillThreadSubagents", Migration0048],
   [49, "ProjectionThreadSubagentsBackgrounded", Migration0049],
+  [50, "ProjectionTranscriptEventSequence", Migration0050],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

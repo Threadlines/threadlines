@@ -183,6 +183,13 @@ const RawGitHubRepositoryCloneUrlsSchema = Schema.Struct({
   sshUrl: TrimmedNonEmptyString,
 });
 
+const RawGitHubRepositoryListSchema = Schema.Array(
+  Schema.Struct({
+    ...RawGitHubRepositoryCloneUrlsSchema.fields,
+    archived: Schema.Boolean,
+  }),
+);
+
 function normalizeRepositoryCloneUrls(
   raw: Schema.Schema.Type<typeof RawGitHubRepositoryCloneUrlsSchema>,
 ): GitHubRepositoryCloneUrls {
@@ -371,29 +378,42 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
         Effect.map(normalizeRepositoryCloneUrls),
       ),
     listRepositories: (input) =>
-      execute({
-        cwd: input.cwd,
-        args: [
-          "repo",
-          "list",
-          "--no-archived",
-          "--limit",
-          String(input.limit ?? 50),
-          "--json",
-          "nameWithOwner,url,sshUrl",
-        ],
-      }).pipe(
-        Effect.map((result) => result.stdout.trim()),
-        Effect.flatMap((raw) =>
-          decodeGitHubJson(
+      Effect.gen(function* () {
+        const limit = input.limit ?? 50;
+        const pageSize = Math.min(limit, 100);
+        const repositories: GitHubRepositoryCloneUrls[] = [];
+
+        // The authenticated-user endpoint includes organization and collaborator
+        // access. `gh repo list` only lists repositories the account owns.
+        for (let page = 1; repositories.length < limit; page += 1) {
+          const result = yield* execute({
+            cwd: input.cwd,
+            args: [
+              "api",
+              `user/repos?affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=${pageSize}&page=${page}`,
+              "--jq",
+              "map({nameWithOwner: .full_name, url: .html_url, sshUrl: .ssh_url, archived: .archived})",
+            ],
+          });
+          const raw = result.stdout.trim();
+          const entries = yield* decodeGitHubJson(
             raw.length === 0 ? "[]" : raw,
-            Schema.Array(RawGitHubRepositoryCloneUrlsSchema),
+            RawGitHubRepositoryListSchema,
             "listRepositories",
             "GitHub CLI returned invalid repository list JSON.",
-          ),
-        ),
-        Effect.map((repositories) => repositories.map(normalizeRepositoryCloneUrls)),
-      ),
+          );
+          for (const entry of entries) {
+            if (!entry.archived && repositories.length < limit) {
+              repositories.push(normalizeRepositoryCloneUrls(entry));
+            }
+          }
+          if (entries.length < pageSize) {
+            break;
+          }
+        }
+
+        return repositories;
+      }),
     createRepository: (input) =>
       execute({
         cwd: input.cwd,

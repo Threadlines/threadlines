@@ -80,6 +80,11 @@ export function isWinGetUpdateNotApplicable(cause: VcsError): boolean {
   );
 }
 
+export function isWinGetInstallCancelled(cause: VcsError): boolean {
+  // APPINSTALLER_CLI_ERROR_INSTALL_CANCELLED_BY_USER may be signed by the process bridge.
+  return cause._tag === "VcsProcessExitError" && cause.exitCode >>> 0 === 0x8a15010c;
+}
+
 export function makeLatestWinGetVersionResolver(input: {
   readonly cwd: string;
   readonly vcsProcess: VcsProcess.VcsProcessShape;

@@ -1,4 +1,4 @@
-import { afterEach, describe, it, assert } from "@effect/vitest";
+import { afterEach, beforeEach, describe, it, assert } from "@effect/vitest";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -289,16 +289,18 @@ function claudeWindowsUpdateCapabilities(): ProviderMaintenanceCapabilities {
 }
 
 const makeTestRunner = (registry: ProviderRegistryShape) =>
-  Effect.service(ProviderMaintenanceRunner.ProviderMaintenanceRunner).pipe(
-    Effect.provide(
-      ProviderMaintenanceRunner.layer.pipe(
-        Layer.provide(Layer.succeed(ProviderRegistry, registry)),
-      ),
-    ),
-  );
+  ProviderMaintenanceRunner.make().pipe(Effect.provideService(ProviderRegistry, registry));
 
 describe("providerMaintenanceRunner", () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  beforeEach(() => {
+    // Generic command assertions use POSIX argv. Windows cases below opt in explicitly.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
   afterEach(() => {
+    if (platformDescriptor) {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
     clearLatestProviderVersionCacheForTests();
   });
 
@@ -945,7 +947,7 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
-  it.effect("prevents concurrent updates for the same provider", () => {
+  it.effect("keeps an update running and locked after its requesting client disconnects", () => {
     const startedLatch: { resolve: () => void } = { resolve: () => {} };
     const releaseLatch: { resolve: () => void } = { resolve: () => {} };
     const started = new Promise<void>((resolve) => {
@@ -960,6 +962,7 @@ describe("providerMaintenanceRunner", () => {
 
       const first = yield* updater.updateProvider(CODEX_DRIVER).pipe(Effect.forkScoped);
       yield* Effect.promise(() => started);
+      yield* Fiber.interrupt(first);
 
       const second = yield* updater.updateProvider(CODEX_DRIVER).pipe(Effect.exit);
       assert.strictEqual(Exit.isFailure(second), true);
@@ -972,7 +975,9 @@ describe("providerMaintenanceRunner", () => {
       }
 
       releaseLatch.resolve();
-      yield* Fiber.join(first);
+      while ((yield* registry.getProviders)[0]?.updateState?.status !== "succeeded") {
+        yield* Effect.yieldNow;
+      }
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

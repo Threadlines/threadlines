@@ -1,3 +1,4 @@
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -113,8 +114,7 @@ function derivePendingUserInputCountFromActivities(
 ): number {
   const ordered = [...activities].toSorted(
     (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
+      compareTranscriptOrder(left, right) || left.activityId.localeCompare(right.activityId),
   );
   return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS).length;
 }
@@ -165,7 +165,9 @@ function deriveHasActionableProposedPlan(input: {
 }): boolean {
   const sorted = [...input.proposedPlans].toSorted(
     (left, right) =>
-      left.updatedAt.localeCompare(right.updatedAt) || left.planId.localeCompare(right.planId),
+      (left.eventSequence === undefined && right.eventSequence === undefined
+        ? left.updatedAt.localeCompare(right.updatedAt)
+        : compareTranscriptOrder(left, right)) || left.planId.localeCompare(right.planId),
   );
 
   let latestForTurn: ProjectionThreadProposedPlan | null = null;
@@ -235,8 +237,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
-          left.messageId.localeCompare(right.messageId),
+          compareTranscriptOrder(left, right) || left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingUserCount);
     for (const message of fallbackUserMessages) {
@@ -258,8 +259,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
-          left.messageId.localeCompare(right.messageId),
+          compareTranscriptOrder(left, right) || left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingAssistantCount);
     for (const message of fallbackAssistantMessages) {
@@ -998,6 +998,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const nextSkills = event.payload.skills ?? previousMessage?.skills;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
+            eventSequence: previousMessage?.eventSequence ?? event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
             role: event.payload.role,
@@ -1025,6 +1026,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const nextSkills = event.payload.skills ?? previousMessage?.skills;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
+            eventSequence: previousMessage?.eventSequence ?? event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
             role: event.payload.role,
@@ -1083,6 +1085,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.proposed-plan-upserted":
           yield* projectionThreadProposedPlanRepository.upsert({
             planId: event.payload.proposedPlan.id,
+            eventSequence: event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.proposedPlan.turnId,
             planMarkdown: event.payload.proposedPlan.planMarkdown,
@@ -1135,6 +1138,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.activity-appended": {
           yield* projectionThreadActivityRepository.upsert({
             activityId: event.payload.activity.id,
+            eventSequence: event.sequence,
             threadId: event.payload.threadId,
             turnId: event.payload.activity.turnId,
             tone: event.payload.activity.tone,
@@ -1149,7 +1153,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingSubagents = yield* projectionThreadSubagentRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const nextSubagents = projectSubagentActivity(existingSubagents, event.payload.activity);
+          const nextSubagents = projectSubagentActivity(existingSubagents, {
+            ...event.payload.activity,
+            eventSequence: event.sequence,
+          });
           if (nextSubagents !== existingSubagents) {
             yield* projectionThreadSubagentRepository.replaceByThreadId(
               event.payload.threadId,
@@ -1193,6 +1200,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 payload: row.payload,
                 turnId: row.turnId,
                 ...(row.sequence !== undefined ? { sequence: row.sequence } : {}),
+                ...(row.eventSequence !== undefined ? { eventSequence: row.eventSequence } : {}),
                 createdAt: row.createdAt,
               }),
             [],
