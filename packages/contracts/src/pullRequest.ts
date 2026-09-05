@@ -29,6 +29,16 @@ export type PullRequestChecksState = typeof PullRequestChecksState.Type;
 export const PullRequestMergeability = Schema.Literals(["mergeable", "conflicting", "unknown"]);
 export type PullRequestMergeability = typeof PullRequestMergeability.Type;
 
+/**
+ * Whether the host's own rules would take a merge right now. `blocked` is a
+ * protection rule in the way: required checks still running or failed, a
+ * review still owed. `behind` is a host that insists the branch be current
+ * first. `clear` is a merge the host would accept. Conflicts are `mergeability`,
+ * not this.
+ */
+export const PullRequestMergeGate = Schema.Literals(["clear", "blocked", "behind"]);
+export type PullRequestMergeGate = typeof PullRequestMergeGate.Type;
+
 export const PullRequestActor = Schema.Struct({
   login: TrimmedNonEmptyString,
   isBot: Schema.Boolean,
@@ -409,6 +419,8 @@ export const PullRequestDetail = Schema.Struct({
   labels: Schema.Array(PullRequestLabel),
   checks: Schema.Array(PullRequestCheck),
   checksState: Schema.optionalKey(PullRequestChecksState),
+  /** Absent where the host does not say, or has not decided yet after a push. */
+  mergeGate: Schema.optionalKey(PullRequestMergeGate),
   viewer: PullRequestViewerPermissions,
   /** The methods the repository allows, in the order merge, squash, rebase. */
   mergeMethods: Schema.Array(PullRequestMergeMethod),

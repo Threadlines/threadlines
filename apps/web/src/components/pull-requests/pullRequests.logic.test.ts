@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   ProjectId,
   ThreadId,
+  type PullRequestCheck,
   type PullRequestComment,
   type PullRequestListEntry,
   type PullRequestListResult,
@@ -37,12 +38,14 @@ import {
   pullRequestFiltersFromSearch,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
+  resolveDefaultMergeMethod,
   resolveNeedsYouReason,
   resolvePullRequestMergeBlock,
   resolvePullRequestReviewPosition,
   sortPullRequests,
   summarizePullRequestChecks,
   resolveThreadPullRequest,
+  shouldPollPullRequestDetail,
   type PullRequestDiffFile,
   type PullRequestEntry,
   type PullRequestFilters,
@@ -968,6 +971,90 @@ describe("resolvePullRequestMergeBlock", () => {
     );
     expect(resolvePullRequestMergeBlock({ mergeability: "unknown", isDraft: false })).toBeNull();
   });
+
+  it("says what the host's own rules are waiting on", () => {
+    const check = (status: PullRequestCheck["status"]) => ({
+      name: status,
+      status,
+      description: null,
+      url: null,
+    });
+    const blocked = {
+      mergeability: "mergeable" as const,
+      isDraft: false,
+      mergeGate: "blocked" as const,
+    };
+
+    expect(
+      resolvePullRequestMergeBlock({
+        ...blocked,
+        checks: [check("pending"), check("pending"), check("failure")],
+      }),
+    ).toBe("Waiting on 2 checks");
+    expect(resolvePullRequestMergeBlock({ ...blocked, checks: [check("pending")] })).toBe(
+      "Waiting on 1 check",
+    );
+    expect(
+      resolvePullRequestMergeBlock({ ...blocked, checks: [check("failure"), check("success")] }),
+    ).toBe("A check failed");
+    expect(
+      resolvePullRequestMergeBlock({
+        ...blocked,
+        checks: [check("success")],
+        reviewDecision: "review-required",
+      }),
+    ).toBe("Needs an approving review");
+    expect(resolvePullRequestMergeBlock({ ...blocked, checks: [] })).toBe(
+      "Blocked by branch rules",
+    );
+    expect(resolvePullRequestMergeBlock({ ...blocked, mergeGate: "behind" })).toBe(
+      "Update the branch first",
+    );
+    // A running check on its own is not a block: without a rule requiring it,
+    // the host merges anyway.
+    expect(
+      resolvePullRequestMergeBlock({ ...blocked, mergeGate: "clear", checks: [check("pending")] }),
+    ).toBeNull();
+  });
+});
+
+describe("shouldPollPullRequestDetail", () => {
+  const now = Date.parse("2026-09-04T12:00:00.000Z");
+  const check = (status: PullRequestCheck["status"]) => ({
+    name: status,
+    status,
+    description: null,
+    url: null,
+  });
+  const settled = {
+    state: "open" as const,
+    mergeability: "mergeable" as const,
+    updatedAt: "2026-09-04T11:00:00.000Z",
+  };
+
+  it("polls while a check runs, and for a while after a push before any check exists", () => {
+    expect(shouldPollPullRequestDetail({ ...settled, checks: [check("pending")] }, now)).toBe(true);
+    expect(shouldPollPullRequestDetail({ ...settled, checks: [check("success")] }, now)).toBe(
+      false,
+    );
+    expect(shouldPollPullRequestDetail({ ...settled, checks: [] }, now)).toBe(false);
+
+    const justPushed = { ...settled, updatedAt: "2026-09-04T11:59:30.000Z" };
+    expect(shouldPollPullRequestDetail({ ...justPushed, checks: [] }, now)).toBe(true);
+    expect(
+      shouldPollPullRequestDetail(
+        { ...justPushed, mergeability: "unknown", checks: [check("success")] },
+        now,
+      ),
+    ).toBe(true);
+    // Checks that have arrived and settled end the watch early.
+    expect(shouldPollPullRequestDetail({ ...justPushed, checks: [check("success")] }, now)).toBe(
+      false,
+    );
+    expect(
+      shouldPollPullRequestDetail({ ...justPushed, state: "merged" as const, checks: [] }, now),
+    ).toBe(false);
+  });
 });
 
 describe("handing a review comment to a thread", () => {
@@ -1220,5 +1307,17 @@ describe("applyPendingPullRequestReactions", () => {
         ]),
       ),
     ).toEqual([{ content: "thumbs-up", count: 3, viewerReacted: true }]);
+  });
+});
+
+describe("resolveDefaultMergeMethod", () => {
+  it("runs the method last used on the repository while it is still allowed", () => {
+    expect(resolveDefaultMergeMethod(["merge", "squash", "rebase"], "squash")).toBe("squash");
+  });
+
+  it("falls back to the repository's first method when nothing is remembered or it is off", () => {
+    expect(resolveDefaultMergeMethod(["squash", "rebase"], "merge")).toBe("squash");
+    expect(resolveDefaultMergeMethod(["squash", "rebase"])).toBe("squash");
+    expect(resolveDefaultMergeMethod([], "squash")).toBe("merge");
   });
 });

@@ -18,7 +18,6 @@ import { render } from "vitest-browser-react";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
-import type { ComposerStashControlProps } from "./ComposerStashControl";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { runtimeModeConfig, type RuntimeModeOption } from "../../runtimeModeOptions";
@@ -33,17 +32,6 @@ const TEST_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = (
   description: runtimeModeConfig[mode].description,
   icon: runtimeModeConfig[mode].icon,
 }));
-
-const EMPTY_STASH_CONTROL_PROPS = {
-  entries: [],
-  open: false,
-  onOpenChange: () => undefined,
-  canStash: false,
-  stashShortcutLabel: null,
-  onStash: () => undefined,
-  onRestore: () => undefined,
-  onDelete: () => undefined,
-} satisfies ComposerStashControlProps;
 
 function selectDescriptor(
   id: string,
@@ -150,7 +138,6 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
       runtimeMode="approval-required"
       runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
       showInteractionModeToggle
-      stashControlProps={EMPTY_STASH_CONTROL_PROPS}
       traitsMenuContent={
         <TraitsMenuContent
           provider={provider}
@@ -419,7 +406,6 @@ describe("CompactComposerControlsMenu", () => {
         runtimeMode="approval-required"
         runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
         showInteractionModeToggle={false}
-        stashControlProps={EMPTY_STASH_CONTROL_PROPS}
         onInteractionModeChange={vi.fn()}
         onRuntimeModeChange={vi.fn()}
       />,
