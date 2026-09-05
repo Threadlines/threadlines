@@ -99,7 +99,7 @@ export function PullRequestSummaryTab({
         <PullRequestMetaRow icon={<UsersIcon aria-hidden className="size-3.5" />} label="Reviewers">
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
             {detail.reviewers.length === 0 ? (
-              <span className="text-muted-foreground/55">No reviewers</span>
+              <span className="whitespace-nowrap text-muted-foreground/55">No reviewers</span>
             ) : (
               detail.reviewers.map((reviewer) => (
                 <PullRequestReviewerLabel key={`${reviewer.kind}:${reviewer.id}`} {...reviewer} />
@@ -224,7 +224,9 @@ function PullRequestMetaRow({
         {icon}
         {label}
       </span>
-      <span className="flex min-w-0 items-center gap-2">{children}</span>
+      {/* The row wraps rather than overflows: in a narrow panel the Request
+          button sits under the reviewers instead of past the edge. */}
+      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">{children}</span>
     </div>
   );
 }
