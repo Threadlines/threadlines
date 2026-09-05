@@ -180,6 +180,9 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
         })
       : null);
   if (!item) return [];
+  // Older adapters fabricated "running" for this notification, including
+  // messages to finished agents. Ignore it when replaying those saved rows too.
+  if (item.type === "subAgentActivity" && item.kind === "interacted") return [];
   if (isRootAgentPath(text(item.agentPath))) return [];
   const tool = text(item.tool);
   const nativeAgentId = text(item.agentThreadId);

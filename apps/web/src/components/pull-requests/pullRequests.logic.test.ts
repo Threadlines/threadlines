@@ -2,8 +2,10 @@ import {
   EnvironmentId,
   ProjectId,
   ThreadId,
+  type PullRequestCheck,
   type PullRequestComment,
   type PullRequestListEntry,
+  type PullRequestListResult,
   type VcsStatusResult,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -23,9 +25,11 @@ import {
   formatPullRequestChecksSummary,
   groupPullRequests,
   groupTimelineRows,
+  isLinkToPullRequest,
   linkThreadsToPullRequests,
   matchesPullRequestQuery,
   matchesPullRequestSelection,
+  mergePullRequestListResults,
   narrowPullRequests,
   parsePullRequestSelection,
   parsePullRequestsSearch,
@@ -35,12 +39,14 @@ import {
   pullRequestFiltersFromSearch,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
+  resolveDefaultMergeMethod,
   resolveNeedsYouReason,
   resolvePullRequestMergeBlock,
   resolvePullRequestReviewPosition,
   sortPullRequests,
   summarizePullRequestChecks,
   resolveThreadPullRequest,
+  shouldPollPullRequestDetail,
   type PullRequestDiffFile,
   type PullRequestEntry,
   type PullRequestFilters,
@@ -359,7 +365,28 @@ describe("linkThreadsToPullRequests", () => {
     expect(linked.has(pullRequestEntryKey(row))).toBe(false);
   });
 
-  it("ignores archived threads, other branches, other repositories, and other environments", () => {
+  it("links a thread on another computer whose project points at the same repository", () => {
+    // The merged list keeps one row per pull request, so the row this device
+    // listed stands for the work a thread on the laptop is doing on it.
+    const row = entry();
+    const linked = linkThreadsToPullRequests(
+      [row],
+      [
+        thread({
+          id: ThreadId.make("laptop-thread"),
+          environmentId: OTHER_ENVIRONMENT_ID,
+          projectId: OTHER_PROJECT_ID,
+        }),
+      ],
+      PROJECTS,
+    );
+
+    expect(linked.get(pullRequestEntryKey(row))?.map((match) => match.id)).toEqual([
+      "laptop-thread",
+    ]);
+  });
+
+  it("ignores archived threads, other branches, and other repositories", () => {
     const row = entry();
     const linked = linkThreadsToPullRequests(
       [row],
@@ -368,12 +395,66 @@ describe("linkThreadsToPullRequests", () => {
         thread({ id: ThreadId.make("other-branch"), branch: "main" }),
         thread({ id: ThreadId.make("no-branch"), branch: null }),
         thread({ id: ThreadId.make("other-repository"), projectId: OTHER_PROJECT_ID }),
-        thread({ id: ThreadId.make("other-env"), environmentId: OTHER_ENVIRONMENT_ID }),
       ],
       PROJECTS,
     );
 
     expect(linked.has(pullRequestEntryKey(row))).toBe(false);
+  });
+});
+
+describe("mergePullRequestListResults", () => {
+  const listing = (
+    environmentId: EnvironmentId,
+    entries: readonly PullRequestListEntry[],
+  ): { environmentId: EnvironmentId; environmentLabel: string; data: PullRequestListResult } => ({
+    environmentId,
+    environmentLabel: environmentId === ENVIRONMENT_ID ? "This device" : "Laptop",
+    data: { viewer: "ada", entries, errors: [] },
+  });
+
+  it("keeps one row for a pull request two environments both list, seated with the first", () => {
+    const local = entry({ number: 214 });
+    const remote = entry({ number: 214, projectId: OTHER_PROJECT_ID });
+    const laptopOnly = entry({
+      number: 9,
+      repository: "someone/else",
+      projectId: OTHER_PROJECT_ID,
+    });
+
+    const merged = mergePullRequestListResults({
+      state: "open",
+      results: [
+        listing(ENVIRONMENT_ID, [local]),
+        listing(OTHER_ENVIRONMENT_ID, [remote, laptopOnly]),
+      ],
+    });
+
+    expect(merged.entries.map((row) => [row.number, row.environmentId])).toEqual([
+      [214, ENVIRONMENT_ID],
+      [9, OTHER_ENVIRONMENT_ID],
+    ]);
+  });
+
+  it("lets a listing that holds the repository take a row this device only found by search", () => {
+    const searched = entry({ number: 538, repository: "someone/else", origin: "authored" });
+    const checkedOut = entry({
+      number: 538,
+      repository: "Someone/Else",
+      projectId: OTHER_PROJECT_ID,
+    });
+
+    const merged = mergePullRequestListResults({
+      state: "open",
+      results: [listing(ENVIRONMENT_ID, [searched]), listing(OTHER_ENVIRONMENT_ID, [checkedOut])],
+    });
+
+    expect(merged.entries).toHaveLength(1);
+    expect(merged.entries[0]).toMatchObject({
+      origin: "workspace",
+      environmentId: OTHER_ENVIRONMENT_ID,
+      projectId: OTHER_PROJECT_ID,
+    });
   });
 });
 
@@ -781,6 +862,17 @@ describe("the pull request a link names", () => {
     ).toBe(false);
   });
 
+  it("still marks the row after another environment takes over listing it", () => {
+    const selection = {
+      environmentId: OTHER_ENVIRONMENT_ID,
+      projectId: OTHER_PROJECT_ID,
+      repository: "threadlines/threadlines",
+      number: 7,
+    };
+
+    expect(matchesPullRequestSelection(selection, entry({ number: 7 }))).toBe(true);
+  });
+
   it("drops a value that names no pull request", () => {
     expect(parsePullRequestSelection("")).toBeNull();
     expect(parsePullRequestSelection(`${ENVIRONMENT_ID}:${PROJECT_ID}`)).toBeNull();
@@ -878,6 +970,90 @@ describe("resolvePullRequestMergeBlock", () => {
       "Resolve the conflicts first",
     );
     expect(resolvePullRequestMergeBlock({ mergeability: "unknown", isDraft: false })).toBeNull();
+  });
+
+  it("says what the host's own rules are waiting on", () => {
+    const check = (status: PullRequestCheck["status"]) => ({
+      name: status,
+      status,
+      description: null,
+      url: null,
+    });
+    const blocked = {
+      mergeability: "mergeable" as const,
+      isDraft: false,
+      mergeGate: "blocked" as const,
+    };
+
+    expect(
+      resolvePullRequestMergeBlock({
+        ...blocked,
+        checks: [check("pending"), check("pending"), check("failure")],
+      }),
+    ).toBe("Waiting on 2 checks");
+    expect(resolvePullRequestMergeBlock({ ...blocked, checks: [check("pending")] })).toBe(
+      "Waiting on 1 check",
+    );
+    expect(
+      resolvePullRequestMergeBlock({ ...blocked, checks: [check("failure"), check("success")] }),
+    ).toBe("A check failed");
+    expect(
+      resolvePullRequestMergeBlock({
+        ...blocked,
+        checks: [check("success")],
+        reviewDecision: "review-required",
+      }),
+    ).toBe("Needs an approving review");
+    expect(resolvePullRequestMergeBlock({ ...blocked, checks: [] })).toBe(
+      "Blocked by branch rules",
+    );
+    expect(resolvePullRequestMergeBlock({ ...blocked, mergeGate: "behind" })).toBe(
+      "Update the branch first",
+    );
+    // A running check on its own is not a block: without a rule requiring it,
+    // the host merges anyway.
+    expect(
+      resolvePullRequestMergeBlock({ ...blocked, mergeGate: "clear", checks: [check("pending")] }),
+    ).toBeNull();
+  });
+});
+
+describe("shouldPollPullRequestDetail", () => {
+  const now = Date.parse("2026-09-04T12:00:00.000Z");
+  const check = (status: PullRequestCheck["status"]) => ({
+    name: status,
+    status,
+    description: null,
+    url: null,
+  });
+  const settled = {
+    state: "open" as const,
+    mergeability: "mergeable" as const,
+    updatedAt: "2026-09-04T11:00:00.000Z",
+  };
+
+  it("polls while a check runs, and for a while after a push before any check exists", () => {
+    expect(shouldPollPullRequestDetail({ ...settled, checks: [check("pending")] }, now)).toBe(true);
+    expect(shouldPollPullRequestDetail({ ...settled, checks: [check("success")] }, now)).toBe(
+      false,
+    );
+    expect(shouldPollPullRequestDetail({ ...settled, checks: [] }, now)).toBe(false);
+
+    const justPushed = { ...settled, updatedAt: "2026-09-04T11:59:30.000Z" };
+    expect(shouldPollPullRequestDetail({ ...justPushed, checks: [] }, now)).toBe(true);
+    expect(
+      shouldPollPullRequestDetail(
+        { ...justPushed, mergeability: "unknown", checks: [check("success")] },
+        now,
+      ),
+    ).toBe(true);
+    // Checks that have arrived and settled end the watch early.
+    expect(shouldPollPullRequestDetail({ ...justPushed, checks: [check("success")] }, now)).toBe(
+      false,
+    );
+    expect(
+      shouldPollPullRequestDetail({ ...justPushed, state: "merged" as const, checks: [] }, now),
+    ).toBe(false);
   });
 });
 
@@ -1131,5 +1307,59 @@ describe("applyPendingPullRequestReactions", () => {
         ]),
       ),
     ).toEqual([{ content: "thumbs-up", count: 3, viewerReacted: true }]);
+  });
+});
+
+describe("isLinkToPullRequest", () => {
+  const pullRequestUrl = "https://github.com/Threadlines/threadlines/pull/223";
+
+  it("matches the bare address, ignoring host casing and a trailing slash", () => {
+    expect(isLinkToPullRequest(pullRequestUrl, pullRequestUrl)).toBe(true);
+    expect(
+      isLinkToPullRequest("https://GitHub.com/Threadlines/threadlines/pull/223/", pullRequestUrl),
+    ).toBe(true);
+  });
+
+  it("leaves links into a part of the pull request the tab cannot show", () => {
+    expect(
+      isLinkToPullRequest(
+        "https://github.com/Threadlines/threadlines/pull/223/files",
+        pullRequestUrl,
+      ),
+    ).toBe(false);
+    expect(
+      isLinkToPullRequest(
+        "https://github.com/Threadlines/threadlines/pull/223#issuecomment-1",
+        pullRequestUrl,
+      ),
+    ).toBe(false);
+    expect(
+      isLinkToPullRequest(
+        "https://github.com/Threadlines/threadlines/pull/223?diff=split",
+        pullRequestUrl,
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves other pull requests and unreadable addresses alone", () => {
+    expect(
+      isLinkToPullRequest("https://github.com/Threadlines/threadlines/pull/224", pullRequestUrl),
+    ).toBe(false);
+    expect(
+      isLinkToPullRequest("https://github.com/Other/threadlines/pull/223", pullRequestUrl),
+    ).toBe(false);
+    expect(isLinkToPullRequest("not a url", pullRequestUrl)).toBe(false);
+  });
+});
+
+describe("resolveDefaultMergeMethod", () => {
+  it("runs the method last used on the repository while it is still allowed", () => {
+    expect(resolveDefaultMergeMethod(["merge", "squash", "rebase"], "squash")).toBe("squash");
+  });
+
+  it("falls back to the repository's first method when nothing is remembered or it is off", () => {
+    expect(resolveDefaultMergeMethod(["squash", "rebase"], "merge")).toBe("squash");
+    expect(resolveDefaultMergeMethod(["squash", "rebase"])).toBe("squash");
+    expect(resolveDefaultMergeMethod([], "squash")).toBe("merge");
   });
 });

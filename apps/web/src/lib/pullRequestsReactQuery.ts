@@ -24,6 +24,7 @@ import { useMemo } from "react";
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import {
   mergePullRequestListResults,
+  shouldPollPullRequestDetail,
   type PullRequestEntry,
   type PullRequestProjectFailure,
 } from "~/components/pull-requests/pullRequests.logic";
@@ -84,10 +85,11 @@ function readPayload(input: PullRequestReadInput) {
 }
 
 /**
- * The detail reads never poll: a pull request is a document the user reads,
- * and the panel's own Refresh is the one thing that re-runs `gh`.
+ * The pace the header keeps itself current at while there is something to wait
+ * for: a running check, or a fresh push whose checks the host has not queued
+ * yet. The rest of the time it is a document the user reads, and the panel's
+ * own Refresh is the one thing that re-runs `gh`.
  */
-/** While a check is still running the header keeps itself current at this pace. */
 export const PULL_REQUEST_CHECKS_POLL_INTERVAL_MS = 20_000;
 
 export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
@@ -101,10 +103,8 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
       ensureEnvironmentApi(input.environmentId).pullRequests.detail(readPayload(input)),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    // A run in progress is the one moment the reader is watching the checks,
-    // so the header polls until every check has settled, then goes quiet.
     refetchInterval: (query) =>
-      query.state.data?.checks.some((check) => check.status === "pending")
+      query.state.data !== undefined && shouldPollPullRequestDetail(query.state.data, Date.now())
         ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS
         : false,
     refetchIntervalInBackground: false,
@@ -399,23 +399,25 @@ export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
         enabled: false,
       })),
     ),
+    // Merged per state across every environment, the same way the page reads
+    // its own tab, so a pull request two computers both list is one row here
+    // too and the Project filter does not offer it twice.
     combine: (results) =>
-      results.flatMap((result, index) => {
-        const environment = environments[Math.floor(index / PULL_REQUEST_LIST_STATES.length)];
-        const state = PULL_REQUEST_LIST_STATES[index % PULL_REQUEST_LIST_STATES.length];
-        return environment && state && !result.isPlaceholderData
-          ? mergePullRequestListResults({
-              state,
-              results: [
-                {
-                  environmentId: environment.environmentId,
-                  environmentLabel: environment.label,
-                  data: result.data,
-                },
-              ],
-            }).entries
-          : [];
-      }),
+      PULL_REQUEST_LIST_STATES.flatMap(
+        (state, stateIndex) =>
+          mergePullRequestListResults({
+            state,
+            results: environments.map((environment, environmentIndex) => {
+              const result =
+                results[environmentIndex * PULL_REQUEST_LIST_STATES.length + stateIndex];
+              return {
+                environmentId: environment.environmentId,
+                environmentLabel: environment.label,
+                data: result && !result.isPlaceholderData ? result.data : undefined,
+              };
+            }),
+          }).entries,
+      ),
   });
 }
 

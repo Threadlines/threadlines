@@ -8,6 +8,7 @@ import {
   type PullRequestComment,
   type PullRequestCommit,
   type PullRequestMergeability,
+  type PullRequestMergeGate,
   type PullRequestMergeMethod,
   type PullRequestReviewer,
   type PullRequestReviewState,
@@ -40,6 +41,9 @@ export const GITHUB_PULL_REQUEST_DETAIL_FIELDS = [
   "closedAt",
   "reviews",
   "autoMergeRequest",
+  // What `gh pr merge` itself consults before it tries: the host's verdict on
+  // whether its rules would take the merge.
+  "mergeStateStatus",
   // Qualifies the head branch as `owner:branch`, which is the only name a
   // branch on a fork has in the base repository.
   "headRepositoryOwner",
@@ -54,6 +58,8 @@ export interface GitHubRepositoryAccess {
   readonly mergeMethods: ReadonlyArray<PullRequestMergeMethod>;
   /** What a pull request has to target not to be stacked on other work. */
   readonly defaultBranch: string | null;
+  /** Absent on a host too old to report the auto-merge switch. */
+  readonly autoMergeAllowed?: boolean;
 }
 
 /** The order the detail surface offers the allowed merge methods in. */
@@ -75,8 +81,23 @@ const GitHubRepositorySchema = Schema.Struct({
   allow_merge_commit: Schema.optional(Schema.NullOr(Schema.Boolean)),
   allow_squash_merge: Schema.optional(Schema.NullOr(Schema.Boolean)),
   allow_rebase_merge: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  allow_auto_merge: Schema.optional(Schema.NullOr(Schema.Boolean)),
   default_branch: Schema.optional(Schema.NullOr(Schema.String)),
 });
+
+/**
+ * `gh pr view --json mergeStateStatus`: the one word GitHub sums a pull
+ * request's readiness into.
+ */
+const GitHubMergeStateSchema = Schema.Struct({
+  mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+/**
+ * The states `gh pr merge --auto` merges outright instead of arming, copied
+ * from the CLI: nothing is pending, so there is nothing to wait for.
+ */
+const IMMEDIATELY_MERGEABLE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 
 /** A `gh pr view` row: everything a list row carries, plus the detail fields. */
 export interface GitHubPullRequestDetailRow extends GitHubPullRequestListRow {
@@ -87,8 +108,8 @@ export interface GitHubPullRequestDetailRow extends GitHubPullRequestListRow {
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestReviewer>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
-  /** Null on a host too old to report an auto-merge instruction at all. */
-  readonly autoMergeEnabled: boolean | null;
+  /** Absent while the host is still deciding after a push, or on a host too old to say. */
+  readonly mergeGate?: PullRequestMergeGate;
   /** Qualifies the head branch when it lives on a fork. */
   readonly headRepositoryOwnerLogin: string | null;
 }
@@ -137,6 +158,7 @@ const GitHubPullRequestDetailRowSchema = Schema.Struct({
   reviews: Schema.optional(Schema.NullOr(Schema.Array(GitHubReviewSchema))),
   /** An object while auto-merge is armed, null once it is not, absent on an older CLI. */
   autoMergeRequest: Schema.optional(Schema.NullOr(Schema.Struct({}))),
+  mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
   headRepositoryOwner: Schema.optional(
     Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.NullOr(Schema.String)) })),
   ),
@@ -223,6 +245,27 @@ function normalizeReviewers(input: {
 }
 
 /** One row per check. A repeated name is a re-run, so the last one wins. */
+/**
+ * GitHub's `mergeStateStatus` as the gate the client renders. `BLOCKED` and
+ * `BEHIND` are the two `gh pr merge` refuses on without `--admin`; `DIRTY` is a
+ * conflict and already told through `mergeability`, and `UNKNOWN` is a host
+ * that has not finished deciding, so both say nothing here.
+ */
+function normalizeMergeGate(value: string | null | undefined): PullRequestMergeGate | undefined {
+  switch (value?.trim().toUpperCase()) {
+    case "BLOCKED":
+      return "blocked";
+    case "BEHIND":
+      return "behind";
+    case "CLEAN":
+    case "HAS_HOOKS":
+    case "UNSTABLE":
+      return "clear";
+    default:
+      return undefined;
+  }
+}
+
 function normalizeChecks(
   checks: ReadonlyArray<Schema.Schema.Type<typeof GitHubStatusCheckSchema>> | null | undefined,
 ): ReadonlyArray<PullRequestCheck> {
@@ -345,6 +388,7 @@ function normalizeCommits(
 const decodeDetailPayload = decodeJsonResult(GitHubPullRequestDetailRowSchema);
 const decodeActivityPayload = decodeJsonResult(GitHubPullRequestActivitySchema);
 const decodeRepositoryPayload = decodeJsonResult(GitHubRepositorySchema);
+const decodeMergeStatePayload = decodeJsonResult(GitHubMergeStateSchema);
 
 /**
  * Decodes `gh api repos/<owner>/<name>` into the viewer's access and the merge
@@ -370,7 +414,26 @@ export function decodeGitHubRepositoryJson(
       (_method, index) => !reported || switches[index] === true,
     ),
     defaultBranch: nonEmptyText(row.default_branch),
+    ...(typeof row.allow_auto_merge === "boolean"
+      ? { autoMergeAllowed: row.allow_auto_merge }
+      : {}),
   });
+}
+
+/**
+ * Whether GitHub would merge the pull request this instant, read from
+ * `gh pr view --json mergeStateStatus`. A status the host did not name is not
+ * ready: arming then waits, which is the safe way to be wrong.
+ */
+export function decodeGitHubImmediatelyMergeableJson(
+  raw: string,
+): Result.Result<boolean, Cause.Cause<Schema.SchemaError>> {
+  const payload = decodeMergeStatePayload(raw);
+  if (!Result.isSuccess(payload)) {
+    return Result.fail(payload.failure);
+  }
+  const status = nonEmptyText(payload.success.mergeStateStatus);
+  return Result.succeed(status !== null && IMMEDIATELY_MERGEABLE_STATES.has(status));
 }
 
 /** Decodes `gh pr view --json <detail fields>` into the header the panel renders. */
@@ -384,6 +447,7 @@ export function decodeGitHubPullRequestDetailJson(
 
   const row = payload.success;
   const base = normalizeGitHubPullRequestListRow(row);
+  const mergeGate = normalizeMergeGate(row.mergeStateStatus);
   return Result.succeed({
     ...base,
     body: row.body ?? "",
@@ -399,9 +463,7 @@ export function decodeGitHubPullRequestDetailJson(
       reviews: row.reviews ?? [],
     }),
     checks: normalizeChecks(row.statusCheckRollup),
-    // A CLI too old for the field leaves it absent, which is "the host did not
-    // say" rather than "auto-merge is off".
-    autoMergeEnabled: row.autoMergeRequest === undefined ? null : row.autoMergeRequest !== null,
+    ...(mergeGate === undefined ? {} : { mergeGate }),
     headRepositoryOwnerLogin: nonEmptyText(row.headRepositoryOwner?.login),
   });
 }

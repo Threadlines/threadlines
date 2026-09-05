@@ -214,6 +214,8 @@ export interface GitLabMergeRequestRow {
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   readonly labels: ReadonlyArray<PullRequestLabel>;
   readonly checksState?: PullRequestChecksState;
+  /** Absent where GitLab named neither auto-merge field, which is not "off". */
+  readonly autoMergeEnabled?: boolean;
 }
 
 /** The three revisions a positioned comment is written against. */
@@ -235,8 +237,6 @@ export interface GitLabMergeRequestDetailRow extends GitLabMergeRequestRow {
     readonly avatarUrl: string | null;
   }>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
-  /** Null where GitLab named neither auto-merge field, which is not "off". */
-  readonly autoMergeEnabled: boolean | null;
   /** Null where GitLab did not count, which is not the same as "up to date". */
   readonly behindBy: number | null;
   /** Null on a merge request with no revisions to place a comment against. */
@@ -363,6 +363,10 @@ function toChecksState(
 
 function toRow(raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>): GitLabMergeRequestRow {
   const checksState = toChecksState(raw);
+  const autoMergeEnabled =
+    raw.merge_when_pipeline_succeeds == null && raw.auto_merge_enabled == null
+      ? undefined
+      : raw.merge_when_pipeline_succeeds === true || raw.auto_merge_enabled === true;
   return {
     number: raw.iid,
     title: raw.title,
@@ -381,6 +385,7 @@ function toRow(raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>): GitLab
     }),
     labels: toLabels(raw.labels),
     ...(checksState === undefined ? {} : { checksState }),
+    ...(autoMergeEnabled === undefined ? {} : { autoMergeEnabled }),
   };
 }
 
@@ -398,10 +403,6 @@ function toDiffRefs(
 function toDetailRow(
   raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>,
 ): GitLabMergeRequestDetailRow {
-  const autoMerge =
-    raw.merge_when_pipeline_succeeds == null && raw.auto_merge_enabled == null
-      ? null
-      : raw.merge_when_pipeline_succeeds === true || raw.auto_merge_enabled === true;
   return {
     ...toRow(raw),
     body: raw.description ?? "",
@@ -415,7 +416,6 @@ function toDetailRow(
         : [{ id: String(reviewer.id), login: actor.login, avatarUrl: actor.avatarUrl }];
     }),
     checks: toChecks(raw),
-    autoMergeEnabled: autoMerge,
     behindBy: raw.diverged_commits_count ?? null,
     diffRefs: toDiffRefs(raw),
   };

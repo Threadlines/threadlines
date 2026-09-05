@@ -91,9 +91,13 @@ import type {
   TranscriptHighlightContextSelection,
 } from "../../lib/transcriptHighlightContext";
 import {
+  type ComposerFooterTier,
+  INITIAL_COMPOSER_FOOTER_TIER_STATE,
+  isComposerFooterOverflowing,
+  measureComposerFooterOverflow,
+  resetComposerFooterTierWidths,
+  resolveComposerFooterTier,
   shouldUseCompactComposerPrimaryActions,
-  shouldUseCompactComposerFooter,
-  shouldUseIconOnlyComposerFooter,
 } from "../composerFooterLayout";
 import {
   type ComposerPromptEditorHandle,
@@ -293,9 +297,12 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         <>
           <Button
             variant="ghost"
+            // Never shrinks: the footer watches this row for overflow to decide
+            // when every label drops to an icon, and a truncating label would
+            // hide the very overflow it is looking for.
             className={cn(
-              "min-w-0 whitespace-nowrap text-muted-foreground/70 hover:text-foreground/80",
-              props.iconOnly ? "shrink-0" : "max-w-24 shrink px-2 sm:px-3",
+              "shrink-0 whitespace-nowrap text-muted-foreground/70 hover:text-foreground/80",
+              !props.iconOnly && "px-2 sm:px-3",
             )}
             size={props.iconOnly ? "icon-sm" : "sm"}
             type="button"
@@ -304,9 +311,9 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             tooltip={getInteractionModeToggleTitle(props.interactionMode)}
           >
             <InteractionModeIcon
-              className={cn(isPlanInteraction && "text-primary-readable opacity-100")}
+              className={cn("size-3.5", isPlanInteraction && "text-primary-readable opacity-100")}
             />
-            <span className={cn("sr-only", !props.iconOnly && "min-w-0 truncate sm:not-sr-only")}>
+            <span className={cn("sr-only", !props.iconOnly && "sm:not-sr-only")}>
               {interactionModeConfig[props.interactionMode].label}
             </span>
           </Button>
@@ -323,10 +330,9 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
           variant="ghost"
           size="sm"
           className={cn(
-            "font-medium",
+            "shrink-0 font-medium",
             props.iconOnly &&
               "min-h-7 w-7 justify-center gap-0 px-0 [&_[data-slot=select-icon]]:hidden",
-            !props.iconOnly && "min-w-0 max-w-32 shrink",
             isPlanInteraction && "opacity-65",
           )}
           aria-label={`Access level: ${currentRuntimeModeOption.label}`}
@@ -1142,8 +1148,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     null,
   );
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
-  const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
-  const [isComposerFooterIconOnly, setIsComposerFooterIconOnly] = useState(false);
+  const [composerFooterTier, setComposerFooterTier] = useState<ComposerFooterTier>("full");
+  const isComposerFooterCompact = composerFooterTier === "compact";
+  const isComposerFooterIconOnly = composerFooterTier === "icons";
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
@@ -1181,6 +1188,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerFormHeightRef = useRef(0);
+  const composerFooterLeftActionsRef = useRef<HTMLDivElement>(null);
+  const composerFooterTierStateRef = useRef(INITIAL_COMPOSER_FOOTER_TIER_STATE);
+  const composerFooterContentKeyRef = useRef<string | null>(null);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
@@ -1501,7 +1511,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
-    iconOnly: isComposerFooterCompact,
+    iconOnly: composerFooterTier !== "full",
   });
   const pendingPrimaryAction = useMemo(
     () =>
@@ -2167,50 +2177,70 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [draftId, activeThreadId, promptRef]);
 
   // ------------------------------------------------------------------
-  // Footer compact layout observation
+  // Footer layout observation
   // ------------------------------------------------------------------
+  // Left-hand footer content whose width the tier measurement depends on.
+  // When it changes, the recorded overflow widths describe labels that are
+  // gone, so the roomier tiers get retried at the current width.
+  const composerFooterContentKey = [
+    selectedInstanceId,
+    String(selectedModelForPickerWithCustomFallback),
+    activeFallbackModelDisplayName ?? "",
+    interactionMode,
+    runtimeMode,
+    composerFooterActionLayoutKey,
+    composerFooterHasWideActions,
+    isComposerPrimaryActionsCompact,
+    JSON.stringify(composerModelOptions?.[selectedInstanceId] ?? null),
+  ].join("|");
+
+  // The left control group never shrinks, so when its content outgrows the
+  // row it overflows (the scrollbar is hidden) and the tier steps up:
+  // labels -> icons -> overflow menu. Runs in a layout effect so a tier
+  // change lands before paint, and from the ResizeObserver so live resizes
+  // re-evaluate without waiting for a render.
+  const evaluateComposerFooterTier = useCallback(() => {
+    const composerForm = composerFormRef.current;
+    const leftActions = composerFooterLeftActionsRef.current;
+    // A hidden footer measures as zero; keep the last tier until it shows.
+    if (!composerForm || !leftActions || leftActions.clientWidth === 0) return;
+    let state = composerFooterTierStateRef.current;
+    if (composerFooterContentKeyRef.current !== composerFooterContentKey) {
+      composerFooterContentKeyRef.current = composerFooterContentKey;
+      state = resetComposerFooterTierWidths(state);
+    }
+    const next = resolveComposerFooterTier(state, {
+      width: composerForm.clientWidth,
+      overflowing: isComposerFooterOverflowing(measureComposerFooterOverflow(leftActions)),
+    });
+    composerFooterTierStateRef.current = next;
+    setComposerFooterTier(next.tier);
+  }, [composerFooterContentKey]);
+
+  // Re-measure after every tier change: the narrower tier may still overflow,
+  // and a roomier one may fit again.
+  useLayoutEffect(() => {
+    if (composerFooterTierStateRef.current.tier !== composerFooterTier) return;
+    evaluateComposerFooterTier();
+  }, [evaluateComposerFooterTier, composerFooterTier]);
+
   useLayoutEffect(() => {
     const composerForm = composerFormRef.current;
     if (!composerForm) return;
-    const measureComposerFormWidth = () => composerForm.clientWidth;
-    const measureFooterCompactness = () => {
-      const composerFormWidth = measureComposerFormWidth();
-      const footerCompact = shouldUseCompactComposerFooter(composerFormWidth);
-      const footerIconOnly = shouldUseIconOnlyComposerFooter(composerFormWidth, {
+    const measurePrimaryActionsCompact = () =>
+      shouldUseCompactComposerPrimaryActions(composerForm.clientWidth, {
         hasWideActions: composerFooterHasWideActions,
       });
-      const primaryActionsCompact = shouldUseCompactComposerPrimaryActions(composerFormWidth, {
-        hasWideActions: composerFooterHasWideActions,
-      });
-      return {
-        primaryActionsCompact,
-        footerCompact,
-        footerIconOnly,
-      };
-    };
 
     composerFormHeightRef.current = composerForm.getBoundingClientRect().height;
-    const initialCompactness = measureFooterCompactness();
-    setIsComposerPrimaryActionsCompact(initialCompactness.primaryActionsCompact);
-    setIsComposerFooterCompact(initialCompactness.footerCompact);
-    setIsComposerFooterIconOnly(initialCompactness.footerIconOnly);
+    setIsComposerPrimaryActionsCompact(measurePrimaryActionsCompact());
     if (typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver((entries) => {
       const [entry] = entries;
       if (!entry) return;
-      const nextCompactness = measureFooterCompactness();
-      setIsComposerPrimaryActionsCompact((previous) =>
-        previous === nextCompactness.primaryActionsCompact
-          ? previous
-          : nextCompactness.primaryActionsCompact,
-      );
-      setIsComposerFooterCompact((previous) =>
-        previous === nextCompactness.footerCompact ? previous : nextCompactness.footerCompact,
-      );
-      setIsComposerFooterIconOnly((previous) =>
-        previous === nextCompactness.footerIconOnly ? previous : nextCompactness.footerIconOnly,
-      );
+      setIsComposerPrimaryActionsCompact(measurePrimaryActionsCompact());
+      evaluateComposerFooterTier();
       const nextHeight = entry.contentRect.height;
       const previousHeight = composerFormHeightRef.current;
       composerFormHeightRef.current = nextHeight;
@@ -2227,6 +2257,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     composerFooterActionLayoutKey,
     composerFooterHasWideActions,
+    evaluateComposerFooterTier,
     scheduleStickToBottom,
     shouldAutoScrollRef,
   ]);
@@ -3624,11 +3655,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               data-chat-composer-footer-icon-only={isComposerFooterIconOnly ? "true" : "false"}
               className={cn(
                 "flex min-w-0 flex-nowrap items-center justify-between overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
-                isComposerFooterIconOnly ? "gap-x-1.5 gap-y-1.5" : "gap-x-2 gap-y-1.5 sm:gap-x-0",
+                // The left group's negative margin would touch the right group
+                // once the narrower tiers fill the row; keep a real gap there.
+                composerFooterTier === "full"
+                  ? "gap-x-2 gap-y-1.5 sm:gap-x-0"
+                  : "gap-x-1.5 gap-y-1.5",
                 showMobilePendingAnswerActions && "hidden sm:flex",
               )}
             >
               <div
+                ref={composerFooterLeftActionsRef}
                 data-chat-composer-actions="left"
                 className={cn(
                   "-m-1 flex flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
@@ -3664,7 +3700,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         <span
                           data-chat-model-fallback-chip="true"
                           className={cn(
-                            "inline-flex h-7 max-w-52 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
+                            "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
                             isComposerFooterIconOnly ? "max-w-36" : "max-w-52",
                           )}
                         />
@@ -3691,7 +3727,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeModeOptions={composerProviderControls.runtimeModeOptions}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
-                    stashControlProps={stashControlProps}
                     onInteractionModeChange={handleInteractionModeChange}
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />
@@ -3716,13 +3751,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               </div>
 
-              {/* Right side: add attachments + send / stop button */}
+              {/* Right side: stash + add attachments + send / stop button */}
               <div
                 data-chat-composer-actions="right"
                 data-chat-composer-primary-actions-compact={
                   isComposerPrimaryActionsCompact ? "true" : "false"
                 }
-                className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-2"
+                className={cn(
+                  "ml-auto flex shrink-0 flex-nowrap items-center justify-end",
+                  // Compact rows spend every pixel on the model name; tighter
+                  // gaps keep the always-visible stash bookmark from squeezing
+                  // the model picker or the overflow menu out of the row.
+                  isComposerFooterCompact ? "gap-1" : "gap-2",
+                )}
               >
                 <input
                   ref={imageFileInputRef}
@@ -3744,7 +3785,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   aria-hidden="true"
                   onChange={onAttachmentFileInputChange}
                 />
-                {!isComposerFooterCompact ? <ComposerStashControl {...stashControlProps} /> : null}
+                <ComposerStashControl {...stashControlProps} />
                 <ComposerAttachmentMenu
                   canCaptureScreenshot={canCaptureScreenshot}
                   isCapturingScreenshot={isCapturingScreenshot}

@@ -1487,6 +1487,12 @@ function collectSubagentActivityRecords(
     if (isRootAgentPath(asTrimmedString(item.agentPath))) {
       continue;
     }
+    // Native interactions include messages that leave an idle child idle.
+    // Older snapshots labeled them running; only child lifecycle events can
+    // restart the agent, even when replaying those saved activities.
+    if (item.type === "subAgentActivity" && item.kind === "interacted") {
+      continue;
+    }
 
     const toolCallId =
       asTrimmedString(item.id) ??

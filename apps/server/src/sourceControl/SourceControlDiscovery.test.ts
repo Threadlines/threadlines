@@ -295,7 +295,7 @@ it.effect("reports implemented tools separately from locally available executabl
       checkedAt: github.versionAdvisory?.checkedAt ?? null,
       message:
         "This GitHub CLI version can briefly open terminal windows during background telemetry on Windows and is below the recommended security-fix release.",
-      notificationKey: "github-cli:security:2.97.0",
+      notificationKey: "github-cli:2.98.0",
       actions: [
         {
           label: "Update now",

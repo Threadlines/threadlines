@@ -5453,6 +5453,91 @@ describe("deriveSubagentProgressState", () => {
     ).toBeNull();
   });
 
+  it("keeps a finished Codex agent idle after a message until its child turn starts", () => {
+    const activities = [
+      makeActivity({
+        id: "child-result",
+        createdAt: "2026-09-05T06:38:52.000Z",
+        kind: "subagent.result",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "subagent-response:agent-child",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-child"],
+              agentsStates: {
+                "agent-child": { status: "completed", message: "Review complete." },
+              },
+            },
+          },
+        },
+      }),
+      // Saved activities from older servers claim that any interaction starts
+      // work, including a send_message delivered after the child's final reply.
+      makeActivity({
+        id: "child-message",
+        createdAt: "2026-09-05T06:40:10.000Z",
+        kind: "tool.completed",
+        turnId: "turn-2",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "message-call",
+              type: "subAgentActivity",
+              kind: "interacted",
+              agentThreadId: "agent-child",
+              agentPath: "/root/review",
+              tool: "sendInput",
+              status: "inProgress",
+              receiverThreadIds: ["agent-child"],
+              agentsStates: { "agent-child": { status: "running" } },
+            },
+          },
+        },
+      }),
+    ];
+    const settled = deriveSubagentActivityState({
+      activities,
+      latestTurnId: TurnId.make("turn-2"),
+      latestTurnSettled: true,
+    });
+
+    expect(settled.progress).toBeNull();
+    expect(settled.history).toMatchObject([
+      { item: { status: "completed", turnId: "turn-1" }, resultBody: "Review complete." },
+    ]);
+    expect(settled.resultEntries).toMatchObject([{ body: "Review complete." }]);
+    expect(settled.liveEntries).toEqual([]);
+
+    const resumed = deriveSubagentActivityState({
+      activities: [
+        ...activities,
+        makeActivity({
+          id: "child-turn-started",
+          createdAt: "2026-09-05T06:41:00.000Z",
+          kind: "subagent.metadata",
+          turnId: "turn-2",
+          payload: { agentThreadId: "agent-child", status: "running" },
+        }),
+      ],
+      latestTurnId: TurnId.make("turn-2"),
+      latestTurnSettled: true,
+    });
+
+    expect(resumed.progress).toMatchObject({
+      activeCount: 1,
+      items: [{ agentThreadId: "agent-child", status: "running" }],
+    });
+    expect(resumed.history).toHaveLength(1);
+  });
+
   it("does not expose root conversation interactions as running subagents", () => {
     const childStarted = makeActivity({
       id: "native-child-started",

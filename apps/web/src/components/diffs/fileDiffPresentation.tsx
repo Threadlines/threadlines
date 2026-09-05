@@ -24,14 +24,6 @@ export function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
   return raw;
 }
 
-/**
- * The instance hydrates once per mount and skips `fileDiff` swaps, so this is
- * what a caller keys its wrapper on to force a remount when the file changes.
- */
-export function buildFileDiffRenderKey(fileDiff: FileDiffMetadata): string {
-  return fileDiff.cacheKey ?? `${fileDiff.prevName ?? "none"}:${fileDiff.name}`;
-}
-
 /** Rename source path, only when it differs from the displayed path. */
 export function resolveFileDiffPrevPath(fileDiff: FileDiffMetadata): string | null {
   const raw = fileDiff.prevName;
