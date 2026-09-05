@@ -58,6 +58,7 @@ const THREAD: SidebarThreadSummary = {
 const OPEN_PULL_REQUEST: ThreadPullRequest = {
   number: 123,
   state: "open",
+  settledAt: null,
   isDraft: false,
   title: "Add the pull requests page",
   url: "https://github.com/threadlines/threadlines/pull/123",

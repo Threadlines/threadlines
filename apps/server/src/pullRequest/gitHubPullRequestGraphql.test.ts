@@ -300,6 +300,7 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
         deletions: 2,
         createdAt: "2026-08-30T10:00:00Z",
         updatedAt: "2026-08-31T10:00:00Z",
+        settledAt: null,
         reviewRequestedLogins: ["hubot"],
         reviewDecision: "changes-requested",
         checksState: "failure",

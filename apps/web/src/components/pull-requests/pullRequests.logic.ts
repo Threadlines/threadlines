@@ -540,6 +540,8 @@ export interface ThreadPullRequest {
   /** The repository name, or null when the project sits on a host we cannot
    *  read. The detail surface needs it; the badge does not. */
   readonly repository: string | null;
+  /** When it merged or closed; null while open, or where the source did not say. */
+  readonly settledAt: string | null;
 }
 
 /**
@@ -609,6 +611,8 @@ export function pullRequestFromGitStatus(
     title: gitStatus.pr.title,
     url: gitStatus.pr.url,
     repository,
+    // The status read carries no dates.
+    settledAt: null,
   };
 }
 
@@ -662,6 +666,9 @@ export function resolveThreadPullRequest(input: {
     title: entry.title,
     url: entry.url,
     repository: entry.repository,
+    // A host that does not date the landing gets the row's last update, which
+    // is at or after it.
+    settledAt: entry.settledAt ?? (entry.state === "open" ? null : entry.updatedAt),
   };
 }
 
