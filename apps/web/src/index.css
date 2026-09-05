@@ -1008,26 +1008,30 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--background) 94%, var(--card));
 }
 
-.diff-render-file {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-2xl);
-  overflow: clip;
-  background: color-mix(in srgb, var(--card) 92%, var(--background));
-  scroll-margin-top: 0.5rem;
-}
-
-/* One-time emphasis on the file card the diff panel just scrolled to. */
+/* One-time emphasis on the file the diff panel just scrolled to. Files sit
+   flush against the scroller edges, so the ring is drawn inside the box. */
 @keyframes diff-file-flash {
   0% {
-    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--primary) 55%, transparent);
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--primary) 55%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 1.5px transparent;
+    box-shadow: inset 0 0 0 1.5px transparent;
   }
 }
 
 .diff-file-flash {
   animation: diff-file-flash 1.1s ease-out 150ms both;
+}
+
+/* Loading rows hold back a beat so a diff that lands fast never flashes them. */
+@keyframes diff-panel-loading-reveal {
+  from {
+    opacity: 0;
+  }
+}
+
+.diff-panel-loading {
+  animation: diff-panel-loading-reveal 160ms ease-out 120ms both;
 }
 
 /* Drill-in entrance for the diff panel body when it replaces source control. */
@@ -1709,6 +1713,7 @@ label:has(> select#reasoning-effort) select {
 
 @media (prefers-reduced-motion: reduce) {
   .diff-file-flash,
+  .diff-panel-loading,
   .diff-panel-enter,
   .work-row-enter,
   .work-meta-enter,

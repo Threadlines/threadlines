@@ -37,7 +37,11 @@ import { resolvePathLinkTarget } from "../terminal-links";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useTheme } from "../hooks/useTheme";
-import { getRenderablePatch, resolveDiffThemeName } from "../lib/diffRendering";
+import {
+  buildFileDiffRenderKey,
+  getRenderablePatch,
+  resolveDiffThemeName,
+} from "../lib/diffRendering";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
@@ -59,7 +63,6 @@ import {
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
 import {
   FileDiffHeader,
-  buildFileDiffRenderKey,
   getFileDiffStatusBadge,
   resolveFileDiffPath,
 } from "./diffs/fileDiffPresentation";
@@ -1598,7 +1601,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                 </div>
               ) : (
                 <Virtualizer
-                  className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
+                  className="diff-render-surface h-full min-h-0 overflow-auto"
                   config={{
                     overscrollSize: 600,
                     intersectionObserverMargin: 1200,
@@ -1615,13 +1618,15 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                     const showPreview = previewFileDiff != null && previewFileDiff.hunks.length > 0;
                     return (
                       <div
-                        // The diff instance hydrates once per mount and skips
-                        // fileDiff swaps unless options change, so the
-                        // changes-only variant must remount.
+                        // Keyed by path, so a refetched patch updates each file in
+                        // place instead of rebuilding every instance. The changes-only
+                        // cut is a separate parse, so switching it remounts.
                         key={`${themedFileKey}:${showPreview ? "changes" : "full"}`}
                         data-diff-file-path={filePath}
+                        // Files stack edge to edge, split by hairlines. A collapsed
+                        // file is only its header, whose own bottom rule is the divider.
                         className={cn(
-                          "diff-render-file group/diff-file mb-2 rounded-md first:mt-2 last:mb-0",
+                          !collapsed && "border-b border-border",
                           flashFilePath === filePath && "diff-file-flash",
                         )}
                         onContextMenu={(event) => {
