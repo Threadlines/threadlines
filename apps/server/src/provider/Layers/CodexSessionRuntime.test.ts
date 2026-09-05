@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { describe, it } from "vite-plus/test";
-import { ThreadId, TurnId } from "@threadlines/contracts";
+import { ThreadId, TurnId, type ProviderEvent } from "@threadlines/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -20,6 +25,7 @@ import {
   isNativeThreadForkUnsupportedError,
   isRecoverableThreadResumeError,
   makeCodexStderrLineClassifier,
+  makeCodexSessionRuntime,
   openCodexThread,
   readCollabChildThreadMetadata,
   readCollabParentTurnId,
@@ -31,6 +37,69 @@ import {
   type CodexServerNotification,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+
+describe("Codex user input lifecycle", () => {
+  for (const [input, reason] of [
+    ["resolve", "resolved"],
+    ["complete", "turn-completed"],
+  ] as const) {
+    it(`closes a pending question when Codex sends ${reason}`, async () => {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const runtime = yield* makeCodexSessionRuntime({
+            threadId: ThreadId.make("local-question-thread"),
+            serverPort: 0,
+            binaryPath: process.execPath,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+              ...spawner,
+              spawn: () =>
+                spawner.spawn(
+                  ChildProcess.make(process.execPath, [
+                    fileURLToPath(
+                      new URL(
+                        "../../../../../packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+                        import.meta.url,
+                      ),
+                    ),
+                  ]),
+                ),
+            }),
+          );
+          const requested = yield* Deferred.make<ProviderEvent>();
+          const resolved = yield* Deferred.make<ProviderEvent>();
+          yield* runtime.events.pipe(
+            Stream.runForEach((event) => {
+              if (event.method === "item/tool/requestUserInput")
+                return Deferred.succeed(requested, event);
+              if (event.method === "item/tool/requestUserInput/resolved")
+                return Deferred.succeed(resolved, event);
+              return Effect.void;
+            }),
+            Effect.forkScoped,
+          );
+          yield* runtime.start();
+          yield* runtime.sendTurn({ input: "Ask a question" });
+          const request = yield* Deferred.await(requested);
+          assert.ok(request.requestId);
+          assert.equal((request.payload as { isBlocking: boolean }).isBlocking, true);
+          yield* runtime.steerTurn({ expectedTurnId: TurnId.make("turn-1"), input });
+          const resolution = yield* Deferred.await(resolved);
+          assert.equal(resolution.requestId, request.requestId);
+          assert.equal(resolution.turnId, request.turnId);
+          assert.deepEqual(resolution.payload, { reason });
+          const lateAnswer = yield* runtime
+            .respondToUserInput(request.requestId, { proceed: ["yes"] })
+            .pipe(Effect.result);
+          assert.equal(lateAnswer._tag, "Failure");
+        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      );
+    });
+  }
+});
 
 function makeThreadOpenResponse(
   threadId: string,

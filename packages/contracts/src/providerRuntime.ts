@@ -581,16 +581,19 @@ export const UserInputQuestion = Schema.Struct({
 });
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
-const UserInputRequestedPayload = Schema.Struct({
+export const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
   /** False when the agent keeps working while the question is open (Codex
    *  0.150+ non-blocking `request_user_input`). Absent means blocking. */
   isBlocking: Schema.optional(Schema.Boolean),
+  /** Async message questions receive a user message instead of an RPC response. */
+  responseMode: Schema.optional(Schema.Literal("message")),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  reason: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 

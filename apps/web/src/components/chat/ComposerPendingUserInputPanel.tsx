@@ -1,12 +1,14 @@
 import { type ApprovalRequestId } from "@threadlines/contracts";
-import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
+import { memo, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { type PendingUserInput } from "../../session-logic";
 import {
   derivePendingUserInputProgress,
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
-import { CheckIcon, ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
+import { CheckIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, PencilLineIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
+import { Button } from "../ui/button";
+import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -17,6 +19,10 @@ interface PendingUserInputPanelProps {
   isTimelineScrolledAway?: boolean;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  onPrevious: () => void;
+  onCustomAnswerChange: (questionId: string, value: string) => void;
+  isUnavailable?: boolean;
+  isAgentRunning: boolean;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -27,6 +33,10 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   isTimelineScrolledAway = false,
   onToggleOption,
   onAdvance,
+  onPrevious,
+  onCustomAnswerChange,
+  isUnavailable = false,
+  isAgentRunning,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -42,6 +52,10 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       isTimelineScrolledAway={isTimelineScrolledAway}
       onToggleOption={onToggleOption}
       onAdvance={onAdvance}
+      onPrevious={onPrevious}
+      onCustomAnswerChange={onCustomAnswerChange}
+      isUnavailable={isUnavailable}
+      isAgentRunning={isAgentRunning}
     />
   );
 });
@@ -54,6 +68,10 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   isTimelineScrolledAway,
   onToggleOption,
   onAdvance,
+  onPrevious,
+  onCustomAnswerChange,
+  isUnavailable,
+  isAgentRunning,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
@@ -62,6 +80,10 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   isTimelineScrolledAway: boolean;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  onPrevious: () => void;
+  onCustomAnswerChange: (questionId: string, value: string) => void;
+  isUnavailable: boolean;
+  isAgentRunning: boolean;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
@@ -70,42 +92,27 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   // toggle wins until the next scroll boundary change. State lives in this card
   // (keyed by requestId), so each prompt re-derives from the current scroll state.
   const [isCollapsed, setIsCollapsed] = useState(isTimelineScrolledAway);
+  const collapseButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreToggleFocusRef = useRef(false);
+  const toggleCollapsed = () => {
+    restoreToggleFocusRef.current = true;
+    setIsCollapsed((collapsed) => !collapsed);
+  };
+  useLayoutEffect(() => {
+    if (restoreToggleFocusRef.current) {
+      collapseButtonRef.current?.focus({ preventScroll: true });
+      restoreToggleFocusRef.current = false;
+    }
+  }, [isCollapsed]);
   useEffect(() => {
     setIsCollapsed(isTimelineScrolledAway);
   }, [isTimelineScrolledAway]);
-  const autoAdvanceTimerRef = useRef<number | null>(null);
-  const onAdvanceRef = useRef(onAdvance);
-
-  useEffect(() => {
-    onAdvanceRef.current = onAdvance;
-  }, [onAdvance]);
-
-  // Clear auto-advance timer on unmount
-  useEffect(() => {
-    return () => {
-      if (autoAdvanceTimerRef.current !== null) {
-        window.clearTimeout(autoAdvanceTimerRef.current);
-      }
-    };
-  }, []);
-
   const handleOptionSelection = useEffectEvent((questionId: string, optionLabel: string) => {
     onToggleOption(questionId, optionLabel);
-    if (activeQuestion?.multiSelect) {
-      return;
-    }
-    if (autoAdvanceTimerRef.current !== null) {
-      window.clearTimeout(autoAdvanceTimerRef.current);
-    }
-    autoAdvanceTimerRef.current = window.setTimeout(() => {
-      autoAdvanceTimerRef.current = null;
-      onAdvanceRef.current();
-    }, 200);
   });
 
   // Keyboard shortcut: number keys 1-9 select corresponding options when focus is
-  // outside editable fields. Multi-select prompts toggle options in place; single-
-  // select prompts keep the existing auto-advance behavior.
+  // outside editable fields. Answers are only sent by the explicit submit action.
   useEffect(() => {
     if (!activeQuestion || isResponding || isCollapsed) return;
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -143,7 +150,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         type="button"
         aria-expanded={false}
         aria-label="Expand questions"
-        onClick={() => setIsCollapsed(false)}
+        ref={collapseButtonRef}
+        onClick={toggleCollapsed}
         className="group flex w-full min-w-0 cursor-pointer items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-muted/30 sm:px-5"
       >
         {prompt.questions.length > 1 ? (
@@ -151,26 +159,41 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             {questionIndex + 1}/{prompt.questions.length}
           </span>
         ) : null}
-        <span className="shrink-0 text-[11px] font-semibold tracking-widest text-muted-foreground/50 uppercase">
+        <span className="shrink-0 text-[11px] font-semibold tracking-widest text-muted-foreground/70 uppercase">
           {activeQuestion.header}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm text-foreground/80">
           {activeQuestion.question}
         </span>
-        <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-muted-foreground/80" />
+        <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-muted-foreground/80" />
       </button>
     );
   }
 
+  const submitLabel = formatPendingPrimaryActionLabel({
+    compact: false,
+    isLastQuestion: progress.isLastQuestion,
+    isResponding,
+    questionIndex,
+  });
+  const submitDisabled =
+    isUnavailable ||
+    isResponding ||
+    (progress.isLastQuestion ? !progress.isComplete : !progress.canAdvance);
+
   return (
     // The data attribute lets ChatView measure the expanded height to derive the
     // scroll distance at which auto-collapse becomes safe (no layout feedback).
-    <div data-composer-questions-expanded="true" className="px-4 py-2.5 sm:px-5">
+    <div
+      data-composer-questions-expanded="true"
+      className="max-h-[50dvh] overflow-y-auto overscroll-contain px-4 py-2.5 sm:px-5"
+    >
       <button
         type="button"
         aria-expanded={true}
         aria-label="Collapse questions"
-        onClick={() => setIsCollapsed(true)}
+        ref={collapseButtonRef}
+        onClick={toggleCollapsed}
         className="group/header -mx-1.5 -my-1 flex w-[calc(100%+0.75rem)] cursor-pointer items-center justify-between gap-3 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/40"
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -179,26 +202,30 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               {questionIndex + 1}/{prompt.questions.length}
             </span>
           ) : null}
-          <span className="shrink-0 text-[11px] font-semibold tracking-widest text-muted-foreground/50 uppercase">
+          <span className="shrink-0 text-[11px] font-semibold tracking-widest text-muted-foreground/70 uppercase">
             {activeQuestion.header}
           </span>
           {activeQuestion.multiSelect ? (
-            <span className="truncate text-[11px] text-muted-foreground/50">
+            <span className="truncate text-[11px] text-muted-foreground/70">
               · select one or more
             </span>
           ) : null}
         </div>
-        <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground/50 transition-colors group-hover/header:text-muted-foreground/80">
+        <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground/70 transition-colors group-hover/header:text-muted-foreground/80">
           <ChevronsDownUpIcon className="size-3.5" />
         </span>
       </button>
       <p className="mt-1 text-sm text-foreground/90">{activeQuestion.question}</p>
+      {/* Blocking questions need no hint: the transcript already says the turn
+          is waiting. Async ones do, since answering later is the new behavior. */}
       {prompt.isBlocking === false ? (
         <p
-          className="mt-0.5 text-[11px] leading-4 text-muted-foreground/55"
+          className="mt-0.5 text-[11px] leading-4 text-muted-foreground/70"
           data-composer-question-nonblocking="true"
         >
-          The agent keeps working while you answer.
+          {isAgentRunning
+            ? "The agent keeps working while you answer."
+            : "The agent finished. Your answer starts a follow-up."}
         </p>
       ) : null}
       <div className="mt-2 space-y-0.5">
@@ -210,6 +237,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               key={`${activeQuestion.id}:${option.label}`}
               type="button"
               disabled={isResponding}
+              aria-pressed={isSelected}
               onClick={() => handleOptionSelection(activeQuestion.id, option.label)}
               className={cn(
                 "group flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left transition-all duration-150",
@@ -225,7 +253,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                     "flex size-4.5 shrink-0 items-center justify-center rounded text-[10px] font-medium tabular-nums transition-colors duration-150",
                     isSelected
                       ? "bg-primary/20 text-primary-readable"
-                      : "bg-muted/40 text-muted-foreground/50 group-hover:bg-muted/60 group-hover:text-muted-foreground/70",
+                      : "bg-muted/40 text-muted-foreground/70 group-hover:bg-muted/60 group-hover:text-muted-foreground/70",
                   )}
                 >
                   {shortcutKey}
@@ -234,7 +262,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               <div className="min-w-0 flex-1 leading-snug">
                 <span className="text-[13px] font-medium">{option.label}</span>
                 {option.description && option.description !== option.label ? (
-                  <span className="ml-2 text-xs text-muted-foreground/50">
+                  <span className="ml-2 text-xs text-muted-foreground/70">
                     {option.description}
                   </span>
                 ) : null}
@@ -245,6 +273,67 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             </button>
           );
         })}
+        {/* The free-text answer is one more row in the list, styled like an
+            option, with the submit action at its end so the panel needs no
+            separate button row. Enter submits; Shift+Enter adds a line. */}
+        <div
+          className={cn(
+            "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-1 transition-colors duration-150",
+            progress.usingCustomAnswer
+              ? "border-primary/40 bg-primary/8"
+              : "border-transparent bg-muted/20 focus-within:border-border/40 focus-within:bg-muted/30",
+          )}
+        >
+          <span
+            className={cn(
+              "flex size-4.5 shrink-0 items-center justify-center rounded transition-colors duration-150",
+              progress.usingCustomAnswer
+                ? "bg-primary/20 text-primary-readable"
+                : "bg-muted/40 text-muted-foreground/70",
+            )}
+          >
+            <PencilLineIcon className="size-3" />
+          </span>
+          <textarea
+            aria-label="Custom answer"
+            placeholder="Or type your own answer"
+            value={progress.customAnswer}
+            onChange={(event) => onCustomAnswerChange(activeQuestion.id, event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+                return;
+              }
+              event.preventDefault();
+              if (!submitDisabled) onAdvance();
+            }}
+            disabled={isResponding}
+            rows={1}
+            className="field-sizing-content max-h-32 min-w-0 flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50"
+          />
+          <div className="flex shrink-0 items-center gap-1">
+            {questionIndex > 0 ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                className="text-muted-foreground"
+                onClick={onPrevious}
+                disabled={isResponding}
+              >
+                Previous
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="xs"
+              variant={progress.usingCustomAnswer || progress.canAdvance ? "default" : "secondary"}
+              onClick={onAdvance}
+              disabled={submitDisabled}
+            >
+              {submitLabel}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

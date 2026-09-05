@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const CODEX_PROTOCOL_VERSION = "0.150.1";
+const CODEX_PROTOCOL_VERSION = "0.153.4";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
 const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
 
@@ -628,6 +628,24 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   for (const [name, schema] of Object.entries(ManualSchemas)) {
     if (!(name in aggregateSchemas)) {
       aggregateSchemas[name] = stripNullDefaults(normalizeNullableTypes(schema));
+    }
+  }
+
+  // Older Codex versions omit isBlocking. The runtime treats those questions
+  // as blocking, while preserving an explicit false from newer versions.
+  for (const [name, schema] of Object.entries(aggregateSchemas)) {
+    if (
+      name.endsWith("ToolRequestUserInputParams") &&
+      schema !== null &&
+      typeof schema === "object" &&
+      !Array.isArray(schema) &&
+      "required" in schema &&
+      Array.isArray(schema.required)
+    ) {
+      aggregateSchemas[name] = {
+        ...schema,
+        required: schema.required.filter((field) => field !== "isBlocking"),
+      };
     }
   }
 

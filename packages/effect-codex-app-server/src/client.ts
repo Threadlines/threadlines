@@ -63,6 +63,7 @@ export interface CodexAppServerClientShape {
     method: M,
     handler: (
       payload: CodexRpc.ServerRequestParamsByMethod[M],
+      metadata: { readonly id: CodexProtocol.CodexAppServerIncomingRequest["id"] },
     ) => Effect.Effect<CodexRpc.ServerRequestResponsesByMethod[M], CodexError.CodexAppServerError>,
   ) => Effect.Effect<void>;
   readonly handleServerNotification: <M extends CodexRpc.ServerNotificationMethod>(
@@ -92,6 +93,7 @@ export class CodexAppServerClient extends Context.Service<
 
 type ServerRequestHandler = (
   payload: unknown,
+  metadata: { readonly id: CodexProtocol.CodexAppServerIncomingRequest["id"] },
 ) => Effect.Effect<unknown, CodexError.CodexAppServerError>;
 type ServerNotificationHandler = (
   payload: unknown,
@@ -214,7 +216,13 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       const handler = requestHandlers.get(method);
 
       return decodeOptionalPayload(method, payloadSchema, request.params).pipe(
-        Effect.flatMap((decoded) => runHandler(handler, decoded, method)),
+        Effect.flatMap((decoded) =>
+          runHandler(
+            handler ? (payload) => handler(payload, { id: request.id }) : undefined,
+            decoded,
+            method,
+          ),
+        ),
         Effect.flatMap((result) => encodeOptionalPayload(method, responseSchema, result)),
       );
     }

@@ -712,26 +712,32 @@ export function derivePendingUserInputs(
 ): PendingUserInput[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
-  return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS)
-    .toSorted((left, right) => compareActivitiesByOrder(left.activity, right.activity))
-    .flatMap<PendingUserInput>(({ requestId, activity }) => {
-      const payload =
-        activity.payload && typeof activity.payload === "object"
-          ? (activity.payload as Record<string, unknown>)
-          : null;
-      const questions = parseUserInputQuestions(payload);
-      if (!questions) {
-        return [];
-      }
-      return [
-        {
-          requestId: ApprovalRequestId.make(requestId),
-          createdAt: activity.createdAt,
-          questions,
-          ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
-        },
-      ];
-    });
+  return (
+    collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS)
+      .toSorted((left, right) => compareActivitiesByOrder(left.activity, right.activity))
+      .flatMap<PendingUserInput>(({ requestId, activity }) => {
+        const payload =
+          activity.payload && typeof activity.payload === "object"
+            ? (activity.payload as Record<string, unknown>)
+            : null;
+        const questions = parseUserInputQuestions(payload);
+        if (!questions) {
+          return [];
+        }
+        return [
+          {
+            requestId: ApprovalRequestId.make(requestId),
+            createdAt: activity.createdAt,
+            questions,
+            ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
+          },
+        ];
+      })
+      // Blocking questions first; the stable sort keeps transcript order within each group.
+      .toSorted(
+        (left, right) => Number(isBlockingUserInput(right)) - Number(isBlockingUserInput(left)),
+      )
+  );
 }
 
 export function deriveActivePlanState(

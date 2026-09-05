@@ -39,6 +39,7 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
+import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
 
 import {
   isPersistenceError,
@@ -531,6 +532,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          blocking_user_input_count AS "blockingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -568,6 +570,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          blocking_user_input_count AS "blockingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -607,6 +610,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          blocking_user_input_count AS "blockingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -729,6 +733,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at AS "createdAt"
         FROM ranked_activities
         WHERE activity_rank <= ${MAX_THREAD_ACTIVITIES}
+          OR kind IN (
+            'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
+            'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
+          )
         ORDER BY
           thread_id ASC,
           event_sequence ASC,
@@ -1190,6 +1198,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          blocking_user_input_count AS "blockingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -1260,6 +1269,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             created_at DESC,
             activity_id DESC
           LIMIT ${MAX_THREAD_ACTIVITIES}
+        ), retained_candidates AS (
+          SELECT * FROM limited_activities
+          UNION
+          SELECT * FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND kind IN (
+              'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
+              'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
+            )
         )
         SELECT
           activity_id AS "activityId",
@@ -1272,7 +1290,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           payload_json AS "payload",
           sequence,
           created_at AS "createdAt"
-        FROM limited_activities
+        FROM retained_candidates
         ORDER BY
           event_sequence ASC,
           sequence ASC,
@@ -1739,7 +1757,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                 activities: dropStaleContextWindowActivities(
-                  activitiesByThread.get(row.threadId) ?? [],
+                  retainRecentActivitiesAndOpenRequests(
+                    activitiesByThread.get(row.threadId) ?? [],
+                    MAX_THREAD_ACTIVITIES,
+                  ),
                 ),
                 subagents: subagentsByThread.get(row.threadId) ?? [],
                 checkpoints: checkpointsByThread.get(row.threadId) ?? [],
@@ -2130,6 +2151,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     latestUserMessageAt: row.latestUserMessageAt,
                     hasPendingApprovals: row.pendingApprovalCount > 0,
                     hasPendingUserInput: row.pendingUserInputCount > 0,
+                    hasBlockingUserInput: row.blockingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                     cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
                     diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
@@ -2280,6 +2302,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
                   hasPendingUserInput: row.pendingUserInputCount > 0,
+                  hasBlockingUserInput: row.blockingUserInputCount > 0,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                   cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
                   diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
@@ -2556,6 +2579,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
+        hasBlockingUserInput: threadRow.value.blockingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         cumulativeDiffStat: mapThreadDiffStat(Option.getOrUndefined(diffStatRow)),
         diffStatBaselineTurnCount: threadRow.value.diffStatBaselineTurnCount ?? 0,
@@ -2667,7 +2691,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         deletedAt: null,
         messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
-        activities: dropStaleContextWindowActivities(activityRows.map(mapThreadActivityRow)),
+        activities: dropStaleContextWindowActivities(
+          retainRecentActivitiesAndOpenRequests(
+            activityRows.map(mapThreadActivityRow),
+            MAX_THREAD_ACTIVITIES,
+          ),
+        ),
         subagents: subagentRows.map(mapThreadSubagentRow),
         checkpoints: checkpointRows.map((row) => ({
           turnId: row.turnId,

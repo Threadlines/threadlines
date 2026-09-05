@@ -225,6 +225,7 @@ export interface SidebarThreadSummary {
   latestUserMessageAt: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
+  hasBlockingUserInput?: boolean;
   hasActionableProposedPlan: boolean;
   /**
    * What this thread changed, summed over its own turns. Null until a turn has

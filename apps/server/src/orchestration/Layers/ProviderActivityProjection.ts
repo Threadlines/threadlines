@@ -717,6 +717,7 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.isBlocking !== undefined
               ? { isBlocking: event.payload.isBlocking }
               : {}),
+            ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
           },
         }),
       ];
@@ -727,10 +728,11 @@ export function projectRuntimeEventToActivities(
           id: event.eventId,
           tone: "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary: event.payload.reason ? "Question closed" : "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+            ...(event.payload.reason ? { reason: event.payload.reason } : {}),
           },
         }),
       ];

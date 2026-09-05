@@ -110,7 +110,7 @@ import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerStashControl } from "./ComposerStashControl";
-import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerPrimaryActions, ComposerStopButton } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
@@ -381,13 +381,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   providerAccountUsage: ProviderAccountUsagePresentation | null;
   contextWindowLabel: string | null;
   isPreparingWorktree: boolean;
-  pendingAction: {
-    questionIndex: number;
-    isLastQuestion: boolean;
-    canAdvance: boolean;
-    isResponding: boolean;
-    isComplete: boolean;
-  } | null;
   isRunning: boolean;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
@@ -399,7 +392,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
-  onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
@@ -427,7 +419,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
       ) : null}
       <ComposerPrimaryActions
         compact={props.compact}
-        pendingAction={props.pendingAction}
         isRunning={props.isRunning}
         showPlanFollowUpPrompt={props.showPlanFollowUpPrompt}
         promptHasText={props.promptHasText}
@@ -440,7 +431,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         runtimeMode={props.runtimeMode}
         runtimeModeOptions={props.runtimeModeOptions}
         onRuntimeModeChange={props.onRuntimeModeChange}
-        onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
@@ -537,15 +527,6 @@ export interface ChatComposerProps {
   activePendingApproval: PendingApproval | null;
   pendingApprovals: PendingApproval[];
   pendingUserInputs: PendingUserInput[];
-  activePendingProgress: {
-    questionIndex: number;
-    isLastQuestion: boolean;
-    canAdvance: boolean;
-    customAnswer: string;
-    activeQuestion: { id: string; multiSelect?: boolean | undefined } | null;
-  } | null;
-  activePendingResolvedAnswers: Record<string, unknown> | null;
-  activePendingIsResponding: boolean;
   activePendingDraftAnswers: Record<string, PendingUserInputDraftAnswer>;
   activePendingQuestionIndex: number;
   respondingRequestIds: ApprovalRequestId[];
@@ -622,13 +603,7 @@ export interface ChatComposerProps {
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onPreviousActivePendingUserInputQuestion: () => void;
-  onChangeActivePendingUserInputCustomAnswer: (
-    questionId: string,
-    value: string,
-    nextCursor: number,
-    expandedCursor: number,
-    cursorAdjacentToMention: boolean,
-  ) => void;
+  onChangeActivePendingUserInputCustomAnswer: (questionId: string, value: string) => void;
 
   onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
   toggleInteractionMode: () => void;
@@ -665,9 +640,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activePendingApproval,
     pendingApprovals,
     pendingUserInputs,
-    activePendingProgress,
-    activePendingResolvedAnswers,
-    activePendingIsResponding,
     activePendingDraftAnswers,
     activePendingQuestionIndex,
     respondingRequestIds,
@@ -1383,7 +1355,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const isComposerApprovalState = activePendingApproval !== null;
-  const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const hasBlockingQuestion = pendingUserInputs.some((input) => input.isBlocking !== false);
+  // A blocking question owns the composer: the editor and toolbar give way to a
+  // thin row that keeps the saved draft visible and Stop reachable.
+  const isComposerBlockedByQuestion = hasBlockingQuestion && !isComposerApprovalState;
+  const hasActiveTurn =
+    phase === "running" ||
+    activeThread?.session?.activeTurnId != null ||
+    activeThread?.latestTurn?.state === "running";
   const hasComposerHeader =
     isComposerApprovalState ||
     pendingUserInputs.length > 0 ||
@@ -1425,11 +1404,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
     : null;
 
-  const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
+  const composerFooterHasWideActions = showPlanFollowUpPrompt;
   const composerFooterActionLayoutKey = useMemo(() => {
-    if (activePendingProgress) {
-      return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
-    }
     if (phase === "running") {
       return `running:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}`;
     }
@@ -1438,8 +1414,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     return `idle:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
   }, [
-    activePendingIsResponding,
-    activePendingProgress,
     composerSendState.hasSendableContent,
     isConnecting,
     isPreparingWorktree,
@@ -1513,31 +1487,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     modelOptions: composerModelOptions?.[selectedInstanceId],
     iconOnly: composerFooterTier !== "full",
   });
-  const pendingPrimaryAction = useMemo(
-    () =>
-      activePendingProgress
-        ? {
-            questionIndex: activePendingProgress.questionIndex,
-            isLastQuestion: activePendingProgress.isLastQuestion,
-            canAdvance: activePendingProgress.canAdvance,
-            isResponding: activePendingIsResponding,
-            isComplete: Boolean(activePendingResolvedAnswers),
-          }
-        : null,
-    [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
-  );
   const collapsedComposerPrimaryActionDisabled =
     isSendBusy || isConnecting || !composerSendState.hasSendableContent;
   const collapsedComposerPrimaryActionLabel =
     phase === "running" ? "Steer active turn" : "Send message";
-  const showMobilePendingAnswerActions =
-    isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
   // Shared gate for every "Add" action (upload + screenshot). The in-flight
   // capture only blocks the screenshot item, not uploading images, so it is
   // handled inside the menu rather than here. Models without image input
   // still accept document attachments, so modality no longer disables the
   // whole menu — image files are rejected per-file during ingest instead.
-  const attachmentsDisabled = isComposerApprovalState || pendingUserInputs.length > 0;
+  const attachmentsDisabled = isComposerApprovalState || hasBlockingQuestion;
   const attachmentsDisabledReason = attachmentsDisabled
     ? "Finish the pending prompt before adding attachments"
     : null;
@@ -2120,51 +2079,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerMenuSearchKey,
   ]);
 
-  const lastSyncedPendingInputRef = useRef<{
-    requestId: string | null;
-    questionId: string | null;
-  } | null>(null);
-
-  useEffect(() => {
-    const nextCustomAnswer = activePendingProgress?.customAnswer;
-    if (typeof nextCustomAnswer !== "string") {
-      lastSyncedPendingInputRef.current = null;
-      return;
-    }
-
-    const nextRequestId = activePendingUserInput?.requestId ?? null;
-    const nextQuestionId = activePendingProgress?.activeQuestion?.id ?? null;
-    const questionChanged =
-      lastSyncedPendingInputRef.current?.requestId !== nextRequestId ||
-      lastSyncedPendingInputRef.current?.questionId !== nextQuestionId;
-    const textChangedExternally = promptRef.current !== nextCustomAnswer;
-
-    lastSyncedPendingInputRef.current = {
-      requestId: nextRequestId,
-      questionId: nextQuestionId,
-    };
-
-    if (!questionChanged && !textChangedExternally) {
-      return;
-    }
-
-    promptRef.current = nextCustomAnswer;
-    const nextCursor = collapseExpandedComposerCursor(nextCustomAnswer, nextCustomAnswer.length);
-    setComposerCursor(nextCursor);
-    setComposerTrigger(
-      detectComposerTrigger(
-        nextCustomAnswer,
-        expandCollapsedComposerCursor(nextCustomAnswer, nextCursor),
-      ),
-    );
-    setComposerHighlightedItemId(null);
-  }, [
-    activePendingProgress?.customAnswer,
-    activePendingProgress?.activeQuestion?.id,
-    activePendingUserInput?.requestId,
-    promptRef,
-  ]);
-
   // ------------------------------------------------------------------
   // Reset compositor state on thread/draft change
   // ------------------------------------------------------------------
@@ -2338,20 +2252,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       cursorAdjacentToMention: boolean,
       terminalContextIds: string[],
     ) => {
-      if (activePendingProgress?.activeQuestion && pendingUserInputs.length > 0) {
-        setComposerCursor(nextCursor);
-        setComposerTrigger(
-          cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
-        );
-        onChangeActivePendingUserInputCustomAnswer(
-          activePendingProgress.activeQuestion.id,
-          nextPrompt,
-          nextCursor,
-          expandedCursor,
-          cursorAdjacentToMention,
-        );
-        return;
-      }
       const previousPrompt = promptRef.current;
       promptRef.current = nextPrompt;
       setPrompt(nextPrompt);
@@ -2374,9 +2274,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
     },
     [
-      activePendingProgress?.activeQuestion,
-      pendingUserInputs.length,
-      onChangeActivePendingUserInputCustomAnswer,
       promptRef,
       setPrompt,
       composerDraftTarget,
@@ -2408,18 +2305,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const nextCursor = collapseExpandedComposerCursor(next.text, next.cursor);
       const nextExpandedCursor = expandCollapsedComposerCursor(next.text, nextCursor);
       promptRef.current = next.text;
-      const activePendingQuestion = activePendingProgress?.activeQuestion;
-      if (activePendingQuestion && activePendingUserInput) {
-        onChangeActivePendingUserInputCustomAnswer(
-          activePendingQuestion.id,
-          next.text,
-          nextCursor,
-          nextExpandedCursor,
-          false,
-        );
-      } else {
-        setPrompt(next.text);
-      }
+      setPrompt(next.text);
       setComposerCursor(nextCursor);
       setComposerTrigger(detectComposerTrigger(next.text, nextExpandedCursor));
       if (options?.focusEditorAfterReplace !== false) {
@@ -2429,13 +2315,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
       return true;
     },
-    [
-      activePendingProgress?.activeQuestion,
-      activePendingUserInput,
-      onChangeActivePendingUserInputCustomAnswer,
-      promptRef,
-      setPrompt,
-    ],
+    [promptRef, setPrompt],
   );
 
   const readComposerSnapshot = useCallback((): {
@@ -2607,13 +2487,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const shouldBlurMobileComposerOnSubmit = useCallback(() => {
     if (!isMobileViewport) return false;
     if (isSendBusy || isConnecting || phase === "running") return false;
-    if (activePendingProgress) {
-      return activePendingProgress.isLastQuestion && Boolean(activePendingResolvedAnswers);
-    }
     return showPlanFollowUpPrompt || composerSendState.hasSendableContent;
   }, [
-    activePendingProgress,
-    activePendingResolvedAnswers,
     composerSendState.hasSendableContent,
     isConnecting,
     isMobileViewport,
@@ -2624,6 +2499,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
+      if (hasBlockingQuestion) {
+        event?.preventDefault();
+        return;
+      }
       if (composerAttachments.length > 0 && !selectedModelSupportsImages) {
         event?.preventDefault();
         toastManager.add({
@@ -2645,6 +2524,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
     [
       activeThread?.latestTurn,
+      hasBlockingQuestion,
       blurMobileComposerAfterSend,
       composerAttachments.length,
       composerSendState.hasSendableContent,
@@ -2719,7 +2599,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
    *  confirm the attachment rather than the attempt. */
   const addComposerFiles = (files: File[]): boolean => {
     if (!activeThreadId || files.length === 0) return false;
-    if (pendingUserInputs.length > 0) {
+    if (hasBlockingQuestion) {
       toastManager.add({
         type: "error",
         title: "Attach files after answering plan questions.",
@@ -3249,6 +3129,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isTimelineScrolledAway={isTimelineScrolledAway}
                   onToggleOption={onSelectActivePendingUserInputOption}
                   onAdvance={onAdvanceActivePendingUserInput}
+                  onPrevious={onPreviousActivePendingUserInputQuestion}
+                  onCustomAnswerChange={onChangeActivePendingUserInputCustomAnswer}
+                  isUnavailable={environmentUnavailable !== null}
+                  isAgentRunning={hasActiveTurn}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
@@ -3275,67 +3159,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                   onRespondToApproval={onRespondToApproval}
                 />
-              </div>
-            </div>
-          ) : isComposerCollapsedMobile && pendingUserInputs.length > 0 ? (
-            <div
-              className="rounded-t-[19px] border-b border-border/65 bg-muted/20"
-              data-chat-composer-collapsed-controls="true"
-            >
-              <ComposerPendingUserInputPanel
-                pendingUserInputs={pendingUserInputs}
-                respondingRequestIds={respondingUserInputRequestIds}
-                answers={activePendingDraftAnswers}
-                questionIndex={activePendingQuestionIndex}
-                isTimelineScrolledAway={isTimelineScrolledAway}
-                onToggleOption={onSelectActivePendingUserInputOption}
-                onAdvance={onAdvanceActivePendingUserInput}
-              />
-              <div className="px-3 pb-3 sm:px-4">
-                <div
-                  data-chat-composer-mobile-pending-compact="true"
-                  className={cn(
-                    "flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-background/55 p-1.5 pl-3 transition-colors hover:bg-background/80",
-                    !activePendingProgress?.activeQuestion?.multiSelect && "p-0",
-                  )}
-                >
-                  <button
-                    type="button"
-                    className={cn(
-                      "min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
-                      activePendingProgress?.customAnswer
-                        ? "text-foreground"
-                        : "text-muted-foreground/60",
-                      !activePendingProgress?.activeQuestion?.multiSelect && "px-3 py-2",
-                    )}
-                    onPointerDown={(event) => event.preventDefault()}
-                    onClick={expandMobileComposer}
-                    aria-label="Write custom answer"
-                  >
-                    {activePendingProgress?.customAnswer || "Write custom answer"}
-                  </button>
-                  {activePendingProgress?.activeQuestion?.multiSelect ? (
-                    <ComposerPrimaryActions
-                      compact
-                      pendingAction={pendingPrimaryAction}
-                      isRunning={false}
-                      showPlanFollowUpPrompt={false}
-                      promptHasText={false}
-                      isSendBusy={isSendBusy}
-                      isConnecting={isConnecting}
-                      isEnvironmentUnavailable={environmentUnavailable !== null}
-                      isPreparingWorktree={false}
-                      hasSendableContent={false}
-                      preserveComposerFocusOnPointerDown
-                      runtimeMode={runtimeMode}
-                      runtimeModeOptions={composerProviderControls.runtimeModeOptions}
-                      onRuntimeModeChange={handleRuntimeModeChange}
-                      onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
-                      onInterrupt={handleInterruptPrimaryAction}
-                      onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                    />
-                  ) : null}
-                </div>
+                {hasActiveTurn ? (
+                  <ComposerStopButton
+                    onInterrupt={handleInterruptPrimaryAction}
+                    preserveComposerFocusOnPointerDown={isMobileViewport}
+                  />
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -3346,18 +3175,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 type="button"
                 className={cn(
                   "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
-                  (activePendingProgress ? activePendingProgress.customAnswer : prompt.trim())
-                    ? "text-foreground"
-                    : "text-muted-foreground/35",
+                  prompt.trim() ? "text-foreground" : "text-muted-foreground/35",
                 )}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={expandMobileComposer}
                 aria-label="Expand composer"
               >
-                {activePendingProgress
-                  ? activePendingProgress.customAnswer ||
-                    "Type your own answer, or leave this blank to use the selected option"
-                  : prompt.trim() || "Ask anything..."}
+                {prompt.trim() || "Ask anything..."}
               </button>
               <button
                 type="button"
@@ -3383,452 +3207,464 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             </div>
           ) : null}
 
-          <div
-            className={cn(
-              "relative px-3 pb-2 sm:px-4",
-              hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
-              isComposerCollapsedMobile && "hidden",
-            )}
-          >
-            {voiceControl?.state.error ? (
-              <div
-                role="alert"
-                className="mb-2 rounded-md border border-destructive/25 bg-destructive/5 px-2.5 py-1.5 text-destructive text-xs"
+          {isComposerBlockedByQuestion ? (
+            <div
+              data-chat-composer-blocked-by-question="true"
+              className="flex items-center justify-between gap-3 px-3 py-2 sm:px-4"
+            >
+              <p
+                className={cn(
+                  "min-w-0 flex-1 truncate text-[14px] leading-6",
+                  prompt.trim() ? "text-muted-foreground/70" : "text-muted-foreground/40",
+                )}
               >
-                {voiceControl.state.error}
-              </div>
-            ) : null}
-            {composerMenuOpen && !isComposerApprovalState && (
-              <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
-                <ComposerCommandMenu
-                  items={composerMenuItems}
-                  resolvedTheme={resolvedTheme}
-                  isLoading={isComposerMenuLoading}
-                  triggerKind={composerTriggerKind}
-                  providerGroupLabel={selectedProviderDisplayName}
-                  emptyStateText={composerMenuEmptyState}
-                  activeItemId={activeComposerMenuItem?.id ?? null}
-                  onHighlightedItemChange={onComposerMenuItemHighlighted}
-                  onSelect={onSelectComposerItem}
+                {prompt.trim() || "Answer the question above, or stop the turn"}
+              </p>
+              {hasActiveTurn ? (
+                <ComposerStopButton
+                  onInterrupt={handleInterruptPrimaryAction}
+                  preserveComposerFocusOnPointerDown={isMobileViewport}
                 />
-              </div>
-            )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerAttachments.length > 0 && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  {composerAttachments.map((attachment) => (
-                    <div
-                      key={attachment.id}
-                      className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
-                      title={attachment.name}
-                    >
-                      {attachment.previewUrl ? (
-                        <button
-                          type="button"
-                          className="h-full w-full cursor-zoom-in"
-                          aria-label={`Preview ${attachment.name}`}
-                          onClick={() => {
-                            const preview = buildExpandedImagePreview(
-                              composerAttachments,
-                              attachment.id,
-                            );
-                            if (!preview) return;
-                            onExpandImage(preview);
-                          }}
-                        >
-                          <img
-                            src={attachment.previewUrl}
-                            alt={attachment.name}
-                            className="h-full w-full object-cover"
-                          />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="flex h-full w-full cursor-zoom-in flex-col items-center justify-center gap-1 px-1 text-center"
-                          aria-label={`Preview ${attachment.name}`}
-                          onClick={() => {
-                            if (attachment.type !== "file") return;
-                            onPreviewFile({
-                              name: attachment.name,
-                              kind: attachment.kind,
-                              // Slice re-labels the blob with the resolved canonical
-                              // MIME type (browsers report none for e.g. .md files).
-                              loadBlob: () =>
-                                Promise.resolve(
-                                  attachment.file.slice(
-                                    0,
-                                    attachment.file.size,
-                                    attachment.mimeType,
-                                  ),
-                                ),
-                            });
-                          }}
-                        >
-                          <FileTextIcon className="size-5 text-muted-foreground" />
-                          <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
-                            {attachment.name}
-                          </span>
-                        </button>
-                      )}
-                      {nonPersistedComposerImageIdSet.has(attachment.id) && (
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <span
-                                role="img"
-                                aria-label="Draft attachment may not persist"
-                                className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
-                              >
-                                <CircleAlertIcon className="size-3" />
-                              </span>
-                            }
-                          />
-                          <TooltipPopup
-                            side="top"
-                            className="max-w-64 whitespace-normal leading-tight"
-                          >
-                            Draft attachment could not be saved locally and may be lost on
-                            navigation.
-                          </TooltipPopup>
-                        </Tooltip>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                        onClick={() => removeComposerAttachment(attachment.id)}
-                        aria-label={`Remove ${attachment.name}`}
-                      >
-                        <XIcon />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerTerminalContexts.length > 0 && (
-                <ComposerPendingTerminalContexts
-                  contexts={composerTerminalContexts}
-                  onRemove={removeComposerTerminalContextFromDraft}
-                  className="mb-2"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerPickedElementContexts.length > 0 && (
-                <ComposerPendingPickedElementContexts
-                  contexts={composerPickedElementContexts}
-                  onRemove={removePickedElementContext}
-                  onUpdateNote={updatePickedElementNote}
-                  onReveal={onRevealPickedElement}
-                  className="mb-2"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerDrawingContexts.length > 0 && (
-                <ComposerPendingDrawingContexts
-                  contexts={composerDrawingContexts}
-                  onRemove={removeDrawingContext}
-                  onUpdateNote={updateDrawingNote}
-                  className="mb-2"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerTranscriptHighlightContexts.length > 0 && (
-                <ComposerPendingTranscriptHighlightContexts
-                  contexts={composerTranscriptHighlightContexts}
-                  onRemove={removeComposerTranscriptHighlightContextFromDraft}
-                  onUpdateNote={updateComposerTranscriptHighlightContextNote}
-                  className="mb-2"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerFileSelectionContexts.length > 0 && (
-                <ComposerPendingFileSelectionContexts
-                  contexts={composerFileSelectionContexts}
-                  onRemove={removeComposerFileSelectionContextFromDraft}
-                  className="mb-2"
-                />
-              )}
-
-            <div className="relative">
-              <ComposerPromptEditor
-                editorRef={composerEditorRef}
-                value={
-                  isComposerApprovalState
-                    ? ""
-                    : activePendingProgress
-                      ? activePendingProgress.customAnswer
-                      : prompt
-                }
-                cursor={composerCursor}
-                terminalContexts={[]}
-                skills={composerSkills}
-                recognizedSlashCommands={recognizedSlashCommands}
-                skillAvailability={composerSkillAvailability}
-                {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
-                onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
-                onChange={onPromptChange}
-                onCommandKeyDown={onComposerCommandKey}
-                onPaste={onComposerPaste}
-                placeholder={
-                  isComposerApprovalState
-                    ? "Resolve this approval request to continue"
-                    : activePendingProgress
-                      ? "Type your own answer, or leave this blank to use the selected option"
-                      : showPlanFollowUpPrompt && activeProposedPlan
-                        ? "Add feedback to refine the plan, or leave this blank to implement it"
-                        : environmentUnavailable
-                          ? `${environmentUnavailable.label} is ${
-                              environmentUnavailable.connectionState === "connecting"
-                                ? "connecting"
-                                : "disconnected"
-                            }`
-                          : defaultComposerPlaceholder
-                }
-                disabled={
-                  isConnecting ||
-                  isComposerApprovalState ||
-                  (environmentUnavailable !== null && activePendingProgress === null)
-                }
-              />
-              {showMobilePendingAnswerActions ? (
-                <div
-                  data-chat-composer-mobile-pending-actions="true"
-                  className="absolute bottom-0 right-0 flex justify-end"
-                >
-                  <ComposerPrimaryActions
-                    compact
-                    pendingAction={pendingPrimaryAction}
-                    isRunning={false}
-                    showPlanFollowUpPrompt={false}
-                    promptHasText={false}
-                    isSendBusy={isSendBusy}
-                    isConnecting={isConnecting}
-                    isEnvironmentUnavailable={environmentUnavailable !== null}
-                    isPreparingWorktree={false}
-                    hasSendableContent={false}
-                    preserveComposerFocusOnPointerDown
-                    runtimeMode={runtimeMode}
-                    runtimeModeOptions={composerProviderControls.runtimeModeOptions}
-                    onRuntimeModeChange={handleRuntimeModeChange}
-                    onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
-                    onInterrupt={handleInterruptPrimaryAction}
-                    onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                  />
-                </div>
               ) : null}
             </div>
-          </div>
-
-          {/* Bottom toolbar */}
-          {isComposerCollapsedMobile ? null : activePendingApproval ? (
-            <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
-              <ComposerPendingApprovalActions
-                requestId={activePendingApproval.requestId}
-                isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
-                onRespondToApproval={onRespondToApproval}
-              />
-            </div>
           ) : (
-            <div
-              data-chat-composer-footer="true"
-              data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
-              data-chat-composer-footer-icon-only={isComposerFooterIconOnly ? "true" : "false"}
-              className={cn(
-                "flex min-w-0 flex-nowrap items-center justify-between overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
-                // The left group's negative margin would touch the right group
-                // once the narrower tiers fill the row; keep a real gap there.
-                composerFooterTier === "full"
-                  ? "gap-x-2 gap-y-1.5 sm:gap-x-0"
-                  : "gap-x-1.5 gap-y-1.5",
-                showMobilePendingAnswerActions && "hidden sm:flex",
-              )}
-            >
+            <>
               <div
-                ref={composerFooterLeftActionsRef}
-                data-chat-composer-actions="left"
                 className={cn(
-                  "-m-1 flex flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-                  "min-w-0",
+                  "relative px-3 pb-2 sm:px-4",
+                  hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
+                  isComposerCollapsedMobile && "hidden",
                 )}
               >
-                <ProviderModelPicker
-                  compact={isComposerFooterCompact}
-                  activeInstanceId={selectedInstanceId}
-                  model={selectedModelForPickerWithCustomFallback}
-                  lockedProvider={lockedProvider}
-                  lockedContinuationGroupKey={lockedContinuationGroupKey}
-                  instanceEntries={providerInstanceEntries}
-                  keybindings={keybindings}
-                  modelOptionsByInstance={modelOptionsByInstance}
-                  terminalOpen={terminalOpen}
-                  side="top"
-                  open={isComposerModelPickerOpen}
-                  {...(composerProviderState.modelPickerIconClassName
-                    ? {
-                        activeProviderIconClassName: composerProviderState.modelPickerIconClassName,
-                      }
-                    : {})}
-                  onOpenChange={(open) => {
-                    setIsComposerModelPickerOpen(open);
-                  }}
-                  onInstanceModelChange={onProviderModelSelect}
-                />
-                {activeModelFallback && activeFallbackModelDisplayName ? (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <span
-                          data-chat-model-fallback-chip="true"
-                          className={cn(
-                            "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
-                            isComposerFooterIconOnly ? "max-w-36" : "max-w-52",
-                          )}
-                        />
-                      }
-                    >
-                      <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
-                      <span className="min-w-0 truncate">
-                        {isComposerFooterIconOnly
-                          ? activeFallbackModelDisplayName
-                          : `Fallback: ${activeFallbackModelDisplayName}`}
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipPopup side="top" className="max-w-72 whitespace-normal leading-tight">
-                      {activeModelFallback.detail ??
-                        `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
-                    </TooltipPopup>
-                  </Tooltip>
+                {voiceControl?.state.error ? (
+                  <div
+                    role="alert"
+                    className="mb-2 rounded-md border border-destructive/25 bg-destructive/5 px-2.5 py-1.5 text-destructive text-xs"
+                  >
+                    {voiceControl.state.error}
+                  </div>
                 ) : null}
+                {composerMenuOpen && !isComposerApprovalState && (
+                  <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
+                    <ComposerCommandMenu
+                      items={composerMenuItems}
+                      resolvedTheme={resolvedTheme}
+                      isLoading={isComposerMenuLoading}
+                      triggerKind={composerTriggerKind}
+                      providerGroupLabel={selectedProviderDisplayName}
+                      emptyStateText={composerMenuEmptyState}
+                      activeItemId={activeComposerMenuItem?.id ?? null}
+                      onHighlightedItemChange={onComposerMenuItemHighlighted}
+                      onSelect={onSelectComposerItem}
+                    />
+                  </div>
+                )}
 
-                {isComposerFooterCompact ? (
-                  <CompactComposerControlsMenu
-                    interactionMode={interactionMode}
-                    runtimeMode={runtimeMode}
-                    runtimeModeOptions={composerProviderControls.runtimeModeOptions}
-                    showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
-                    traitsMenuContent={providerTraitsMenuContent}
-                    onInteractionModeChange={handleInteractionModeChange}
-                    onRuntimeModeChange={handleRuntimeModeChange}
+                {!isComposerCollapsedMobile &&
+                  !isComposerApprovalState &&
+                  !hasBlockingQuestion &&
+                  composerAttachments.length > 0 && (
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {composerAttachments.map((attachment) => (
+                        <div
+                          key={attachment.id}
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
+                          title={attachment.name}
+                        >
+                          {attachment.previewUrl ? (
+                            <button
+                              type="button"
+                              className="h-full w-full cursor-zoom-in"
+                              aria-label={`Preview ${attachment.name}`}
+                              onClick={() => {
+                                const preview = buildExpandedImagePreview(
+                                  composerAttachments,
+                                  attachment.id,
+                                );
+                                if (!preview) return;
+                                onExpandImage(preview);
+                              }}
+                            >
+                              <img
+                                src={attachment.previewUrl}
+                                alt={attachment.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="flex h-full w-full cursor-zoom-in flex-col items-center justify-center gap-1 px-1 text-center"
+                              aria-label={`Preview ${attachment.name}`}
+                              onClick={() => {
+                                if (attachment.type !== "file") return;
+                                onPreviewFile({
+                                  name: attachment.name,
+                                  kind: attachment.kind,
+                                  // Slice re-labels the blob with the resolved canonical
+                                  // MIME type (browsers report none for e.g. .md files).
+                                  loadBlob: () =>
+                                    Promise.resolve(
+                                      attachment.file.slice(
+                                        0,
+                                        attachment.file.size,
+                                        attachment.mimeType,
+                                      ),
+                                    ),
+                                });
+                              }}
+                            >
+                              <FileTextIcon className="size-5 text-muted-foreground" />
+                              <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
+                                {attachment.name}
+                              </span>
+                            </button>
+                          )}
+                          {nonPersistedComposerImageIdSet.has(attachment.id) && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    role="img"
+                                    aria-label="Draft attachment may not persist"
+                                    className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                  >
+                                    <CircleAlertIcon className="size-3" />
+                                  </span>
+                                }
+                              />
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                Draft attachment could not be saved locally and may be lost on
+                                navigation.
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerAttachment(attachment.id)}
+                            aria-label={`Remove ${attachment.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                {!isComposerCollapsedMobile &&
+                  !isComposerApprovalState &&
+                  !hasBlockingQuestion &&
+                  composerTerminalContexts.length > 0 && (
+                    <ComposerPendingTerminalContexts
+                      contexts={composerTerminalContexts}
+                      onRemove={removeComposerTerminalContextFromDraft}
+                      className="mb-2"
+                    />
+                  )}
+
+                {!isComposerCollapsedMobile &&
+                  !isComposerApprovalState &&
+                  !hasBlockingQuestion &&
+                  composerPickedElementContexts.length > 0 && (
+                    <ComposerPendingPickedElementContexts
+                      contexts={composerPickedElementContexts}
+                      onRemove={removePickedElementContext}
+                      onUpdateNote={updatePickedElementNote}
+                      onReveal={onRevealPickedElement}
+                      className="mb-2"
+                    />
+                  )}
+
+                {!isComposerCollapsedMobile &&
+                  !isComposerApprovalState &&
+                  !hasBlockingQuestion &&
+                  composerDrawingContexts.length > 0 && (
+                    <ComposerPendingDrawingContexts
+                      contexts={composerDrawingContexts}
+                      onRemove={removeDrawingContext}
+                      onUpdateNote={updateDrawingNote}
+                      className="mb-2"
+                    />
+                  )}
+
+                {!isComposerCollapsedMobile &&
+                  !isComposerApprovalState &&
+                  !hasBlockingQuestion &&
+                  composerTranscriptHighlightContexts.length > 0 && (
+                    <ComposerPendingTranscriptHighlightContexts
+                      contexts={composerTranscriptHighlightContexts}
+                      onRemove={removeComposerTranscriptHighlightContextFromDraft}
+                      onUpdateNote={updateComposerTranscriptHighlightContextNote}
+                      className="mb-2"
+                    />
+                  )}
+
+                {!isComposerCollapsedMobile &&
+                  !isComposerApprovalState &&
+                  !hasBlockingQuestion &&
+                  composerFileSelectionContexts.length > 0 && (
+                    <ComposerPendingFileSelectionContexts
+                      contexts={composerFileSelectionContexts}
+                      onRemove={removeComposerFileSelectionContextFromDraft}
+                      className="mb-2"
+                    />
+                  )}
+
+                <div className="relative">
+                  <ComposerPromptEditor
+                    editorRef={composerEditorRef}
+                    value={isComposerApprovalState ? "" : prompt}
+                    cursor={composerCursor}
+                    terminalContexts={[]}
+                    skills={composerSkills}
+                    recognizedSlashCommands={recognizedSlashCommands}
+                    skillAvailability={composerSkillAvailability}
+                    onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
+                    onChange={onPromptChange}
+                    onCommandKeyDown={onComposerCommandKey}
+                    onPaste={onComposerPaste}
+                    placeholder={
+                      isComposerApprovalState
+                        ? "Resolve this approval request to continue"
+                        : hasBlockingQuestion
+                          ? "Answer the question above, or stop the turn"
+                          : showPlanFollowUpPrompt && activeProposedPlan
+                            ? "Add feedback to refine the plan, or leave this blank to implement it"
+                            : environmentUnavailable
+                              ? `${environmentUnavailable.label} is ${
+                                  environmentUnavailable.connectionState === "connecting"
+                                    ? "connecting"
+                                    : "disconnected"
+                                }`
+                              : defaultComposerPlaceholder
+                    }
+                    disabled={
+                      isConnecting ||
+                      isComposerApprovalState ||
+                      hasBlockingQuestion ||
+                      environmentUnavailable !== null
+                    }
                   />
-                ) : (
-                  <>
-                    {providerTraitsPicker ? (
-                      <>
-                        <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
-                        {providerTraitsPicker}
-                      </>
+                </div>
+              </div>
+
+              {/* Bottom toolbar */}
+              {isComposerCollapsedMobile ? null : activePendingApproval ? (
+                <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
+                  <ComposerPendingApprovalActions
+                    requestId={activePendingApproval.requestId}
+                    isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
+                    onRespondToApproval={onRespondToApproval}
+                  />
+                  {hasActiveTurn ? (
+                    <ComposerStopButton
+                      onInterrupt={handleInterruptPrimaryAction}
+                      preserveComposerFocusOnPointerDown={isMobileViewport}
+                    />
+                  ) : null}
+                </div>
+              ) : (
+                <div
+                  data-chat-composer-footer="true"
+                  data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
+                  data-chat-composer-footer-icon-only={isComposerFooterIconOnly ? "true" : "false"}
+                  className={cn(
+                    "flex min-w-0 flex-nowrap items-center justify-between overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
+                    // The left group's negative margin would touch the right group
+                    // once the narrower tiers fill the row; keep a real gap there.
+                    composerFooterTier === "full"
+                      ? "gap-x-2 gap-y-1.5 sm:gap-x-0"
+                      : "gap-x-1.5 gap-y-1.5",
+                  )}
+                >
+                  <div
+                    ref={composerFooterLeftActionsRef}
+                    data-chat-composer-actions="left"
+                    className={cn(
+                      "-m-1 flex flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                      "min-w-0",
+                    )}
+                  >
+                    <ProviderModelPicker
+                      compact={isComposerFooterCompact}
+                      activeInstanceId={selectedInstanceId}
+                      model={selectedModelForPickerWithCustomFallback}
+                      lockedProvider={lockedProvider}
+                      lockedContinuationGroupKey={lockedContinuationGroupKey}
+                      instanceEntries={providerInstanceEntries}
+                      keybindings={keybindings}
+                      modelOptionsByInstance={modelOptionsByInstance}
+                      terminalOpen={terminalOpen}
+                      side="top"
+                      open={isComposerModelPickerOpen}
+                      {...(composerProviderState.modelPickerIconClassName
+                        ? {
+                            activeProviderIconClassName:
+                              composerProviderState.modelPickerIconClassName,
+                          }
+                        : {})}
+                      onOpenChange={(open) => {
+                        setIsComposerModelPickerOpen(open);
+                      }}
+                      onInstanceModelChange={onProviderModelSelect}
+                    />
+                    {activeModelFallback && activeFallbackModelDisplayName ? (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span
+                              data-chat-model-fallback-chip="true"
+                              className={cn(
+                                "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
+                                isComposerFooterIconOnly ? "max-w-36" : "max-w-52",
+                              )}
+                            />
+                          }
+                        >
+                          <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
+                          <span className="min-w-0 truncate">
+                            {isComposerFooterIconOnly
+                              ? activeFallbackModelDisplayName
+                              : `Fallback: ${activeFallbackModelDisplayName}`}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipPopup
+                          side="top"
+                          className="max-w-72 whitespace-normal leading-tight"
+                        >
+                          {activeModelFallback.detail ??
+                            `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
+                        </TooltipPopup>
+                      </Tooltip>
                     ) : null}
-                    <ComposerFooterModeControls
-                      iconOnly={isComposerFooterIconOnly}
-                      showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
-                      interactionMode={interactionMode}
+
+                    {isComposerFooterCompact ? (
+                      <CompactComposerControlsMenu
+                        interactionMode={interactionMode}
+                        runtimeMode={runtimeMode}
+                        runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                        showInteractionModeToggle={
+                          composerProviderControls.showInteractionModeToggle
+                        }
+                        traitsMenuContent={providerTraitsMenuContent}
+                        onInteractionModeChange={handleInteractionModeChange}
+                        onRuntimeModeChange={handleRuntimeModeChange}
+                      />
+                    ) : (
+                      <>
+                        {providerTraitsPicker ? (
+                          <>
+                            <Separator
+                              orientation="vertical"
+                              className="mx-0.5 hidden h-4 sm:block"
+                            />
+                            {providerTraitsPicker}
+                          </>
+                        ) : null}
+                        <ComposerFooterModeControls
+                          iconOnly={isComposerFooterIconOnly}
+                          showInteractionModeToggle={
+                            composerProviderControls.showInteractionModeToggle
+                          }
+                          interactionMode={interactionMode}
+                          runtimeMode={runtimeMode}
+                          runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                          onToggleInteractionMode={toggleInteractionMode}
+                          onRuntimeModeChange={handleRuntimeModeChange}
+                        />
+                      </>
+                    )}
+                  </div>
+
+                  {/* Right side: stash + add attachments + send / stop button */}
+                  <div
+                    data-chat-composer-actions="right"
+                    data-chat-composer-primary-actions-compact={
+                      isComposerPrimaryActionsCompact ? "true" : "false"
+                    }
+                    className={cn(
+                      "ml-auto flex shrink-0 flex-nowrap items-center justify-end",
+                      // Compact rows spend every pixel on the model name; tighter
+                      // gaps keep the always-visible stash bookmark from squeezing
+                      // the model picker or the overflow menu out of the row.
+                      isComposerFooterCompact ? "gap-1" : "gap-2",
+                    )}
+                  >
+                    <input
+                      ref={imageFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="sr-only"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      onChange={onAttachmentFileInputChange}
+                    />
+                    <input
+                      ref={attachmentFileInputRef}
+                      type="file"
+                      accept={ALL_ATTACHMENT_ACCEPT}
+                      multiple
+                      className="sr-only"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      onChange={onAttachmentFileInputChange}
+                    />
+                    <ComposerStashControl {...stashControlProps} />
+                    <ComposerAttachmentMenu
+                      canCaptureScreenshot={canCaptureScreenshot}
+                      isCapturingScreenshot={isCapturingScreenshot}
+                      isMobileViewport={isMobileViewport}
+                      disabled={attachmentsDisabled}
+                      disabledReason={attachmentsDisabledReason}
+                      onAddImage={openImageFilePicker}
+                      onAttachFiles={openAttachmentFilePicker}
+                      onCaptureScreenshot={onCaptureScreenshot}
+                    />
+                    {voiceControl ? <ComposerVoiceControls {...voiceControl} /> : null}
+                    <ComposerFooterPrimaryActions
+                      compact={isComposerPrimaryActionsCompact}
+                      activeContextWindow={activeContextWindow}
+                      providerAccountUsage={selectedProviderAccountUsage}
+                      contextWindowLabel={composerProviderState.contextWindowLabel}
+                      isRunning={hasActiveTurn}
+                      showPlanFollowUpPrompt={
+                        pendingUserInputs.length === 0 && showPlanFollowUpPrompt
+                      }
+                      promptHasText={prompt.trim().length > 0}
+                      isSendBusy={isSendBusy}
+                      isConnecting={isConnecting}
+                      isEnvironmentUnavailable={environmentUnavailable !== null}
+                      isPreparingWorktree={isPreparingWorktree}
+                      hasSendableContent={
+                        !hasBlockingQuestion && composerSendState.hasSendableContent
+                      }
+                      preserveComposerFocusOnPointerDown={isMobileViewport}
                       runtimeMode={runtimeMode}
                       runtimeModeOptions={composerProviderControls.runtimeModeOptions}
-                      onToggleInteractionMode={toggleInteractionMode}
                       onRuntimeModeChange={handleRuntimeModeChange}
+                      onInterrupt={handleInterruptPrimaryAction}
+                      onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
+                      onResetAccountUsage={
+                        canResetSelectedProviderUsage
+                          ? requestSelectedProviderUsageReset
+                          : undefined
+                      }
+                      accountUsageResetInFlight={isConsumingRateLimitResetCredit}
+                      onCompactContext={onCompactContext}
+                      contextCompactDisabled={contextCompactDisabled}
+                      contextCompactInFlight={contextCompactInFlight}
+                      contextCompactDisabledReason={contextCompactDisabledReason}
                     />
-                  </>
-                )}
-              </div>
-
-              {/* Right side: stash + add attachments + send / stop button */}
-              <div
-                data-chat-composer-actions="right"
-                data-chat-composer-primary-actions-compact={
-                  isComposerPrimaryActionsCompact ? "true" : "false"
-                }
-                className={cn(
-                  "ml-auto flex shrink-0 flex-nowrap items-center justify-end",
-                  // Compact rows spend every pixel on the model name; tighter
-                  // gaps keep the always-visible stash bookmark from squeezing
-                  // the model picker or the overflow menu out of the row.
-                  isComposerFooterCompact ? "gap-1" : "gap-2",
-                )}
-              >
-                <input
-                  ref={imageFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="sr-only"
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  onChange={onAttachmentFileInputChange}
-                />
-                <input
-                  ref={attachmentFileInputRef}
-                  type="file"
-                  accept={ALL_ATTACHMENT_ACCEPT}
-                  multiple
-                  className="sr-only"
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  onChange={onAttachmentFileInputChange}
-                />
-                <ComposerStashControl {...stashControlProps} />
-                <ComposerAttachmentMenu
-                  canCaptureScreenshot={canCaptureScreenshot}
-                  isCapturingScreenshot={isCapturingScreenshot}
-                  isMobileViewport={isMobileViewport}
-                  disabled={attachmentsDisabled}
-                  disabledReason={attachmentsDisabledReason}
-                  onAddImage={openImageFilePicker}
-                  onAttachFiles={openAttachmentFilePicker}
-                  onCaptureScreenshot={onCaptureScreenshot}
-                />
-                {voiceControl ? <ComposerVoiceControls {...voiceControl} /> : null}
-                <ComposerFooterPrimaryActions
-                  compact={isComposerPrimaryActionsCompact}
-                  activeContextWindow={activeContextWindow}
-                  providerAccountUsage={selectedProviderAccountUsage}
-                  contextWindowLabel={composerProviderState.contextWindowLabel}
-                  pendingAction={pendingPrimaryAction}
-                  isRunning={phase === "running"}
-                  showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
-                  promptHasText={prompt.trim().length > 0}
-                  isSendBusy={isSendBusy}
-                  isConnecting={isConnecting}
-                  isEnvironmentUnavailable={environmentUnavailable !== null}
-                  isPreparingWorktree={isPreparingWorktree}
-                  hasSendableContent={composerSendState.hasSendableContent}
-                  preserveComposerFocusOnPointerDown={isMobileViewport}
-                  runtimeMode={runtimeMode}
-                  runtimeModeOptions={composerProviderControls.runtimeModeOptions}
-                  onRuntimeModeChange={handleRuntimeModeChange}
-                  onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
-                  onInterrupt={handleInterruptPrimaryAction}
-                  onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                  onResetAccountUsage={
-                    canResetSelectedProviderUsage ? requestSelectedProviderUsageReset : undefined
-                  }
-                  accountUsageResetInFlight={isConsumingRateLimitResetCredit}
-                  onCompactContext={onCompactContext}
-                  contextCompactDisabled={contextCompactDisabled}
-                  contextCompactInFlight={contextCompactInFlight}
-                  contextCompactDisabledReason={contextCompactDisabledReason}
-                />
-              </div>
-            </div>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

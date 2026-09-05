@@ -9,7 +9,6 @@ import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 const noop = () => {};
 
 const baseProps = {
-  pendingAction: null,
   isRunning: true,
   showPlanFollowUpPrompt: false,
   promptHasText: false,
@@ -20,7 +19,6 @@ const baseProps = {
   runtimeMode: "approval-required" as const,
   runtimeModeOptions: [],
   onRuntimeModeChange: noop,
-  onPreviousPendingQuestion: noop,
   onInterrupt: noop,
   onImplementPlanInNewThread: noop,
 };

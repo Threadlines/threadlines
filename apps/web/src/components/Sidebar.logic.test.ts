@@ -491,6 +491,18 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
+  it("keeps working visible while a non-blocking question is open", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasPendingUserInput: true,
+          hasBlockingUserInput: false,
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
+  });
+
   it("shows working from the orchestration running status even if the legacy status lags", () => {
     expect(
       resolveThreadStatusPill({

@@ -77,6 +77,63 @@ const handleMethod = (message: Record<string, unknown>) => {
       });
       return;
     }
+    case "thread/start": {
+      respond(message.id as number | string, {
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        cwd: process.cwd(),
+        model: "gpt-5.6-sol",
+        modelProvider: "openai",
+        sandbox: { type: "dangerFullAccess" },
+        thread: {
+          cliVersion: "0.153.4",
+          createdAt: 0,
+          cwd: process.cwd(),
+          ephemeral: true,
+          id: "thread-1",
+          modelProvider: "openai",
+          preview: "",
+          projectId: null,
+          sessionId: "session-1",
+          source: "cli",
+          status: { type: "idle" },
+          turns: [],
+          updatedAt: 0,
+        },
+      });
+      return;
+    }
+    case "turn/start": {
+      respond(message.id as number | string, {
+        turn: { id: "turn-1", status: "inProgress", items: [] },
+      });
+      pendingUserInputRequestId = sendRequest("item/tool/requestUserInput", {
+        itemId: "question-item",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        questions: [{ id: "proceed", header: "Proceed", question: "Continue?" }],
+      });
+      return;
+    }
+    case "turn/steer": {
+      respond(message.id as number | string, { turnId: "turn-1" });
+      const params = message.params as { input: Array<{ text?: string }> };
+      if (params.input[0]?.text === "resolve") {
+        writeMessage({
+          method: "serverRequest/resolved",
+          params: { threadId: "thread-1", requestId: pendingUserInputRequestId },
+        });
+      } else {
+        writeMessage({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "completed", items: [] },
+          },
+        });
+      }
+      return;
+    }
     case "skills/list": {
       pendingSkillsListRequestId = message.id as number | string;
       pendingUserInputRequestId = sendRequest("item/tool/requestUserInput", {
@@ -114,6 +171,8 @@ const handleResponse = (message: Record<string, unknown>) => {
   }
 
   pendingUserInputRequestId = null;
+
+  if (pendingSkillsListRequestId === null) return;
 
   respond(pendingSkillsListRequestId!, {
     data: [

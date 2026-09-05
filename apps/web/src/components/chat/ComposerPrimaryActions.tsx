@@ -1,6 +1,6 @@
 import { memo, type PointerEventHandler } from "react";
 import type { RuntimeMode } from "@threadlines/contracts";
-import { ChevronDownIcon, ChevronLeftIcon, CornerDownRightIcon, SquareIcon } from "lucide-react";
+import { ChevronDownIcon, CornerDownRightIcon, SquareIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import {
@@ -14,17 +14,8 @@ import {
 } from "../ui/menu";
 import type { RuntimeModeOption } from "../../runtimeModeOptions";
 
-interface PendingActionState {
-  questionIndex: number;
-  isLastQuestion: boolean;
-  canAdvance: boolean;
-  isResponding: boolean;
-  isComplete: boolean;
-}
-
 interface ComposerPrimaryActionsProps {
   compact: boolean;
-  pendingAction: PendingActionState | null;
   isRunning: boolean;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
@@ -37,7 +28,6 @@ interface ComposerPrimaryActionsProps {
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
-  onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
 }
@@ -60,16 +50,36 @@ export const formatPendingPrimaryActionLabel = (input: {
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
 };
 
-export const formatRunningPrimaryActionLabel = (input: { hasSendableContent: boolean }) =>
-  input.hasSendableContent ? "Steer" : "Stop";
-
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
 
+/** Shared by the normal toolbar and the approval toolbar. */
+export const ComposerStopButton = memo(function ComposerStopButton({
+  onInterrupt,
+  preserveComposerFocusOnPointerDown = false,
+}: {
+  onInterrupt: () => void;
+  preserveComposerFocusOnPointerDown?: boolean;
+}) {
+  return (
+    <Button
+      type="button"
+      size="icon"
+      variant="destructive"
+      className="rounded-full before:hidden"
+      onPointerDown={preserveComposerFocusOnPointerDown ? preventPointerFocus : undefined}
+      onClick={onInterrupt}
+      aria-label="Stop generation"
+      tooltip="Stop"
+    >
+      <SquareIcon className="size-2.5 fill-current" strokeWidth={0} />
+    </Button>
+  );
+});
+
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
-  pendingAction,
   isRunning,
   showPlanFollowUpPrompt,
   promptHasText,
@@ -82,7 +92,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   runtimeMode,
   runtimeModeOptions,
   onRuntimeModeChange,
-  onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
@@ -90,89 +99,28 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     ? { onPointerDown: preventPointerFocus }
     : undefined;
 
-  if (pendingAction) {
-    return (
-      <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {pendingAction.questionIndex > 0 ? (
-          compact ? (
-            <Button
-              size="icon-sm"
-              variant="outline"
-              className="rounded-full"
-              {...pointerFocusProps}
-              onClick={onPreviousPendingQuestion}
-              disabled={pendingAction.isResponding}
-              aria-label="Previous question"
-            >
-              <ChevronLeftIcon className="size-3.5" />
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              className="rounded-full"
-              {...pointerFocusProps}
-              onClick={onPreviousPendingQuestion}
-              disabled={pendingAction.isResponding}
-            >
-              Previous
-            </Button>
-          )
-        ) : null}
-        <Button
-          type="submit"
-          size="sm"
-          className={cn("rounded-full", compact ? "px-3" : "px-4")}
-          {...pointerFocusProps}
-          disabled={
-            isEnvironmentUnavailable ||
-            pendingAction.isResponding ||
-            (pendingAction.isLastQuestion ? !pendingAction.isComplete : !pendingAction.canAdvance)
-          }
-        >
-          {formatPendingPrimaryActionLabel({
-            compact,
-            isLastQuestion: pendingAction.isLastQuestion,
-            isResponding: pendingAction.isResponding,
-            questionIndex: pendingAction.questionIndex,
-          })}
-        </Button>
-      </div>
-    );
-  }
-
   if (isRunning) {
-    const runningActionLabel = formatRunningPrimaryActionLabel({ hasSendableContent });
-
-    if (hasSendableContent) {
-      return (
-        <Button
-          type="submit"
-          size="icon"
-          className="rounded-full"
-          {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
-          aria-label="Steer active turn"
-          tooltip={runningActionLabel}
-        >
-          <CornerDownRightIcon className="size-3.5" />
-        </Button>
-      );
-    }
-
     return (
-      <Button
-        type="button"
-        size="icon"
-        variant="destructive"
-        className="rounded-full before:hidden"
-        {...pointerFocusProps}
-        onClick={onInterrupt}
-        aria-label="Stop generation"
-        tooltip={runningActionLabel}
-      >
-        <SquareIcon className="size-2.5 fill-current" strokeWidth={0} />
-      </Button>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {hasSendableContent ? (
+          <Button
+            type="submit"
+            size="icon"
+            className="rounded-full"
+            {...pointerFocusProps}
+            disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+            aria-label="Steer active turn"
+            tooltip="Steer"
+          >
+            <CornerDownRightIcon className="size-3.5" />
+          </Button>
+        ) : (
+          <ComposerStopButton
+            onInterrupt={onInterrupt}
+            preserveComposerFocusOnPointerDown={preserveComposerFocusOnPointerDown}
+          />
+        )}
+      </div>
     );
   }
 

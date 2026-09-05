@@ -14,6 +14,7 @@ import {
 } from "@threadlines/shared/threadLimits";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { retainRecentActivitiesAndOpenRequests } from "@threadlines/shared/pendingRequests";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -929,15 +930,16 @@ export function projectEvent(
           const existingActivity = thread.activities.find(
             (entry) => entry.id === payload.activity.id,
           );
-          const activities = [
-            ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-            {
-              ...payload.activity,
-              eventSequence: existingActivity ? existingActivity.eventSequence : event.sequence,
-            },
-          ]
-            .toSorted(compareThreadActivities)
-            .slice(-MAX_THREAD_ACTIVITIES);
+          const activities = retainRecentActivitiesAndOpenRequests(
+            [
+              ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
+              {
+                ...payload.activity,
+                eventSequence: existingActivity ? existingActivity.eventSequence : event.sequence,
+              },
+            ].toSorted(compareThreadActivities),
+            MAX_THREAD_ACTIVITIES,
+          );
           const subagents = projectSubagentActivity(thread.subagents ?? [], {
             ...payload.activity,
             eventSequence: event.sequence,

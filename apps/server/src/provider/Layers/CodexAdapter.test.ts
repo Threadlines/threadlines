@@ -2444,6 +2444,94 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("projects async question messages once with choices and free-text questions", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
+      const item = {
+        id: "async-question-1",
+        type: "agentMessage",
+        delivery: "async",
+        phase: "final_answer",
+        text: "Which providers are signed in?\n- Both\n- Only one",
+        questions: [
+          { title: "Which providers are signed in?", options: ["Both", "Only one"] },
+          { title: "Anything else I should know?" },
+        ],
+      };
+      const base = {
+        kind: "notification" as const,
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      yield* runtime.emit({
+        ...base,
+        id: asEventId("async-started"),
+        method: "item/started",
+        payload: { item, threadId: "thread-1", turnId: "turn-1", startedAtMs: 0 },
+      });
+      yield* runtime.emit({
+        ...base,
+        id: asEventId("async-completed"),
+        method: "item/completed",
+        payload: { item, threadId: "thread-1", turnId: "turn-1", completedAtMs: 0 },
+      });
+      yield* runtime.emit({
+        ...base,
+        id: asEventId("async-following-text"),
+        method: "item/agentMessage/delta",
+        payload: {
+          itemId: "work-continues",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          delta: "I can keep checking the layout.",
+        },
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.equal(events[0]?.type, "user-input.requested");
+      if (events[0]?.type === "user-input.requested") {
+        assert.equal(events[0].requestId, "codex-question:thread-1:async-question-1");
+        assert.equal(events[0].payload.isBlocking, false);
+        assert.equal(events[0].payload.responseMode, "message");
+        assert.deepEqual(
+          events[0].payload.questions.map((question) =>
+            question.options.map((option) => option.label),
+          ),
+          [["Both", "Only one"], []],
+        );
+      }
+      assert.equal(events[1]?.type, "content.delta");
+    }),
+  );
+
+  it.effect("projects provider-cleared input as closed without an answer", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* runtime.emit({
+        id: asEventId("question-closed"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        requestId: ApprovalRequestId.make("input-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/tool/requestUserInput/resolved",
+        payload: { reason: "turn-completed" },
+      });
+      const event = yield* Fiber.join(eventFiber);
+      assert.equal(event._tag, "Some");
+      if (event._tag === "Some") {
+        assert.equal(event.value.type, "user-input.resolved");
+        assert.deepEqual(event.value.payload, { answers: {}, reason: "turn-completed" });
+      }
+    }),
+  );
+
   it.effect("unwraps Codex token usage payloads for context window events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -519,6 +519,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
+          hasBlockingUserInput: false,
           hasActionableProposedPlan: false,
           cumulativeDiffStat: { additions: 2, deletions: 1 },
           diffStatBaselineTurnCount: 0,
@@ -1263,6 +1264,51 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       }
       assert.equal(snapshot.threads[0]?.activities.length, MAX_THREAD_ACTIVITIES);
       assert.equal(snapshot.threads[0]?.subagents?.[0]?.id, "agent-durable");
+
+      // Old open questions and approvals must survive a busy turn. Closed
+      // prompt history still leaves the recent activity window as usual.
+      const oldPrompts = [
+        {
+          id: "open-question",
+          kind: "user-input.requested",
+          payload: { requestId: "question", isBlocking: false },
+        },
+        { id: "open-approval", kind: "approval.requested", payload: { requestId: "approval" } },
+        { id: "closed-question", kind: "user-input.requested", payload: { requestId: "closed" } },
+        {
+          id: "closed-question-resolved",
+          kind: "user-input.resolved",
+          payload: { requestId: "closed" },
+        },
+      ];
+      for (const [index, prompt] of oldPrompts.entries()) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${prompt.id}, 'thread-activity-cap', 'info', ${prompt.kind}, 'Prompt',
+            ${JSON.stringify(prompt.payload)}, ${index}, '2026-03-01T00:00:00.000Z'
+          )
+        `;
+      }
+      const retainedSnapshot = yield* snapshotQuery.getSnapshot();
+      const retainedDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-activity-cap"),
+      );
+      assert.equal(retainedDetail._tag, "Some");
+      if (retainedDetail._tag === "Some") {
+        const activities = retainedDetail.value.activities;
+        assert.equal(activities.length, MAX_THREAD_ACTIVITIES + 2);
+        assert.deepEqual(
+          activities.slice(0, 2).map((activity) => activity.id),
+          ["open-question", "open-approval"],
+        );
+        assert.equal(
+          activities.some((activity) => activity.id === "closed-question"),
+          false,
+        );
+        assert.deepEqual(retainedSnapshot.threads[0]?.activities, activities);
+      }
 
       yield* sql`DELETE FROM projection_thread_activities`;
       yield* sql`
