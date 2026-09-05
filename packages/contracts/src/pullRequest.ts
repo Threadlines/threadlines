@@ -423,6 +423,17 @@ export const PullRequestDetail = Schema.Struct({
   checksState: Schema.optionalKey(PullRequestChecksState),
   /** Absent where the host does not say, or has not decided yet after a push. */
   mergeGate: Schema.optionalKey(PullRequestMergeGate),
+  /**
+   * The base branch's merge queue, where the host has one: the queue decides the
+   * merge method and brings the branch current itself. Absent where the base has
+   * no queue, or the host does not say.
+   */
+  mergeQueue: Schema.optionalKey(
+    Schema.Struct({
+      /** Where this pull request stands in the queue, first is 1; null while it is not queued. */
+      position: Schema.NullOr(PositiveInt),
+    }),
+  ),
   viewer: PullRequestViewerPermissions,
   /** The methods the repository allows, in the order merge, squash, rebase. */
   mergeMethods: Schema.Array(PullRequestMergeMethod),

@@ -4,7 +4,8 @@ import * as Result from "effect/Result";
 
 import {
   decodeGitHubAuthoredPullRequestsJson,
-  decodeGitHubBaseComparisonJson,
+  decodeGitHubDetailBaseStateJson,
+  decodeGitHubImmediatelyMergeableJson,
   decodeGitHubPullRequestConversationJson,
   decodeGitHubReviewerCandidatesJson,
   decodeGitHubSubjectScopeJson,
@@ -143,31 +144,70 @@ describe("decodeGitHubPullRequestConversationJson", () => {
   });
 });
 
-describe("decodeGitHubBaseComparisonJson", () => {
-  it("counts the commits the base is ahead by", () => {
-    assert.equal(
-      decoded(
-        decodeGitHubBaseComparisonJson(
-          JSON.stringify({
-            data: { repository: { pullRequest: { baseRef: { compare: { behindBy: 7 } } } } },
-          }),
-        ),
-        "base comparison",
-      ),
-      7,
+describe("decodeGitHubDetailBaseStateJson", () => {
+  const baseState = (pullRequest: unknown) =>
+    decoded(
+      decodeGitHubDetailBaseStateJson(JSON.stringify({ data: { repository: { pullRequest } } })),
+      "detail base state",
     );
+
+  it("counts the commits the base is ahead by", () => {
+    assert.deepStrictEqual(baseState({ baseRef: { compare: { behindBy: 7 } } }), { behindBy: 7 });
   });
 
   it("reads a comparison the host would not make as unknown", () => {
-    assert.equal(
-      decoded(
-        decodeGitHubBaseComparisonJson(
-          JSON.stringify({ data: { repository: { pullRequest: { baseRef: null } } } }),
-        ),
-        "base comparison",
-      ),
-      null,
+    assert.deepStrictEqual(baseState({ baseRef: null }), { behindBy: null });
+  });
+
+  it("names the queue on a guarded base, and where this pull request sits in it", () => {
+    assert.deepStrictEqual(
+      baseState({
+        baseRef: { compare: { behindBy: 2 } },
+        isMergeQueueEnabled: true,
+        isInMergeQueue: true,
+        mergeQueueEntry: { position: 3 },
+      }),
+      { behindBy: 2, mergeQueue: { position: 3 } },
     );
+  });
+
+  it("keeps the queue but no place in it while the pull request has not joined", () => {
+    assert.deepStrictEqual(
+      baseState({
+        baseRef: { compare: { behindBy: 0 } },
+        isMergeQueueEnabled: true,
+        isInMergeQueue: false,
+        mergeQueueEntry: null,
+      }),
+      { behindBy: 0, mergeQueue: { position: null } },
+    );
+  });
+
+  it("says nothing about a queue where the host named no queue fields at all", () => {
+    assert.deepStrictEqual(baseState({ baseRef: { compare: { behindBy: 1 } } }), { behindBy: 1 });
+  });
+});
+
+describe("decodeGitHubImmediatelyMergeableJson", () => {
+  const readiness = (pullRequest: unknown) =>
+    decoded(
+      decodeGitHubImmediatelyMergeableJson(
+        JSON.stringify({ data: { repository: { pullRequest } } }),
+      ),
+      "auto-merge readiness",
+    );
+
+  it("reports a green pull request on an unguarded base as one that merges now", () => {
+    assert.equal(readiness({ mergeStateStatus: "CLEAN", isMergeQueueEnabled: false }), true);
+    assert.equal(readiness({ mergeStateStatus: "BLOCKED", isMergeQueueEnabled: false }), false);
+  });
+
+  it("never reports one on a queued base, where arming means joining the queue", () => {
+    assert.equal(readiness({ mergeStateStatus: "CLEAN", isMergeQueueEnabled: true }), false);
+  });
+
+  it("treats a status the host would not name as one that waits", () => {
+    assert.equal(readiness({}), false);
   });
 });
 

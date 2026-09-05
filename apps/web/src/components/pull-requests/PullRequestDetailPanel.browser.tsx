@@ -570,6 +570,51 @@ describe("PullRequestDetailPanel", () => {
     await behind.cleanup();
   });
 
+  it("offers one Merge when ready button where the base runs a merge queue", async () => {
+    const armable = await renderPanel({
+      detail: {
+        viewer: { canWrite: true, canReview: false, canManage: true },
+        // Behind its base and blocked on a rule: both are the queue's own work,
+        // so neither displaces the button nor turns it off.
+        mergeQueue: { position: null },
+        baseComparison: "behind",
+        behindBy: 3,
+        mergeGate: "blocked",
+      },
+    });
+
+    await expect.element(page.getByTestId("pull-request-merge-when-ready")).toBeEnabled();
+    expect(page.getByTestId("pull-request-merge").elements()).toHaveLength(0);
+    expect(page.getByTestId("pull-request-update-branch").elements()).toHaveLength(0);
+    await userEvent.click(page.getByTestId("pull-request-merge-when-ready"));
+
+    await vi.waitFor(() => {
+      expect(armable.runAction).toHaveBeenCalledWith({
+        ...REFERENCE,
+        action: "enable-auto-merge",
+        // The queue picks how it lands; the method goes along and is ignored.
+        mergeMethod: "squash",
+      });
+    });
+
+    await armable.cleanup();
+
+    const queued = await renderPanel({
+      detail: {
+        viewer: { canWrite: true, canReview: false, canManage: true },
+        mergeQueue: { position: 2 },
+      },
+    });
+
+    // The host owns it from here, so the header states where it stands and
+    // there is no button offering to start it again.
+    await expect.element(page.getByText("Queued, 2nd")).toBeVisible();
+    expect(page.getByTestId("pull-request-merge-when-ready").elements()).toHaveLength(0);
+    expect(page.getByTestId("pull-request-merge").elements()).toHaveLength(0);
+
+    await queued.cleanup();
+  });
+
   it("keeps Merge on screen but off while the host's rules refuse it, and says why", async () => {
     const rendered = await renderPanel({
       detail: {

@@ -78,21 +78,55 @@ export const PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY = `query($owner: String!, $
 }`;
 
 /**
- * How far the head branch trails its base.
+ * Everything about the base a detail read needs and `gh pr view --json` cannot
+ * report: how far the head branch trails it, and whether it is guarded by a
+ * merge queue. One document, so the detail costs one GraphQL request.
  *
- * `mergeStateStatus` is not the answer: GitHub only reports BEHIND where the
- * repository requires branches to be current before merging. The comparison
- * counts the commits instead, which is the number GitHub's own banner shows.
+ * `mergeStateStatus` is not the freshness answer: GitHub only reports BEHIND
+ * where the repository requires branches to be current before merging. The
+ * comparison counts the commits instead, which is the number GitHub's own
+ * banner shows.
  *
  * `headRef` is qualified `owner:branch` because a branch on a fork has no name
  * of its own in the base repository.
  */
-export const BASE_COMPARISON_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!, $headRef: String!) {
+export const DETAIL_BASE_STATE_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!, $headRef: String!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       baseRef { compare(headRef: $headRef) { behindBy } }
+      isMergeQueueEnabled
+      isInMergeQueue
+      mergeQueueEntry { position }
     }
   }
+}`;
+
+/**
+ * What arming a standing merge instruction has to know first: whether GitHub
+ * would take the merge this instant, and whether the base runs a merge queue.
+ * A queue turns `gh pr merge --auto` on a green pull request into "join the
+ * queue", which is the point, so only a base without one is refused.
+ */
+export const AUTO_MERGE_READINESS_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { mergeStateStatus isMergeQueueEnabled }
+  }
+}`;
+
+/**
+ * What disarming has to know first: whether the host has already taken the
+ * pull request into its merge queue. `gh pr merge --disable-auto` stops short
+ * on a queued pull request without touching it, so that case is undone by the
+ * dequeue mutation instead, which is addressed by node id.
+ */
+export const MERGE_QUEUE_STANDING_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { id isInMergeQueue }
+  }
+}`;
+
+export const DEQUEUE_PULL_REQUEST_GRAPHQL_MUTATION = `mutation($id: ID!) {
+  dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { id } }
 }`;
 
 /** Labels and outstanding review requests are short lists; this is room to spare. */
@@ -486,7 +520,7 @@ export function decodeGitHubPullRequestConversationJson(
   });
 }
 
-const RawBaseComparisonSchema = Schema.Struct({
+const RawDetailBaseStateSchema = Schema.Struct({
   data: Schema.Struct({
     repository: Schema.NullOr(
       Schema.Struct({
@@ -504,6 +538,14 @@ const RawBaseComparisonSchema = Schema.Struct({
                 }),
               ),
             ),
+            isMergeQueueEnabled: Schema.optional(Schema.NullOr(Schema.Boolean)),
+            isInMergeQueue: Schema.optional(Schema.NullOr(Schema.Boolean)),
+            /** Null until the pull request actually joins the queue. */
+            mergeQueueEntry: Schema.optional(
+              Schema.NullOr(
+                Schema.Struct({ position: Schema.optional(Schema.NullOr(Schema.Number)) }),
+              ),
+            ),
           }),
         ),
       }),
@@ -511,20 +553,119 @@ const RawBaseComparisonSchema = Schema.Struct({
   }),
 });
 
-const decodeBaseComparison = decodeJsonResult(RawBaseComparisonSchema);
+const decodeDetailBaseState = decodeJsonResult(RawDetailBaseStateSchema);
 
-/** How many commits the base has that the head does not; null when unanswerable. */
-export function decodeGitHubBaseComparisonJson(
+/** Where the base stands: how far ahead of the head, and what guards it. */
+export interface GitHubDetailBaseState {
+  /** How many commits the base has that the head does not; null when unanswerable. */
+  readonly behindBy: number | null;
+  /** Present only where the base requires a merge queue. */
+  readonly mergeQueue?: { readonly position: number | null };
+}
+
+/**
+ * Decodes the one GraphQL read a detail makes about its base. The queue is
+ * reported only where the base requires one, and its position only once this
+ * pull request has actually joined it.
+ */
+export function decodeGitHubDetailBaseStateJson(
   raw: string,
-): Result.Result<number | null, DecodeFailure> {
-  const decoded = decodeBaseComparison(raw);
+): Result.Result<GitHubDetailBaseState, DecodeFailure> {
+  const decoded = decodeDetailBaseState(raw);
   if (!Result.isSuccess(decoded)) {
     return Result.fail(decoded.failure);
   }
-  const behindBy = decoded.success.data.repository?.pullRequest?.baseRef?.compare?.behindBy;
-  return Result.succeed(
-    typeof behindBy === "number" && behindBy >= 0 ? Math.trunc(behindBy) : null,
-  );
+  const pullRequest = decoded.success.data.repository?.pullRequest ?? null;
+  const behindByRaw = pullRequest?.baseRef?.compare?.behindBy;
+  const behindBy =
+    typeof behindByRaw === "number" && behindByRaw >= 0 ? Math.trunc(behindByRaw) : null;
+  if (pullRequest?.isMergeQueueEnabled !== true) {
+    return Result.succeed({ behindBy });
+  }
+  const positionRaw = pullRequest.mergeQueueEntry?.position;
+  const position =
+    pullRequest.isInMergeQueue === true && typeof positionRaw === "number" && positionRaw > 0
+      ? Math.trunc(positionRaw)
+      : null;
+  return Result.succeed({ behindBy, mergeQueue: { position } });
+}
+
+/**
+ * The states `gh pr merge --auto` merges outright instead of arming, copied
+ * from the CLI: nothing is pending, so there is nothing to wait for.
+ */
+const IMMEDIATELY_MERGEABLE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
+
+const RawAutoMergeReadinessSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(
+      Schema.Struct({
+        pullRequest: Schema.NullOr(
+          Schema.Struct({
+            mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
+            isMergeQueueEnabled: Schema.optional(Schema.NullOr(Schema.Boolean)),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+const decodeAutoMergeReadiness = decodeJsonResult(RawAutoMergeReadinessSchema);
+
+/**
+ * Whether arming this pull request would merge it on the spot instead. True
+ * only where GitHub would take the merge this instant and the base runs no
+ * merge queue: under a queue the same call joins the queue, which is what the
+ * reader asked for. A status the host did not name is not ready, so arming
+ * then waits, which is the safe way to be wrong.
+ */
+export function decodeGitHubImmediatelyMergeableJson(
+  raw: string,
+): Result.Result<boolean, DecodeFailure> {
+  const decoded = decodeAutoMergeReadiness(raw);
+  if (!Result.isSuccess(decoded)) {
+    return Result.fail(decoded.failure);
+  }
+  const pullRequest = decoded.success.data.repository?.pullRequest ?? null;
+  if (pullRequest?.isMergeQueueEnabled === true) {
+    return Result.succeed(false);
+  }
+  const status = nonEmptyText(pullRequest?.mergeStateStatus)?.toUpperCase() ?? null;
+  return Result.succeed(status !== null && IMMEDIATELY_MERGEABLE_STATES.has(status));
+}
+
+const RawMergeQueueStandingSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(
+      Schema.Struct({
+        pullRequest: Schema.NullOr(
+          Schema.Struct({
+            id: Schema.optional(Schema.NullOr(Schema.String)),
+            isInMergeQueue: Schema.optional(Schema.NullOr(Schema.Boolean)),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+const decodeMergeQueueStanding = decodeJsonResult(RawMergeQueueStandingSchema);
+
+/**
+ * The node id to dequeue while the pull request sits in a merge queue, or null
+ * where it does not: a host that names no queue, or no id, has nothing to take
+ * it out of, and the plain disarm is the right call.
+ */
+export function decodeGitHubMergeQueueStandingJson(
+  raw: string,
+): Result.Result<string | null, DecodeFailure> {
+  const decoded = decodeMergeQueueStanding(raw);
+  if (!Result.isSuccess(decoded)) {
+    return Result.fail(decoded.failure);
+  }
+  const pullRequest = decoded.success.data.repository?.pullRequest ?? null;
+  return Result.succeed(pullRequest?.isInMergeQueue === true ? nonEmptyText(pullRequest.id) : null);
 }
 
 const RawAuthoredNodeSchema = Schema.Struct({

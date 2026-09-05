@@ -102,8 +102,10 @@ import {
   formatPullRequestBehindLabel,
   formatPullRequestChecksHeadline,
   pullRequestBadgeTone,
+  pullRequestMergeQueueLabel,
   pullRequestUpdateMethodLabel,
   resolveDefaultMergeMethod,
+  resolveMergeWhenReadyBlock,
   resolvePullRequestMergeBlock,
   summarizePullRequestChecks,
   type PullRequestChecksSummary,
@@ -609,6 +611,7 @@ function PullRequestDetailHeader({
     detail.state === "open" && !detail.isDraft && detail.mergeability === "conflicting"
       ? `Conflicts with ${detail.baseBranch}`
       : null;
+  const queueLabel = pullRequestMergeQueueLabel(detail);
   const behindLabel = formatPullRequestBehindLabel(detail);
   const freshness = formatPullRequestBaseFreshness(detail);
   // Open is the resting state and the glyph already says it; the other three
@@ -641,7 +644,13 @@ function PullRequestDetailHeader({
             <ExternalLinkIcon aria-hidden className="size-3 opacity-70" />
           </button>
           {stateWord ? <span className={cn("shrink-0", tone.className)}>{stateWord}</span> : null}
-          {detail.autoMergeEnabled === true ? (
+          {/* A base with a merge queue says where the host has taken it, since
+              the queue, not the standing instruction, is what lands it now. */}
+          {queueLabel !== null ? (
+            <TooltipWrapper tooltip={queueLabel.tooltip}>
+              <span className="shrink-0">{queueLabel.label}</span>
+            </TooltipWrapper>
+          ) : detail.mergeQueue === undefined && detail.autoMergeEnabled === true ? (
             <span className="shrink-0">Auto-merge on</span>
           ) : null}
         </div>
@@ -1148,37 +1157,82 @@ function usePullRequestActions({
   const showClose = canManage && isOpen && allows("close");
   const showReopen = canManage && isReopenable && allows("reopen");
   const showDraftToggle = canManage && isOpen && allows(detail.isDraft ? "ready" : "draft");
+
+  // A base guarded by a merge queue: the queue picks the method, brings the
+  // branch current itself, and refuses a direct merge, so the only thing to
+  // offer is joining it. The queue's own position says whether it has been.
+  const queue = detail.mergeQueue ?? null;
+  const isQueued = queue !== null && queue.position !== null;
+  // A queued pull request need not carry a standing instruction any more, and
+  // the same call is what takes it back out, so the way out is offered on the
+  // queue's own say-so.
   const showDisableAutoMerge =
-    canWrite && isOpen && detail.autoMergeEnabled === true && allows("disable-auto-merge");
+    canWrite &&
+    isOpen &&
+    allows("disable-auto-merge") &&
+    (detail.autoMergeEnabled === true || isQueued);
   const showEnableAutoMerge =
-    canWrite && isOpen && detail.autoMergeEnabled !== true && allows("enable-auto-merge");
+    canWrite &&
+    isOpen &&
+    detail.autoMergeEnabled !== true &&
+    allows("enable-auto-merge") &&
+    // Nothing left to arm once the host has taken it into the queue.
+    !isQueued;
+  const showMergeWhenReady = queue !== null && showEnableAutoMerge;
+  // Outside a queue the arming lives in the menu; under one it is the button.
+  const showEnableAutoMergeInMenu = queue === null && showEnableAutoMerge;
 
   const updateMethods = detail.capabilities.updateMethods;
   const mergeBlock = resolvePullRequestMergeBlock(detail);
   const mergeDisabled = isRunning || mergeBlock !== null;
+  // Waiting on checks or on a stale base is the queue's own job, so the only
+  // things that stop it are the two it cannot fix: a draft, and a conflict.
+  const mergeWhenReadyBlock = resolveMergeWhenReadyBlock(detail);
   const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods, rememberedMergeMethod);
   const canUpdateBranch = canWrite && isOpen && allows("update-branch");
   const isBehind = detail.baseComparison === "behind";
+  // Someone may still want the branch current for local testing, so the update
+  // stays reachable under a queue; it simply must not lead.
+  const showUpdateBranchInMenu = queue !== null && canUpdateBranch && isBehind;
 
   // One primary action for the state the branch is in: work it cannot merge
   // through first, then bringing it up to date, then the merge itself. The
   // displaced merge is not lost — it moves into the menu beside the rest.
-  const primary: "resolve-conflicts" | "update-branch" | "merge" | null =
+  // Under a queue the last two collapse into one button, and a pull request
+  // already in the queue has no primary at all: the host owns it now.
+  const primary: "resolve-conflicts" | "update-branch" | "merge" | "merge-when-ready" | null =
     isOpen && !detail.isDraft && detail.mergeability === "conflicting" && handoffs?.resolveConflicts
       ? "resolve-conflicts"
-      : canUpdateBranch && isBehind && detail.mergeability !== "conflicting"
-        ? "update-branch"
-        : showMerge
-          ? "merge"
-          : null;
-  const showMergeInMenu = showMerge && primary !== "merge" && mergeBlock === null;
+      : queue !== null
+        ? showMergeWhenReady
+          ? "merge-when-ready"
+          : null
+        : canUpdateBranch && isBehind && detail.mergeability !== "conflicting"
+          ? "update-branch"
+          : showMerge
+            ? "merge"
+            : null;
+  // A queue refuses a direct merge, so the merge never reaches the menu either.
+  const showMergeInMenu = queue === null && showMerge && primary !== "merge" && mergeBlock === null;
   const hasMenuWrites =
-    showDraftToggle || showDisableAutoMerge || showEnableAutoMerge || showMergeInMenu;
+    showDraftToggle ||
+    showDisableAutoMerge ||
+    showEnableAutoMergeInMenu ||
+    showMergeInMenu ||
+    showUpdateBranchInMenu;
   // The two menu halves: the hand-offs, and the writes that are not buttons.
   const hasMenu = handoffs !== null || hasMenuWrites;
 
+  // Under a queue two writes swap places: the update becomes a menu item and
+  // arming becomes the primary button. A write with a button of its own says so
+  // on that button; everything else says so on the line under the header.
+  const runningOnItsOwnButton =
+    (runningAction === "enable-auto-merge" && showMergeWhenReady) ||
+    (runningAction === "update-branch" && !showUpdateBranchInMenu);
   const menuRunningWord =
-    runningAction !== null && MENU_ACTIONS.has(runningAction)
+    runningAction !== null &&
+    !runningOnItsOwnButton &&
+    (MENU_ACTIONS.has(runningAction) || runningAction === "update-branch")
       ? RUNNING_ACTION_WORDS[runningAction]
       : null;
   // A hairline between the two halves would be a colour this app does not
@@ -1223,6 +1277,20 @@ function usePullRequestActions({
         </Menu>
       ) : null}
     </span>
+  );
+
+  // One button, no method picker and no confirmation: the queue's own setting
+  // decides how it lands, and joining a queue is undone by leaving it.
+  const mergeWhenReadyControl = (
+    <Button
+      size="xs"
+      className={PHONE_ACTION_CLASS}
+      disabled={isRunning || mergeWhenReadyBlock !== null}
+      data-testid="pull-request-merge-when-ready"
+      onClick={() => run("enable-auto-merge", { mergeMethod: defaultMergeMethod })}
+    >
+      {runningAction === "enable-auto-merge" ? "Joining the queue…" : "Merge when ready"}
+    </Button>
   );
 
   const updateBranchControl =
@@ -1283,6 +1351,18 @@ function usePullRequestActions({
           </Button>
         ) : null}
         {primary === "update-branch" ? updateBranchControl : null}
+        {primary === "merge-when-ready" ? (
+          // The queue fixes a stale base and waits out the checks itself, so
+          // the only reasons this is off are a draft and a conflict — both
+          // said on the button rather than by hiding it.
+          mergeWhenReadyBlock === null ? (
+            mergeWhenReadyControl
+          ) : (
+            <TooltipWrapper tooltip={mergeWhenReadyBlock}>
+              <span className="inline-flex">{mergeWhenReadyControl}</span>
+            </TooltipWrapper>
+          )
+        ) : null}
         {primary === "merge" ? (
           // A blocked merge stays on screen and says what is in the way: the
           // fix is on the host, and a vanished button explains nothing.
@@ -1363,8 +1443,39 @@ function usePullRequestActions({
                 </>
               ) : null}
               {(handoffs || showMergeInMenu) &&
-              (showDraftToggle || showDisableAutoMerge || showEnableAutoMerge) ? (
+              (showDraftToggle ||
+                showDisableAutoMerge ||
+                showEnableAutoMergeInMenu ||
+                showUpdateBranchInMenu) ? (
                 <MenuSeparator />
+              ) : null}
+              {/* Under a queue the update no longer leads, because the queue
+                  builds its own merge on the latest base; it stays here for
+                  anyone who wants the branch current to test it locally. */}
+              {showUpdateBranchInMenu ? (
+                updateMethods.length > 1 ? (
+                  updateMethods.map((method) => (
+                    <MenuItem
+                      key={method}
+                      data-testid={`pull-request-update-branch-${method}`}
+                      onClick={() => run("update-branch", { updateMethod: method })}
+                    >
+                      {pullRequestUpdateMethodLabel(method, detail.baseBranch)}
+                    </MenuItem>
+                  ))
+                ) : (
+                  <MenuItem
+                    data-testid="pull-request-update-branch"
+                    onClick={() =>
+                      run(
+                        "update-branch",
+                        updateMethods[0] ? { updateMethod: updateMethods[0] } : undefined,
+                      )
+                    }
+                  >
+                    Update branch
+                  </MenuItem>
+                )
               ) : null}
               {showDraftToggle ? (
                 detail.isDraft ? (
@@ -1378,10 +1489,14 @@ function usePullRequestActions({
                   data-testid="pull-request-disable-auto-merge"
                   onClick={() => run("disable-auto-merge")}
                 >
-                  Disable auto-merge
+                  {queue === null
+                    ? "Disable auto-merge"
+                    : isQueued
+                      ? "Leave the merge queue"
+                      : "Cancel merge when ready"}
                 </MenuItem>
               ) : null}
-              {showEnableAutoMerge ? (
+              {showEnableAutoMergeInMenu ? (
                 <MenuItem
                   data-testid="pull-request-enable-auto-merge"
                   onClick={() => run("enable-auto-merge", { mergeMethod: defaultMergeMethod })}
@@ -1395,6 +1510,12 @@ function usePullRequestActions({
         ) : null}
       </>
     );
+
+  // Whatever is holding the primary button back, whichever button it is. A
+  // disabled button cannot be focused, so this is written out as well as
+  // tucked in the button's own tooltip.
+  const primaryBlock =
+    primary === "merge" ? mergeBlock : primary === "merge-when-ready" ? mergeWhenReadyBlock : null;
 
   const notices = (
     <>
@@ -1410,14 +1531,12 @@ function usePullRequestActions({
       >
         {menuRunningWord}
       </p>
-      {/* A disabled button cannot be focused, so the reason it is disabled is
-          written out as well as tucked in its tooltip. */}
-      {primary === "merge" && mergeBlock !== null ? (
+      {primaryBlock !== null ? (
         <p
           className="mt-1 text-right text-xs text-muted-foreground/60"
           data-testid="pull-request-merge-block"
         >
-          {mergeBlock}
+          {primaryBlock}
         </p>
       ) : null}
       {mutation.isError ? (
