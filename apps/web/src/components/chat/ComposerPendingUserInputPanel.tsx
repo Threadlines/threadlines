@@ -278,7 +278,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             separate button row. Enter submits; Shift+Enter adds a line. */}
         <div
           className={cn(
-            "flex w-full items-end gap-2.5 rounded-lg border px-2.5 py-1 transition-colors duration-150",
+            "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-1 transition-colors duration-150",
             progress.usingCustomAnswer
               ? "border-primary/40 bg-primary/8"
               : "border-transparent bg-muted/20 focus-within:border-border/40 focus-within:bg-muted/30",
@@ -286,7 +286,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         >
           <span
             className={cn(
-              "mb-1.5 flex size-4.5 shrink-0 items-center justify-center rounded transition-colors duration-150",
+              "flex size-4.5 shrink-0 items-center justify-center rounded transition-colors duration-150",
               progress.usingCustomAnswer
                 ? "bg-primary/20 text-primary-readable"
                 : "bg-muted/40 text-muted-foreground/70",
