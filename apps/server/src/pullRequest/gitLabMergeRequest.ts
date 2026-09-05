@@ -42,6 +42,7 @@ const GitLabUserSchema = Schema.Struct({
   id: Schema.optional(Schema.NullOr(Schema.Int)),
   username: Schema.optional(Schema.NullOr(Schema.String)),
   name: Schema.optional(Schema.NullOr(Schema.String)),
+  avatar_url: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const GitLabPipelineSchema = Schema.Struct({
@@ -206,6 +207,8 @@ export interface GitLabMergeRequestRow {
   readonly baseBranch: string;
   readonly state: PullRequestState;
   readonly isDraft: boolean;
+  /** `unknown` while GitLab is still checking, which every listing may see. */
+  readonly mergeability: PullRequestMergeability;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly reviewRequestedLogins: ReadonlyArray<string>;
@@ -223,11 +226,14 @@ export interface GitLabDiffRefs {
 export interface GitLabMergeRequestDetailRow extends GitLabMergeRequestRow {
   readonly body: string;
   readonly changedFiles: number;
-  readonly mergeability: PullRequestMergeability;
   readonly mergedAt: string | null;
   readonly closedAt: string | null;
   /** Requested reviewers, keyed by the numeric id a reviewer write takes. */
-  readonly reviewers: ReadonlyArray<{ readonly id: string; readonly login: string }>;
+  readonly reviewers: ReadonlyArray<{
+    readonly id: string;
+    readonly login: string;
+    readonly avatarUrl: string | null;
+  }>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
   /** Null where GitLab named neither auto-merge field, which is not "off". */
   readonly autoMergeEnabled: boolean | null;
@@ -247,7 +253,7 @@ function toActor(
   raw: Schema.Schema.Type<typeof GitLabUserSchema> | null | undefined,
 ): PullRequestActor | null {
   const login = trimmed(raw?.username);
-  return login === null ? null : { login, isBot: false };
+  return login === null ? null : { login, isBot: false, avatarUrl: trimmed(raw?.avatar_url) };
 }
 
 function toState(raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>): PullRequestState {
@@ -366,6 +372,7 @@ function toRow(raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>): GitLab
     baseBranch: raw.target_branch,
     state: toState(raw),
     isDraft: raw.draft === true || raw.work_in_progress === true,
+    mergeability: toMergeability(raw),
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     reviewRequestedLogins: (raw.reviewers ?? []).flatMap((reviewer) => {
@@ -399,12 +406,13 @@ function toDetailRow(
     ...toRow(raw),
     body: raw.description ?? "",
     changedFiles: toChangedFiles(raw.changes_count),
-    mergeability: toMergeability(raw),
     mergedAt: trimmed(raw.merged_at),
     closedAt: trimmed(raw.closed_at),
     reviewers: (raw.reviewers ?? []).flatMap((reviewer) => {
-      const login = trimmed(reviewer.username);
-      return login === null || reviewer.id == null ? [] : [{ id: String(reviewer.id), login }];
+      const actor = toActor(reviewer);
+      return actor === null || reviewer.id == null
+        ? []
+        : [{ id: String(reviewer.id), login: actor.login, avatarUrl: actor.avatarUrl }];
     }),
     checks: toChecks(raw),
     autoMergeEnabled: autoMerge,
@@ -768,6 +776,7 @@ export function decodeGitLabProjectUsersJson(
       kind: "user",
       login,
       name: trimmed(decoded.value.name),
+      avatarUrl: trimmed(decoded.value.avatar_url),
       requested: false,
     });
   }

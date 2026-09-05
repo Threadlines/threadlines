@@ -3,6 +3,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import type {
+  PullRequestActor,
   PullRequestListState,
   PullRequestReaction,
   PullRequestReactionContent,
@@ -56,7 +57,7 @@ export const PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY = `query($owner: String!, $
           comments(first: ${GRAPHQL_PAGE_SIZE}) {
             nodes {
               id
-              author { login }
+              author { login avatarUrl }
               body
               createdAt
               url
@@ -67,10 +68,10 @@ export const PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY = `query($owner: String!, $
         }
       }
       comments(first: ${GRAPHQL_PAGE_SIZE}) {
-        nodes { id viewerDidAuthor ${REACTION_GROUPS_FIELDS} }
+        nodes { id viewerDidAuthor author { login avatarUrl } ${REACTION_GROUPS_FIELDS} }
       }
       reviews(first: ${GRAPHQL_PAGE_SIZE}) {
-        nodes { id viewerDidAuthor ${REACTION_GROUPS_FIELDS} }
+        nodes { id viewerDidAuthor author { login avatarUrl } ${REACTION_GROUPS_FIELDS} }
       }
     }
   }
@@ -104,8 +105,9 @@ const AUTHORED_CONNECTION_PAGE_SIZE = 20;
  *
  * `first` is a variable so the listing asks for as many rows as it would from a
  * repository. The fields are the ones a list row is built from, plus the
- * repository each one is on and the check rollup of its last commit, since a
- * search cannot be asked for `statusCheckRollup` the way `gh pr list` is.
+ * repository each one is on, what the viewer may do there, and the check rollup
+ * of its last commit, since a search cannot be asked for `statusCheckRollup`
+ * the way `gh pr list` is.
  */
 export const AUTHORED_PULL_REQUESTS_GRAPHQL_QUERY = `query($q: String!, $first: Int!) {
   search(query: $q, type: ISSUE, first: $first) {
@@ -123,9 +125,10 @@ export const AUTHORED_PULL_REQUESTS_GRAPHQL_QUERY = `query($q: String!, $first: 
         baseRefName
         additions
         deletions
+        mergeable
         reviewDecision
-        author { login }
-        repository { nameWithOwner }
+        author { login avatarUrl }
+        repository { nameWithOwner viewerPermission }
         labels(first: ${AUTHORED_CONNECTION_PAGE_SIZE}) { nodes { name color } }
         reviewRequests(first: ${AUTHORED_CONNECTION_PAGE_SIZE}) {
           nodes { requestedReviewer { ... on User { login } } }
@@ -158,16 +161,16 @@ export function gitHubAuthoredSearchQuery(input: {
 export const REVIEWER_CANDIDATES_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     assignableUsers(first: ${GRAPHQL_PAGE_SIZE}) {
-      nodes { login name }
+      nodes { login name avatarUrl }
     }
     pullRequest(number: $number) {
       author { login }
       reviewRequests(first: ${GRAPHQL_PAGE_SIZE}) {
         nodes {
           requestedReviewer {
-            ... on User { login name }
-            ... on Team { slug name }
-            ... on Bot { login }
+            ... on User { login name avatarUrl }
+            ... on Team { slug name avatarUrl }
+            ... on Bot { login avatarUrl }
           }
         }
       }
@@ -238,11 +241,20 @@ export const UPDATE_REVIEW_COMMENT_GRAPHQL_MUTATION = `mutation($commentId: ID!,
   }
 }`;
 
+/** A list of ids is a variable too: one read asks about a batch of accounts. */
+export type GitHubGraphQlVariable = string | number | boolean | null | ReadonlyArray<string>;
+
 const GraphQlRequestSchema = Schema.Struct({
   query: Schema.String,
   variables: Schema.Record(
     Schema.String,
-    Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null]),
+    Schema.Union([
+      Schema.String,
+      Schema.Number,
+      Schema.Boolean,
+      Schema.Null,
+      Schema.Array(Schema.String),
+    ]),
   ),
 });
 
@@ -255,7 +267,7 @@ const encodeGraphQlRequest = Schema.encodeSync(Schema.fromJsonString(GraphQlRequ
  */
 export function encodeGraphQlRequestJson(input: {
   readonly query: string;
-  readonly variables: Readonly<Record<string, string | number | boolean | null>>;
+  readonly variables: Readonly<Record<string, GitHubGraphQlVariable>>;
 }): string {
   return encodeGraphQlRequest({ query: input.query, variables: { ...input.variables } });
 }
@@ -336,6 +348,7 @@ const RawThreadCommentSchema = Schema.Struct({
 const RawAnnotatedNodeSchema = Schema.Struct({
   id: Schema.optional(Schema.NullOr(Schema.String)),
   viewerDidAuthor: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  author: Schema.optional(Schema.NullOr(GitHubAuthorSchema)),
   reactionGroups: RawReactionGroupsSchema,
 });
 
@@ -386,6 +399,8 @@ const RawConversationSchema = Schema.Struct({
 export interface GitHubCommentAnnotation {
   readonly reactions: ReadonlyArray<PullRequestReaction>;
   readonly viewerIsAuthor: boolean;
+  /** The author with their picture, which `gh pr view --json` never carries. */
+  readonly author: PullRequestActor | null;
 }
 
 /** Everything one activity read learns from GraphQL, keyed the way it is used. */
@@ -459,6 +474,7 @@ export function decodeGitHubPullRequestConversationJson(
     annotationsByCommentId.set(id, {
       reactions: toReactions(node.reactionGroups),
       viewerIsAuthor: node.viewerDidAuthor === true,
+      author: normalizeActor(node.author),
     });
   }
 
@@ -523,10 +539,16 @@ const RawAuthoredNodeSchema = Schema.Struct({
   baseRefName: Schema.optional(Schema.NullOr(Schema.String)),
   additions: Schema.optional(Schema.NullOr(Schema.Number)),
   deletions: Schema.optional(Schema.NullOr(Schema.Number)),
+  mergeable: Schema.optional(Schema.NullOr(Schema.String)),
   reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
   author: Schema.optional(Schema.NullOr(GitHubAuthorSchema)),
   repository: Schema.optional(
-    Schema.NullOr(Schema.Struct({ nameWithOwner: Schema.optional(Schema.NullOr(Schema.String)) })),
+    Schema.NullOr(
+      Schema.Struct({
+        nameWithOwner: Schema.optional(Schema.NullOr(Schema.String)),
+        viewerPermission: Schema.optional(Schema.NullOr(Schema.String)),
+      }),
+    ),
   ),
   labels: Schema.optional(
     Schema.NullOr(
@@ -599,6 +621,27 @@ const decodeAuthoredSearch = decodeJsonResult(RawAuthoredSearchSchema);
 /** One of the viewer's own pull requests, and the repository it is on. */
 export interface GitHubAuthoredPullRequestRow extends GitHubPullRequestListRow {
   readonly repository: string;
+  /** Absent where the search named no permission on the repository. */
+  readonly viewerCanWrite?: boolean;
+}
+
+/**
+ * Whether a `RepositoryPermission` is push access, or null where GitHub named
+ * none. Admin and maintain both include write; triage and read do not, and
+ * anything unrecognised is treated as an answer we do not have.
+ */
+function toViewerCanWrite(permission: string | null | undefined): boolean | null {
+  switch (nonEmptyText(permission)?.toUpperCase() ?? null) {
+    case "ADMIN":
+    case "MAINTAIN":
+    case "WRITE":
+      return true;
+    case "READ":
+    case "TRIAGE":
+      return false;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -624,6 +667,7 @@ function toGitHubListRowShape(node: RawAuthoredNode): unknown {
     deletions: node.deletions,
     createdAt: node.createdAt,
     updatedAt: node.updatedAt,
+    mergeable: node.mergeable,
     reviewDecision: node.reviewDecision,
     reviewRequests: (node.reviewRequests?.nodes ?? []).map((request) => ({
       login: request?.requestedReviewer?.login ?? null,
@@ -657,7 +701,12 @@ export function decodeGitHubAuthoredPullRequestsJson(
     }
     const row = decodeGitHubPullRequestListRow(toGitHubListRowShape(node));
     if (row !== null) {
-      rows.push({ ...row, repository });
+      const viewerCanWrite = toViewerCanWrite(node.repository?.viewerPermission);
+      rows.push({
+        ...row,
+        repository,
+        ...(viewerCanWrite === null ? {} : { viewerCanWrite }),
+      });
     }
   }
   return Result.succeed(rows);
@@ -720,6 +769,7 @@ const RawRequestedReviewerSchema = Schema.Struct({
   login: Schema.optional(Schema.NullOr(Schema.String)),
   slug: Schema.optional(Schema.NullOr(Schema.String)),
   name: Schema.optional(Schema.NullOr(Schema.String)),
+  avatarUrl: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const RawReviewerCandidatesSchema = Schema.Struct({
@@ -787,6 +837,7 @@ export function decodeGitHubReviewerCandidatesJson(
       kind,
       login: id,
       name: nonEmptyText(node.requestedReviewer?.name),
+      avatarUrl: nonEmptyText(node.requestedReviewer?.avatarUrl),
       requested: true,
     });
   }
@@ -805,6 +856,7 @@ export function decodeGitHubReviewerCandidatesJson(
       kind: "user",
       login,
       name: nonEmptyText(node?.name),
+      avatarUrl: nonEmptyText(node?.avatarUrl),
       requested: false,
     });
   }

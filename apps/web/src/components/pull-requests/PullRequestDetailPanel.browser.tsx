@@ -89,7 +89,7 @@ const DETAIL: PullRequestDetail = {
   title: "Read a pull request in the app",
   body: "Adds the detail surface.",
   url: "https://github.com/threadlines/threadlines/pull/42",
-  author: { login: "ada", isBot: false },
+  author: { login: "ada", isBot: false, avatarUrl: null },
   state: "open",
   isDraft: false,
   mergeability: "mergeable",
@@ -103,7 +103,7 @@ const DETAIL: PullRequestDetail = {
   mergedAt: null,
   closedAt: null,
   viewerIsAuthor: true,
-  reviewers: [{ id: "grace", kind: "user", login: "grace", state: "pending" }],
+  reviewers: [{ id: "grace", kind: "user", login: "grace", state: "pending", avatarUrl: null }],
   labels: [],
   checks: [
     { name: "build", status: "success", description: "Passed in 2m", url: null },
@@ -132,7 +132,7 @@ const THREAD: PullRequestReviewThread = {
   comments: [
     {
       id: "thread-comment-1",
-      author: { login: "grace", isBot: false },
+      author: { login: "grace", isBot: false, avatarUrl: null },
       body: "Name this something else.",
       createdAt: "2026-09-01T11:30:00.000Z",
       url: null,
@@ -146,7 +146,7 @@ function makeComment(id: string, createdAt: string, body = `body ${id}`): PullRe
   return {
     id,
     kind: "issue-comment",
-    author: { login: "grace", isBot: false },
+    author: { login: "grace", isBot: false, avatarUrl: null },
     body,
     createdAt,
     url: null,
@@ -176,6 +176,8 @@ async function renderPanel(
   options: {
     readonly detail?: Partial<PullRequestDetail>;
     readonly activity?: Partial<PullRequestActivity>;
+    /** Makes the conversation read fail, which the meta rows answer for. */
+    readonly activityFails?: boolean;
     readonly composerTarget?: ScopedThreadRef;
   } = {},
 ) {
@@ -187,7 +189,12 @@ async function renderPanel(
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
     pullRequests: {
       detail: vi.fn(async () => ({ ...DETAIL, ...options.detail })),
-      activity: vi.fn(async () => ({ ...ACTIVITY, ...options.activity })),
+      activity: vi.fn(async () => {
+        if (options.activityFails) {
+          throw new Error("the host said no");
+        }
+        return { ...ACTIVITY, ...options.activity };
+      }),
       diff: vi.fn(async () => ({ patch: PATCH, truncated: false })),
       comment,
       runAction,
@@ -199,7 +206,14 @@ async function renderPanel(
       updateComment: vi.fn(async () => undefined),
       reviewerCandidates: vi.fn(async () => ({
         candidates: [
-          { id: "grace", kind: "user" as const, login: "grace", name: "Grace H", requested: false },
+          {
+            id: "grace",
+            kind: "user" as const,
+            login: "grace",
+            name: "Grace H",
+            avatarUrl: null,
+            requested: false,
+          },
         ],
       })),
       requestReviewers,
@@ -303,7 +317,9 @@ describe("PullRequestDetailPanel", () => {
     const box = page.getByTestId("pull-request-comment-input");
     await expect.element(box).toBeVisible();
     await userEvent.fill(box, "Shipping this.");
-    await userEvent.click(page.getByRole("button", { name: "Comment" }));
+    // Exactly "Comment": the Summary now also carries a "1 comment" button
+    // that jumps to the conversation, and a substring match takes both.
+    await userEvent.click(page.getByRole("button", { name: "Comment", exact: true }));
 
     await vi.waitFor(() => {
       expect(rendered.comment).toHaveBeenCalledWith({ ...REFERENCE, body: "Shipping this." });
@@ -528,7 +544,15 @@ describe("PullRequestDetailPanel", () => {
         behindBy: 3,
       },
     });
-    await expect.element(page.getByText("Behind main by 3 commits")).toBeVisible();
+    // The branch line carries how far behind it is; the full sentence is its
+    // tooltip. Update branch takes the primary slot while it is behind, and the
+    // merge it displaces moves into the menu rather than disappearing.
+    await expect.element(page.getByTestId("pull-request-behind")).toHaveTextContent("behind by 3");
+    expect(page.getByTestId("pull-request-merge").elements()).toHaveLength(0);
+    await userEvent.click(page.getByRole("button", { name: "More pull request actions" }));
+    await expect.element(page.getByTestId("pull-request-merge-menu-item")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+
     await userEvent.click(page.getByTestId("pull-request-update-branch"));
     await userEvent.click(page.getByRole("menuitem", { name: "Rebase onto main" }));
 
@@ -595,6 +619,57 @@ describe("PullRequestDetailPanel", () => {
     expect(page.getByRole("button", { name: "Reopen" }).elements()).toHaveLength(0);
 
     await closed.cleanup();
+  });
+
+  it("copies the command that takes this branch on another machine", async () => {
+    const writeText = vi.fn(async () => undefined);
+    const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const rendered = await renderPanel();
+
+    try {
+      await userEvent.click(page.getByTestId("pull-request-checkout-command"));
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith("gh pr checkout 42");
+      });
+      // "Copied" is the only sign it worked, so the button's name says it too
+      // rather than staying "Copy" for anyone who cannot see the word.
+      await expect
+        .element(page.getByRole("button", { name: "Copied gh pr checkout 42" }))
+        .toBeVisible();
+    } finally {
+      if (previous) {
+        Object.defineProperty(navigator, "clipboard", previous);
+      }
+      await rendered.cleanup();
+    }
+  });
+
+  it("says why the comment count is missing rather than offering a button with none", async () => {
+    const rendered = await renderPanel({ activityFails: true });
+
+    await expect
+      .element(page.getByTestId("pull-request-comment-count"))
+      .toHaveTextContent("Comments unavailable");
+    // Nothing to scroll to, so nothing to press.
+    expect(page.getByRole("button", { name: "Comments unavailable" }).elements()).toHaveLength(0);
+
+    await rendered.cleanup();
+  });
+
+  it("folds the description away and back", async () => {
+    const rendered = await renderPanel();
+
+    await expect.element(page.getByText("Adds the detail surface.")).toBeVisible();
+    await userEvent.click(page.getByTestId("pull-request-description-toggle"));
+    await vi.waitFor(() => {
+      expect(page.getByText("Adds the detail surface.").elements()).toHaveLength(0);
+    });
+
+    await userEvent.click(page.getByTestId("pull-request-description-toggle"));
+    await expect.element(page.getByText("Adds the detail surface.")).toBeVisible();
+
+    await rendered.cleanup();
   });
 
   it("passes the delete-branch choice to the merge", async () => {

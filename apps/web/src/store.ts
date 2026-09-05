@@ -50,6 +50,7 @@ import {
   derivePendingUserInputs,
   findLatestProposedPlan,
   hasActionableProposedPlan,
+  isWaitingOnBackgroundTasks,
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
@@ -2198,13 +2199,21 @@ export function selectSidebarThreadsAcrossEnvironments(state: AppState): Sidebar
   );
 }
 
-/** Sidebar threads whose agent session is running right now, across every environment. */
+/**
+ * Sidebar threads with live agent work, across every environment: the session
+ * is running a turn, or the turn settled and background provider tasks
+ * (subagents, deferred commands) will start it back up on their own. Drives the
+ * taskbar badge and the quit and update warnings, so a thread that is only
+ * waiting on its subagents must not read as finished here.
+ */
 export function selectRunningSidebarThreadsAcrossEnvironments(
   state: AppState,
 ): SidebarThreadSummary[] {
   return selectSidebarThreadsAcrossEnvironments(state).filter(
     (thread) =>
-      thread.session?.status === "running" || thread.session?.orchestrationStatus === "running",
+      thread.session?.status === "running" ||
+      thread.session?.orchestrationStatus === "running" ||
+      isWaitingOnBackgroundTasks(thread.latestTurn, thread.session),
   );
 }
 

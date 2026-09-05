@@ -9,7 +9,8 @@
  * because there is a fixed set of them and each can only be open once. A
  * surface already in the strip stays listed and dimmed: choosing it focuses the
  * tab it already has. Empty surfaces stay clickable too, but use the same quiet
- * treatment as their rows in the panel launcher.
+ * treatment as their rows in the panel launcher. A surface with live work (agents
+ * still running) swaps its icon for the same pulsing node its tab would show.
  *
  * The row shares its width with the Windows window-controls overlay, which
  * reserves ~150px of it, so the strip measures itself and drops every label
@@ -853,6 +854,7 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
                   const surface = RIGHT_PANEL_SURFACES[tab];
                   const alreadyOpen = openTabs.includes(tab);
                   const empty = surfaceStates?.[tab]?.empty ?? false;
+                  const live = liveTabs?.includes(tab) ?? false;
                   const MenuIcon = RIGHT_PANEL_TAB_ICONS[tab];
                   return (
                     <MenuItem
@@ -860,13 +862,27 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
                       data-right-panel-menu-tab={tab}
                       data-right-panel-menu-tab-open={alreadyOpen ? "true" : undefined}
                       data-right-panel-menu-tab-empty={empty ? "true" : undefined}
+                      data-right-panel-menu-tab-live={live ? "true" : undefined}
                       className={cn((alreadyOpen || empty) && "text-muted-foreground/60")}
                       onClick={() => onSelectTab(tab)}
                     >
-                      <MenuIcon
-                        aria-hidden="true"
-                        className={cn(empty ? "text-muted-foreground/45" : "text-muted-foreground")}
-                      />
+                      {live ? (
+                        // The same live node the open tab draws, sat in the box
+                        // the icon would otherwise fill so the labels stay aligned.
+                        <span
+                          aria-hidden="true"
+                          className="-mx-0.5 flex size-4.5 shrink-0 items-center justify-center sm:size-4"
+                        >
+                          <LiveNode className="size-1.5" />
+                        </span>
+                      ) : (
+                        <MenuIcon
+                          aria-hidden="true"
+                          className={cn(
+                            empty ? "text-muted-foreground/45" : "text-muted-foreground",
+                          )}
+                        />
+                      )}
                       {surface.label}
                     </MenuItem>
                   );

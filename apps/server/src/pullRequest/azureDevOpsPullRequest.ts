@@ -31,6 +31,8 @@ const AzureIdentitySchema = Schema.Struct({
   uniqueName: Schema.optional(Schema.NullOr(Schema.String)),
   /** How `az repos pr reviewer` names one, when Azure carries it. */
   id: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Azure's picture for the identity, which is not always a plain URL. */
+  imageUrl: Schema.optional(Schema.NullOr(Schema.String)),
   vote: Schema.optional(Schema.NullOr(Schema.Int)),
 });
 
@@ -151,13 +153,31 @@ function normalizeRefName(refName: string): string {
   return refName.trim().replace(/^refs\/heads\//, "");
 }
 
+/**
+ * The picture Azure named, if it is one a browser can fetch on its own. Azure
+ * writes a relative path or a `data:` blob as readily as a URL, and only an
+ * absolute http one is worth handing the client; the rest draw initials.
+ */
+function toAvatarUrl(value: string | null | undefined): string | null {
+  const raw = trimmed(value);
+  if (raw === null) {
+    return null;
+  }
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A login has to compare against `az account show`, which reports an email. */
 function toActor(
   raw: Schema.Schema.Type<typeof AzureIdentitySchema> | null | undefined,
 ): PullRequestActor | null {
   const login = trimmed(raw?.uniqueName) ?? trimmed(raw?.displayName);
   // Azure names no bot flag on the identities it hands back.
-  return login === null ? null : { login, isBot: false };
+  return login === null ? null : { login, isBot: false, avatarUrl: toAvatarUrl(raw?.imageUrl) };
 }
 
 function toState(raw: Schema.Schema.Type<typeof AzurePullRequestSchema>): PullRequestState {
@@ -252,6 +272,7 @@ function toRow(
               kind: "user",
               login: actor.login,
               state: toReviewerState(reviewer.vote),
+              avatarUrl: actor.avatarUrl,
             },
           ];
     },

@@ -72,6 +72,8 @@ import {
   useMarkdownFileLinkKinds,
 } from "../hooks/useMarkdownFileLinkKinds";
 import { cn } from "../lib/utils";
+import { isImageFilePath } from "../lib/imageFilePaths";
+import { LocalImageThumbnail } from "./chat/LocalImageThumbnail";
 import { parseCodexInlineVisualizations } from "../lib/codexInlineVisualization";
 import { CodexInlineVisualization } from "./chat/CodexInlineVisualization";
 
@@ -200,6 +202,8 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
 /** Everything a markdown renderer needs from the document around it. */
 interface MarkdownDocumentContextValue {
   readonly cwd: string | undefined;
+  /** Environment whose `projects.readFile` RPC backs inline image previews. */
+  readonly environmentId: EnvironmentId | undefined;
   readonly threadRef: ScopedThreadRef | null;
   readonly resolvedTheme: "light" | "dark";
   readonly themeName: DiffThemeName;
@@ -224,6 +228,7 @@ interface MarkdownDocumentContextValue {
  */
 const MarkdownDocumentContext = createContext<MarkdownDocumentContextValue>({
   cwd: undefined,
+  environmentId: undefined,
   threadRef: null,
   resolvedTheme: "dark",
   themeName: resolveDiffThemeName("dark"),
@@ -463,11 +468,108 @@ function MarkdownListItem({ node: _node, children, ...props }: MarkdownRendererP
   return <li {...props}>{renderSkillInlineMarkdownChildren(children, inlineContext)}</li>;
 }
 
+/**
+ * A referenced image, shown as a picture with its file chip underneath.
+ *
+ * The chip is the constant: it is what an image reference has always looked
+ * like, it still opens the file viewer, and it is all that is left while the
+ * bytes are in flight or when the file is gone. The picture is the addition.
+ */
+function MarkdownImageFigure({
+  filePath,
+  name,
+  children,
+}: {
+  filePath: string;
+  name: string;
+  children: ReactNode;
+}) {
+  const { cwd, environmentId } = useContext(MarkdownDocumentContext);
+  return (
+    <span className="my-1 flex w-fit max-w-full flex-col items-start gap-1">
+      <LocalImageThumbnail
+        environmentId={environmentId}
+        cwd={cwd}
+        filePath={filePath}
+        name={name}
+      />
+      {children}
+    </span>
+  );
+}
+
+/**
+ * `![alt](path)` where the destination is a file on the agent's machine.
+ * A plain `<img>` would ask the browser to load a `file://` url it will always
+ * refuse; http(s) and data sources still render as ordinary images.
+ */
+function MarkdownImage({ node: _node, src, alt, ...props }: MarkdownRendererProps<"img">) {
+  const { cwd, resolvedTheme, searchHighlightQuery, fileLinkKindByPath } =
+    useContext(MarkdownDocumentContext);
+  const source = typeof src === "string" ? src : undefined;
+  const fileLinkMeta =
+    source && !searchHighlightQuery?.trim() ? resolveMarkdownFileLinkMeta(source, cwd) : null;
+  if (!fileLinkMeta || !isImageFilePath(fileLinkMeta.filePath)) {
+    return <RemoteMarkdownImage {...props} src={source} alt={alt} />;
+  }
+  const name = alt && alt.length > 0 ? alt : fileLinkMeta.basename;
+  return (
+    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={name}>
+      <MarkdownFileLink
+        href={fileLinkMeta.href}
+        targetPath={fileLinkMeta.targetPath}
+        displayPath={fileLinkMeta.displayPath}
+        filePath={fileLinkMeta.filePath}
+        kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
+        isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
+        label={name}
+        theme={resolvedTheme}
+      />
+    </MarkdownImageFigure>
+  );
+}
+
+/**
+ * An image path written bare in prose (`C:\Users\me\AppData\Local\Temp\ui.png`).
+ * Only reached for settled, unhighlighted text; see {@link findBareImagePaths}.
+ */
+function MarkdownBareImagePath({ rawPath }: { rawPath: string }) {
+  const { cwd, resolvedTheme, fileLinkKindByPath, fileLinkParentSuffixByPath } =
+    useContext(MarkdownDocumentContext);
+  const fileLinkMeta = resolveMarkdownFileLinkMeta(rawPath, cwd);
+  if (!fileLinkMeta) {
+    return <>{rawPath}</>;
+  }
+  return (
+    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={fileLinkMeta.basename}>
+      <MarkdownFileLink
+        href={fileLinkMeta.href}
+        targetPath={fileLinkMeta.targetPath}
+        displayPath={fileLinkMeta.displayPath}
+        filePath={fileLinkMeta.filePath}
+        kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
+        isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
+        label={buildFileLinkLabel(
+          fileLinkMeta,
+          fileLinkParentSuffixByPath.get(fileLinkMeta.filePath),
+        )}
+        theme={resolvedTheme}
+      />
+    </MarkdownImageFigure>
+  );
+}
+
+/** Module-level so the inline pass never changes component identity. */
+const renderBareImagePath: NonNullable<InlineMarkdownContext["renderBareImagePath"]> = (input) => (
+  <MarkdownBareImagePath key={input.key} rawPath={input.path} />
+);
+
 function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRendererProps<"a">) {
   const {
     cwd,
     threadRef,
     resolvedTheme,
+    searchHighlightQuery,
     markdownFileLinkMetaByHref,
     fileLinkKindByPath,
     fileLinkParentSuffixByPath,
@@ -497,7 +599,7 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
     );
   }
 
-  return (
+  const chip = (
     <MarkdownFileLink
       href={fileLinkMeta.href}
       targetPath={fileLinkMeta.targetPath}
@@ -513,6 +615,14 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
       theme={resolvedTheme}
       className={props.className}
     />
+  );
+  if (!isImageFilePath(fileLinkMeta.filePath) || searchHighlightQuery?.trim()) {
+    return chip;
+  }
+  return (
+    <MarkdownImageFigure filePath={fileLinkMeta.filePath} name={fileLinkMeta.basename}>
+      {chip}
+    </MarkdownImageFigure>
   );
 }
 
@@ -567,7 +677,7 @@ function MarkdownCode({
     ? inlineCodeFileLinkMetaBySpan.get(inlineFileReference)
     : undefined;
   if (inlineFileReference && inlineFileLinkMeta) {
-    return (
+    const chip = (
       <MarkdownFileLink
         href={inlineFileLinkMeta.href}
         targetPath={inlineFileLinkMeta.targetPath}
@@ -583,6 +693,17 @@ function MarkdownCode({
         theme={resolvedTheme}
         chatReference={inlineFileReference}
       />
+    );
+    if (!isImageFilePath(inlineFileLinkMeta.filePath)) {
+      return chip;
+    }
+    return (
+      <MarkdownImageFigure
+        filePath={inlineFileLinkMeta.filePath}
+        name={inlineFileLinkMeta.basename}
+      >
+        {chip}
+      </MarkdownImageFigure>
     );
   }
   if (className || !text || !parseChatFileReference(text)) {
@@ -644,11 +765,12 @@ function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<
 }
 
 /**
- * An image the text points at. A host bot links images that later go missing,
- * and a broken-image glyph says nothing; the alt text at least says what was
- * meant to be there.
+ * An image with an http(s) or data source, the case {@link MarkdownImage} does
+ * not turn into a local thumbnail. A host bot links images that later go
+ * missing, and a broken-image glyph says nothing; the alt text at least says
+ * what was meant to be there.
  */
-function MarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
+function RemoteMarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
   const [failed, setFailed] = useState(false);
   if (failed || !src) {
     return alt ? <span className="text-muted-foreground/70">{alt}</span> : null;
@@ -1359,9 +1481,17 @@ function ChatMarkdownDocument({
     },
     [cwd],
   );
+  // A streaming tail is re-parsed on every delta, so a path halfway through
+  // being typed would fetch a file that does not exist yet; bare paths only
+  // become pictures once the block has settled.
   const inlineContext = useMemo<InlineMarkdownContext>(
-    () => ({ skills, searchHighlightQuery, threadRef }),
-    [searchHighlightQuery, skills, threadRef],
+    () => ({
+      skills,
+      searchHighlightQuery,
+      threadRef,
+      ...(isStreaming || searchHighlightQuery?.trim() ? {} : { renderBareImagePath }),
+    }),
+    [isStreaming, searchHighlightQuery, skills, threadRef],
   );
   // Rebuilt whenever the document's data changes, which on a streaming tail is
   // every delta. That is fine and is the point: the renderers re-render, they
@@ -1369,6 +1499,7 @@ function ChatMarkdownDocument({
   const documentContext = useMemo<MarkdownDocumentContextValue>(
     () => ({
       cwd,
+      environmentId,
       threadRef,
       resolvedTheme,
       themeName: diffThemeName,
@@ -1382,6 +1513,7 @@ function ChatMarkdownDocument({
     }),
     [
       cwd,
+      environmentId,
       diffThemeName,
       fileLinkKindByPath,
       fileLinkParentSuffixByPath,

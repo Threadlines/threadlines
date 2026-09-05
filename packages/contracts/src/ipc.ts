@@ -367,9 +367,10 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
   state: DesktopUpdateStateSchema,
 });
 
-export type DesktopTaskbarThreadState = "running" | "completed";
+/** "waiting": the turn settled but background provider tasks keep the thread live. */
+export type DesktopTaskbarThreadState = "running" | "waiting" | "completed";
 
-export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "completed"]);
+export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "waiting", "completed"]);
 
 /** A thread surfaced in the desktop status item menu (click-to-open). */
 export interface DesktopTaskbarThreadSummary {
