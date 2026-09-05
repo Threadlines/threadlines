@@ -9597,6 +9597,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(blockedRow.textContent).toContain("Keep checking the repository while I sign in.");
           expect(blockedRow.contains(stop)).toBe(true);
           expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
+          // The draft check above is the regression guard; the screenshot shows
+          // the common case of an empty composer.
+          useComposerDraftStore.getState().setPrompt(THREAD_REF, "");
+          await vi.waitFor(() => {
+            expect(blockedRow.textContent).toContain("Answer the question above, or stop the turn");
+          });
         } else {
           await expectComposerActionsContained();
         }

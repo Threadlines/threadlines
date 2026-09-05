@@ -3212,21 +3212,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               data-chat-composer-blocked-by-question="true"
               className="flex items-center justify-between gap-3 px-3 py-2 sm:px-4"
             >
-              <p className="flex min-w-0 flex-1 items-baseline gap-2 text-[14px] leading-6">
-                {prompt.trim() ? (
-                  <>
-                    <span className="shrink-0 font-mono text-[10px] tracking-widest text-muted-foreground/50 uppercase">
-                      Draft
-                    </span>
-                    <span className="min-w-0 truncate text-muted-foreground/70">
-                      {prompt.trim()}
-                    </span>
-                  </>
-                ) : (
-                  <span className="truncate text-muted-foreground/40">
-                    Answer the question above, or stop the turn
-                  </span>
+              <p
+                className={cn(
+                  "min-w-0 flex-1 truncate text-[14px] leading-6",
+                  prompt.trim() ? "text-muted-foreground/70" : "text-muted-foreground/40",
                 )}
+              >
+                {prompt.trim() || "Answer the question above, or stop the turn"}
               </p>
               {hasActiveTurn ? (
                 <ComposerStopButton
