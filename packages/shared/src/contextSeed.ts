@@ -29,11 +29,18 @@ import type {
  * deleting it strands the conversation with nowhere to run. Threadlines owns
  * that lifecycle and removes worktrees on the user's behalf.
  *
- * One sentence on purpose. It is prepended to every provider's instructions,
+ * The second sentence covers the other thing agents assume about a checkout:
+ * that it is ready to build. A worktree is a bare checkout of tracked files.
+ * Installed dependencies, build output, and ignored local files from the main
+ * checkout are not in it, and Threadlines does not install anything on the
+ * agent's behalf; whether to install is the agent's call for its task.
+ *
+ * Two sentences on purpose. It is prepended to every provider's instructions,
  * where every extra line competes with the user's actual task.
  */
 export const MANAGED_WORKTREE_INSTRUCTION =
-  "Your working directory is a git worktree that Threadlines created and manages; never remove or prune it, including as post-merge cleanup.";
+  "Your working directory is a git worktree that Threadlines created and manages; never remove or prune it, including as post-merge cleanup. " +
+  "It is a fresh checkout of tracked files only: dependencies, build output, and ignored local files from the main checkout are not present, so install what your task needs before building or testing.";
 
 const ROLE_LABEL: Record<string, string> = {
   user: "User",
