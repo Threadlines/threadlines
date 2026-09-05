@@ -4464,6 +4464,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           layers: {
             gitVcsDriver: {
               createWorktree,
+              resolveFreshWorktreeBase: (input) =>
+                Effect.succeed({ refName: input.branch, isRemote: false }),
             },
             vcsStatusBroadcaster: {
               refreshStatus,
@@ -4584,6 +4586,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           gitVcsDriver: {
             createWorktree,
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
           },
           orchestrationEngine: {
             dispatch: (command) =>
@@ -4685,6 +4689,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           gitVcsDriver: {
             createWorktree,
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
           },
           orchestrationEngine: {
             dispatch: (command) => {
@@ -4788,6 +4794,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           gitVcsDriver: {
             createWorktree,
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
           },
           orchestrationEngine: {
             dispatch: (command) =>
