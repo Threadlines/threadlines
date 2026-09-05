@@ -58,6 +58,8 @@ export interface GitHubRepositoryAccess {
   readonly mergeMethods: ReadonlyArray<PullRequestMergeMethod>;
   /** What a pull request has to target not to be stacked on other work. */
   readonly defaultBranch: string | null;
+  /** Absent on a host too old to report the auto-merge switch. */
+  readonly autoMergeAllowed?: boolean;
 }
 
 /** The order the detail surface offers the allowed merge methods in. */
@@ -79,8 +81,23 @@ const GitHubRepositorySchema = Schema.Struct({
   allow_merge_commit: Schema.optional(Schema.NullOr(Schema.Boolean)),
   allow_squash_merge: Schema.optional(Schema.NullOr(Schema.Boolean)),
   allow_rebase_merge: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  allow_auto_merge: Schema.optional(Schema.NullOr(Schema.Boolean)),
   default_branch: Schema.optional(Schema.NullOr(Schema.String)),
 });
+
+/**
+ * `gh pr view --json mergeStateStatus`: the one word GitHub sums a pull
+ * request's readiness into.
+ */
+const GitHubMergeStateSchema = Schema.Struct({
+  mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+/**
+ * The states `gh pr merge --auto` merges outright instead of arming, copied
+ * from the CLI: nothing is pending, so there is nothing to wait for.
+ */
+const IMMEDIATELY_MERGEABLE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 
 /** A `gh pr view` row: everything a list row carries, plus the detail fields. */
 export interface GitHubPullRequestDetailRow extends GitHubPullRequestListRow {
@@ -93,8 +110,6 @@ export interface GitHubPullRequestDetailRow extends GitHubPullRequestListRow {
   readonly checks: ReadonlyArray<PullRequestCheck>;
   /** Absent while the host is still deciding after a push, or on a host too old to say. */
   readonly mergeGate?: PullRequestMergeGate;
-  /** Null on a host too old to report an auto-merge instruction at all. */
-  readonly autoMergeEnabled: boolean | null;
   /** Qualifies the head branch when it lives on a fork. */
   readonly headRepositoryOwnerLogin: string | null;
 }
@@ -373,6 +388,7 @@ function normalizeCommits(
 const decodeDetailPayload = decodeJsonResult(GitHubPullRequestDetailRowSchema);
 const decodeActivityPayload = decodeJsonResult(GitHubPullRequestActivitySchema);
 const decodeRepositoryPayload = decodeJsonResult(GitHubRepositorySchema);
+const decodeMergeStatePayload = decodeJsonResult(GitHubMergeStateSchema);
 
 /**
  * Decodes `gh api repos/<owner>/<name>` into the viewer's access and the merge
@@ -398,7 +414,26 @@ export function decodeGitHubRepositoryJson(
       (_method, index) => !reported || switches[index] === true,
     ),
     defaultBranch: nonEmptyText(row.default_branch),
+    ...(typeof row.allow_auto_merge === "boolean"
+      ? { autoMergeAllowed: row.allow_auto_merge }
+      : {}),
   });
+}
+
+/**
+ * Whether GitHub would merge the pull request this instant, read from
+ * `gh pr view --json mergeStateStatus`. A status the host did not name is not
+ * ready: arming then waits, which is the safe way to be wrong.
+ */
+export function decodeGitHubImmediatelyMergeableJson(
+  raw: string,
+): Result.Result<boolean, Cause.Cause<Schema.SchemaError>> {
+  const payload = decodeMergeStatePayload(raw);
+  if (!Result.isSuccess(payload)) {
+    return Result.fail(payload.failure);
+  }
+  const status = nonEmptyText(payload.success.mergeStateStatus);
+  return Result.succeed(status !== null && IMMEDIATELY_MERGEABLE_STATES.has(status));
 }
 
 /** Decodes `gh pr view --json <detail fields>` into the header the panel renders. */
@@ -429,9 +464,6 @@ export function decodeGitHubPullRequestDetailJson(
     }),
     checks: normalizeChecks(row.statusCheckRollup),
     ...(mergeGate === undefined ? {} : { mergeGate }),
-    // A CLI too old for the field leaves it absent, which is "the host did not
-    // say" rather than "auto-merge is off".
-    autoMergeEnabled: row.autoMergeRequest === undefined ? null : row.autoMergeRequest !== null,
     headRepositoryOwnerLogin: nonEmptyText(row.headRepositoryOwner?.login),
   });
 }

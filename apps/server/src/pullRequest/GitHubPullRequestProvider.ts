@@ -32,6 +32,7 @@ import {
 import {
   decodeGitHubPullRequestActivityJson,
   decodeGitHubPullRequestDetailJson,
+  decodeGitHubImmediatelyMergeableJson,
   decodeGitHubRepositoryJson,
   GITHUB_PULL_REQUEST_ACTIVITY_FIELDS,
   GITHUB_PULL_REQUEST_DETAIL_FIELDS,
@@ -258,6 +259,43 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       args: ["api", "graphql", "--input", "-"],
       stdin: encodeGraphQlRequestJson({ query: input.query, variables: input.variables }),
     });
+
+  /**
+   * Fails where GitHub would merge the pull request the moment it is armed. The
+   * refusal is this app's own sentence, since the host never gets asked.
+   */
+  const refuseIfImmediatelyMergeable = (
+    input: ProviderRepositoryRef & { readonly number: number },
+  ) =>
+    run({
+      operation: "runAction",
+      cwd: input.cwd,
+      args: [
+        "pr",
+        "view",
+        String(input.number),
+        ...repositoryArgs(input),
+        "--json",
+        "mergeStateStatus",
+      ],
+    }).pipe(
+      Effect.flatMap((output) => {
+        const decoded = decodeGitHubImmediatelyMergeableJson(output.stdout.trim());
+        if (!Result.isSuccess(decoded)) {
+          return Effect.fail(decodeError("runAction", "merge state", decoded.failure));
+        }
+        return decoded.success
+          ? Effect.fail(
+              new PullRequestProviderError({
+                provider: PROVIDER_KIND,
+                operation: "runAction",
+                reason: "failed",
+                detail: "This pull request can merge right now. Use Merge instead.",
+              }),
+            )
+          : Effect.void;
+      }),
+    );
 
   const graphqlRead = <A>(input: {
     readonly operation: string;
@@ -626,12 +664,19 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
         updateMethod: input.updateMethod,
         deleteBranch: input.deleteBranch,
       });
-      return run({
-        operation: "runAction",
-        cwd: input.cwd,
-        args: ["pr", subcommand, String(input.number), ...repositoryArgs(input), ...flags],
-        ...(input.action === "merge" ? { timeoutMs: MERGE_TIMEOUT_MS } : {}),
-      }).pipe(Effect.asVoid);
+      const action = () =>
+        run({
+          operation: "runAction",
+          cwd: input.cwd,
+          args: ["pr", subcommand, String(input.number), ...repositoryArgs(input), ...flags],
+          ...(input.action === "merge" ? { timeoutMs: MERGE_TIMEOUT_MS } : {}),
+        }).pipe(Effect.asVoid);
+      // `gh pr merge --auto` merges outright when nothing is pending, which is
+      // not what someone arming a merge asked for. The readiness is read first
+      // and a ready pull request is sent back to the Merge button instead.
+      return input.action === "enable-auto-merge"
+        ? refuseIfImmediatelyMergeable(input).pipe(Effect.flatMap(action))
+        : action();
     },
 
     comment: (input) =>

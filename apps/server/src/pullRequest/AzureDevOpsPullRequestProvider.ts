@@ -296,6 +296,7 @@ export const make = Effect.fn("makeAzureDevOpsPullRequestProvider")(function* ()
     reviewRequestedLogins: row.reviewRequestedLogins,
     // Azure keeps labels on work items rather than on the pull request.
     labels: [],
+    autoMergeEnabled: row.autoMergeEnabled,
   });
 
   const provider: PullRequestProviderApi = {
@@ -342,7 +343,6 @@ export const make = Effect.fn("makeAzureDevOpsPullRequestProvider")(function* ()
           checks: [],
           baseComparison: "unknown" as const,
           behindBy: null,
-          autoMergeEnabled: row.autoMergeEnabled,
         })),
       ),
 

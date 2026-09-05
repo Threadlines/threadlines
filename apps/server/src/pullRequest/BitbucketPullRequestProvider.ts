@@ -332,8 +332,6 @@ export const make = Effect.fn("makeBitbucketPullRequestProvider")(function* () {
             // Bitbucket compares no branch with its base.
             baseComparison: "unknown" as const,
             behindBy: null,
-            // Bitbucket has nothing that arms a merge to run on its own.
-            autoMergeEnabled: null,
           })),
         );
       }),
