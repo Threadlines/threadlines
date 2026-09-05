@@ -1884,9 +1884,18 @@ describe("GeneralSettingsPanel observability", () => {
 
     await expect.element(page.getByText(/Credential configured · Claude Max/)).toBeInTheDocument();
     await page.getByLabelText("Toggle Claude details").click();
-    await expect.element(page.getByText("Chat configured")).toBeInTheDocument();
-    await expect.element(page.getByText("Usage verified")).toBeInTheDocument();
-    await page.getByText("Advanced: headless chat token").click();
+    await expect.element(page.getByText("Chat configured")).toBeVisible();
+    await expect.element(page.getByText("Usage verified")).toBeVisible();
+    const advancedTokenLabel = page.getByText("Advanced: headless chat token");
+    await expect.element(advancedTokenLabel).toBeVisible();
+    const advancedTokenToggle = advancedTokenLabel.element().closest("summary");
+    // The summary can have stable bounds while its parent is still revealing it.
+    // Wait for that height transition before sending a pointer click.
+    const detailsPanel = advancedTokenToggle?.closest('[data-slot="collapsible-panel"]');
+    if (!advancedTokenToggle || !detailsPanel)
+      throw new Error("Claude details panel did not render");
+    await Promise.all(detailsPanel.getAnimations().map((animation) => animation.finished));
+    await page.elementLocator(advancedTokenToggle).click();
     await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
