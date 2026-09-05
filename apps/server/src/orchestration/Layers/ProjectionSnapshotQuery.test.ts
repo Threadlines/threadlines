@@ -1637,6 +1637,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             yield* sql`
               INSERT INTO projection_thread_messages (
                 message_id,
+                event_sequence,
                 thread_id,
                 turn_id,
                 role,
@@ -1648,14 +1649,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               )
               VALUES (
                 ${messageIdAt(index)},
+                ${index},
                 'thread-message-cap',
                 NULL,
                 ${index % 2 === 1 ? "user" : "assistant"},
                 ${`message ${index}`},
                 NULL,
                 0,
-                ${messageCreatedAt(index)},
-                ${messageCreatedAt(index)}
+                ${messageCreatedAt(totalMessages - index)},
+                ${messageCreatedAt(totalMessages - index)}
               )
             `;
           }

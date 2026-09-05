@@ -2341,7 +2341,15 @@ export default function ChatView(props: ChatViewProps) {
     if (pendingMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
-    return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
+    // Pending rows have no server event yet. Keep their submission order at
+    // the end until the server replaces them with acknowledged messages.
+    return [
+      ...serverMessagesWithPreviewHandoff,
+      ...pendingMessages.map((message, index) => ({
+        ...message,
+        eventSequence: Number.MAX_SAFE_INTEGER - pendingMessages.length + index,
+      })),
+    ];
   }, [
     serverMessages,
     queuedSteeringMessageIds,

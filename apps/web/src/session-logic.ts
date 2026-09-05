@@ -1,5 +1,6 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
+import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -105,6 +106,7 @@ export interface McpAuthReconnectAction {
 
 export interface WorkLogEntry {
   id: string;
+  eventSequence?: number | undefined;
   createdAt: string;
   /** Provider-stamped lifecycle completion time. Combined with `createdAt`
    *  after started/completed rows collapse to produce an accurate duration. */
@@ -323,6 +325,7 @@ export interface SubagentProgressState {
 
 export interface SubagentResultEntry {
   id: string;
+  eventSequence?: number | undefined;
   createdAt: string;
   turnId: TurnId | null;
   agentThreadId: string;
@@ -337,6 +340,7 @@ export interface SubagentResultEntry {
 
 export interface SubagentLiveEntry {
   id: string;
+  eventSequence?: number | undefined;
   createdAt: string;
   turnId: TurnId | null;
   agentThreadId: string;
@@ -383,6 +387,7 @@ export function shouldShowSubagentDisplayChip(input: {
 
 export interface ForkContextEntry {
   id: string;
+  eventSequence?: number | undefined;
   createdAt: string;
   payload: ThreadForkContextPayload;
   /** How the forked session was actually seeded, from the reactor's
@@ -391,7 +396,7 @@ export interface ForkContextEntry {
   seedMode?: ThreadForkSeedOutcomePayload["seedMode"];
 }
 
-export type TimelineEntry =
+export type TimelineEntry = { eventSequence?: number | undefined } & (
   | {
       id: string;
       kind: "message";
@@ -427,7 +432,8 @@ export type TimelineEntry =
       kind: "fork-context";
       createdAt: string;
       forkContext: ForkContextEntry;
-    };
+    }
+);
 
 export function formatDuration(durationMs: number): string {
   if (!Number.isFinite(durationMs) || durationMs < 0) return "0ms";
@@ -614,6 +620,7 @@ export function derivePendingApprovals(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   return collectOpenPendingRequests(ordered, APPROVAL_ACTIVITY_KINDS)
+    .toSorted((left, right) => compareActivitiesByOrder(left.activity, right.activity))
     .flatMap<PendingApproval>(({ requestId, activity }) => {
       const payload =
         activity.payload && typeof activity.payload === "object"
@@ -647,8 +654,7 @@ export function derivePendingApprovals(
           ...(detail ? { detail } : {}),
         },
       ];
-    })
-    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+    });
 }
 
 function parseUserInputQuestions(
@@ -707,6 +713,7 @@ export function derivePendingUserInputs(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS)
+    .toSorted((left, right) => compareActivitiesByOrder(left.activity, right.activity))
     .flatMap<PendingUserInput>(({ requestId, activity }) => {
       const payload =
         activity.payload && typeof activity.payload === "object"
@@ -724,8 +731,7 @@ export function derivePendingUserInputs(
           ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
         },
       ];
-    })
-    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+    });
 }
 
 export function deriveActivePlanState(
@@ -797,7 +803,9 @@ export function findLatestProposedPlan(
       .filter((proposedPlan) => proposedPlan.turnId === latestTurnId)
       .toSorted(
         (left, right) =>
-          left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
+          (left.eventSequence ?? -1) - (right.eventSequence ?? -1) ||
+          left.updatedAt.localeCompare(right.updatedAt) ||
+          left.id.localeCompare(right.id),
       )
       .at(-1);
     if (matchingTurnPlan) {
@@ -808,7 +816,9 @@ export function findLatestProposedPlan(
   const latestPlan = [...proposedPlans]
     .toSorted(
       (left, right) =>
-        left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
+        (left.eventSequence ?? -1) - (right.eventSequence ?? -1) ||
+        left.updatedAt.localeCompare(right.updatedAt) ||
+        left.id.localeCompare(right.id),
     )
     .at(-1);
   if (!latestPlan) {
@@ -858,6 +868,8 @@ export function hasActionableProposedPlan(
 }
 
 interface InternalSubagentRecord extends SubagentProgressItem {
+  resultEventSequence?: number | undefined;
+  liveEventSequence?: number | undefined;
   /** Exact model id from the agent's own messages, as opposed to the alias a
    *  spawn asked for. Sticky: later lifecycle rows only carry the alias
    *  again, and the model has not changed. */
@@ -960,6 +972,8 @@ function toSubagentProgressItem(record: InternalSubagentRecord): SubagentProgres
     resultActivityId: _resultActivityId,
     resultBody: _resultBody,
     resultCreatedAt: _resultCreatedAt,
+    resultEventSequence: _resultEventSequence,
+    liveEventSequence: _liveEventSequence,
     ...item
   } = record;
   return item;
@@ -1031,6 +1045,9 @@ function deriveSubagentResultEntriesFromRecords(
     .map((record) => ({
       id: `subagent-result:${record.turnId ?? "no-turn"}:${record.agentThreadId}`,
       createdAt: record.resultCreatedAt,
+      ...(record.resultEventSequence !== undefined
+        ? { eventSequence: record.resultEventSequence }
+        : {}),
       turnId: record.turnId,
       agentThreadId: record.agentThreadId,
       label: record.label,
@@ -1076,6 +1093,9 @@ function deriveSubagentLiveEntriesFromRecords(
     .map((record) => ({
       id: `subagent-live:${record.turnId ?? "no-turn"}:${record.agentThreadId}`,
       createdAt: record.liveBodyUpdatedAt,
+      ...(record.liveEventSequence !== undefined
+        ? { eventSequence: record.liveEventSequence }
+        : {}),
       turnId: record.turnId,
       agentThreadId: record.agentThreadId,
       label: record.label,
@@ -1168,6 +1188,9 @@ export function deriveForkContextEntries(
           id: activity.id,
           createdAt: activity.createdAt,
           payload,
+          ...(activity.eventSequence !== undefined
+            ? { eventSequence: activity.eventSequence }
+            : {}),
           ...(seedMode != null ? { seedMode } : {}),
         },
       ];
@@ -1288,6 +1311,22 @@ function collectTurnModelSelections(
   return byTurnId;
 }
 
+function subagentResultEventSequence(
+  previous: InternalSubagentRecord | undefined,
+  activity: OrchestrationThreadActivity,
+  resultBody: string | null,
+): number | undefined {
+  // A retained activity keeps its first position even when its payload was
+  // updated. The roster can therefore hold a newer position for the same result.
+  if (previous?.resultBody === resultBody && previous.resultEventSequence !== undefined) {
+    return Math.max(
+      previous.resultEventSequence,
+      activity.eventSequence ?? previous.resultEventSequence,
+    );
+  }
+  return activity.eventSequence;
+}
+
 function collectSubagentActivityRecords(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   options: {
@@ -1334,6 +1373,8 @@ function collectSubagentActivityRecords(
       resultActivityId: subagent.resultBody === null ? null : `subagent-result:${agentId}`,
       resultBody: subagent.resultBody,
       resultCreatedAt: subagent.resultCreatedAt,
+      resultEventSequence: subagent.resultEventSequence,
+      liveEventSequence: subagent.liveEventSequence,
     });
   }
 
@@ -1615,6 +1656,12 @@ function collectSubagentActivityRecords(
         createdAt: previous?.createdAt ?? activity.createdAt,
         updatedAt: activity.createdAt,
         resultActivityId,
+        resultEventSequence: terminalResult
+          ? subagentResultEventSequence(previous, activity, resultBody)
+          : previous?.resultEventSequence,
+        liveEventSequence: asTrimmedString(data?.subagentLiveText)
+          ? activity.eventSequence
+          : previous?.liveEventSequence,
         resultBody,
         resultCreatedAt,
       });
@@ -1908,6 +1955,9 @@ function applySubagentReceipt(
     liveBody: terminalResult ? null : record.liveBody,
     liveBodyUpdatedAt: terminalResult ? null : record.liveBodyUpdatedAt,
     resultActivityId: terminalResult ? activity.id : record.resultActivityId,
+    resultEventSequence: terminalResult
+      ? subagentResultEventSequence(record, activity, stateMessage)
+      : record.resultEventSequence,
     resultBody: terminalResult ? stateMessage : record.resultBody,
     resultCreatedAt: terminalResult ? activity.createdAt : record.resultCreatedAt,
     updatedAt: activity.createdAt,
@@ -2040,6 +2090,8 @@ function applySubagentMetadataActivity(
     createdAt: previous?.createdAt ?? activity.createdAt,
     updatedAt: activity.createdAt,
     resultActivityId: resultIsNew ? activity.id : (previous?.resultActivityId ?? null),
+    resultEventSequence: resultIsNew ? activity.eventSequence : previous?.resultEventSequence,
+    liveEventSequence: previous?.liveEventSequence,
     resultBody,
     resultCreatedAt: resultIsNew
       ? (asTrimmedString(payload.resultCreatedAt) ?? activity.createdAt)
@@ -2576,6 +2628,7 @@ function toDerivedWorkLogEntry(
   const browserReceipt = deriveBrowserReceipt(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
+    ...(activity.eventSequence !== undefined ? { eventSequence: activity.eventSequence } : {}),
     createdAt: activity.createdAt,
     label: runtimeWarningDisplay?.label ?? (taskLabel || activity.summary),
     tone:
@@ -3104,6 +3157,7 @@ function mergeDerivedWorkLogEntries(
     ...next,
     id: previous.id,
     createdAt: previous.createdAt,
+    eventSequence: previous.eventSequence,
     ...(completedAt ? { completedAt } : {}),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
@@ -4819,6 +4873,10 @@ function compareActivitiesByOrder(
   left: OrchestrationThreadActivity,
   right: OrchestrationThreadActivity,
 ): number {
+  if (left.eventSequence !== undefined || right.eventSequence !== undefined) {
+    const position = compareTranscriptPosition(left, right);
+    if (position !== 0) return position;
+  }
   if (left.sequence !== undefined && right.sequence !== undefined) {
     if (left.sequence !== right.sequence) {
       return left.sequence - right.sequence;
@@ -4879,36 +4937,46 @@ export function deriveTimelineEntries(
       id: message.id,
       kind: "message",
       createdAt: message.createdAt,
+      ...(message.eventSequence !== undefined ? { eventSequence: message.eventSequence } : {}),
       message,
     }));
   const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
     id: proposedPlan.id,
     kind: "proposed-plan",
     createdAt: proposedPlan.createdAt,
+    ...(proposedPlan.eventSequence !== undefined
+      ? { eventSequence: proposedPlan.eventSequence }
+      : {}),
     proposedPlan,
   }));
   const workRows: TimelineEntry[] = workEntries.map((entry) => ({
     id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
+    ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
     entry,
   }));
   const subagentResultRows: TimelineEntry[] = subagentResults.map((result) => ({
     id: result.id,
     kind: "subagent-result",
     createdAt: result.createdAt,
+    ...(result.eventSequence !== undefined ? { eventSequence: result.eventSequence } : {}),
     result,
   }));
   const subagentLiveRows: TimelineEntry[] = subagentLiveEntries.map((live) => ({
     id: live.id,
     kind: "subagent-live",
     createdAt: live.createdAt,
+    ...(live.eventSequence !== undefined ? { eventSequence: live.eventSequence } : {}),
     live,
   }));
   const forkContextRows: TimelineEntry[] = forkContexts.map((forkContext) => ({
     id: forkContext.id,
     kind: "fork-context",
     createdAt: forkContext.createdAt,
+    ...(forkContext.eventSequence !== undefined
+      ? { eventSequence: forkContext.eventSequence }
+      : {}),
     forkContext,
   }));
   return [
@@ -4919,7 +4987,7 @@ export function deriveTimelineEntries(
     ...subagentLiveRows,
     ...subagentResultRows,
   ].toSorted((a, b) => {
-    const timeDelta = a.createdAt.localeCompare(b.createdAt);
+    const timeDelta = compareTranscriptPosition(a, b);
     if (timeDelta !== 0) {
       return timeDelta;
     }

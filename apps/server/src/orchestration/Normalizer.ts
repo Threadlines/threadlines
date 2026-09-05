@@ -1,3 +1,4 @@
+import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -197,16 +198,20 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
               : message.text,
           sourceMessageId: message.id,
           createdAt: message.createdAt,
+          ...(message.eventSequence !== undefined ? { eventSequence: message.eventSequence } : {}),
         })),
         ...sourceThread.activities
           .filter((activity) => activity.tone === "tool")
-          .filter((activity) => activity.createdAt <= sourceMessage.createdAt)
+          .filter((activity) => compareTranscriptOrder(activity, sourceMessage) <= 0)
           .map((activity) => ({
             kind: "tool" as const,
             text: activity.summary,
             createdAt: activity.createdAt,
+            ...(activity.eventSequence !== undefined
+              ? { eventSequence: activity.eventSequence }
+              : {}),
           })),
-      ].toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+      ].toSorted(compareTranscriptOrder);
       const split = splitSeedEntriesByBudget(
         entries.map((entry) =>
           entry.kind === "message"

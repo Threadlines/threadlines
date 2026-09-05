@@ -587,3 +587,47 @@ describe("projectSubagentActivity", () => {
     expect(roster[0]?.spawnCallId).toBe("call-1");
   });
 });
+
+it("keeps result and live event positions through metadata updates", () => {
+  let roster = projectSubagentActivity([], {
+    ...activity({
+      id: "live-order",
+      kind: "tool.updated",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        data: {
+          subagentLiveText: "Reading files",
+          item: {
+            id: "spawn-order",
+            tool: "spawnAgent",
+            status: "inProgress",
+            agentThreadId: "agent-order",
+          },
+        },
+      },
+    }),
+    eventSequence: 10,
+  });
+  for (const [eventSequence, payload] of [
+    [20, { agentThreadId: "agent-order", status: "completed", resultBody: "Done" }],
+    [30, { agentThreadId: "agent-order", resultBody: "Done", role: "Reviewer" }],
+    [40, { agentThreadId: "agent-order", isBackgrounded: true }],
+  ] as const) {
+    roster = projectSubagentActivity(roster, {
+      ...activity({
+        id: `metadata-${eventSequence}`,
+        kind: "subagent.metadata",
+        payload,
+        createdAt: "2026-08-14T23:00:00.000Z",
+      }),
+      eventSequence,
+    });
+  }
+  expect(roster[0]).toMatchObject({
+    resultBody: "Done",
+    resultEventSequence: 20,
+    liveEventSequence: 10,
+    role: "Reviewer",
+    isBackgrounded: true,
+  });
+});

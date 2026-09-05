@@ -9,6 +9,9 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
+import * as TestClock from "effect/testing/TestClock";
 
 import {
   hydrateCachedProvider,
@@ -42,6 +45,93 @@ const makeProvider = (
 });
 
 it.layer(NodeServices.layer)("providerStatusCache", (it) => {
+  it.effect(
+    "replaces the cache after a temporary Windows file lock without removing the old file",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-provider-cache-lock-" });
+        const filePath = yield* resolveProviderStatusCachePath({
+          cacheDir: tempDir,
+          instanceId: defaultInstanceIdForDriver(CODEX_DRIVER),
+        });
+        const original = makeProvider(CODEX_DRIVER);
+        const refreshed = { ...original, checkedAt: "2026-04-11T00:01:00.000Z" };
+        yield* writeProviderStatusCache({ filePath, provider: original });
+        let attempts = 0;
+        const lockedFileSystem = {
+          ...fs,
+          rename: (source, target) =>
+            Effect.gen(function* () {
+              attempts += 1;
+              if (attempts <= 2) {
+                assert.deepStrictEqual(yield* readProviderStatusCache(filePath), original);
+                return yield* PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "FileSystem",
+                  method: "rename",
+                  cause: { code: "EPERM", syscall: "rename" },
+                });
+              }
+              return yield* fs.rename(source, target);
+            }),
+        } satisfies FileSystem.FileSystem;
+
+        yield* writeProviderStatusCache({ filePath, provider: refreshed }).pipe(
+          Effect.provideService(FileSystem.FileSystem, lockedFileSystem),
+          TestClock.withLive,
+        );
+
+        assert.deepStrictEqual(yield* readProviderStatusCache(filePath), refreshed);
+        assert.deepStrictEqual(yield* fs.readDirectory(tempDir), ["codex.json"]);
+      }),
+  );
+
+  for (const code of ["EPERM", "ENOSPC"] as const) {
+    it.effect(`preserves the cache and reports a persistent ${code} replacement failure`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-provider-cache-error-" });
+        const filePath = yield* resolveProviderStatusCachePath({
+          cacheDir: tempDir,
+          instanceId: defaultInstanceIdForDriver(CODEX_DRIVER),
+        });
+        const original = makeProvider(CODEX_DRIVER);
+        yield* writeProviderStatusCache({ filePath, provider: original });
+        const failure = PlatformError.systemError({
+          _tag: "Unknown",
+          module: "FileSystem",
+          method: "rename",
+          cause: { code, syscall: "rename" },
+        });
+        let attempts = 0;
+        const failingFileSystem = {
+          ...fs,
+          rename: () =>
+            Effect.suspend(() => {
+              attempts += 1;
+              return Effect.fail(failure);
+            }),
+        } satisfies FileSystem.FileSystem;
+
+        const result = yield* writeProviderStatusCache({
+          filePath,
+          provider: { ...original, checkedAt: "2026-04-11T00:01:00.000Z" },
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, failingFileSystem),
+          TestClock.withLive,
+          Effect.result,
+        );
+
+        assert.ok(Result.isFailure(result));
+        assert.strictEqual(result.failure, failure);
+        assert.strictEqual(attempts, code === "EPERM" ? 11 : 1);
+        assert.deepStrictEqual(yield* readProviderStatusCache(filePath), original);
+        assert.deepStrictEqual(yield* fs.readDirectory(tempDir), ["codex.json"]);
+      }),
+    );
+  }
+
   it.effect("writes and reads provider status snapshots", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
