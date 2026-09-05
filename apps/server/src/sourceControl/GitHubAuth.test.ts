@@ -127,6 +127,92 @@ it.effect("cancels only its login process and can start a fresh sign-in", () =>
   }).pipe(Effect.scoped),
 );
 
+it.effect("configures Git access when Git is installed after GitHub sign-in", () =>
+  Effect.gen(function* () {
+    let gitInstalled = false;
+    let gitConfigured = false;
+    const spawner = ChildProcessSpawner.make((command) => {
+      assert.strictEqual(command._tag, "StandardCommand");
+      const standard = command as ChildProcess.StandardCommand;
+      if (standard.args.includes("setup-git")) {
+        assert.strictEqual(gitInstalled, true);
+        gitConfigured = true;
+      }
+      return Effect.succeed(handle());
+    });
+    const options = {
+      commandAvailable: (command: string) => command === "gh" || gitInstalled,
+      environment: () => ({}),
+    };
+    const createAuth = make(options).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    const auth = yield* createAuth;
+    yield* auth.start;
+    yield* waitForState(auth, (state) => state.status === "succeeded");
+    assert.strictEqual(gitConfigured, false);
+
+    // A restart clears the in-memory sign-in state, but the CLI keeps its credential.
+    const restarted = yield* createAuth;
+    gitInstalled = true;
+    yield* restarted.configureGit;
+    assert.strictEqual(gitConfigured, true);
+    assert.strictEqual((yield* restarted.getState).status, "idle");
+  }).pipe(Effect.scoped),
+);
+
+it.effect("leaves Git credentials alone when GitHub has no working sign-in", () =>
+  Effect.gen(function* () {
+    let gitConfigured = false;
+    const auth = yield* make({ commandAvailable: () => true, environment: () => ({}) }).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          assert.strictEqual(command._tag, "StandardCommand");
+          const standard = command as ChildProcess.StandardCommand;
+          gitConfigured ||= standard.args.includes("setup-git");
+          return Effect.succeed(
+            handle({ exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)) }),
+          );
+        }),
+      ),
+    );
+    yield* auth.configureGit;
+    assert.strictEqual(gitConfigured, false);
+    assert.strictEqual((yield* auth.getState).status, "idle");
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reports a Git configuration failure without exposing the CLI output", () =>
+  Effect.gen(function* () {
+    const auth = yield* make({ commandAvailable: () => true, environment: () => ({}) }).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          assert.strictEqual(command._tag, "StandardCommand");
+          const standard = command as ChildProcess.StandardCommand;
+          return Effect.succeed(
+            handle({
+              chunks: ["private-token-value"],
+              exitCode: Effect.succeed(
+                ChildProcessSpawner.ExitCode(standard.args.includes("setup-git") ? 1 : 0),
+              ),
+            }),
+          );
+        }),
+      ),
+    );
+    const result = yield* Effect.result(auth.configureGit);
+    assert.strictEqual(result._tag, "Failure");
+    if (result._tag === "Failure") {
+      assert.strictEqual(result.failure.operation, "configureGit");
+      assert.match(result.failure.detail, /Git is installed/);
+      assert.match(result.failure.detail, /gh auth setup-git --hostname github.com/);
+      assert.notMatch(result.failure.detail, /private-token-value/);
+    }
+  }).pipe(Effect.scoped),
+);
+
 it.effect("rejects credential overrides before starting and never exposes their values", () =>
   Effect.gen(function* () {
     let spawned = false;

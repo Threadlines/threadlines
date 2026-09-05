@@ -25,7 +25,7 @@ import {
   sourceControlToolPackageRecipe,
 } from "./SourceControlToolPackages.ts";
 import { parseGitHubCliVersion, parseGitVersion } from "./SourceControlToolVersionAdvisory.ts";
-import { isWinGetUpdateNotApplicable } from "./SourceControlWinGet.ts";
+import { isWinGetInstallCancelled, isWinGetUpdateNotApplicable } from "./SourceControlWinGet.ts";
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
@@ -71,6 +71,12 @@ function packageManagerFailureReason(input: {
   readonly manager: "homebrew" | "winget";
   readonly cause: VcsError;
 }): string {
+  if (input.manager === "winget" && input.cause._tag === "VcsProcessTimeoutError") {
+    return `${sourceControlToolLabel(input.target)} ${input.operation === "install" ? "installation" : "update"} timed out. Check for a Windows permission prompt, then rescan before retrying. The installer may still finish.`;
+  }
+  if (input.manager === "winget" && isWinGetInstallCancelled(input.cause)) {
+    return `${sourceControlToolLabel(input.target)} ${input.operation === "install" ? "installation" : "update"} was cancelled. Try again and approve the Windows permission prompt.`;
+  }
   if (
     input.manager === "winget" &&
     input.operation === "update" &&

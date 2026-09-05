@@ -1304,6 +1304,19 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                             }),
                           ),
                     ),
+                    Effect.andThen(() =>
+                      input.target === "git" && operation === "install"
+                        ? githubAuth.configureGit.pipe(
+                            Effect.mapError(
+                              (error) =>
+                                new SourceControlToolUpdateError({
+                                  target: input.target,
+                                  reason: error.detail,
+                                }),
+                            ),
+                          )
+                        : Effect.void,
+                    ),
                   ),
               );
 

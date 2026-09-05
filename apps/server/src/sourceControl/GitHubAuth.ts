@@ -21,6 +21,7 @@ export interface GitHubAuthShape {
   readonly getState: Effect.Effect<GitHubAuthState>;
   readonly start: Effect.Effect<GitHubAuthState, SourceControlProviderError>;
   readonly cancel: Effect.Effect<void>;
+  readonly configureGit: Effect.Effect<void, SourceControlProviderError>;
 }
 
 export class GitHubAuth extends Context.Service<GitHubAuth, GitHubAuthShape>()(
@@ -88,6 +89,28 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
     return Number(exitCode);
   });
 
+  const setupGit = runCommand(["auth", "setup-git", "--hostname", "github.com"]).pipe(
+    Effect.scoped,
+    Effect.timeout("30 seconds"),
+    Effect.flatMap((exitCode) =>
+      exitCode === 0 ? Effect.void : Effect.fail(new Error("GitHub Git credential setup failed.")),
+    ),
+    Effect.mapError(
+      () =>
+        new SourceControlProviderError({
+          provider: "github",
+          operation: "configureGit",
+          detail:
+            "Git is installed, but GitHub could not configure Git access. Run `gh auth setup-git --hostname github.com` to use your GitHub account for Git.",
+        }),
+    ),
+  );
+
+  const verifyCredential = runCommand(["api", "--hostname", "github.com", "user", "--silent"]).pipe(
+    Effect.scoped,
+    Effect.timeout("30 seconds"),
+  );
+
   const run = Effect.gen(function* () {
     let output = "";
     const exitCode = yield* runCommand(
@@ -117,13 +140,7 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
     }
 
     // Check the active credential directly, without printing account data or tokens.
-    const verified = yield* runCommand([
-      "api",
-      "--hostname",
-      "github.com",
-      "user",
-      "--silent",
-    ]).pipe(Effect.scoped);
+    const verified = yield* verifyCredential;
     if (verified !== 0) {
       return yield* authError(
         "GitHub could not verify the sign-in. Check your connection and try again.",
@@ -131,11 +148,8 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
     }
     let message = "Signed in to GitHub.";
     if (commandAvailable("git")) {
-      const configured = yield* runCommand(["auth", "setup-git", "--hostname", "github.com"]).pipe(
-        Effect.scoped,
-        Effect.catch(() => Effect.succeed(-1)),
-      );
-      if (configured !== 0) {
+      const configured = yield* setupGit.pipe(Effect.result);
+      if (configured._tag === "Failure") {
         message =
           "Signed in to GitHub. Run `gh auth setup-git` to enable Git access with this account.";
       }
@@ -166,6 +180,12 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
 
   return GitHubAuth.of({
     getState: Ref.get(state),
+    // Git may be installed after GitHub sign-in, including across server restarts.
+    configureGit: Effect.gen(function* () {
+      if (!commandAvailable("git") || !commandAvailable("gh")) return;
+      const verified = yield* verifyCredential.pipe(Effect.catch(() => Effect.succeed(-1)));
+      if (verified === 0) yield* setupGit;
+    }),
     start: Effect.gen(function* () {
       const current = yield* Ref.get(state);
       if (current.status === "running") return current;
