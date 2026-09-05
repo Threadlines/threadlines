@@ -64,7 +64,7 @@ describe("ComposerPendingUserInputPanel", () => {
       .element(page.getByText("The agent finished. Your answer starts a follow-up."))
       .toBeVisible();
 
-    // Blocking questions explain why the turn is waiting.
+    // Blocking questions carry no hint; the transcript already says the turn is waiting.
     screen.rerender(
       <ComposerPendingUserInputPanel
         pendingUserInputs={[makePendingUserInput()]}

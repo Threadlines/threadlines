@@ -5,7 +5,7 @@ import {
   derivePendingUserInputProgress,
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
-import { CheckIcon, ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
+import { CheckIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, PencilLineIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
@@ -170,6 +170,17 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     );
   }
 
+  const submitLabel = formatPendingPrimaryActionLabel({
+    compact: false,
+    isLastQuestion: progress.isLastQuestion,
+    isResponding,
+    questionIndex,
+  });
+  const submitDisabled =
+    isUnavailable ||
+    isResponding ||
+    (progress.isLastQuestion ? !progress.isComplete : !progress.canAdvance);
+
   return (
     // The data attribute lets ChatView measure the expanded height to derive the
     // scroll distance at which auto-collapse becomes safe (no layout feedback).
@@ -205,6 +216,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         </span>
       </button>
       <p className="mt-1 text-sm text-foreground/90">{activeQuestion.question}</p>
+      {/* Blocking questions need no hint: the transcript already says the turn
+          is waiting. Async ones do, since answering later is the new behavior. */}
       {prompt.isBlocking === false ? (
         <p
           className="mt-0.5 text-[11px] leading-4 text-muted-foreground/70"
@@ -214,11 +227,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             ? "The agent keeps working while you answer."
             : "The agent finished. Your answer starts a follow-up."}
         </p>
-      ) : (
-        <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground/70">
-          Waiting for your answer.
-        </p>
-      )}
+      ) : null}
       <div className="mt-2 space-y-0.5">
         {activeQuestion.options.map((option, index) => {
           const isSelected = progress.selectedOptionLabels.includes(option.label);
@@ -264,45 +273,67 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             </button>
           );
         })}
-      </div>
-      <textarea
-        aria-label="Custom answer"
-        placeholder="Or write your own answer..."
-        value={progress.customAnswer}
-        onChange={(event) => onCustomAnswerChange(activeQuestion.id, event.target.value)}
-        disabled={isResponding}
-        rows={2}
-        className="mt-2 block max-h-32 min-h-14 w-full resize-y rounded-md border border-border/65 bg-background/55 px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:outline-2 focus-visible:outline-ring"
-      />
-      <div className="mt-2 flex items-center justify-end gap-2">
-        {questionIndex > 0 ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={onPrevious}
-            disabled={isResponding}
-          >
-            Previous
-          </Button>
-        ) : null}
-        <Button
-          type="button"
-          size="sm"
-          onClick={onAdvance}
-          disabled={
-            isUnavailable ||
-            isResponding ||
-            (progress.isLastQuestion ? !progress.isComplete : !progress.canAdvance)
-          }
+        {/* The free-text answer is one more row in the list, styled like an
+            option, with the submit action at its end so the panel needs no
+            separate button row. Enter submits; Shift+Enter adds a line. */}
+        <div
+          className={cn(
+            "flex w-full items-end gap-2.5 rounded-lg border px-2.5 py-1 transition-colors duration-150",
+            progress.usingCustomAnswer
+              ? "border-primary/40 bg-primary/8"
+              : "border-transparent bg-muted/20 focus-within:border-border/40 focus-within:bg-muted/30",
+          )}
         >
-          {formatPendingPrimaryActionLabel({
-            compact: false,
-            isLastQuestion: progress.isLastQuestion,
-            isResponding,
-            questionIndex,
-          })}
-        </Button>
+          <span
+            className={cn(
+              "mb-1.5 flex size-4.5 shrink-0 items-center justify-center rounded transition-colors duration-150",
+              progress.usingCustomAnswer
+                ? "bg-primary/20 text-primary-readable"
+                : "bg-muted/40 text-muted-foreground/70",
+            )}
+          >
+            <PencilLineIcon className="size-3" />
+          </span>
+          <textarea
+            aria-label="Custom answer"
+            placeholder="Or type your own answer"
+            value={progress.customAnswer}
+            onChange={(event) => onCustomAnswerChange(activeQuestion.id, event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+                return;
+              }
+              event.preventDefault();
+              if (!submitDisabled) onAdvance();
+            }}
+            disabled={isResponding}
+            rows={1}
+            className="field-sizing-content max-h-32 min-w-0 flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50"
+          />
+          <div className="flex shrink-0 items-center gap-1">
+            {questionIndex > 0 ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                className="text-muted-foreground"
+                onClick={onPrevious}
+                disabled={isResponding}
+              >
+                Previous
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="xs"
+              variant={progress.usingCustomAnswer || progress.canAdvance ? "default" : "secondary"}
+              onClick={onAdvance}
+              disabled={submitDisabled}
+            >
+              {submitLabel}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -1923,6 +1923,37 @@ async function expectComposerActionsContained(): Promise<void> {
   );
 }
 
+/** The question panel carries its own actions while the composer footer is
+ *  hidden behind a blocking question, so containment is checked against the
+ *  panel instead. */
+async function expectQuestionActionsContained(): Promise<void> {
+  const panel = await waitForElement(
+    () => document.querySelector<HTMLElement>('[data-composer-questions-expanded="true"]'),
+    "Unable to find expanded question panel.",
+  );
+
+  await vi.waitFor(
+    () => {
+      const panelRect = panel.getBoundingClientRect();
+      const actionButtons = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).filter(
+        (button) =>
+          /^(Previous|Next question|Submit answers?)$/.test(button.textContent?.trim() ?? ""),
+      );
+      expect(actionButtons.length).toBeGreaterThanOrEqual(1);
+
+      const buttonRects = actionButtons.map((button) => button.getBoundingClientRect());
+      const firstTop = buttonRects[0]?.top ?? 0;
+
+      for (const rect of buttonRects) {
+        expect(rect.right).toBeLessThanOrEqual(panelRect.right + 0.5);
+        expect(rect.bottom).toBeLessThanOrEqual(panelRect.bottom + 0.5);
+        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(4.5);
+      }
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
 async function waitForInteractionModeButton(
   expectedLabel: "Build" | "Plan",
 ): Promise<HTMLButtonElement> {
@@ -9200,7 +9231,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps pending-question footer actions inside the composer after a real resize", async () => {
+  it("keeps pending-question actions inside the question panel after a real resize", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotWithPendingUserInput(),
@@ -9215,7 +9246,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForButtonByText("Submit answers");
 
       await mounted.setContainerSize(COMPACT_FOOTER_VIEWPORT);
-      await expectComposerActionsContained();
+      await expectQuestionActionsContained();
+      expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -9552,12 +9584,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
           await editor.fill("Keep checking the repository while I sign in.");
           await expect.element(page.getByLabelText("Steer active turn")).toBeVisible();
         }
-        await expectComposerActionsContained();
+        await expectQuestionActionsContained();
+        if (isBlocking) {
+          // The blocked row keeps the saved draft readable and Stop inside it.
+          const blockedRow = await waitForElement(
+            () =>
+              document.querySelector<HTMLElement>(
+                '[data-chat-composer-blocked-by-question="true"]',
+              ),
+            "Unable to find the blocked composer row.",
+          );
+          expect(blockedRow.textContent).toContain("Keep checking the repository while I sign in.");
+          expect(blockedRow.contains(stop)).toBe(true);
+          expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
+        } else {
+          await expectComposerActionsContained();
+        }
         await page.screenshot({
           path: `__screenshots__/question-${name.replaceAll(" ", "-")}.png`,
         });
         if (isBlocking) {
-          expect(document.body.textContent).toContain("Waiting for your answer.");
           expect(document.querySelector('[contenteditable="true"]')).toBeNull();
           stop.click();
           await vi.waitFor(() => {
