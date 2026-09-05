@@ -292,6 +292,7 @@ import {
   resolveRemoteBehindCount,
   resolveWorkingTreeDiffStat,
   type RevertConfirmView,
+  resolveThreadBranchToRecord,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
@@ -2447,6 +2448,33 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+  // A thread that owns its worktree follows the branch that worktree is on: a
+  // checkout switched from the shell or by the agent must not leave the record,
+  // and with it the pull request badge, on the branch the thread began with.
+  const branchToRecord = resolveThreadBranchToRecord({
+    thread: isServerThread ? serverThread : undefined,
+    cwd: gitCwd,
+    checkoutRef: gitStatusQuery.data?.refName ?? null,
+  });
+  const recordedBranchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (branchToRecord === null || !serverThread) return;
+    const key = `${routeThreadKey}:${branchToRecord}`;
+    if (recordedBranchKeyRef.current === key) return;
+    recordedBranchKeyRef.current = key;
+    const api = readEnvironmentApi(environmentId);
+    if (!api) return;
+    api.orchestration
+      .dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: serverThread.id,
+        branch: branchToRecord,
+      })
+      .catch((error: unknown) => {
+        console.warn("[chat] failed to record the worktree branch", error);
+      });
+  }, [branchToRecord, environmentId, routeThreadKey, serverThread]);
   // Watched separately from the thread's own checkout: when that checkout is
   // gone, the project root's status is what tells us whether there is still a
   // repository to fall back to. Same key as every other subscriber of this

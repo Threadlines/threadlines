@@ -35,6 +35,7 @@ export const GITHUB_PULL_REQUEST_LIST_FIELDS = [
   "createdAt",
   "updatedAt",
   "mergedAt",
+  "closedAt",
   "mergeable",
   "reviewDecision",
   "reviewRequests",
@@ -64,6 +65,8 @@ export interface GitHubPullRequestListRow {
   readonly deletions: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** When the row merged or closed; null while open, or where the host did not say. */
+  readonly settledAt: string | null;
   /** User logins with a pending review request; team requests are dropped. */
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   readonly reviewDecision?: PullRequestReviewDecision;
@@ -120,6 +123,7 @@ export const GitHubPullRequestListRowSchema = Schema.Struct({
   baseRefName: TrimmedNonEmptyString,
   state: Schema.optional(Schema.NullOr(Schema.String)),
   mergedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  closedAt: Schema.optional(Schema.NullOr(Schema.String)),
   isDraft: Schema.optional(Schema.NullOr(Schema.Boolean)),
   additions: Schema.optional(Schema.NullOr(NonNegativeInt)),
   deletions: Schema.optional(Schema.NullOr(NonNegativeInt)),
@@ -201,6 +205,18 @@ function normalizeState(raw: {
     return "merged";
   }
   return state === "CLOSED" ? "closed" : "open";
+}
+
+/** The moment a settled row landed: the merge for a merged one, the close otherwise. */
+function normalizeSettledAt(raw: {
+  readonly state?: string | null | undefined;
+  readonly mergedAt?: string | null | undefined;
+  readonly closedAt?: string | null | undefined;
+}): string | null {
+  if (normalizeState(raw) === "open") {
+    return null;
+  }
+  return nonEmptyText(raw.mergedAt) ?? nonEmptyText(raw.closedAt);
 }
 
 function normalizeReviewDecision(
@@ -292,6 +308,7 @@ export function normalizeGitHubPullRequestListRow(
     deletions: raw.deletions ?? 0,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
+    settledAt: normalizeSettledAt(raw),
     reviewRequestedLogins: (raw.reviewRequests ?? []).flatMap((request) => {
       const typename = nonEmptyText(request.__typename);
       if (typename !== null && typename !== "User") {
