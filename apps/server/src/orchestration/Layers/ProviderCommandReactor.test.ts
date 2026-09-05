@@ -60,7 +60,10 @@ import {
   ProviderCommandReactorLive,
   resolveForkTurnBoundary,
 } from "./ProviderCommandReactor.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -169,6 +172,9 @@ describe("ProviderCommandReactor", () => {
     /** Mirror the provider lifecycle's projected `starting` state while a
      *  replacement session is being bound. */
     readonly projectStartingDuringRestart?: boolean;
+    /** State left behind by a previous server process, seeded before the
+     *  reactor starts. */
+    readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, unknown>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -542,6 +548,9 @@ describe("ProviderCommandReactor", () => {
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
+    if (input?.beforeStart) {
+      await Effect.runPromise(input.beforeStart(engine).pipe(Effect.orDie));
+    }
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(reactor.drain);
 
@@ -1137,6 +1146,79 @@ describe("ProviderCommandReactor", () => {
       text: "adjust the running command",
       turnId,
     });
+  });
+
+  // A server restart mid-turn (crash, update, dev reload) leaves the session
+  // row saying "running" with nothing behind it; without this the thread shows
+  // "Preparing turn" forever and the only way out is deleting it.
+  it("settles sessions left in flight by the previous server process on start", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const staleThreadId = ThreadId.make("thread-stale-restart");
+    const staleTurnId = asTurnId("turn-stale-restart");
+    const harness = await createHarness({
+      beforeStart: (engine) =>
+        Effect.gen(function* () {
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("cmd-project-create-stale"),
+            projectId: asProjectId("project-stale"),
+            title: "Stale Project",
+            workspaceRoot: PROJECT_ROOT,
+            defaultModelSelection: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd-thread-create-stale"),
+            threadId: staleThreadId,
+            projectId: asProjectId("project-stale"),
+            title: "Stale Thread",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("cmd-session-set-stale"),
+            threadId: staleThreadId,
+            session: {
+              threadId: staleThreadId,
+              status: "running",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: staleTurnId,
+              pendingBackgroundTaskCount: 0,
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+        }),
+    });
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === staleThreadId);
+      return (
+        thread?.session?.status === "interrupted" &&
+        thread.activities.some((entry) => entry.kind === "provider.session.restart-interrupted")
+      );
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === staleThreadId);
+    expect(thread?.session).toMatchObject({ status: "interrupted", activeTurnId: null });
+    expect(thread?.latestTurn).toMatchObject({ turnId: staleTurnId, state: "interrupted" });
+    expect(
+      thread?.activities.find((entry) => entry.kind === "provider.session.restart-interrupted"),
+    ).toMatchObject({ turnId: staleTurnId });
+    // The thread the harness created after start is untouched.
+    const freshThread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(freshThread?.session ?? null).toBeNull();
   });
 
   it("settles a stale running session when the provider reports no active turn to steer", async () => {
