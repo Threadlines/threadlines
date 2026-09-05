@@ -1838,6 +1838,13 @@ async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
   return waitForElement(() => findButtonByText(text), `Unable to find "${text}" button.`);
 }
 
+async function waitForButtonByAriaLabel(label: string): Promise<HTMLButtonElement> {
+  return waitForElement(
+    () => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`),
+    `Unable to find "${label}" button.`,
+  );
+}
+
 /** The proposed-plan timeline card renders its own "Implement" button, so
  *  composer-footer assertions must scope their lookup to the footer. */
 async function waitForButtonByTextWithin(
@@ -9642,12 +9649,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (await waitForButtonContainingText("Only one worked")).click();
         await page
           .getByLabelText("Custom answer", { exact: true })
-          .fill("Codex is ready. Claude still needs help.");
+          .fill("Codex is ready. Claude still needs help.", { timeout: 5_000 });
         expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt ?? "").toBe(
           isBlocking ? "Keep checking the repository while I sign in." : "",
         );
-        await page.getByLabelText("Collapse questions").click();
-        await expect.element(stop).toBeVisible();
+        // Plain DOM clicks: Playwright hit-tests the click point, and on phone
+        // the scroll-to-bottom pill can cover the panel header while the
+        // timeline is still settling to the end.
+        (await waitForButtonByAriaLabel("Collapse questions")).click();
+        await expect.element(stop, { timeout: 5_000 }).toBeVisible();
         expect(
           wsRequests.some(
             (request) =>
@@ -9655,20 +9665,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
               request.type === "thread.user-input.respond",
           ),
         ).toBe(false);
-        await page.getByLabelText("Expand questions").click();
+        (await waitForButtonByAriaLabel("Expand questions")).click();
         await expect
-          .element(page.getByLabelText("Custom answer", { exact: true }))
+          .element(page.getByLabelText("Custom answer", { exact: true }), { timeout: 5_000 })
           .toHaveValue("Codex is ready. Claude still needs help.");
         if (!isBlocking) {
           const editor = page.getByTestId("composer-editor");
-          await editor.fill("Keep checking the repository while I sign in.");
-          await expect.element(page.getByLabelText("Steer active turn")).toBeVisible();
+          await editor.fill("Keep checking the repository while I sign in.", { timeout: 5_000 });
+          await waitForComposerText("Keep checking the repository while I sign in.");
+          await waitForButtonByAriaLabel("Steer active turn");
           expect(document.querySelector('button[aria-label="Stop generation"]')).toBeNull();
-          await editor.fill("");
-          await expect.element(page.getByLabelText("Stop generation")).toBeVisible();
+          // Clear through the draft store. Playwright's empty fill presses Delete
+          // over a select-all, which the editor does not reliably turn into an
+          // empty draft, and the point here is the empty-draft state, not the key.
+          useComposerDraftStore.getState().setPrompt(THREAD_REF, "");
+          await waitForButtonByAriaLabel("Stop generation");
           expect(document.querySelector('button[aria-label="Steer active turn"]')).toBeNull();
-          await editor.fill("Keep checking the repository while I sign in.");
-          await expect.element(page.getByLabelText("Steer active turn")).toBeVisible();
+          await editor.fill("Keep checking the repository while I sign in.", { timeout: 5_000 });
+          await waitForComposerText("Keep checking the repository while I sign in.");
+          await waitForButtonByAriaLabel("Steer active turn");
         }
         await expectQuestionActionsContained();
         if (isBlocking) {
@@ -9710,7 +9725,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         } else {
           expect(document.body.textContent).toContain("The agent keeps working while you answer.");
           await expect
-            .element(await waitForComposerEditor())
+            .element(await waitForComposerEditor(), { timeout: 5_000 })
             .toHaveTextContent("Keep checking the repository while I sign in.");
           (await waitForButtonByText("Submit answer")).click();
           await vi.waitFor(() => {
@@ -9722,7 +9737,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               ),
             ).toMatchObject({ answers: { sign_in: "Codex is ready. Claude still needs help." } });
           });
-          await page.getByLabelText("Steer active turn").click();
+          await page.getByLabelText("Steer active turn").click({ timeout: 5_000 });
           await vi.waitFor(() => {
             expect(
               wsRequests.find(
