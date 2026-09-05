@@ -472,8 +472,9 @@ export function PullRequestDetailSkeleton({ onClose }: { readonly onClose?: () =
           <Skeleton className="h-2.5 w-16 rounded-full" />
           <Skeleton className="h-2.5 w-20 rounded-full" />
         </div>
-        {/* Row 4: base ← head, with the file count at the far end. */}
-        <div className="mt-3 flex items-center gap-1.5">
+        {/* Row 4: base ← head, with the file count at the far end, which wraps
+            under the branches where the header's own would. */}
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <Skeleton className="h-2.5 w-14 rounded-full" />
           <Skeleton className="h-2.5 w-3 rounded-full" />
           <Skeleton className="h-2.5 w-32 rounded-full" />
