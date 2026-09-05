@@ -499,6 +499,7 @@ describe("resolveThreadPullRequest", () => {
       title: "Merged already",
       url: "https://github.com/threadlines/threadlines/pull/7",
       repository: "threadlines/threadlines",
+      settledAt: null,
     });
   });
 

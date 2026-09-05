@@ -51,7 +51,9 @@ import {
   THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
   THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS,
   waitForStartedServerThread,
+  resolveThreadBranchToRecord,
 } from "./ChatView.logic";
+import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -2725,5 +2727,57 @@ describe("deriveProviderSendPreflight", () => {
       }),
     ).toBeNull();
     expect(deriveProviderSendPreflight({ instanceId: null, providers: [] })).toBeNull();
+  });
+});
+
+describe("resolveThreadBranchToRecord", () => {
+  const thread = { branch: "feature/one", worktreePath: "C:/wt/one" };
+
+  it("records the branch the thread's own worktree moved to", () => {
+    expect(
+      resolveThreadBranchToRecord({
+        thread,
+        cwd: "C:\\wt\\one\\apps\\web",
+        checkoutRef: "feature/two",
+      }),
+    ).toBe("feature/two");
+    expect(
+      resolveThreadBranchToRecord({
+        thread: { branch: null, worktreePath: "/wt/one" },
+        cwd: "/wt/one",
+        checkoutRef: "feature/two",
+      }),
+    ).toBe("feature/two");
+  });
+
+  it("stays quiet where the checkout is shared, unchanged, elsewhere, detached, or temporary", () => {
+    expect(
+      resolveThreadBranchToRecord({
+        thread: { ...thread, worktreePath: null },
+        cwd: "C:/repo",
+        checkoutRef: "feature/two",
+      }),
+    ).toBeNull();
+    expect(
+      resolveThreadBranchToRecord({ thread, cwd: "C:/wt/one", checkoutRef: "feature/one" }),
+    ).toBeNull();
+    expect(
+      resolveThreadBranchToRecord({ thread, cwd: "C:/other/repo", checkoutRef: "feature/two" }),
+    ).toBeNull();
+    expect(resolveThreadBranchToRecord({ thread, cwd: "C:/wt/one", checkoutRef: null })).toBeNull();
+    expect(
+      resolveThreadBranchToRecord({
+        thread,
+        cwd: "C:/wt/one",
+        checkoutRef: buildTemporaryWorktreeBranchName(),
+      }),
+    ).toBeNull();
+    expect(
+      resolveThreadBranchToRecord({
+        thread: { ...thread, branch: buildTemporaryWorktreeBranchName() },
+        cwd: "C:/wt/one",
+        checkoutRef: "feature/two",
+      }),
+    ).toBeNull();
   });
 });

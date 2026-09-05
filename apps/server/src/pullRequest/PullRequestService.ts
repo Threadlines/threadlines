@@ -391,6 +391,7 @@ function toEntry(input: {
     deletions: row.deletions,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    ...(row.settledAt == null ? {} : { settledAt: row.settledAt }),
     viewerIsAuthor: row.author !== null && matchesViewer(row.author.login),
     viewerReviewRequested: row.reviewRequestedLogins.some(matchesViewer),
     ...(input.viewerCanWrite === undefined ? {} : { viewerCanWrite: input.viewerCanWrite }),

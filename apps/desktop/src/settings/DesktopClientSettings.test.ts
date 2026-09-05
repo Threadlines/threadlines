@@ -17,6 +17,7 @@ const clientSettings: ClientSettings = {
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  wrapUpThreadsOnPullRequestSettled: true,
   dismissedProviderUpdateNotificationKeys: [],
   diffChangesOnly: false,
   diffIgnoreWhitespace: true,

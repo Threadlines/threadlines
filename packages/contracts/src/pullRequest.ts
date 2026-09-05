@@ -89,6 +89,8 @@ export const PullRequestListEntry = Schema.Struct({
   deletions: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  /** When the row merged or closed. Absent while open, or where the host did not say. */
+  settledAt: Schema.optionalKey(IsoDateTime),
   viewerIsAuthor: Schema.Boolean,
   viewerReviewRequested: Schema.Boolean,
   /**

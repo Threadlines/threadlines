@@ -69,6 +69,10 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** File a thread under Wrapped once its pull request merges or closes. */
+  wrapUpThreadsOnPullRequestSettled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -625,6 +629,7 @@ export const ClientSettingsPatch = Schema.Struct({
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
   diffChangesOnly: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffRenderMode: Schema.optionalKey(DiffRenderMode),
