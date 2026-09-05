@@ -23,6 +23,7 @@ import {
   formatPullRequestChecksSummary,
   groupPullRequests,
   groupTimelineRows,
+  isLinkToPullRequest,
   linkThreadsToPullRequests,
   matchesPullRequestQuery,
   matchesPullRequestSelection,
@@ -1131,5 +1132,47 @@ describe("applyPendingPullRequestReactions", () => {
         ]),
       ),
     ).toEqual([{ content: "thumbs-up", count: 3, viewerReacted: true }]);
+  });
+});
+
+describe("isLinkToPullRequest", () => {
+  const pullRequestUrl = "https://github.com/Threadlines/threadlines/pull/223";
+
+  it("matches the bare address, ignoring host casing and a trailing slash", () => {
+    expect(isLinkToPullRequest(pullRequestUrl, pullRequestUrl)).toBe(true);
+    expect(
+      isLinkToPullRequest("https://GitHub.com/Threadlines/threadlines/pull/223/", pullRequestUrl),
+    ).toBe(true);
+  });
+
+  it("leaves links into a part of the pull request the tab cannot show", () => {
+    expect(
+      isLinkToPullRequest(
+        "https://github.com/Threadlines/threadlines/pull/223/files",
+        pullRequestUrl,
+      ),
+    ).toBe(false);
+    expect(
+      isLinkToPullRequest(
+        "https://github.com/Threadlines/threadlines/pull/223#issuecomment-1",
+        pullRequestUrl,
+      ),
+    ).toBe(false);
+    expect(
+      isLinkToPullRequest(
+        "https://github.com/Threadlines/threadlines/pull/223?diff=split",
+        pullRequestUrl,
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves other pull requests and unreadable addresses alone", () => {
+    expect(
+      isLinkToPullRequest("https://github.com/Threadlines/threadlines/pull/224", pullRequestUrl),
+    ).toBe(false);
+    expect(
+      isLinkToPullRequest("https://github.com/Other/threadlines/pull/223", pullRequestUrl),
+    ).toBe(false);
+    expect(isLinkToPullRequest("not a url", pullRequestUrl)).toBe(false);
   });
 });
