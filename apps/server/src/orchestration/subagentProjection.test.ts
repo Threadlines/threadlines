@@ -559,6 +559,69 @@ describe("projectSubagentActivity", () => {
     expect(orphan[1]?.resultBody).toBe("Lost agent output.");
   });
 
+  it("keeps a completed Codex agent settled after a message and reopens on a real child turn", () => {
+    const completed = projectSubagentActivity(
+      [],
+      activity({
+        id: "child-result",
+        kind: "subagent.result",
+        turnId: TURN_ID,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              tool: "wait",
+              receiverThreadIds: ["child"],
+              agentsStates: { child: { status: "completed", message: "Review complete." } },
+            },
+          },
+        },
+      }),
+    );
+    const messaged = projectSubagentActivity(
+      completed,
+      activity({
+        id: "child-message",
+        kind: "tool.completed",
+        turnId: RESUME_TURN_ID,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              kind: "interacted",
+              agentThreadId: "child",
+              tool: "sendInput",
+              status: "inProgress",
+              agentsStates: { child: { status: "running" } },
+            },
+          },
+        },
+      }),
+    );
+    expect(messaged).toEqual(completed);
+    const resumed = projectSubagentActivity(
+      messaged,
+      activity({
+        id: "child-turn-started",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { agentThreadId: "child", status: "running" },
+      }),
+    );
+    expect(resumed).toMatchObject([{ status: "running", turnId: RESUME_TURN_ID }]);
+    const settled = projectSubagentActivity(
+      resumed,
+      activity({
+        id: "child-turn-completed",
+        kind: "subagent.metadata",
+        turnId: RESUME_TURN_ID,
+        payload: { agentThreadId: "child", status: "completed" },
+      }),
+    );
+    expect(settled).toMatchObject([{ status: "completed", resultBody: "Review complete." }]);
+  });
+
   it("still folds Codex-shaped collab items", () => {
     const roster = projectSubagentActivity(
       [],
