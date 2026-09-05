@@ -12,6 +12,8 @@ import { create } from "zustand";
 import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
 import { isWindowsAbsolutePath } from "@threadlines/shared/path";
 
+import { isImageFilePath } from "./lib/imageFilePaths";
+
 export interface FileViewerContext {
   environmentId: EnvironmentId;
   /** Workspace root (or worktree path) that relative file paths resolve against. */
@@ -378,6 +380,55 @@ export function isPathWithinCwd(targetPath: string, cwd: string): boolean {
   return relativePathWithinCwdOrRoot(targetPath, cwd) !== null;
 }
 
+/**
+ * The `relativePath` the `projects.readFile` RPC takes for a target, which may
+ * sit outside the workspace root — agents save screenshots to temp directories,
+ * and the server serves those when the bytes are a verified image.
+ *
+ * Inside the root this is the plain workspace-relative path; outside it walks
+ * up with `../`. Null when no relative path exists at all (a different Windows
+ * drive), since there is nothing the server could resolve.
+ */
+export function workspaceReadRelativePath(targetPath: string, cwd: string): string | null {
+  const inside = relativePathWithinCwdOrRoot(targetPath, cwd);
+  if (inside) {
+    return inside;
+  }
+
+  const target = normalizeFileViewerPath(targetPath).replace(/\/+$/u, "");
+  const root = normalizeFileViewerPath(cwd).replace(/\/+$/u, "");
+  if (target.length === 0 || root.length === 0) {
+    return null;
+  }
+  if (!target.startsWith("/") && !isWindowsAbsolutePath(target)) {
+    // Already relative to the workspace root; the server resolves it as-is.
+    return target;
+  }
+
+  const targetSegments = target.split("/");
+  const rootSegments = root.split("/");
+  const comparableTarget = normalizePathForComparison(target).split("/");
+  const comparableRoot = normalizePathForComparison(root).split("/");
+  let shared = 0;
+  while (
+    shared < comparableTarget.length &&
+    shared < comparableRoot.length &&
+    comparableTarget[shared] === comparableRoot[shared]
+  ) {
+    shared += 1;
+  }
+  // Nothing in common means separate roots (`D:/` against `C:/`), where no
+  // number of `..` segments ever reaches the target.
+  if (shared === 0) {
+    return null;
+  }
+
+  const upwards = Array.from({ length: rootSegments.length - shared }, () => "..");
+  const downwards = targetSegments.slice(shared);
+  const relativePath = [...upwards, ...downwards].join("/");
+  return relativePath.length > 0 ? relativePath : null;
+}
+
 function resolveViewerWorkspacePath(targetPath: string, cwd: string): string | null {
   const normalizedTarget = normalizeFileViewerPath(targetPath);
   const isAbsolute =
@@ -646,7 +697,12 @@ export function openFileInViewer(input: OpenFileInViewerInput): boolean {
       line = Number.parseInt(lineSuffix[1] ?? "", 10) || undefined;
     }
   }
-  const relativePath = resolveViewerWorkspacePath(targetPath, input.cwd);
+  // An image outside the root still opens here: the server serves verified
+  // image bytes for an escaping path, so the viewer can show the picture
+  // instead of bouncing the click to an external editor.
+  const relativePath =
+    resolveViewerWorkspacePath(targetPath, input.cwd) ??
+    (isImageFilePath(targetPath) ? workspaceReadRelativePath(targetPath, input.cwd) : null);
   if (!relativePath) {
     return false;
   }

@@ -27,6 +27,15 @@ import {
   gitWorkingTreeDiffQueryOptions,
   invalidateGitWorkingTreeDiffQueries,
 } from "../lib/gitReactQuery";
+import { useGitStatus } from "../lib/gitStatusState";
+import {
+  PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  usePullRequestLists,
+} from "../lib/pullRequestsReactQuery";
+import { LazyPullRequestDetailPanel } from "../components/pull-requests/LazyPullRequestDetailPanel";
+import { resolveThreadPullRequest } from "../components/pull-requests/pullRequests.logic";
+import { Button } from "~/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from "~/components/ui/empty";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   useAutoHideRightPanelSheet,
@@ -278,6 +287,51 @@ function ChatThreadRouteView() {
       }),
     [isGeneralChatThread, serverThread],
   );
+
+  // The thread's pull request, for the Pull request tab and the launcher row
+  // that names it. Both reads are shared: the git status is the same refcounted
+  // subscription the Source surface and the sidebar row already hold, and the
+  // open listing is the key the sidebar's Pull Requests row keeps warm.
+  const threadBranch = serverThread?.branch ?? null;
+  const pullRequestTabAvailable = availableTabs.includes("pullRequest");
+  const pullRequestGitStatus = useGitStatus({
+    environmentId:
+      pullRequestTabAvailable && threadBranch ? (threadRef?.environmentId ?? null) : null,
+    cwd: pullRequestTabAvailable && threadBranch ? (sourceControlTarget?.cwd ?? null) : null,
+  });
+  const openPullRequests = usePullRequestLists({
+    state: "open",
+    refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+    enabled: pullRequestTabAvailable && threadBranch !== null,
+  });
+  const pullRequestProjects = useMemo(
+    () => (activeProject ? [activeProject] : []),
+    [activeProject],
+  );
+  const threadPullRequest = useMemo(
+    () =>
+      serverThread
+        ? resolveThreadPullRequest({
+            thread: serverThread,
+            gitStatus: pullRequestGitStatus.data,
+            openEntries: openPullRequests.entries,
+            projects: pullRequestProjects,
+          })
+        : null,
+    [openPullRequests.entries, pullRequestGitStatus.data, pullRequestProjects, serverThread],
+  );
+  // The panel addresses one pull request by project and repository, so a
+  // thread whose project has no resolved GitHub remote has nothing to open.
+  const threadPullRequestReference = useMemo(() => {
+    if (!serverThread || !threadPullRequest || threadPullRequest.repository === null) {
+      return null;
+    }
+    return {
+      projectId: serverThread.projectId,
+      repository: threadPullRequest.repository,
+      number: threadPullRequest.number,
+    };
+  }, [serverThread, threadPullRequest]);
   const defaultVisible = useRightPanelDefaultVisible();
   const urlActiveTab = activeRightPanelTabFromSearch(search);
   const urlClosed = isRightPanelClosedInSearch(search);
@@ -341,6 +395,7 @@ function ChatThreadRouteView() {
   const diffTarget = rightPanel.diffTarget;
   const diffOpen = activeTab === "diff";
   const sourceControlOpen = activeTab === "sourceControl";
+  const pullRequestOpen = activeTab === "pullRequest";
   const agentsOpen = activeTab === "agents";
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
@@ -392,6 +447,7 @@ function ChatThreadRouteView() {
     // tree with committed turn diffs behind it never reads as nothing to review.
     turnDiffSummaries: serverThread?.turnDiffSummaries ?? null,
     agents: agentsSource,
+    pullRequest: threadPullRequest,
   });
   // Opening the Diff tab with nothing remembered means this thread's working
   // tree, which is also the freshest thing to look at, so it gets re-read.
@@ -524,10 +580,39 @@ function ChatThreadRouteView() {
                 ...(filePath ? { diffFilePath: filePath } : {}),
               });
             }}
+            {...(availableTabs.includes("pullRequest")
+              ? { onOpenPullRequest: () => selectTab("pullRequest") }
+              : {})}
             {...(!serverThread && draftThread
               ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
               : {})}
           />
+        </div>
+      ) : null}
+      {openTabs.includes("pullRequest") ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", pullRequestOpen ? "flex" : "hidden")}>
+          {threadPullRequestReference ? (
+            <LazyPullRequestDetailPanel
+              environmentId={threadRef.environmentId}
+              reference={threadPullRequestReference}
+              context="thread"
+              composerTarget={threadRef}
+              onComposerHandoff={() => setComposerFocusRequest((request) => request + 1)}
+            />
+          ) : (
+            <Empty>
+              <EmptyHeader>
+                <EmptyDescription>No pull request on this branch yet.</EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent>
+                {/* The New PR action lives in Source; sending the user there
+                    beats repeating it on a surface that has nothing to show. */}
+                <Button variant="outline" size="sm" onClick={() => selectTab("sourceControl")}>
+                  Open the Source tab
+                </Button>
+              </EmptyContent>
+            </Empty>
+          )}
         </div>
       ) : null}
       {shouldRenderDiffContent ? (

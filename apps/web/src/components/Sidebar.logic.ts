@@ -8,7 +8,7 @@ import {
   type ThreadSortInput,
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
-import { isLatestTurnSettled } from "../session-logic";
+import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -358,8 +358,7 @@ export function resolveThreadStatusPill(input: {
 
   // Settled turn with provider tasks still running: the provider will start
   // the thread back up on its own when they finish.
-  const pendingBackgroundTaskCount = thread.session?.pendingBackgroundTaskCount ?? 0;
-  if (pendingBackgroundTaskCount > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
+  if (isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)) {
     return {
       label: "Background",
       colorClass: "text-cyan-600 dark:text-cyan-300/90",
@@ -678,7 +677,12 @@ export const INBOX_AUTO_DONE_AFTER_DAYS = 2;
  *    last activity. New work outranks an old word in both directions: a done
  *    thread that starts again pulls itself back without being un-marked, and
  *    a reopened thread that goes quiet again is allowed to re-file itself.
- * 3. Auto-done on idle, unless the thread is pinned or holds a completion the
+ * 3. A merged or closed pull request. The branch landing is a stronger signal
+ *    than idleness, so it files the thread at once rather than waiting out the
+ *    timer, and a pin does not hold it back -- finished work is finished
+ *    wherever it was placed. Unread work still stays out, and a moving thread
+ *    was already excluded above.
+ * 4. Auto-done on idle, unless the thread is pinned or holds a completion the
  *    user has not seen. A pin is "keep this at hand" -- filing it on a timer
  *    would undo the one placement the user made by hand -- and unread work is
  *    the inbox's reason to exist; filing it unread would be the sidebar
@@ -689,7 +693,12 @@ export function isThreadDone(
     DoneSortInput &
     Pick<SidebarThreadSummary, "pinnedAt"> & { readonly lastVisitedAt?: string | undefined },
   override: ThreadDoneOverride | null | undefined,
-  options: { readonly now: string; readonly autoDoneAfterDays?: number | null },
+  options: {
+    readonly now: string;
+    readonly autoDoneAfterDays?: number | null;
+    /** The thread's pull request has merged or closed. */
+    readonly pullRequestSettled?: boolean;
+  },
 ): boolean {
   if (!canMarkThreadDone(thread, options)) return false;
   const lastActivityAt = resolveDoneTimestamp(thread, null);
@@ -700,6 +709,7 @@ export function isThreadDone(
   if (override != null && !overrideIsStale) {
     return override.state === "done";
   }
+  if (options.pullRequestSettled === true && !hasUnseenCompletion(thread)) return true;
   if (options.autoDoneAfterDays == null) return false;
   if (thread.pinnedAt !== null) return false;
   if (hasUnseenCompletion(thread)) return false;

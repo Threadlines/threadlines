@@ -123,6 +123,7 @@ import {
 import { providerMcpLoginCommand, type ExtensionMcpLoginProvider } from "../../mcpAuthStatus";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { PageTabButton } from "../ui/page-tabs";
 import {
   Dialog,
   DialogDescription,
@@ -432,40 +433,6 @@ function formatBoolean(value: boolean | undefined): string | undefined {
  * The page's primary structure. Underline tabs rather than chips: chips sit next to the filter
  * chips and read as one more filter, which is exactly what these are not.
  */
-function PageTabButton({
-  label,
-  count,
-  active,
-  panelId,
-  onClick,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  panelId: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      aria-controls={panelId}
-      // The -mb-px drops the active underline onto the row's hairline instead of above it.
-      className={cn(
-        "-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[15px] font-medium transition-colors focus-ring",
-        active
-          ? "border-foreground text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground",
-      )}
-      onClick={onClick}
-    >
-      {label}
-      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count}</span>
-    </button>
-  );
-}
-
 /** The provider's own mark, for rows and headers that belong to exactly one provider. */
 function ProviderNameGlyph({ driver }: { driver: string }) {
   const Glyph = providerIconForDriverLabel(driver);

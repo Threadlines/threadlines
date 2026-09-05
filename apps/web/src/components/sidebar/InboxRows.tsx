@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import React, { memo, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ScopedThreadRef } from "@threadlines/contracts";
+import type { ScopedThreadRef, VcsStatusResult } from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import type { SidebarThreadSummary } from "../../types";
@@ -26,15 +26,14 @@ import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
+import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatusIndicators";
 import {
-  ChangeRequestStatusIcon,
-  prStatusIndicator,
-  resolveThreadPr,
-  terminalStatusFromRunningIds,
-} from "../ThreadStatusIndicators";
+  pullRequestFromGitStatus,
+  type ThreadPullRequest,
+} from "../pull-requests/pullRequests.logic";
 import { inboxStatusWord, type ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { ThreadHoverCard } from "./ThreadHoverCard";
+import { ThreadHoverCard, useThreadHoverCardHandle } from "./ThreadHoverCard";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
@@ -78,6 +77,76 @@ function resolveRowHoverFillTone(input: { isActive: boolean; isSelected: boolean
  */
 const ROW_ACTIONS_CLASS_NAME =
   "flex shrink-0 items-center gap-0.5 sm:pointer-events-none sm:absolute sm:top-1/2 sm:right-full sm:-translate-y-1/2 sm:pl-4 sm:pr-1 sm:opacity-0 sm:transition-opacity sm:duration-150 sm:[mask-image:linear-gradient(to_right,transparent,black_16px)] sm:group-hover/thread-row:pointer-events-auto sm:group-hover/thread-row:opacity-100 sm:group-focus-within/thread-row:pointer-events-auto sm:group-focus-within/thread-row:opacity-100";
+
+/**
+ * The thread's pull request as a badge: its state's glyph and colour, then the
+ * number. Live and wrapped rows share it, so a merged branch reads the same
+ * violet wherever the thread ends up. Renders nothing without a pull request.
+ */
+function ThreadPullRequestBadge({
+  pullRequest,
+  provider,
+  threadRef,
+  openPrLink,
+}: {
+  readonly pullRequest: ThreadPullRequest | null;
+  readonly provider: VcsStatusResult["sourceControlProvider"] | null | undefined;
+  readonly threadRef: ScopedThreadRef;
+  readonly openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    pullRequestUrl: string,
+    threadRef: ScopedThreadRef,
+  ) => void;
+}) {
+  const prStatus = prStatusIndicator(pullRequest, provider);
+  const cardHandle = useThreadHoverCardHandle();
+  if (!prStatus) {
+    return null;
+  }
+  const url = prStatus.url;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            data-thread-selection-safe
+            data-testid="inbox-thread-pr-badge"
+            aria-label={prStatus.tooltip}
+            className={cn(
+              // 10px type is a small thing to hit with a thumb, so a coarse
+              // pointer gets padding around it and the same glyph inside.
+              // Underlined on hover like the number in the detail header: it
+              // opens the pull request, and should read as the link it is.
+              "inline-flex cursor-pointer items-center gap-0.5 rounded-sm font-mono text-[10px] leading-none tabular-nums underline-offset-2 outline-hidden hover:underline focus-ring pointer-coarse:p-1.5",
+              prStatus.colorClass,
+            )}
+            // The badge has a tooltip of its own, so the row's hover card has
+            // no business opening over it: it is closed on the way in, and the
+            // pointer's movement is kept from the row so it cannot reopen
+            // while the pointer stays here.
+            onPointerEnter={() => cardHandle?.close()}
+            onPointerMove={(event) => event.stopPropagation()}
+            onMouseMove={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => openPrLink(event, url, threadRef)}
+            // Middle click never reaches onClick, and it is the other half of
+            // the browser's "open it over there" gesture openPrLink answers.
+            onAuxClick={(event) => {
+              if (event.button === 1) openPrLink(event, url, threadRef);
+            }}
+          >
+            <prStatus.Icon className="size-3" />
+            {/* The mono digits sit a hair high beside the glyph at this size. */}
+            <span className="translate-y-px">#{prStatus.number}</span>
+          </button>
+        }
+      />
+      <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
+    </Tooltip>
+  );
+}
 
 /** The slot a row's first line gives to the time, and to the actions. */
 const ROW_META_SLOT_CLASS_NAME =
@@ -229,7 +298,17 @@ export interface InboxThreadRowProps {
   ) => Promise<void>;
   cancelRename: () => void;
   markThreadDone: (threadKey: string) => void;
-  openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
+  /**
+   * The pull request the listings know about for this thread, read once for
+   * the whole inbox. Only consulted when the checkout is standing on some
+   * other branch, where its own status has nothing to say.
+   */
+  listPullRequest: ThreadPullRequest | null;
+  openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    pullRequestUrl: string,
+    threadRef: ScopedThreadRef,
+  ) => void;
 }
 
 /**
@@ -263,6 +342,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     commitRename,
     cancelRename,
     markThreadDone,
+    listPullRequest,
     openPrLink,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
@@ -296,8 +376,10 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // every thread in it, so its ref (and that ref's change request) says
   // nothing about this thread. The hover card is where the current ref gets
   // its say.
-  const pr = resolveThreadPr(thread.branch, gitStatus.data);
-  const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
+  // The checkout's own status wins on this branch, because it is the only one
+  // that knows a merge or a close; the listing covers a thread whose checkout
+  // has moved on.
+  const pr = pullRequestFromGitStatus(thread.branch, gitStatus.data) ?? listPullRequest;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
   const isRenaming = renamingThreadKey === threadKey;
@@ -365,13 +447,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
       void handleThreadContextMenu(threadRef, { x: event.clientX, y: event.clientY });
     },
     [clearSelection, handleMultiSelectContextMenu, handleThreadContextMenu, isSelected, threadRef],
-  );
-  const handlePrClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      if (!prStatus) return;
-      openPrLink(event, prStatus.url);
-    },
-    [openPrLink, prStatus],
   );
   const handleRenameInputRef = useCallback(
     (element: HTMLInputElement | null) => {
@@ -587,28 +662,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                 </span>
               ) : null}
               <ThreadEnvironmentBadge thread={thread} />
-              {prStatus ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        aria-label={prStatus.tooltip}
-                        className={cn(
-                          "inline-flex cursor-pointer items-center justify-center rounded-sm outline-hidden focus-ring",
-                          prStatus.colorClass,
-                        )}
-                        onPointerDown={stopPropagationOnPointerDown}
-                        onClick={handlePrClick}
-                      >
-                        <ChangeRequestStatusIcon className="size-3" />
-                      </button>
-                    }
-                  />
-                  <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
-                </Tooltip>
-              ) : null}
+              <ThreadPullRequestBadge
+                pullRequest={pr}
+                provider={gitStatus.data?.sourceControlProvider}
+                threadRef={threadRef}
+                openPrLink={openPrLink}
+              />
               {showDiffStat && diffStat ? (
                 <span className="font-mono text-[10px] leading-none">
                   <span className="text-success">+{formatDiffCount(diffStat.additions)}</span>
@@ -642,6 +701,17 @@ export interface InboxDoneRowProps {
   ) => Promise<void>;
   reopenThread: (threadKey: string) => void;
   attemptArchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
+  /**
+   * The pull request the listings found for this thread. A merged or closed
+   * one is often why the thread is down here at all, so the badge stays with
+   * it and keeps the reason visible.
+   */
+  listPullRequest: ThreadPullRequest | null;
+  openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    pullRequestUrl: string,
+    threadRef: ScopedThreadRef,
+  ) => void;
 }
 
 /**
@@ -663,6 +733,8 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     handleThreadContextMenu,
     reopenThread,
     attemptArchiveThread,
+    listPullRequest,
+    openPrLink,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
@@ -815,6 +887,15 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
           </span>
           <span className={ROW_META_SLOT_CLASS_NAME}>
             <ThreadEnvironmentBadge thread={thread} />
+            {/* A wrapped thread's checkout has usually moved on, so the badge
+                answers from the listings rather than from a git status this
+                row never subscribes to. */}
+            <ThreadPullRequestBadge
+              pullRequest={listPullRequest}
+              provider={null}
+              threadRef={threadRef}
+              openPrLink={openPrLink}
+            />
             {terminalStatus ? (
               <span
                 role="img"

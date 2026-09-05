@@ -7,6 +7,8 @@ import type {
 } from "@threadlines/contracts";
 import {
   claudeSubagentActivityItem,
+  claudeSubagentNotificationTaskId,
+  isClaudeAgentTaskPayload,
   isClaudeSubagentToolName,
   isSpawnAgentTool,
 } from "@threadlines/shared/claudeSubagentActivity";
@@ -107,6 +109,8 @@ interface SubagentPatch {
   readonly reasoningEffortProvenance?: OrchestrationSubagentSettingProvenance | null;
   readonly resultBody?: string | null;
   readonly resultCreatedAt?: string | null;
+  /** Task id of the notification a replayed agent result was built from. */
+  readonly notificationTaskId?: string | null;
 }
 
 function metadataPatch(activity: OrchestrationThreadActivity): SubagentPatch | null {
@@ -197,6 +201,7 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
   const agentPath = text(item.agentPath);
   const requestedModel = text(item.model);
   const reasoningEffort = text(item.reasoningEffort);
+  const notificationTaskId = claudeSubagentNotificationTaskId(data);
   return ids.map((id) => {
     const state = record(states?.[id]);
     return {
@@ -225,6 +230,7 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
       reasoningEffortProvenance: reasoningEffort ? "explicit" : null,
       resultBody: text(state?.message),
       resultCreatedAt: text(state?.message) ? activity.createdAt : null,
+      notificationTaskId,
     };
   });
 }
@@ -310,16 +316,6 @@ function settleTaskCompletion(
   return next;
 }
 
-const AGENT_TASK_TYPES = new Set(["local_agent", "remote_agent"]);
-
-/** Background command tasks share the task activity kinds with agent tasks and
- *  must never move an agent's row. */
-function isAgentTaskActivity(payload: UnknownRecord | null): boolean {
-  return (
-    text(payload?.subagentType) !== null || AGENT_TASK_TYPES.has(text(payload?.taskType) ?? "")
-  );
-}
-
 function isSettledStatus(status: OrchestrationSubagentStatus): boolean {
   return status === "completed" || status === "failed" || status === "interrupted";
 }
@@ -341,7 +337,7 @@ function reopenResumedAgentRun(
   activity: OrchestrationThreadActivity,
 ): ReadonlyArray<OrchestrationSubagent> {
   const payload = record(activity.payload);
-  if (!isAgentTaskActivity(payload)) return current;
+  if (!isClaudeAgentTaskPayload(payload)) return current;
   const taskId = text(payload?.taskId);
   const toolUseId = text(payload?.toolUseId);
   const index = current.findIndex(
@@ -423,6 +419,35 @@ export function projectSubagentActivity(
         matches.push(index);
       }
     }
+    // A replayed final report is filed under the call the adapter knows the
+    // agent by. After a provider restart that is the call that resumed the
+    // agent, which owns no row; the task id it carries still names the agent.
+    // Only the lifecycle lands there: the synthesized item knows nothing else
+    // about the agent. A report naming no known agent stands for itself below,
+    // so the agent's only output is kept.
+    if (matches.length === 0 && patch.notificationTaskId) {
+      const owner = next.findIndex((entry) => entry.transcriptAgentId === patch.notificationTaskId);
+      const row = owner >= 0 ? next[owner] : undefined;
+      if (row) {
+        next[owner] = mergeSubagent(
+          row,
+          {
+            id: row.id,
+            ...(patch.status === undefined ? {} : { status: patch.status }),
+            resultBody: patch.resultBody ?? null,
+            resultCreatedAt: patch.resultCreatedAt ?? null,
+          },
+          activity,
+        );
+        continue;
+      }
+    }
+    // A patch that states no lifecycle status (a background flag, a nesting
+    // depth) describes an agent some other activity introduced. When none did
+    // — a shell command the harness moved to the background, a resume call
+    // for a spawn this process never saw — there is no agent to describe, and
+    // a `pending:` row keyed by that call would never receive a stop.
+    if (matches.length === 0 && patch.status === undefined) continue;
     const [primary, ...absorbed] = matches;
     let base = primary !== undefined ? next[primary] : undefined;
     for (const index of absorbed) {

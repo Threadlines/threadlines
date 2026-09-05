@@ -860,6 +860,19 @@ label:has(> select#reasoning-effort) select {
   text-align: left;
 }
 
+/* Pull request text from the host: tables wider than the column scroll on their
+   own, and images never push the panel wider than it is. */
+.chat-markdown-html table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chat-markdown-html img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* No-active-thread empty state: staggered reveal + self-drawing thread graph.
    Motion is opt-in; reduced-motion users get the fully drawn static layout. */
 @media (prefers-reduced-motion: no-preference) {
