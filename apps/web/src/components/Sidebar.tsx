@@ -460,6 +460,7 @@ export default function Sidebar() {
   const isOnSettings = pathname.startsWith("/settings");
   const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
@@ -668,11 +669,19 @@ export default function Sidebar() {
           doneThreadOverlays[threadKey],
           thread.doneOverride,
         );
-        const pullRequestState = pullRequestByThreadKey.get(threadKey)?.state;
+        const pullRequest = pullRequestByThreadKey.get(threadKey);
+        const pullRequestSettled =
+          pullRequest !== undefined &&
+          (pullRequest.state === "merged" || pullRequest.state === "closed");
         const isDone = isThreadDone({ ...thread, lastVisitedAt }, override, {
           now: nowIso,
           autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
-          pullRequestSettled: pullRequestState === "merged" || pullRequestState === "closed",
+          // A landing the host did not date is taken as now, which files the
+          // thread the way it always did.
+          pullRequestSettledAt:
+            wrapUpOnPullRequestSettled && pullRequestSettled
+              ? (pullRequest.settledAt ?? nowIso)
+              : null,
         });
         return {
           thread,
@@ -698,6 +707,7 @@ export default function Sidebar() {
       resolveThreadProjectKey,
       seenThreadOverlays,
       sidebarProjectByKey,
+      wrapUpOnPullRequestSettled,
       threadSeedVisitedAtById,
     ],
   );

@@ -78,6 +78,8 @@ export interface ProviderChangeRequest {
   readonly deletions: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** When the row merged or closed; absent or null while open, or where the host did not say. */
+  readonly settledAt?: string | null;
   /** Accounts with a review outstanding; team requests are dropped by each host. */
   readonly reviewRequestedLogins: ReadonlyArray<string>;
   readonly labels: ReadonlyArray<PullRequestLabel>;
