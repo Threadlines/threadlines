@@ -118,6 +118,23 @@ describe("decodeGitHubPullRequestListJson", () => {
     });
   });
 
+  it("reads the auto-merge instruction, and says nothing where the CLI did not carry it", () => {
+    const rows = decodeRows([
+      { ...baseRow, number: 1, autoMergeRequest: { enabledAt: "2026-08-31T10:00:00Z" } },
+      { ...baseRow, number: 2, autoMergeRequest: null },
+      { ...baseRow, number: 3 },
+    ]);
+
+    assert.deepStrictEqual(
+      rows.map((row) => [row.number, row.autoMergeEnabled]),
+      [
+        [1, true],
+        [2, false],
+        [3, undefined],
+      ],
+    );
+  });
+
   it("skips a malformed row and keeps the rest", () => {
     const rows = decodeRows([
       { ...baseRow, number: 0 },

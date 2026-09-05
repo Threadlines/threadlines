@@ -401,6 +401,7 @@ function toEntry(input: {
     ...(row.mergeability === undefined || row.mergeability === "unknown"
       ? {}
       : { mergeability: row.mergeability }),
+    ...(row.autoMergeEnabled === undefined ? {} : { autoMergeEnabled: row.autoMergeEnabled }),
     labels: row.labels,
     origin: input.origin,
   };
@@ -474,11 +475,19 @@ function toDetail(input: {
     },
     mergeMethods: input.repository.mergeMethods,
     // What the host supports in general, narrowed to what this repository
-    // actually allows, so the client never offers a merge the host refuses.
-    capabilities: { ...input.capabilities, mergeMethods: input.repository.mergeMethods },
+    // actually allows, so the client never offers a merge the host refuses,
+    // nor an auto-merge switch the repository has turned off.
+    capabilities: {
+      ...input.capabilities,
+      mergeMethods: input.repository.mergeMethods,
+      actions:
+        input.repository.autoMergeAllowed === false
+          ? input.capabilities.actions.filter((action) => action !== "enable-auto-merge")
+          : input.capabilities.actions,
+    },
     baseComparison: row.baseComparison,
     behindBy: row.behindBy,
-    autoMergeEnabled: row.autoMergeEnabled,
+    autoMergeEnabled: row.autoMergeEnabled ?? null,
     isStacked: defaultBranch !== null && row.baseBranch !== defaultBranch,
     defaultBranch,
   };

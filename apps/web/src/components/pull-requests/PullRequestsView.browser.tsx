@@ -537,6 +537,7 @@ describe("PullRequestsView", () => {
           mergeability: "conflicting",
           reviewDecision: "approved",
           checksState: "failure",
+          autoMergeEnabled: true,
           labels: [{ name: "dependencies", color: "0366d6" }],
         }),
       ],
@@ -546,6 +547,8 @@ describe("PullRequestsView", () => {
     await expect.element(page.getByText("Bump the runner")).toBeVisible();
     // The triangle stands in for the open glyph, and says so in words.
     expect(page.getByText("Conflicts with main").elements()).toHaveLength(1);
+    // The standing instruction is a word on the meta line, not a glyph.
+    expect(page.getByText("auto-merge").elements()).toHaveLength(1);
     // The reviews and the checks are both glyphs, and each carries the words
     // the row no longer spends its meta line on.
     expect(page.getByText("Approved").elements()).toHaveLength(1);

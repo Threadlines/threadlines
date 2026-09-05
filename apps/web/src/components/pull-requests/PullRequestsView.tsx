@@ -79,6 +79,7 @@ import {
   narrowPullRequests,
   projectRepository,
   pullRequestBadgeTone,
+  pullRequestAutoMergeLabel,
   pullRequestConflictLabel,
   pullRequestEntryKey,
   pullRequestFilterChips,
@@ -927,9 +928,13 @@ function PullRequestRow({
   // opens it, since a glyph in a sibling is not part of that name: the state
   // word, then the conflict, then how the checks went.
   const checksLabel = pullRequestChecksTone(entry.checksState)?.label ?? null;
+  // Armed to land on its own is worth a word on an open row: it is the one that
+  // needs nobody to come back for it.
+  const autoMergeLabel = pullRequestAutoMergeLabel(entry);
   const rowLabel = `${[
     `${glyphLabel} pull request #${entry.number}`,
     ...(conflictLabel ? [lowerFirst(conflictLabel)] : []),
+    ...(autoMergeLabel ? [lowerFirst(autoMergeLabel)] : []),
     ...(checksLabel ? [lowerFirst(checksLabel)] : []),
   ].join(", ")}: ${entry.title}`;
   const reviewTone = pullRequestReviewTone({
@@ -1014,6 +1019,22 @@ function PullRequestRow({
           },
         ]
       : []),
+    // The standing merge instruction, as a mono meta word like the number: it
+    // is a fact the host holds, not a state the glyphs beside it already say.
+    ...(autoMergeLabel === null
+      ? []
+      : [
+          {
+            key: "auto-merge",
+            fit: "whole" as const,
+            className: "font-mono",
+            content: (
+              <TooltipWrapper tooltip="Merges on its own once every requirement passes">
+                <span className="pointer-events-auto">{autoMergeLabel.toLowerCase()}</span>
+              </TooltipWrapper>
+            ),
+          },
+        ]),
     // Where the reviews stand and how the checks went, as two glyphs at the end
     // of the line: the same pair on every row, in every group, so the eye finds
     // them in the same place rather than reading a coloured word out of the

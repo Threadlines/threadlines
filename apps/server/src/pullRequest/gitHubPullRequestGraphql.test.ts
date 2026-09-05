@@ -272,6 +272,7 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
     labels: { nodes: [{ name: "bug", color: "d73a4a" }] },
     reviewRequests: { nodes: [{ requestedReviewer: { login: "hubot" } }] },
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+    autoMergeRequest: { enabledAt: "2026-08-31T09:00:00Z" },
     ...overrides,
   });
 
@@ -303,6 +304,7 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
         reviewDecision: "changes-requested",
         checksState: "failure",
         mergeability: "conflicting",
+        autoMergeEnabled: true,
         labels: [{ name: "bug", color: "d73a4a" }],
         repository: "openai/codex",
       },

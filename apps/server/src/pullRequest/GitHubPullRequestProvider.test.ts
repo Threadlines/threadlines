@@ -40,11 +40,6 @@ describe("GitHubPullRequestProvider.runAction", () => {
       args: ["pr", "update-branch", "12", "--repo", "octocat/example-app", "--rebase"],
     },
     {
-      name: "arms auto-merge with the strategy the host stores alongside it",
-      input: { action: "enable-auto-merge", mergeMethod: "squash" },
-      args: ["pr", "merge", "12", "--repo", "octocat/example-app", "--auto", "--squash"],
-    },
-    {
       name: "disarms auto-merge",
       input: { action: "disable-auto-merge" },
       args: ["pr", "merge", "12", "--repo", "octocat/example-app", "--disable-auto"],
@@ -68,6 +63,62 @@ describe("GitHubPullRequestProvider.runAction", () => {
       }).pipe(Effect.provide(layer)),
     );
   }
+
+  /** The host answers the readiness read with one status and every write with nothing. */
+  const hostReports = (status: string) => {
+    mockExecute.mockImplementation((input) =>
+      Effect.succeed(
+        processOutput(input.args[1] === "view" ? JSON.stringify({ mergeStateStatus: status }) : ""),
+      ),
+    );
+  };
+  const prCalls = () =>
+    calls()
+      .map((call) => call.args)
+      .filter((args) => args[0] === "pr");
+
+  it.effect("arms auto-merge only once the host says the merge would wait", () =>
+    Effect.gen(function* () {
+      hostReports("BLOCKED");
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      yield* provider.runAction({
+        ...repository,
+        number: 12,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+      });
+
+      assert.deepStrictEqual(prCalls(), [
+        ["pr", "view", "12", "--repo", "octocat/example-app", "--json", "mergeStateStatus"],
+        // The strategy travels with the standing instruction.
+        ["pr", "merge", "12", "--repo", "octocat/example-app", "--auto", "--squash"],
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("refuses to arm a pull request gh would merge on the spot", () =>
+    Effect.gen(function* () {
+      hostReports("CLEAN");
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      const error = yield* provider
+        .runAction({
+          ...repository,
+          number: 12,
+          action: "enable-auto-merge",
+          mergeMethod: "squash",
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error.detail, "This pull request can merge right now. Use Merge instead.");
+      // Nothing ran but the read: the merge never reached the host.
+      assert.deepStrictEqual(
+        prCalls().map((args) => args[1]),
+        ["view"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("GitHubPullRequestProvider.submitReview", () => {
