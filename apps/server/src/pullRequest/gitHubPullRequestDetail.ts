@@ -8,6 +8,7 @@ import {
   type PullRequestComment,
   type PullRequestCommit,
   type PullRequestMergeability,
+  type PullRequestMergeGate,
   type PullRequestMergeMethod,
   type PullRequestReviewer,
   type PullRequestReviewState,
@@ -40,6 +41,9 @@ export const GITHUB_PULL_REQUEST_DETAIL_FIELDS = [
   "closedAt",
   "reviews",
   "autoMergeRequest",
+  // What `gh pr merge` itself consults before it tries: the host's verdict on
+  // whether its rules would take the merge.
+  "mergeStateStatus",
   // Qualifies the head branch as `owner:branch`, which is the only name a
   // branch on a fork has in the base repository.
   "headRepositoryOwner",
@@ -87,6 +91,8 @@ export interface GitHubPullRequestDetailRow extends GitHubPullRequestListRow {
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestReviewer>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
+  /** Absent while the host is still deciding after a push, or on a host too old to say. */
+  readonly mergeGate?: PullRequestMergeGate;
   /** Null on a host too old to report an auto-merge instruction at all. */
   readonly autoMergeEnabled: boolean | null;
   /** Qualifies the head branch when it lives on a fork. */
@@ -137,6 +143,7 @@ const GitHubPullRequestDetailRowSchema = Schema.Struct({
   reviews: Schema.optional(Schema.NullOr(Schema.Array(GitHubReviewSchema))),
   /** An object while auto-merge is armed, null once it is not, absent on an older CLI. */
   autoMergeRequest: Schema.optional(Schema.NullOr(Schema.Struct({}))),
+  mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
   headRepositoryOwner: Schema.optional(
     Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.NullOr(Schema.String)) })),
   ),
@@ -223,6 +230,27 @@ function normalizeReviewers(input: {
 }
 
 /** One row per check. A repeated name is a re-run, so the last one wins. */
+/**
+ * GitHub's `mergeStateStatus` as the gate the client renders. `BLOCKED` and
+ * `BEHIND` are the two `gh pr merge` refuses on without `--admin`; `DIRTY` is a
+ * conflict and already told through `mergeability`, and `UNKNOWN` is a host
+ * that has not finished deciding, so both say nothing here.
+ */
+function normalizeMergeGate(value: string | null | undefined): PullRequestMergeGate | undefined {
+  switch (value?.trim().toUpperCase()) {
+    case "BLOCKED":
+      return "blocked";
+    case "BEHIND":
+      return "behind";
+    case "CLEAN":
+    case "HAS_HOOKS":
+    case "UNSTABLE":
+      return "clear";
+    default:
+      return undefined;
+  }
+}
+
 function normalizeChecks(
   checks: ReadonlyArray<Schema.Schema.Type<typeof GitHubStatusCheckSchema>> | null | undefined,
 ): ReadonlyArray<PullRequestCheck> {
@@ -384,6 +412,7 @@ export function decodeGitHubPullRequestDetailJson(
 
   const row = payload.success;
   const base = normalizeGitHubPullRequestListRow(row);
+  const mergeGate = normalizeMergeGate(row.mergeStateStatus);
   return Result.succeed({
     ...base,
     body: row.body ?? "",
@@ -399,6 +428,7 @@ export function decodeGitHubPullRequestDetailJson(
       reviews: row.reviews ?? [],
     }),
     checks: normalizeChecks(row.statusCheckRollup),
+    ...(mergeGate === undefined ? {} : { mergeGate }),
     // A CLI too old for the field leaves it absent, which is "the host did not
     // say" rather than "auto-merge is off".
     autoMergeEnabled: row.autoMergeRequest === undefined ? null : row.autoMergeRequest !== null,

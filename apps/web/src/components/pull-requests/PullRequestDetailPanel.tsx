@@ -12,6 +12,7 @@ import type {
   ScopedThreadRef,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
+import { PullRequestMergeMethod as PullRequestMergeMethodSchema } from "@threadlines/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -94,6 +95,7 @@ import {
 } from "./pullRequestPresentation";
 import {
   PULL_REQUEST_MERGE_METHOD_LABELS,
+  PULL_REQUEST_MERGE_METHOD_WORDS,
   appendHandoffToDraft,
   buildReviewCommentHandoff,
   formatPullRequestBaseFreshness,
@@ -1061,6 +1063,11 @@ type PullRequestConfirmation =
 /** Remembered per computer: whoever deletes merged branches always does. */
 const DELETE_BRANCH_STORAGE_PREFIX = "threadlines:pull-requests:delete-branch:v1";
 
+/** Remembered per repository: the merge method last run on it becomes the
+ *  Merge button's own, as the host's site does. */
+const MERGE_METHOD_STORAGE_PREFIX = "threadlines:pull-requests:merge-method:v1";
+const REMEMBERED_MERGE_METHOD_SCHEMA = Schema.NullOr(PullRequestMergeMethodSchema);
+
 /** The three pieces the header hangs in three different places. */
 interface PullRequestActionsView {
   /** The buttons, for the right of the header's first row. */
@@ -1104,6 +1111,11 @@ function usePullRequestActions({
     false,
     Schema.Boolean,
   );
+  const [rememberedMergeMethod, setRememberedMergeMethod] = useLocalStorage(
+    `${MERGE_METHOD_STORAGE_PREFIX}:${detail.provider}:${detail.repository}`,
+    null,
+    REMEMBERED_MERGE_METHOD_SCHEMA,
+  );
 
   const isRunning = mutation.isPending;
   const runningAction = isRunning ? (mutation.variables?.action ?? null) : null;
@@ -1144,7 +1156,7 @@ function usePullRequestActions({
   const updateMethods = detail.capabilities.updateMethods;
   const mergeBlock = resolvePullRequestMergeBlock(detail);
   const mergeDisabled = isRunning || mergeBlock !== null;
-  const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods);
+  const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods, rememberedMergeMethod);
   const canUpdateBranch = canWrite && isOpen && allows("update-branch");
   const isBehind = detail.baseComparison === "behind";
 
@@ -1180,7 +1192,9 @@ function usePullRequestActions({
         data-testid="pull-request-merge"
         onClick={() => setConfirming({ action: "merge", mergeMethod: defaultMergeMethod })}
       >
-        {runningAction === "merge" ? RUNNING_ACTION_WORDS.merge : "Merge"}
+        {runningAction === "merge"
+          ? RUNNING_ACTION_WORDS.merge
+          : PULL_REQUEST_MERGE_METHOD_WORDS[defaultMergeMethod]}
       </Button>
       {detail.mergeMethods.length > 1 ? (
         <Menu>
@@ -1329,7 +1343,7 @@ function usePullRequestActions({
                     setConfirming({ action: "merge", mergeMethod: defaultMergeMethod })
                   }
                 >
-                  Merge
+                  {PULL_REQUEST_MERGE_METHOD_LABELS[defaultMergeMethod]}
                 </MenuItem>
               ) : null}
               {handoffs ? (
@@ -1399,7 +1413,12 @@ function usePullRequestActions({
       {/* A disabled button cannot be focused, so the reason it is disabled is
           written out as well as tucked in its tooltip. */}
       {primary === "merge" && mergeBlock !== null ? (
-        <p className="mt-1 text-right text-xs text-muted-foreground/60">{mergeBlock}</p>
+        <p
+          className="mt-1 text-right text-xs text-muted-foreground/60"
+          data-testid="pull-request-merge-block"
+        >
+          {mergeBlock}
+        </p>
       ) : null}
       {mutation.isError ? (
         <p className="mt-1.5 break-words text-right text-xs text-destructive">
@@ -1456,6 +1475,7 @@ function usePullRequestActions({
             onClick={() => {
               setConfirming(null);
               if (confirming.action === "merge") {
+                setRememberedMergeMethod(confirming.mergeMethod);
                 run("merge", {
                   mergeMethod: confirming.mergeMethod,
                   ...(deleteBranch ? { deleteBranch: true } : {}),
