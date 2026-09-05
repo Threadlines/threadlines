@@ -39,7 +39,9 @@ import {
   pullRequestFiltersFromSearch,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
+  pullRequestMergeQueueLabel,
   resolveDefaultMergeMethod,
+  resolveMergeWhenReadyBlock,
   resolveNeedsYouReason,
   resolvePullRequestMergeBlock,
   resolvePullRequestReviewPosition,
@@ -1019,6 +1021,53 @@ describe("resolvePullRequestMergeBlock", () => {
   });
 });
 
+describe("resolveMergeWhenReadyBlock", () => {
+  it("stops only for what a merge queue cannot fix for itself", () => {
+    expect(resolveMergeWhenReadyBlock({ mergeability: "mergeable", isDraft: true })).toBe(
+      "Mark as ready first",
+    );
+    expect(resolveMergeWhenReadyBlock({ mergeability: "conflicting", isDraft: false })).toBe(
+      "Resolve the conflicts first",
+    );
+    // A stale base and a rule still waiting are the queue's own work: it
+    // builds its merge on the latest base and waits the checks out there.
+    expect(resolveMergeWhenReadyBlock({ mergeability: "mergeable", isDraft: false })).toBeNull();
+  });
+});
+
+describe("pullRequestMergeQueueLabel", () => {
+  const base = { baseBranch: "main", autoMergeEnabled: false };
+
+  it("says nothing where the base runs no queue", () => {
+    expect(pullRequestMergeQueueLabel({ ...base, autoMergeEnabled: true })).toBeNull();
+  });
+
+  it("counts a place in the queue in English, and leaves first place bare", () => {
+    const at = (position: number) =>
+      pullRequestMergeQueueLabel({ ...base, mergeQueue: { position } })?.label;
+    expect(at(1)).toBe("Queued");
+    expect(at(2)).toBe("Queued, 2nd");
+    expect(at(3)).toBe("Queued, 3rd");
+    expect(at(4)).toBe("Queued, 4th");
+    expect(at(11)).toBe("Queued, 11th");
+    expect(at(21)).toBe("Queued, 21st");
+    expect(pullRequestMergeQueueLabel({ ...base, mergeQueue: { position: 2 } })?.tooltip).toBe(
+      "In the merge queue for main",
+    );
+  });
+
+  it("says what an armed pull request is waiting to do, and nothing when it is not armed", () => {
+    expect(
+      pullRequestMergeQueueLabel({
+        ...base,
+        autoMergeEnabled: true,
+        mergeQueue: { position: null },
+      })?.label,
+    ).toBe("Merge when ready");
+    expect(pullRequestMergeQueueLabel({ ...base, mergeQueue: { position: null } })).toBeNull();
+  });
+});
+
 describe("shouldPollPullRequestDetail", () => {
   const now = Date.parse("2026-09-04T12:00:00.000Z");
   const check = (status: PullRequestCheck["status"]) => ({
@@ -1055,6 +1104,18 @@ describe("shouldPollPullRequestDetail", () => {
     expect(
       shouldPollPullRequestDetail({ ...justPushed, state: "merged" as const, checks: [] }, now),
     ).toBe(false);
+  });
+
+  it("keeps watching a pull request the host has taken into its merge queue", () => {
+    const inQueue = { ...settled, checks: [check("success")] };
+    expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: 2 } }, now)).toBe(
+      true,
+    );
+    // Merely armed under a queue is a settled state: nothing moves until the
+    // requirements pass, which the checks already say.
+    expect(shouldPollPullRequestDetail({ ...inQueue, mergeQueue: { position: null } }, now)).toBe(
+      false,
+    );
   });
 });
 

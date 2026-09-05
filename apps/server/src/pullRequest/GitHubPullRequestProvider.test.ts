@@ -64,11 +64,22 @@ describe("GitHubPullRequestProvider.runAction", () => {
     );
   }
 
-  /** The host answers the readiness read with one status and every write with nothing. */
-  const hostReports = (status: string) => {
+  /**
+   * The host answers the readiness read over GraphQL and every write with
+   * nothing. `isMergeQueueEnabled` is what the queue case turns on.
+   */
+  const hostReports = (status: string, isMergeQueueEnabled = false) => {
     mockExecute.mockImplementation((input) =>
       Effect.succeed(
-        processOutput(input.args[1] === "view" ? JSON.stringify({ mergeStateStatus: status }) : ""),
+        processOutput(
+          input.args[0] === "api"
+            ? JSON.stringify({
+                data: {
+                  repository: { pullRequest: { mergeStateStatus: status, isMergeQueueEnabled } },
+                },
+              })
+            : "",
+        ),
       ),
     );
   };
@@ -90,7 +101,6 @@ describe("GitHubPullRequestProvider.runAction", () => {
       });
 
       assert.deepStrictEqual(prCalls(), [
-        ["pr", "view", "12", "--repo", "octocat/example-app", "--json", "mergeStateStatus"],
         // The strategy travels with the standing instruction.
         ["pr", "merge", "12", "--repo", "octocat/example-app", "--auto", "--squash"],
       ]);
@@ -112,11 +122,31 @@ describe("GitHubPullRequestProvider.runAction", () => {
         .pipe(Effect.flip);
 
       assert.equal(error.detail, "This pull request can merge right now. Use Merge instead.");
-      // Nothing ran but the read: the merge never reached the host.
+      // Nothing ran but the GraphQL read: the merge never reached the host.
       assert.deepStrictEqual(
-        prCalls().map((args) => args[1]),
-        ["view"],
+        calls().map((call) => call.args[0]),
+        ["api"],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("arms a green pull request whose base runs a merge queue", () =>
+    Effect.gen(function* () {
+      hostReports("CLEAN", true);
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      yield* provider.runAction({
+        ...repository,
+        number: 12,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+      });
+
+      // Under a queue this call adds the pull request to it, which is the
+      // whole point, so the refusal must not stand in the way.
+      assert.deepStrictEqual(prCalls(), [
+        ["pr", "merge", "12", "--repo", "octocat/example-app", "--auto", "--squash"],
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 });

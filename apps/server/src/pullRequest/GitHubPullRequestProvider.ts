@@ -32,7 +32,6 @@ import {
 import {
   decodeGitHubPullRequestActivityJson,
   decodeGitHubPullRequestDetailJson,
-  decodeGitHubImmediatelyMergeableJson,
   decodeGitHubRepositoryJson,
   GITHUB_PULL_REQUEST_ACTIVITY_FIELDS,
   GITHUB_PULL_REQUEST_DETAIL_FIELDS,
@@ -40,18 +39,21 @@ import {
 import {
   ADD_REACTION_GRAPHQL_MUTATION,
   AUTHORED_PULL_REQUESTS_GRAPHQL_QUERY,
-  BASE_COMPARISON_GRAPHQL_QUERY,
+  AUTO_MERGE_READINESS_GRAPHQL_QUERY,
   buildGitHubReviewerRequestJson,
   buildGitHubReviewSubmissionJson,
   decodeGitHubAuthoredPullRequestsJson,
-  decodeGitHubBaseComparisonJson,
+  decodeGitHubDetailBaseStateJson,
+  decodeGitHubImmediatelyMergeableJson,
   decodeGitHubPullRequestConversationJson,
   decodeGitHubPullRequestNodeIdJson,
   decodeGitHubReviewerCandidatesJson,
   decodeGitHubSubjectScopeJson,
+  DETAIL_BASE_STATE_GRAPHQL_QUERY,
   encodeGraphQlRequestJson,
   gitHubAuthoredSearchQuery,
   gitHubReactionContent,
+  type GitHubDetailBaseState,
   type GitHubGraphQlVariable,
   PULL_REQUEST_CONVERSATION_GRAPHQL_QUERY,
   PULL_REQUEST_NODE_ID_GRAPHQL_QUERY,
@@ -260,43 +262,6 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       stdin: encodeGraphQlRequestJson({ query: input.query, variables: input.variables }),
     });
 
-  /**
-   * Fails where GitHub would merge the pull request the moment it is armed. The
-   * refusal is this app's own sentence, since the host never gets asked.
-   */
-  const refuseIfImmediatelyMergeable = (
-    input: ProviderRepositoryRef & { readonly number: number },
-  ) =>
-    run({
-      operation: "runAction",
-      cwd: input.cwd,
-      args: [
-        "pr",
-        "view",
-        String(input.number),
-        ...repositoryArgs(input),
-        "--json",
-        "mergeStateStatus",
-      ],
-    }).pipe(
-      Effect.flatMap((output) => {
-        const decoded = decodeGitHubImmediatelyMergeableJson(output.stdout.trim());
-        if (!Result.isSuccess(decoded)) {
-          return Effect.fail(decodeError("runAction", "merge state", decoded.failure));
-        }
-        return decoded.success
-          ? Effect.fail(
-              new PullRequestProviderError({
-                provider: PROVIDER_KIND,
-                operation: "runAction",
-                reason: "failed",
-                detail: "This pull request can merge right now. Use Merge instead.",
-              }),
-            )
-          : Effect.void;
-      }),
-    );
-
   const graphqlRead = <A>(input: {
     readonly operation: string;
     readonly cwd: string;
@@ -311,6 +276,38 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
           ? Effect.succeed(decoded.success)
           : Effect.fail(decodeError(input.operation, "GraphQL", decoded.failure));
       }),
+    );
+
+  /**
+   * Fails where GitHub would merge the pull request the moment it is armed. The
+   * refusal is this app's own sentence, since the host never gets asked.
+   *
+   * A base guarded by a merge queue is never refused: there the same call adds
+   * the pull request to the queue rather than merging it, which is exactly what
+   * arming means under a queue.
+   */
+  const refuseIfImmediatelyMergeable = (
+    input: ProviderRepositoryRef & { readonly number: number },
+  ) =>
+    graphqlRead({
+      operation: "runAction",
+      cwd: input.cwd,
+      query: AUTO_MERGE_READINESS_GRAPHQL_QUERY,
+      variables: graphQlVariables(input),
+      decode: decodeGitHubImmediatelyMergeableJson,
+    }).pipe(
+      Effect.flatMap((immediatelyMergeable) =>
+        immediatelyMergeable
+          ? Effect.fail(
+              new PullRequestProviderError({
+                provider: PROVIDER_KIND,
+                operation: "runAction",
+                reason: "failed",
+                detail: "This pull request can merge right now. Use Merge instead.",
+              }),
+            )
+          : Effect.void,
+      ),
     );
 
   /**
@@ -571,7 +568,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
           graphqlRead({
             operation: "detail",
             cwd: input.cwd,
-            query: BASE_COMPARISON_GRAPHQL_QUERY,
+            query: DETAIL_BASE_STATE_GRAPHQL_QUERY,
             variables: {
               ...graphQlVariables(input),
               headRef:
@@ -579,15 +576,17 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
                   ? row.headBranch
                   : `${row.headRepositoryOwnerLogin}:${row.headBranch}`,
             },
-            decode: decodeGitHubBaseComparisonJson,
+            decode: decodeGitHubDetailBaseStateJson,
           }).pipe(
-            // A comparison the host will not make leaves the branch's freshness
-            // unknown; it is not worth failing a detail the reader can use.
-            Effect.catch(() => Effect.succeed(null)),
-            Effect.map((behindBy) => ({
+            // A read the host will not answer leaves the branch's freshness
+            // unknown and says nothing about a queue; it is not worth failing a
+            // detail the reader can use.
+            Effect.catch(() => Effect.succeed<GitHubDetailBaseState>({ behindBy: null })),
+            Effect.map((base) => ({
               ...row,
-              baseComparison: toBaseComparison(behindBy),
-              behindBy,
+              baseComparison: toBaseComparison(base.behindBy),
+              behindBy: base.behindBy,
+              ...(base.mergeQueue === undefined ? {} : { mergeQueue: base.mergeQueue }),
             })),
           ),
         ),

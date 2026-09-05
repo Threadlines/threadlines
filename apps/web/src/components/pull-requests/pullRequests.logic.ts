@@ -1451,6 +1451,67 @@ export function resolvePullRequestMergeBlock(
   return null;
 }
 
+/**
+ * Why "Merge when ready" is off the table right now, or null when it is
+ * available. Only the two things a merge queue cannot fix for itself: the queue
+ * builds its own merge on top of the latest base, so a branch that is behind or
+ * waiting on a rule is exactly what it is for.
+ */
+export function resolveMergeWhenReadyBlock(
+  detail: Pick<PullRequestDetail, "mergeability" | "isDraft">,
+): string | null {
+  if (detail.isDraft) {
+    return "Mark as ready first";
+  }
+  if (detail.mergeability === "conflicting") {
+    return "Resolve the conflicts first";
+  }
+  return null;
+}
+
+/** `1` reads as first and needs no ordinal; the rest are 2nd, 3rd, 4th… */
+function englishOrdinal(value: number): string {
+  const remainderOfTen = value % 10;
+  const remainderOfHundred = value % 100;
+  if (remainderOfTen === 1 && remainderOfHundred !== 11) {
+    return `${value}st`;
+  }
+  if (remainderOfTen === 2 && remainderOfHundred !== 12) {
+    return `${value}nd`;
+  }
+  if (remainderOfTen === 3 && remainderOfHundred !== 13) {
+    return `${value}rd`;
+  }
+  return `${value}th`;
+}
+
+/**
+ * The header's word for a pull request whose base runs a merge queue, or null
+ * where there is nothing to say. Queued leads with where it stands, since that
+ * is the only part that moves; armed says what it is waiting to do. Outside a
+ * queue this says nothing and the plain auto-merge word stands.
+ */
+export function pullRequestMergeQueueLabel(
+  detail: Pick<PullRequestDetail, "mergeQueue" | "autoMergeEnabled" | "baseBranch">,
+): { readonly label: string; readonly tooltip: string } | null {
+  if (detail.mergeQueue === undefined) {
+    return null;
+  }
+  const position = detail.mergeQueue.position;
+  if (position !== null) {
+    return {
+      label: position <= 1 ? "Queued" : `Queued, ${englishOrdinal(position)}`,
+      tooltip: `In the merge queue for ${detail.baseBranch}`,
+    };
+  }
+  return detail.autoMergeEnabled === true
+    ? {
+        label: "Merge when ready",
+        tooltip: "Joins the merge queue once every requirement passes",
+      }
+    : null;
+}
+
 /** How long after a push the header waits for the host to register the new commit's checks. */
 export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
 
@@ -1459,10 +1520,12 @@ export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
  * the plain case. The other is the quiet moment right after a push (an update
  * from the base, a new commit) when the host has the commit but has not queued
  * its checks or decided whether it merges: a read then shows no checks at all,
- * and would otherwise sit on that answer until the user hit Refresh.
+ * and would otherwise sit on that answer until the user hit Refresh. A pull
+ * request sitting in a merge queue is the third: its place in the queue moves
+ * on its own, and the host lands it without anyone here asking.
  */
 export function shouldPollPullRequestDetail(
-  detail: Pick<PullRequestDetail, "state" | "checks" | "mergeability" | "updatedAt">,
+  detail: Pick<PullRequestDetail, "state" | "checks" | "mergeability" | "updatedAt" | "mergeQueue">,
   now: number,
 ): boolean {
   if (detail.checks.some((check) => check.status === "pending")) {
@@ -1470,6 +1533,9 @@ export function shouldPollPullRequestDetail(
   }
   if (detail.state !== "open") {
     return false;
+  }
+  if (detail.mergeQueue !== undefined && detail.mergeQueue.position !== null) {
+    return true;
   }
   const unsettled = detail.checks.length === 0 || detail.mergeability === "unknown";
   const updatedAt = Date.parse(detail.updatedAt);

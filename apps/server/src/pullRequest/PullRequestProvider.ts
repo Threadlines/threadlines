@@ -123,6 +123,12 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly checks: ReadonlyArray<PullRequestCheck>;
   /** Absent where the host does not say whether its rules would take a merge. */
   readonly mergeGate?: PullRequestMergeGate;
+  /**
+   * The merge queue guarding the base, where the host runs one. Absent where
+   * the base has no queue, or the host does not say. `position` is null until
+   * this change request has actually joined the queue.
+   */
+  readonly mergeQueue?: { readonly position: number | null };
   readonly baseComparison: PullRequestBaseComparison;
   /** Null where the host could not compare the branch with its base. */
   readonly behindBy: number | null;
