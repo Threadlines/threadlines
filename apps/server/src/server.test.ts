@@ -3189,6 +3189,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeed({
                 worktree: { path: "/tmp/wt", refName: "feature/demo" },
               }),
+            resolveFreshWorktreeBase: (input) =>
+              Effect.succeed({ refName: input.branch, isRemote: false }),
             workingTreeDiff: () => Effect.succeed({ diff: "" }),
             discardChanges: (input) => Effect.succeed({ discardedPaths: [...input.filePaths] }),
             stageChanges: (input) => Effect.succeed({ stagedPaths: [...input.filePaths] }),
