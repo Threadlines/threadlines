@@ -8,7 +8,7 @@ import {
   type EnvironmentApi,
   type DesktopPreviewUserControl,
   type DesktopPreviewTarget,
-  type MessageId,
+  MessageId,
   type OrchestrationEvent,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
