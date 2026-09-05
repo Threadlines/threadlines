@@ -9165,68 +9165,101 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps one composer row and moves stash into the overflow menu in an extra-narrow pane", async () => {
-    const mounted = await mountChatView({
-      viewport: WIDE_FOOTER_VIEWPORT,
-      snapshot: fixture.snapshot,
-    });
-
-    try {
-      await mounted.setContainerSize({
-        width: 250,
-        height: WIDE_FOOTER_VIEWPORT.height,
+  // Real phone viewports (touch-size buttons) and extra-narrow desktop side
+  // panes. The stash bookmark used to hide in the overflow menu below the
+  // compact breakpoint; now it stays in the row, so the row must still fit
+  // without the bookmark shoving the overflow trigger off-screen or squeezing
+  // the model picker down to nothing. One test per viewport: the full app
+  // only mounts cleanly once per test.
+  it.each([
+    { name: "phone", viewport: PHONE_VIEWPORT, width: PHONE_VIEWPORT.width },
+    { name: "small phone", viewport: { ...PHONE_VIEWPORT, width: 360 }, width: 360 },
+    { name: "narrow pane", viewport: WIDE_FOOTER_VIEWPORT, width: 320 },
+    { name: "extra-narrow pane", viewport: WIDE_FOOTER_VIEWPORT, width: 250 },
+  ])(
+    "keeps one composer row with the stash bookmark and overflow menu both visible ($name)",
+    async ({ viewport, width }) => {
+      const mounted = await mountChatView({
+        viewport,
+        // The shared fixture snapshot does not render at phone viewports in
+        // this harness; the target-user snapshot does.
+        snapshot:
+          viewport === WIDE_FOOTER_VIEWPORT
+            ? fixture.snapshot
+            : createSnapshotForTargetUser({
+                targetMessageId: "msg-user-narrow-footer" as MessageId,
+                targetText: "narrow footer",
+              }),
       });
 
-      const footer = await waitForElement(
-        findVisibleComposerFooter,
-        "Unable to find composer footer.",
-      );
-      const leftActions = await waitForElement(
-        () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
-        "Unable to find left composer actions.",
-      );
-      const rightActions = await waitForElement(
-        () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
-        "Unable to find right composer actions.",
-      );
-      const moreControlsButton = await waitForElement(
-        () =>
-          footer.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
-        "Unable to find compact composer controls.",
-      );
+      try {
+        await mounted.setContainerSize({
+          width,
+          height: viewport.height,
+        });
 
-      await vi.waitFor(
-        () => {
-          const footerRect = footer.getBoundingClientRect();
-          const leftRect = leftActions.getBoundingClientRect();
-          const rightRect = rightActions.getBoundingClientRect();
+        const footer = await waitForElement(
+          findVisibleComposerFooter,
+          "Unable to find composer footer.",
+        );
+        const leftActions = await waitForElement(
+          () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
+          "Unable to find left composer actions.",
+        );
+        const rightActions = await waitForElement(
+          () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
+          "Unable to find right composer actions.",
+        );
+        const moreControlsButton = await waitForElement(
+          () =>
+            footer.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
+          "Unable to find compact composer controls.",
+        );
+        const stashButton = await waitForElement(
+          () =>
+            rightActions.querySelector<HTMLButtonElement>('button[aria-label^="Stashed prompts"]'),
+          "Unable to find the stash bookmark in the composer row.",
+        );
+        const modelButton = await waitForElement(
+          () =>
+            leftActions.querySelector<HTMLButtonElement>(
+              '[data-chat-provider-model-picker="true"]',
+            ),
+          "Unable to find provider model picker.",
+        );
 
-          const leftCenter = (leftRect.top + leftRect.bottom) / 2;
-          const rightCenter = (rightRect.top + rightRect.bottom) / 2;
-          expect(Math.abs(leftCenter - rightCenter)).toBeLessThanOrEqual(1);
-          expect(moreControlsButton.getBoundingClientRect().right).toBeLessThanOrEqual(
-            leftRect.right + 0.5,
-          );
-          expect(leftRect.right).toBeLessThanOrEqual(rightRect.left + 0.5);
-          expect(rightRect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
-          expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
-          expect(footer.dataset.chatComposerFooterCompact).toBe("true");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+        await vi.waitFor(
+          () => {
+            const footerRect = footer.getBoundingClientRect();
+            const leftRect = leftActions.getBoundingClientRect();
+            const rightRect = rightActions.getBoundingClientRect();
+            const moreRect = moreControlsButton.getBoundingClientRect();
+            const stashRect = stashButton.getBoundingClientRect();
 
-      expect(document.querySelector('button[aria-label^="Stashed prompts"]')).toBeNull();
-      moreControlsButton.click();
-      await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-slot="menu-sub-trigger"]'),
-        "Unable to find the stashed prompts submenu.",
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+            const leftCenter = (leftRect.top + leftRect.bottom) / 2;
+            const rightCenter = (rightRect.top + rightRect.bottom) / 2;
+            expect(Math.abs(leftCenter - rightCenter)).toBeLessThanOrEqual(1);
+            expect(moreRect.left).toBeGreaterThanOrEqual(leftRect.left - 0.5);
+            expect(moreRect.right).toBeLessThanOrEqual(leftRect.right + 0.5);
+            expect(leftRect.right).toBeLessThanOrEqual(rightRect.left + 0.5);
+            expect(stashRect.left).toBeGreaterThanOrEqual(rightRect.left - 0.5);
+            expect(stashRect.right).toBeLessThanOrEqual(rightRect.right + 0.5);
+            expect(rightRect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
+            expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+            expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
+            expect(footer.dataset.chatComposerFooterCompact).toBe("true");
+            // The provider icon plus at least a few characters of model name.
+            expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(48);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
-  it("keeps model and reasoning labels while secondary controls are icon-only", async () => {
+  it("drops traits, mode, and access to icons together when the labels stop fitting, and restores them", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
@@ -9267,66 +9300,54 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      await setVisibleComposerFormWidth(560);
-
       const footer = await waitForElement(
         findVisibleComposerFooter,
         "Unable to find composer footer.",
       );
-      await vi.waitFor(() => {
-        expect(footer.dataset.chatComposerFooterIconOnly).toBe("true");
-        expect(footer.dataset.chatComposerFooterCompact).toBe("false");
-      });
       const modelButton = await waitForElement(
         () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find provider model picker.",
       );
-      const reasoningButton = await waitForButtonByTextWithin(footer, "Medium");
-      expect(modelButton.textContent).toContain("GPT-5");
-      expect(reasoningButton.textContent).toBe("Medium");
-      expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(32);
-      expect(reasoningButton.getBoundingClientRect().width).toBeGreaterThan(32);
-      expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+      await waitForButtonByTextWithin(footer, "Medium");
+      await waitForButtonByText("Full access");
 
-  it("shrinks interaction and access controls to icons before using the overflow menu", async () => {
-    const mounted = await mountChatView({
-      viewport: WIDE_FOOTER_VIEWPORT,
-      snapshot: fixture.snapshot,
-    });
-
-    try {
       await setVisibleComposerFormWidth(560);
-
-      const footer = await waitForElement(
-        findVisibleComposerFooter,
-        "Unable to find composer footer.",
-      );
       await vi.waitFor(() => {
         expect(footer.dataset.chatComposerFooterIconOnly).toBe("true");
         expect(footer.dataset.chatComposerFooterCompact).toBe("false");
       });
-      const interactionButton = await waitForElement(
-        () => footer.querySelector<HTMLButtonElement>('button[aria-label^="Interaction mode:"]'),
-        "Unable to find icon-only interaction mode.",
+      const iconButtons = await Promise.all(
+        [
+          'button[aria-label^="Reasoning settings:"]',
+          'button[aria-label^="Interaction mode:"]',
+          'button[aria-label^="Access level:"]',
+        ].map((selector) =>
+          waitForElement(
+            () => footer.querySelector<HTMLButtonElement>(selector),
+            `Unable to find icon-only control ${selector}.`,
+          ),
+        ),
       );
-      const accessButton = await waitForElement(
-        () => footer.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]'),
-        "Unable to find icon-only access level.",
-      );
-      const iconButtons = [interactionButton, accessButton];
       const visibleSeparators = Array.from(
         footer.querySelectorAll<HTMLElement>('[data-slot="separator"]'),
       ).filter((separator) => getComputedStyle(separator).display !== "none");
 
       expect(document.querySelector('button[aria-label="More composer controls"]')).toBeNull();
       expect(visibleSeparators.length).toBeGreaterThanOrEqual(2);
+      expect(modelButton.textContent).toContain("GPT-5");
+      expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(32);
       for (const button of iconButtons) {
         expect(button.getBoundingClientRect().width).toBeLessThanOrEqual(32);
       }
+      expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+
+      // The way back: room returns, so do the labels.
+      await setVisibleComposerFormWidth(900);
+      await vi.waitFor(() => {
+        expect(footer.dataset.chatComposerFooterIconOnly).toBe("false");
+      });
+      await waitForButtonByTextWithin(footer, "Medium");
+      await waitForButtonByText("Full access");
     } finally {
       await mounted.cleanup();
     }
@@ -9494,7 +9515,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("uses icon-only footer controls when a wide desktop follow-up layout starts overflowing", async () => {
+  it("keeps the footer on one row when a wide desktop follow-up layout starts overflowing", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotWithPlanFollowUpPrompt({
@@ -9523,9 +9544,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
           const actions = document.querySelector<HTMLElement>(
             '[data-chat-composer-actions="right"]',
           );
-          expect(footer?.dataset.chatComposerFooterIconOnly).toBe("true");
-          expect(footer?.dataset.chatComposerFooterCompact).toBe("false");
           expect(actions?.dataset.chatComposerPrimaryActionsCompact).toBe("true");
+          expect(footer).toBeTruthy();
+          expect(footer!.scrollWidth).toBeLessThanOrEqual(footer!.clientWidth + 1);
+          const leftActions = footer!.querySelector<HTMLElement>(
+            '[data-chat-composer-actions="left"]',
+          );
+          expect(leftActions).toBeTruthy();
+          expect(leftActions!.scrollWidth).toBeLessThanOrEqual(leftActions!.clientWidth + 1);
         },
         { timeout: 8_000, interval: 16 },
       );
