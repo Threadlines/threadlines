@@ -20,6 +20,7 @@ import {
   type ProviderStartReviewResult,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
+  type SubagentMetadataUpdatedPayload,
   RuntimeMode,
   ThreadId,
   TurnId,
@@ -1321,6 +1322,22 @@ export function enrichCollabAgentToolPayload(
   };
 }
 
+/** Converts a child's real turn lifecycle into a roster update. The caller
+ *  must establish that the notification belongs to a known child first. */
+export function readCollabChildTurnStatus(
+  notification: CodexServerNotification,
+): SubagentMetadataUpdatedPayload | undefined {
+  if (notification.method === "turn/started") {
+    return { agentThreadId: notification.params.threadId, status: "running" };
+  }
+  if (notification.method === "turn/completed") {
+    const status = notification.params.turn.status;
+    if (status === "inProgress") return undefined;
+    return { agentThreadId: notification.params.threadId, status };
+  }
+  return undefined;
+}
+
 /** Child-conversation notifications that describe the child's own turn rather
  *  than work done inside the parent's. Mapped onto the parent turn they would
  *  overwrite the parent's state: a child's `turn/diff/updated` covers only its
@@ -1613,6 +1630,19 @@ export const makeCodexSessionRuntime = (
           providerThreadId,
         );
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
+          // Keep child turns out of the parent's lifecycle, but use them to
+          // track real work after a follow-up instead of guessing from messages.
+          const childStatus = readCollabChildTurnStatus(notification);
+          if (childStatus) {
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              method: "subagent/status/changed",
+              ...(providerConversationId ? { providerThreadId: providerConversationId } : {}),
+              turnId: childParentTurnId,
+              payload: childStatus,
+            });
+          }
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
           return;
