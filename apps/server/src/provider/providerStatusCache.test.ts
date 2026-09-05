@@ -65,7 +65,12 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
             Effect.gen(function* () {
               attempts += 1;
               if (attempts <= 2) {
-                assert.deepStrictEqual(yield* readProviderStatusCache(filePath), original);
+                assert.deepStrictEqual(
+                  yield* readProviderStatusCache(filePath).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                  ),
+                  original,
+                );
                 return yield* PlatformError.systemError({
                   _tag: "Unknown",
                   module: "FileSystem",

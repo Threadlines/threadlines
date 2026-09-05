@@ -2979,7 +2979,7 @@ it.effect("keeps first transcript event order after clock rollback, updates, and
         fullSnapshot.threads
           .find((thread) => thread.id === threadId)
           ?.activities.map((activity) => [activity.id, activity.eventSequence, activity.sequence]),
-        [["tool-clock", 4, 901]],
+        [[EventId.make("tool-clock"), 4, 901]],
       );
       for (const snapshot of [fullSnapshot, yield* query.getCommandReadModel()]) {
         const thread = snapshot.threads.find((entry) => entry.id === threadId);
