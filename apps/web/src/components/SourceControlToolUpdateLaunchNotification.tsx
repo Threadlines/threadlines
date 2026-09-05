@@ -9,17 +9,18 @@ import { useDismissedSourceControlToolAdvisoryKeys } from "../sourceControlToolA
 import { useStore } from "../store";
 import { useActiveEnvironmentFirstRunSetupPending } from "./chat/firstRunSetupState";
 import {
-  collectSourceControlToolUpdateWarnings,
-  sourceControlToolUpdateWarningSetKey,
+  collectSourceControlToolUpdateNotices,
+  sourceControlToolUpdateNoticeSetKey,
+  sourceControlToolUpdateToastCopy,
 } from "./SourceControlToolUpdateLaunchNotification.logic";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
-const seenSourceControlToolWarningSetKeys = new Set<string>();
-type SourceControlToolWarningToastId = ReturnType<typeof toastManager.add>;
+const seenSourceControlToolNoticeSetKeys = new Set<string>();
+type SourceControlToolNoticeToastId = ReturnType<typeof toastManager.add>;
 
-interface ActiveSourceControlToolWarningToast {
+interface ActiveSourceControlToolNoticeToast {
   readonly key: string;
-  readonly toastId: SourceControlToolWarningToastId;
+  readonly toastId: SourceControlToolNoticeToastId;
 }
 
 export function SourceControlToolUpdateLaunchNotification() {
@@ -27,54 +28,46 @@ export function SourceControlToolUpdateLaunchNotification() {
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const discovery = useSourceControlDiscovery({ environmentId: activeEnvironmentId });
   const firstRunSetupPending = useActiveEnvironmentFirstRunSetupPending();
-  const activeToastRef = useRef<ActiveSourceControlToolWarningToast | null>(null);
+  const activeToastRef = useRef<ActiveSourceControlToolNoticeToast | null>(null);
   const { dismissedNotificationKeys, dismissNotificationKeys } =
     useDismissedSourceControlToolAdvisoryKeys();
 
-  const warnings = useMemo(() => {
+  const notices = useMemo(() => {
     if (!activeEnvironmentId || !discovery.data) {
       return [];
     }
-    return collectSourceControlToolUpdateWarnings({
+    return collectSourceControlToolUpdateNotices({
       discovery: discovery.data,
       environmentKey: `environment:${activeEnvironmentId}`,
-    }).filter((warning) => !dismissedNotificationKeys.has(warning.dismissalKey));
+    }).filter((notice) => !dismissedNotificationKeys.has(notice.dismissalKey));
   }, [activeEnvironmentId, discovery.data, dismissedNotificationKeys]);
-  const warningSetKey = useMemo(() => sourceControlToolUpdateWarningSetKey(warnings), [warnings]);
+  const noticeSetKey = useMemo(() => sourceControlToolUpdateNoticeSetKey(notices), [notices]);
 
   useEffect(() => {
     const activeToast = activeToastRef.current;
-    if (activeToast && activeToast.key !== warningSetKey) {
+    if (activeToast && activeToast.key !== noticeSetKey) {
       toastManager.close(activeToast.toastId);
       activeToastRef.current = null;
     }
 
     if (
-      warningSetKey === null ||
+      noticeSetKey === null ||
       firstRunSetupPending ||
       activeToastRef.current !== null ||
-      seenSourceControlToolWarningSetKeys.has(warningSetKey)
+      seenSourceControlToolNoticeSetKeys.has(noticeSetKey)
     ) {
       return;
     }
 
-    seenSourceControlToolWarningSetKeys.add(warningSetKey);
-    const dismissalKeys = warnings.map((warning) => warning.dismissalKey);
-    const labels = warnings.map((warning) => warning.label).join(" and ");
+    seenSourceControlToolNoticeSetKeys.add(noticeSetKey);
+    const dismissalKeys = notices.map((notice) => notice.dismissalKey);
     const directUpdateAction =
-      warnings.length === 1
-        ? warnings[0]!.advisory.actions.find((action) => action.kind === "runUpdate")
+      notices.length === 1
+        ? notices[0]!.advisory.actions.find((action) => action.kind === "runUpdate")
         : undefined;
-    const title =
-      warnings.length === 1
-        ? `${warnings[0]!.label} update recommended`
-        : `${warnings.length} source control updates recommended`;
-    const description =
-      warnings.length === 1
-        ? (warnings[0]!.advisory.message ?? "A source control tool update is recommended.")
-        : `${labels} should be updated for a known security or reliability issue.`;
+    const copy = sourceControlToolUpdateToastCopy(notices);
 
-    let toastId!: SourceControlToolWarningToastId;
+    let toastId!: SourceControlToolNoticeToastId;
     const dismiss = () => {
       dismissNotificationKeys(dismissalKeys);
       if (activeToastRef.current?.toastId === toastId) {
@@ -88,7 +81,7 @@ export function SourceControlToolUpdateLaunchNotification() {
     };
     const runUpdate = () => {
       if (!directUpdateAction || !activeEnvironmentId) return;
-      const warning = warnings[0]!;
+      const notice = notices[0]!;
       dismiss();
       toastManager.close(toastId);
 
@@ -102,10 +95,10 @@ export function SourceControlToolUpdateLaunchNotification() {
             type: result.status === "succeeded" ? "success" : "info",
             title:
               result.status === "succeeded"
-                ? `${warning.label} updated`
+                ? `${notice.label} updated`
                 : result.status === "started"
-                  ? `${warning.label} update started`
-                  : `${warning.label} is unchanged`,
+                  ? `${notice.label} update started`
+                  : `${notice.label} is unchanged`,
             description:
               result.status === "succeeded"
                 ? `${result.previousVersion ?? "Previous version"} to ${result.currentVersion ?? "updated"}`
@@ -118,7 +111,7 @@ export function SourceControlToolUpdateLaunchNotification() {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: `Could not update ${warning.label}`,
+              title: `Could not update ${notice.label}`,
               description:
                 error instanceof Error ? error.message : "The verified update command failed.",
             }),
@@ -128,9 +121,9 @@ export function SourceControlToolUpdateLaunchNotification() {
 
     toastId = toastManager.add(
       stackedThreadToast({
-        type: "warning",
-        title,
-        description,
+        type: copy.type,
+        title: copy.title,
+        description: copy.description,
         timeout: 0,
         actionProps: {
           children: directUpdateAction?.label ?? "Settings",
@@ -143,8 +136,8 @@ export function SourceControlToolUpdateLaunchNotification() {
         },
       }),
     );
-    activeToastRef.current = { key: warningSetKey, toastId };
-  }, [dismissNotificationKeys, firstRunSetupPending, navigate, warningSetKey, warnings]);
+    activeToastRef.current = { key: noticeSetKey, toastId };
+  }, [dismissNotificationKeys, firstRunSetupPending, navigate, noticeSetKey, notices]);
 
   return null;
 }
