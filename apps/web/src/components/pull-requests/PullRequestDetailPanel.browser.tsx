@@ -261,6 +261,9 @@ describe("PullRequestDetailPanel", () => {
     // The merge dialog remembers this per computer, so one test's tick would
     // otherwise be the next one's default.
     window.localStorage.removeItem(`threadlines:pull-requests:delete-branch:v1:${ENVIRONMENT_ID}`);
+    window.localStorage.removeItem(
+      "threadlines:pull-requests:merge-method:v1:github:threadlines/threadlines",
+    );
   });
 
   it("renders the header, the checks that need attention, and the conversation", async () => {
@@ -567,6 +570,28 @@ describe("PullRequestDetailPanel", () => {
     await behind.cleanup();
   });
 
+  it("keeps Merge on screen but off while the host's rules refuse it, and says why", async () => {
+    const rendered = await renderPanel({
+      detail: {
+        viewer: { canWrite: true, canReview: false, canManage: true },
+        mergeGate: "blocked",
+        checks: [
+          { name: "build", status: "success", description: null, url: null },
+          { name: "lint", status: "pending", description: null, url: null },
+          { name: "test", status: "pending", description: null, url: null },
+        ],
+        checksState: "pending",
+      },
+    });
+
+    await expect.element(page.getByTestId("pull-request-merge")).toBeDisabled();
+    await expect
+      .element(page.getByTestId("pull-request-merge-block"))
+      .toHaveTextContent("Waiting on 2 checks");
+
+    await rendered.cleanup();
+  });
+
   it("asks someone for a review from the reviewers row", async () => {
     const rendered = await renderPanel({
       detail: { viewer: { canWrite: true, canReview: false, canManage: true } },
@@ -692,5 +717,35 @@ describe("PullRequestDetailPanel", () => {
     });
 
     await rendered.cleanup();
+  });
+
+  it("wears the method last run on the repository and runs it next time", async () => {
+    const viewer = { canWrite: true, canReview: false, canManage: true };
+    const first = await renderPanel({ detail: { viewer } });
+
+    // The repository lists squash first, so that is the button's own until a
+    // choice is made. The menu spells the methods out in full.
+    await expect.element(page.getByTestId("pull-request-merge")).toHaveTextContent("Squash");
+    await userEvent.click(page.getByRole("button", { name: "Choose a merge method" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "Create a merge commit" }));
+    const dialog = page.getByRole("alertdialog");
+    await expect.element(dialog.getByText("Create a merge commit.")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Merge" }));
+    await vi.waitFor(() => {
+      expect(first.runAction).toHaveBeenCalledWith({
+        ...REFERENCE,
+        action: "merge",
+        mergeMethod: "merge",
+      });
+    });
+    await first.cleanup();
+
+    const second = await renderPanel({ detail: { viewer } });
+    await expect.element(page.getByTestId("pull-request-merge")).toHaveTextContent("Merge");
+    await userEvent.click(page.getByTestId("pull-request-merge"));
+    await expect
+      .element(page.getByRole("alertdialog").getByText("Create a merge commit."))
+      .toBeVisible();
+    await second.cleanup();
   });
 });

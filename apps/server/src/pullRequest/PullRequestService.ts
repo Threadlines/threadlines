@@ -464,6 +464,7 @@ function toDetail(input: {
     labels: row.labels,
     checks: row.checks,
     ...(row.checksState === undefined ? {} : { checksState: row.checksState }),
+    ...(row.mergeGate === undefined ? {} : { mergeGate: row.mergeGate }),
     viewer: {
       canWrite: input.repository.canWrite,
       canReview: viewerKnown && !viewerIsAuthor,

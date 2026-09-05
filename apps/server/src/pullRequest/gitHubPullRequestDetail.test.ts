@@ -58,6 +58,14 @@ function decodeActivity(payload: Record<string, unknown>) {
 }
 
 describe("decodeGitHubPullRequestDetailJson", () => {
+  it("reads the host's merge gate the way gh does, and says nothing while it is undecided", () => {
+    assert.strictEqual(decodeDetail({ mergeStateStatus: "BLOCKED" }).mergeGate, "blocked");
+    assert.strictEqual(decodeDetail({ mergeStateStatus: "BEHIND" }).mergeGate, "behind");
+    assert.strictEqual(decodeDetail({ mergeStateStatus: "UNSTABLE" }).mergeGate, "clear");
+    assert.strictEqual(decodeDetail({ mergeStateStatus: "UNKNOWN" }).mergeGate, undefined);
+    assert.strictEqual(decodeDetail({}).mergeGate, undefined);
+  });
+
   it("lists a re-requested reviewer as pending, keeps a verdict over a later comment, and never the author", () => {
     const detail = decodeDetail({
       author: { login: "octocat", is_bot: false },
