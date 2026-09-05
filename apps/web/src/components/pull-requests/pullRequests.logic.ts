@@ -542,6 +542,43 @@ export interface ThreadPullRequest {
   readonly repository: string | null;
 }
 
+/**
+ * Whether a link in a transcript points at exactly this pull request, so the
+ * app can show its own Pull request tab instead of the host's page.
+ *
+ * Only the bare address counts: a link into the Files tab, the checks page,
+ * or a particular comment names a spot our tab cannot show, and landing at the
+ * top of the pull request instead would be the misleading case. The comparison
+ * ignores the host's casing and a trailing slash, nothing else.
+ */
+export function isLinkToPullRequest(href: string, pullRequestUrl: string): boolean {
+  const link = parseHttpUrl(href);
+  const target = parseHttpUrl(pullRequestUrl);
+  if (link === null || target === null) {
+    return false;
+  }
+  if (link.search !== "" || link.hash !== "") {
+    return false;
+  }
+  return (
+    link.origin.toLowerCase() === target.origin.toLowerCase() &&
+    stripTrailingSlash(link.pathname) === stripTrailingSlash(target.pathname)
+  );
+}
+
+function parseHttpUrl(value: string): URL | null {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function stripTrailingSlash(pathname: string): string {
+  return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+}
+
 /** The thread fields both the sidebar summary and the full thread record carry. */
 export interface ThreadPullRequestSubject {
   readonly environmentId: EnvironmentId;
