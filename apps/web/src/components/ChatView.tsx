@@ -2039,7 +2039,7 @@ export default function ChatView(props: ChatViewProps) {
     markLocalDispatchAccepted,
     resetLocalDispatch,
     localDispatchStartedAt,
-    isPreparingWorktree,
+    isPreparingWorktree: isPreparingWorktreeDispatch,
     isSendBusy,
   } = useLocalDispatchState({
     activeThread,
@@ -2049,6 +2049,9 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError: activeThread?.error,
   });
+  // Raised for the whole bootstrap request; dropped as soon as the thread
+  // reports its worktree so the label never outlives the work it describes.
+  const isPreparingWorktree = isPreparingWorktreeDispatch && !activeThread?.worktreePath;
   const isWorking =
     phase === "running" ||
     phase === "connecting" ||
@@ -4233,9 +4236,15 @@ export default function ChatView(props: ChatViewProps) {
     activeThread.worktreePath === null &&
     !envLocked,
   );
-  const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
-    ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
-    : derivedEnvMode;
+  // The server records the thread a beat before it cuts the worktree, so the
+  // merged thread briefly carries the project root and its branch. Hold the
+  // requested mode until the worktree path lands instead of flashing "Current
+  // checkout" at the user who just picked "New worktree".
+  const envMode: DraftThreadEnvMode = isPreparingWorktree
+    ? "worktree"
+    : canOverrideServerThreadEnvMode
+      ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
+      : derivedEnvMode;
   const activeThreadBranch =
     canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
       ? pendingServerThreadBranch
@@ -4920,7 +4929,9 @@ export default function ChatView(props: ChatViewProps) {
                 : {}),
             }
           : undefined;
-      beginLocalDispatch({ preparingWorktree: false });
+      // The worktree is cut inside this request; the flag stays up until the
+      // thread reports its worktree path.
+      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
       await api.orchestration.dispatchCommand({
         type: "thread.turn.start",
         commandId: newCommandId(),
@@ -6439,9 +6450,15 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       if (isLocalDraftThread) {
+        // Leaving an existing worktree for a new one also drops its branch as
+        // the base: that branch is the previous thread's work (often a
+        // throwaway `threadlines/...` name), not what "new worktree" means.
+        // The branch selector refills the base from the default branch.
         setDraftThreadContext(composerDraftTarget, {
           envMode: mode,
-          ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+          ...(mode === "worktree" && draftThread?.worktreePath
+            ? { worktreePath: null, branch: null }
+            : {}),
         });
       }
       scheduleComposerFocus();
@@ -6945,7 +6962,9 @@ export default function ChatView(props: ChatViewProps) {
                 threadId={activeThread.id}
                 {...(routeKind === "draft" && draftId ? { draftId } : {})}
                 onEnvModeChange={onEnvModeChange}
-                {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
+                {...(canOverrideServerThreadEnvMode || isPreparingWorktree
+                  ? { effectiveEnvModeOverride: envMode }
+                  : {})}
                 {...(canOverrideServerThreadEnvMode
                   ? {
                       activeThreadBranchOverride: activeThreadBranch,

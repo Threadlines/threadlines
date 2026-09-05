@@ -9,6 +9,7 @@ import {
   resolveActiveWorktreePath,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
+  resolveDefaultWorktreeBaseBranch,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   resolveEnvModeLabel,
@@ -86,6 +87,31 @@ describe("resolveBranchToolbarValue", () => {
         currentGitBranch: "main",
       }),
     ).toBe("main");
+  });
+});
+
+describe("resolveDefaultWorktreeBaseBranch", () => {
+  it("prefers the local default branch over the checkout's current branch", () => {
+    expect(
+      resolveDefaultWorktreeBaseBranch({
+        refs: [
+          { name: "threadlines/2d841c42", isDefault: false },
+          { name: "origin/main", isDefault: true, isRemote: true },
+          { name: "main", isDefault: true },
+        ],
+        currentGitBranch: "threadlines/2d841c42",
+      }),
+    ).toBe("main");
+  });
+
+  it("falls back to the current branch when no default branch is known", () => {
+    expect(
+      resolveDefaultWorktreeBaseBranch({
+        refs: [{ name: "feature/x", isDefault: false }],
+        currentGitBranch: "feature/x",
+      }),
+    ).toBe("feature/x");
+    expect(resolveDefaultWorktreeBaseBranch({ refs: [], currentGitBranch: null })).toBeNull();
   });
 });
 
