@@ -1313,12 +1313,15 @@ export function resolveDefaultMergeMethod(
 }
 
 /**
- * Why merging is off the table right now, or null when it is available. Both
- * answers are things the user fixes elsewhere, so the button stays visible and
- * says what is in the way rather than disappearing.
+ * Why merging is off the table right now, or null when it is available. Every
+ * answer is something the user fixes elsewhere or waits out, so the button
+ * stays visible and says what is in the way rather than disappearing. The
+ * host's own gate comes last: a draft or a conflict is the more useful thing
+ * to say when both hold.
  */
 export function resolvePullRequestMergeBlock(
-  detail: Pick<PullRequestDetail, "mergeability" | "isDraft">,
+  detail: Pick<PullRequestDetail, "mergeability" | "isDraft"> &
+    Partial<Pick<PullRequestDetail, "mergeGate" | "checks" | "reviewDecision">>,
 ): string | null {
   if (detail.isDraft) {
     return "Mark as ready first";
@@ -1326,7 +1329,55 @@ export function resolvePullRequestMergeBlock(
   if (detail.mergeability === "conflicting") {
     return "Resolve the conflicts first";
   }
+  if (detail.mergeGate === "behind") {
+    return "Update the branch first";
+  }
+  if (detail.mergeGate === "blocked") {
+    // The host does not say which rule refused, so this reads the most likely
+    // one off what it did say: running checks, then failed ones, then reviews.
+    const { pending, failing } = summarizePullRequestChecks(detail.checks ?? []);
+    if (pending > 0) {
+      return pending === 1 ? "Waiting on 1 check" : `Waiting on ${pending} checks`;
+    }
+    if (failing > 0) {
+      return failing === 1 ? "A check failed" : "Checks failed";
+    }
+    if (
+      detail.reviewDecision === "review-required" ||
+      detail.reviewDecision === "changes-requested"
+    ) {
+      return "Needs an approving review";
+    }
+    return "Blocked by branch rules";
+  }
   return null;
+}
+
+/** How long after a push the header waits for the host to register the new commit's checks. */
+export const PULL_REQUEST_FRESH_PUSH_WATCH_MS = 120_000;
+
+/**
+ * Whether the header should keep re-reading itself. A check still running is
+ * the plain case. The other is the quiet moment right after a push (an update
+ * from the base, a new commit) when the host has the commit but has not queued
+ * its checks or decided whether it merges: a read then shows no checks at all,
+ * and would otherwise sit on that answer until the user hit Refresh.
+ */
+export function shouldPollPullRequestDetail(
+  detail: Pick<PullRequestDetail, "state" | "checks" | "mergeability" | "updatedAt">,
+  now: number,
+): boolean {
+  if (detail.checks.some((check) => check.status === "pending")) {
+    return true;
+  }
+  if (detail.state !== "open") {
+    return false;
+  }
+  const unsettled = detail.checks.length === 0 || detail.mergeability === "unknown";
+  const updatedAt = Date.parse(detail.updatedAt);
+  return (
+    unsettled && Number.isFinite(updatedAt) && now - updatedAt < PULL_REQUEST_FRESH_PUSH_WATCH_MS
+  );
 }
 
 /**

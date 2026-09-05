@@ -17,6 +17,7 @@ import {
   type PullRequestLabel,
   type PullRequestListState,
   type PullRequestMergeability,
+  type PullRequestMergeGate,
   type PullRequestMergeMethod,
   type PullRequestReactionContent,
   type PullRequestReviewCommentDraft,
@@ -116,6 +117,8 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestReviewer>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
+  /** Absent where the host does not say whether its rules would take a merge. */
+  readonly mergeGate?: PullRequestMergeGate;
   readonly baseComparison: PullRequestBaseComparison;
   /** Null where the host could not compare the branch with its base. */
   readonly behindBy: number | null;
