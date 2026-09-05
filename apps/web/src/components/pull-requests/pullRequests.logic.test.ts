@@ -4,6 +4,7 @@ import {
   ThreadId,
   type PullRequestComment,
   type PullRequestListEntry,
+  type PullRequestListResult,
   type VcsStatusResult,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -26,6 +27,7 @@ import {
   linkThreadsToPullRequests,
   matchesPullRequestQuery,
   matchesPullRequestSelection,
+  mergePullRequestListResults,
   narrowPullRequests,
   parsePullRequestSelection,
   parsePullRequestsSearch,
@@ -359,7 +361,28 @@ describe("linkThreadsToPullRequests", () => {
     expect(linked.has(pullRequestEntryKey(row))).toBe(false);
   });
 
-  it("ignores archived threads, other branches, other repositories, and other environments", () => {
+  it("links a thread on another computer whose project points at the same repository", () => {
+    // The merged list keeps one row per pull request, so the row this device
+    // listed stands for the work a thread on the laptop is doing on it.
+    const row = entry();
+    const linked = linkThreadsToPullRequests(
+      [row],
+      [
+        thread({
+          id: ThreadId.make("laptop-thread"),
+          environmentId: OTHER_ENVIRONMENT_ID,
+          projectId: OTHER_PROJECT_ID,
+        }),
+      ],
+      PROJECTS,
+    );
+
+    expect(linked.get(pullRequestEntryKey(row))?.map((match) => match.id)).toEqual([
+      "laptop-thread",
+    ]);
+  });
+
+  it("ignores archived threads, other branches, and other repositories", () => {
     const row = entry();
     const linked = linkThreadsToPullRequests(
       [row],
@@ -368,12 +391,66 @@ describe("linkThreadsToPullRequests", () => {
         thread({ id: ThreadId.make("other-branch"), branch: "main" }),
         thread({ id: ThreadId.make("no-branch"), branch: null }),
         thread({ id: ThreadId.make("other-repository"), projectId: OTHER_PROJECT_ID }),
-        thread({ id: ThreadId.make("other-env"), environmentId: OTHER_ENVIRONMENT_ID }),
       ],
       PROJECTS,
     );
 
     expect(linked.has(pullRequestEntryKey(row))).toBe(false);
+  });
+});
+
+describe("mergePullRequestListResults", () => {
+  const listing = (
+    environmentId: EnvironmentId,
+    entries: readonly PullRequestListEntry[],
+  ): { environmentId: EnvironmentId; environmentLabel: string; data: PullRequestListResult } => ({
+    environmentId,
+    environmentLabel: environmentId === ENVIRONMENT_ID ? "This device" : "Laptop",
+    data: { viewer: "ada", entries, errors: [] },
+  });
+
+  it("keeps one row for a pull request two environments both list, seated with the first", () => {
+    const local = entry({ number: 214 });
+    const remote = entry({ number: 214, projectId: OTHER_PROJECT_ID });
+    const laptopOnly = entry({
+      number: 9,
+      repository: "someone/else",
+      projectId: OTHER_PROJECT_ID,
+    });
+
+    const merged = mergePullRequestListResults({
+      state: "open",
+      results: [
+        listing(ENVIRONMENT_ID, [local]),
+        listing(OTHER_ENVIRONMENT_ID, [remote, laptopOnly]),
+      ],
+    });
+
+    expect(merged.entries.map((row) => [row.number, row.environmentId])).toEqual([
+      [214, ENVIRONMENT_ID],
+      [9, OTHER_ENVIRONMENT_ID],
+    ]);
+  });
+
+  it("lets a listing that holds the repository take a row this device only found by search", () => {
+    const searched = entry({ number: 538, repository: "someone/else", origin: "authored" });
+    const checkedOut = entry({
+      number: 538,
+      repository: "Someone/Else",
+      projectId: OTHER_PROJECT_ID,
+    });
+
+    const merged = mergePullRequestListResults({
+      state: "open",
+      results: [listing(ENVIRONMENT_ID, [searched]), listing(OTHER_ENVIRONMENT_ID, [checkedOut])],
+    });
+
+    expect(merged.entries).toHaveLength(1);
+    expect(merged.entries[0]).toMatchObject({
+      origin: "workspace",
+      environmentId: OTHER_ENVIRONMENT_ID,
+      projectId: OTHER_PROJECT_ID,
+    });
   });
 });
 
@@ -779,6 +856,17 @@ describe("the pull request a link names", () => {
     expect(
       matchesPullRequestSelection(selection, entry({ number: 7, repository: "someone/else" })),
     ).toBe(false);
+  });
+
+  it("still marks the row after another environment takes over listing it", () => {
+    const selection = {
+      environmentId: OTHER_ENVIRONMENT_ID,
+      projectId: OTHER_PROJECT_ID,
+      repository: "threadlines/threadlines",
+      number: 7,
+    };
+
+    expect(matchesPullRequestSelection(selection, entry({ number: 7 }))).toBe(true);
   });
 
   it("drops a value that names no pull request", () => {
