@@ -63,6 +63,96 @@ const processOutput = (
   stderrTruncated: false,
 });
 
+it.effect(
+  "discovers tools installed or removed after startup and refreshes install actions",
+  () => {
+    const commands = new Set<string>();
+    const commandAvailable = (command: string) => commands.has(command);
+    const processMock = {
+      run: (input: VcsProcess.VcsProcessInput) =>
+        Effect.succeed(
+          processOutput(
+            input.command === "git"
+              ? "git version 2.55.0.windows.4"
+              : input.args[0] === "--version"
+                ? "gh version 2.98.0"
+                : '{"hosts":{}}',
+          ),
+        ),
+    } satisfies Partial<VcsProcess.VcsProcessShape>;
+    const testLayer = Layer.effect(
+      SourceControlDiscovery.SourceControlDiscovery,
+      SourceControlDiscovery.make({
+        commandAvailable,
+        platform: "win32",
+        latestVersionResolver: noLatestToolVersion,
+      }),
+    ).pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-rescan-" })),
+      Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+      Layer.provide(
+        sourceControlProviderRegistryTestLayer({
+          process: processMock,
+          commandAvailable,
+          bitbucket: {
+            probeAuth: Effect.succeed({
+              status: "unauthenticated",
+              account: Option.none(),
+              host: Option.none(),
+              detail: Option.none(),
+            }),
+          },
+        }),
+      ),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const discovery = yield* SourceControlDiscovery.SourceControlDiscovery;
+      const initial = yield* discovery.discover;
+      assert.equal(
+        initial.versionControlSystems.find((item) => item.kind === "git")?.status,
+        "missing",
+      );
+      commands.add("winget");
+      const installable = yield* discovery.discover;
+      assert.ok(
+        installable.versionControlSystems
+          .find((item) => item.kind === "git")
+          ?.versionAdvisory?.actions.some(
+            (action) => action.kind === "runUpdate" && action.operation === "install",
+          ),
+      );
+      commands.add("git");
+      commands.add("gh");
+      const installed = yield* discovery.discover;
+      assert.equal(
+        installed.versionControlSystems.find((item) => item.kind === "git")?.status,
+        "available",
+      );
+      assert.equal(
+        installed.sourceControlProviders.find((item) => item.kind === "github")?.status,
+        "available",
+      );
+      commands.clear();
+      const removed = yield* discovery.discover;
+      assert.equal(
+        removed.versionControlSystems.find((item) => item.kind === "git")?.status,
+        "missing",
+      );
+      assert.equal(
+        removed.sourceControlProviders.find((item) => item.kind === "github")?.status,
+        "missing",
+      );
+      assert.equal(
+        removed.versionControlSystems
+          .find((item) => item.kind === "git")
+          ?.versionAdvisory?.actions.some((action) => action.kind === "runUpdate") ?? false,
+        false,
+      );
+    }).pipe(Effect.provide(testLayer));
+  },
+);
+
 it.effect("reports implemented tools separately from locally available executables", () => {
   const processCommands: Array<string> = [];
   const processMock = {

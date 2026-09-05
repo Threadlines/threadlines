@@ -16,6 +16,7 @@ import {
   type ServerProcessResourceHistoryResult,
   type ServerProvider,
   type SourceControlDiscoveryResult,
+  type SourceControlSetupState,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as DateTime from "effect/DateTime";
@@ -44,6 +45,7 @@ import { ConnectionsSettings } from "./ConnectionsSettings";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
+import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
 
 /**
  * The app-wide providers these panels are always mounted under. Settings rows
@@ -2447,14 +2449,114 @@ describe("SourceControlSettingsPanel discovery states", () => {
   function setSourceControlDiscoveryStub(
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>,
     updateSourceControlTool?: LocalApi["server"]["updateSourceControlTool"],
+    setup: Partial<
+      Pick<LocalApi["server"], "getSourceControlSetup" | "startGitHubAuth" | "cancelGitHubAuth">
+    > = {},
   ) {
+    resetSourceControlDiscoveryStateForTests();
     window.nativeApi = {
       server: {
         discoverSourceControl,
+        getSourceControlSetup: async () => ({
+          tools: [],
+          githubAuth: { status: "idle", verificationUrl: null, userCode: null, message: null },
+        }),
+        ...setup,
         ...(updateSourceControlTool ? { updateSourceControlTool } : {}),
       },
-    } as LocalApi;
+      shell: { openExternal: vi.fn(async () => {}) },
+    } as unknown as LocalApi;
   }
+
+  it("restores an installation check and supports GitHub browser sign-in, cancellation, and safe links", async () => {
+    const discovery: SourceControlDiscoveryResult = {
+      versionControlSystems: [
+        {
+          kind: "git",
+          label: "Git",
+          executable: "git",
+          implemented: true,
+          status: "available",
+          version: Option.some("2.55.0"),
+          installHint: "Install Git.",
+          detail: Option.none(),
+        },
+      ],
+      sourceControlProviders: [
+        {
+          kind: "github",
+          label: "GitHub",
+          executable: "gh",
+          status: "available",
+          version: Option.some("2.98.0"),
+          installHint: "Install GitHub CLI.",
+          detail: Option.none(),
+          auth: {
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.none(),
+            detail: Option.none(),
+          },
+        },
+      ],
+    };
+    let state: SourceControlSetupState = {
+      tools: [
+        {
+          target: "git",
+          operation: "install",
+          status: "checking",
+          message: "Checking the installed Git version…",
+        },
+      ],
+      githubAuth: { status: "idle", verificationUrl: null, userCode: null, message: null },
+    };
+    let verificationUrl = "https://github.com/login/device";
+    const cancel = vi.fn(async () => {
+      state = {
+        ...state,
+        githubAuth: { status: "cancelled", verificationUrl: null, userCode: null, message: null },
+      };
+    });
+    setSourceControlDiscoveryStub(async () => discovery, undefined, {
+      getSourceControlSetup: async () => state,
+      startGitHubAuth: async () => {
+        state = {
+          ...state,
+          githubAuth: { status: "running", verificationUrl, userCode: "ABCD-1234", message: null },
+        };
+        return state.githubAuth;
+      },
+      cancelGitHubAuth: cancel,
+    });
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <SourceControlSettingsPanel />
+      </TestAppProviders>,
+    );
+    await expect.element(page.getByText("Checking the installed Git version…")).toBeVisible();
+    await page.getByRole("button", { name: "Sign in to GitHub" }).click();
+    await expect.element(page.getByText("ABCD-1234", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Open GitHub", exact: true }))
+      .toBeVisible();
+    await expect
+      .poll(() => vi.mocked(window.nativeApi!.shell.openExternal).mock.calls.length)
+      .toBe(1);
+    expect(window.nativeApi!.shell.openExternal).toHaveBeenCalledWith(
+      "https://github.com/login/device",
+    );
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect.element(page.getByRole("button", { name: "Sign in to GitHub" })).toBeVisible();
+    expect(cancel).toHaveBeenCalledOnce();
+    verificationUrl = "https://github.com.evil.example/login/device";
+    await page.getByRole("button", { name: "Sign in to GitHub" }).click();
+    await expect.element(page.getByText("ABCD-1234", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Open GitHub", exact: true }))
+      .not.toBeInTheDocument();
+    expect(window.nativeApi!.shell.openExternal).toHaveBeenCalledTimes(1);
+  });
 
   it("shows skeleton sections while the first source control scan is pending", async () => {
     setSourceControlDiscoveryStub(() => new Promise(() => {}));

@@ -64,6 +64,9 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
+import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
+import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import { AutomaticGitFetchSupervisorLive } from "./vcs/AutomaticGitFetchSupervisor.ts";
@@ -406,7 +409,13 @@ export const makeRoutesLayer = Layer.mergeAll(
   serverEnvironmentRouteLayer,
   staticAndDevRouteLayer,
   websocketRpcRouteLayer,
-).pipe(Layer.provide(browserApiCorsLayer));
+).pipe(
+  Layer.provide(browserApiCorsLayer),
+  // Build setup services once for the HTTP server, not once per WebSocket.
+  Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
+  Layer.provide(GitHubAuth.layer),
+  Layer.provide(ProviderMaintenanceRunner.layer),
+);
 
 export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {

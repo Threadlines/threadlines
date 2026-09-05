@@ -241,6 +241,11 @@ export interface WsRpcClient {
     readonly updateSourceControlTool: RpcUnaryMethod<
       typeof WS_METHODS.serverUpdateSourceControlTool
     >;
+    readonly getSourceControlSetup: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetSourceControlSetup
+    >;
+    readonly startGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverStartGitHubAuth>;
+    readonly cancelGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverCancelGitHubAuth>;
     readonly getTraceDiagnostics: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetTraceDiagnostics>;
     readonly getProcessDiagnostics: RpcUnaryNoArgMethod<
       typeof WS_METHODS.serverGetProcessDiagnostics
@@ -650,6 +655,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverDiscoverSourceControl]({})),
       updateSourceControlTool: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpdateSourceControlTool](input)),
+      getSourceControlSetup: () =>
+        transport.request((client) => client[WS_METHODS.serverGetSourceControlSetup]({})),
+      startGitHubAuth: () =>
+        transport.request((client) => client[WS_METHODS.serverStartGitHubAuth]({})),
+      cancelGitHubAuth: () =>
+        transport.request((client) => client[WS_METHODS.serverCancelGitHubAuth]({})),
       getTraceDiagnostics: () =>
         transport.request((client) =>
           client[WS_METHODS.serverGetTraceDiagnostics]({}).pipe(Effect.withTracerEnabled(false)),

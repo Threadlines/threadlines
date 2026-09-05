@@ -372,44 +372,63 @@ it.effect("explains when Homebrew does not manage the tool it was asked to upgra
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("serializes all source control updates through one WinGet lock", () =>
-  Effect.gen(function* () {
-    const started = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    let calls = 0;
-    const layer = Layer.effect(
-      SourceControlToolMaintenance.SourceControlToolMaintenance,
-      SourceControlToolMaintenance.make({
-        platform: "win32",
-        commandAvailable: (command) => command === "winget" || command === "git",
-      }),
-    ).pipe(
-      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
-      Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
-          run: () => {
-            calls += 1;
-            return Deferred.succeed(started, undefined).pipe(
-              Effect.andThen(Deferred.await(release)),
-              Effect.as(processOutput),
-            );
-          },
+it.effect(
+  "queues different tools, rejects duplicates, and keeps installing after the caller leaves",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let calls = 0;
+      const layer = Layer.effect(
+        SourceControlToolMaintenance.SourceControlToolMaintenance,
+        SourceControlToolMaintenance.make({
+          platform: "win32",
+          commandAvailable: (command) => command === "winget" || command === "git",
         }),
-      ),
-      Layer.provideMerge(NodeServices.layer),
-    );
+      ).pipe(
+        Layer.provide(
+          ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" }),
+        ),
+        Layer.provide(
+          Layer.mock(VcsProcess.VcsProcess)({
+            run: () => {
+              calls += 1;
+              return Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(processOutput),
+              );
+            },
+          }),
+        ),
+        Layer.provideMerge(NodeServices.layer),
+      );
 
-    yield* Effect.gen(function* () {
-      const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
-      const first = yield* maintenance.update({ target: "github-cli" }).pipe(Effect.forkScoped);
-      yield* Deferred.await(started);
+      yield* Effect.gen(function* () {
+        const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+        const first = yield* maintenance.update({ target: "github-cli" }).pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
 
-      const second = yield* Effect.result(maintenance.update({ target: "git" }));
-      assert.strictEqual(second._tag, "Failure");
-      assert.strictEqual(calls, 1);
+        const duplicate = yield* Effect.result(maintenance.update({ target: "github-cli" }));
+        assert.strictEqual(duplicate._tag, "Failure");
+        const second = yield* maintenance.update({ target: "git" }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.deepStrictEqual(
+          (yield* maintenance.getState).map((state) => [state.target, state.status]),
+          [
+            ["github-cli", "running"],
+            ["git", "queued"],
+          ],
+        );
+        assert.strictEqual(calls, 1);
 
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(first);
-    }).pipe(Effect.provide(layer));
-  }),
+        yield* Fiber.interrupt(first);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(second);
+        assert.strictEqual(calls, 2);
+        assert.deepStrictEqual(
+          (yield* maintenance.getState).map((state) => state.status),
+          ["succeeded", "succeeded"],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
 );

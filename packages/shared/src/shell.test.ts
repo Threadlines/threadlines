@@ -11,6 +11,7 @@ import {
   readEnvironmentFromWindowsShell,
   readPathFromLaunchctl,
   readPathFromLoginShell,
+  refreshWindowsPath,
   resolveCommandPath,
   resolveKnownWindowsCliDirs,
   resolveWindowsEnvironment,
@@ -321,15 +322,19 @@ describe("resolveKnownWindowsCliDirs", () => {
     ).toEqual([
       "C:\\Program Files\\Git\\cmd",
       "C:\\Program Files\\GitHub CLI",
+      "C:\\Program Files\\nodejs",
       "C:\\Program Files (x86)\\Git\\cmd",
       "C:\\Program Files (x86)\\GitHub CLI",
+      "C:\\Program Files (x86)\\nodejs",
       "C:\\Users\\testuser\\AppData\\Roaming\\npm",
       "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WindowsApps",
       "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
       "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
       "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
+      "C:\\Users\\testuser\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
       "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
       "C:\\Users\\testuser\\AppData\\Local\\pnpm",
+      "C:\\Users\\testuser\\.local\\bin",
       "C:\\Users\\testuser\\.bun\\bin",
       "C:\\Users\\testuser\\scoop\\shims",
     ]);
@@ -373,6 +378,50 @@ describe("resolveCommandPath", () => {
   });
 });
 
+describe("refreshWindowsPath", () => {
+  it("finds newly installed tools while preserving configured command precedence", () => {
+    const env = { PATH: "C:\\Configured;C:\\Windows", USERPROFILE: "C:\\Users\\testuser" };
+    const readEnvironment = () => ({ PATH: "c:\\windows;D:\\Installed" });
+    const commandOptions = {
+      platform: "win32" as const,
+      env,
+      fileSystem: {
+        isFile: (file: string) =>
+          file === "D:\\Installed\\git.exe" ||
+          file === "C:\\Users\\testuser\\.local\\bin\\claude.exe",
+        canAccess: () => true,
+      },
+    };
+    expect(resolveCommandPath("git", commandOptions)).toBeNull();
+    refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    expect(resolveCommandPath("git", commandOptions)).toBe("D:\\Installed\\git.exe");
+    expect(resolveCommandPath("claude", commandOptions)).toBe(
+      "C:\\Users\\testuser\\.local\\bin\\claude.exe",
+    );
+    expect(env.PATH.split(";").slice(0, 3)).toEqual([
+      "C:\\Configured",
+      "C:\\Windows",
+      "D:\\Installed",
+    ]);
+    const refreshed = env.PATH;
+    refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    expect(env.PATH).toBe(refreshed);
+  });
+
+  it("keeps configured paths and known native locations when the Windows probe fails", () => {
+    const env = { PATH: "D:\\Configured", USERPROFILE: "C:\\Users\\testuser" };
+    refreshWindowsPath({
+      env,
+      platform: "win32",
+      readEnvironment: () => {
+        throw new Error("PowerShell is unavailable");
+      },
+    });
+    expect(env.PATH.split(";")).toContain("C:\\Users\\testuser\\.local\\bin");
+    expect(env.PATH.split(";")[0]).toBe("D:\\Configured");
+  });
+});
+
 describe("resolveWindowsEnvironment", () => {
   it("returns the baseline no-profile PATH patch when node is already available", () => {
     const readEnvironment = vi.fn(
@@ -403,8 +452,10 @@ describe("resolveWindowsEnvironment", () => {
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
+        "C:\\Users\\testuser\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
         "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
         "C:\\Users\\testuser\\AppData\\Local\\pnpm",
+        "C:\\Users\\testuser\\.local\\bin",
         "C:\\Users\\testuser\\.bun\\bin",
         "C:\\Users\\testuser\\scoop\\shims",
         "C:\\Shell\\Bin",
@@ -456,8 +507,10 @@ describe("resolveWindowsEnvironment", () => {
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\Git\\cmd",
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\GitHub CLI",
         "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
+        "C:\\Users\\testuser\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
         "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
         "C:\\Users\\testuser\\AppData\\Local\\pnpm",
+        "C:\\Users\\testuser\\.local\\bin",
         "C:\\Users\\testuser\\.bun\\bin",
         "C:\\Users\\testuser\\scoop\\shims",
         "C:\\Shell\\Bin",
@@ -494,6 +547,7 @@ describe("resolveWindowsEnvironment", () => {
     ).toEqual({
       PATH: [
         "C:\\Users\\testuser\\AppData\\Roaming\\npm",
+        "C:\\Users\\testuser\\.local\\bin",
         "C:\\Users\\testuser\\.bun\\bin",
         "C:\\Users\\testuser\\scoop\\shims",
         "C:\\Windows\\System32",

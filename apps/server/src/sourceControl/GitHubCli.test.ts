@@ -220,49 +220,88 @@ describe("GitHubCli.layer", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("lists authenticated user repositories", () =>
-    Effect.gen(function* () {
-      mockRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify([
-              {
-                nameWithOwner: "octocat/example-app",
-                url: "https://github.com/octocat/example-app",
-                sshUrl: "git@github.com:octocat/example-app.git",
-              },
-            ]),
+  it.effect(
+    "lists personal, organization, and collaborator repositories across archived entries",
+    () =>
+      Effect.gen(function* () {
+        const repository = (nameWithOwner: string, archived = false) => ({
+          nameWithOwner,
+          url: `https://github.com/${nameWithOwner}`,
+          sshUrl: `git@github.com:${nameWithOwner}.git`,
+          archived,
+        });
+        mockRun.mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify([
+                repository("octocat/example-app"),
+                repository("octocat/archived", true),
+                repository("example-org/team-app"),
+              ]),
+            ),
           ),
-        ),
-      );
+        );
+        mockRun.mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify([
+                repository("collaborator/shared-app"),
+                repository("octocat/beyond-limit"),
+              ]),
+            ),
+          ),
+        );
+
+        const gh = yield* GitHubCli.GitHubCli;
+        const result = yield* gh.listRepositories({ cwd: "/repo", limit: 3 });
+
+        assert.deepStrictEqual(result, [
+          {
+            nameWithOwner: "octocat/example-app",
+            url: "https://github.com/octocat/example-app",
+            sshUrl: "git@github.com:octocat/example-app.git",
+          },
+          {
+            nameWithOwner: "example-org/team-app",
+            url: "https://github.com/example-org/team-app",
+            sshUrl: "git@github.com:example-org/team-app.git",
+          },
+          {
+            nameWithOwner: "collaborator/shared-app",
+            url: "https://github.com/collaborator/shared-app",
+            sshUrl: "git@github.com:collaborator/shared-app.git",
+          },
+        ]);
+        assert.deepStrictEqual(mockRun.mock.calls[0]?.[0], {
+          operation: "GitHubCli.execute",
+          command: "gh",
+          args: [
+            "api",
+            "user/repos?affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=3&page=1",
+            "--jq",
+            "map({nameWithOwner: .full_name, url: .html_url, sshUrl: .ssh_url, archived: .archived})",
+          ],
+          cwd: "/repo",
+          env: GITHUB_CLI_BACKGROUND_ENV,
+          timeoutMs: 30_000,
+        });
+        assert.match(mockRun.mock.calls[1]?.[0].args[1] ?? "", /per_page=3&page=2$/);
+        assert.strictEqual(mockRun.mock.calls.length, 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("stops listing when the accessible repositories run out", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("[]")));
 
       const gh = yield* GitHubCli.GitHubCli;
-      const result = yield* gh.listRepositories({ cwd: "/repo", limit: 25 });
+      const result = yield* gh.listRepositories({ cwd: "/repo", limit: 150 });
 
-      assert.deepStrictEqual(result, [
-        {
-          nameWithOwner: "octocat/example-app",
-          url: "https://github.com/octocat/example-app",
-          sshUrl: "git@github.com:octocat/example-app.git",
-        },
-      ]);
-      assert.deepStrictEqual(mockRun.mock.calls[0]?.[0], {
-        operation: "GitHubCli.execute",
-        command: "gh",
-        args: [
-          "repo",
-          "list",
-          "--no-archived",
-          "--limit",
-          "25",
-          "--json",
-          "nameWithOwner,url,sshUrl",
-        ],
-        cwd: "/repo",
-        env: GITHUB_CLI_BACKGROUND_ENV,
-        timeoutMs: 30_000,
-      });
+      assert.deepStrictEqual(result, []);
+      assert.strictEqual(mockRun.mock.calls.length, 1);
+      assert.match(mockRun.mock.calls[0]?.[0].args[1] ?? "", /per_page=100&page=1$/);
     }).pipe(Effect.provide(layer)),
   );
 

@@ -266,6 +266,9 @@ import {
   SourceControlToolUpdateError,
   SourceControlToolUpdateInput,
   SourceControlToolUpdateResult,
+  SourceControlSetupState,
+  GitHubAuthState,
+  SourceControlProviderError,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 
@@ -377,6 +380,9 @@ export const WS_METHODS = {
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverUpdateSourceControlTool: "server.updateSourceControlTool",
+  serverGetSourceControlSetup: "server.getSourceControlSetup",
+  serverStartGitHubAuth: "server.startGitHubAuth",
+  serverCancelGitHubAuth: "server.cancelGitHubAuth",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
@@ -544,6 +550,20 @@ export const WsServerUpdateSourceControlToolRpc = Rpc.make(
 export const WsServerGetTraceDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetTraceDiagnostics, {
   payload: Schema.Struct({}),
   success: ServerTraceDiagnosticsResult,
+});
+
+export const WsServerGetSourceControlSetupRpc = Rpc.make(WS_METHODS.serverGetSourceControlSetup, {
+  payload: Schema.Struct({}),
+  success: SourceControlSetupState,
+});
+export const WsServerStartGitHubAuthRpc = Rpc.make(WS_METHODS.serverStartGitHubAuth, {
+  payload: Schema.Struct({}),
+  success: GitHubAuthState,
+  error: SourceControlProviderError,
+});
+export const WsServerCancelGitHubAuthRpc = Rpc.make(WS_METHODS.serverCancelGitHubAuth, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
 });
 
 export const WsServerGetProcessDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetProcessDiagnostics, {
@@ -1322,6 +1342,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerUpdateSourceControlToolRpc,
+  WsServerGetSourceControlSetupRpc,
+  WsServerStartGitHubAuthRpc,
+  WsServerCancelGitHubAuthRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,

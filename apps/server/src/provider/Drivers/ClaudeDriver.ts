@@ -51,10 +51,14 @@ import {
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  refreshProviderInstanceEnvironment,
+} from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
+  makeWindowsNativeInstaller,
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
@@ -253,6 +257,12 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@anthropic-ai/claude-code",
   homebrewFormula: "claude-code",
+  nativeInstall: {
+    win32: makeWindowsNativeInstaller({
+      url: "https://claude.ai/install.ps1",
+      lockKey: "claude-native-verified-win32",
+    }),
+  },
   nativeUpdate: {
     executable: "claude",
     args: ["update"],
@@ -322,7 +332,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       });
       const effectiveConfig = { ...config, enabled } satisfies ClaudeSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
+      let maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
         platform: process.platform,
@@ -380,8 +390,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       );
 
       const snapshot = yield* makeManagedServerProvider<ClaudeSettings>({
-        maintenanceCapabilities,
-        getSettings: Effect.succeed(effectiveConfig),
+        get maintenanceCapabilities() {
+          return maintenanceCapabilities;
+        },
+        getSettings: Effect.gen(function* () {
+          refreshProviderInstanceEnvironment(environment, processEnv);
+          maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
+            binaryPath: effectiveConfig.binaryPath,
+            env: processEnv,
+          }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+          return effectiveConfig;
+        }),
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
         initialSnapshot: (settings) =>
